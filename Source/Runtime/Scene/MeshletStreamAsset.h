@@ -20,6 +20,7 @@ inline constexpr uint32_t kMeshletStreamPayloadAttributePosition = 1u << 0u;
 inline constexpr uint32_t kMeshletStreamPayloadAttributeNormal = 1u << 1u;
 inline constexpr uint32_t kMeshletStreamPayloadAttributeTexcoord0 = 1u << 2u;
 inline constexpr uint32_t kMeshletStreamPayloadAttributeMaterial = 1u << 3u;
+inline constexpr uint32_t kMeshletStreamPayloadAttributeTangent = 1u << 4u;
 
 enum class MeshletStreamPayloadCompression : uint32_t {
     None = 0,
@@ -153,6 +154,10 @@ struct MeshletStreamPayloadHeader {
     uint32_t normalFormat = static_cast<uint32_t>(MeshletStreamPayloadFormat::Unknown);
     uint32_t texcoord0Format = static_cast<uint32_t>(MeshletStreamPayloadFormat::Unknown);
     uint32_t materialFormat = static_cast<uint32_t>(MeshletStreamPayloadFormat::Uint32);
+    uint32_t tangentOffsetBytes = 0;
+    uint32_t tangentFormat = static_cast<uint32_t>(MeshletStreamPayloadFormat::Unknown);
+    uint32_t reserved0 = 0;
+    uint32_t reserved1 = 0;
 };
 
 struct MeshletStreamPayloadCluster {
@@ -165,6 +170,12 @@ struct MeshletStreamPayloadCluster {
     uint32_t lodLevel = 0;
     uint32_t lodGroupIndex = 0;
     uint32_t refinedGroupIndex = kMeshletStreamInvalidGroupIndex;
+    uint32_t reserved0 = 0;
+    uint32_t reserved1 = 0;
+    uint32_t reserved2 = 0;
+    float boundingSphere[4] = {};
+    float coneApexCutoff[4] = {};
+    float coneAxisLodError[4] = {};
 };
 
 class MeshletStreamAsset {

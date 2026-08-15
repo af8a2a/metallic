@@ -1,5 +1,19 @@
+#include "GPUDrivenRasterCommon.slang"
+
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
+static const uint kMeshletTriangleChunkSize = 64u;
+static const uint kMeshletTriangleChunkCount = 2u;
+static const uint kMaxMeshOutputVertices = kMeshletTriangleChunkSize * 3u;
+static const uint kPayloadHeaderBytes = 112u;
+static const uint kPayloadClusterBytes = 96u;
+static const uint kPayloadClusterWords = kPayloadClusterBytes / 4u;
+static const uint kPayloadAttributePosition = 1u << 0u;
+static const uint kPayloadAttributeNormal = 1u << 1u;
+static const uint kPayloadAttributeTexcoord0 = 1u << 2u;
+static const uint kPayloadAttributeTangent = 1u << 4u;
+static const uint kPayloadFormatFloat32x2 = 1u;
+static const uint kPayloadFormatFloat32x4 = 2u;
 static const uint kInvalidStreamDeviceOffset = 0xffffffffu;
 static const uint kInvalidClusterIndex = 0xffffffffu;
 static const uint kUnloadClusterIndex = 0xfffffffeu;
@@ -75,6 +89,27 @@ struct GPUDrivenStreamAssetPush
     uint tlasInstanceBuffer;
     uint traversalPhase;
     uint activeBuildPhase;
+    uint rasterBindingsBuffer;
+};
+
+struct GPUDrivenStreamAssetRasterBindings
+{
+    uint visibleClusterBuffer;
+    uint instanceVisibilityBuffer;
+    uint hzbBuffer0;
+    uint hzbBuffer1;
+    uint depthImage;
+    uint visibilityImage;
+    uint deferredColorBuffer;
+    uint visibleInstanceIdsBuffer;
+    uint visibleRecordBase;
+    uint visibleRecordCapacity;
+    uint hzbMipCount;
+    uint hzbValid;
+    uint cullingFlags;
+    uint width;
+    uint height;
+    uint visibleInstanceCounterBuffer;
 };
 
 struct GPUDrivenStreamAssetActiveHeader
@@ -100,7 +135,7 @@ struct GPUDrivenStreamAssetActiveGroup
     uint clusterSelectionMask;
     uint flags;
     uint instanceIndex;
-    uint padding0;
+    uint gpuSceneInstanceIndex;
     uint padding1;
     uint padding2;
     float4 world0;
@@ -114,7 +149,7 @@ struct GPUDrivenStreamAssetInstance
     uint primitiveIndex;
     uint materialIndex;
     uint visible;
-    uint padding0;
+    uint gpuSceneInstanceIndex;
     float4 world0;
     float4 world1;
     float4 world2;
@@ -355,18 +390,71 @@ struct GPUDrivenStreamAssetParams
     uint blasClusterReferenceAddressHigh;
     uint blasClusterReferenceCapacity;
     uint blasBuildCapacity;
+    float4 previousEye;
+    float4 previousCenter;
+    float4 previousUpProjection;
+    float4 previousViewport;
+    float4 previousClipOrtho;
 };
 
 struct GPUDrivenStreamAssetVertexOutput
 {
     float4 position : SV_Position;
-    nointerpolation float3 color : COLOR0;
+    nointerpolation uint visibilityId : TEXCOORD0;
+};
+
+struct GPUDrivenStreamAssetFullscreenOutput
+{
+    float4 position : SV_Position;
 };
 
 float3 safeNormalize(float3 value, float3 fallback)
 {
     float lengthSquared = dot(value, value);
     return lengthSquared > 0.00000001 ? value * rsqrt(lengthSquared) : fallback;
+}
+
+bool streamPayloadRangeValid(
+    uint byteOffset,
+    uint byteCount,
+    uint payloadBytes)
+{
+    return byteOffset <= payloadBytes && byteCount <= payloadBytes - byteOffset;
+}
+
+bool streamPayloadArrayRangeValid(
+    uint byteOffset,
+    uint elementCount,
+    uint elementStride,
+    uint payloadBytes)
+{
+    return elementStride != 0u &&
+        byteOffset <= payloadBytes &&
+        elementCount <= (payloadBytes - byteOffset) / elementStride;
+}
+
+float3 transformStreamDirection(
+    GPUDrivenStreamAssetActiveGroup group,
+    float3 localDirection)
+{
+    return group.world0.xyz * localDirection.x +
+        group.world1.xyz * localDirection.y +
+        group.world2.xyz * localDirection.z;
+}
+
+float3 transformStreamNormal(
+    GPUDrivenStreamAssetActiveGroup group,
+    float3 localNormal,
+    float3 fallback)
+{
+    float3 cofactor0 = cross(group.world1.xyz, group.world2.xyz);
+    float3 cofactor1 = cross(group.world2.xyz, group.world0.xyz);
+    float3 cofactor2 = cross(group.world0.xyz, group.world1.xyz);
+    return safeNormalize(
+        cofactor0 * localNormal.x +
+            cofactor1 * localNormal.y +
+            cofactor2 * localNormal.z,
+        fallback);
 }
 
 float4 projectPosition(float3 worldPosition, GPUDrivenStreamAssetParams params)
@@ -385,9 +473,14 @@ float4 projectPosition(float3 worldPosition, GPUDrivenStreamAssetParams params)
     float zNear = max(params.clipOrtho.x, 0.0001);
     float zFar = max(params.clipOrtho.y, zNear + 0.0001);
     float ndcZ = (viewPosition.z - zNear) / (zFar - zNear);
-    if (params.clipOrtho.w > 0.5) {
-        ndcZ = 1.0 - ndcZ;
+    if (params.upProjection.w <= 0.5) {
+        float safeViewZ = abs(viewPosition.z) > 0.000001
+            ? viewPosition.z
+            : (viewPosition.z < 0.0 ? -0.000001 : 0.000001);
+        ndcZ = zFar / (zFar - zNear) -
+            (zFar * zNear) / ((zFar - zNear) * safeViewZ);
     }
+    ndcZ = params.clipOrtho.w > 0.5 ? 1.0 - ndcZ : ndcZ;
     float aspect = max(params.viewport.x, 0.001);
 
     if (params.upProjection.w > 0.5) {
@@ -407,6 +500,383 @@ float4 projectPosition(float3 worldPosition, GPUDrivenStreamAssetParams params)
         viewPosition.y * yScale,
         ndcZ * w,
         w);
+}
+
+struct GPUDrivenStreamAssetCameraData
+{
+    float4 eye;
+    float4 center;
+    float4 upProjection;
+    float4 viewport;
+    float4 clipOrtho;
+};
+
+GPUDrivenStreamAssetCameraData currentStreamCamera(GPUDrivenStreamAssetParams params)
+{
+    GPUDrivenStreamAssetCameraData camera;
+    camera.eye = params.eye;
+    camera.center = params.center;
+    camera.upProjection = params.upProjection;
+    camera.viewport = params.viewport;
+    camera.clipOrtho = params.clipOrtho;
+    return camera;
+}
+
+GPUDrivenStreamAssetCameraData previousStreamCamera(GPUDrivenStreamAssetParams params)
+{
+    GPUDrivenStreamAssetCameraData camera;
+    camera.eye = params.previousEye;
+    camera.center = params.previousCenter;
+    camera.upProjection = params.previousUpProjection;
+    camera.viewport = params.previousViewport;
+    camera.clipOrtho = params.previousClipOrtho;
+    return camera;
+}
+
+float3 streamWorldToView(float3 worldPosition, GPUDrivenStreamAssetCameraData camera)
+{
+    float3 forward = safeNormalize(camera.center.xyz - camera.eye.xyz, float3(0.0, 0.0, -1.0));
+    float3 cameraUp = safeNormalize(camera.upProjection.xyz, float3(0.0, 1.0, 0.0));
+    float3 right = safeNormalize(cross(forward, cameraUp), float3(1.0, 0.0, 0.0));
+    float3 up = safeNormalize(cross(right, forward), float3(0.0, 1.0, 0.0));
+    float3 cameraVector = worldPosition - camera.eye.xyz;
+    return float3(
+        dot(cameraVector, right),
+        dot(cameraVector, up),
+        dot(cameraVector, forward));
+}
+
+float streamProjectDepth(float viewZ, GPUDrivenStreamAssetCameraData camera)
+{
+    float zNear = max(camera.clipOrtho.x, 0.0001);
+    float zFar = max(camera.clipOrtho.y, zNear + 0.0001);
+    float depth = (viewZ - zNear) / (zFar - zNear);
+    if (camera.upProjection.w <= 0.5) {
+        float safeViewZ = abs(viewZ) > 0.000001
+            ? viewZ
+            : (viewZ < 0.0 ? -0.000001 : 0.000001);
+        depth = zFar / (zFar - zNear) -
+            (zFar * zNear) / ((zFar - zNear) * safeViewZ);
+    }
+    return camera.clipOrtho.w > 0.5 ? 1.0 - depth : depth;
+}
+
+bool streamSphereInsideFrustum(
+    float3 center,
+    float radius,
+    GPUDrivenStreamAssetCameraData camera)
+{
+    float3 viewCenter = streamWorldToView(center, camera);
+    float zNear = max(camera.clipOrtho.x, 0.0001);
+    float zFar = max(camera.clipOrtho.y, zNear + 0.0001);
+    if (viewCenter.z + radius < zNear || viewCenter.z - radius > zFar) {
+        return false;
+    }
+    float aspect = max(camera.viewport.x, 0.001);
+    if (camera.upProjection.w > 0.5) {
+        float halfHeight = max(camera.clipOrtho.z * 0.5, 0.0001);
+        float halfWidth = halfHeight * aspect;
+        return abs(viewCenter.x) <= halfWidth + radius &&
+            abs(viewCenter.y) <= halfHeight + radius;
+    }
+    if (viewCenter.z + radius <= 0.0) {
+        return false;
+    }
+    float tanY = tan(clamp(camera.viewport.w, 0.017453292, 3.12413936) * 0.5);
+    float tanX = tanY * aspect;
+    float radiusX = radius * sqrt(1.0 + tanX * tanX);
+    float radiusY = radius * sqrt(1.0 + tanY * tanY);
+    return abs(viewCenter.x) <= viewCenter.z * tanX + radiusX &&
+        abs(viewCenter.y) <= viewCenter.z * tanY + radiusY;
+}
+
+uint streamMipDimension(uint baseDimension, uint mipLevel)
+{
+    uint dimension = max(baseDimension, 1u);
+    for (uint level = 0u; level < mipLevel; ++level) {
+        dimension = max(1u, (dimension + 1u) / 2u);
+    }
+    return dimension;
+}
+
+uint streamHzbMipOffset(
+    GPUDrivenStreamAssetRasterBindings bindings,
+    uint mipLevel)
+{
+    uint offset = 0u;
+    uint width = max(bindings.width, 1u);
+    uint height = max(bindings.height, 1u);
+    for (uint level = 0u; level < mipLevel; ++level) {
+        offset += width * height;
+        width = max(1u, (width + 1u) / 2u);
+        height = max(1u, (height + 1u) / 2u);
+    }
+    return offset;
+}
+
+float loadStreamHzb(
+    GPUDrivenStreamAssetPush push,
+    GPUDrivenStreamAssetRasterBindings bindings,
+    uint hzbIndex,
+    uint elementIndex)
+{
+    uint handleIndex = hzbIndex == 0u ? bindings.hzbBuffer0 : bindings.hzbBuffer1;
+    DescriptorHandle<StructuredBuffer<float>> hzbHandle =
+        DescriptorHandle<StructuredBuffer<float>>(uint2(
+            push.bufferShaderIndexBase + handleIndex,
+            0));
+    StructuredBuffer<float> hzb = hzbHandle;
+    return hzb[elementIndex];
+}
+
+bool streamSphereOccluded(
+    float3 center,
+    float radius,
+    GPUDrivenStreamAssetCameraData camera,
+    GPUDrivenStreamAssetRasterBindings bindings,
+    GPUDrivenStreamAssetPush push,
+    uint hzbIndex)
+{
+    if (bindings.hzbMipCount == 0u) {
+        return false;
+    }
+    float3 viewCenter = streamWorldToView(center, camera);
+    float zNear = max(camera.clipOrtho.x, 0.0001);
+    if (viewCenter.z - radius <= zNear) {
+        return false;
+    }
+    float2 centerPixels;
+    float2 radiusPixels;
+    if (camera.upProjection.w > 0.5) {
+        float halfHeight = max(camera.clipOrtho.z * 0.5, 0.0001);
+        float halfWidth = halfHeight * max(camera.viewport.x, 0.001);
+        centerPixels = float2(
+            (viewCenter.x / halfWidth * 0.5 + 0.5) * float(bindings.width),
+            (-viewCenter.y / halfHeight * 0.5 + 0.5) * float(bindings.height));
+        radiusPixels = float2(
+            radius / halfWidth * 0.5 * float(bindings.width),
+            radius / halfHeight * 0.5 * float(bindings.height));
+    } else {
+        float tanY = tan(clamp(camera.viewport.w, 0.017453292, 3.12413936) * 0.5);
+        float tanX = tanY * max(camera.viewport.x, 0.001);
+        float closestZ = max(viewCenter.z - radius, zNear);
+        centerPixels = float2(
+            (viewCenter.x / (viewCenter.z * tanX) * 0.5 + 0.5) * float(bindings.width),
+            (-viewCenter.y / (viewCenter.z * tanY) * 0.5 + 0.5) * float(bindings.height));
+        radiusPixels = float2(
+            radius / (closestZ * tanX) * 0.5 * float(bindings.width),
+            radius / (closestZ * tanY) * 0.5 * float(bindings.height));
+    }
+    float2 limit = float2(max(bindings.width, 1u) - 1u, max(bindings.height, 1u) - 1u);
+    float2 minPixels = clamp(centerPixels - radiusPixels, 0.0, limit);
+    float2 maxPixels = clamp(centerPixels + radiusPixels, 0.0, limit);
+    float maxExtent = max(maxPixels.x - minPixels.x, maxPixels.y - minPixels.y);
+    uint mipLevel = min(
+        bindings.hzbMipCount - 1u,
+        maxExtent > 1.0 ? uint(ceil(log2(maxExtent))) : 0u);
+    uint mipWidth = streamMipDimension(bindings.width, mipLevel);
+    uint mipHeight = streamMipDimension(bindings.height, mipLevel);
+    float mipScale = exp2(-float(mipLevel));
+    uint2 minTexel = min(uint2(minPixels * mipScale), uint2(mipWidth - 1u, mipHeight - 1u));
+    uint2 maxTexel = min(uint2(maxPixels * mipScale), uint2(mipWidth - 1u, mipHeight - 1u));
+    uint mipOffset = streamHzbMipOffset(bindings, mipLevel);
+    float depth00 = loadStreamHzb(push, bindings, hzbIndex, mipOffset + minTexel.y * mipWidth + minTexel.x);
+    float depth10 = loadStreamHzb(push, bindings, hzbIndex, mipOffset + minTexel.y * mipWidth + maxTexel.x);
+    float depth01 = loadStreamHzb(push, bindings, hzbIndex, mipOffset + maxTexel.y * mipWidth + minTexel.x);
+    float depth11 = loadStreamHzb(push, bindings, hzbIndex, mipOffset + maxTexel.y * mipWidth + maxTexel.x);
+    float nearestZ = max(viewCenter.z - radius, zNear);
+    float depthBias = max(0.001, radius * 0.01);
+    float nearestDepth = streamProjectDepth(max(nearestZ - depthBias, zNear), camera);
+    if (camera.clipOrtho.w > 0.5) {
+        float occluderDepth = min(min(depth00, depth10), min(depth01, depth11));
+        return nearestDepth < occluderDepth;
+    }
+    float occluderDepth = max(max(depth00, depth10), max(depth01, depth11));
+    return nearestDepth > occluderDepth;
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void gpuDrivenStreamAssetCullResetMain(
+    uint3 dispatchThreadID : SV_DispatchThreadID,
+    uniform GPUDrivenStreamAssetPush push)
+{
+    // Late culling appends the instances recovered by the current-frame HZB to
+    // the early-pass list, matching the common GPUScene two-phase contract.
+    if (min(push.traversalPhase, 1u) != 0u) {
+        return;
+    }
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindingsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
+            push.bufferShaderIndexBase + push.rasterBindingsBuffer,
+            0));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsBuffer = bindingsHandle;
+    GPUDrivenStreamAssetRasterBindings bindings = bindingsBuffer[0];
+    DescriptorHandle<RWStructuredBuffer<uint>> counterHandle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
+            push.bufferShaderIndexBase + bindings.visibleInstanceCounterBuffer,
+            0));
+    RWStructuredBuffer<uint> counter = counterHandle;
+    counter[0] = 0u;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void gpuDrivenStreamAssetInstanceCullMain(
+    uint3 dispatchThreadID : SV_DispatchThreadID,
+    uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(
+            push.bufferShaderIndexBase + push.paramsBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindingsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
+            push.bufferShaderIndexBase + push.rasterBindingsBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instanceHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(
+            push.bufferShaderIndexBase + push.instanceBuffer,
+            0));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsBuffer = bindingsHandle;
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instances = instanceHandle;
+    GPUDrivenStreamAssetParams params = paramsBuffer[0];
+    GPUDrivenStreamAssetRasterBindings bindings = bindingsBuffer[0];
+    uint rasterPhase = min(push.traversalPhase, 1u);
+    uint instanceIndex = dispatchThreadID.x;
+    if (instanceIndex >= params.sceneInstanceCount) {
+        return;
+    }
+
+    DescriptorHandle<RWStructuredBuffer<uint>> visibilityHandle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
+            push.bufferShaderIndexBase + bindings.instanceVisibilityBuffer,
+            0));
+    RWStructuredBuffer<uint> visibility = visibilityHandle;
+    GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
+    uint gpuSceneInstanceIndex = instance.gpuSceneInstanceIndex;
+    if (gpuSceneInstanceIndex == kInvalidClusterIndex) {
+        return;
+    }
+    if (rasterPhase != 0u && visibility[gpuSceneInstanceIndex] != 2u) {
+        return;
+    }
+    if (instance.visible == 0u) {
+        visibility[gpuSceneInstanceIndex] = 0u;
+        return;
+    }
+
+    float3 center = instance.boundsCenterRadius.xyz;
+    float radius = max(instance.boundsCenterRadius.w, 0.000001);
+    GPUDrivenStreamAssetCameraData currentCamera = currentStreamCamera(params);
+    if ((bindings.cullingFlags & (1u << 0u)) != 0u &&
+        !streamSphereInsideFrustum(center, radius, currentCamera)) {
+        visibility[gpuSceneInstanceIndex] = 0u;
+        return;
+    }
+
+    bool occluded = false;
+    if ((bindings.cullingFlags & (1u << 1u)) != 0u &&
+        (rasterPhase != 0u || bindings.hzbValid != 0u)) {
+        uint currentHzb = params.frameIndex & 1u;
+        uint hzbIndex = rasterPhase == 0u ? (currentHzb ^ 1u) : currentHzb;
+        GPUDrivenStreamAssetCameraData hzbCamera = rasterPhase == 0u
+            ? previousStreamCamera(params)
+            : currentCamera;
+        occluded = streamSphereOccluded(
+            center,
+            radius,
+            hzbCamera,
+            bindings,
+            push,
+            hzbIndex);
+    }
+    uint visibleState = rasterPhase == 0u ? 1u : 3u;
+    visibility[gpuSceneInstanceIndex] = occluded
+        ? (rasterPhase == 0u ? 2u : 0u)
+        : visibleState;
+    if (!occluded) {
+        DescriptorHandle<RWStructuredBuffer<uint>> visibleIdsHandle =
+            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
+                push.bufferShaderIndexBase + bindings.visibleInstanceIdsBuffer,
+                0));
+        DescriptorHandle<RWStructuredBuffer<uint>> counterHandle =
+            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
+                push.bufferShaderIndexBase + bindings.visibleInstanceCounterBuffer,
+                0));
+        RWStructuredBuffer<uint> visibleIds = visibleIdsHandle;
+        RWStructuredBuffer<uint> counter = counterHandle;
+        uint outputIndex = 0u;
+        InterlockedAdd(counter[0], 1u, outputIndex);
+        if (outputIndex < params.sceneInstanceCount) {
+            visibleIds[outputIndex] = gpuSceneInstanceIndex;
+        }
+    }
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void gpuDrivenStreamAssetHzbMain(
+    uint3 dispatchThreadID : SV_DispatchThreadID,
+    uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(
+            push.bufferShaderIndexBase + push.paramsBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindingsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
+            push.bufferShaderIndexBase + push.rasterBindingsBuffer,
+            0));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsBuffer = bindingsHandle;
+    GPUDrivenStreamAssetParams params = paramsBuffer[0];
+    GPUDrivenStreamAssetRasterBindings bindings = bindingsBuffer[0];
+    uint mipLevel = push.activeBuildPhase;
+    if (mipLevel >= bindings.hzbMipCount) {
+        return;
+    }
+    uint mipWidth = streamMipDimension(bindings.width, mipLevel);
+    uint mipHeight = streamMipDimension(bindings.height, mipLevel);
+    if (dispatchThreadID.x >= mipWidth || dispatchThreadID.y >= mipHeight) {
+        return;
+    }
+    uint currentHzb = params.frameIndex & 1u;
+    uint hzbHandleIndex = currentHzb == 0u ? bindings.hzbBuffer0 : bindings.hzbBuffer1;
+    DescriptorHandle<RWStructuredBuffer<float>> hzbHandle =
+        DescriptorHandle<RWStructuredBuffer<float>>(uint2(
+            push.bufferShaderIndexBase + hzbHandleIndex,
+            0));
+    RWStructuredBuffer<float> hzb = hzbHandle;
+    uint destinationIndex = streamHzbMipOffset(bindings, mipLevel) +
+        dispatchThreadID.y * mipWidth + dispatchThreadID.x;
+    if (mipLevel == 0u) {
+        DescriptorHandle<Texture2D<float>> depthHandle =
+            DescriptorHandle<Texture2D<float>>(uint2(
+                push.imageShaderIndexBase + bindings.depthImage,
+                0));
+        Texture2D<float> depth = depthHandle;
+        hzb[destinationIndex] = depth.Load(int3(dispatchThreadID.xy, 0));
+        return;
+    }
+    uint sourceMip = mipLevel - 1u;
+    uint sourceWidth = streamMipDimension(bindings.width, sourceMip);
+    uint sourceHeight = streamMipDimension(bindings.height, sourceMip);
+    uint sourceOffset = streamHzbMipOffset(bindings, sourceMip);
+    uint2 sourceBase = dispatchThreadID.xy * 2u;
+    uint2 limit = uint2(sourceWidth - 1u, sourceHeight - 1u);
+    uint2 source0 = min(sourceBase, limit);
+    uint2 source1 = min(sourceBase + uint2(1u, 0u), limit);
+    uint2 source2 = min(sourceBase + uint2(0u, 1u), limit);
+    uint2 source3 = min(sourceBase + uint2(1u, 1u), limit);
+    float depth0 = hzb[sourceOffset + source0.y * sourceWidth + source0.x];
+    float depth1 = hzb[sourceOffset + source1.y * sourceWidth + source1.x];
+    float depth2 = hzb[sourceOffset + source2.y * sourceWidth + source2.x];
+    float depth3 = hzb[sourceOffset + source3.y * sourceWidth + source3.x];
+    hzb[destinationIndex] = params.clipOrtho.w > 0.5
+        ? min(min(depth0, depth1), min(depth2, depth3))
+        : max(max(depth0, depth1), max(depth2, depth3));
 }
 
 float3 hashColor(uint seed)
@@ -668,15 +1138,21 @@ uint buildGroupClusterSelectionMask(
     bool clusterDirectoryAvailable = false;
     uint currentPageOffset = streamPageDeviceOffset(currentPage);
     if (currentPageOffset != kInvalidStreamDeviceOffset &&
-        params.pageBufferBytes >= 96u &&
-        currentPageOffset <= params.pageBufferBytes - 96u) {
+        params.pageBufferBytes >= kPayloadHeaderBytes &&
+        currentPageOffset <= params.pageBufferBytes - kPayloadHeaderBytes) {
         pageWord = currentPageOffset / 4u;
         payloadClusterCount = pageWords[pageWord + 2u];
         clusterOffsetBytes = pageWords[pageWord + 9u];
         payloadBytes = pageWords[pageWord + 12u];
-        clusterDirectoryAvailable = payloadBytes >= 96u &&
+        clusterDirectoryAvailable = payloadBytes >= kPayloadHeaderBytes &&
             payloadBytes <= params.pageBufferBytes &&
-            currentPageOffset <= params.pageBufferBytes - payloadBytes;
+            currentPageOffset <= params.pageBufferBytes - payloadBytes &&
+            (clusterOffsetBytes & 3u) == 0u &&
+            streamPayloadArrayRangeValid(
+                clusterOffsetBytes,
+                payloadClusterCount,
+                kPayloadClusterBytes,
+                payloadBytes);
     }
 
     uint mask = 0u;
@@ -686,7 +1162,8 @@ uint buildGroupClusterSelectionMask(
         }
         uint refinedGroupIndex = kInvalidClusterIndex;
         if (clusterDirectoryAvailable) {
-            uint refinedGroupByteOffset = clusterOffsetBytes + clusterChild * 36u + 32u;
+            uint refinedGroupByteOffset =
+                clusterOffsetBytes + clusterChild * kPayloadClusterBytes + 32u;
             if (clusterChild < payloadClusterCount &&
                 refinedGroupByteOffset >= clusterOffsetBytes &&
                 refinedGroupByteOffset + 4u >= refinedGroupByteOffset &&
@@ -751,7 +1228,7 @@ void appendActivePage(
     group.clusterSelectionMask = clusterSelectionMask;
     group.flags = kActiveGroupResident;
     group.instanceIndex = instanceIndex;
-    group.padding0 = 0u;
+    group.gpuSceneInstanceIndex = instance.gpuSceneInstanceIndex;
     group.padding1 = 0u;
     group.padding2 = 0u;
     group.world0 = instance.world0;
@@ -995,18 +1472,31 @@ void appendInstanceFallbackGroups(
             reportInvalidTraversal(requests, params);
             continue;
         }
-        if (!updateGroupPageDemand(pageTable, requests, params, instance, primitive, group) ||
-            !groupPageDrawable(pageTable, params, group)) {
+        uint state = streamPageState(pageTable[group.pageIndex]);
+        if (streamPageAvailable(state)) {
+            markStreamPageDemand(pageTable, params, group.pageIndex);
+        } else {
+            requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
+        }
+        if (!groupPageDrawable(pageTable, params, group)) {
             continue;
         }
-        uint clusterSelectionMask = buildGroupClusterSelectionMask(
-            groups,
-            pageWords,
-            pageTable,
-            params,
-            instance,
-            primitive,
-            group);
+        uint clusterSelectionMask = 0u;
+        if (!groupNeedsTraversal(params, instance, primitive, group)) {
+            uint clusterCount = min(group.clusterCount, 32u);
+            clusterSelectionMask = clusterCount == 32u
+                ? 0xffffffffu
+                : ((1u << clusterCount) - 1u);
+        } else {
+            clusterSelectionMask = buildGroupClusterSelectionMask(
+                groups,
+                pageWords,
+                pageTable,
+                params,
+                instance,
+                primitive,
+                group);
+        }
         if (clusterSelectionMask != 0u) {
             appendActivePage(
                 activeGroups,
@@ -1383,7 +1873,9 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
             }
             uint activeCount = min(header.activeGroupCount, header.activeGroupCapacity);
             GPUDrivenStreamAssetDrawIndirect draw;
-            draw.groupCountX = min(activeCount * header.maxActiveGroupClusters, params.drawTaskCount);
+            draw.groupCountX = min(
+                activeCount * header.maxActiveGroupClusters * kMeshletTriangleChunkCount,
+                params.drawTaskCount);
             draw.groupCountY = 1u;
             draw.groupCountZ = 1u;
             drawIndirect[0] = draw;
@@ -1778,8 +2270,8 @@ void gpuDrivenStreamAssetBuildTlasInputMain(
 [outputtopology("triangle")]
 void gpuDrivenStreamAssetMeshMain(
     uint3 groupID : SV_GroupID,
-    out vertices GPUDrivenStreamAssetVertexOutput vertices[kMaxMeshletVertices],
-    out indices uint3 triangles[kMaxMeshletTriangles],
+    out vertices GPUDrivenStreamAssetVertexOutput vertices[kMaxMeshOutputVertices],
+    out indices uint3 triangles[kMeshletTriangleChunkSize],
     uniform GPUDrivenStreamAssetPush push)
 {
     DescriptorHandle<StructuredBuffer<uint>> pageHandle =
@@ -1794,6 +2286,10 @@ void gpuDrivenStreamAssetMeshMain(
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<uint>> requestHandle =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.requestBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rasterBindingsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
+            push.bufferShaderIndexBase + push.rasterBindingsBuffer,
+            0));
 
     StructuredBuffer<uint> pageWords = pageHandle;
     StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
@@ -1801,18 +2297,34 @@ void gpuDrivenStreamAssetMeshMain(
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
     RWStructuredBuffer<uint> requests = requestHandle;
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rasterBindingsBuffer = rasterBindingsHandle;
 
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
+    GPUDrivenStreamAssetRasterBindings rasterBindings = rasterBindingsBuffer[0];
     uint drawIndex = groupID.x;
     if (drawIndex >= params.drawTaskCount) {
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
+    uint localRecordIndex = drawIndex / kMeshletTriangleChunkCount;
+    uint chunkIndex = drawIndex - localRecordIndex * kMeshletTriangleChunkCount;
+    uint recordCapacity = rasterBindings.visibleRecordCapacity != 0u
+        ? rasterBindings.visibleRecordCapacity
+        : params.drawTaskCount / kMeshletTriangleChunkCount;
+    uint recordIndex = 0u;
+    if (!resolveVisibilityRecordIndex(
+            localRecordIndex,
+            rasterBindings.visibleRecordBase,
+            recordCapacity,
+            recordIndex)) {
         SetMeshOutputCounts(0, 0);
         return;
     }
 
     GPUDrivenStreamAssetActiveHeader header = activeHeader[0];
     uint maxActiveGroupClusters = max(header.maxActiveGroupClusters, 1u);
-    uint activeGroupIndex = drawIndex / maxActiveGroupClusters;
-    uint clusterIndex = drawIndex - activeGroupIndex * maxActiveGroupClusters;
+    uint activeGroupIndex = localRecordIndex / maxActiveGroupClusters;
+    uint clusterIndex = localRecordIndex - activeGroupIndex * maxActiveGroupClusters;
     uint activeGroupCount = min(header.activeGroupCount, header.activeGroupCapacity);
     if (activeGroupIndex >= activeGroupCount) {
         SetMeshOutputCounts(0, 0);
@@ -1820,6 +2332,13 @@ void gpuDrivenStreamAssetMeshMain(
     }
 
     GPUDrivenStreamAssetActiveGroup group = activeGroups[activeGroupIndex];
+    if (group.pageIndex >= params.scenePageCount ||
+        group.gpuSceneInstanceIndex == kInvalidClusterIndex ||
+        clusterIndex >= group.clusterCount ||
+        clusterIndex >= 32u) {
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
     if ((group.flags & kActiveGroupLoadRequest) != 0u) {
         if (clusterIndex == 0u) {
             requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
@@ -1838,9 +2357,7 @@ void gpuDrivenStreamAssetMeshMain(
     GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[group.pageIndex];
     uint pageState = streamPageState(pageEntry);
     uint pageDeviceOffset = streamPageDeviceOffset(pageEntry);
-    if (clusterIndex >= group.clusterCount ||
-        clusterIndex >= 32u ||
-        ((group.clusterSelectionMask >> clusterIndex) & 1u) == 0u ||
+    if (((group.clusterSelectionMask >> clusterIndex) & 1u) == 0u ||
         ((pageState != kStreamStateResident && pageState != kStreamStateLockedFallback) ||
         pageDeviceOffset == kInvalidStreamDeviceOffset)) {
         if (clusterIndex == 0u) {
@@ -1849,22 +2366,28 @@ void gpuDrivenStreamAssetMeshMain(
         SetMeshOutputCounts(0, 0);
         return;
     }
-    if (params.pageBufferBytes < 96u ||
-        pageDeviceOffset > params.pageBufferBytes - 96u) {
+    if (params.pageBufferBytes < kPayloadHeaderBytes ||
+        pageDeviceOffset > params.pageBufferBytes - kPayloadHeaderBytes) {
         SetMeshOutputCounts(0, 0);
         return;
     }
 
     uint pageWord = pageDeviceOffset / 4u;
     uint payloadBytes = pageWords[pageWord + 12u];
-    if (payloadBytes < 96u ||
+    if (payloadBytes < kPayloadHeaderBytes ||
         payloadBytes > params.pageBufferBytes ||
         pageDeviceOffset > params.pageBufferBytes - payloadBytes) {
         SetMeshOutputCounts(0, 0);
         return;
     }
     uint clusterCount = pageWords[pageWord + 2u];
-    if (clusterIndex >= clusterCount) {
+    uint payloadVertexCount = pageWords[pageWord + 3u];
+    uint triangleIndexCount = pageWords[pageWord + 4u];
+    uint attributeFlags = pageWords[pageWord + 14u];
+    uint positionFormat = pageWords[pageWord + 20u];
+    if (clusterIndex >= clusterCount ||
+        (attributeFlags & kPayloadAttributePosition) == 0u ||
+        positionFormat != kPayloadFormatFloat32x4) {
         SetMeshOutputCounts(0, 0);
         return;
     }
@@ -1872,29 +2395,145 @@ void gpuDrivenStreamAssetMeshMain(
     uint clusterOffsetBytes = pageWords[pageWord + 9u];
     uint positionOffsetBytes = pageWords[pageWord + 10u];
     uint triangleOffsetBytes = pageWords[pageWord + 11u];
-    uint clusterWord = pageWord + clusterOffsetBytes / 4u + clusterIndex * 9u;
-    uint vertexOffset = pageWords[clusterWord + 0u];
-    uint vertexCount = min(pageWords[clusterWord + 1u], kMaxMeshletVertices);
-    uint triangleOffset = pageWords[clusterWord + 2u];
-    uint triangleCount = min(pageWords[clusterWord + 3u], kMaxMeshletTriangles);
-
-    SetMeshOutputCounts(vertexCount, triangleCount);
-
-    uint colorSeed = group.pageIndex;
-    if (params.debugColorMode == 1u) {
-        colorSeed = group.lodLevel;
-    } else if (params.debugColorMode == 2u) {
-        colorSeed = group.primitiveIndex;
-    } else if (params.debugColorMode == 3u) {
-        colorSeed = group.instanceIndex;
-    } else if (params.debugColorMode == 4u) {
-        colorSeed = ((group.pageIndex + 1u) * 0x9e3779b9u) ^ clusterIndex;
+    if ((clusterOffsetBytes & 3u) != 0u ||
+        (positionOffsetBytes & 3u) != 0u ||
+        !streamPayloadArrayRangeValid(
+            clusterOffsetBytes,
+            clusterCount,
+            kPayloadClusterBytes,
+            payloadBytes) ||
+        !streamPayloadArrayRangeValid(
+            positionOffsetBytes,
+            payloadVertexCount,
+            16u,
+            payloadBytes) ||
+        !streamPayloadRangeValid(
+            triangleOffsetBytes,
+            triangleIndexCount,
+            payloadBytes)) {
+        SetMeshOutputCounts(0, 0);
+        return;
     }
-    float3 color = hashColor(colorSeed + 1u);
+    uint clusterWord = pageWord + clusterOffsetBytes / 4u +
+        clusterIndex * kPayloadClusterWords;
+    uint vertexOffset = pageWords[clusterWord + 0u];
+    uint vertexCount = pageWords[clusterWord + 1u];
+    uint triangleOffset = pageWords[clusterWord + 2u];
+    uint clusterTriangleCount = pageWords[clusterWord + 3u];
+    if (vertexCount == 0u ||
+        vertexCount > kMaxMeshletVertices ||
+        vertexOffset > payloadVertexCount ||
+        vertexCount > payloadVertexCount - vertexOffset ||
+        clusterTriangleCount > kMaxMeshletTriangles ||
+        triangleOffset > triangleIndexCount ||
+        clusterTriangleCount > (triangleIndexCount - triangleOffset) / 3u) {
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
+    uint triangleStart = chunkIndex * kMeshletTriangleChunkSize;
+    if (triangleStart >= clusterTriangleCount) {
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
 
-    for (uint vertexIndex = 0; vertexIndex < kMaxMeshletVertices; ++vertexIndex) {
-        if (vertexIndex < vertexCount) {
-            uint positionWord = pageWord + positionOffsetBytes / 4u + (vertexOffset + vertexIndex) * 4u;
+    float3 localSphereCenter = float3(
+        asfloat(pageWords[clusterWord + 12u]),
+        asfloat(pageWords[clusterWord + 13u]),
+        asfloat(pageWords[clusterWord + 14u]));
+    float localSphereRadius = max(asfloat(pageWords[clusterWord + 15u]), 0.0);
+    float3 worldSphereCenter =
+        group.world0.xyz * localSphereCenter.x +
+        group.world1.xyz * localSphereCenter.y +
+        group.world2.xyz * localSphereCenter.z +
+        group.world3.xyz;
+    float worldScale = max(
+        max(length(group.world0.xyz), length(group.world1.xyz)),
+        max(length(group.world2.xyz), 0.000001));
+    float worldSphereRadius = localSphereRadius * worldScale;
+    GPUDrivenStreamAssetCameraData rasterCamera = currentStreamCamera(params);
+    if ((rasterBindings.cullingFlags & (1u << 2u)) != 0u &&
+        !streamSphereInsideFrustum(
+            worldSphereCenter,
+            worldSphereRadius,
+            rasterCamera)) {
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
+
+    float coneCutoff = asfloat(pageWords[clusterWord + 19u]);
+    if ((rasterBindings.cullingFlags & (1u << 3u)) != 0u && coneCutoff < 0.9999) {
+        float3 localConeApex = float3(
+            asfloat(pageWords[clusterWord + 16u]),
+            asfloat(pageWords[clusterWord + 17u]),
+            asfloat(pageWords[clusterWord + 18u]));
+        float3 localConeAxis = float3(
+            asfloat(pageWords[clusterWord + 20u]),
+            asfloat(pageWords[clusterWord + 21u]),
+            asfloat(pageWords[clusterWord + 22u]));
+        float3 worldConeApex =
+            group.world0.xyz * localConeApex.x +
+            group.world1.xyz * localConeApex.y +
+            group.world2.xyz * localConeApex.z +
+            group.world3.xyz;
+        float3 worldConeAxis = transformStreamNormal(
+            group,
+            localConeAxis,
+            float3(0.0, 0.0, 1.0));
+        float3 viewDirection = safeNormalize(
+            worldConeApex - rasterCamera.eye.xyz,
+            -worldConeAxis);
+        if (dot(viewDirection, worldConeAxis) >= coneCutoff) {
+            SetMeshOutputCounts(0, 0);
+            return;
+        }
+    }
+
+    DescriptorHandle<StructuredBuffer<uint>> visibilityStateHandle =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(
+            push.bufferShaderIndexBase + rasterBindings.instanceVisibilityBuffer,
+            0));
+    StructuredBuffer<uint> visibilityStates = visibilityStateHandle;
+    uint rasterPhase = min(push.traversalPhase, 1u);
+    uint expectedState = rasterPhase == 0u ? 1u : 3u;
+    if (visibilityStates[group.gpuSceneInstanceIndex] != expectedState) {
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
+
+    DescriptorHandle<RWStructuredBuffer<VisibleClusterRecord>> visibleClusterHandle =
+        DescriptorHandle<RWStructuredBuffer<VisibleClusterRecord>>(uint2(
+            push.bufferShaderIndexBase + rasterBindings.visibleClusterBuffer,
+            0));
+    RWStructuredBuffer<VisibleClusterRecord> visibleClusters = visibleClusterHandle;
+    if (chunkIndex == 0u) {
+        VisibleClusterRecord record;
+        record.clusterIndex = clusterIndex;
+        record.instanceIndex = group.gpuSceneInstanceIndex;
+        record.dataIndex = activeGroupIndex;
+        record.flags = kVisibleClusterSourceStreamPage << kVisibleClusterSourceShift;
+        visibleClusters[localRecordIndex] = record;
+    }
+
+    uint triangleCount = min(
+        clusterTriangleCount - triangleStart,
+        kMeshletTriangleChunkSize);
+    uint outputVertexCount = triangleCount * 3u;
+    SetMeshOutputCounts(outputVertexCount, triangleCount);
+
+    uint triangleBaseByte = pageDeviceOffset + triangleOffsetBytes + triangleOffset;
+    for (uint vertexIndex = 0; vertexIndex < kMaxMeshOutputVertices; ++vertexIndex) {
+        if (vertexIndex < outputVertexCount) {
+            uint chunkTriangleIndex = vertexIndex / 3u;
+            uint triangleCorner = vertexIndex % 3u;
+            uint meshletTriangleIndex = triangleStart + chunkTriangleIndex;
+            uint localVertexIndex = readPageByte(
+                pageWords,
+                triangleBaseByte + meshletTriangleIndex * 3u + triangleCorner);
+            if (localVertexIndex >= vertexCount) {
+                localVertexIndex = 0u;
+            }
+            uint positionWord = pageWord + positionOffsetBytes / 4u +
+                (vertexOffset + localVertexIndex) * 4u;
             float3 localPosition = float3(
                 asfloat(pageWords[positionWord + 0u]),
                 asfloat(pageWords[positionWord + 1u]),
@@ -1907,20 +2546,430 @@ void gpuDrivenStreamAssetMeshMain(
             float4 projected = projectPosition(worldPosition, params);
             projected.y = -projected.y;
             vertices[vertexIndex].position = projected;
-            vertices[vertexIndex].color = color;
+            vertices[vertexIndex].visibilityId =
+                packVisibilityId(recordIndex, meshletTriangleIndex);
         }
     }
 
-    uint triangleBaseByte = pageDeviceOffset + triangleOffsetBytes + triangleOffset;
-    for (uint triangleIndex = 0; triangleIndex < kMaxMeshletTriangles; ++triangleIndex) {
+    for (uint triangleIndex = 0; triangleIndex < kMeshletTriangleChunkSize; ++triangleIndex) {
         if (triangleIndex < triangleCount) {
-            uint baseByte = triangleBaseByte + triangleIndex * 3u;
             triangles[triangleIndex] = uint3(
-                readPageByte(pageWords, baseByte + 0u),
-                readPageByte(pageWords, baseByte + 1u),
-                readPageByte(pageWords, baseByte + 2u));
+                triangleIndex * 3u,
+                triangleIndex * 3u + 1u,
+                triangleIndex * 3u + 2u);
         }
     }
+}
+
+float edgeFunction(float2 a, float2 b, float2 point)
+{
+    float2 edge = b - a;
+    float2 offset = point - a;
+    return edge.x * offset.y - edge.y * offset.x;
+}
+
+uint packStreamColor(float3 color)
+{
+    uint3 encoded = uint3(round(saturate(color) * 255.0));
+    return encoded.x | (encoded.y << 8u) | (encoded.z << 16u) | 0xff000000u;
+}
+
+float4 unpackStreamColor(uint packed)
+{
+    return float4(
+        float(packed & 0xffu),
+        float((packed >> 8u) & 0xffu),
+        float((packed >> 16u) & 0xffu),
+        float((packed >> 24u) & 0xffu)) / 255.0;
+}
+
+float3 streamPerspectiveBarycentrics(
+    float2 pixelCenter,
+    float4 clip0,
+    float4 clip1,
+    float4 clip2,
+    uint width,
+    uint height)
+{
+    float2 viewport = float2(max(width, 1u), max(height, 1u));
+    float2 screen0 = (clip0.xy / max(abs(clip0.w), 0.000001) * 0.5 + 0.5) * viewport;
+    float2 screen1 = (clip1.xy / max(abs(clip1.w), 0.000001) * 0.5 + 0.5) * viewport;
+    float2 screen2 = (clip2.xy / max(abs(clip2.w), 0.000001) * 0.5 + 0.5) * viewport;
+    float area = edgeFunction(screen0, screen1, screen2);
+    if (abs(area) < 0.000001) {
+        return float3(1.0, 0.0, 0.0);
+    }
+    float3 affine = float3(
+        edgeFunction(screen1, screen2, pixelCenter),
+        edgeFunction(screen2, screen0, pixelCenter),
+        edgeFunction(screen0, screen1, pixelCenter)) / area;
+    float3 weighted = affine / float3(
+        max(abs(clip0.w), 0.000001),
+        max(abs(clip1.w), 0.000001),
+        max(abs(clip2.w), 0.000001));
+    float weight = weighted.x + weighted.y + weighted.z;
+    return abs(weight) > 0.000001 ? weighted / weight : affine;
+}
+
+float4 loadPayloadFloat4(
+    StructuredBuffer<uint> pageWords,
+    uint pageWord,
+    uint byteOffset,
+    uint elementIndex)
+{
+    uint word = pageWord + byteOffset / 4u + elementIndex * 4u;
+    return float4(
+        asfloat(pageWords[word + 0u]),
+        asfloat(pageWords[word + 1u]),
+        asfloat(pageWords[word + 2u]),
+        asfloat(pageWords[word + 3u]));
+}
+
+float2 loadPayloadFloat2(
+    StructuredBuffer<uint> pageWords,
+    uint pageWord,
+    uint byteOffset,
+    uint elementIndex)
+{
+    uint word = pageWord + byteOffset / 4u + elementIndex * 2u;
+    return float2(
+        asfloat(pageWords[word + 0u]),
+        asfloat(pageWords[word + 1u]));
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void gpuDrivenStreamAssetDeferredMain(
+    uint3 dispatchThreadID : SV_DispatchThreadID,
+    uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(
+            push.bufferShaderIndexBase + push.paramsBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rasterBindingsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
+            push.bufferShaderIndexBase + push.rasterBindingsBuffer,
+            0));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rasterBindingsBuffer = rasterBindingsHandle;
+    GPUDrivenStreamAssetParams params = paramsBuffer[0];
+    GPUDrivenStreamAssetRasterBindings rasterBindings = rasterBindingsBuffer[0];
+    uint width = max(rasterBindings.width, 1u);
+    uint height = max(rasterBindings.height, 1u);
+    if (dispatchThreadID.x >= width || dispatchThreadID.y >= height) {
+        return;
+    }
+
+    DescriptorHandle<Texture2D<uint>> visibilityHandle =
+        DescriptorHandle<Texture2D<uint>>(uint2(
+            push.imageShaderIndexBase + rasterBindings.visibilityImage,
+            0));
+    DescriptorHandle<RWStructuredBuffer<uint>> outputHandle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
+            push.bufferShaderIndexBase + rasterBindings.deferredColorBuffer,
+            0));
+    Texture2D<uint> visibility = visibilityHandle;
+    RWStructuredBuffer<uint> output = outputHandle;
+    uint outputIndex = dispatchThreadID.y * width + dispatchThreadID.x;
+    uint packedVisibility = visibility.Load(int3(dispatchThreadID.xy, 0));
+    uint recordIndex = 0u;
+    uint triangleIndex = 0u;
+    if (!unpackVisibilityId(packedVisibility, recordIndex, triangleIndex)) {
+        output[outputIndex] = packStreamColor(params.clearColor.xyz);
+        return;
+    }
+    uint visibleRecordCapacity = rasterBindings.visibleRecordCapacity != 0u
+        ? rasterBindings.visibleRecordCapacity
+        : params.drawTaskCount / kMeshletTriangleChunkCount;
+    if (!visibilityRecordRangeValid(
+            rasterBindings.visibleRecordBase,
+            visibleRecordCapacity) ||
+        recordIndex < rasterBindings.visibleRecordBase ||
+        recordIndex - rasterBindings.visibleRecordBase >= visibleRecordCapacity) {
+        output[outputIndex] = packStreamColor(params.clearColor.xyz);
+        return;
+    }
+
+    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> visibleClusterHandle =
+        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(
+            push.bufferShaderIndexBase + rasterBindings.visibleClusterBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(
+            push.bufferShaderIndexBase + push.activeGroupBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<uint>> pageHandle =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(
+            push.bufferShaderIndexBase + push.pageBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(
+            push.bufferShaderIndexBase + push.pageTableBuffer,
+            0));
+    StructuredBuffer<VisibleClusterRecord> visibleClusters = visibleClusterHandle;
+    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
+    StructuredBuffer<uint> pageWords = pageHandle;
+    StructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
+
+    uint localRecordIndex = recordIndex - rasterBindings.visibleRecordBase;
+    VisibleClusterRecord record = visibleClusters[localRecordIndex];
+    if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) {
+        output[outputIndex] = packStreamColor(params.clearColor.xyz);
+        return;
+    }
+    GPUDrivenStreamAssetActiveHeader activeHeader;
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> activeHeaderHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(
+            push.bufferShaderIndexBase + push.activeHeaderBuffer,
+            0));
+    StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeaders = activeHeaderHandle;
+    activeHeader = activeHeaders[0];
+    uint activeGroupCount = min(activeHeader.activeGroupCount, activeHeader.activeGroupCapacity);
+    if (record.dataIndex >= activeGroupCount) {
+        output[outputIndex] = packStreamColor(params.clearColor.xyz);
+        return;
+    }
+    GPUDrivenStreamAssetActiveGroup group = activeGroups[record.dataIndex];
+    if (record.instanceIndex == kInvalidClusterIndex ||
+        record.instanceIndex != group.gpuSceneInstanceIndex ||
+        group.pageIndex >= params.scenePageCount) {
+        output[outputIndex] = packStreamColor(params.clearColor.xyz);
+        return;
+    }
+    GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[group.pageIndex];
+    uint pageDeviceOffset = streamPageDeviceOffset(pageEntry);
+    if (!streamPageDrawable(streamPageState(pageEntry)) ||
+        pageDeviceOffset == kInvalidStreamDeviceOffset ||
+        params.pageBufferBytes < kPayloadHeaderBytes ||
+        pageDeviceOffset > params.pageBufferBytes - kPayloadHeaderBytes) {
+        output[outputIndex] = packStreamColor(params.clearColor.xyz);
+        return;
+    }
+
+    uint pageWord = pageDeviceOffset / 4u;
+    uint payloadBytes = pageWords[pageWord + 12u];
+    uint clusterCount = pageWords[pageWord + 2u];
+    uint payloadVertexCount = pageWords[pageWord + 3u];
+    uint triangleIndexCount = pageWords[pageWord + 4u];
+    if (payloadBytes < kPayloadHeaderBytes ||
+        payloadBytes > params.pageBufferBytes ||
+        pageDeviceOffset > params.pageBufferBytes - payloadBytes ||
+        record.clusterIndex >= clusterCount) {
+        output[outputIndex] = packStreamColor(params.clearColor.xyz);
+        return;
+    }
+
+    uint clusterOffsetBytes = pageWords[pageWord + 9u];
+    uint positionOffsetBytes = pageWords[pageWord + 10u];
+    uint triangleOffsetBytes = pageWords[pageWord + 11u];
+    uint attributeFlags = pageWords[pageWord + 14u];
+    uint normalOffsetBytes = pageWords[pageWord + 16u];
+    uint texcoordOffsetBytes = pageWords[pageWord + 17u];
+    uint positionFormat = pageWords[pageWord + 20u];
+    uint normalFormat = pageWords[pageWord + 21u];
+    uint texcoordFormat = pageWords[pageWord + 22u];
+    uint tangentOffsetBytes = pageWords[pageWord + 24u];
+    uint tangentFormat = pageWords[pageWord + 25u];
+    bool hasNormals = (attributeFlags & kPayloadAttributeNormal) != 0u;
+    bool hasTexcoords = (attributeFlags & kPayloadAttributeTexcoord0) != 0u;
+    bool hasTangents = (attributeFlags & kPayloadAttributeTangent) != 0u;
+    if ((attributeFlags & kPayloadAttributePosition) == 0u ||
+        positionFormat != kPayloadFormatFloat32x4 ||
+        (clusterOffsetBytes & 3u) != 0u ||
+        (positionOffsetBytes & 3u) != 0u ||
+        !streamPayloadArrayRangeValid(
+            clusterOffsetBytes,
+            clusterCount,
+            kPayloadClusterBytes,
+            payloadBytes) ||
+        !streamPayloadArrayRangeValid(
+            positionOffsetBytes,
+            payloadVertexCount,
+            16u,
+            payloadBytes) ||
+        !streamPayloadRangeValid(
+            triangleOffsetBytes,
+            triangleIndexCount,
+            payloadBytes) ||
+        (hasNormals &&
+            (normalFormat != kPayloadFormatFloat32x4 ||
+             (normalOffsetBytes & 3u) != 0u ||
+             !streamPayloadArrayRangeValid(
+                 normalOffsetBytes,
+                 payloadVertexCount,
+                 16u,
+                 payloadBytes))) ||
+        (hasTexcoords &&
+            (texcoordFormat != kPayloadFormatFloat32x2 ||
+             (texcoordOffsetBytes & 3u) != 0u ||
+             !streamPayloadArrayRangeValid(
+                 texcoordOffsetBytes,
+                 payloadVertexCount,
+                 8u,
+                 payloadBytes))) ||
+        (hasTangents &&
+            (tangentFormat != kPayloadFormatFloat32x4 ||
+             (tangentOffsetBytes & 3u) != 0u ||
+             !streamPayloadArrayRangeValid(
+                 tangentOffsetBytes,
+                 payloadVertexCount,
+                 16u,
+                 payloadBytes)))) {
+        output[outputIndex] = packStreamColor(params.clearColor.xyz);
+        return;
+    }
+    uint clusterWord = pageWord + clusterOffsetBytes / 4u +
+        record.clusterIndex * kPayloadClusterWords;
+    uint vertexOffset = pageWords[clusterWord + 0u];
+    uint vertexCount = pageWords[clusterWord + 1u];
+    uint localTriangleOffset = pageWords[clusterWord + 2u];
+    uint triangleCount = pageWords[clusterWord + 3u];
+    if (triangleIndex >= triangleCount ||
+        triangleCount > kMaxMeshletTriangles ||
+        vertexCount == 0u ||
+        vertexCount > kMaxMeshletVertices ||
+        vertexOffset > payloadVertexCount ||
+        vertexCount > payloadVertexCount - vertexOffset ||
+        localTriangleOffset > triangleIndexCount ||
+        triangleCount > (triangleIndexCount - localTriangleOffset) / 3u) {
+        output[outputIndex] = packStreamColor(params.clearColor.xyz);
+        return;
+    }
+
+    uint triangleByte = pageDeviceOffset + triangleOffsetBytes +
+        localTriangleOffset + triangleIndex * 3u;
+    uint3 localIndices = uint3(
+        readPageByte(pageWords, triangleByte + 0u),
+        readPageByte(pageWords, triangleByte + 1u),
+        readPageByte(pageWords, triangleByte + 2u));
+    if (any(localIndices >= vertexCount)) {
+        output[outputIndex] = packStreamColor(params.clearColor.xyz);
+        return;
+    }
+    uint3 vertexIndices = vertexOffset + localIndices;
+    float3 local0 = loadPayloadFloat4(pageWords, pageWord, positionOffsetBytes, vertexIndices.x).xyz;
+    float3 local1 = loadPayloadFloat4(pageWords, pageWord, positionOffsetBytes, vertexIndices.y).xyz;
+    float3 local2 = loadPayloadFloat4(pageWords, pageWord, positionOffsetBytes, vertexIndices.z).xyz;
+    float3 world0 = group.world0.xyz * local0.x + group.world1.xyz * local0.y +
+        group.world2.xyz * local0.z + group.world3.xyz;
+    float3 world1 = group.world0.xyz * local1.x + group.world1.xyz * local1.y +
+        group.world2.xyz * local1.z + group.world3.xyz;
+    float3 world2 = group.world0.xyz * local2.x + group.world1.xyz * local2.y +
+        group.world2.xyz * local2.z + group.world3.xyz;
+    float4 clip0 = projectPosition(world0, params);
+    float4 clip1 = projectPosition(world1, params);
+    float4 clip2 = projectPosition(world2, params);
+    clip0.y = -clip0.y;
+    clip1.y = -clip1.y;
+    clip2.y = -clip2.y;
+    float3 barycentrics = streamPerspectiveBarycentrics(
+        float2(dispatchThreadID.xy) + 0.5,
+        clip0,
+        clip1,
+        clip2,
+        width,
+        height);
+
+    float3 geometryNormal = safeNormalize(
+        cross(world1 - world0, world2 - world0),
+        float3(0.0, 1.0, 0.0));
+    float3 authoredNormal = geometryNormal;
+    if (hasNormals) {
+        float3 normal0 = loadPayloadFloat4(pageWords, pageWord, normalOffsetBytes, vertexIndices.x).xyz;
+        float3 normal1 = loadPayloadFloat4(pageWords, pageWord, normalOffsetBytes, vertexIndices.y).xyz;
+        float3 normal2 = loadPayloadFloat4(pageWords, pageWord, normalOffsetBytes, vertexIndices.z).xyz;
+        float3 localNormal = normal0 * barycentrics.x + normal1 * barycentrics.y +
+            normal2 * barycentrics.z;
+        authoredNormal = transformStreamNormal(
+            group,
+            localNormal,
+            geometryNormal);
+    }
+    if (dot(authoredNormal, geometryNormal) < 0.0) {
+        authoredNormal = -authoredNormal;
+    }
+
+    float3 tangent = safeNormalize(
+        cross(abs(authoredNormal.y) < 0.999 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0), authoredNormal),
+        float3(1.0, 0.0, 0.0));
+    float handedness = 1.0;
+    if (hasTangents) {
+        float4 tangent0 = loadPayloadFloat4(pageWords, pageWord, tangentOffsetBytes, vertexIndices.x);
+        float4 tangent1 = loadPayloadFloat4(pageWords, pageWord, tangentOffsetBytes, vertexIndices.y);
+        float4 tangent2 = loadPayloadFloat4(pageWords, pageWord, tangentOffsetBytes, vertexIndices.z);
+        float4 localTangent = tangent0 * barycentrics.x + tangent1 * barycentrics.y +
+            tangent2 * barycentrics.z;
+        float3 worldTangent = transformStreamDirection(group, localTangent.xyz);
+        tangent = safeNormalize(
+            worldTangent - authoredNormal * dot(authoredNormal, worldTangent),
+            tangent);
+        handedness = localTangent.w < 0.0 ? -1.0 : 1.0;
+    }
+    float3 bitangent = safeNormalize(
+        cross(authoredNormal, tangent) * handedness,
+        cross(authoredNormal, tangent));
+    float3 shadingNormal = authoredNormal;
+    float2 uv = float2(0.0, 0.0);
+    if (hasTexcoords) {
+        float2 uv0 = loadPayloadFloat2(pageWords, pageWord, texcoordOffsetBytes, vertexIndices.x);
+        float2 uv1 = loadPayloadFloat2(pageWords, pageWord, texcoordOffsetBytes, vertexIndices.y);
+        float2 uv2 = loadPayloadFloat2(pageWords, pageWord, texcoordOffsetBytes, vertexIndices.z);
+        uv = uv0 * barycentrics.x + uv1 * barycentrics.y + uv2 * barycentrics.z;
+    }
+
+    uint colorSeed = group.pageIndex;
+    if (params.debugColorMode == 1u) {
+        colorSeed = group.lodLevel;
+    } else if (params.debugColorMode == 2u) {
+        colorSeed = group.primitiveIndex;
+    } else if (params.debugColorMode == 3u) {
+        colorSeed = group.instanceIndex;
+    } else if (params.debugColorMode == 4u) {
+        colorSeed = ((group.pageIndex + 1u) * 0x9e3779b9u) ^ record.clusterIndex;
+    }
+    float3 color = hashColor(colorSeed + 1u);
+    if (params.debugColorMode == 5u) {
+        float3 lightDirection = safeNormalize(float3(0.35, 0.85, 0.4), float3(0.0, 1.0, 0.0));
+        float diffuse = 0.18 + 0.82 * max(dot(shadingNormal, lightDirection), 0.0);
+        float tangentPattern = 0.92 + 0.08 * sin((dot(uv, float2(1.0, 0.0)) + dot(bitangent, tangent)) * 40.0);
+        color = float3(0.18, 0.42, 0.12) * diffuse * tangentPattern;
+    }
+    output[outputIndex] = packStreamColor(color);
+}
+
+[shader("vertex")]
+GPUDrivenStreamAssetFullscreenOutput gpuDrivenStreamAssetCompositeVertexMain(
+    uint vertexID : SV_VertexID)
+{
+    GPUDrivenStreamAssetFullscreenOutput output;
+    float2 position = vertexID == 0u
+        ? float2(-1.0, -1.0)
+        : (vertexID == 1u ? float2(3.0, -1.0) : float2(-1.0, 3.0));
+    output.position = float4(position, 0.0, 1.0);
+    return output;
+}
+
+[shader("fragment")]
+float4 gpuDrivenStreamAssetCompositeFragmentMain(
+    GPUDrivenStreamAssetFullscreenOutput input,
+    uniform GPUDrivenStreamAssetPush push) : SV_Target0
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rasterBindingsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
+            push.bufferShaderIndexBase + push.rasterBindingsBuffer,
+            0));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rasterBindingsBuffer = rasterBindingsHandle;
+    GPUDrivenStreamAssetRasterBindings rasterBindings = rasterBindingsBuffer[0];
+    uint width = max(rasterBindings.width, 1u);
+    uint height = max(rasterBindings.height, 1u);
+    uint2 pixel = min(uint2(input.position.xy), uint2(width - 1u, height - 1u));
+    DescriptorHandle<StructuredBuffer<uint>> colorHandle =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(
+            push.bufferShaderIndexBase + rasterBindings.deferredColorBuffer,
+            0));
+    StructuredBuffer<uint> colors = colorHandle;
+    return unpackStreamColor(colors[pixel.y * width + pixel.x]);
 }
 
 [shader("compute")]
@@ -1970,7 +3019,7 @@ void gpuDrivenStreamAssetApplyUpdatesMain(uint3 dispatchThreadID : SV_DispatchTh
 }
 
 [shader("fragment")]
-float4 gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, uniform GPUDrivenStreamAssetPush push) : SV_Target0
+uint gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, uniform GPUDrivenStreamAssetPush push) : SV_Target0
 {
-    return float4(input.color, 1.0);
+    return input.visibilityId;
 }

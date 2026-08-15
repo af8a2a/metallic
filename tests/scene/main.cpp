@@ -1166,6 +1166,10 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(
         scene.renderNodes().front().object == meshObject.entity(),
         "render node should retain its source scene object");
+    EXPECT_EQ(scene.renderNodeIndexForSource("main", 0), 0);
+    EXPECT_EQ(
+        scene.renderNodeIndexForSource("main", 1),
+        metallic::scene::kInvalidSceneIndex);
 
     const float3 meshWorldTranslation(
         scene.nodes()[1].worldMatrix.a03,
@@ -1419,6 +1423,14 @@ void testCompositeSceneImport(const std::filesystem::path& baseDirectory)
     EXPECT_EQ(sourceBMeshComponent.meshIndex, 1);
     ASSERT_EQ(sourceAMeshComponent.renderNodeIndices, std::vector<int32_t>{0});
     ASSERT_EQ(sourceBMeshComponent.renderNodeIndices, std::vector<int32_t>{1});
+    EXPECT_EQ(scene.renderNodeIndexForSource("source-a", 0), 0);
+    EXPECT_EQ(scene.renderNodeIndexForSource("source-b", 0), 1);
+    EXPECT_EQ(
+        scene.renderNodeIndexForSource("source-a", 1),
+        metallic::scene::kInvalidSceneIndex);
+    EXPECT_EQ(
+        scene.renderNodeIndexForSource("unknown", 0),
+        metallic::scene::kInvalidSceneIndex);
     const metallic::scene::RenderNode& sourceARenderNode = scene.renderNodes()[0];
     const metallic::scene::RenderNode& sourceBRenderNode = scene.renderNodes()[1];
     EXPECT_EQ(sourceARenderNode.object, sourceAMesh.entity());
@@ -1556,6 +1568,21 @@ void testCompositeSceneImport(const std::filesystem::path& baseDirectory)
     EXPECT_EQ(
         scene.objectForSourceNode("source-b", 0).entity(),
         sourceBRootEntity);
+    EXPECT_EQ(scene.renderNodeIndexForSource("source-b", 0), 1);
+
+    metallic::scene::Scene movedScene = std::move(scene);
+    EXPECT_EQ(movedScene.renderNodeIndexForSource("source-a", 0), 0);
+    EXPECT_EQ(movedScene.renderNodeIndexForSource("source-b", 0), 1);
+    movedScene.clear();
+    EXPECT_EQ(
+        movedScene.renderNodeIndexForSource("source-a", 0),
+        metallic::scene::kInvalidSceneIndex);
+    ASSERT_TRUE(movedScene.compose(sources, error)) << error;
+    EXPECT_EQ(movedScene.renderNodeIndexForSource("source-b", 0), 1);
+    ASSERT_TRUE(movedScene.load(sourceAPath));
+    EXPECT_EQ(
+        movedScene.renderNodeIndexForSource("source-b", 0),
+        metallic::scene::kInvalidSceneIndex);
 }
 
 void testCompositeFallbackCamera(const std::filesystem::path& baseDirectory)
@@ -1879,9 +1906,16 @@ void expectClusterMetadataEqual(
     EXPECT_EQ(actual.lodGroupChildIndex, expected.lodGroupChildIndex) << label;
     EXPECT_EQ(actual.lodGroupIndex, expected.lodGroupIndex) << label;
     EXPECT_EQ(actual.refinedGroupIndex, expected.refinedGroupIndex) << label;
+    EXPECT_TRUE(nearlyEqual(actual.lodError, expected.lodError)) << label;
     EXPECT_TRUE(actual.bounds.valid == expected.bounds.valid) << label;
+    expectVec3(actual.bounds.min, expected.bounds.min, label + " bounds min");
+    expectVec3(actual.bounds.max, expected.bounds.max, label + " bounds max");
     expectVec3(actual.boundingSphereCenter, expected.boundingSphereCenter, label + " center");
     EXPECT_TRUE(nearlyEqual(actual.boundingSphereRadius, expected.boundingSphereRadius)) << label;
+    expectVec3(actual.coneApex, expected.coneApex, label + " cone apex");
+    expectVec3(actual.coneAxis, expected.coneAxis, label + " cone axis");
+    EXPECT_TRUE(nearlyEqual(actual.coneCutoff, expected.coneCutoff)) << label;
+    EXPECT_EQ(actual.packedCone, expected.packedCone) << label;
 }
 
 void testMeshletPersistence(const std::filesystem::path& directory)
@@ -2084,6 +2118,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
         EXPECT_TRUE((page.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributeNormal) != 0u);
         EXPECT_TRUE((page.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributeTexcoord0) != 0u);
         EXPECT_TRUE((page.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributeMaterial) != 0u);
+        EXPECT_TRUE((page.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributeTangent) != 0u);
     }
 
     const metallic::scene::MeshletStreamPageInfo& page = asset.pages().front();
@@ -2091,7 +2126,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     ASSERT_EQ(payload.size(), page.payloadSize);
     metallic::scene::MeshletStreamPayloadHeader header;
     std::memcpy(&header, payload.data(), sizeof(header));
-    EXPECT_EQ(header.version, 3u);
+    EXPECT_EQ(header.version, 4u);
     EXPECT_EQ(header.clusterCount, page.clusterCount);
     EXPECT_EQ(header.vertexCount, page.vertexCount);
     EXPECT_EQ(header.triangleIndexCount, page.triangleIndexCount);
@@ -2109,6 +2144,9 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
         header.texcoord0Format,
         static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadFormat::Float32x2));
     EXPECT_EQ(
+        header.tangentFormat,
+        static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadFormat::Float32x4));
+    EXPECT_EQ(
         header.materialFormat,
         static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadFormat::Uint32));
     EXPECT_EQ(header.materialCount, header.clusterCount);
@@ -2118,16 +2156,42 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
         payload.size());
     ASSERT_LE(header.positionOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
     ASSERT_LE(header.normalOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
+    ASSERT_EQ(header.tangentOffsetBytes % 16u, 0u);
+    ASSERT_LE(header.tangentOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
     ASSERT_LE(header.texcoord0OffsetBytes + header.vertexCount * sizeof(float) * 2u, payload.size());
     ASSERT_LE(header.materialOffsetBytes + header.materialCount * sizeof(uint32_t), payload.size());
     const auto* clusters = reinterpret_cast<const metallic::scene::MeshletStreamPayloadCluster*>(
         payload.data() + header.clusterOffsetBytes);
     const auto* materialIds = reinterpret_cast<const uint32_t*>(payload.data() + header.materialOffsetBytes);
+    const metallic::scene::RenderPrimitive& sourcePrimitive = scene.renderPrimitives().front();
+    ASSERT_GE(page.lodGroupIndex, primitive.groupOffset);
+    const uint32_t sourceGroupIndex = page.lodGroupIndex - primitive.groupOffset;
+    ASSERT_LT(sourceGroupIndex, sourcePrimitive.meshletLodGroups.size());
+    const metallic::scene::MeshletLodGroup& sourceGroup =
+        sourcePrimitive.meshletLodGroups[sourceGroupIndex];
+    ASSERT_EQ(sourceGroup.clusterCount, header.clusterCount);
     for (uint32_t clusterIndex = 0; clusterIndex < header.clusterCount; ++clusterIndex) {
         const metallic::scene::MeshletStreamPayloadCluster& cluster = clusters[clusterIndex];
+        const metallic::scene::MeshletCluster& sourceCluster =
+            sourcePrimitive.meshletLodClusters[sourceGroup.clusterOffset + clusterIndex];
         ASSERT_LE(cluster.vertexOffset + cluster.vertexCount, header.vertexCount);
         ASSERT_LE(cluster.triangleOffset + cluster.triangleCount * 3u, header.triangleIndexCount);
         EXPECT_EQ(materialIds[clusterIndex], page.materialIndex);
+        expectVec3(
+            float3(cluster.boundingSphere[0], cluster.boundingSphere[1], cluster.boundingSphere[2]),
+            sourceCluster.boundingSphereCenter,
+            "stream cluster sphere center");
+        EXPECT_TRUE(nearlyEqual(cluster.boundingSphere[3], sourceCluster.boundingSphereRadius));
+        expectVec3(
+            float3(cluster.coneApexCutoff[0], cluster.coneApexCutoff[1], cluster.coneApexCutoff[2]),
+            sourceCluster.coneApex,
+            "stream cluster cone apex");
+        EXPECT_TRUE(nearlyEqual(cluster.coneApexCutoff[3], sourceCluster.coneCutoff));
+        expectVec3(
+            float3(cluster.coneAxisLodError[0], cluster.coneAxisLodError[1], cluster.coneAxisLodError[2]),
+            sourceCluster.coneAxis,
+            "stream cluster cone axis");
+        EXPECT_TRUE(nearlyEqual(cluster.coneAxisLodError[3], sourceCluster.lodError));
         if (cluster.refinedGroupIndex != metallic::scene::kMeshletStreamInvalidGroupIndex) {
             EXPECT_GE(cluster.refinedGroupIndex, page.primitiveGroupOffset);
             EXPECT_LT(cluster.refinedGroupIndex, page.lodGroupIndex);
@@ -2138,10 +2202,117 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
         }
     }
 
+    const auto expectCorruptedPayloadRejected = [&asset, &reason](
+                                                    uint32_t pageIndex,
+                                                    const auto& corrupt,
+                                                    std::string_view expectedReason) {
+        ASSERT_LT(pageIndex, asset.pageCount());
+        const metallic::scene::MeshletStreamPageInfo& corruptPage = asset.pages()[pageIndex];
+        const std::span<const uint8_t> sourcePayload = asset.pagePayload(pageIndex);
+        std::vector<uint8_t> corruptedPayload(sourcePayload.begin(), sourcePayload.end());
+        metallic::scene::MeshletStreamPayloadHeader corruptHeader;
+        std::memcpy(&corruptHeader, corruptedPayload.data(), sizeof(corruptHeader));
+        ASSERT_GT(corruptHeader.clusterCount, 0u);
+        metallic::scene::MeshletStreamPayloadCluster corruptCluster;
+        std::memcpy(
+            &corruptCluster,
+            corruptedPayload.data() + corruptHeader.clusterOffsetBytes,
+            sizeof(corruptCluster));
+        corrupt(corruptedPayload, corruptHeader, corruptCluster);
+        std::memcpy(
+            corruptedPayload.data() + corruptHeader.clusterOffsetBytes,
+            &corruptCluster,
+            sizeof(corruptCluster));
+
+        std::vector<uint8_t> decodeStorage;
+        std::span<const uint8_t> decoded;
+        reason.clear();
+        EXPECT_FALSE(metallic::scene::decodeMeshletStreamPayloadForDevice(
+            corruptPage,
+            corruptedPayload,
+            decodeStorage,
+            decoded,
+            reason));
+        EXPECT_TRUE(decoded.empty());
+        EXPECT_NE(reason.find(expectedReason), std::string::npos) << reason;
+    };
+
+    constexpr uint32_t kRejectedMeshletCount = 129u;
+    uint32_t oversizedVertexPage = metallic::scene::kInvalidSceneIndex;
+    uint32_t oversizedTrianglePage = metallic::scene::kInvalidSceneIndex;
+    for (uint32_t pageIndex = 0; pageIndex < asset.pageCount(); ++pageIndex) {
+        const std::span<const uint8_t> candidatePayload = asset.pagePayload(pageIndex);
+        metallic::scene::MeshletStreamPayloadHeader candidateHeader;
+        std::memcpy(&candidateHeader, candidatePayload.data(), sizeof(candidateHeader));
+        if (candidateHeader.clusterCount == 0) {
+            continue;
+        }
+        metallic::scene::MeshletStreamPayloadCluster candidateCluster;
+        std::memcpy(
+            &candidateCluster,
+            candidatePayload.data() + candidateHeader.clusterOffsetBytes,
+            sizeof(candidateCluster));
+        if (oversizedVertexPage == metallic::scene::kInvalidSceneIndex &&
+            candidateCluster.vertexOffset <= candidateHeader.vertexCount &&
+            kRejectedMeshletCount <=
+                candidateHeader.vertexCount - candidateCluster.vertexOffset) {
+            oversizedVertexPage = pageIndex;
+        }
+        if (oversizedTrianglePage == metallic::scene::kInvalidSceneIndex &&
+            candidateCluster.triangleOffset <= candidateHeader.triangleIndexCount &&
+            static_cast<uint64_t>(kRejectedMeshletCount) * 3u <=
+                candidateHeader.triangleIndexCount - candidateCluster.triangleOffset) {
+            oversizedTrianglePage = pageIndex;
+        }
+    }
+    ASSERT_NE(oversizedVertexPage, metallic::scene::kInvalidSceneIndex);
+    ASSERT_NE(oversizedTrianglePage, metallic::scene::kInvalidSceneIndex);
+    expectCorruptedPayloadRejected(
+        oversizedVertexPage,
+        [](std::vector<uint8_t>&,
+           const metallic::scene::MeshletStreamPayloadHeader&,
+           metallic::scene::MeshletStreamPayloadCluster& cluster) {
+            cluster.vertexCount = kRejectedMeshletCount;
+        },
+        "cluster metadata");
+    expectCorruptedPayloadRejected(
+        oversizedTrianglePage,
+        [](std::vector<uint8_t>&,
+           const metallic::scene::MeshletStreamPayloadHeader&,
+           metallic::scene::MeshletStreamPayloadCluster& cluster) {
+            cluster.triangleCount = kRejectedMeshletCount;
+        },
+        "cluster metadata");
+    expectCorruptedPayloadRejected(
+        0u,
+        [](std::vector<uint8_t>& corruptedPayload,
+           const metallic::scene::MeshletStreamPayloadHeader& corruptHeader,
+           metallic::scene::MeshletStreamPayloadCluster& cluster) {
+            corruptedPayload[
+                static_cast<size_t>(corruptHeader.triangleOffsetBytes) +
+                cluster.triangleOffset] = static_cast<uint8_t>(cluster.vertexCount);
+        },
+        "triangle index");
+
     const auto* normals = reinterpret_cast<const float*>(payload.data() + header.normalOffsetBytes);
+    const auto* tangents = reinterpret_cast<const float*>(payload.data() + header.tangentOffsetBytes);
     const auto* texcoords = reinterpret_cast<const float*>(payload.data() + header.texcoord0OffsetBytes);
     EXPECT_TRUE(nearlyEqual(normals[2], 1.0f));
     EXPECT_TRUE(nearlyEqual(normals[3], 0.0f));
+    EXPECT_TRUE(std::isfinite(tangents[0]));
+    EXPECT_TRUE(std::isfinite(tangents[1]));
+    EXPECT_TRUE(std::isfinite(tangents[2]));
+    EXPECT_TRUE(nearlyEqual(std::abs(tangents[3]), 1.0f));
+    const metallic::scene::MeshletCluster& firstSourceCluster =
+        sourcePrimitive.meshletLodClusters[sourceGroup.clusterOffset];
+    const uint32_t firstSourceVertex =
+        sourcePrimitive.meshletLodVertices[firstSourceCluster.vertexOffset];
+    ASSERT_LT(firstSourceVertex, sourcePrimitive.tangents.size());
+    const float4& firstSourceTangent = sourcePrimitive.tangents[firstSourceVertex];
+    EXPECT_TRUE(nearlyEqual(tangents[0], firstSourceTangent.x));
+    EXPECT_TRUE(nearlyEqual(tangents[1], firstSourceTangent.y));
+    EXPECT_TRUE(nearlyEqual(tangents[2], firstSourceTangent.z));
+    EXPECT_TRUE(nearlyEqual(tangents[3], firstSourceTangent.w));
     EXPECT_GE(texcoords[0], 0.0f);
     EXPECT_LE(texcoords[0], 1.0f);
     EXPECT_GE(texcoords[1], 0.0f);
@@ -2201,6 +2372,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
         decodedPayload.size());
     ASSERT_LE(decodedHeader.positionOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 4u, decodedPayload.size());
     ASSERT_LE(decodedHeader.normalOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 4u, decodedPayload.size());
+    ASSERT_LE(decodedHeader.tangentOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 4u, decodedPayload.size());
     ASSERT_LE(decodedHeader.texcoord0OffsetBytes + decodedHeader.vertexCount * sizeof(float) * 2u, decodedPayload.size());
 
     const std::filesystem::path lazyValidationPath =

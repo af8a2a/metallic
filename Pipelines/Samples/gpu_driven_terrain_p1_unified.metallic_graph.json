@@ -1,0 +1,62 @@
+{
+    "edges": [],
+    "name": "GPUDrivenTerrainP1Unified",
+    "nodes": [
+        {
+            "id": 1,
+            "name": "GPUDriven",
+            "position": {
+                "x": 335.0,
+                "y": 281.0
+            },
+            "properties": {
+                "camera": {
+                    "center": [
+                        0.0,
+                        12.0,
+                        0.0
+                    ],
+                    "eye": [
+                        190.0,
+                        170.0,
+                        190.0
+                    ],
+                    "fovDegrees": 50.0,
+                    "projection": "perspective",
+                    "reversedZ": true,
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 2000.0,
+                    "znear": 0.1
+                },
+                "enableGpuLodSelection": true,
+                "enableMeshletStreaming": true,
+                "freezeCullingCamera": false,
+                "instanceFrustumCull": true,
+                "instanceHzbCull": true,
+                "maxActiveGroups": 4096,
+                "maxLockedFallbackPages": 16,
+                "maxPageLoadsInFlight": 64,
+                "maxPageUploadsPerFrame": 64,
+                "maxResidentPages": 256,
+                "maxTraversalWorkers": 256,
+                "maxTraversalWorkItems": 65536,
+                "meshletFrustumCull": true,
+                "meshletNormalConeCull": true,
+                "mode": "shaded",
+                "pageLoadConcurrency": 2,
+                "path": "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf",
+                "selectedLodLevel": 0,
+                "streamAssetPath": "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf.meshstream.bin"
+            },
+            "type": "GPUDrivenPreviewPass"
+        }
+    ],
+    "outputs": [
+        "GPUDriven.color"
+    ],
+    "version": 1
+}

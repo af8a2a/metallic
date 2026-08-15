@@ -1,3 +1,5 @@
+#include "GPUDrivenRasterCommon.slang"
+
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
 static const uint kMeshletTriangleChunkSize = 64;
@@ -47,6 +49,9 @@ struct GPUDrivenPreviewPush
     uint materialTextureRemapBuffer;
     uint environmentImage;
     uint environmentSHBuffer;
+    uint streamDeferredBindingsBuffer;
+    uint residentRecordCapacity;
+    uint streamOwnerMaskBuffer;
 };
 
 struct GPUDrivenPreviewVertex
@@ -74,14 +79,6 @@ struct GPUDrivenPreviewMeshlet
     float4 boundingSphere;
     float4 coneApexCutoff;
     float4 coneAxisLodError;
-};
-
-struct GPUDrivenPreviewMeshletDraw
-{
-    uint meshletIndex;
-    uint instanceIndex;
-    uint geometryIndex;
-    uint drawBucket;
 };
 
 struct GPUDrivenPreviewGeometry
@@ -603,6 +600,22 @@ void gpuDrivenPreviewInstanceCullMain(
     }
 
     RWStructuredBuffer<uint> visibility = visibilityHandle;
+    if (push.streamOwnerMaskBuffer != kInvalidTextureIndex) {
+        DescriptorHandle<StructuredBuffer<uint>> streamOwnerMaskHandle =
+            DescriptorHandle<StructuredBuffer<uint>>(uint2(
+                push.bufferShaderIndexBase + push.streamOwnerMaskBuffer,
+                0));
+        StructuredBuffer<uint> streamOwnerMask = streamOwnerMaskHandle;
+        if (streamOwnerMask[instanceIndex] != 0u) {
+            // Early culling clears stale shared state before the Stream
+            // producer runs. Late culling must preserve Stream's early state
+            // (2 == deferred/occluded) so its late HZB pass can recover it.
+            if (push.passIndex == 0u) {
+                visibility[instanceIndex] = 0u;
+            }
+            return;
+        }
+    }
     if (push.passIndex != 0 && visibility[instanceIndex] != 2u) {
         return;
     }
@@ -661,8 +674,8 @@ void gpuDrivenPreviewCompactMain(
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshletHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.bufferShaderIndexBase + push.meshletBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshletDraw>> meshletDrawHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshletDraw>>(uint2(
+    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> meshletDrawHandle =
+        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(
             push.bufferShaderIndexBase + push.meshletDrawBuffer,
             0));
     DescriptorHandle<StructuredBuffer<uint>> visibilityHandle =
@@ -675,17 +688,17 @@ void gpuDrivenPreviewCompactMain(
     }
 
     StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
-    StructuredBuffer<GPUDrivenPreviewMeshletDraw> meshletDraws = meshletDrawHandle;
+    StructuredBuffer<VisibleClusterRecord> meshletDraws = meshletDrawHandle;
     StructuredBuffer<uint> visibility = visibilityHandle;
     uint meshletIndex = params.meshletOffset + localMeshletIndex;
-    GPUDrivenPreviewMeshletDraw meshletDraw = meshletDraws[meshletIndex];
-    GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.meshletIndex];
+    VisibleClusterRecord meshletDraw = meshletDraws[meshletIndex];
+    GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.clusterIndex];
     uint expectedVisibility = push.passIndex == 0 ? 1u : 3u;
     if (visibility[meshletDraw.instanceIndex] != expectedVisibility) {
         return;
     }
 
-    uint bucketIndex = meshletDraw.drawBucket;
+    uint bucketIndex = visibleClusterDrawBucket(meshletDraw);
     if (bucketIndex >= kDrawBucketCount) {
         return;
     }
@@ -749,8 +762,8 @@ void gpuDrivenPreviewMeshMain(
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(uint2(push.bufferShaderIndexBase + push.positionBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshletHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.bufferShaderIndexBase + push.meshletBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshletDraw>> meshletDrawHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshletDraw>>(uint2(
+    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> meshletDrawHandle =
+        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(
             push.bufferShaderIndexBase + push.meshletDrawBuffer,
             0));
     DescriptorHandle<StructuredBuffer<uint>> meshletVertexHandle =
@@ -773,7 +786,7 @@ void gpuDrivenPreviewMeshMain(
 
     StructuredBuffer<GPUDrivenPreviewVertex> verticesBuffer = positionHandle;
     StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
-    StructuredBuffer<GPUDrivenPreviewMeshletDraw> meshletDraws = meshletDrawHandle;
+    StructuredBuffer<VisibleClusterRecord> meshletDraws = meshletDrawHandle;
     StructuredBuffer<uint> meshletVertices = meshletVertexHandle;
     StructuredBuffer<uint> meshletTriangles = meshletTriangleHandle;
     StructuredBuffer<GPUDrivenPreviewParams> paramsBuffer = paramsHandle;
@@ -786,9 +799,9 @@ void gpuDrivenPreviewMeshMain(
         push.mipLevel * params.visibleMeshletCapacity + groupID.x];
     uint meshletIndex = meshletChunk >> 1u;
     uint chunkIndex = meshletChunk & 1u;
-    GPUDrivenPreviewMeshletDraw meshletDraw = meshletDraws[meshletIndex];
-    GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.meshletIndex];
-    GPUDrivenPreviewGeometry geometry = geometries[meshletDraw.geometryIndex];
+    VisibleClusterRecord meshletDraw = meshletDraws[meshletIndex];
+    GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.clusterIndex];
+    GPUDrivenPreviewGeometry geometry = geometries[meshletDraw.dataIndex];
     GPUDrivenPreviewInstance instance = instances[meshletDraw.instanceIndex];
     SceneTransform transform = instanceTransform(instance);
     if (!meshletVisible(meshlet, instance.identity.w, transform, params)) {
@@ -826,7 +839,7 @@ void gpuDrivenPreviewMeshMain(
             position.y = -position.y;
             vertices[vertexIndex].position = position;
             vertices[vertexIndex].visibilityId =
-                ((meshletIndex + 1u) << 7u) | meshletTriangleIndex;
+                packVisibilityId(meshletIndex, meshletTriangleIndex);
             vertices[vertexIndex].texcoord = verticesBuffer[positionIndex].texcoord.xy;
             vertices[vertexIndex].materialIndex = instance.identity.y;
         }

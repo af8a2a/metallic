@@ -39,6 +39,16 @@ struct GPUSceneCullRecordDesc {
     uint32_t meshletGroupCountX = 0;
 };
 
+struct GPUSceneInstanceCullRecordDesc {
+    GPUSceneCullPhase phase = GPUSceneCullPhase::Early;
+    BindlessHeap* bindlessHeap = nullptr;
+    ComputePipeline* resetPipeline = nullptr;
+    ComputePipeline* instanceCullPipeline = nullptr;
+    const void* pushData = nullptr;
+    uint32_t pushDataSize = 0;
+    uint32_t instanceGroupCountX = 0;
+};
+
 struct GPUSceneComputeDispatchDesc {
     const void* pushData = nullptr;
     uint32_t pushDataSize = 0;
@@ -228,6 +238,12 @@ public:
         GPUSceneViewId view,
         uint32_t frameSlot,
         const GPUSceneCullRecordDesc& desc,
+        std::string& log);
+    Result recordInstanceCull(
+        CommandBuffer& commandBuffer,
+        GPUSceneViewId view,
+        uint32_t frameSlot,
+        const GPUSceneInstanceCullRecordDesc& desc,
         std::string& log);
     Result recordBuildHzb(
         CommandBuffer& commandBuffer,

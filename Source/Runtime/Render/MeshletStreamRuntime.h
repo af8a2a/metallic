@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/MeshletStreamResidency.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -25,6 +27,17 @@ inline constexpr const char* kMeshletStreamShaderSearchPath = PROJECT_SOURCE_DIR
 inline constexpr const char* kMeshletStreamShaderModuleName = "GPUDrivenStreamAsset";
 inline constexpr const char* kMeshletStreamMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
 inline constexpr const char* kMeshletStreamFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";
+inline constexpr const char* kMeshletStreamDeferredEntryPoint = "gpuDrivenStreamAssetDeferredMain";
+inline constexpr const char* kMeshletStreamCompositeVertexEntryPoint =
+    "gpuDrivenStreamAssetCompositeVertexMain";
+inline constexpr const char* kMeshletStreamCompositeFragmentEntryPoint =
+    "gpuDrivenStreamAssetCompositeFragmentMain";
+inline constexpr const char* kMeshletStreamCullResetEntryPoint =
+    "gpuDrivenStreamAssetCullResetMain";
+inline constexpr const char* kMeshletStreamInstanceCullEntryPoint =
+    "gpuDrivenStreamAssetInstanceCullMain";
+inline constexpr const char* kMeshletStreamHzbEntryPoint =
+    "gpuDrivenStreamAssetHzbMain";
 inline constexpr const char* kMeshletStreamPageTableInitEntryPoint = "gpuDrivenStreamAssetInitializePageTableMain";
 inline constexpr const char* kMeshletStreamUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
 inline constexpr const char* kMeshletStreamTraversalEntryPoint = "gpuDrivenStreamAssetTraversalMain";
@@ -37,6 +50,7 @@ inline constexpr uint32_t kMeshletStreamDebugLod = 1;
 inline constexpr uint32_t kMeshletStreamDebugPrimitive = 2;
 inline constexpr uint32_t kMeshletStreamDebugInstance = 3;
 inline constexpr uint32_t kMeshletStreamDebugMeshlet = 4;
+inline constexpr uint32_t kMeshletStreamDebugShaded = 5;
 inline constexpr uint32_t kMeshletStreamNoDebugLodOverride = UINT32_MAX;
 inline constexpr uint32_t kMeshletStreamInvalidClusterIndex = UINT32_MAX;
 inline constexpr uint32_t kMeshletStreamUnloadClusterIndex = UINT32_MAX - 1u;
@@ -62,8 +76,16 @@ inline constexpr uint32_t kMeshletStreamDefaultMaxActiveGroups = 262144;
 inline constexpr uint32_t kMeshletStreamDefaultTraversalWorkers = 1024;
 inline constexpr uint32_t kMeshletStreamDefaultTraversalWorkItems = 1048576;
 inline constexpr uint32_t kMeshletStreamDefaultMaxBlasBuilds = 65536;
+inline constexpr uint32_t kMeshletStreamTriangleChunkSize = 64;
+inline constexpr uint32_t kMeshletStreamTriangleChunkCount = 2;
+inline constexpr uint32_t kMeshletStreamMaxActiveGroupClusters = 32;
 inline constexpr uint32_t kMeshletStreamMaxTraversalWorkers = 65535u * 64u;
 inline constexpr uint32_t kMeshletStreamMaxTraversalWorkItems = 16777216;
+
+static_assert(
+    static_cast<uint64_t>(kMeshletStreamDefaultMaxActiveGroups) *
+        kMeshletStreamMaxActiveGroupClusters <=
+    kVisibilityMaxRecordCount);
 
 struct MeshletStreamGpuActiveHeader {
     uint32_t activeGroupCount = 0;
@@ -86,7 +108,7 @@ struct MeshletStreamGpuActiveGroup {
     uint32_t clusterSelectionMask = 0;
     uint32_t flags = 0;
     uint32_t instanceIndex = 0;
-    uint32_t padding0 = 0;
+    uint32_t gpuSceneInstanceIndex = kMeshletStreamInvalidClusterIndex;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
     float world0[4] = {};
@@ -99,7 +121,7 @@ struct MeshletStreamGpuInstance {
     uint32_t primitiveIndex = 0;
     uint32_t materialIndex = 0;
     uint32_t visible = 0;
-    uint32_t padding0 = 0;
+    uint32_t gpuSceneInstanceIndex = kMeshletStreamInvalidClusterIndex;
     float world0[4] = {};
     float world1[4] = {};
     float world2[4] = {};
@@ -252,6 +274,57 @@ struct MeshletStreamGpuParams {
     uint32_t blasClusterReferenceAddressHigh = 0;
     uint32_t blasClusterReferenceCapacity = 0;
     uint32_t blasBuildCapacity = 0;
+    float previousEye[4] = {};
+    float previousCenter[4] = {};
+    float previousUpProjection[4] = {};
+    float previousViewport[4] = {};
+    float previousClipOrtho[4] = {};
+};
+
+struct MeshletStreamGpuRasterBindings {
+    uint32_t visibleClusterBuffer = 0;
+    uint32_t instanceVisibilityBuffer = 0;
+    uint32_t hzbBuffer0 = 0;
+    uint32_t hzbBuffer1 = 0;
+    uint32_t depthImage = 0;
+    uint32_t visibilityImage = 0;
+    uint32_t deferredColorBuffer = 0;
+    uint32_t visibleInstanceIdsBuffer = 0;
+    // Stream records keep a local storage index while visibility IDs address
+    // the common resident + stream record namespace.
+    uint32_t visibleRecordBase = 0;
+    uint32_t visibleRecordCapacity = 0;
+    uint32_t hzbMipCount = 0;
+    uint32_t hzbValid = 0;
+    uint32_t cullingFlags = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t visibleInstanceCounterBuffer = 0;
+};
+
+// Non-owning resources required by a unified deferred consumer. The stream
+// runtime retains ownership; a consumer registers these buffers in its own
+// bindless heap so one deferred dispatch can decode both resident and streamed
+// visibility IDs.
+struct MeshletStreamDeferredGpuResourcesView {
+    Buffer* pageBuffer = nullptr;
+    Buffer* activeGroupBuffer = nullptr;
+    Buffer* pageTableBuffer = nullptr;
+    Buffer* activeHeaderBuffer = nullptr;
+    Buffer* paramsBuffer = nullptr;
+    Buffer* visibleClusterBuffer = nullptr;
+    uint32_t visibleRecordCapacity = 0;
+
+    bool valid() const
+    {
+        return pageBuffer != nullptr &&
+            activeGroupBuffer != nullptr &&
+            pageTableBuffer != nullptr &&
+            activeHeaderBuffer != nullptr &&
+            paramsBuffer != nullptr &&
+            visibleClusterBuffer != nullptr &&
+            visibleRecordCapacity != 0;
+    }
 };
 
 struct MeshletStreamUserPush {
@@ -282,6 +355,7 @@ struct MeshletStreamUserPush {
     uint32_t tlasInstanceBuffer = 0;
     uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
     uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
+    uint32_t rasterBindingsBuffer = 0;
 };
 
 static_assert(sizeof(MeshletStreamGpuActiveHeader) == 32);
@@ -299,8 +373,9 @@ static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(MeshletStreamGpuTlasInstance) == 64);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGpuParams) == 192);
-static_assert(sizeof(MeshletStreamUserPush) == 108);
+static_assert(sizeof(MeshletStreamGpuParams) == 272);
+static_assert(sizeof(MeshletStreamGpuRasterBindings) == 64);
+static_assert(sizeof(MeshletStreamUserPush) == 112);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -358,6 +433,11 @@ public:
 
     Result initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log);
     Result syncRuntimeScene(const scene::Scene& scene, std::string& log);
+    Result syncRuntimeScene(
+        const scene::Scene& scene,
+        std::span<const uint32_t> runtimeRenderNodeIndices,
+        std::string& log);
+    Result syncGPUSceneInstanceMapping(std::span<const uint32_t> mapping);
     void reset();
 
     bool ready() const;
@@ -371,6 +451,12 @@ public:
 
     BindlessHeap* bindlessHeap() const { return bindlessHeap_.get(); }
     MeshletStreamUserPush userPush() const;
+    Result updateRasterBindings(const MeshletStreamGpuRasterBindings& bindings);
+    Result cmdPrepareVisibility(CommandBuffer& commandBuffer);
+    Result cmdPrepareDeferred(CommandBuffer& commandBuffer);
+    MeshletStreamDeferredGpuResourcesView deferredGpuResources() const;
+    uint32_t frameIndex() const { return frameIndex_; }
+    uint32_t visibleClusterCapacity() const;
     uint32_t drawTaskCount() const;
     void cmdDrawMeshTasks(CommandBuffer& commandBuffer) const;
     const scene::Bounds& bounds() const { return drawBounds_; }
@@ -421,6 +507,10 @@ private:
     MeshletStreamResidencyManager residency_;
     scene::Bounds drawBounds_;
     uint64_t sceneTransformRevision_ = 0;
+    uint64_t sceneVisibilityRevision_ = 0;
+    uint64_t sceneResourceIdentity_ = 0;
+    std::vector<uint32_t> runtimeRenderNodeIndices_;
+    std::vector<uint32_t> gpuSceneInstanceMapping_;
     std::unique_ptr<Buffer> pageBuffer_;
     std::unique_ptr<Buffer> activeGroupBuffer_;
     std::unique_ptr<Buffer> activeHeaderBuffer_;
@@ -429,6 +519,8 @@ private:
     std::unique_ptr<Buffer> requestReadbackBuffer_;
     std::unique_ptr<Buffer> requestClearBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;
+    std::unique_ptr<Buffer> visibleClusterBuffer_;
+    std::unique_ptr<Buffer> rasterBindingsBuffer_;
     std::vector<ResidentPageFrame> residentPageFrames_;
     std::unique_ptr<Buffer> instanceBuffer_;
     std::unique_ptr<Buffer> primitiveBuffer_;
@@ -467,6 +559,8 @@ private:
     BindlessHandle activeHeaderHandle_;
     BindlessHandle pageTableHandle_;
     BindlessHandle paramsHandle_;
+    BindlessHandle visibleClusterHandle_;
+    BindlessHandle rasterBindingsHandle_;
     BindlessHandle requestHandle_;
     BindlessHandle instanceHandle_;
     BindlessHandle primitiveHandle_;
@@ -490,6 +584,7 @@ private:
     ResourceState activeHeaderBufferState_ = ResourceState::Undefined;
     ResourceState pageTableState_ = ResourceState::Undefined;
     ResourceState requestBufferState_ = ResourceState::Undefined;
+    ResourceState visibleClusterBufferState_ = ResourceState::Undefined;
     ResourceState drawIndirectBufferState_ = ResourceState::Undefined;
     ResourceState traversalHeaderBufferState_ = ResourceState::Undefined;
     ResourceState traversalWorkBufferState_ = ResourceState::Undefined;
@@ -527,6 +622,8 @@ private:
     bool tlasBuilt_ = false;
     std::vector<FallbackBlasPrimitive> fallbackBlasPrimitives_;
     uint32_t currentFrameUploadCount_ = 0;
+    MeshletStreamGpuParams previousFrameParams_;
+    bool previousFrameParamsValid_ = false;
 };
 
 } // namespace metallic::render

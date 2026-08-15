@@ -10,6 +10,7 @@ namespace {
 constexpr const char* kGPUDrivenSampleId = "gpu-driven-sample";
 constexpr const char* kGPUDrivenStreamAssetSampleId = "gpu-driven-streamasset";
 constexpr const char* kGPUDrivenTerrainP0SampleId = "gpu-driven-terrain-p0";
+constexpr const char* kGPUDrivenTerrainP1SampleId = "gpu-driven-terrain-p1-unified";
 constexpr const char* kGPUDrivenRtasVisualizationSampleId = "gpu-driven-rtas-visualization";
 
 void printUsage()
@@ -21,6 +22,7 @@ void printUsage()
         "  --visibility-buffer          Load the visibility-buffer variant (default)\n"
         "  --streamasset                Load the default meshlet StreamAsset variant\n"
         "  --terrain-p0                 Load the generated Houdini height-field StreamAsset\n"
+        "  --terrain-p1                 Load the unified GPUScene/StreamAsset terrain pipeline\n"
         "  --legacy-preloaded           Alias for the visibility-buffer variant\n"
         "  --rtas-visualization         Load the RTAS visualization variant\n"
         "  --scene <source.gltf>        Override the sample source scene\n"
@@ -56,6 +58,10 @@ int main(int argc, char** argv)
         }
         if (argument == "--terrain-p0") {
             sampleId = kGPUDrivenTerrainP0SampleId;
+            continue;
+        }
+        if (argument == "--terrain-p1") {
+            sampleId = kGPUDrivenTerrainP1SampleId;
             continue;
         }
         if (argument == "--visibility-buffer" || argument == "--legacy-preloaded") {

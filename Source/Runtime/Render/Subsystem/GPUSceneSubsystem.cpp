@@ -512,11 +512,13 @@ GPUSceneCpuUploadData buildGpuUploadData(
             for (uint32_t meshletOffset = 0;
                  meshletOffset < geometryRange->count;
                  ++meshletOffset) {
-                data.meshletDraws.push_back(GPUSceneGpuMeshletDrawRecord{
-                    .meshletIndex = geometryRange->offset + meshletOffset,
+                data.meshletDraws.push_back(VisibleClusterRecord{
+                    .clusterIndex = geometryRange->offset + meshletOffset,
                     .instanceIndex = id.index,
-                    .geometryIndex = instance->geometry.index,
-                    .drawBucket = static_cast<uint32_t>(instance->drawKey.bucket),
+                    .dataIndex = instance->geometry.index,
+                    .flags = visibleClusterFlags(
+                        VisibleClusterSource::Resident,
+                        static_cast<uint32_t>(instance->drawKey.bucket)),
                 });
             }
         }
@@ -1322,6 +1324,10 @@ Result GPUSceneSubsystem::uploadFullScene(
     std::string& log)
 {
     GPUSceneCpuUploadData data = buildGpuUploadData(scene_);
+    if (!visibilityRecordCapacityFitsId(data.meshletDraws.size())) {
+        log = "GPUScene resident meshlet draw count exceeds the common visibility ID record limit";
+        return makeError(Error::InvalidArgument);
+    }
     // Mandatory tables always retain one sentinel element so consumers can
     // bind a stable non-zero structured buffer for an empty DrawSet.
     if (data.geometries.empty()) {
@@ -1890,6 +1896,82 @@ Result GPUSceneSubsystem::recordCull(
     commandBuffer.barrier(BarrierDesc{
         .buffers = compactBarriers.data(),
         .bufferCount = gpuCount(compactBarriers.size()),
+    });
+    return {};
+}
+
+Result GPUSceneSubsystem::recordInstanceCull(
+    CommandBuffer& commandBuffer,
+    GPUSceneViewId view,
+    uint32_t frameSlot,
+    const GPUSceneInstanceCullRecordDesc& desc,
+    std::string& log)
+{
+    const GPUSceneVisibleDrawSet* visible = scene_.visibleDrawSet(view, frameSlot);
+    const uint32_t generation = scene_.drawSet().generation;
+    const uint64_t revision = scene_.drawSet().revision;
+    if (visible == nullptr ||
+        visible->gpu.sourceView != view ||
+        visible->gpu.frameSlot != frameSlot ||
+        !visible->gpu.validFor(generation, revision)) {
+        log = "GPUScene recordInstanceCull requires a live View with a prepared current-revision frame slot";
+        return makeError(Error::InvalidArgument);
+    }
+    const size_t phaseIndex = static_cast<size_t>(desc.phase);
+    if (phaseIndex >= kGPUSceneCullPhaseCount ||
+        desc.bindlessHeap == nullptr ||
+        desc.resetPipeline == nullptr ||
+        desc.instanceCullPipeline == nullptr ||
+        desc.pushData == nullptr ||
+        desc.pushDataSize == 0 ||
+        desc.instanceGroupCountX == 0 ||
+        visible->gpu.instanceVisibilityStates.buffer == nullptr ||
+        visible->gpu.visibleInstanceCounter.buffer == nullptr) {
+        log = "GPUScene recordInstanceCull received an incomplete culling description";
+        return makeError(Error::InvalidArgument);
+    }
+
+    commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
+    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    commandBuffer.bindComputePipeline(*desc.resetPipeline);
+    commandBuffer.dispatch(1u, 1u, 1u);
+
+    BufferBarrierDesc resetBarrier{
+        .buffer = visible->gpu.visibleInstanceCounter.buffer,
+        .before = ResourceState::General,
+        .after = ResourceState::General,
+    };
+    commandBuffer.barrier(BarrierDesc{
+        .buffers = &resetBarrier,
+        .bufferCount = 1,
+    });
+
+    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    commandBuffer.bindComputePipeline(*desc.instanceCullPipeline);
+    commandBuffer.dispatch(desc.instanceGroupCountX, 1u, 1u);
+
+    std::array<BufferBarrierDesc, 3> barriers{};
+    uint32_t barrierCount = 0;
+    barriers[barrierCount++] = BufferBarrierDesc{
+        .buffer = visible->gpu.instanceVisibilityStates.buffer,
+        .before = ResourceState::General,
+        .after = ResourceState::General,
+    };
+    if (visible->gpu.visibleInstanceIds.buffer != nullptr) {
+        barriers[barrierCount++] = BufferBarrierDesc{
+            .buffer = visible->gpu.visibleInstanceIds.buffer,
+            .before = ResourceState::General,
+            .after = ResourceState::General,
+        };
+    }
+    barriers[barrierCount++] = BufferBarrierDesc{
+        .buffer = visible->gpu.visibleInstanceCounter.buffer,
+        .before = ResourceState::General,
+        .after = ResourceState::General,
+    };
+    commandBuffer.barrier(BarrierDesc{
+        .buffers = barriers.data(),
+        .bufferCount = barrierCount,
     });
     return {};
 }

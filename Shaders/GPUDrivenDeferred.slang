@@ -7,6 +7,8 @@
 #define OPENPBR_FEATURE_EnableMetallic true
 #define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
 
+#include "GPUDrivenRasterCommon.slang"
+
 #ifndef GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE
 #define GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE 0
 #endif
@@ -95,8 +97,6 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 
 #include "../External/openpbr-bsdf/openpbr.h"
 
-static const uint kVisibilityTriangleBits = 7u;
-static const uint kVisibilityTriangleMask = (1u << kVisibilityTriangleBits) - 1u;
 static const uint kInvalidTextureIndex = 0xffffffffu;
 static const uint kModeMeshlet = 0u;
 static const uint kModePrimitive = 1u;
@@ -107,6 +107,22 @@ static const uint kEnvironmentModeProcedural = 0u;
 static const uint kEnvironmentModeMap = 1u;
 static const uint kEnvironmentModeDisabled = 2u;
 static const uint kEnvironmentSampleCount = 24u;
+static const uint kStreamMaxMeshletVertices = 128u;
+static const uint kStreamMaxMeshletTriangles = 128u;
+static const uint kStreamPayloadHeaderBytes = 112u;
+static const uint kStreamPayloadClusterBytes = 96u;
+static const uint kStreamPayloadClusterWords = kStreamPayloadClusterBytes / 4u;
+static const uint kStreamPayloadAttributePosition = 1u << 0u;
+static const uint kStreamPayloadAttributeNormal = 1u << 1u;
+static const uint kStreamPayloadAttributeTexcoord0 = 1u << 2u;
+static const uint kStreamPayloadAttributeTangent = 1u << 4u;
+static const uint kStreamPayloadFormatFloat32x2 = 1u;
+static const uint kStreamPayloadFormatFloat32x4 = 2u;
+static const uint kStreamInvalidDeviceOffset = 0xffffffffu;
+static const uint kStreamStateResident = 2u;
+static const uint kStreamStateLockedFallback = 3u;
+static const uint kStreamPageStateMask = 0x00000007u;
+static const uint kStreamPageDeviceOffsetMask = 0xfffffff8u;
 static const float kPi = 3.14159265358979323846;
 
 struct GPUDrivenPreviewPush
@@ -140,6 +156,98 @@ struct GPUDrivenPreviewPush
     uint materialTextureRemapBuffer;
     uint environmentImage;
     uint environmentSHBuffer;
+    uint streamDeferredBindingsBuffer;
+    uint residentRecordCapacity;
+    uint streamOwnerMaskBuffer;
+};
+
+struct GPUDrivenStreamDeferredBindings
+{
+    uint pageBuffer;
+    uint activeGroupBuffer;
+    uint pageTableBuffer;
+    uint activeHeaderBuffer;
+    uint paramsBuffer;
+    uint visibleClusterBuffer;
+    uint visibleRecordBase;
+    uint visibleRecordCapacity;
+};
+
+struct GPUDrivenStreamDeferredActiveHeader
+{
+    uint activeGroupCount;
+    uint activeGroupCapacity;
+    uint maxActiveGroupClusters;
+    uint overflowCount;
+    uint frameIndex;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
+struct GPUDrivenStreamDeferredActiveGroup
+{
+    uint pageDeviceOffsetBytes;
+    uint pageIndex;
+    uint clusterCount;
+    uint primitiveIndex;
+    uint lodLevel;
+    uint materialIndex;
+    uint clusterSelectionMask;
+    uint flags;
+    uint instanceIndex;
+    uint gpuSceneInstanceIndex;
+    uint padding1;
+    uint padding2;
+    float4 world0;
+    float4 world1;
+    float4 world2;
+    float4 world3;
+};
+
+struct GPUDrivenStreamDeferredPageTableEntry
+{
+    uint deviceOffsetAndState;
+    uint lastRequestFrame;
+};
+
+struct GPUDrivenStreamDeferredParams
+{
+    float4 eye;
+    float4 center;
+    float4 upProjection;
+    float4 viewport;
+    float4 clipOrtho;
+    float4 clearColor;
+    uint debugColorMode;
+    uint pageBufferBytes;
+    uint drawTaskCount;
+    uint frameIndex;
+    uint maxGpuPageRequests;
+    uint maxGpuPageUnloadRequests;
+    uint activeGroupCount;
+    uint maxActiveGroupClusters;
+    uint sceneInstanceCount;
+    uint scenePrimitiveCount;
+    uint sceneLodLevelCount;
+    uint scenePageCount;
+    uint selectedLodLevel;
+    uint enableGpuLodSelection;
+    uint enableGpuUnloadRequests;
+    uint sceneGroupCount;
+    uint maxPrimitiveGroupCount;
+    uint sceneNodeCount;
+    uint traversalWorkerCount;
+    uint traversalWorkCapacity;
+    uint blasClusterReferenceAddressLow;
+    uint blasClusterReferenceAddressHigh;
+    uint blasClusterReferenceCapacity;
+    uint blasBuildCapacity;
+    float4 previousEye;
+    float4 previousCenter;
+    float4 previousUpProjection;
+    float4 previousViewport;
+    float4 previousClipOrtho;
 };
 
 struct GPUDrivenPreviewVertex
@@ -167,14 +275,6 @@ struct GPUDrivenPreviewMeshlet
     float4 boundingSphere;
     float4 coneApexCutoff;
     float4 coneAxisLodError;
-};
-
-struct GPUDrivenPreviewMeshletDraw
-{
-    uint meshletIndex;
-    uint instanceIndex;
-    uint geometryIndex;
-    uint drawBucket;
 };
 
 struct GPUDrivenPreviewGeometry
@@ -423,6 +523,426 @@ float3 cameraRayDirection(float2 pixel, GPUDrivenPreviewParams params)
         forward);
 }
 
+struct GPUDrivenDeferredSurface
+{
+    float3 worldPosition;
+    float3 geometryNormal;
+    float3 normal;
+    float3 tangent;
+    float2 texcoord;
+    float tangentSign;
+    uint materialIndex;
+    uint primitiveIndex;
+    uint lodLevel;
+    uint colorSeed;
+};
+
+uint streamDeferredPageState(GPUDrivenStreamDeferredPageTableEntry entry)
+{
+    return entry.deviceOffsetAndState & kStreamPageStateMask;
+}
+
+uint streamDeferredPageOffset(GPUDrivenStreamDeferredPageTableEntry entry)
+{
+    return streamDeferredPageState(entry) == 0u
+        ? kStreamInvalidDeviceOffset
+        : entry.deviceOffsetAndState & kStreamPageDeviceOffsetMask;
+}
+
+bool streamDeferredPageDrawable(uint state)
+{
+    return state == kStreamStateResident || state == kStreamStateLockedFallback;
+}
+
+bool streamDeferredRangeValid(uint byteOffset, uint byteCount, uint payloadBytes)
+{
+    return byteOffset <= payloadBytes && byteCount <= payloadBytes - byteOffset;
+}
+
+bool streamDeferredArrayRangeValid(
+    uint byteOffset,
+    uint elementCount,
+    uint elementStride,
+    uint payloadBytes)
+{
+    return elementStride != 0u &&
+        byteOffset <= payloadBytes &&
+        elementCount <= (payloadBytes - byteOffset) / elementStride;
+}
+
+uint streamDeferredReadByte(StructuredBuffer<uint> words, uint byteOffset)
+{
+    uint word = words[byteOffset >> 2u];
+    return (word >> ((byteOffset & 3u) * 8u)) & 0xffu;
+}
+
+float4 streamDeferredLoadFloat4(
+    StructuredBuffer<uint> words,
+    uint pageWord,
+    uint byteOffset,
+    uint elementIndex)
+{
+    uint word = pageWord + byteOffset / 4u + elementIndex * 4u;
+    return float4(
+        asfloat(words[word + 0u]),
+        asfloat(words[word + 1u]),
+        asfloat(words[word + 2u]),
+        asfloat(words[word + 3u]));
+}
+
+float2 streamDeferredLoadFloat2(
+    StructuredBuffer<uint> words,
+    uint pageWord,
+    uint byteOffset,
+    uint elementIndex)
+{
+    uint word = pageWord + byteOffset / 4u + elementIndex * 2u;
+    return float2(asfloat(words[word + 0u]), asfloat(words[word + 1u]));
+}
+
+SceneTransform streamDeferredTransform(GPUDrivenStreamDeferredActiveGroup group)
+{
+    SceneTransform transform;
+    transform.world0 = group.world0;
+    transform.world1 = group.world1;
+    transform.world2 = group.world2;
+    transform.world3 = group.world3;
+    return transform;
+}
+
+float4 projectStreamDeferredPosition(
+    float3 worldPosition,
+    GPUDrivenStreamDeferredParams params)
+{
+    float3 forward = safeNormalize(
+        params.center.xyz - params.eye.xyz,
+        float3(0.0, 0.0, -1.0));
+    float3 cameraUp = safeNormalize(params.upProjection.xyz, float3(0.0, 1.0, 0.0));
+    float3 right = safeNormalize(cross(forward, cameraUp), float3(1.0, 0.0, 0.0));
+    float3 up = safeNormalize(cross(right, forward), float3(0.0, 1.0, 0.0));
+    float3 cameraVector = worldPosition - params.eye.xyz;
+    float3 viewPosition = float3(
+        dot(cameraVector, right),
+        dot(cameraVector, up),
+        dot(cameraVector, forward));
+    float zNear = max(params.clipOrtho.x, 0.0001);
+    float zFar = max(params.clipOrtho.y, zNear + 0.0001);
+    float ndcZ = (viewPosition.z - zNear) / (zFar - zNear);
+    if (params.upProjection.w <= 0.5) {
+        float safeViewZ = abs(viewPosition.z) > 0.000001
+            ? viewPosition.z
+            : (viewPosition.z < 0.0 ? -0.000001 : 0.000001);
+        ndcZ = zFar / (zFar - zNear) -
+            (zFar * zNear) / ((zFar - zNear) * safeViewZ);
+    }
+    ndcZ = params.clipOrtho.w > 0.5 ? 1.0 - ndcZ : ndcZ;
+    float aspect = max(params.viewport.x, 0.001);
+    if (params.upProjection.w > 0.5) {
+        float halfHeight = max(params.clipOrtho.z * 0.5, 0.0001);
+        return float4(
+            viewPosition.x / (halfHeight * aspect),
+            viewPosition.y / halfHeight,
+            ndcZ,
+            1.0);
+    }
+    float fovRadians = clamp(params.viewport.w, 0.017453292, 3.12413936);
+    float yScale = 1.0 / tan(fovRadians * 0.5);
+    float w = viewPosition.z;
+    return float4(
+        viewPosition.x * yScale / aspect,
+        viewPosition.y * yScale,
+        ndcZ * w,
+        w);
+}
+
+bool decodeStreamDeferredSurface(
+    VisibleClusterRecord record,
+    uint triangleIndex,
+    float2 pixelCenter,
+    GPUDrivenPreviewParams previewParams,
+    GPUDrivenPreviewPush push,
+    GPUDrivenStreamDeferredBindings bindings,
+    out GPUDrivenDeferredSurface surface)
+{
+    surface.worldPosition = float3(0.0);
+    surface.geometryNormal = float3(0.0, 0.0, 1.0);
+    surface.normal = surface.geometryNormal;
+    surface.tangent = float3(1.0, 0.0, 0.0);
+    surface.texcoord = float2(0.0);
+    surface.tangentSign = 1.0;
+    surface.materialIndex = 0u;
+    surface.primitiveIndex = 0u;
+    surface.lodLevel = 0u;
+    surface.colorSeed = record.clusterIndex;
+
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredParams>> streamParamsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredParams>>(uint2(
+            push.bufferShaderIndexBase + bindings.paramsBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredActiveHeader>> activeHeaderHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredActiveHeader>>(uint2(
+            push.bufferShaderIndexBase + bindings.activeHeaderBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredActiveGroup>> activeGroupHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredActiveGroup>>(uint2(
+            push.bufferShaderIndexBase + bindings.activeGroupBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredPageTableEntry>> pageTableHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredPageTableEntry>>(uint2(
+            push.bufferShaderIndexBase + bindings.pageTableBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<uint>> pageHandle =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(
+            push.bufferShaderIndexBase + bindings.pageBuffer,
+            0));
+    StructuredBuffer<GPUDrivenStreamDeferredParams> streamParamsBuffer = streamParamsHandle;
+    StructuredBuffer<GPUDrivenStreamDeferredActiveHeader> activeHeaders = activeHeaderHandle;
+    StructuredBuffer<GPUDrivenStreamDeferredActiveGroup> activeGroups = activeGroupHandle;
+    StructuredBuffer<GPUDrivenStreamDeferredPageTableEntry> pageTable = pageTableHandle;
+    StructuredBuffer<uint> pageWords = pageHandle;
+    GPUDrivenStreamDeferredParams streamParams = streamParamsBuffer[0];
+    GPUDrivenStreamDeferredActiveHeader activeHeader = activeHeaders[0];
+    uint activeGroupCount = min(activeHeader.activeGroupCount, activeHeader.activeGroupCapacity);
+    if (record.dataIndex >= activeGroupCount ||
+        record.instanceIndex >= previewParams.instanceCount) {
+        return false;
+    }
+    GPUDrivenStreamDeferredActiveGroup group = activeGroups[record.dataIndex];
+    if (record.instanceIndex != group.gpuSceneInstanceIndex ||
+        group.pageIndex >= streamParams.scenePageCount ||
+        record.clusterIndex >= group.clusterCount) {
+        return false;
+    }
+    GPUDrivenStreamDeferredPageTableEntry pageEntry = pageTable[group.pageIndex];
+    uint pageDeviceOffset = streamDeferredPageOffset(pageEntry);
+    if (!streamDeferredPageDrawable(streamDeferredPageState(pageEntry)) ||
+        pageDeviceOffset == kStreamInvalidDeviceOffset ||
+        streamParams.pageBufferBytes < kStreamPayloadHeaderBytes ||
+        pageDeviceOffset > streamParams.pageBufferBytes - kStreamPayloadHeaderBytes) {
+        return false;
+    }
+
+    uint pageWord = pageDeviceOffset / 4u;
+    uint payloadBytes = pageWords[pageWord + 12u];
+    uint clusterCount = pageWords[pageWord + 2u];
+    uint payloadVertexCount = pageWords[pageWord + 3u];
+    uint triangleIndexCount = pageWords[pageWord + 4u];
+    if (payloadBytes < kStreamPayloadHeaderBytes ||
+        payloadBytes > streamParams.pageBufferBytes ||
+        pageDeviceOffset > streamParams.pageBufferBytes - payloadBytes ||
+        record.clusterIndex >= clusterCount) {
+        return false;
+    }
+
+    uint clusterOffsetBytes = pageWords[pageWord + 9u];
+    uint positionOffsetBytes = pageWords[pageWord + 10u];
+    uint triangleOffsetBytes = pageWords[pageWord + 11u];
+    uint attributeFlags = pageWords[pageWord + 14u];
+    uint normalOffsetBytes = pageWords[pageWord + 16u];
+    uint texcoordOffsetBytes = pageWords[pageWord + 17u];
+    uint positionFormat = pageWords[pageWord + 20u];
+    uint normalFormat = pageWords[pageWord + 21u];
+    uint texcoordFormat = pageWords[pageWord + 22u];
+    uint tangentOffsetBytes = pageWords[pageWord + 24u];
+    uint tangentFormat = pageWords[pageWord + 25u];
+    bool hasNormals = (attributeFlags & kStreamPayloadAttributeNormal) != 0u;
+    bool hasTexcoords = (attributeFlags & kStreamPayloadAttributeTexcoord0) != 0u;
+    bool hasTangents = (attributeFlags & kStreamPayloadAttributeTangent) != 0u;
+    if ((attributeFlags & kStreamPayloadAttributePosition) == 0u ||
+        positionFormat != kStreamPayloadFormatFloat32x4 ||
+        (clusterOffsetBytes & 3u) != 0u ||
+        (positionOffsetBytes & 3u) != 0u ||
+        !streamDeferredArrayRangeValid(
+            clusterOffsetBytes,
+            clusterCount,
+            kStreamPayloadClusterBytes,
+            payloadBytes) ||
+        !streamDeferredArrayRangeValid(
+            positionOffsetBytes,
+            payloadVertexCount,
+            16u,
+            payloadBytes) ||
+        !streamDeferredRangeValid(
+            triangleOffsetBytes,
+            triangleIndexCount,
+            payloadBytes) ||
+        (hasNormals &&
+            (normalFormat != kStreamPayloadFormatFloat32x4 ||
+             (normalOffsetBytes & 3u) != 0u ||
+             !streamDeferredArrayRangeValid(
+                 normalOffsetBytes,
+                 payloadVertexCount,
+                 16u,
+                 payloadBytes))) ||
+        (hasTexcoords &&
+            (texcoordFormat != kStreamPayloadFormatFloat32x2 ||
+             (texcoordOffsetBytes & 3u) != 0u ||
+             !streamDeferredArrayRangeValid(
+                 texcoordOffsetBytes,
+                 payloadVertexCount,
+                 8u,
+                 payloadBytes))) ||
+        (hasTangents &&
+            (tangentFormat != kStreamPayloadFormatFloat32x4 ||
+             (tangentOffsetBytes & 3u) != 0u ||
+             !streamDeferredArrayRangeValid(
+                 tangentOffsetBytes,
+                 payloadVertexCount,
+                 16u,
+                 payloadBytes)))) {
+        return false;
+    }
+
+    uint clusterWord = pageWord + clusterOffsetBytes / 4u +
+        record.clusterIndex * kStreamPayloadClusterWords;
+    uint vertexOffset = pageWords[clusterWord + 0u];
+    uint vertexCount = pageWords[clusterWord + 1u];
+    uint localTriangleOffset = pageWords[clusterWord + 2u];
+    uint triangleCount = pageWords[clusterWord + 3u];
+    if (triangleIndex >= triangleCount ||
+        triangleCount > kStreamMaxMeshletTriangles ||
+        vertexCount == 0u ||
+        vertexCount > kStreamMaxMeshletVertices ||
+        vertexOffset > payloadVertexCount ||
+        vertexCount > payloadVertexCount - vertexOffset ||
+        localTriangleOffset > triangleIndexCount ||
+        triangleCount > (triangleIndexCount - localTriangleOffset) / 3u) {
+        return false;
+    }
+    uint triangleByte = pageDeviceOffset + triangleOffsetBytes +
+        localTriangleOffset + triangleIndex * 3u;
+    uint3 localIndices = uint3(
+        streamDeferredReadByte(pageWords, triangleByte + 0u),
+        streamDeferredReadByte(pageWords, triangleByte + 1u),
+        streamDeferredReadByte(pageWords, triangleByte + 2u));
+    if (any(localIndices >= vertexCount)) {
+        return false;
+    }
+
+    uint3 vertexIndices = vertexOffset + localIndices;
+    float3 local0 = streamDeferredLoadFloat4(
+        pageWords,
+        pageWord,
+        positionOffsetBytes,
+        vertexIndices.x).xyz;
+    float3 local1 = streamDeferredLoadFloat4(
+        pageWords,
+        pageWord,
+        positionOffsetBytes,
+        vertexIndices.y).xyz;
+    float3 local2 = streamDeferredLoadFloat4(
+        pageWords,
+        pageWord,
+        positionOffsetBytes,
+        vertexIndices.z).xyz;
+    SceneTransform transform = streamDeferredTransform(group);
+    float3 world0 = transformPoint(transform, local0);
+    float3 world1 = transformPoint(transform, local1);
+    float3 world2 = transformPoint(transform, local2);
+    float4 clip0 = projectStreamDeferredPosition(world0, streamParams);
+    float4 clip1 = projectStreamDeferredPosition(world1, streamParams);
+    float4 clip2 = projectStreamDeferredPosition(world2, streamParams);
+    clip0.y = -clip0.y;
+    clip1.y = -clip1.y;
+    clip2.y = -clip2.y;
+    float3 barycentrics = perspectiveBarycentrics(
+        pixelCenter,
+        clip0,
+        clip1,
+        clip2,
+        previewParams);
+    surface.worldPosition = world0 * barycentrics.x +
+        world1 * barycentrics.y + world2 * barycentrics.z;
+    surface.geometryNormal = safeNormalize(
+        cross(world1 - world0, world2 - world0),
+        float3(0.0, 0.0, 1.0));
+    surface.normal = surface.geometryNormal;
+    if (hasNormals) {
+        float3 normal0 = streamDeferredLoadFloat4(
+            pageWords,
+            pageWord,
+            normalOffsetBytes,
+            vertexIndices.x).xyz;
+        float3 normal1 = streamDeferredLoadFloat4(
+            pageWords,
+            pageWord,
+            normalOffsetBytes,
+            vertexIndices.y).xyz;
+        float3 normal2 = streamDeferredLoadFloat4(
+            pageWords,
+            pageWord,
+            normalOffsetBytes,
+            vertexIndices.z).xyz;
+        float3 localNormal = normal0 * barycentrics.x +
+            normal1 * barycentrics.y + normal2 * barycentrics.z;
+        surface.normal = transformNormal(transform, localNormal);
+    }
+    if (dot(surface.normal, surface.geometryNormal) < 0.0) {
+        surface.normal = -surface.normal;
+    }
+    surface.tangent = safeNormalize(
+        cross(
+            abs(surface.normal.y) < 0.999
+                ? float3(0.0, 1.0, 0.0)
+                : float3(1.0, 0.0, 0.0),
+            surface.normal),
+        float3(1.0, 0.0, 0.0));
+    if (hasTangents) {
+        float4 tangent0 = streamDeferredLoadFloat4(
+            pageWords,
+            pageWord,
+            tangentOffsetBytes,
+            vertexIndices.x);
+        float4 tangent1 = streamDeferredLoadFloat4(
+            pageWords,
+            pageWord,
+            tangentOffsetBytes,
+            vertexIndices.y);
+        float4 tangent2 = streamDeferredLoadFloat4(
+            pageWords,
+            pageWord,
+            tangentOffsetBytes,
+            vertexIndices.z);
+        float4 localTangent = tangent0 * barycentrics.x +
+            tangent1 * barycentrics.y + tangent2 * barycentrics.z;
+        float3 worldTangent = transformDirection(transform, localTangent.xyz);
+        surface.tangent = safeNormalize(
+            worldTangent - surface.normal * dot(surface.normal, worldTangent),
+            surface.tangent);
+        surface.tangentSign = localTangent.w < 0.0 ? -1.0 : 1.0;
+    }
+    if (hasTexcoords) {
+        float2 uv0 = streamDeferredLoadFloat2(
+            pageWords,
+            pageWord,
+            texcoordOffsetBytes,
+            vertexIndices.x);
+        float2 uv1 = streamDeferredLoadFloat2(
+            pageWords,
+            pageWord,
+            texcoordOffsetBytes,
+            vertexIndices.y);
+        float2 uv2 = streamDeferredLoadFloat2(
+            pageWords,
+            pageWord,
+            texcoordOffsetBytes,
+            vertexIndices.z);
+        surface.texcoord = uv0 * barycentrics.x + uv1 * barycentrics.y +
+            uv2 * barycentrics.z;
+    }
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instanceHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(
+            push.bufferShaderIndexBase + push.instanceBuffer,
+            0));
+    StructuredBuffer<GPUDrivenPreviewInstance> instances = instanceHandle;
+    GPUDrivenPreviewInstance instance = instances[record.instanceIndex];
+    surface.materialIndex = instance.identity.y;
+    surface.primitiveIndex = group.primitiveIndex;
+    surface.lodLevel = group.lodLevel;
+    surface.colorSeed = ((group.pageIndex + 1u) * 0x9e3779b9u) ^ record.clusterIndex;
+    return true;
+}
+
 float3 srgbToLinear(float3 color)
 {
     float3 low = color / 12.92;
@@ -611,9 +1131,165 @@ uint packHdrColor(float3 color)
     return packColor(linearToSrgb(acesToneMap(max(color, float3(0.0)))));
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void gpuDrivenPreviewDeferredMain(
+uint shadeDeferredSurface(
+    GPUDrivenDeferredSurface surface,
+    float2 pixelCenter,
+    GPUDrivenPreviewParams params,
+    GPUDrivenPreviewPush push)
+{
+    float3 geometryNormal = surface.geometryNormal;
+    float3 normal = surface.normal;
+    float3 tangent = safeNormalize(
+        surface.tangent - normal * dot(normal, surface.tangent),
+        abs(normal.z) < 0.999
+            ? safeNormalize(
+                cross(float3(0.0, 0.0, 1.0), normal),
+                float3(1.0, 0.0, 0.0))
+            : safeNormalize(
+                cross(float3(0.0, 1.0, 0.0), normal),
+                float3(1.0, 0.0, 0.0)));
+    float tangentSign = surface.tangentSign < 0.0 ? -1.0 : 1.0;
+    float3 bitangent = safeNormalize(
+        cross(normal, tangent) * tangentSign,
+        float3(0.0, 1.0, 0.0));
+    float3 viewDirection = safeNormalize(
+        params.renderEye.xyz - surface.worldPosition,
+        -cameraRayDirection(pixelCenter, params));
+
+    uint materialIndex = min(surface.materialIndex, max(params.materialCount, 1u) - 1u);
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materialHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(uint2(
+            push.bufferShaderIndexBase + push.materialBuffer,
+            0));
+    StructuredBuffer<GPUDrivenPreviewMaterial> materials = materialHandle;
+    GPUDrivenPreviewMaterial material = materials[materialIndex];
+
+    float4 normalSample = sampleMaterialTexture(
+        material.normalTexture,
+        surface.texcoord,
+        float4(0.5, 0.5, 1.0, 1.0),
+        params,
+        push);
+    float3 tangentNormal = normalSample.xyz * 2.0 - 1.0;
+    tangentNormal.xy *= material.textureParams.x;
+    tangentNormal = safeNormalize(tangentNormal, float3(0.0, 0.0, 1.0));
+    normal = safeNormalize(
+        tangent * tangentNormal.x + bitangent * tangentNormal.y + normal * tangentNormal.z,
+        normal);
+    if (dot(normal, geometryNormal) < 0.0) {
+        normal = -normal;
+    }
+    if (dot(normal, viewDirection) < 0.0) {
+        normal = -normal;
+    }
+    tangent = safeNormalize(tangent - normal * dot(normal, tangent), tangent);
+    bitangent = safeNormalize(cross(normal, tangent) * tangentSign, bitangent);
+
+    float4 baseColorSample = sampleMaterialTexture(
+        material.baseColorTexture,
+        surface.texcoord,
+        float4(1.0),
+        params,
+        push);
+    float4 metallicRoughnessSample = sampleMaterialTexture(
+        material.metallicRoughnessTexture,
+        surface.texcoord,
+        float4(1.0),
+        params,
+        push);
+    float4 occlusionSample = sampleMaterialTexture(
+        material.occlusionTexture,
+        surface.texcoord,
+        float4(1.0),
+        params,
+        push);
+    float4 emissiveSample = sampleMaterialTexture(
+        material.emissiveTexture,
+        surface.texcoord,
+        float4(1.0),
+        params,
+        push);
+    float4 transmissionSample = sampleMaterialTexture(
+        material.transmissionTexture,
+        surface.texcoord,
+        float4(1.0),
+        params,
+        push);
+
+    float3 baseColor = saturate(
+        material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
+    if (params.mode == kModeBaseColor) {
+        return packColor(linearToSrgb(baseColor));
+    }
+    float metallic = saturate(material.params.x * metallicRoughnessSample.b);
+    float roughness = clamp(
+        material.params.y * metallicRoughnessSample.g,
+        0.001,
+        1.0);
+    float transmission = saturate(
+        material.glassParams.x * transmissionSample.r) * (1.0 - metallic);
+    float3 emissive = max(
+        material.emissive.rgb * srgbToLinear(emissiveSample.rgb),
+        float3(0.0));
+    float occlusion = lerp(
+        1.0,
+        saturate(occlusionSample.r),
+        saturate(material.textureParams.y));
+
+    OpenPBR_ResolvedInputs inputs = openpbr_make_default_resolved_inputs();
+    inputs.base_weight = 1.0;
+    inputs.base_color = baseColor;
+    inputs.base_diffuse_roughness = roughness;
+    inputs.base_metalness = metallic;
+    inputs.specular_weight = 1.0;
+    inputs.specular_color = float3(1.0);
+    inputs.specular_roughness = roughness;
+    inputs.specular_roughness_anisotropy = 0.0;
+    inputs.specular_ior = clamp(material.glassParams.y, 1.0, 3.0);
+    inputs.specular_anisotropy_rotation_cos_sin = float2(1.0, 0.0);
+    inputs.transmission_weight = transmission;
+    inputs.transmission_color = sqrt(max(baseColor, float3(0.0)));
+    inputs.transmission_depth = 0.0;
+    inputs.subsurface_weight = 0.0;
+    float emissionLuminance = max(emissive.x, max(emissive.y, emissive.z));
+    inputs.emission_luminance = emissionLuminance;
+    inputs.emission_color = emissionLuminance > 0.0
+        ? emissive / emissionLuminance
+        : float3(1.0);
+    inputs.geometry_opacity = saturate(material.baseColor.a * baseColorSample.a);
+    inputs.geometry_thin_walled = false;
+    inputs.geometry_basis = openpbr_make_basis(normal, tangent, bitangent);
+    inputs.geometry_coat_basis = inputs.geometry_basis;
+
+    OpenPBR_PreparedBsdf prepared = openpbr_prepare(
+        inputs,
+        float3(1.0),
+        OpenPBR_BaseRgbWavelengths_nm,
+        OpenPBR_VacuumIor,
+        viewDirection);
+    float3 reflectedEnvironment = float3(0.0);
+    for (uint sampleIndex = 0u; sampleIndex < kEnvironmentSampleCount; ++sampleIndex) {
+        float3 localDirection = environmentIntegrationDirection(sampleIndex);
+        float3 lightDirection = safeNormalize(
+            tangent * localDirection.x +
+                normal * localDirection.y +
+                bitangent * localDirection.z,
+            normal);
+        OpenPBR_DiffuseSpecular bsdf = openpbr_eval(prepared, lightDirection);
+        float3 incidentRadiance = params.environmentMode == kEnvironmentModeMap
+            ? environmentSHRadiance(lightDirection, params, push)
+            : environmentRadiance(lightDirection, params, push);
+        reflectedEnvironment +=
+            max(openpbr_get_sum_of_diffuse_specular(bsdf), float3(0.0)) *
+            incidentRadiance;
+    }
+    float uniformSphereWeight = 4.0 * kPi / float(kEnvironmentSampleCount);
+    float3 radiance = max(prepared.emission, float3(0.0)) +
+        reflectedEnvironment * (occlusion * uniformSphereWeight);
+    return packHdrColor(radiance);
+}
+
+void gpuDrivenPreviewDeferredResident(
     uint3 dispatchThreadId : SV_DispatchThreadID,
     uniform GPUDrivenPreviewPush push)
 {
@@ -643,24 +1319,32 @@ void gpuDrivenPreviewDeferredMain(
         return;
     }
 
-    uint encodedMeshlet = packedVisibility >> kVisibilityTriangleBits;
-    uint triangleIndex = packedVisibility & kVisibilityTriangleMask;
-    if (encodedMeshlet == 0u) {
+    uint meshletIndex = 0u;
+    uint triangleIndex = 0u;
+    if (!unpackVisibilityId(packedVisibility, meshletIndex, triangleIndex)) {
         colors[outputIndex] = packColor(params.clearColor.xyz);
         return;
     }
-    uint meshletIndex = encodedMeshlet - 1u;
+    if (!visibilityRecordIndexValid(meshletIndex, push.residentRecordCapacity)) {
+        colors[outputIndex] = packColor(params.clearColor.xyz);
+        return;
+    }
 
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshletHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.bufferShaderIndexBase + push.meshletBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshletDraw>> meshletDrawHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshletDraw>>(uint2(
+    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> meshletDrawHandle =
+        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(
             push.bufferShaderIndexBase + push.meshletDrawBuffer,
             0));
     StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
-    StructuredBuffer<GPUDrivenPreviewMeshletDraw> meshletDraws = meshletDrawHandle;
-    GPUDrivenPreviewMeshletDraw meshletDraw = meshletDraws[meshletIndex];
-    GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.meshletIndex];
+    StructuredBuffer<VisibleClusterRecord> meshletDraws = meshletDrawHandle;
+    VisibleClusterRecord meshletDraw = meshletDraws[meshletIndex];
+    if (visibleClusterSource(meshletDraw) != kVisibleClusterSourceResident ||
+        meshletDraw.instanceIndex >= params.instanceCount) {
+        colors[outputIndex] = packColor(params.clearColor.xyz);
+        return;
+    }
+    GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.clusterIndex];
     if (triangleIndex >= meshlet.ranges.w) {
         colors[outputIndex] = packColor(params.clearColor.xyz);
         return;
@@ -676,7 +1360,7 @@ void gpuDrivenPreviewDeferredMain(
             0));
     StructuredBuffer<GPUDrivenPreviewGeometry> geometries = geometryHandle;
     StructuredBuffer<GPUDrivenPreviewInstance> instances = instanceHandle;
-    GPUDrivenPreviewGeometry geometry = geometries[meshletDraw.geometryIndex];
+    GPUDrivenPreviewGeometry geometry = geometries[meshletDraw.dataIndex];
     GPUDrivenPreviewInstance instance = instances[meshletDraw.instanceIndex];
 
     if (params.mode != kModeShaded && params.mode != kModeBaseColor) {
@@ -728,7 +1412,6 @@ void gpuDrivenPreviewDeferredMain(
         vertex1.normal.xyz * barycentrics.y + vertex2.normal.xyz * barycentrics.z;
     float3 geometryNormal = safeNormalize(cross(world1 - world0, world2 - world0), float3(0.0, 0.0, 1.0));
     float3 normal = transformNormal(transform, localNormal);
-    float3 viewDirection = safeNormalize(params.renderEye.xyz - worldPosition, -cameraRayDirection(pixelCenter, params));
     if (dot(normal, geometryNormal) < 0.0) {
         normal = -normal;
     }
@@ -740,104 +1423,123 @@ void gpuDrivenPreviewDeferredMain(
         abs(normal.z) < 0.999 ? safeNormalize(cross(float3(0.0, 0.0, 1.0), normal), float3(1.0, 0.0, 0.0)) :
             safeNormalize(cross(float3(0.0, 1.0, 0.0), normal), float3(1.0, 0.0, 0.0)));
     float tangentSign = localTangent.w < 0.0 ? -1.0 : 1.0;
-    float3 bitangent = safeNormalize(cross(normal, tangent) * tangentSign, float3(0.0, 1.0, 0.0));
 
-    uint materialIndex = min(instance.identity.y, max(params.materialCount, 1u) - 1u);
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materialHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(uint2(push.bufferShaderIndexBase + push.materialBuffer, 0));
-    StructuredBuffer<GPUDrivenPreviewMaterial> materials = materialHandle;
-    GPUDrivenPreviewMaterial material = materials[materialIndex];
+    GPUDrivenDeferredSurface surface;
+    surface.worldPosition = worldPosition;
+    surface.geometryNormal = geometryNormal;
+    surface.normal = normal;
+    surface.tangent = tangent;
+    surface.texcoord = texcoord;
+    surface.tangentSign = tangentSign;
+    surface.materialIndex = instance.identity.y;
+    surface.primitiveIndex = geometry.source.x;
+    surface.lodLevel = meshlet.lod.y;
+    surface.colorSeed = meshletIndex;
+    colors[outputIndex] = shadeDeferredSurface(surface, pixelCenter, params, push);
+}
 
-    float4 normalSample = sampleMaterialTexture(
-        material.normalTexture,
-        texcoord,
-        float4(0.5, 0.5, 1.0, 1.0),
-        params,
-        push);
-    float3 tangentNormal = normalSample.xyz * 2.0 - 1.0;
-    tangentNormal.xy *= material.textureParams.x;
-    tangentNormal = safeNormalize(tangentNormal, float3(0.0, 0.0, 1.0));
-    normal = safeNormalize(
-        tangent * tangentNormal.x + bitangent * tangentNormal.y + normal * tangentNormal.z,
-        normal);
-    if (dot(normal, geometryNormal) < 0.0) {
-        normal = -normal;
-    }
-    if (dot(normal, viewDirection) < 0.0) {
-        normal = -normal;
-    }
-    tangent = safeNormalize(tangent - normal * dot(normal, tangent), tangent);
-    bitangent = safeNormalize(cross(normal, tangent) * tangentSign, bitangent);
-
-    float4 baseColorSample = sampleMaterialTexture(
-        material.baseColorTexture, texcoord, float4(1.0), params, push);
-    float4 metallicRoughnessSample = sampleMaterialTexture(
-        material.metallicRoughnessTexture, texcoord, float4(1.0), params, push);
-    float4 occlusionSample = sampleMaterialTexture(
-        material.occlusionTexture, texcoord, float4(1.0), params, push);
-    float4 emissiveSample = sampleMaterialTexture(
-        material.emissiveTexture, texcoord, float4(1.0), params, push);
-    float4 transmissionSample = sampleMaterialTexture(
-        material.transmissionTexture, texcoord, float4(1.0), params, push);
-
-    float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
-    if (params.mode == kModeBaseColor) {
-        colors[outputIndex] = packColor(linearToSrgb(baseColor));
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void gpuDrivenPreviewDeferredMain(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uniform GPUDrivenPreviewPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(
+            push.bufferShaderIndexBase + push.paramsBuffer,
+            0));
+    GPUDrivenPreviewParams params = paramsHandle[0];
+    if (dispatchThreadId.x >= params.width || dispatchThreadId.y >= params.height) {
         return;
     }
-    float metallic = saturate(material.params.x * metallicRoughnessSample.b);
-    float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.001, 1.0);
-    float transmission = saturate(material.glassParams.x * transmissionSample.r) * (1.0 - metallic);
-    float3 emissive = max(material.emissive.rgb * srgbToLinear(emissiveSample.rgb), float3(0.0));
-    float occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));
 
-    OpenPBR_ResolvedInputs inputs = openpbr_make_default_resolved_inputs();
-    inputs.base_weight = 1.0;
-    inputs.base_color = baseColor;
-    inputs.base_diffuse_roughness = roughness;
-    inputs.base_metalness = metallic;
-    inputs.specular_weight = 1.0;
-    inputs.specular_color = float3(1.0);
-    inputs.specular_roughness = roughness;
-    inputs.specular_roughness_anisotropy = 0.0;
-    inputs.specular_ior = clamp(material.glassParams.y, 1.0, 3.0);
-    inputs.specular_anisotropy_rotation_cos_sin = float2(1.0, 0.0);
-    inputs.transmission_weight = transmission;
-    inputs.transmission_color = sqrt(max(baseColor, float3(0.0)));
-    inputs.transmission_depth = 0.0;
-    inputs.subsurface_weight = 0.0;
-    float emissionLuminance = max(emissive.x, max(emissive.y, emissive.z));
-    inputs.emission_luminance = emissionLuminance;
-    inputs.emission_color = emissionLuminance > 0.0 ? emissive / emissionLuminance : float3(1.0);
-    inputs.geometry_opacity = saturate(material.baseColor.a * baseColorSample.a);
-    inputs.geometry_thin_walled = false;
-    inputs.geometry_basis = openpbr_make_basis(normal, tangent, bitangent);
-    inputs.geometry_coat_basis = inputs.geometry_basis;
-
-    OpenPBR_PreparedBsdf prepared = openpbr_prepare(
-        inputs,
-        float3(1.0),
-        OpenPBR_BaseRgbWavelengths_nm,
-        OpenPBR_VacuumIor,
-        viewDirection);
-    float3 reflectedEnvironment = float3(0.0);
-    for (uint sampleIndex = 0u; sampleIndex < kEnvironmentSampleCount; ++sampleIndex) {
-        float3 localDirection = environmentIntegrationDirection(sampleIndex);
-        float3 lightDirection = safeNormalize(
-            tangent * localDirection.x +
-                normal * localDirection.y +
-                bitangent * localDirection.z,
-            normal);
-        OpenPBR_DiffuseSpecular bsdf = openpbr_eval(prepared, lightDirection);
-        float3 incidentRadiance = params.environmentMode == kEnvironmentModeMap ?
-            environmentSHRadiance(lightDirection, params, push) :
-            environmentRadiance(lightDirection, params, push);
-        reflectedEnvironment +=
-            max(openpbr_get_sum_of_diffuse_specular(bsdf), float3(0.0)) *
-            incidentRadiance;
+    DescriptorHandle<Texture2D<uint>> visibilityHandle =
+        DescriptorHandle<Texture2D<uint>>(uint2(
+            push.imageShaderIndexBase + push.visibilityImage,
+            0));
+    Texture2D<uint> visibility = visibilityHandle;
+    uint packedVisibility = visibility.Load(int3(dispatchThreadId.xy, 0));
+    if (packedVisibility == 0u) {
+        gpuDrivenPreviewDeferredResident(dispatchThreadId, push);
+        return;
     }
-    float uniformSphereWeight = 4.0 * kPi / float(kEnvironmentSampleCount);
-    float3 radiance = max(prepared.emission, float3(0.0)) +
-        reflectedEnvironment * (occlusion * uniformSphereWeight);
-    colors[outputIndex] = packHdrColor(radiance);
+
+    uint recordIndex = 0u;
+    uint triangleIndex = 0u;
+    if (!unpackVisibilityId(packedVisibility, recordIndex, triangleIndex)) {
+        gpuDrivenPreviewDeferredResident(dispatchThreadId, push);
+        return;
+    }
+    if (visibilityRecordIndexValid(recordIndex, push.residentRecordCapacity)) {
+        gpuDrivenPreviewDeferredResident(dispatchThreadId, push);
+        return;
+    }
+
+    DescriptorHandle<RWStructuredBuffer<uint>> colorHandle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
+            push.bufferShaderIndexBase + push.deferredColorBuffer,
+            0));
+    RWStructuredBuffer<uint> colors = colorHandle;
+    uint outputIndex = dispatchThreadId.y * params.width + dispatchThreadId.x;
+    if (push.streamDeferredBindingsBuffer == kInvalidTextureIndex) {
+        colors[outputIndex] = packColor(params.clearColor.xyz);
+        return;
+    }
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredBindings>> bindingsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredBindings>>(uint2(
+            push.bufferShaderIndexBase + push.streamDeferredBindingsBuffer,
+            0));
+    StructuredBuffer<GPUDrivenStreamDeferredBindings> bindingsBuffer = bindingsHandle;
+    GPUDrivenStreamDeferredBindings bindings = bindingsBuffer[0];
+    if (bindings.visibleRecordBase < push.residentRecordCapacity ||
+        !visibilityRecordRangeValid(
+            bindings.visibleRecordBase,
+            bindings.visibleRecordCapacity) ||
+        recordIndex < bindings.visibleRecordBase ||
+        recordIndex - bindings.visibleRecordBase >= bindings.visibleRecordCapacity) {
+        colors[outputIndex] = packColor(params.clearColor.xyz);
+        return;
+    }
+
+    uint localRecordIndex = recordIndex - bindings.visibleRecordBase;
+    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> streamRecordHandle =
+        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(
+            push.bufferShaderIndexBase + bindings.visibleClusterBuffer,
+            0));
+    StructuredBuffer<VisibleClusterRecord> streamRecords = streamRecordHandle;
+    VisibleClusterRecord record = streamRecords[localRecordIndex];
+    if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) {
+        colors[outputIndex] = packColor(params.clearColor.xyz);
+        return;
+    }
+
+    GPUDrivenDeferredSurface surface;
+    float2 pixelCenter = float2(dispatchThreadId.xy) + 0.5;
+    if (!decodeStreamDeferredSurface(
+            record,
+            triangleIndex,
+            pixelCenter,
+            params,
+            push,
+            bindings,
+            surface)) {
+        colors[outputIndex] = packColor(params.clearColor.xyz);
+        return;
+    }
+    if (params.mode != kModeShaded && params.mode != kModeBaseColor) {
+        uint colorSeed = recordIndex;
+        if (params.mode == kModePrimitive) {
+            colorSeed = surface.primitiveIndex;
+        } else if (params.mode == kModeLod) {
+            colorSeed = surface.primitiveIndex * 1009u +
+                surface.lodLevel * 131u + record.clusterIndex * 17u + 1u;
+        }
+        colors[outputIndex] = packColor(hashColor(colorSeed + 1u));
+        return;
+    }
+    colors[outputIndex] = shadeDeferredSurface(
+        surface,
+        pixelCenter,
+        params,
+        push);
 }

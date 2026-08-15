@@ -2,12 +2,14 @@
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
@@ -1637,6 +1639,51 @@ public:
             return RhiTestResult::fail("GPUDriven Terrain P0 graph first output changed");
         }
 
+        render::RenderSampleLoadResult gpuDrivenTerrainP1Sample;
+        if (!render::loadBuiltInRenderSample(
+                "gpu-driven-terrain-p1-unified",
+                gpuDrivenTerrainP1Sample,
+                message)) {
+            return RhiTestResult::fail(message);
+        }
+        if (gpuDrivenTerrainP1Sample.desc.id != "gpu-driven-terrain-p1-unified" ||
+            gpuDrivenTerrainP1Sample.desc.name != "GPUDrivenSample / Terrain P1 Unified" ||
+            gpuDrivenTerrainP1Sample.desc.category != "GPUDriven" ||
+            gpuDrivenTerrainP1Sample.desc.scenePath !=
+                "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf" ||
+            !gpuDrivenTerrainP1Sample.desc.loadSceneInEditor ||
+            gpuDrivenTerrainP1Sample.desc.graphPath !=
+                "Pipelines/Samples/gpu_driven_terrain_p1_unified.metallic_graph.json" ||
+            !gpuDrivenTerrainP1Sample.desc.environment.has_value() ||
+            gpuDrivenTerrainP1Sample.desc.previewOutput != "GPUDriven.color") {
+            return RhiTestResult::fail(
+                "GPUDriven Terrain P1 unified sample metadata did not load as expected");
+        }
+        const render::RenderGraphNode* gpuDrivenTerrainP1 =
+            gpuDrivenTerrainP1Sample.graph.findNode("GPUDriven");
+        if (gpuDrivenTerrainP1 == nullptr ||
+            gpuDrivenTerrainP1->type != "GPUDrivenPreviewPass" ||
+            !gpuDrivenTerrainP1->properties.is_object() ||
+            gpuDrivenTerrainP1->properties.value("path", "") !=
+                gpuDrivenTerrainP1Sample.desc.scenePath ||
+            gpuDrivenTerrainP1->properties.value("streamAssetPath", "") !=
+                "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf.meshstream.bin" ||
+            !gpuDrivenTerrainP1->properties.value("enableMeshletStreaming", false) ||
+            !gpuDrivenTerrainP1->properties.value("instanceHzbCull", false) ||
+            !gpuDrivenTerrainP1->properties.value("meshletFrustumCull", false) ||
+            gpuDrivenTerrainP1->properties.value("mode", "") != "shaded" ||
+            !gpuDrivenTerrainP1->properties.contains("camera") ||
+            !gpuDrivenTerrainP1->properties["camera"].is_object()) {
+            return RhiTestResult::fail(
+                "GPUDriven Terrain P1 unified sample did not preserve unified raster defaults");
+        }
+        if (!gpuDrivenTerrainP1Sample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (gpuDrivenTerrainP1Sample.graph.firstOutputName() != "GPUDriven.color") {
+            return RhiTestResult::fail("GPUDriven Terrain P1 unified graph first output changed");
+        }
+
         render::RenderSampleLoadResult gpuDrivenRtasSample;
         if (!render::loadBuiltInRenderSample("gpu-driven-rtas-visualization", gpuDrivenRtasSample, message)) {
             return RhiTestResult::fail(message);
@@ -1677,6 +1724,7 @@ public:
         bool listedGPUDriven = false;
         bool listedGPUDrivenStreamAsset = false;
         bool listedGPUDrivenTerrainP0 = false;
+        bool listedGPUDrivenTerrainP1 = false;
         bool listedGPUDrivenRtasVisualization = false;
         bool listedRtxcr = false;
         for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
@@ -1688,6 +1736,8 @@ public:
             listedGPUDriven = listedGPUDriven || desc.id == "gpu-driven-sample";
             listedGPUDrivenStreamAsset = listedGPUDrivenStreamAsset || desc.id == "gpu-driven-streamasset";
             listedGPUDrivenTerrainP0 = listedGPUDrivenTerrainP0 || desc.id == "gpu-driven-terrain-p0";
+            listedGPUDrivenTerrainP1 = listedGPUDrivenTerrainP1 ||
+                desc.id == "gpu-driven-terrain-p1-unified";
             listedGPUDrivenRtasVisualization = listedGPUDrivenRtasVisualization ||
                 desc.id == "gpu-driven-rtas-visualization";
             listedRtxcr = listedRtxcr || desc.id == "rtxcr-material-sample";
@@ -1699,6 +1749,7 @@ public:
             !listedGPUDriven ||
             !listedGPUDrivenStreamAsset ||
             !listedGPUDrivenTerrainP0 ||
+            !listedGPUDrivenTerrainP1 ||
             !listedGPUDrivenRtasVisualization ||
             !listedRtxcr) {
             return RhiTestResult::fail("built-in Sample list did not contain expected samples");
@@ -2621,6 +2672,39 @@ public:
             return RhiTestResult::fail("GPUDrivenStreamAsset fragment shader produced empty SPIR-V");
         }
 
+        constexpr std::array<const char*, 6> kRasterEntryPoints{
+            render::kMeshletStreamDeferredEntryPoint,
+            render::kMeshletStreamCompositeVertexEntryPoint,
+            render::kMeshletStreamCompositeFragmentEntryPoint,
+            render::kMeshletStreamCullResetEntryPoint,
+            render::kMeshletStreamInstanceCullEntryPoint,
+            render::kMeshletStreamHzbEntryPoint,
+        };
+        for (const char* entryPoint : kRasterEntryPoints) {
+            render::ShaderCompileResult rasterCompile;
+            result = render::compileSlangShaderToSpirv(
+                render::SlangShaderDesc{
+                    .moduleName = "GPUDrivenStreamAsset",
+                    .entryPointName = entryPoint,
+                    .searchPath = kShaderSearchPath,
+                },
+                rasterCompile);
+            if (!result) {
+                return RhiTestResult::fail(
+                    std::string("GPUDrivenStreamAsset shader compile returned ") +
+                    toString(result) +
+                    " for " +
+                    entryPoint +
+                    ": " +
+                    rasterCompile.diagnostics);
+            }
+            if (rasterCompile.spirv.empty()) {
+                return RhiTestResult::fail(
+                    std::string("GPUDrivenStreamAsset shader produced empty SPIR-V for ") +
+                    entryPoint);
+            }
+        }
+
         render::ShaderCompileResult updateCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
@@ -2881,7 +2965,9 @@ public:
         params.traversalWorkCapacity = kTraversalWorkCapacity;
         params.activeGroupCount = kActiveGroupCapacity;
         params.maxActiveGroupClusters = 11;
-        params.drawTaskCount = kActiveGroupCapacity * params.maxActiveGroupClusters;
+        params.drawTaskCount = kActiveGroupCapacity *
+            params.maxActiveGroupClusters *
+            render::kMeshletStreamTriangleChunkCount;
 
         std::array<render::StreamPageTableEntry, kScenePageCount> pageTable{};
         pageTable[0].deviceOffsetAndState = render::packStreamPageTableEntry(
@@ -2892,7 +2978,7 @@ public:
             render::MeshletStreamPageResidencyState::Resident);
         pageTable[1].lastRequestFrame = 3;
         pageTable[2].deviceOffsetAndState = render::packStreamPageTableEntry(
-            1024,
+            1536,
             render::MeshletStreamPageResidencyState::LockedFallback);
         pageTable[2].lastRequestFrame = 3;
         pageTable[3].deviceOffsetAndState = render::packStreamPageTableEntry(
@@ -2911,6 +2997,12 @@ public:
 
         constexpr uint32_t kPageBufferBytes = 16u * 1024u;
         std::vector<uint32_t> pageWords(kPageBufferBytes / sizeof(uint32_t), 0u);
+        static_assert(sizeof(scene::MeshletStreamPayloadHeader) == 112u);
+        static_assert(sizeof(scene::MeshletStreamPayloadCluster) == 96u);
+        constexpr uint32_t kClusterOffsetBytes =
+            sizeof(scene::MeshletStreamPayloadHeader);
+        constexpr uint32_t kClusterStrideWords =
+            sizeof(scene::MeshletStreamPayloadCluster) / sizeof(uint32_t);
         for (uint32_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
             const uint32_t pageIndex = groups[groupIndex].pageIndex;
             const render::StreamPageTableEntry& entry = pageTable[pageIndex];
@@ -2919,25 +3011,25 @@ public:
                 continue;
             }
             const uint32_t pageWord = deviceOffsetBytes / sizeof(uint32_t);
-            constexpr uint32_t kClusterOffsetBytes = 96u;
             const uint32_t payloadBytes =
-                kClusterOffsetBytes + groups[groupIndex].clusterCount * 36u;
+                kClusterOffsetBytes + groups[groupIndex].clusterCount *
+                    sizeof(scene::MeshletStreamPayloadCluster);
             pageWords[pageWord + 2u] = groups[groupIndex].clusterCount;
             pageWords[pageWord + 9u] = kClusterOffsetBytes;
             pageWords[pageWord + 12u] = payloadBytes;
             const uint32_t clusterWord = pageWord + kClusterOffsetBytes / sizeof(uint32_t);
             for (uint32_t clusterIndex = 0; clusterIndex < groups[groupIndex].clusterCount; ++clusterIndex) {
-                pageWords[clusterWord + clusterIndex * 9u + 8u] = UINT32_MAX;
+                pageWords[clusterWord + clusterIndex * kClusterStrideWords + 8u] = UINT32_MAX;
             }
         }
         const uint32_t group2ClusterWord =
             render::streamPageTableDeviceOffset(pageTable[groups[2].pageIndex]) /
-                sizeof(uint32_t) + 96u / sizeof(uint32_t);
+                sizeof(uint32_t) + kClusterOffsetBytes / sizeof(uint32_t);
         pageWords[group2ClusterWord + 8u] = 0u;
-        pageWords[group2ClusterWord + 9u + 8u] = 1u;
+        pageWords[group2ClusterWord + kClusterStrideWords + 8u] = 1u;
         const uint32_t group4ClusterWord =
             render::streamPageTableDeviceOffset(pageTable[groups[4].pageIndex]) /
-                sizeof(uint32_t) + 96u / sizeof(uint32_t);
+                sizeof(uint32_t) + kClusterOffsetBytes / sizeof(uint32_t);
         pageWords[group4ClusterWord + 8u] = 3u;
         params.pageBufferBytes = kPageBufferBytes;
 
@@ -3862,7 +3954,9 @@ public:
             return RhiTestResult::fail("draw indirect readback buffer did not map");
         }
         if (drawIndirectResult.groupCountX !=
-                activeHeaderResult.activeGroupCount * activeHeaderResult.maxActiveGroupClusters ||
+                activeHeaderResult.activeGroupCount *
+                    activeHeaderResult.maxActiveGroupClusters *
+                    render::kMeshletStreamTriangleChunkCount ||
             drawIndirectResult.groupCountY != 1 ||
             drawIndirectResult.groupCountZ != 1) {
             return RhiTestResult::fail("active table did not generate the expected indirect mesh task command");
@@ -5332,6 +5426,12 @@ public:
             context.outputDirectory / "gpu_driven_streamasset_smoke.meshstream.bin";
         const std::filesystem::path sourcePath =
             std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
+        scene::Scene runtimeScene;
+        if (!runtimeScene.load(sourcePath)) {
+            return RhiTestResult::fail(
+                "GPUDrivenStreamAssetPass smoke scene load failed: " +
+                runtimeScene.lastLoadResult().error);
+        }
         std::string buildReason;
         if (!scene::buildMeshletStreamAssetOffline(
                 scene::MeshletStreamAssetOfflineBuildDesc{
@@ -5366,6 +5466,7 @@ public:
         graph.markOutput("GPUDriven.color");
 
         render::RenderGraphExecutor executor;
+        executor.bindRuntimeScene(&runtimeScene);
         std::string log;
         result = executor.compile(*device, graph, kWidth, kHeight, log);
         const bool hasRequiredCapabilities =
@@ -5522,13 +5623,15 @@ public:
             render::RenderGraphProperties{
                 {"path", sourcePath.string()},
                 {"streamAssetPath", streamAssetPath.string()},
-                {"maxLockedFallbackPages", 0},
-                {"maxResidentPages", 1},
+                {"maxLockedFallbackPages", 1},
+                {"maxResidentPages", 2},
                 {"maxPageUploadsPerFrame", 1},
             });
         streamedFallbackGraph.markOutput("GPUDriven.color");
+        streamedFallbackGraph.markOutput("GPUDriven.visibility");
 
         render::RenderGraphExecutor streamedFallbackExecutor;
+        streamedFallbackExecutor.bindRuntimeScene(&runtimeScene);
         log.clear();
         result = streamedFallbackExecutor.compile(
             *device,
@@ -5538,18 +5641,18 @@ public:
             log);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("zero-locked-fallback RenderGraphExecutor::compile returned ") +
+                std::string("streamed-fallback RenderGraphExecutor::compile returned ") +
                 toString(result) +
                 ": " +
                 log);
         }
-        for (uint32_t frame = 0; frame < 5; ++frame) {
+        for (uint32_t frame = 0; frame < kStreamingWarmupFrameCount; ++frame) {
             result = streamedFallbackExecutor.execute(render::RenderGraphSubmitDesc{
                 .graphicsQueue = graphicsQueue,
             });
             if (!result) {
                 return RhiTestResult::fail(
-                    std::string("zero-locked-fallback RenderGraphExecutor::execute frame ") +
+                    std::string("streamed-fallback RenderGraphExecutor::execute frame ") +
                     std::to_string(frame) +
                     " returned " +
                     toString(result));
@@ -5557,15 +5660,978 @@ public:
             result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
             if (!result) {
                 return RhiTestResult::fail(
-                    std::string("zero-locked-fallback RenderGraphExecutor::waitForSubmittedWork frame ") +
+                    std::string("streamed-fallback RenderGraphExecutor::waitForSubmittedWork frame ") +
                     std::to_string(frame) +
                     " returned " +
                     toString(result));
             }
         }
 
+        std::unique_ptr<render::CommandBuffer> rasterCommandBuffer;
+        result = commandPool->createCommandBuffer(rasterCommandBuffer);
+        if (!result || rasterCommandBuffer == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createCommandBuffer(raster readback) returned ") +
+                toString(result));
+        }
+        std::unique_ptr<render::Fence> rasterFence;
+        result = device->createFence(false, rasterFence);
+        if (!result || rasterFence == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createFence(raster readback) returned ") +
+                toString(result));
+        }
+        std::unique_ptr<render::Buffer> rasterColorReadback;
+        std::unique_ptr<render::Buffer> rasterVisibilityReadback;
+        auto createRasterReadback = [&](std::unique_ptr<render::Buffer>& buffer) {
+            return device->createBuffer(
+                render::BufferDesc{
+                    .size = kReadbackByteSize,
+                    .usage = render::BufferUsageBits::TransferDestination,
+                    .memoryLocation = render::MemoryLocation::HostReadback,
+                },
+                buffer);
+        };
+        result = createRasterReadback(rasterColorReadback);
+        if (!result || rasterColorReadback == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createBuffer(raster color readback) returned ") +
+                toString(result));
+        }
+        result = createRasterReadback(rasterVisibilityReadback);
+        if (!result || rasterVisibilityReadback == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createBuffer(raster visibility readback) returned ") +
+                toString(result));
+        }
+
+        result = rasterCommandBuffer->begin();
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("raster readback CommandBuffer::begin returned ") +
+                toString(result));
+        }
+        result = streamedFallbackExecutor.execute(*rasterCommandBuffer);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("streamed-fallback execute(readback) returned ") +
+                toString(result));
+        }
+        render::RenderGraphResource* rasterColor =
+            streamedFallbackExecutor.outputResource("GPUDriven.color");
+        render::RenderGraphResource* rasterVisibility =
+            streamedFallbackExecutor.outputResource("GPUDriven.visibility");
+        if (rasterColor == nullptr || rasterColor->texture == nullptr ||
+            rasterVisibility == nullptr || rasterVisibility->texture == nullptr) {
+            return RhiTestResult::fail(
+                "streamed-fallback raster outputs are missing");
+        }
+        result = streamedFallbackExecutor.transitionOutput(
+            *rasterCommandBuffer,
+            "GPUDriven.color",
+            render::ResourceState::TransferSource);
+        if (result) {
+            result = streamedFallbackExecutor.transitionOutput(
+                *rasterCommandBuffer,
+                "GPUDriven.visibility",
+                render::ResourceState::TransferSource);
+        }
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("transitionOutput(raster readback) returned ") +
+                toString(result));
+        }
+        const render::TextureBufferCopyDesc colorCopy{
+            .texture = rasterColor->texture,
+            .buffer = rasterColorReadback.get(),
+            .width = kWidth,
+            .height = kHeight,
+            .depth = 1,
+            .mipLevel = 0,
+            .baseLayer = 0,
+        };
+        render::TextureBufferCopyDesc visibilityCopy = colorCopy;
+        visibilityCopy.texture = rasterVisibility->texture;
+        visibilityCopy.buffer = rasterVisibilityReadback.get();
+        rasterCommandBuffer->copyTextureToBuffer(colorCopy);
+        rasterCommandBuffer->copyTextureToBuffer(visibilityCopy);
+        result = rasterCommandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("raster readback CommandBuffer::end returned ") +
+                toString(result));
+        }
+        render::CommandBuffer* rasterCommandBuffers[] = {rasterCommandBuffer.get()};
+        result = graphicsQueue->submit(render::QueueSubmitDesc{
+            .commandBuffers = rasterCommandBuffers,
+            .commandBufferCount = 1,
+            .signalFence = rasterFence.get(),
+        });
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("raster readback Queue::submit returned ") +
+                toString(result));
+        }
+        result = rasterFence->wait(5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("raster readback Fence::wait returned ") +
+                toString(result));
+        }
+
+        rasterColorReadback->invalidate();
+        const auto* rasterColorPixels =
+            static_cast<const uint8_t*>(rasterColorReadback->map());
+        if (rasterColorPixels == nullptr) {
+            return RhiTestResult::fail("raster color readback did not map");
+        }
+        uint32_t rasterColorPixelCount = 0;
+        for (uint32_t index = 0; index < kWidth * kHeight; ++index) {
+            const uint8_t r = rasterColorPixels[index * 4u + 0u];
+            const uint8_t g = rasterColorPixels[index * 4u + 1u];
+            const uint8_t b = rasterColorPixels[index * 4u + 2u];
+            rasterColorPixelCount += r > 24u || g > 24u || b > 24u ? 1u : 0u;
+        }
+        rasterColorReadback->unmap();
+
+        rasterVisibilityReadback->invalidate();
+        const auto* visibilityIds =
+            static_cast<const uint32_t*>(rasterVisibilityReadback->map());
+        if (visibilityIds == nullptr) {
+            return RhiTestResult::fail("raster visibility readback did not map");
+        }
+        uint32_t rasterVisibilityPixelCount = 0;
+        for (uint32_t index = 0; index < kWidth * kHeight; ++index) {
+            const uint32_t visibilityId = visibilityIds[index];
+            if ((visibilityId >> 7u) != 0u) {
+                ++rasterVisibilityPixelCount;
+            }
+        }
+        rasterVisibilityReadback->unmap();
+        if (rasterColorPixelCount == 0 || rasterVisibilityPixelCount == 0) {
+            return RhiTestResult::fail(
+                std::string("streamed-fallback raster path produced colorPixels=") +
+                std::to_string(rasterColorPixelCount) +
+                " visibilityPixels=" +
+                std::to_string(rasterVisibilityPixelCount));
+        }
+
+        auto captureVisibilityPixelCount = [&](
+                                               uint32_t width,
+                                               uint32_t height,
+                                               uint32_t& pixelCount,
+                                               std::string& error) -> bool {
+            pixelCount = 0;
+            error.clear();
+            render::RenderGraphResource* captureOutput =
+                streamedFallbackExecutor.outputResource("GPUDriven.visibility");
+            if (captureOutput == nullptr ||
+                captureOutput->texture == nullptr ||
+                captureOutput->desc.width != width ||
+                captureOutput->desc.height != height) {
+                error = "output dimensions do not match the capture";
+                return false;
+            }
+
+            std::unique_ptr<render::Buffer> captureReadback;
+            result = device->createBuffer(
+                render::BufferDesc{
+                    .size = static_cast<uint64_t>(width) * height * sizeof(uint32_t),
+                    .usage = render::BufferUsageBits::TransferDestination,
+                    .memoryLocation = render::MemoryLocation::HostReadback,
+                },
+                captureReadback);
+            if (!result || captureReadback == nullptr) {
+                error = std::string("createBuffer(visibility capture) returned ") +
+                    toString(result);
+                return false;
+            }
+
+            std::unique_ptr<render::CommandBuffer> captureCommandBuffer;
+            result = commandPool->createCommandBuffer(captureCommandBuffer);
+            if (!result || captureCommandBuffer == nullptr) {
+                error = std::string("createCommandBuffer(visibility capture) returned ") +
+                    toString(result);
+                return false;
+            }
+            std::unique_ptr<render::Fence> captureFence;
+            result = device->createFence(false, captureFence);
+            if (!result || captureFence == nullptr) {
+                error = std::string("createFence(visibility capture) returned ") +
+                    toString(result);
+                return false;
+            }
+
+            result = captureCommandBuffer->begin();
+            if (result) {
+                result = streamedFallbackExecutor.transitionOutput(
+                    *captureCommandBuffer,
+                    "GPUDriven.visibility",
+                    render::ResourceState::TransferSource);
+            }
+            if (result) {
+                captureCommandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
+                    .texture = captureOutput->texture,
+                    .buffer = captureReadback.get(),
+                    .width = width,
+                    .height = height,
+                    .depth = 1,
+                    .mipLevel = 0,
+                    .baseLayer = 0,
+                });
+                result = captureCommandBuffer->end();
+            }
+            if (!result) {
+                error = std::string("record visibility capture returned ") + toString(result);
+                return false;
+            }
+
+            render::CommandBuffer* captureCommandBuffers[] = {captureCommandBuffer.get()};
+            result = graphicsQueue->submit(render::QueueSubmitDesc{
+                .commandBuffers = captureCommandBuffers,
+                .commandBufferCount = 1,
+                .signalFence = captureFence.get(),
+            });
+            if (result) {
+                result = captureFence->wait(5'000'000'000ull);
+            }
+            if (!result) {
+                error = std::string("submit visibility capture returned ") + toString(result);
+                return false;
+            }
+
+            captureReadback->invalidate();
+            const auto* visibilityPixels =
+                static_cast<const uint32_t*>(captureReadback->map());
+            if (visibilityPixels == nullptr) {
+                error = "visibility capture buffer did not map";
+                return false;
+            }
+            for (uint32_t index = 0; index < width * height; ++index) {
+                pixelCount += (visibilityPixels[index] >> 7u) != 0u ? 1u : 0u;
+            }
+            captureReadback->unmap();
+            return true;
+        };
+
+        constexpr uint32_t kResizedWidth = 96;
+        constexpr uint32_t kResizedHeight = 72;
+        log.clear();
+        result = streamedFallbackExecutor.compile(
+            *device,
+            streamedFallbackGraph,
+            kResizedWidth,
+            kResizedHeight,
+            log);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("resized streamed-fallback compile returned ") +
+                toString(result) +
+                ": " +
+                log);
+        }
+        for (uint32_t frame = 0; frame < 3 && result; ++frame) {
+            result = streamedFallbackExecutor.execute(render::RenderGraphSubmitDesc{
+                .graphicsQueue = graphicsQueue,
+            });
+            if (result) {
+                result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
+            }
+        }
+        uint32_t resizedVisibilityPixelCount = 0;
+        std::string captureError;
+        if (!result ||
+            !captureVisibilityPixelCount(
+                kResizedWidth,
+                kResizedHeight,
+                resizedVisibilityPixelCount,
+                captureError)) {
+            return RhiTestResult::fail(
+                std::string("resized streamed-fallback capture failed: ") +
+                captureError);
+        }
+        if (resizedVisibilityPixelCount == 0) {
+            return RhiTestResult::fail("resized stream frame produced no visibility pixels");
+        }
+
+        std::vector<scene::SceneEntity> visibleObjects;
+        for (const scene::RenderNode& renderNode : runtimeScene.renderNodes()) {
+            if (renderNode.visible &&
+                std::find(visibleObjects.begin(), visibleObjects.end(), renderNode.object) ==
+                    visibleObjects.end()) {
+                visibleObjects.push_back(renderNode.object);
+            }
+        }
+        if (visibleObjects.empty()) {
+            return RhiTestResult::fail("stream visibility sync test found no visible objects");
+        }
+        const uint64_t transformRevisionBeforeHide = runtimeScene.transformRevision();
+        const uint64_t visibilityRevisionBeforeHide = runtimeScene.visibilityRevision();
+        for (scene::SceneEntity object : visibleObjects) {
+            if (!runtimeScene.setObjectVisible(object, false)) {
+                return RhiTestResult::fail("stream visibility sync test could not hide an object");
+            }
+        }
+        if (runtimeScene.transformRevision() != transformRevisionBeforeHide ||
+            runtimeScene.visibilityRevision() == visibilityRevisionBeforeHide) {
+            return RhiTestResult::fail(
+                "stream visibility sync test did not isolate visibility revision changes");
+        }
+
+        result = streamedFallbackExecutor.execute(render::RenderGraphSubmitDesc{
+            .graphicsQueue = graphicsQueue,
+        });
+        if (result) {
+            result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
+        }
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("hidden stream frame returned ") + toString(result));
+        }
+        uint32_t hiddenVisibilityPixelCount = 0;
+        if (!captureVisibilityPixelCount(
+                kResizedWidth,
+                kResizedHeight,
+                hiddenVisibilityPixelCount,
+                captureError)) {
+            return RhiTestResult::fail(captureError);
+        }
+        if (hiddenVisibilityPixelCount != 0) {
+            return RhiTestResult::fail(
+                "visibility-only hide left " +
+                std::to_string(hiddenVisibilityPixelCount) +
+                " raster pixels");
+        }
+
+        for (scene::SceneEntity object : visibleObjects) {
+            if (!runtimeScene.setObjectVisible(object, true)) {
+                return RhiTestResult::fail("stream visibility sync test could not restore an object");
+            }
+        }
+        result = streamedFallbackExecutor.execute(render::RenderGraphSubmitDesc{
+            .graphicsQueue = graphicsQueue,
+        });
+        if (result) {
+            result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
+        }
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("restored stream frame returned ") + toString(result));
+        }
+        uint32_t restoredVisibilityPixelCount = 0;
+        if (!captureVisibilityPixelCount(
+                kResizedWidth,
+                kResizedHeight,
+                restoredVisibilityPixelCount,
+                captureError)) {
+            return RhiTestResult::fail(captureError);
+        }
+        if (restoredVisibilityPixelCount == 0) {
+            return RhiTestResult::fail("visibility-only show did not restore raster pixels");
+        }
+
+        for (uint32_t frame = 0; frame < 3; ++frame) {
+            result = streamedFallbackExecutor.execute(render::RenderGraphSubmitDesc{
+                .graphicsQueue = graphicsQueue,
+            });
+            if (result) {
+                result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
+            }
+            if (!result) {
+                return RhiTestResult::fail(
+                    "post-show stabilization frame " +
+                    std::to_string(frame) +
+                    " failed");
+            }
+            uint32_t stableVisibilityPixelCount = 0;
+            if (!captureVisibilityPixelCount(
+                    kResizedWidth,
+                    kResizedHeight,
+                    stableVisibilityPixelCount,
+                    captureError)) {
+                return RhiTestResult::fail(
+                    "post-show stabilization capture failed: " +
+                    captureError);
+            }
+            if (stableVisibilityPixelCount == 0) {
+                return RhiTestResult::fail(
+                    "post-show stabilization frame " +
+                    std::to_string(frame) +
+                    " produced no visibility pixels");
+            }
+        }
+
+        constexpr uint32_t kSecondResizeWidth = 80;
+        constexpr uint32_t kSecondResizeHeight = 60;
+        log.clear();
+        result = streamedFallbackExecutor.compile(
+            *device,
+            streamedFallbackGraph,
+            kSecondResizeWidth,
+            kSecondResizeHeight,
+            log);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("post-show resize compile returned ") +
+                toString(result) +
+                ": " +
+                log);
+        }
+        for (uint32_t frame = 0; frame < 3; ++frame) {
+            result = streamedFallbackExecutor.execute(render::RenderGraphSubmitDesc{
+                .graphicsQueue = graphicsQueue,
+            });
+            if (result) {
+                result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
+            }
+            if (!result) {
+                return RhiTestResult::fail(
+                    "post-show resized frame " +
+                    std::to_string(frame) +
+                    " failed");
+            }
+            uint32_t postShowResizedPixels = 0;
+            if (!captureVisibilityPixelCount(
+                    kSecondResizeWidth,
+                    kSecondResizeHeight,
+                    postShowResizedPixels,
+                    captureError)) {
+                return RhiTestResult::fail(
+                    "post-show resize capture failed: " +
+                    captureError);
+            }
+            if (postShowResizedPixels == 0) {
+                return RhiTestResult::fail(
+                    "post-show resized frame " +
+                    std::to_string(frame) +
+                    " produced no visibility pixels");
+            }
+        }
+
         (void)device->waitIdle();
         return RhiTestResult::pass();
+    }
+};
+
+class RenderGraphGPUDrivenMixedProducerRenderTest : public RhiTest {
+public:
+    RenderGraphGPUDrivenMixedProducerRenderTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_gpu_driven_mixed_producer_render";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        constexpr uint32_t kWidth = 256;
+        constexpr uint32_t kHeight = 192;
+        constexpr uint32_t kMaxActiveGroups = 64;
+        constexpr uint32_t kWarmupFrameCount = 16;
+        constexpr uint64_t kPixelByteSize =
+            static_cast<uint64_t>(kWidth) * kHeight * sizeof(uint32_t);
+
+        const std::filesystem::path sourcePath =
+            std::filesystem::path(PROJECT_SOURCE_DIR) /
+            "Asset/StandfordBunny/scene.gltf";
+        const std::filesystem::path streamAssetPath =
+            context.outputDirectory / "gpu_driven_mixed_producer.meshstream.bin";
+        std::string reason;
+        if (!scene::buildMeshletStreamAssetOffline(
+                scene::MeshletStreamAssetOfflineBuildDesc{
+                    .sourcePath = sourcePath,
+                    .outputPath = streamAssetPath,
+                },
+                reason)) {
+            return RhiTestResult::fail(
+                "mixed-producer streamasset build failed: " + reason);
+        }
+
+        scene::MeshletStreamAsset streamAsset;
+        if (!streamAsset.open(streamAssetPath, reason) ||
+            !streamAsset.isCurrentForSource(sourcePath)) {
+            return RhiTestResult::fail(
+                "mixed-producer streamasset open failed: " + reason);
+        }
+
+        float4x4 streamMount = float4x4::Identity();
+        float4x4 residentMount = float4x4::Identity();
+        streamMount.SetupByTranslation(float3(-0.14f, 0.0f, 0.0f));
+        residentMount.SetupByTranslation(float3(0.14f, 0.0f, 0.0f));
+        scene::Scene runtimeScene;
+        if (!runtimeScene.compose(
+                {
+                    scene::SceneSourceDesc{
+                        .id = "resident",
+                        .path = sourcePath,
+                        .mountMatrix = residentMount,
+                    },
+                    scene::SceneSourceDesc{
+                        .id = "stream",
+                        .path = sourcePath,
+                        .mountMatrix = streamMount,
+                    },
+                },
+                reason,
+                sourcePath)) {
+            return RhiTestResult::fail(
+                "mixed-producer scene composition failed: " + reason);
+        }
+        if (runtimeScene.renderNodes().size() != 2 ||
+            streamAsset.instances().size() != 1 ||
+            streamAsset.instances()[0].renderNodeIndex != 0 ||
+            runtimeScene.renderNodeIndexForSource("resident", 0) != 0 ||
+            runtimeScene.renderNodeIndexForSource("stream", 0) != 1) {
+            return RhiTestResult::fail(
+                "mixed-producer fixture no longer has one stream owner and one ordinary instance");
+        }
+
+        uint64_t requestedStreamRecordCapacity = 0;
+        for (const scene::MeshletStreamInstanceInfo& instance :
+             streamAsset.instances()) {
+            if (instance.visible == 0 ||
+                instance.primitiveIndex >= streamAsset.primitives().size()) {
+                continue;
+            }
+            requestedStreamRecordCapacity +=
+                streamAsset.primitives()[instance.primitiveIndex].groupCount;
+        }
+        requestedStreamRecordCapacity =
+            std::min<uint64_t>(requestedStreamRecordCapacity, kMaxActiveGroups) *
+            streamAsset.maxPageClusters();
+        if (requestedStreamRecordCapacity == 0 ||
+            !render::visibilityRecordCapacityFitsId(
+                requestedStreamRecordCapacity)) {
+            return RhiTestResult::fail(
+                "mixed-producer fixture has an invalid stream record capacity");
+        }
+
+        std::unique_ptr<render::Device> device;
+        render::Result result = render::createDevice(
+            render::DeviceDesc{
+                .applicationName = "Metallic GPUDriven mixed-producer render test",
+                .enableValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true,
+                .enableMeshShader = true,
+            },
+            device);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("createDevice returned ") + toString(result));
+            }
+            return RhiTestResult::fail(
+                std::string("createDevice returned ") + toString(result));
+        }
+        render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
+        if (graphicsQueue == nullptr) {
+            return RhiTestResult::fail(
+                "mixed-producer device has no graphics queue");
+        }
+
+        render::RenderGraph graph;
+        graph.setName("GPUDrivenMixedProducer");
+        graph.addNode(
+            "GPUDrivenPreviewPass",
+            "GPUDriven",
+            render::RenderGraphProperties{
+                {"path", sourcePath.string()},
+                {"streamAssetPath", streamAssetPath.string()},
+                {"streamSourceId", "stream"},
+                {"enableMeshletStreaming", true},
+                {"maxLockedFallbackPages", 4},
+                {"maxResidentPages", 16},
+                {"maxPageUploadsPerFrame", 4},
+                {"maxActiveGroups", kMaxActiveGroups},
+                {"mode", "meshlet"},
+                {"instanceFrustumCull", false},
+                {"instanceHzbCull", false},
+                {"meshletFrustumCull", false},
+                {"meshletNormalConeCull", false},
+                {"camera", {
+                    {"projection", "perspective"},
+                    {"fovDegrees", 60.0f},
+                    {"znear", 0.01f},
+                    {"zfar", 100.0f},
+                    {"reversedZ", true},
+                    {"eye", {-0.0168404f, 0.110154f, 0.55f}},
+                    {"center", {-0.0168404f, 0.110154f, 0.0f}},
+                    {"up", {0.0f, 1.0f, 0.0f}},
+                }},
+            });
+        graph.markOutput("GPUDriven.color");
+        graph.markOutput("GPUDriven.visibility");
+        graph.markOutput("GPUDriven.depth");
+
+        render::RenderGraphExecutor executor;
+        executor.bindRuntimeScene(&runtimeScene);
+        std::string log;
+        result = executor.compile(*device, graph, kWidth, kHeight, log);
+        const bool hasRequiredCapabilities =
+            device->capabilities().meshShader &&
+            device->capabilities().bindlessDescriptorHeap;
+        if (!hasRequiredCapabilities) {
+            if (!render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::fail(
+                    std::string("expected Unsupported without mixed raster capabilities, got ") +
+                    toString(result) + ": " + log);
+            }
+            return RhiTestResult::skip(
+                "GPUDrivenPreviewPass mixed producer mode requires mesh shaders and bindless descriptors");
+        }
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("mixed-producer graph compile returned ") +
+                toString(result) + ": " + log);
+        }
+
+        for (uint32_t frame = 0; frame < kWarmupFrameCount; ++frame) {
+            result = executor.execute(render::RenderGraphSubmitDesc{
+                .graphicsQueue = graphicsQueue,
+            });
+            if (result) {
+                result = executor.waitForSubmittedWork(5'000'000'000ull);
+            }
+            if (!result) {
+                return RhiTestResult::fail(
+                    "mixed-producer warmup frame " +
+                    std::to_string(frame) + " returned " + toString(result));
+            }
+        }
+
+        render::RenderSubsystemHost* subsystemHost = executor.subsystemHost();
+        render::GPUSceneSubsystem* gpuScene = subsystemHost != nullptr
+            ? subsystemHost->get<render::GPUSceneSubsystem>()
+            : nullptr;
+        if (gpuScene == nullptr) {
+            return RhiTestResult::fail(
+                "mixed-producer graph did not publish GPUScene");
+        }
+        const render::GPUSceneGlobalBufferViews& globalViews =
+            gpuScene->globalBufferViews();
+        if (!globalViews.meshletDraws.valid() ||
+            globalViews.meshletDraws.structureStride !=
+                sizeof(render::VisibleClusterRecord) ||
+            globalViews.meshletDraws.size == 0 ||
+            (globalViews.meshletDraws.size %
+                sizeof(render::VisibleClusterRecord)) != 0) {
+            return RhiTestResult::fail(
+                "mixed-producer GPUScene resident record namespace is invalid");
+        }
+        const uint32_t streamRecordBase = static_cast<uint32_t>(
+            globalViews.meshletDraws.size /
+            sizeof(render::VisibleClusterRecord));
+        if (!render::visibilityRecordCapacityFitsId(
+                static_cast<uint64_t>(streamRecordBase) +
+                requestedStreamRecordCapacity)) {
+            return RhiTestResult::fail(
+                "mixed-producer combined record namespace exceeds visibility IDs");
+        }
+
+        const render::GPUSceneInstanceId streamInstance =
+            gpuScene->instanceForRenderNode(1);
+        const render::GPUSceneInstanceId residentInstance =
+            gpuScene->instanceForRenderNode(0);
+        if (!streamInstance.valid() || !residentInstance.valid() ||
+            streamInstance == residentInstance) {
+            return RhiTestResult::fail(
+                "mixed-producer fixture did not map two dense GPUScene instances");
+        }
+
+        render::RenderGraphResource* color =
+            executor.outputResource("GPUDriven.color");
+        render::RenderGraphResource* visibility =
+            executor.outputResource("GPUDriven.visibility");
+        render::RenderGraphResource* depth =
+            executor.outputResource("GPUDriven.depth");
+        if (color == nullptr || color->texture == nullptr ||
+            visibility == nullptr || visibility->texture == nullptr ||
+            depth == nullptr || depth->texture == nullptr ||
+            color->desc.format != render::Format::Rgba8Unorm ||
+            visibility->desc.format != render::Format::R32Uint ||
+            depth->desc.format != render::Format::D32Sfloat) {
+            return RhiTestResult::fail(
+                "mixed-producer shared color/visibility/depth surfaces are missing");
+        }
+
+        std::unique_ptr<render::CommandPool> commandPool;
+        result = device->createCommandPool(*graphicsQueue, commandPool);
+        if (!result || commandPool == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createCommandPool(mixed producer) returned ") +
+                toString(result));
+        }
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        result = commandPool->createCommandBuffer(commandBuffer);
+        if (!result || commandBuffer == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createCommandBuffer(mixed producer) returned ") +
+                toString(result));
+        }
+        std::unique_ptr<render::Fence> fence;
+        result = device->createFence(false, fence);
+        if (!result || fence == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createFence(mixed producer) returned ") +
+                toString(result));
+        }
+
+        auto makeReadback = [&](uint64_t size,
+                                std::unique_ptr<render::Buffer>& buffer) {
+            return device->createBuffer(
+                render::BufferDesc{
+                    .size = size,
+                    .usage = render::BufferUsageBits::TransferDestination,
+                    .memoryLocation = render::MemoryLocation::HostReadback,
+                    .queueAccess = render::QueueAccessBits::Graphics,
+                },
+                buffer);
+        };
+        std::unique_ptr<render::Buffer> colorReadback;
+        std::unique_ptr<render::Buffer> visibilityReadback;
+        std::unique_ptr<render::Buffer> depthReadback;
+        std::unique_ptr<render::Buffer> residentRecordReadback;
+        result = makeReadback(kPixelByteSize, colorReadback);
+        if (result) {
+            result = makeReadback(kPixelByteSize, visibilityReadback);
+        }
+        if (result) {
+            result = makeReadback(kPixelByteSize, depthReadback);
+        }
+        if (result) {
+            result = makeReadback(
+                globalViews.meshletDraws.size,
+                residentRecordReadback);
+        }
+        if (!result || colorReadback == nullptr ||
+            visibilityReadback == nullptr || depthReadback == nullptr ||
+            residentRecordReadback == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createBuffer(mixed producer readback) returned ") +
+                toString(result));
+        }
+
+        result = commandBuffer->begin();
+        if (result) {
+            result = executor.execute(*commandBuffer);
+        }
+        for (const char* outputName : {
+                 "GPUDriven.color",
+                 "GPUDriven.visibility",
+                 "GPUDriven.depth",
+             }) {
+            if (result) {
+                result = executor.transitionOutput(
+                    *commandBuffer,
+                    outputName,
+                    render::ResourceState::TransferSource);
+            }
+        }
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("record mixed-producer outputs returned ") +
+                toString(result));
+        }
+
+        const render::TextureBufferCopyDesc colorCopy{
+            .texture = color->texture,
+            .buffer = colorReadback.get(),
+            .width = kWidth,
+            .height = kHeight,
+            .depth = 1,
+            .mipLevel = 0,
+            .baseLayer = 0,
+        };
+        render::TextureBufferCopyDesc visibilityCopy = colorCopy;
+        visibilityCopy.texture = visibility->texture;
+        visibilityCopy.buffer = visibilityReadback.get();
+        render::TextureBufferCopyDesc depthCopy = colorCopy;
+        depthCopy.texture = depth->texture;
+        depthCopy.buffer = depthReadback.get();
+        commandBuffer->copyTextureToBuffer(colorCopy);
+        commandBuffer->copyTextureToBuffer(visibilityCopy);
+        commandBuffer->copyTextureToBuffer(depthCopy);
+
+        const render::BufferBarrierDesc residentRecordsToCopy{
+            .buffer = globalViews.meshletDraws.buffer,
+            .before = render::ResourceState::ShaderRead,
+            .after = render::ResourceState::TransferSource,
+            .offset = globalViews.meshletDraws.offset,
+            .size = globalViews.meshletDraws.size,
+        };
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = &residentRecordsToCopy,
+            .bufferCount = 1,
+        });
+        commandBuffer->copyBuffer(render::BufferCopyDesc{
+            .source = globalViews.meshletDraws.buffer,
+            .destination = residentRecordReadback.get(),
+            .sourceOffset = globalViews.meshletDraws.offset,
+            .destinationOffset = 0,
+            .size = globalViews.meshletDraws.size,
+        });
+        const render::BufferBarrierDesc residentRecordsToRead{
+            .buffer = globalViews.meshletDraws.buffer,
+            .before = render::ResourceState::TransferSource,
+            .after = render::ResourceState::ShaderRead,
+            .offset = globalViews.meshletDraws.offset,
+            .size = globalViews.meshletDraws.size,
+        };
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = &residentRecordsToRead,
+            .bufferCount = 1,
+        });
+        result = commandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("end mixed-producer capture returned ") +
+                toString(result));
+        }
+        render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
+        result = graphicsQueue->submit(render::QueueSubmitDesc{
+            .commandBuffers = commandBuffers,
+            .commandBufferCount = 1,
+            .signalFence = fence.get(),
+        });
+        if (result) {
+            result = fence->wait(5'000'000'000ull);
+        }
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("submit mixed-producer capture returned ") +
+                toString(result));
+        }
+
+        auto copyReadback = [](
+                                render::Buffer& buffer,
+                                void* destination,
+                                uint64_t size) -> bool {
+            buffer.invalidate(0, size);
+            const void* mapped = buffer.map();
+            if (mapped == nullptr) {
+                return false;
+            }
+            std::memcpy(destination, mapped, static_cast<size_t>(size));
+            buffer.unmap();
+            return true;
+        };
+        std::vector<uint32_t> colorPixels(kWidth * kHeight);
+        std::vector<uint32_t> visibilityPixels(kWidth * kHeight);
+        std::vector<float> depthPixels(kWidth * kHeight);
+        std::vector<render::VisibleClusterRecord> residentRecords(
+            streamRecordBase);
+        if (!copyReadback(
+                *colorReadback,
+                colorPixels.data(),
+                kPixelByteSize) ||
+            !copyReadback(
+                *visibilityReadback,
+                visibilityPixels.data(),
+                kPixelByteSize) ||
+            !copyReadback(
+                *depthReadback,
+                depthPixels.data(),
+                kPixelByteSize) ||
+            !copyReadback(
+                *residentRecordReadback,
+                residentRecords.data(),
+                globalViews.meshletDraws.size)) {
+            return RhiTestResult::fail(
+                "mixed-producer capture did not map all shared surfaces and records");
+        }
+
+        uint32_t residentPixelCount = 0;
+        uint32_t streamPixelCount = 0;
+        uint32_t residentMinX = kWidth;
+        uint32_t residentMaxX = 0;
+        uint32_t streamMinX = kWidth;
+        uint32_t streamMaxX = 0;
+        std::unordered_set<uint32_t> residentRecordIds;
+        std::unordered_set<uint32_t> streamRecordIds;
+        for (uint32_t pixelIndex = 0;
+             pixelIndex < kWidth * kHeight;
+             ++pixelIndex) {
+            const uint32_t packedVisibility = visibilityPixels[pixelIndex];
+            const uint32_t encodedRecord =
+                packedVisibility >> render::kVisibilityTriangleBits;
+            if (encodedRecord == 0) {
+                continue;
+            }
+            const uint32_t recordIndex = encodedRecord - 1u;
+            const uint32_t x = pixelIndex % kWidth;
+            const uint32_t colorPixel = colorPixels[pixelIndex];
+            const uint8_t red = static_cast<uint8_t>(colorPixel & 0xffu);
+            const uint8_t green =
+                static_cast<uint8_t>((colorPixel >> 8u) & 0xffu);
+            const uint8_t blue =
+                static_cast<uint8_t>((colorPixel >> 16u) & 0xffu);
+            if ((!std::isfinite(depthPixels[pixelIndex])) ||
+                depthPixels[pixelIndex] <= 0.0f ||
+                depthPixels[pixelIndex] > 1.0f ||
+                (red <= 8u && green <= 8u && blue <= 8u)) {
+                return RhiTestResult::fail(
+                    "mixed-producer visibility was not resolved by the shared depth/deferred surfaces");
+            }
+
+            if (recordIndex < streamRecordBase) {
+                const render::VisibleClusterRecord& record =
+                    residentRecords[recordIndex];
+                if (render::visibleClusterSource(record.flags) !=
+                        render::VisibleClusterSource::Resident ||
+                    record.instanceIndex != residentInstance.index ||
+                    record.instanceIndex == streamInstance.index) {
+                    return RhiTestResult::fail(
+                        "stream-owned geometry leaked into the resident producer namespace");
+                }
+                ++residentPixelCount;
+                residentMinX = std::min(residentMinX, x);
+                residentMaxX = std::max(residentMaxX, x);
+                residentRecordIds.insert(recordIndex);
+                continue;
+            }
+
+            const uint64_t localStreamRecord =
+                static_cast<uint64_t>(recordIndex) - streamRecordBase;
+            if (localStreamRecord >= requestedStreamRecordCapacity) {
+                return RhiTestResult::fail(
+                    "visibility referenced a stream record outside its logical namespace");
+            }
+            ++streamPixelCount;
+            streamMinX = std::min(streamMinX, x);
+            streamMaxX = std::max(streamMaxX, x);
+            streamRecordIds.insert(recordIndex);
+        }
+
+        if (residentPixelCount < 32 || streamPixelCount < 32 ||
+            residentRecordIds.empty() || streamRecordIds.empty()) {
+            return RhiTestResult::fail(
+                "mixed-producer frame did not contain both resident and stream visibility IDs: resident=" +
+                std::to_string(residentPixelCount) +
+                " stream=" + std::to_string(streamPixelCount));
+        }
+        if (streamMinX > streamMaxX || residentMinX > residentMaxX ||
+            streamMaxX >= residentMinX) {
+            return RhiTestResult::fail(
+                "mixed-producer mounted fixtures overlap or were assigned to the wrong producer");
+        }
+
+        uint32_t unifiedPassNodeCount = 0;
+        for (const render::RenderGraphNodeExecutionStat& node :
+             executor.executionStats().nodes) {
+            unifiedPassNodeCount +=
+                node.type == "GPUDrivenPreviewPass" ? 1u : 0u;
+        }
+        if (unifiedPassNodeCount != 1) {
+            return RhiTestResult::fail(
+                "mixed producers were not resolved by one unified raster/deferred graph node");
+        }
+
+        (void)device->waitIdle();
+        return RhiTestResult::pass(
+            "shared visibility/depth/color resolved residentPixels=" +
+            std::to_string(residentPixelCount) +
+            " streamPixels=" + std::to_string(streamPixelCount) +
+            " residentRecords=" + std::to_string(residentRecordIds.size()) +
+            " streamRecords=" + std::to_string(streamRecordIds.size()));
     }
 };
 
@@ -6637,6 +7703,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphImageSamplePassPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphMaterialShaderObjectPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetPassSmokeTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenMixedProducerRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenAlphaMaskRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenSponzaVisibilityRenderTest);

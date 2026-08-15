@@ -1035,7 +1035,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     traversalWorkCapacity_ = std::min(
         std::max(desc.maxTraversalWorkItems, 1u),
         kMeshletStreamMaxTraversalWorkItems);
-    if (maxActiveGroupClusters_ > 32) {
+    if (maxActiveGroupClusters_ > kMeshletStreamMaxActiveGroupClusters) {
         log = "MeshletStreamRuntime group exceeds the 32-cluster selection mask capacity";
         return makeError(Error::Failure);
     }
@@ -1074,13 +1074,19 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         log = "MeshletStreamRuntime streamasset has no drawable active groups";
         return makeError(Error::Failure);
     }
-    if (static_cast<uint64_t>(maxActiveGroups_) * maxActiveGroupClusters_ >
+    const uint64_t visibleRecordCapacity =
+        static_cast<uint64_t>(maxActiveGroups_) * maxActiveGroupClusters_;
+    if (!visibilityRecordCapacityFitsId(visibleRecordCapacity)) {
+        log = "MeshletStreamRuntime visible cluster capacity exceeds the common visibility ID record limit";
+        return makeError(Error::Failure);
+    }
+    if (visibleRecordCapacity * kMeshletStreamTriangleChunkCount >
         std::numeric_limits<uint32_t>::max()) {
         log = "MeshletStreamRuntime active group draw task count overflowed";
         return makeError(Error::Failure);
     }
     if (clasPool_ != nullptr) {
-        const uint32_t activeClusterCapacity = drawTaskCount();
+        const uint32_t activeClusterCapacity = visibleClusterCapacity();
         blasClusterReferenceCapacity_ = desc.maxBlasClusterReferences == 0
             ? activeClusterCapacity
             : std::min(desc.maxBlasClusterReferences, activeClusterCapacity);
@@ -1908,6 +1914,31 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (!result) {
         return result;
     }
+    result = createNamedBuffer(
+        device,
+        BufferDesc{
+            .size = static_cast<uint64_t>(visibleClusterCapacity()) *
+                sizeof(VisibleClusterRecord),
+            .structureStride = sizeof(VisibleClusterRecord),
+            .usage = BufferUsageBits::Storage,
+            .memoryLocation = MemoryLocation::Device,
+        },
+        visibleClusterBuffer_,
+        log,
+        "MeshletStreamRuntime visible clusters");
+    if (!result) {
+        return result;
+    }
+    visibleClusterBufferState_ = ResourceState::Undefined;
+    result = createHostStorageBuffer(
+        device,
+        sizeof(MeshletStreamGpuRasterBindings),
+        rasterBindingsBuffer_,
+        log,
+        "MeshletStreamRuntime raster bindings");
+    if (!result) {
+        return result;
+    }
 
     residentPageFrames_.resize(std::max(desc.queuedFrameCount, 1u));
     for (ResidentPageFrame& frame : residentPageFrames_) {
@@ -1927,8 +1958,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     result = device.createBindlessHeap(
         BindlessHeapDesc{
             .maxSamplers = 0,
-            .maxSampledImages = 0,
-            .maxBuffers = (clasPool_ != nullptr ? 24u : 15u) +
+            .maxSampledImages = 4,
+            .maxBuffers = 64u +
                 static_cast<uint32_t>(residentPageFrames_.size()),
         },
         bindlessHeap_);
@@ -1954,6 +1985,28 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return result;
     }
     result = allocateAndWriteBuffer(*bindlessHeap_, *paramsBuffer_, paramsHandle_, log, "meshlet stream params");
+    if (!result) {
+        return result;
+    }
+    result = allocateAndWriteBuffer(
+        *bindlessHeap_,
+        *visibleClusterBuffer_,
+        visibleClusterHandle_,
+        log,
+        "meshlet stream visible clusters");
+    if (!result) {
+        return result;
+    }
+    result = allocateAndWriteBuffer(
+        *bindlessHeap_,
+        *rasterBindingsBuffer_,
+        rasterBindingsHandle_,
+        log,
+        "meshlet stream raster bindings");
+    if (!result) {
+        return result;
+    }
+    result = updateRasterBindings(MeshletStreamGpuRasterBindings{});
     if (!result) {
         return result;
     }
@@ -2150,6 +2203,10 @@ void MeshletStreamRuntime::reset()
     asset_.close();
     drawBounds_.reset();
     sceneTransformRevision_ = 0;
+    sceneVisibilityRevision_ = 0;
+    sceneResourceIdentity_ = 0;
+    runtimeRenderNodeIndices_.clear();
+    gpuSceneInstanceMapping_.clear();
     pageBuffer_.reset();
     activeGroupBuffer_.reset();
     activeHeaderBuffer_.reset();
@@ -2158,6 +2215,8 @@ void MeshletStreamRuntime::reset()
     requestReadbackBuffer_.reset();
     requestClearBuffer_.reset();
     paramsBuffer_.reset();
+    visibleClusterBuffer_.reset();
+    rasterBindingsBuffer_.reset();
     residentPageFrames_.clear();
     instanceBuffer_.reset();
     primitiveBuffer_.reset();
@@ -2196,6 +2255,8 @@ void MeshletStreamRuntime::reset()
     activeHeaderHandle_ = {};
     pageTableHandle_ = {};
     paramsHandle_ = {};
+    visibleClusterHandle_ = {};
+    rasterBindingsHandle_ = {};
     requestHandle_ = {};
     instanceHandle_ = {};
     primitiveHandle_ = {};
@@ -2219,6 +2280,7 @@ void MeshletStreamRuntime::reset()
     activeHeaderBufferState_ = ResourceState::Undefined;
     pageTableState_ = ResourceState::Undefined;
     requestBufferState_ = ResourceState::Undefined;
+    visibleClusterBufferState_ = ResourceState::Undefined;
     drawIndirectBufferState_ = ResourceState::Undefined;
     traversalHeaderBufferState_ = ResourceState::Undefined;
     traversalWorkBufferState_ = ResourceState::Undefined;
@@ -2253,6 +2315,8 @@ void MeshletStreamRuntime::reset()
     tlasScratchAddress_ = 0;
     fallbackBlasPrimitives_.clear();
     currentFrameUploadCount_ = 0;
+    previousFrameParams_ = {};
+    previousFrameParamsValid_ = false;
 }
 
 bool MeshletStreamRuntime::ready() const
@@ -2273,6 +2337,8 @@ bool MeshletStreamRuntime::ready() const
         requestReadbackBuffer_ != nullptr &&
         requestClearBuffer_ != nullptr &&
         paramsBuffer_ != nullptr &&
+        visibleClusterBuffer_ != nullptr &&
+        rasterBindingsBuffer_ != nullptr &&
         instanceBuffer_ != nullptr &&
         primitiveBuffer_ != nullptr &&
         lodLevelBuffer_ != nullptr &&
@@ -2497,30 +2563,123 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
             ? dynamicBlasAddressHandle_.index
             : 0u,
         .tlasInstanceBuffer = tlasInstanceHandle_.valid() ? tlasInstanceHandle_.index : 0u,
+        .rasterBindingsBuffer = rasterBindingsHandle_.index,
     };
 }
 
-uint32_t MeshletStreamRuntime::drawTaskCount() const
+Result MeshletStreamRuntime::updateRasterBindings(
+    const MeshletStreamGpuRasterBindings& bindings)
+{
+    if (rasterBindingsBuffer_ == nullptr || !visibleClusterHandle_.valid()) {
+        return makeError(Error::InvalidArgument);
+    }
+    MeshletStreamGpuRasterBindings resolved = bindings;
+    resolved.visibleClusterBuffer = visibleClusterHandle_.index;
+    return updateHostBuffer(*rasterBindingsBuffer_, &resolved, sizeof(resolved));
+}
+
+Result MeshletStreamRuntime::cmdPrepareVisibility(CommandBuffer& commandBuffer)
+{
+    if (!ready()) {
+        return makeError(Error::InvalidArgument);
+    }
+    transitionBuffer(
+        commandBuffer,
+        *drawIndirectBuffer_,
+        drawIndirectBufferState_,
+        ResourceState::IndirectArgument);
+    transitionBuffer(
+        commandBuffer,
+        *visibleClusterBuffer_,
+        visibleClusterBufferState_,
+        ResourceState::General,
+        visibleClusterBufferState_ == ResourceState::General);
+    return {};
+}
+
+Result MeshletStreamRuntime::cmdPrepareDeferred(CommandBuffer& commandBuffer)
+{
+    if (!ready()) {
+        return makeError(Error::InvalidArgument);
+    }
+    transitionBuffer(
+        commandBuffer,
+        *visibleClusterBuffer_,
+        visibleClusterBufferState_,
+        ResourceState::ShaderRead,
+        true);
+    return {};
+}
+
+MeshletStreamDeferredGpuResourcesView MeshletStreamRuntime::deferredGpuResources() const
+{
+    return MeshletStreamDeferredGpuResourcesView{
+        .pageBuffer = pageBuffer_.get(),
+        .activeGroupBuffer = activeGroupBuffer_.get(),
+        .pageTableBuffer = pageTableBuffer_.get(),
+        .activeHeaderBuffer = activeHeaderBuffer_.get(),
+        .paramsBuffer = paramsBuffer_.get(),
+        .visibleClusterBuffer = visibleClusterBuffer_.get(),
+        .visibleRecordCapacity = visibleClusterCapacity(),
+    };
+}
+
+uint32_t MeshletStreamRuntime::visibleClusterCapacity() const
 {
     if (maxActiveGroups_ == 0 || maxActiveGroupClusters_ == 0) {
         return 0;
     }
     const uint64_t count = static_cast<uint64_t>(maxActiveGroups_) * maxActiveGroupClusters_;
+    return visibilityRecordCapacityFitsId(count) ? static_cast<uint32_t>(count) : 0u;
+}
+
+uint32_t MeshletStreamRuntime::drawTaskCount() const
+{
+    const uint32_t clusterCapacity = visibleClusterCapacity();
+    if (clusterCapacity == 0) {
+        return 0;
+    }
+    const uint64_t count = static_cast<uint64_t>(clusterCapacity) *
+        kMeshletStreamTriangleChunkCount;
     return count > std::numeric_limits<uint32_t>::max() ? 0u : static_cast<uint32_t>(count);
 }
 
 Result MeshletStreamRuntime::syncRuntimeScene(const scene::Scene& scene, std::string& log)
+{
+    const std::span<const scene::MeshletStreamInstanceInfo> instances = asset_.instances();
+    std::vector<uint32_t> runtimeRenderNodeIndices(instances.size());
+    for (size_t index = 0; index < instances.size(); ++index) {
+        runtimeRenderNodeIndices[index] = instances[index].renderNodeIndex;
+    }
+    return syncRuntimeScene(scene, runtimeRenderNodeIndices, log);
+}
+
+Result MeshletStreamRuntime::syncRuntimeScene(
+    const scene::Scene& scene,
+    std::span<const uint32_t> runtimeRenderNodeIndices,
+    std::string& log)
 {
     log.clear();
     if (!ready() || !scene.valid() || instanceBuffer_ == nullptr) {
         log = "MeshletStreamRuntime is not ready for a scene transform update.";
         return makeError(Error::InvalidArgument);
     }
-    if (sceneTransformRevision_ == scene.transformRevision()) {
+    const std::span<const scene::MeshletStreamInstanceInfo> instances = asset_.instances();
+    if (runtimeRenderNodeIndices.size() != instances.size()) {
+        log = "MeshletStreamRuntime runtime render-node mapping does not match the stream instances.";
+        return makeError(Error::InvalidArgument);
+    }
+    if (sceneResourceIdentity_ == scene.resourceIdentity() &&
+        sceneTransformRevision_ == scene.transformRevision() &&
+        sceneVisibilityRevision_ == scene.visibilityRevision() &&
+        runtimeRenderNodeIndices_.size() == runtimeRenderNodeIndices.size() &&
+        std::equal(
+            runtimeRenderNodeIndices.begin(),
+            runtimeRenderNodeIndices.end(),
+            runtimeRenderNodeIndices_.begin())) {
         return {};
     }
 
-    const std::span<const scene::MeshletStreamInstanceInfo> instances = asset_.instances();
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
     if (instances.size() * sizeof(MeshletStreamGpuInstance) != instanceBuffer_->desc().size) {
         log = "MeshletStreamRuntime instance layout changed.";
@@ -2531,17 +2690,21 @@ Result MeshletStreamRuntime::syncRuntimeScene(const scene::Scene& scene, std::st
     scene::Bounds updatedBounds;
     for (size_t index = 0; index < instances.size(); ++index) {
         const scene::MeshletStreamInstanceInfo& instance = instances[index];
-        if (instance.renderNodeIndex >= scene.renderNodes().size() ||
+        const uint32_t runtimeRenderNodeIndex = runtimeRenderNodeIndices[index];
+        if (runtimeRenderNodeIndex >= scene.renderNodes().size() ||
             instance.primitiveIndex >= primitives.size()) {
-            log = "MeshletStreamRuntime instance does not match the runtime glTF scene.";
+            log = "MeshletStreamRuntime instance mapping does not match the runtime scene.";
             return makeError(Error::InvalidArgument);
         }
-        const scene::RenderNode& renderNode = scene.renderNodes()[instance.renderNodeIndex];
+        const scene::RenderNode& renderNode = scene.renderNodes()[runtimeRenderNodeIndex];
         MeshletStreamGpuInstance& gpuInstance = gpuInstances[index];
         gpuInstance = MeshletStreamGpuInstance{};
         gpuInstance.primitiveIndex = instance.primitiveIndex;
         gpuInstance.materialIndex = instance.materialIndex;
         gpuInstance.visible = renderNode.visible ? 1u : 0u;
+        gpuInstance.gpuSceneInstanceIndex = index < gpuSceneInstanceMapping_.size()
+            ? gpuSceneInstanceMapping_[index]
+            : kMeshletStreamInvalidClusterIndex;
         for (uint32_t row = 0; row < 4; ++row) {
             gpuInstance.world0[row] = renderNode.worldMatrix.a[0 + row];
             gpuInstance.world1[row] = renderNode.worldMatrix.a[4 + row];
@@ -2577,6 +2740,35 @@ Result MeshletStreamRuntime::syncRuntimeScene(const scene::Scene& scene, std::st
         drawBounds_ = updatedBounds;
     }
     sceneTransformRevision_ = scene.transformRevision();
+    sceneVisibilityRevision_ = scene.visibilityRevision();
+    sceneResourceIdentity_ = scene.resourceIdentity();
+    runtimeRenderNodeIndices_.assign(
+        runtimeRenderNodeIndices.begin(),
+        runtimeRenderNodeIndices.end());
+    return {};
+}
+
+Result MeshletStreamRuntime::syncGPUSceneInstanceMapping(std::span<const uint32_t> mapping)
+{
+    if (!ready() || instanceBuffer_ == nullptr || mapping.size() != asset_.instances().size()) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (gpuSceneInstanceMapping_.size() == mapping.size() &&
+        std::equal(mapping.begin(), mapping.end(), gpuSceneInstanceMapping_.begin())) {
+        return {};
+    }
+
+    void* mapped = instanceBuffer_->map();
+    if (mapped == nullptr) {
+        return makeError(Error::Failure);
+    }
+    auto* gpuInstances = static_cast<MeshletStreamGpuInstance*>(mapped);
+    for (size_t index = 0; index < mapping.size(); ++index) {
+        gpuInstances[index].gpuSceneInstanceIndex = mapping[index];
+    }
+    instanceBuffer_->flush(0, instanceBuffer_->desc().size);
+    instanceBuffer_->unmap();
+    gpuSceneInstanceMapping_.assign(mapping.begin(), mapping.end());
     return {};
 }
 
@@ -2620,6 +2812,7 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
 {
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
     const std::span<const scene::MeshletStreamInstanceInfo> instances = asset_.instances();
+    gpuSceneInstanceMapping_.assign(instances.size(), kMeshletStreamInvalidClusterIndex);
     Result result = createAndPopulateHostStorageBuffer<MeshletStreamGpuInstance>(
         device,
         instances.size(),
@@ -2632,6 +2825,7 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
             gpuInstance.primitiveIndex = instance.primitiveIndex;
             gpuInstance.materialIndex = instance.materialIndex;
             gpuInstance.visible = instance.visible;
+            gpuInstance.gpuSceneInstanceIndex = gpuSceneInstanceMapping_[index];
             for (uint32_t row = 0; row < 4; ++row) {
                 gpuInstance.world0[row] = instance.worldMatrix[0 + row];
                 gpuInstance.world1[row] = instance.worldMatrix[4 + row];
@@ -2891,7 +3085,20 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
     params.blasClusterReferenceAddressHigh = static_cast<uint32_t>(blasClusterReferenceAddress_ >> 32u);
     params.blasClusterReferenceCapacity = blasClusterReferenceCapacity_;
     params.blasBuildCapacity = blasBuildCapacity_;
-    return updateHostBuffer(*paramsBuffer_, &params, sizeof(params));
+    const MeshletStreamGpuParams& previous = previousFrameParamsValid_
+        ? previousFrameParams_
+        : params;
+    std::copy_n(previous.eye, 4u, params.previousEye);
+    std::copy_n(previous.center, 4u, params.previousCenter);
+    std::copy_n(previous.upProjection, 4u, params.previousUpProjection);
+    std::copy_n(previous.viewport, 4u, params.previousViewport);
+    std::copy_n(previous.clipOrtho, 4u, params.previousClipOrtho);
+    Result result = updateHostBuffer(*paramsBuffer_, &params, sizeof(params));
+    if (result) {
+        previousFrameParams_ = params;
+        previousFrameParamsValid_ = true;
+    }
+    return result;
 }
 
 Result MeshletStreamRuntime::dispatchTraversal(

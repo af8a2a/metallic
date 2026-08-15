@@ -1,6 +1,8 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
 #include "Runtime/Render/HistoryResources.h"
+#include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/SceneResourceManager.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -13,6 +15,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -46,8 +49,6 @@ const char* pipelineCacheLoadStatusName(PipelineCacheLoadStatus status)
 }
 
 constexpr uint32_t kGPUDrivenMaxMaterialTextures = 256;
-constexpr uint32_t kGPUDrivenVisibilityTriangleBits = 7;
-constexpr uint32_t kGPUDrivenMaxEncodedMeshlets = (1u << (32u - kGPUDrivenVisibilityTriangleBits)) - 1u;
 constexpr uint32_t kGPUDrivenEnvironmentModeProcedural = 0;
 constexpr uint32_t kGPUDrivenEnvironmentModeMap = 1;
 constexpr uint32_t kGPUDrivenEnvironmentModeDisabled = 2;
@@ -56,8 +57,236 @@ constexpr uint32_t kGPUDrivenOpenPBRLut3DCount = 2;
 constexpr uint32_t kGPUDrivenOpenPBRLutSize = OpenPBR_EnergyTableSize;
 constexpr uint32_t kGPUDrivenOpenPBRLtcSize = OpenPBR_LTCTableSize;
 constexpr float kGPUDrivenOpenPBRLutScale = 1.0f / 65535.0f;
+constexpr uint32_t kGPUDrivenInvalidBindlessIndex =
+    std::numeric_limits<uint32_t>::max();
 constexpr const char* kGPUDrivenPipelineCachePath =
     PROJECT_SOURCE_DIR "/.cache/pso/GPUDrivenPreviewPass.pso";
+
+bool previewStreamEnabled(const RenderGraphProperties& properties)
+{
+    const auto enabled = properties.find("enableMeshletStreaming");
+    if (enabled != properties.end() && enabled->is_boolean()) {
+        return enabled->get<bool>();
+    }
+    const auto assetPath = properties.find("streamAssetPath");
+    return assetPath != properties.end() && assetPath->is_string();
+}
+
+uint32_t previewStreamUintProperty(
+    const RenderGraphProperties& properties,
+    const char* key,
+    uint32_t fallback)
+{
+    const auto iter = properties.find(key);
+    if (iter == properties.end() || !iter->is_number_integer()) {
+        return fallback;
+    }
+    const int64_t value = iter->get<int64_t>();
+    return value < 0 || value > std::numeric_limits<uint32_t>::max()
+        ? fallback
+        : static_cast<uint32_t>(value);
+}
+
+uint64_t previewStreamUint64Property(
+    const RenderGraphProperties& properties,
+    const char* key,
+    uint64_t fallback)
+{
+    const auto iter = properties.find(key);
+    if (iter == properties.end() || !iter->is_number_integer()) {
+        return fallback;
+    }
+    const int64_t value = iter->get<int64_t>();
+    return value < 0 ? fallback : static_cast<uint64_t>(value);
+}
+
+std::filesystem::path previewStreamAssetPath(
+    const RenderGraphProperties& properties,
+    const std::filesystem::path& sourcePath)
+{
+    const auto iter = properties.find("streamAssetPath");
+    if (iter == properties.end() || !iter->is_string()) {
+        return scene::meshletStreamAssetPathFor(sourcePath);
+    }
+    std::filesystem::path path = iter->get<std::string>();
+    return path.is_relative()
+        ? std::filesystem::path(PROJECT_SOURCE_DIR) / path
+        : path;
+}
+
+struct PreviewStreamSourceSelection {
+    std::string sourceId;
+    std::filesystem::path sourcePath;
+};
+
+bool resolvePreviewStreamSource(
+    const RenderGraphProperties& properties,
+    const scene::Scene* runtimeScene,
+    const std::filesystem::path& scenePath,
+    PreviewStreamSourceSelection& outSelection,
+    std::string& log)
+{
+    outSelection = {};
+    if (runtimeScene == nullptr) {
+        log = "GPUDrivenPreviewPass stream integration requires a runtime scene";
+        return false;
+    }
+
+    std::string requestedSourceId;
+    const auto sourceIdProperty = properties.find("streamSourceId");
+    if (sourceIdProperty != properties.end()) {
+        if (!sourceIdProperty->is_string() ||
+            sourceIdProperty->get_ref<const std::string&>().empty()) {
+            log = "GPUDrivenPreviewPass streamSourceId must be a non-empty string";
+            return false;
+        }
+        requestedSourceId = sourceIdProperty->get<std::string>();
+    }
+
+    const std::vector<scene::SceneSourceDesc>& sources = runtimeScene->sources();
+    if (sources.empty()) {
+        if (!requestedSourceId.empty()) {
+            log = "GPUDrivenPreviewPass streamSourceId was provided for a non-composed scene";
+            return false;
+        }
+        outSelection.sourcePath = scenePath;
+        return true;
+    }
+
+    const auto selectSource = [&](const scene::SceneSourceDesc& source) {
+        outSelection.sourceId = source.id;
+        outSelection.sourcePath = source.path;
+    };
+    if (!requestedSourceId.empty()) {
+        const auto source = std::find_if(
+            sources.begin(),
+            sources.end(),
+            [&](const scene::SceneSourceDesc& candidate) {
+                return candidate.id == requestedSourceId;
+            });
+        if (source == sources.end()) {
+            log = "GPUDrivenPreviewPass streamSourceId '" + requestedSourceId +
+                "' does not name a composed scene source";
+            return false;
+        }
+        selectSource(*source);
+        return true;
+    }
+
+    if (sources.size() == 1) {
+        selectSource(sources.front());
+        return true;
+    }
+
+    std::vector<const scene::SceneSourceDesc*> matches;
+    const std::filesystem::path normalizedRequestedPath = normalizedScenePath(scenePath);
+    for (const scene::SceneSourceDesc& source : sources) {
+        if (normalizedScenePath(source.path) == normalizedRequestedPath) {
+            matches.push_back(&source);
+        }
+    }
+    if (matches.size() == 1) {
+        selectSource(*matches.front());
+        return true;
+    }
+
+    matches.clear();
+    const auto assetPathProperty = properties.find("streamAssetPath");
+    if (assetPathProperty != properties.end() && assetPathProperty->is_string()) {
+        scene::MeshletStreamAsset candidateAsset;
+        std::string reason;
+        const std::filesystem::path assetPath =
+            previewStreamAssetPath(properties, scenePath);
+        if (!candidateAsset.open(assetPath, reason)) {
+            log = "GPUDrivenPreviewPass cannot inspect streamAssetPath '" +
+                assetPath.string() + "': " + reason;
+            return false;
+        }
+        for (const scene::SceneSourceDesc& source : sources) {
+            if (candidateAsset.isCurrentForSource(source.path)) {
+                matches.push_back(&source);
+            }
+        }
+    }
+    if (matches.size() == 1) {
+        selectSource(*matches.front());
+        return true;
+    }
+
+    log = matches.empty()
+        ? "GPUDrivenPreviewPass could not uniquely match the stream asset to a composed scene source; set streamSourceId"
+        : "GPUDrivenPreviewPass stream asset matches multiple composed scene sources; set streamSourceId to disambiguate the owner";
+    return false;
+}
+
+MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
+    const RenderGraphProperties& properties,
+    const std::filesystem::path& sourcePath)
+{
+    const uint32_t maxGpuPageRequests = std::max(
+        previewStreamUintProperty(
+            properties,
+            "maxGpuPageRequests",
+            kMeshletStreamDefaultMaxGpuPageRequests),
+        1u);
+    return MeshletStreamRuntimeDesc{
+        .sourcePath = sourcePath,
+        .streamAssetPath = previewStreamAssetPath(properties, sourcePath),
+        .autoBuildStreamAsset = false,
+        .maxResidentBytes = previewStreamUint64Property(
+            properties,
+            "maxResidentBytes",
+            0),
+        .maxResidentPages = previewStreamUintProperty(
+            properties,
+            "maxResidentPages",
+            4096),
+        .maxLockedFallbackPages = previewStreamUintProperty(
+            properties,
+            "maxLockedFallbackPages",
+            1024),
+        .maxPageUploadsPerFrame = previewStreamUintProperty(
+            properties,
+            "maxPageUploadsPerFrame",
+            64),
+        .maxGpuPageRequests = maxGpuPageRequests,
+        .maxGpuPageUnloadRequests = std::max(
+            previewStreamUintProperty(
+                properties,
+                "maxGpuPageUnloadRequests",
+                maxGpuPageRequests),
+            1u),
+        .maxActiveGroups = std::max(
+            previewStreamUintProperty(
+                properties,
+                "maxActiveGroups",
+                kMeshletStreamDefaultMaxActiveGroups),
+            1u),
+        .maxTraversalWorkers = std::max(
+            previewStreamUintProperty(
+                properties,
+                "maxTraversalWorkers",
+                kMeshletStreamDefaultTraversalWorkers),
+            1u),
+        .maxTraversalWorkItems = std::min(
+            std::max(
+                previewStreamUintProperty(
+                    properties,
+                    "maxTraversalWorkItems",
+                    kMeshletStreamDefaultTraversalWorkItems),
+                1u),
+            kMeshletStreamMaxTraversalWorkItems),
+        .pageLoadConcurrency = pageLoadConcurrencyFromProperties(properties),
+        .maxPageLoadsInFlight = std::max(
+            previewStreamUintProperty(
+                properties,
+                "maxPageLoadsInFlight",
+                128),
+            1u),
+        .queuedFrameCount = 3,
+        .enableClusterRtx = false,
+    };
+}
 
 using GPUDrivenOpenPBRLutScalar = uint16_t;
 
@@ -585,8 +814,33 @@ struct GPUDrivenPreviewFrameSlotBindings {
     std::array<BindlessHandle, 2> indirectHandles;
 };
 
+struct GPUDrivenStreamDeferredBindings {
+    uint32_t pageBuffer = 0;
+    uint32_t activeGroupBuffer = 0;
+    uint32_t pageTableBuffer = 0;
+    uint32_t activeHeaderBuffer = 0;
+    uint32_t paramsBuffer = 0;
+    uint32_t visibleClusterBuffer = 0;
+    uint32_t visibleRecordBase = 0;
+    uint32_t visibleRecordCapacity = 0;
+};
+
+static_assert(sizeof(GPUDrivenStreamDeferredBindings) == 32);
+
+enum GPUDrivenStreamDeferredResourceIndex : uint32_t {
+    GPUDrivenStreamDeferredPage,
+    GPUDrivenStreamDeferredActiveGroup,
+    GPUDrivenStreamDeferredPageTable,
+    GPUDrivenStreamDeferredActiveHeader,
+    GPUDrivenStreamDeferredParams,
+    GPUDrivenStreamDeferredVisibleCluster,
+    GPUDrivenStreamDeferredResourceCount,
+};
+
 struct GPUDrivenPreviewBindingBundle {
     std::unique_ptr<Buffer> materialTextureRemapBuffer;
+    std::unique_ptr<Buffer> streamDeferredBindingsBuffer;
+    std::unique_ptr<Buffer> streamOwnerMaskBuffer;
     std::unique_ptr<BindlessHeap> heap;
     GPUSceneConsumerBindings gpuSceneBindings;
     BindlessHandle materialTextureRemapHandle;
@@ -601,12 +855,18 @@ struct GPUDrivenPreviewBindingBundle {
     BindlessHandle environmentSHBufferHandle;
     std::array<BindlessHandle, kGPUDrivenOpenPBRLut2DCount> openPBRLut2DHandles;
     std::array<BindlessHandle, kGPUDrivenOpenPBRLut3DCount> openPBRLut3DHandles;
+    std::array<BindlessHandle, GPUDrivenStreamDeferredResourceCount>
+        streamDeferredResourceHandles;
+    BindlessHandle streamDeferredBindingsHandle;
+    BindlessHandle streamOwnerMaskHandle;
 };
 
 struct GPUDrivenPreviewRetiredViewResources {
     std::unique_ptr<Buffer> deferredColorBuffer;
     GPUDrivenPreviewCullingTargets cullingTargets;
     std::unique_ptr<Buffer> materialTextureRemapBuffer;
+    std::unique_ptr<Buffer> streamDeferredBindingsBuffer;
+    std::unique_ptr<Buffer> streamOwnerMaskBuffer;
     std::unique_ptr<BindlessHeap> bindlessHeap;
 };
 
@@ -725,6 +985,22 @@ public:
                 return sceneResult;
             }
         }
+        const bool requestedStreamEnabled = previewStreamEnabled(properties());
+        PreviewStreamSourceSelection requestedStreamSource;
+        std::filesystem::path requestedStreamAssetPath;
+        if (requestedStreamEnabled) {
+            if (!resolvePreviewStreamSource(
+                    properties(),
+                    runtimeScene,
+                    scenePathFromProperties(properties()),
+                    requestedStreamSource,
+                    log)) {
+                return makeError(Error::InvalidArgument);
+            }
+            requestedStreamAssetPath = previewStreamAssetPath(
+                properties(),
+                requestedStreamSource.sourcePath);
+        }
         if (gpuSceneSource_ != runtimeScene) {
             releaseGPUSceneSourceLease();
             gpuSceneSource_ = runtimeScene;
@@ -761,7 +1037,12 @@ public:
             sceneContentRevision_ == runtimeContentRevision &&
             frameWidth_ == context.width &&
             frameHeight_ == context.height &&
-            frameSlotResources_.size() == requestedFrameSlotCount) {
+            frameSlotResources_.size() == requestedFrameSlotCount &&
+            streamEnabled_ == requestedStreamEnabled &&
+            (!requestedStreamEnabled ||
+                (compiledStreamAssetPath_ == requestedStreamAssetPath &&
+                    compiledStreamSourceId_ == requestedStreamSource.sourceId &&
+                    compiledStreamSourcePath_ == requestedStreamSource.sourcePath))) {
             return {};
         }
 
@@ -804,6 +1085,29 @@ public:
             log = "GPUDrivenPreviewPass shading requires a runtime scene";
             return makeError(Error::InvalidArgument);
         }
+        if (requestedStreamEnabled) {
+            resetStreamIntegration();
+            Result streamResult = streamRuntime_.initialize(
+                *context.device,
+                previewStreamRuntimeDesc(
+                    properties(),
+                    requestedStreamSource.sourcePath),
+                log);
+            if (!streamResult) {
+                log = "GPUDrivenPreviewPass stream integration failed: " + log;
+                return streamResult;
+            }
+            streamEnabled_ = true;
+            compiledStreamAssetPath_ = requestedStreamAssetPath;
+            compiledStreamSourceId_ = requestedStreamSource.sourceId;
+            compiledStreamSourcePath_ = requestedStreamSource.sourcePath;
+            streamResult = allocateStreamRasterBindings(log);
+            if (!streamResult) {
+                return streamResult;
+            }
+        } else {
+            resetStreamIntegration();
+        }
         std::vector<GPUDrivenPreviewGpuMaterial> materials;
         compileStageBegin = GPUDrivenCompileClock::now();
         Result result = prepareShadingResources(
@@ -826,6 +1130,14 @@ public:
         if (drawTaskCount_ == 0 || instanceCount_ == 0) {
             log = "GPUDrivenPreviewPass found no drawable meshlet instances";
             return makeError(Error::Failure);
+        }
+        residentRecordCapacity_ = static_cast<uint32_t>(meshletDraws.size());
+        streamOwnerMask_.assign(std::max(instanceCount_, 1u), 0u);
+        if (streamEnabled_ && !visibilityRecordRangeFitsId(
+                residentRecordCapacity_,
+                streamRuntime_.visibleClusterCapacity())) {
+            log = "GPUDrivenPreviewPass resident + stream records exceed the visibility ID range";
+            return makeError(Error::InvalidArgument);
         }
 
         frameWidth_ = std::max(context.width, 1u);
@@ -1029,7 +1341,13 @@ public:
             compositePipeline_ == nullptr ||
             cullingTargets_.visibilityView == nullptr ||
             cullingTargets_.depthView == nullptr ||
-            drawTaskCount_ == 0) {
+            drawTaskCount_ == 0 ||
+            (streamEnabled_ &&
+                (context.streamer() == nullptr ||
+                    !streamRuntime_.ready() ||
+                    streamVisibilityPipeline_ == nullptr ||
+                    streamCullResetPipeline_ == nullptr ||
+                    streamInstanceCullPipeline_ == nullptr))) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -1053,6 +1371,28 @@ public:
             return makeError(Error::InvalidArgument);
         }
         activeFrameSlot_ = frameSlot;
+        MeshletStreamFrameDesc streamFrame;
+        if (streamEnabled_) {
+            gpuSceneLog.clear();
+            result = syncStreamRuntimeScene(
+                context.runtimeScene(),
+                *gpuSceneSubsystem,
+                gpuSceneLog);
+            if (!result) {
+                spdlog::error("[GPUDrivenPreviewPass] {}", gpuSceneLog);
+                return result;
+            }
+            streamFrame = streamFrameDesc(context);
+            result = streamRuntime_.cmdBeginFrame(
+                context.commandBuffer(),
+                *context.streamer(),
+                streamFrame);
+            if (!result) {
+                return result;
+            }
+            // Both producer families must select the same HZB history index.
+            frameIndex_ = streamRuntime_.frameIndex();
+        }
         bool cameraCut = false;
         if (HistoryResourceManager* historyResources = context.historyResources()) {
             const uint64_t invalidationRevision =
@@ -1119,6 +1459,21 @@ public:
         if (!result) {
             return result;
         }
+        if (streamEnabled_) {
+            result = bindStreamViewResources(
+                *gpuSceneSubsystem,
+                visibility,
+                depth);
+            if (!result) {
+                return result;
+            }
+            result = streamRuntime_.cmdPreTraversal(
+                context.commandBuffer(),
+                streamFrame);
+            if (!result) {
+                return result;
+            }
+        }
 
         CommandBuffer& commandBuffer = context.commandBuffer();
         result = uploadShadingTextures(commandBuffer);
@@ -1134,6 +1489,14 @@ public:
         result = dispatchCulling(commandBuffer, 0);
         if (!result) {
             return result;
+        }
+        if (streamEnabled_) {
+            result = dispatchStreamCulling(
+                commandBuffer,
+                GPUSceneCullPhase::Early);
+            if (!result) {
+                return result;
+            }
         }
         if (freezeCullingCamera_) {
             drawVisibility(
@@ -1158,8 +1521,30 @@ public:
                 ResourceState::ShaderRead,
                 ResourceState::DepthStencilAttachment);
             drawVisibility(commandBuffer, *visibility.view(), *depth.view(), 0, LoadOp::Clear);
+            if (streamEnabled_) {
+                result = drawStreamVisibility(
+                    commandBuffer,
+                    *visibility.view(),
+                    *depth.view(),
+                    GPUSceneCullPhase::Early,
+                    LoadOp::Load);
+                if (!result) {
+                    return result;
+                }
+            }
         } else {
             drawVisibility(commandBuffer, *visibility.view(), *depth.view(), 0, LoadOp::Clear);
+            if (streamEnabled_) {
+                result = drawStreamVisibility(
+                    commandBuffer,
+                    *visibility.view(),
+                    *depth.view(),
+                    GPUSceneCullPhase::Early,
+                    LoadOp::Load);
+                if (!result) {
+                    return result;
+                }
+            }
             transitionTexture(commandBuffer, *depth.texture(), ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
             result = buildHzb(commandBuffer);
             if (!result) {
@@ -1171,6 +1556,14 @@ public:
         result = dispatchCulling(commandBuffer, 1);
         if (!result) {
             return result;
+        }
+        if (streamEnabled_) {
+            result = dispatchStreamCulling(
+                commandBuffer,
+                GPUSceneCullPhase::Late);
+            if (!result) {
+                return result;
+            }
         }
         if (freezeCullingCamera_) {
             drawVisibility(
@@ -1195,8 +1588,30 @@ public:
                 ResourceState::ShaderRead,
                 ResourceState::DepthStencilAttachment);
             drawVisibility(commandBuffer, *visibility.view(), *depth.view(), 1, LoadOp::Load);
+            if (streamEnabled_) {
+                result = drawStreamVisibility(
+                    commandBuffer,
+                    *visibility.view(),
+                    *depth.view(),
+                    GPUSceneCullPhase::Late,
+                    LoadOp::Load);
+                if (!result) {
+                    return result;
+                }
+            }
         } else {
             drawVisibility(commandBuffer, *visibility.view(), *depth.view(), 1, LoadOp::Load);
+            if (streamEnabled_) {
+                result = drawStreamVisibility(
+                    commandBuffer,
+                    *visibility.view(),
+                    *depth.view(),
+                    GPUSceneCullPhase::Late,
+                    LoadOp::Load);
+                if (!result) {
+                    return result;
+                }
+            }
         }
 
         transitionTexture(commandBuffer, *visibility.texture(), ResourceState::ColorAttachment, ResourceState::ShaderRead);
@@ -1206,6 +1621,13 @@ public:
             if (!result) {
                 return result;
             }
+        }
+        if (streamEnabled_) {
+            result = streamRuntime_.cmdPrepareDeferred(commandBuffer);
+            if (!result) {
+                return result;
+            }
+            commandBuffer.bindBindlessHeap(*bindlessHeap_);
         }
         dispatchDeferred(commandBuffer);
         barrierBuffer(commandBuffer, *deferredColorBuffer_, ResourceState::General, ResourceState::General);
@@ -1220,11 +1642,113 @@ public:
                 true)) {
             return makeError(Error::Failure);
         }
+        if (streamEnabled_) {
+            result = streamRuntime_.cmdPostTraversal(commandBuffer);
+            if (!result) {
+                return result;
+            }
+            result = streamRuntime_.cmdEndFrame(commandBuffer);
+            if (!result) {
+                return result;
+            }
+        }
         ++frameIndex_;
         return {};
     }
 
 private:
+    void resetStreamIntegration()
+    {
+        streamRuntime_.reset();
+        streamMeshShader_.reset();
+        streamFragmentShader_.reset();
+        streamCullResetShader_.reset();
+        streamInstanceCullShader_.reset();
+        streamVisibilityPipeline_.reset();
+        streamCullResetPipeline_.reset();
+        streamInstanceCullPipeline_.reset();
+        streamVisibilityImageHandle_ = {};
+        streamDepthImageHandle_ = {};
+        streamInstanceVisibilityHandle_ = {};
+        streamVisibleInstanceIdsHandle_ = {};
+        streamVisibleInstanceCounterHandle_ = {};
+        streamHzbHandles_ = {};
+        streamDeferredResourceHandles_ = {};
+        streamDeferredBindingsHandle_ = {};
+        streamOwnerMaskHandle_ = {};
+        streamDeferredBindingsBuffer_.reset();
+        streamOwnerMaskBuffer_.reset();
+        streamEnabled_ = false;
+        compiledStreamAssetPath_.clear();
+        compiledStreamSourceId_.clear();
+        compiledStreamSourcePath_.clear();
+        streamOwnerMask_.clear();
+        streamMappedInstanceCount_ = 0;
+    }
+
+    Result allocateStreamRasterBindings(std::string& log)
+    {
+        BindlessHeap* heap = streamRuntime_.bindlessHeap();
+        if (!streamEnabled_ || heap == nullptr) {
+            log = "GPUDrivenPreviewPass stream runtime has no bindless heap";
+            return makeError(Error::InvalidArgument);
+        }
+        auto allocateBuffer = [&](BindlessHandle& handle,
+                                  const char* label) -> Result {
+            Result result = heap->allocateBuffer(handle);
+            if (!result || !handle.valid()) {
+                log += resultMessage(
+                    std::string("allocateBuffer(GPUDrivenPreviewPass stream ") +
+                        label + ")",
+                    result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
+            }
+            return {};
+        };
+        auto allocateImage = [&](BindlessHandle& handle,
+                                 const char* label) -> Result {
+            Result result = heap->allocateSampledImage(handle);
+            if (!result || !handle.valid()) {
+                log += resultMessage(
+                    std::string("allocateSampledImage(GPUDrivenPreviewPass stream ") +
+                        label + ")",
+                    result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
+            }
+            return {};
+        };
+
+        Result result = allocateImage(streamVisibilityImageHandle_, "visibility");
+        if (result) {
+            result = allocateImage(streamDepthImageHandle_, "depth");
+        }
+        if (result) {
+            result = allocateBuffer(
+                streamInstanceVisibilityHandle_,
+                "instance visibility");
+        }
+        if (result) {
+            result = allocateBuffer(
+                streamVisibleInstanceIdsHandle_,
+                "visible instance IDs");
+        }
+        if (result) {
+            result = allocateBuffer(
+                streamVisibleInstanceCounterHandle_,
+                "visible instance counter");
+        }
+        for (uint32_t historyIndex = 0;
+             historyIndex < streamHzbHandles_.size() && result;
+             ++historyIndex) {
+            result = allocateBuffer(
+                streamHzbHandles_[historyIndex],
+                "HZB history");
+        }
+        return result;
+    }
+
     void invalidateHzbHistory()
     {
         hzbValid_ = false;
@@ -1462,6 +1986,30 @@ private:
                 std::string("Slang ") + request.entryPoint,
                 shaderCompileBegin);
         }
+        if (streamEnabled_) {
+            const std::array<ShaderRequest, 4> streamRequests{
+                ShaderRequest{kMeshletStreamShaderModuleName, kMeshletStreamMeshEntryPoint, true, &streamMeshShader_},
+                ShaderRequest{kMeshletStreamShaderModuleName, kMeshletStreamFragmentEntryPoint, false, &streamFragmentShader_},
+                ShaderRequest{kMeshletStreamShaderModuleName, kMeshletStreamCullResetEntryPoint, false, &streamCullResetShader_},
+                ShaderRequest{kMeshletStreamShaderModuleName, kMeshletStreamInstanceCullEntryPoint, false, &streamInstanceCullShader_},
+            };
+            for (const ShaderRequest& request : streamRequests) {
+                const auto shaderCompileBegin = GPUDrivenCompileClock::now();
+                Result streamResult = createShader(
+                    device,
+                    request.moduleName,
+                    request.entryPoint,
+                    request.meshShader,
+                    *request.shader,
+                    log);
+                if (!streamResult) {
+                    return streamResult;
+                }
+                logGPUDrivenCompileStage(
+                    std::string("Slang ") + request.entryPoint,
+                    shaderCompileBegin);
+            }
+        }
 
         Result result = device.createPipelineCache(
             PipelineCacheDesc{.filePath = kGPUDrivenPipelineCachePath},
@@ -1508,7 +2056,73 @@ private:
         if (!result) {
             return result;
         }
-        return createCompute(*deferredShader_, deferredPipeline_, "deferred");
+        result = createCompute(*deferredShader_, deferredPipeline_, "deferred");
+        if (!result || !streamEnabled_) {
+            return result;
+        }
+
+        auto createStreamCompute = [&](ShaderModule& shader,
+                                       std::unique_ptr<ComputePipeline>& pipeline,
+                                       const char* label) -> Result {
+            Result streamResult = device.createComputePipeline(
+                ComputePipelineDesc{
+                    .computeShader = &shader,
+                    .computeEntryPoint = "main",
+                    .usesBindlessHeap = true,
+                    .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+                    .pipelineCache = pipelineCache_.get(),
+                },
+                pipeline);
+            if (!streamResult || pipeline == nullptr) {
+                log += resultMessage(
+                    std::string("createComputePipeline(GPUDrivenPreviewPass stream ") +
+                        label + ")",
+                    streamResult);
+                log += '\n';
+                return streamResult ? makeError(Error::Failure) : streamResult;
+            }
+            return {};
+        };
+        result = createStreamCompute(
+            *streamCullResetShader_,
+            streamCullResetPipeline_,
+            "cull reset");
+        if (result) {
+            result = createStreamCompute(
+                *streamInstanceCullShader_,
+                streamInstanceCullPipeline_,
+                "instance cull");
+        }
+        if (!result) {
+            return result;
+        }
+        result = device.createGraphicsPipeline(
+            GraphicsPipelineDesc{
+                .meshShader = streamMeshShader_.get(),
+                .fragmentShader = streamFragmentShader_.get(),
+                .colorFormat = Format::R32Uint,
+                .depthStencilFormat = Format::D32Sfloat,
+                .rasterization = RasterizationState{
+                    .cullMode = CullMode::Back,
+                    .frontFace = FrontFace::CounterClockwise,
+                },
+                .depthStencil = DepthStencilState{
+                    .depthTestEnable = true,
+                    .depthWriteEnable = true,
+                    .depthCompareOp = depthCompareOp(kDefaultReversedZ),
+                },
+                .usesBindlessHeap = true,
+                .pipelineCache = pipelineCache_.get(),
+            },
+            streamVisibilityPipeline_);
+        if (!result || streamVisibilityPipeline_ == nullptr) {
+            log += resultMessage(
+                "createGraphicsPipeline(GPUDrivenPreviewPass stream visibility)",
+                result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
     }
 
     GPUDrivenPreviewFrameSlotResources& activeFrameResources()
@@ -1639,9 +2253,25 @@ private:
             log = "GPUDrivenPreviewPass GPUScene raster layout has no drawable instances";
             return makeError(Error::Failure);
         }
+        if (views.meshletDraws.structureStride != sizeof(VisibleClusterRecord) ||
+            views.meshletDraws.size % sizeof(VisibleClusterRecord) != 0 ||
+            views.meshletDraws.size / sizeof(VisibleClusterRecord) >
+                std::numeric_limits<uint32_t>::max()) {
+            log = "GPUDrivenPreviewPass received an invalid resident visible-record buffer";
+            return makeError(Error::Failure);
+        }
+        const uint32_t residentRecordCapacity = static_cast<uint32_t>(
+            views.meshletDraws.size / sizeof(VisibleClusterRecord));
+        if (!visibilityRecordRangeFitsId(
+                residentRecordCapacity,
+                streamEnabled_ ? streamRuntime_.visibleClusterCapacity() : 0u)) {
+            log = "GPUDrivenPreviewPass resident + stream records exceed the visibility ID range";
+            return makeError(Error::Failure);
+        }
+        residentRecordCapacity_ = residentRecordCapacity;
         const auto encodedRangeValid = [](const GPUSceneRasterDrawRange& range) {
-            return static_cast<uint64_t>(range.offset) + range.count <=
-                kGPUDrivenMaxEncodedMeshlets;
+            return visibilityRecordCapacityFitsId(
+                static_cast<uint64_t>(range.offset) + range.count);
         };
         if (!encodedRangeValid(layout.baseRange) ||
             !std::ranges::all_of(layout.lodRanges, encodedRangeValid)) {
@@ -1669,6 +2299,9 @@ private:
         }
         drawTaskCount_ = layout.maxRangeCount;
         instanceCount_ = static_cast<uint32_t>(subsystem.instances().size());
+        if (streamOwnerMask_.size() != std::max(instanceCount_, 1u)) {
+            streamOwnerMask_.assign(std::max(instanceCount_, 1u), 0u);
+        }
         materialCount_ = static_cast<uint32_t>(subsystem.materials().size());
         materialTextureCount_ = materialCount_ * kGPUSceneMaterialTextureSlotCount;
 
@@ -1736,10 +2369,20 @@ private:
             static_cast<uint64_t>(materialTextureCount_) * sizeof(uint32_t);
         const bool remapLayoutChanged =
             materialTextureRemapBuffer_->desc().size != expectedRemapBytes;
-        if (!gpuSceneBindings_.drawSetGeneration && !remapLayoutChanged) {
+        const uint64_t expectedOwnerMaskBytes = static_cast<uint64_t>(
+            std::max(instanceCount_, 1u)) * sizeof(uint32_t);
+        const bool ownerMaskLayoutChanged = streamEnabled_ &&
+            (streamOwnerMaskBuffer_ == nullptr ||
+                streamOwnerMaskBuffer_->desc().size != expectedOwnerMaskBytes);
+        if (!gpuSceneBindings_.drawSetGeneration &&
+            !remapLayoutChanged &&
+            !streamEnabled_ &&
+            !ownerMaskLayoutChanged) {
             return subsystem.createBindings(*bindlessHeap_, gpuSceneBindings_, log);
         }
-        if (!remapLayoutChanged && gpuSceneBindings_.validFor(views)) {
+        if (!remapLayoutChanged &&
+            !ownerMaskLayoutChanged &&
+            gpuSceneBindings_.validFor(views)) {
             return {};
         }
 
@@ -1757,6 +2400,9 @@ private:
         retired->bindlessHeap = std::move(bindlessHeap_);
         retired->materialTextureRemapBuffer =
             std::move(materialTextureRemapBuffer_);
+        retired->streamDeferredBindingsBuffer =
+            std::move(streamDeferredBindingsBuffer_);
+        retired->streamOwnerMaskBuffer = std::move(streamOwnerMaskBuffer_);
         installBindingBundle(std::move(replacement));
         subsystemHost.retire(std::static_pointer_cast<void>(retired));
         return {};
@@ -1801,6 +2447,15 @@ private:
             .materialTextureRemapBuffer = materialTextureRemapHandle_.index,
             .environmentImage = environmentTextureHandle_.index,
             .environmentSHBuffer = environmentSHBufferHandle_.index,
+            .streamDeferredBindingsBuffer =
+                streamEnabled_ && streamDeferredBindingsHandle_.valid()
+                ? streamDeferredBindingsHandle_.index
+                : kGPUDrivenInvalidBindlessIndex,
+            .residentRecordCapacity = residentRecordCapacity_,
+            .streamOwnerMaskBuffer =
+                streamEnabled_ && streamOwnerMaskHandle_.valid()
+                ? streamOwnerMaskHandle_.index
+                : kGPUDrivenInvalidBindlessIndex,
         };
     }
 
@@ -1975,6 +2630,7 @@ private:
             .maxDepth = 1.0f,
         });
         commandBuffer.setScissor(renderArea);
+        commandBuffer.bindBindlessHeap(*bindlessHeap_);
         for (uint32_t bucketIndex = 0;
              bucketIndex < kGPUDrivenPreviewDrawBucketCount;
              ++bucketIndex) {
@@ -2136,7 +2792,7 @@ private:
         Result result = subsystem.publishViewGpuResources(
             gpuSceneView_,
             activeFrameSlot_,
-            frameIndex_ & 1u,
+            (streamEnabled_ ? streamRuntime_.frameIndex() : frameIndex_) & 1u,
             log);
         if (!result) {
             spdlog::error("[GPUDrivenPreviewPass] {}", log);
@@ -2166,6 +2822,370 @@ private:
             sceneVisibilityRevision_ = runtimeScene->visibilityRevision();
         }
         invalidateHzbHistory();
+        return {};
+    }
+
+    Result syncStreamRuntimeScene(
+        const scene::Scene* runtimeScene,
+        GPUSceneSubsystem& subsystem,
+        std::string& log)
+    {
+        if (!streamEnabled_) {
+            return {};
+        }
+        runtimeScene = runtimeSceneForPath(
+            runtimeScene,
+            scenePathFromProperties(properties()));
+        if (runtimeScene == nullptr || !streamRuntime_.ready()) {
+            log = "GPUDrivenPreviewPass stream integration requires its runtime scene";
+            return makeError(Error::InvalidArgument);
+        }
+        std::vector<uint32_t> runtimeRenderNodeIndices(
+            streamRuntime_.asset().instances().size(),
+            std::numeric_limits<uint32_t>::max());
+        for (size_t streamInstanceIndex = 0;
+             streamInstanceIndex < streamRuntime_.asset().instances().size();
+             ++streamInstanceIndex) {
+            const uint32_t localRenderNodeIndex =
+                streamRuntime_.asset().instances()[streamInstanceIndex].renderNodeIndex;
+            if (compiledStreamSourceId_.empty()) {
+                runtimeRenderNodeIndices[streamInstanceIndex] = localRenderNodeIndex;
+                continue;
+            }
+            const int32_t runtimeRenderNodeIndex = runtimeScene->renderNodeIndexForSource(
+                compiledStreamSourceId_,
+                localRenderNodeIndex <=
+                        static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+                    ? static_cast<int32_t>(localRenderNodeIndex)
+                    : scene::kInvalidSceneIndex);
+            if (runtimeRenderNodeIndex == scene::kInvalidSceneIndex) {
+                log = "GPUDrivenPreviewPass stream source '" +
+                    compiledStreamSourceId_ + "' has no render node " +
+                    std::to_string(localRenderNodeIndex);
+                return makeError(Error::InvalidArgument);
+            }
+            runtimeRenderNodeIndices[streamInstanceIndex] =
+                static_cast<uint32_t>(runtimeRenderNodeIndex);
+        }
+
+        Result result = streamRuntime_.syncRuntimeScene(
+            *runtimeScene,
+            runtimeRenderNodeIndices,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        std::vector<uint32_t> mapping(
+            streamRuntime_.asset().instances().size(),
+            std::numeric_limits<uint32_t>::max());
+        streamOwnerMask_.assign(std::max(instanceCount_, 1u), 0u);
+        uint32_t mappedCount = 0;
+        for (size_t streamInstanceIndex = 0;
+             streamInstanceIndex < streamRuntime_.asset().instances().size();
+             ++streamInstanceIndex) {
+            const GPUSceneInstanceId instance = subsystem.instanceForRenderNode(
+                runtimeRenderNodeIndices[streamInstanceIndex]);
+            if (!instance.valid() || instance.index >= streamOwnerMask_.size()) {
+                continue;
+            }
+            mapping[streamInstanceIndex] = instance.index;
+            streamOwnerMask_[instance.index] = 1u;
+            ++mappedCount;
+        }
+        result = streamRuntime_.syncGPUSceneInstanceMapping(mapping);
+        if (!result) {
+            log = "GPUDrivenPreviewPass failed to upload the stream GPUScene mapping";
+            return result;
+        }
+        streamMappedInstanceCount_ = mappedCount;
+        return {};
+    }
+
+    uint32_t streamCullingFlags() const
+    {
+        uint32_t flags = 0;
+        if (boolProperty(&properties(), "instanceFrustumCull", true)) {
+            flags |= 1u << 0u;
+        }
+        if (boolProperty(&properties(), "instanceHzbCull", true)) {
+            flags |= 1u << 1u;
+        }
+        if (boolProperty(&properties(), "meshletFrustumCull", true)) {
+            flags |= 1u << 2u;
+        }
+        if (boolProperty(&properties(), "meshletNormalConeCull", true)) {
+            flags |= 1u << 3u;
+        }
+        return flags;
+    }
+
+    Result bindStreamViewResources(
+        GPUSceneSubsystem& subsystem,
+        TextureHandle visibility,
+        TextureHandle depth)
+    {
+        if (!streamEnabled_ || streamRuntime_.bindlessHeap() == nullptr ||
+            !visibility.valid() || !depth.valid()) {
+            return makeError(Error::InvalidArgument);
+        }
+        GPUSceneViewGpuResourcesView resources;
+        if (!subsystem.viewGpuResources(
+                gpuSceneView_,
+                activeFrameSlot_,
+                resources) ||
+            resources.instanceVisibilityStates.view == nullptr ||
+            resources.visibleInstanceIds.view == nullptr ||
+            resources.visibleInstanceCounter.view == nullptr ||
+            resources.hzbHistory[0].view == nullptr ||
+            resources.hzbHistory[1].view == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        BindlessHeap& heap = *streamRuntime_.bindlessHeap();
+        Result result = heap.writeSampledImage(
+            streamVisibilityImageHandle_,
+            *visibility.view(),
+            ResourceState::ShaderRead);
+        if (result) {
+            result = heap.writeSampledImage(
+                streamDepthImageHandle_,
+                *depth.view(),
+                ResourceState::ShaderRead);
+        }
+        if (result) {
+            result = heap.writeBufferView(
+                streamInstanceVisibilityHandle_,
+                *resources.instanceVisibilityStates.view);
+        }
+        if (result) {
+            result = heap.writeBufferView(
+                streamVisibleInstanceIdsHandle_,
+                *resources.visibleInstanceIds.view);
+        }
+        if (result) {
+            result = heap.writeBufferView(
+                streamVisibleInstanceCounterHandle_,
+                *resources.visibleInstanceCounter.view);
+        }
+        for (uint32_t historyIndex = 0;
+             historyIndex < streamHzbHandles_.size() && result;
+             ++historyIndex) {
+            result = heap.writeBufferView(
+                streamHzbHandles_[historyIndex],
+                *resources.hzbHistory[historyIndex].view);
+        }
+        if (!result) {
+            return result;
+        }
+
+        const uint32_t streamRecordCapacity =
+            streamRuntime_.visibleClusterCapacity();
+        if (!visibilityRecordRangeFitsId(
+                residentRecordCapacity_,
+                streamRecordCapacity)) {
+            return makeError(Error::InvalidArgument);
+        }
+        result = streamRuntime_.updateRasterBindings(
+            MeshletStreamGpuRasterBindings{
+                .instanceVisibilityBuffer =
+                    streamInstanceVisibilityHandle_.index,
+                .hzbBuffer0 = streamHzbHandles_[0].index,
+                .hzbBuffer1 = streamHzbHandles_[1].index,
+                .depthImage = streamDepthImageHandle_.index,
+                .visibilityImage = streamVisibilityImageHandle_.index,
+                .visibleInstanceIdsBuffer =
+                    streamVisibleInstanceIdsHandle_.index,
+                .visibleRecordBase = residentRecordCapacity_,
+                .visibleRecordCapacity = streamRecordCapacity,
+                .hzbMipCount = hzbMipCount_,
+                .hzbValid = hzbValid_ ? 1u : 0u,
+                .cullingFlags = streamCullingFlags(),
+                .width = frameWidth_,
+                .height = frameHeight_,
+                .visibleInstanceCounterBuffer =
+                    streamVisibleInstanceCounterHandle_.index,
+            });
+        if (!result || streamDeferredBindingsBuffer_ == nullptr ||
+            streamOwnerMaskBuffer_ == nullptr) {
+            return result ? makeError(Error::InvalidArgument) : result;
+        }
+        const GPUDrivenStreamDeferredBindings deferredBindings{
+            .pageBuffer = streamDeferredResourceHandles_[
+                GPUDrivenStreamDeferredPage].index,
+            .activeGroupBuffer = streamDeferredResourceHandles_[
+                GPUDrivenStreamDeferredActiveGroup].index,
+            .pageTableBuffer = streamDeferredResourceHandles_[
+                GPUDrivenStreamDeferredPageTable].index,
+            .activeHeaderBuffer = streamDeferredResourceHandles_[
+                GPUDrivenStreamDeferredActiveHeader].index,
+            .paramsBuffer = streamDeferredResourceHandles_[
+                GPUDrivenStreamDeferredParams].index,
+            .visibleClusterBuffer = streamDeferredResourceHandles_[
+                GPUDrivenStreamDeferredVisibleCluster].index,
+            .visibleRecordBase = residentRecordCapacity_,
+            .visibleRecordCapacity = streamRecordCapacity,
+        };
+        result = updateHostStorageBuffer(
+            *streamDeferredBindingsBuffer_,
+            &deferredBindings,
+            sizeof(deferredBindings));
+        if (result) {
+            result = updateHostStorageBuffer(
+                *streamOwnerMaskBuffer_,
+                streamOwnerMask_.data(),
+                static_cast<uint64_t>(streamOwnerMask_.size()) * sizeof(uint32_t));
+        }
+        return result;
+    }
+
+    MeshletStreamFrameDesc streamFrameDesc(
+        const RenderGraphExecutionContext& context) const
+    {
+        const scene::Bounds& bounds = streamRuntime_.bounds();
+        const float3 center = bounds.center();
+        const float radius = std::max(bounds.radius(), 1.0f);
+        const RenderGraphProperties* camera =
+            cameraPropertiesFrom(context.properties());
+        const float3 defaultEye(
+            center.x,
+            center.y + radius * 0.35f,
+            center.z + radius * 2.5f);
+        const bool gpuLod = boolProperty(
+            &context.properties(),
+            "enableGpuLodSelection",
+            true);
+        uint32_t debugMode = kMeshletStreamDebugShaded;
+        switch (previewModeFromProperties(context.properties())) {
+        case kGPUDrivenPreviewModeMeshlet:
+            debugMode = kMeshletStreamDebugMeshlet;
+            break;
+        case kGPUDrivenPreviewModePrimitive:
+            debugMode = kMeshletStreamDebugPrimitive;
+            break;
+        case kGPUDrivenPreviewModeLod:
+            debugMode = kMeshletStreamDebugLod;
+            break;
+        default:
+            break;
+        }
+        return MeshletStreamFrameDesc{
+            .width = frameWidth_,
+            .height = frameHeight_,
+            .selectedLodLevel = gpuLod
+                ? kMeshletStreamNoDebugLodOverride
+                : lodLevelFromProperties(context.properties()),
+            .enableGpuLodSelection = gpuLod,
+            .debugColorMode = debugMode,
+            .camera = MeshletStreamCameraDesc{
+                .eye = cameraVec3(camera, "eye", defaultEye),
+                .center = cameraVec3(camera, "center", center),
+                .up = cameraVec3(camera, "up", float3(0.0f, 1.0f, 0.0f)),
+                .fovDegrees = cameraFloat(camera, "fovDegrees", 60.0f),
+                .znear = cameraFloat(camera, "znear", 0.1f),
+                .zfar = cameraFloat(
+                    camera,
+                    "zfar",
+                    std::max(radius * 8.0f, 100.0f)),
+            },
+        };
+    }
+
+    Result dispatchStreamCulling(
+        CommandBuffer& commandBuffer,
+        GPUSceneCullPhase phase)
+    {
+        if (!streamEnabled_ || gpuSceneSubsystem_ == nullptr ||
+            streamCullResetPipeline_ == nullptr ||
+            streamInstanceCullPipeline_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        MeshletStreamUserPush push = streamRuntime_.userPush();
+        push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
+        const GPUSceneInstanceCullRecordDesc desc{
+            .phase = phase,
+            .bindlessHeap = streamRuntime_.bindlessHeap(),
+            .resetPipeline = streamCullResetPipeline_.get(),
+            .instanceCullPipeline = streamInstanceCullPipeline_.get(),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .instanceGroupCountX = std::max(
+                divideRoundUp(
+                    static_cast<uint32_t>(
+                        streamRuntime_.asset().instances().size()),
+                    64u),
+                1u),
+        };
+        std::string log;
+        Result result = gpuSceneSubsystem_->recordInstanceCull(
+            commandBuffer,
+            gpuSceneView_,
+            activeFrameSlot_,
+            desc,
+            log);
+        if (!result) {
+            spdlog::error("[GPUDrivenPreviewPass] {}", log);
+        }
+        return result;
+    }
+
+    Result drawStreamVisibility(
+        CommandBuffer& commandBuffer,
+        TextureView& visibility,
+        TextureView& depth,
+        GPUSceneCullPhase phase,
+        LoadOp loadOp)
+    {
+        if (!streamEnabled_ || streamVisibilityPipeline_ == nullptr ||
+            streamRuntime_.bindlessHeap() == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        Result result = streamRuntime_.cmdPrepareVisibility(commandBuffer);
+        if (!result) {
+            return result;
+        }
+        const Rect renderArea{
+            .x = 0,
+            .y = 0,
+            .width = frameWidth_,
+            .height = frameHeight_,
+        };
+        const RenderingAttachmentDesc visibilityAttachment{
+            .view = &visibility,
+            .state = ResourceState::ColorAttachment,
+            .loadOp = loadOp,
+            .storeOp = StoreOp::Store,
+            .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
+        };
+        const RenderingAttachmentDesc depthAttachment{
+            .view = &depth,
+            .state = ResourceState::DepthStencilAttachment,
+            .loadOp = loadOp,
+            .storeOp = StoreOp::Store,
+            .clearDepth = depthClearValue(kDefaultReversedZ),
+        };
+        commandBuffer.beginRendering(RenderingDesc{
+            .renderArea = renderArea,
+            .colorAttachments = &visibilityAttachment,
+            .colorAttachmentCount = 1,
+            .depthStencilAttachment = &depthAttachment,
+        });
+        commandBuffer.setViewport(Viewport{
+            .x = 0.0f,
+            .y = 0.0f,
+            .width = static_cast<float>(frameWidth_),
+            .height = static_cast<float>(frameHeight_),
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f,
+        });
+        commandBuffer.setScissor(renderArea);
+        commandBuffer.bindBindlessHeap(*streamRuntime_.bindlessHeap());
+        commandBuffer.bindGraphicsPipeline(*streamVisibilityPipeline_);
+        MeshletStreamUserPush push = streamRuntime_.userPush();
+        push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        streamRuntime_.cmdDrawMeshTasks(commandBuffer);
+        commandBuffer.endRendering();
         return {};
     }
 
@@ -2373,6 +3393,24 @@ private:
         return {};
     }
 
+    static Result updateHostStorageBuffer(
+        Buffer& buffer,
+        const void* data,
+        uint64_t byteSize)
+    {
+        if (data == nullptr || byteSize == 0 || byteSize > buffer.desc().size) {
+            return makeError(Error::InvalidArgument);
+        }
+        void* mapped = buffer.map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, data, static_cast<size_t>(byteSize));
+        buffer.flush(0, byteSize);
+        buffer.unmap();
+        return {};
+    }
+
     static Result allocateAndWriteBuffer(
         BindlessHeap& heap,
         Buffer& buffer,
@@ -2421,7 +3459,8 @@ private:
                                     kGPUDrivenOpenPBRLut2DCount +
                                     kGPUDrivenOpenPBRLut3DCount,
                 .maxBuffers = 5u + frameSlotCount_ * 8u +
-                    static_cast<uint32_t>(kGPUSceneGlobalBufferKindCount),
+                    static_cast<uint32_t>(kGPUSceneGlobalBufferKindCount) +
+                    (streamEnabled_ ? 8u : 0u),
             },
             bundle.heap);
         if (!result || bundle.heap == nullptr) {
@@ -2522,6 +3561,94 @@ private:
         result = bindBuffer(deferredColorBuffer, bundle.deferredColorHandle, "deferred color");
         if (!result) {
             return result;
+        }
+        if (streamEnabled_) {
+            const MeshletStreamDeferredGpuResourcesView streamResources =
+                streamRuntime_.deferredGpuResources();
+            if (!streamResources.valid() || streamOwnerMask_.empty()) {
+                log = "GPUDrivenPreviewPass stream deferred resources are incomplete";
+                return makeError(Error::InvalidArgument);
+            }
+            const std::array<Buffer*, GPUDrivenStreamDeferredResourceCount>
+                streamBuffers{
+                    streamResources.pageBuffer,
+                    streamResources.activeGroupBuffer,
+                    streamResources.pageTableBuffer,
+                    streamResources.activeHeaderBuffer,
+                    streamResources.paramsBuffer,
+                    streamResources.visibleClusterBuffer,
+                };
+            const std::array<const char*, GPUDrivenStreamDeferredResourceCount>
+                streamLabels{
+                    "stream pages",
+                    "stream active groups",
+                    "stream page table",
+                    "stream active header",
+                    "stream params",
+                    "stream visible records",
+                };
+            for (uint32_t resourceIndex = 0;
+                 resourceIndex < streamBuffers.size();
+                 ++resourceIndex) {
+                result = bindBuffer(
+                    *streamBuffers[resourceIndex],
+                    bundle.streamDeferredResourceHandles[resourceIndex],
+                    streamLabels[resourceIndex]);
+                if (!result) {
+                    return result;
+                }
+            }
+
+            const GPUDrivenStreamDeferredBindings streamBindings{
+                .pageBuffer = bundle.streamDeferredResourceHandles[
+                    GPUDrivenStreamDeferredPage].index,
+                .activeGroupBuffer = bundle.streamDeferredResourceHandles[
+                    GPUDrivenStreamDeferredActiveGroup].index,
+                .pageTableBuffer = bundle.streamDeferredResourceHandles[
+                    GPUDrivenStreamDeferredPageTable].index,
+                .activeHeaderBuffer = bundle.streamDeferredResourceHandles[
+                    GPUDrivenStreamDeferredActiveHeader].index,
+                .paramsBuffer = bundle.streamDeferredResourceHandles[
+                    GPUDrivenStreamDeferredParams].index,
+                .visibleClusterBuffer = bundle.streamDeferredResourceHandles[
+                    GPUDrivenStreamDeferredVisibleCluster].index,
+                .visibleRecordBase = residentRecordCapacity_,
+                .visibleRecordCapacity = streamResources.visibleRecordCapacity,
+            };
+            result = uploadStorageBuffer(
+                *device_,
+                &streamBindings,
+                sizeof(streamBindings),
+                bundle.streamDeferredBindingsBuffer,
+                log,
+                "GPUDrivenPreviewPass stream deferred bindings");
+            if (!result) {
+                return result;
+            }
+            result = bindBuffer(
+                *bundle.streamDeferredBindingsBuffer,
+                bundle.streamDeferredBindingsHandle,
+                "stream deferred bindings");
+            if (!result) {
+                return result;
+            }
+            result = uploadStorageBuffer(
+                *device_,
+                streamOwnerMask_.data(),
+                static_cast<uint64_t>(streamOwnerMask_.size()) * sizeof(uint32_t),
+                bundle.streamOwnerMaskBuffer,
+                log,
+                "GPUDrivenPreviewPass stream owner mask");
+            if (!result) {
+                return result;
+            }
+            result = bindBuffer(
+                *bundle.streamOwnerMaskBuffer,
+                bundle.streamOwnerMaskHandle,
+                "stream owner mask");
+            if (!result) {
+                return result;
+            }
         }
         result = allocateImage(bundle.depthImageHandle, "depth");
         if (!result) {
@@ -2700,6 +3827,9 @@ private:
     {
         bindlessHeap_ = std::move(bundle.heap);
         materialTextureRemapBuffer_ = std::move(bundle.materialTextureRemapBuffer);
+        streamDeferredBindingsBuffer_ =
+            std::move(bundle.streamDeferredBindingsBuffer);
+        streamOwnerMaskBuffer_ = std::move(bundle.streamOwnerMaskBuffer);
         gpuSceneBindings_ = bundle.gpuSceneBindings;
         materialTextureRemapHandle_ = bundle.materialTextureRemapHandle;
         hzbHandles_ = bundle.hzbHandles;
@@ -2712,6 +3842,11 @@ private:
         environmentSHBufferHandle_ = bundle.environmentSHBufferHandle;
         openPBRLut2DHandles_ = bundle.openPBRLut2DHandles;
         openPBRLut3DHandles_ = bundle.openPBRLut3DHandles;
+        streamDeferredResourceHandles_ =
+            bundle.streamDeferredResourceHandles;
+        streamDeferredBindingsHandle_ =
+            bundle.streamDeferredBindingsHandle;
+        streamOwnerMaskHandle_ = bundle.streamOwnerMaskHandle;
         for (size_t frameSlot = 0; frameSlot < bundle.frameSlots.size(); ++frameSlot) {
             GPUDrivenPreviewFrameSlotResources& resources = frameSlotResources_[frameSlot];
             const GPUDrivenPreviewFrameSlotBindings& bindings = bundle.frameSlots[frameSlot];
@@ -2800,6 +3935,9 @@ private:
         retired->cullingTargets = std::move(cullingTargets_);
         retired->bindlessHeap = std::move(bindlessHeap_);
         retired->materialTextureRemapBuffer = std::move(materialTextureRemapBuffer_);
+        retired->streamDeferredBindingsBuffer =
+            std::move(streamDeferredBindingsBuffer_);
+        retired->streamOwnerMaskBuffer = std::move(streamOwnerMaskBuffer_);
         deferredColorBuffer_ = std::move(resizedDeferredColorBuffer);
         cullingTargets_ = std::move(resizedCullingTargets);
         installBindingBundle(std::move(resizedBindings));
@@ -3426,7 +4564,7 @@ private:
             log = "GPUDrivenPreviewPass found no drawable meshlet geometry in " + path.string();
             return false;
         }
-        if (outMeshletDraws.size() > kGPUDrivenMaxEncodedMeshlets) {
+        if (!visibilityRecordCapacityFitsId(outMeshletDraws.size())) {
             log = "GPUDrivenPreviewPass scene has too many meshlets for the packed visibility format";
             return false;
         }
@@ -3630,10 +4768,13 @@ private:
     }
 
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
+    std::unique_ptr<Buffer> streamDeferredBindingsBuffer_;
+    std::unique_ptr<Buffer> streamOwnerMaskBuffer_;
     std::vector<GPUDrivenPreviewFrameSlotResources> frameSlotResources_;
     std::array<Buffer*, 2> hzbBuffers_{};
     std::unique_ptr<Buffer> deferredColorBuffer_;
     GPUDrivenPreviewCullingTargets cullingTargets_;
+    MeshletStreamRuntime streamRuntime_;
     std::vector<GPUDrivenPreviewTextureResource> materialTextures_;
     std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut2DCount> openPBRLut2D_;
     std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut3DCount> openPBRLut3D_;
@@ -3656,6 +4797,16 @@ private:
     BindlessHandle environmentSHBufferHandle_;
     std::array<BindlessHandle, kGPUDrivenOpenPBRLut2DCount> openPBRLut2DHandles_;
     std::array<BindlessHandle, kGPUDrivenOpenPBRLut3DCount> openPBRLut3DHandles_;
+    std::array<BindlessHandle, GPUDrivenStreamDeferredResourceCount>
+        streamDeferredResourceHandles_;
+    BindlessHandle streamDeferredBindingsHandle_;
+    BindlessHandle streamOwnerMaskHandle_;
+    BindlessHandle streamVisibilityImageHandle_;
+    BindlessHandle streamDepthImageHandle_;
+    BindlessHandle streamInstanceVisibilityHandle_;
+    BindlessHandle streamVisibleInstanceIdsHandle_;
+    BindlessHandle streamVisibleInstanceCounterHandle_;
+    std::array<BindlessHandle, 2> streamHzbHandles_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<ShaderModule> maskedFragmentShader_;
@@ -3666,6 +4817,10 @@ private:
     std::unique_ptr<ShaderModule> deferredShader_;
     std::unique_ptr<ShaderModule> compositeVertexShader_;
     std::unique_ptr<ShaderModule> compositeFragmentShader_;
+    std::unique_ptr<ShaderModule> streamMeshShader_;
+    std::unique_ptr<ShaderModule> streamFragmentShader_;
+    std::unique_ptr<ShaderModule> streamCullResetShader_;
+    std::unique_ptr<ShaderModule> streamInstanceCullShader_;
     std::unique_ptr<PipelineCache> pipelineCache_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> visibilityPipelines_;
     std::unique_ptr<GraphicsPipeline> compositePipeline_;
@@ -3674,6 +4829,9 @@ private:
     std::unique_ptr<ComputePipeline> compactPipeline_;
     std::unique_ptr<ComputePipeline> hzbPipeline_;
     std::unique_ptr<ComputePipeline> deferredPipeline_;
+    std::unique_ptr<GraphicsPipeline> streamVisibilityPipeline_;
+    std::unique_ptr<ComputePipeline> streamCullResetPipeline_;
+    std::unique_ptr<ComputePipeline> streamInstanceCullPipeline_;
     scene::Bounds drawBounds_;
     uint64_t sceneResourceIdentity_ = 0;
     uint64_t sceneRevision_ = 0;
@@ -3689,6 +4847,10 @@ private:
     GPUDrivenPreviewMeshletRange baseMeshletRange_;
     std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges_;
     std::vector<uint32_t> logicalTextureToMaterialTexture_;
+    std::vector<uint32_t> streamOwnerMask_;
+    std::filesystem::path compiledStreamAssetPath_;
+    std::string compiledStreamSourceId_;
+    std::filesystem::path compiledStreamSourcePath_;
     GPUDrivenPreviewGpuParams previousParams_;
     GPUDrivenPreviewGpuParams frozenCullingCamera_;
     uint32_t drawTaskCount_ = 0;
@@ -3696,6 +4858,8 @@ private:
     uint32_t instanceCount_ = 0;
     uint32_t materialCount_ = 1;
     uint32_t materialTextureCount_ = 1;
+    uint32_t residentRecordCapacity_ = 0;
+    uint32_t streamMappedInstanceCount_ = 0;
     uint32_t frameWidth_ = 1;
     uint32_t frameHeight_ = 1;
     uint32_t hzbMipCount_ = 1;
@@ -3711,6 +4875,7 @@ private:
     bool freezeCullingCamera_ = false;
     bool frozenCullingCameraValid_ = false;
     bool environmentBindingValid_ = false;
+    bool streamEnabled_ = false;
     uint64_t environmentResourceRevision_ = 0;
 };
 

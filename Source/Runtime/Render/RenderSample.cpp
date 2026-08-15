@@ -318,6 +318,38 @@ public:
     std::string previewOutput() const override { return "GPUDriven.color"; }
 };
 
+class GPUDrivenTerrainP1UnifiedSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "gpu-driven-terrain-p1-unified"; }
+    std::string_view name() const override { return "GPUDrivenSample / Terrain P1 Unified"; }
+    std::string_view category() const override { return "GPUDriven"; }
+    std::string_view description() const override
+    {
+        return "Houdini height-field StreamAsset rendered through the unified GPUScene visibility-buffer pipeline.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf";
+    }
+    bool loadSceneInEditor() const override { return true; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/gpu_driven_terrain_p1_unified.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        return RenderSampleEnvironmentDesc{
+            .enabled = true,
+            .path = "Asset/ABeautifulGame/environment.hdr",
+            .intensity = 3.0f,
+            .rotationDegrees = 0.0f,
+            .visible = true,
+        };
+    }
+    std::string previewOutput() const override { return "GPUDriven.color"; }
+};
+
 const RenderSample& pathTracingMeetMatSample()
 {
     static const PathTracingMeetMatSample sample;
@@ -378,6 +410,12 @@ const RenderSample& gpuDrivenTerrainP0Sample()
     return sample;
 }
 
+const RenderSample& gpuDrivenTerrainP1UnifiedSample()
+{
+    static const GPUDrivenTerrainP1UnifiedSample sample;
+    return sample;
+}
+
 std::vector<const RenderSample*> builtInRenderSamples()
 {
     return {
@@ -390,6 +428,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenSample(),
         &gpuDrivenStreamAssetSample(),
         &gpuDrivenTerrainP0Sample(),
+        &gpuDrivenTerrainP1UnifiedSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
 }

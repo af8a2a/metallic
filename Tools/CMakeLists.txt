@@ -69,6 +69,21 @@ if(Python3_Interpreter_FOUND)
         COMMENT "Rendering the Terrain P0 StreamAsset smoke frame"
         VERBATIM
     )
+
+    add_custom_target(MetallicTerrainP1Smoke
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:SDL3::SDL3>"
+            "$<TARGET_FILE_DIR:MetallicGPUDrivenSample>"
+        COMMAND "$<TARGET_FILE:MetallicGPUDrivenSample>"
+            --terrain-p1
+            --smoke-test
+        DEPENDS
+            MetallicGPUDrivenSample
+            MetallicTerrainP0
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Rendering the Terrain P1 unified GPUScene/StreamAsset smoke frame"
+        VERBATIM
+    )
 else()
     message(STATUS "Python3 was not found; Terrain P0 build targets are unavailable")
 endif()

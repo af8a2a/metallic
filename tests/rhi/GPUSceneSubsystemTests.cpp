@@ -9,10 +9,49 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace metallic::tests {
 namespace {
+
+static_assert(sizeof(render::VisibleClusterRecord) == 16u);
+static_assert(alignof(render::VisibleClusterRecord) == 16u);
+static_assert(std::is_same_v<
+    render::GPUSceneGpuMeshletDrawRecord,
+    render::VisibleClusterRecord>);
+
+class GPUDrivenRasterVisibilityIdContractTest final : public RhiTest {
+public:
+    GPUDrivenRasterVisibilityIdContractTest()
+    {
+        type = RhiTestType::Validation;
+        name = "gpu_driven_raster_visibility_id_contract";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const uint32_t highestVisibilityId =
+            ((render::kVisibilityMaxRecordIndex + 1u) <<
+                render::kVisibilityTriangleBits) |
+            render::kVisibilityTriangleMask;
+        const uint32_t firstInvalidVisibilityId =
+            (render::kVisibilityMaxRecordCount + 1u) <<
+            render::kVisibilityTriangleBits;
+        if (highestVisibilityId != std::numeric_limits<uint32_t>::max() ||
+            firstInvalidVisibilityId != 0u ||
+            !render::visibilityRecordCapacityFitsId(
+                render::kVisibilityMaxRecordCount) ||
+            render::visibilityRecordCapacityFitsId(
+                static_cast<uint64_t>(render::kVisibilityMaxRecordCount) + 1u)) {
+            return RhiTestResult::fail(
+                "common visibility ID record capacity contract is incorrect");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GPUDrivenRasterVisibilityIdContractTest);
 
 scene::RenderPrimitive makeTrianglePrimitive(float firstVertexX = 0.0f)
 {
@@ -1110,7 +1149,9 @@ public:
                 views.indices.size != 6u * sizeof(uint32_t) ||
                 views.meshlets.size != 3u * sizeof(render::GPUSceneGpuMeshletRecord) ||
                 views.meshletDraws.size !=
-                    6u * sizeof(render::GPUSceneGpuMeshletDrawRecord) ||
+                    6u * sizeof(render::VisibleClusterRecord) ||
+                views.meshletDraws.structureStride !=
+                    sizeof(render::VisibleClusterRecord) ||
                 views.meshletVertices.size != 9u * sizeof(uint32_t) ||
                 // Three local u8 triangle triplets pack into three uint words.
                 views.meshletTriangleWords.size != 3u * sizeof(uint32_t) ||
@@ -1326,13 +1367,18 @@ public:
                 meshletDrawRecords[firstDraw];
             const render::GPUSceneGpuMeshletDrawRecord& blend =
                 meshletDrawRecords[firstDraw + 1u];
-            if (opaque.meshletIndex != expectedMeshlet || opaque.instanceIndex != 0 ||
-                opaque.geometryIndex != 0 ||
-                opaque.drawBucket != static_cast<uint32_t>(
+            if (opaque.clusterIndex != expectedMeshlet || opaque.instanceIndex != 0 ||
+                opaque.dataIndex != 0 ||
+                (opaque.flags & render::kVisibleClusterDrawBucketMask) != static_cast<uint32_t>(
                     render::GPUSceneDrawBucket::OpaqueSingleSided) ||
-                blend.meshletIndex != expectedMeshlet || blend.instanceIndex != 1 ||
-                blend.geometryIndex != 0 ||
-                blend.drawBucket != static_cast<uint32_t>(render::GPUSceneDrawBucket::Blend)) {
+                render::visibleClusterSource(opaque.flags) !=
+                    render::VisibleClusterSource::Resident ||
+                blend.clusterIndex != expectedMeshlet || blend.instanceIndex != 1 ||
+                blend.dataIndex != 0 ||
+                (blend.flags & render::kVisibleClusterDrawBucketMask) !=
+                    static_cast<uint32_t>(render::GPUSceneDrawBucket::Blend) ||
+                render::visibleClusterSource(blend.flags) !=
+                    render::VisibleClusterSource::Resident) {
                 return RhiTestResult::fail(
                     "GPUScene MeshletDraws do not use dense global instance IDs or retain BLEND");
             }

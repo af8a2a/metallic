@@ -331,8 +331,74 @@ def write_terrain_gltf(
     normals = np.ascontiguousarray(normals, dtype="<f4")
     texcoords = np.ascontiguousarray(texcoords, dtype="<f4")
     indices = np.ascontiguousarray(indices, dtype="<u4")
+
+    triangle_indices = indices.reshape(-1, 3)
+    triangle_positions = positions[triangle_indices]
+    triangle_texcoords = texcoords[triangle_indices]
+    edge_position_1 = triangle_positions[:, 1] - triangle_positions[:, 0]
+    edge_position_2 = triangle_positions[:, 2] - triangle_positions[:, 0]
+    edge_texcoord_1 = triangle_texcoords[:, 1] - triangle_texcoords[:, 0]
+    edge_texcoord_2 = triangle_texcoords[:, 2] - triangle_texcoords[:, 0]
+    determinants = (
+        edge_texcoord_1[:, 0] * edge_texcoord_2[:, 1]
+        - edge_texcoord_1[:, 1] * edge_texcoord_2[:, 0]
+    )
+    valid_triangles = np.abs(determinants) > np.float32(1.0e-8)
+    inverse_determinants = np.zeros_like(determinants)
+    inverse_determinants[valid_triangles] = 1.0 / determinants[valid_triangles]
+    triangle_tangents = (
+        edge_position_1 * edge_texcoord_2[:, 1:2]
+        - edge_position_2 * edge_texcoord_1[:, 1:2]
+    ) * inverse_determinants[:, None]
+    triangle_bitangents = (
+        edge_position_2 * edge_texcoord_1[:, 0:1]
+        - edge_position_1 * edge_texcoord_2[:, 0:1]
+    ) * inverse_determinants[:, None]
+    accumulated_tangents = np.zeros_like(normals)
+    accumulated_bitangents = np.zeros_like(normals)
+    for corner in range(3):
+        np.add.at(accumulated_tangents, triangle_indices[:, corner], triangle_tangents)
+        np.add.at(accumulated_bitangents, triangle_indices[:, corner], triangle_bitangents)
+
+    tangent_xyz = accumulated_tangents - normals * np.sum(
+        normals * accumulated_tangents,
+        axis=1,
+        keepdims=True,
+    )
+    tangent_lengths = np.linalg.norm(tangent_xyz, axis=1, keepdims=True)
+    fallback_mask = tangent_lengths[:, 0] < 1.0e-6
+    reference_x = np.asarray((1.0, 0.0, 0.0), dtype=np.float32)
+    if np.any(fallback_mask):
+        fallback_normals = normals[fallback_mask]
+        tangent_xyz[fallback_mask] = reference_x - fallback_normals * np.sum(
+            fallback_normals * reference_x,
+            axis=1,
+            keepdims=True,
+        )
+        tangent_lengths = np.linalg.norm(tangent_xyz, axis=1, keepdims=True)
+        fallback_mask = tangent_lengths[:, 0] < 1.0e-6
+    if np.any(fallback_mask):
+        reference_z = np.asarray((0.0, 0.0, 1.0), dtype=np.float32)
+        fallback_normals = normals[fallback_mask]
+        tangent_xyz[fallback_mask] = reference_z - fallback_normals * np.sum(
+            fallback_normals * reference_z,
+            axis=1,
+            keepdims=True,
+        )
+        tangent_lengths = np.linalg.norm(tangent_xyz, axis=1, keepdims=True)
+    tangent_xyz /= np.maximum(tangent_lengths, 1.0e-6)
+    handedness = np.where(
+        np.sum(np.cross(normals, tangent_xyz) * accumulated_bitangents, axis=1) < 0.0,
+        -1.0,
+        1.0,
+    ).astype(np.float32)
+    tangents = np.ascontiguousarray(
+        np.concatenate((tangent_xyz, handedness[:, None]), axis=1),
+        dtype="<f4",
+    )
     position_view = append_buffer_view(positions, 34962)
     normal_view = append_buffer_view(normals, 34962)
+    tangent_view = append_buffer_view(tangents, 34962)
     texcoord_view = append_buffer_view(texcoords, 34962)
     index_view = append_buffer_view(indices, 34963)
 
@@ -353,8 +419,13 @@ def write_terrain_gltf(
                 "name": terrain_name,
                 "primitives": [
                     {
-                        "attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2},
-                        "indices": 3,
+                        "attributes": {
+                            "POSITION": 0,
+                            "NORMAL": 1,
+                            "TANGENT": 2,
+                            "TEXCOORD_0": 3,
+                        },
+                        "indices": 4,
                         "material": 0,
                         "mode": 4,
                     }
@@ -388,6 +459,12 @@ def write_terrain_gltf(
                 "componentType": 5126,
                 "count": int(normals.shape[0]),
                 "type": "VEC3",
+            },
+            {
+                "bufferView": tangent_view,
+                "componentType": 5126,
+                "count": int(tangents.shape[0]),
+                "type": "VEC4",
             },
             {
                 "bufferView": texcoord_view,

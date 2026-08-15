@@ -324,6 +324,9 @@ public:
     ConstSceneObject objectForSourceNode(
         std::string_view sourceId,
         int32_t sourceNodeIndex) const;
+    int32_t renderNodeIndexForSource(
+        std::string_view sourceId,
+        int32_t sourceRenderNodeIndex) const;
     const std::vector<SceneSourceDesc>& sources() const { return sources_; }
     const std::vector<int32_t>& rootNodeIndices() const { return rootNodeIndices_; }
     const std::vector<SceneNode>& nodes() const { return nodes_; }
@@ -349,6 +352,12 @@ private:
         size_t primitiveCount = 0;
         int32_t meshBase = 0;
         int32_t materialBase = 0;
+    };
+
+    struct SourceRenderNodeRange {
+        std::string sourceId;
+        size_t offset = 0;
+        size_t count = 0;
     };
 
     bool loadInternal(
@@ -380,6 +389,7 @@ private:
     std::vector<RenderLight> lights_;
     std::vector<SceneSourceDesc> sources_;
     std::vector<SceneEntity> sourceMountObjects_;
+    std::vector<SourceRenderNodeRange> sourceRenderNodeRanges_;
     std::vector<DeferredMeshletCacheTarget> deferredMeshletCacheTargets_;
     std::vector<uint8_t> deferredMeshletBuildMask_;
     bool deferredMeshletBuild_ = false;

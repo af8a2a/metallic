@@ -2852,6 +2852,11 @@ bool Scene::compose(
                 "' exceeds 32-bit flattened scene index capacity.";
             return false;
         }
+        composed.sourceRenderNodeRanges_.push_back(SourceRenderNodeRange{
+            .sourceId = sourceDesc.id,
+            .offset = renderNodeBase,
+            .count = source.renderNodes().size(),
+        });
 
         int32_t sourceCameraResourceCount = 0;
         int32_t sourceLightResourceCount = 0;
@@ -3903,6 +3908,11 @@ bool Scene::loadInternal(
 
     stats_.primitiveCount = renderPrimitives_.size();
     stats_.renderNodeCount = renderNodes_.size();
+    sourceRenderNodeRanges_.push_back(SourceRenderNodeRange{
+        .sourceId = "main",
+        .offset = 0,
+        .count = renderNodes_.size(),
+    });
     if (!reportSceneLoadProgress(
             progressCallback,
             SceneLoadPhase::Finalizing,
@@ -4049,6 +4059,26 @@ ConstSceneObject Scene::objectForSourceNode(
         }
     }
     return {};
+}
+
+int32_t Scene::renderNodeIndexForSource(
+    std::string_view sourceId,
+    int32_t sourceRenderNodeIndex) const
+{
+    if (sourceRenderNodeIndex < 0) {
+        return kInvalidSceneIndex;
+    }
+    for (const SourceRenderNodeRange& range : sourceRenderNodeRanges_) {
+        if (range.sourceId != sourceId ||
+            static_cast<size_t>(sourceRenderNodeIndex) >= range.count ||
+            range.offset > static_cast<size_t>(std::numeric_limits<int32_t>::max()) -
+                static_cast<size_t>(sourceRenderNodeIndex)) {
+            continue;
+        }
+        return static_cast<int32_t>(
+            range.offset + static_cast<size_t>(sourceRenderNodeIndex));
+    }
+    return kInvalidSceneIndex;
 }
 
 bool Scene::setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix)
@@ -4371,6 +4401,7 @@ void Scene::clearParsedData()
     lights_.clear();
     sources_.clear();
     sourceMountObjects_.clear();
+    sourceRenderNodeRanges_.clear();
     deferredMeshletCacheTargets_.clear();
     deferredMeshletBuildMask_.clear();
     deferredMeshletBuild_ = false;

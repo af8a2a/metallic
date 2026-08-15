@@ -656,6 +656,9 @@ struct GPUDrivenPreviewUserPush {
     uint32_t materialTextureRemapBuffer = 0;
     uint32_t environmentImage = 0;
     uint32_t environmentSHBuffer = 0;
+    uint32_t streamDeferredBindingsBuffer = std::numeric_limits<uint32_t>::max();
+    uint32_t residentRecordCapacity = 0;
+    uint32_t streamOwnerMaskBuffer = std::numeric_limits<uint32_t>::max();
 };
 
 static_assert(sizeof(GPUDrivenPreviewGpuVertex) == 64);
@@ -672,7 +675,7 @@ static_assert(sizeof(GPUSceneGpuMeshletDrawRecord) == 16);
 static_assert(sizeof(GPUSceneGpuInstanceRecord) == 160);
 static_assert(sizeof(GPUSceneGpuGeometryRecord) == 96);
 static_assert(sizeof(GPUDrivenPreviewGpuParams) == 336);
-static_assert(sizeof(GPUDrivenPreviewUserPush) == 108);
+static_assert(sizeof(GPUDrivenPreviewUserPush) == 120);
 
 struct SceneMaterialVisualizationPush {
     float eye[4] = {};

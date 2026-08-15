@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Scene/scene.h"
 
@@ -168,12 +169,7 @@ struct alignas(16) GPUSceneGpuMeshletRecord {
     std::array<float, 4> coneAxisLodError{};
 };
 
-struct alignas(16) GPUSceneGpuMeshletDrawRecord {
-    uint32_t meshletIndex = 0;
-    uint32_t instanceIndex = 0;
-    uint32_t geometryIndex = 0;
-    uint32_t drawBucket = 0;
-};
+using GPUSceneGpuMeshletDrawRecord = VisibleClusterRecord;
 
 struct alignas(16) GPUSceneGpuDescriptorRemapRecord {
     // Logical texture ID from the material system. descriptorIndex remains

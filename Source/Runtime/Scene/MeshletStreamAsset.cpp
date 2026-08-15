@@ -32,12 +32,12 @@ namespace {
 constexpr std::array<char, 8> kMeshletStreamMagic{'M', 'T', 'L', 'M', 'S', 'T', 'R', 'M'};
 constexpr std::array<char, 8> kMeshletStreamPartialMagic{'M', 'T', 'L', 'M', 'S', 'P', 'R', 'T'};
 constexpr std::array<char, 8> kMeshoptDecodeCacheMagic{'M', 'T', 'L', 'M', 'O', 'P', 'T', 'C'};
-constexpr uint32_t kMeshletStreamVersion = 7;
-constexpr uint32_t kMeshletStreamPartialVersion = 6;
+constexpr uint32_t kMeshletStreamVersion = 8;
+constexpr uint32_t kMeshletStreamPartialVersion = 7;
 constexpr uint32_t kMeshoptDecodeCacheVersion = 1;
 constexpr uint32_t kMeshletStreamEndian = 0x01020304;
 constexpr uint32_t kPayloadMagic = 0x4d535047u; // "GSPM"
-constexpr uint32_t kPayloadVersion = 3;
+constexpr uint32_t kPayloadVersion = 4;
 constexpr uint64_t kFileAlignment = 16;
 constexpr uint64_t kPageSlotAlignment = 256;
 constexpr uint32_t kMeshletClusterMaxVertices = 128;
@@ -152,8 +152,19 @@ static_assert(std::is_trivially_copyable_v<MeshletStreamNodeInfo>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPageInfo>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPayloadHeader>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPayloadCluster>);
-static_assert(sizeof(MeshletStreamPayloadHeader) == 96);
-static_assert(sizeof(MeshletStreamPayloadCluster) == 36);
+static_assert(sizeof(MeshletStreamPayloadHeader) == 112);
+static_assert(offsetof(MeshletStreamPayloadHeader, clusterOffsetBytes) == 36);
+static_assert(offsetof(MeshletStreamPayloadHeader, positionOffsetBytes) == 40);
+static_assert(offsetof(MeshletStreamPayloadHeader, triangleOffsetBytes) == 44);
+static_assert(offsetof(MeshletStreamPayloadHeader, normalOffsetBytes) == 64);
+static_assert(offsetof(MeshletStreamPayloadHeader, texcoord0OffsetBytes) == 68);
+static_assert(offsetof(MeshletStreamPayloadHeader, tangentOffsetBytes) == 96);
+static_assert(offsetof(MeshletStreamPayloadHeader, tangentFormat) == 100);
+static_assert(sizeof(MeshletStreamPayloadCluster) == 96);
+static_assert(offsetof(MeshletStreamPayloadCluster, refinedGroupIndex) == 32);
+static_assert(offsetof(MeshletStreamPayloadCluster, boundingSphere) == 48);
+static_assert(offsetof(MeshletStreamPayloadCluster, coneApexCutoff) == 64);
+static_assert(offsetof(MeshletStreamPayloadCluster, coneAxisLodError) == 80);
 static_assert(sizeof(MeshletStreamGroupInfo) == 36);
 static_assert(sizeof(MeshletStreamNodeInfo) == 48);
 
@@ -487,6 +498,10 @@ bool validatePayloadHeader(
         (payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeNormal) != 0u
             ? static_cast<uint64_t>(payloadHeader.vertexCount) * sizeof(float) * 4u
             : 0u;
+    const uint64_t tangentBytes =
+        (payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeTangent) != 0u
+            ? static_cast<uint64_t>(payloadHeader.vertexCount) * sizeof(float) * 4u
+            : 0u;
     const uint64_t texcoord0Bytes =
         (payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeTexcoord0) != 0u
             ? static_cast<uint64_t>(payloadHeader.vertexCount) * sizeof(float) * 2u
@@ -500,6 +515,8 @@ bool validatePayloadHeader(
         payloadHeader.positionOffsetBytes % 16u != 0 ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeNormal) != 0u &&
             payloadHeader.normalOffsetBytes % 16u != 0) ||
+        ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeTangent) != 0u &&
+            payloadHeader.tangentOffsetBytes % 16u != 0) ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeTexcoord0) != 0u &&
             payloadHeader.texcoord0OffsetBytes % 8u != 0) ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeMaterial) != 0u &&
@@ -508,6 +525,7 @@ bool validatePayloadHeader(
         !byteRangeWithin(payloadSize, payloadHeader.clusterOffsetBytes, clusterBytes) ||
         !byteRangeWithin(payloadSize, payloadHeader.positionOffsetBytes, positionBytes) ||
         !byteRangeWithin(payloadSize, payloadHeader.normalOffsetBytes, normalBytes) ||
+        !byteRangeWithin(payloadSize, payloadHeader.tangentOffsetBytes, tangentBytes) ||
         !byteRangeWithin(payloadSize, payloadHeader.texcoord0OffsetBytes, texcoord0Bytes) ||
         !byteRangeWithin(payloadSize, payloadHeader.materialOffsetBytes, materialBytes) ||
         !byteRangeWithin(payloadSize, payloadHeader.triangleOffsetBytes, triangleBytes)) {
@@ -526,6 +544,8 @@ bool validatePayloadHeader(
         payloadHeader.positionFormat != static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4) ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeNormal) != 0u &&
             payloadHeader.normalFormat != static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4)) ||
+        ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeTangent) != 0u &&
+            payloadHeader.tangentFormat != static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4)) ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeTexcoord0) != 0u &&
             payloadHeader.texcoord0Format != static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x2)) ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeMaterial) != 0u &&
@@ -556,6 +576,13 @@ bool validateDevicePayloadClusters(
         reason = "streamasset device payload cluster directory is truncated";
         return false;
     }
+    if (!byteRangeWithin(
+            devicePayload.size(),
+            header.triangleOffsetBytes,
+            header.triangleIndexCount)) {
+        reason = "streamasset device payload triangle data is truncated";
+        return false;
+    }
     for (uint32_t clusterIndex = 0; clusterIndex < header.clusterCount; ++clusterIndex) {
         MeshletStreamPayloadCluster cluster;
         std::memcpy(
@@ -563,10 +590,26 @@ bool validateDevicePayloadClusters(
             devicePayload.data() + header.clusterOffsetBytes +
                 static_cast<uint64_t>(clusterIndex) * sizeof(cluster),
             sizeof(cluster));
+        const bool validClusterBounds =
+            std::isfinite(cluster.boundingSphere[0]) &&
+            std::isfinite(cluster.boundingSphere[1]) &&
+            std::isfinite(cluster.boundingSphere[2]) &&
+            std::isfinite(cluster.boundingSphere[3]) &&
+            cluster.boundingSphere[3] >= 0.0f;
+        bool validClusterCone = std::isfinite(cluster.coneApexCutoff[3]) &&
+            std::isfinite(cluster.coneAxisLodError[3]) &&
+            cluster.coneAxisLodError[3] >= 0.0f;
+        for (uint32_t component = 0; component < 3u; ++component) {
+            validClusterCone = validClusterCone &&
+                std::isfinite(cluster.coneApexCutoff[component]) &&
+                std::isfinite(cluster.coneAxisLodError[component]);
+        }
         if (cluster.vertexCount == 0 ||
+            cluster.vertexCount > kMeshletClusterMaxVertices ||
             cluster.vertexOffset > header.vertexCount ||
             cluster.vertexCount > header.vertexCount - cluster.vertexOffset ||
             cluster.triangleCount == 0 ||
+            cluster.triangleCount > kMeshletClusterMaxTriangles ||
             cluster.triangleOffset > header.triangleIndexCount ||
             static_cast<uint64_t>(cluster.triangleCount) * 3u >
                 header.triangleIndexCount - cluster.triangleOffset ||
@@ -574,11 +617,23 @@ bool validateDevicePayloadClusters(
             cluster.materialIndex != page.materialIndex ||
             cluster.lodLevel != page.lodLevel ||
             cluster.lodGroupIndex != page.lodGroupIndex ||
+            !validClusterBounds ||
+            !validClusterCone ||
             (cluster.refinedGroupIndex != kMeshletStreamInvalidGroupIndex &&
                 (cluster.refinedGroupIndex < page.primitiveGroupOffset ||
                     cluster.refinedGroupIndex >= page.lodGroupIndex))) {
             reason = "streamasset device payload cluster metadata is invalid";
             return false;
+        }
+        const uint64_t triangleBegin =
+            static_cast<uint64_t>(header.triangleOffsetBytes) + cluster.triangleOffset;
+        const uint64_t triangleIndexCount =
+            static_cast<uint64_t>(cluster.triangleCount) * 3u;
+        for (uint64_t index = 0; index < triangleIndexCount; ++index) {
+            if (devicePayload[triangleBegin + index] >= cluster.vertexCount) {
+                reason = "streamasset device payload triangle index is outside its cluster vertex range";
+                return false;
+            }
         }
     }
     return true;
@@ -674,6 +729,13 @@ struct PayloadNormal {
     float w = 0.0f;
 };
 
+struct PayloadTangent {
+    float x = 1.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float w = 1.0f;
+};
+
 struct PayloadTexcoord {
     float x = 0.0f;
     float y = 0.0f;
@@ -717,14 +779,19 @@ bool buildPagePayload(
     std::vector<MeshletStreamPayloadCluster> payloadClusters;
     std::vector<PayloadPosition> payloadPositions;
     std::vector<PayloadNormal> payloadNormals;
+    std::vector<PayloadTangent> payloadTangents;
     std::vector<PayloadTexcoord> payloadTexcoords0;
     std::vector<uint32_t> payloadMaterials;
     std::vector<uint8_t> payloadTriangles;
     payloadClusters.reserve(input.clusterCount);
     const bool hasNormals = input.primitive->normals.size() == input.primitive->positions.size();
+    const bool hasTangents = input.primitive->tangents.size() == input.primitive->positions.size();
     const bool hasTexcoords0 = input.primitive->texcoords0.size() == input.primitive->positions.size();
     if (hasNormals) {
         payloadNormals.reserve(input.clusterCount * kMeshletClusterMaxVertices);
+    }
+    if (hasTangents) {
+        payloadTangents.reserve(input.clusterCount * kMeshletClusterMaxVertices);
     }
     if (hasTexcoords0) {
         payloadTexcoords0.reserve(input.clusterCount * kMeshletClusterMaxVertices);
@@ -763,6 +830,15 @@ bool buildPagePayload(
                 const float3& normal = input.primitive->normals[sourceVertex];
                 payloadNormals.push_back(PayloadNormal{normal.x, normal.y, normal.z, 0.0f});
             }
+            if (hasTangents) {
+                const float4& tangent = input.primitive->tangents[sourceVertex];
+                payloadTangents.push_back(PayloadTangent{
+                    tangent.x,
+                    tangent.y,
+                    tangent.z,
+                    tangent.w,
+                });
+            }
             if (hasTexcoords0) {
                 const float2& texcoord = input.primitive->texcoords0[sourceVertex];
                 payloadTexcoords0.push_back(PayloadTexcoord{texcoord.x, texcoord.y});
@@ -792,6 +868,24 @@ bool buildPagePayload(
             .refinedGroupIndex = cluster.refinedGroupIndex < 0
                 ? kMeshletStreamInvalidGroupIndex
                 : input.groupIndexOffset + static_cast<uint32_t>(cluster.refinedGroupIndex),
+            .boundingSphere = {
+                cluster.boundingSphereCenter.x,
+                cluster.boundingSphereCenter.y,
+                cluster.boundingSphereCenter.z,
+                std::max(cluster.boundingSphereRadius, 0.0f),
+            },
+            .coneApexCutoff = {
+                cluster.coneApex.x,
+                cluster.coneApex.y,
+                cluster.coneApex.z,
+                cluster.coneCutoff,
+            },
+            .coneAxisLodError = {
+                cluster.coneAxis.x,
+                cluster.coneAxis.y,
+                cluster.coneAxis.z,
+                std::max(cluster.lodError, 0.0f),
+            },
         });
         payloadMaterials.push_back(input.materialIndex);
     }
@@ -815,6 +909,10 @@ bool buildPagePayload(
         header.attributeFlags |= kMeshletStreamPayloadAttributeNormal;
         header.normalFormat = static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4);
     }
+    if (hasTangents) {
+        header.attributeFlags |= kMeshletStreamPayloadAttributeTangent;
+        header.tangentFormat = static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4);
+    }
     if (hasTexcoords0) {
         header.attributeFlags |= kMeshletStreamPayloadAttributeTexcoord0;
         header.texcoord0Format = static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x2);
@@ -831,6 +929,11 @@ bool buildPagePayload(
         appendPadding(outPayload, 16);
         header.normalOffsetBytes = static_cast<uint32_t>(outPayload.size());
         appendBytes(outPayload, payloadNormals.data(), payloadNormals.size() * sizeof(PayloadNormal));
+    }
+    if (hasTangents) {
+        appendPadding(outPayload, 16);
+        header.tangentOffsetBytes = static_cast<uint32_t>(outPayload.size());
+        appendBytes(outPayload, payloadTangents.data(), payloadTangents.size() * sizeof(PayloadTangent));
     }
     if (hasTexcoords0) {
         appendPadding(outPayload, 8);
@@ -2290,6 +2393,42 @@ float readAccessorFloatComponentForStreamBuilder(
     }
 }
 
+std::vector<float4> readFloat4AccessorForStreamBuilder(
+    const StreamGltfSource& source,
+    const tinygltf::Accessor& accessor,
+    std::string& reason)
+{
+    std::vector<float4> values;
+    const int32_t componentSize = tinygltf::GetComponentSizeInBytes(accessor.componentType);
+    if (accessor.type != TINYGLTF_TYPE_VEC4 || componentSize <= 0) {
+        return values;
+    }
+
+    std::vector<uint8_t> bytes;
+    size_t stride = 0;
+    if (!readAccessorRangeForStreamBuilder(
+            source,
+            accessor,
+            static_cast<size_t>(componentSize) * 4u,
+            bytes,
+            stride,
+            reason)) {
+        return values;
+    }
+
+    values.reserve(accessor.count);
+    for (size_t index = 0; index < accessor.count; ++index) {
+        const uint8_t* data = bytes.data() + stride * index;
+        const size_t componentByteSize = static_cast<size_t>(componentSize);
+        values.emplace_back(
+            readAccessorFloatComponentForStreamBuilder(accessor, data),
+            readAccessorFloatComponentForStreamBuilder(accessor, data + componentByteSize),
+            readAccessorFloatComponentForStreamBuilder(accessor, data + componentByteSize * 2u),
+            readAccessorFloatComponentForStreamBuilder(accessor, data + componentByteSize * 3u));
+    }
+    return values;
+}
+
 std::vector<float3> readFloat3AccessorForStreamBuilder(
     const StreamGltfSource& source,
     const tinygltf::Accessor& accessor,
@@ -2415,6 +2554,87 @@ std::vector<uint32_t> readIndexAccessorForStreamBuilder(
         }
     }
     return indices;
+}
+
+float3 normalizedOrForStreamBuilder(const float3& value, const float3& fallback)
+{
+    const float lengthSquared = dot(value, value);
+    return lengthSquared > 0.00000001f
+        ? value * (1.0f / std::sqrt(lengthSquared))
+        : fallback;
+}
+
+float3 fallbackTangentForStreamBuilder(const float3& normal)
+{
+    const float3 axis = std::abs(normal.z) < 0.999f
+        ? float3(0.0f, 0.0f, 1.0f)
+        : float3(0.0f, 1.0f, 0.0f);
+    return normalizedOrForStreamBuilder(
+        cross(axis, normal),
+        float3(1.0f, 0.0f, 0.0f));
+}
+
+void generateTangentsForStreamBuilder(RenderPrimitive& primitive)
+{
+    if (!primitive.tangents.empty() ||
+        primitive.positions.empty() ||
+        primitive.normals.size() != primitive.positions.size() ||
+        primitive.texcoords0.size() != primitive.positions.size()) {
+        return;
+    }
+
+    std::vector<float3> accumulatedTangents(
+        primitive.positions.size(),
+        float3(0.0f, 0.0f, 0.0f));
+    std::vector<float3> accumulatedBitangents(
+        primitive.positions.size(),
+        float3(0.0f, 0.0f, 0.0f));
+    const size_t indexCount = (primitive.indices.size() / 3u) * 3u;
+    for (size_t index = 0; index + 2u < indexCount; index += 3u) {
+        const uint32_t i0 = primitive.indices[index + 0u];
+        const uint32_t i1 = primitive.indices[index + 1u];
+        const uint32_t i2 = primitive.indices[index + 2u];
+        if (i0 >= primitive.positions.size() ||
+            i1 >= primitive.positions.size() ||
+            i2 >= primitive.positions.size()) {
+            continue;
+        }
+        const float3 edge1 = primitive.positions[i1] - primitive.positions[i0];
+        const float3 edge2 = primitive.positions[i2] - primitive.positions[i0];
+        const float2 uv1 = primitive.texcoords0[i1] - primitive.texcoords0[i0];
+        const float2 uv2 = primitive.texcoords0[i2] - primitive.texcoords0[i0];
+        const float determinant = uv1.x * uv2.y - uv1.y * uv2.x;
+        if (std::abs(determinant) <= 0.0000001f) {
+            continue;
+        }
+        const float inverseDeterminant = 1.0f / determinant;
+        const float3 tangent = (edge1 * uv2.y - edge2 * uv1.y) * inverseDeterminant;
+        const float3 bitangent = (edge2 * uv1.x - edge1 * uv2.x) * inverseDeterminant;
+        accumulatedTangents[i0] = accumulatedTangents[i0] + tangent;
+        accumulatedTangents[i1] = accumulatedTangents[i1] + tangent;
+        accumulatedTangents[i2] = accumulatedTangents[i2] + tangent;
+        accumulatedBitangents[i0] = accumulatedBitangents[i0] + bitangent;
+        accumulatedBitangents[i1] = accumulatedBitangents[i1] + bitangent;
+        accumulatedBitangents[i2] = accumulatedBitangents[i2] + bitangent;
+    }
+
+    primitive.tangents.reserve(primitive.positions.size());
+    for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
+        const float3 normal = normalizedOrForStreamBuilder(
+            primitive.normals[vertexIndex],
+            float3(0.0f, 1.0f, 0.0f));
+        float3 tangent = accumulatedTangents[vertexIndex] -
+            normal * dot(normal, accumulatedTangents[vertexIndex]);
+        tangent = normalizedOrForStreamBuilder(
+            tangent,
+            fallbackTangentForStreamBuilder(normal));
+        const float handedness = dot(
+            cross(normal, tangent),
+            accumulatedBitangents[vertexIndex]) < 0.0f
+            ? -1.0f
+            : 1.0f;
+        primitive.tangents.emplace_back(tangent.x, tangent.y, tangent.z, handedness);
+    }
 }
 
 uint64_t triangleCountForStreamPrimitive(int32_t mode, uint64_t elementCount)
@@ -3101,6 +3321,20 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
         }
     }
 
+    const auto tangentAccessorIter = gltfPrimitive.attributes.find("TANGENT");
+    if (tangentAccessorIter != gltfPrimitive.attributes.end() &&
+        validGltfIndex(tangentAccessorIter->second, model.accessors.size())) {
+        outPrimitive.tangents = readFloat4AccessorForStreamBuilder(
+            source,
+            model.accessors[static_cast<size_t>(tangentAccessorIter->second)],
+            reason);
+        if (outPrimitive.tangents.size() != outPrimitive.positions.size()) {
+            outPrimitive.tangents.clear();
+        } else {
+            outPrimitive.hasAuthoredTangents = true;
+        }
+    }
+
     if (validGltfIndex(gltfPrimitive.indices, model.accessors.size())) {
         const tinygltf::Accessor& indexAccessor =
             model.accessors[static_cast<size_t>(gltfPrimitive.indices)];
@@ -3119,6 +3353,7 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
     }
 
     outPrimitive.triangleCount = triangleCountForStreamPrimitive(outPrimitive.mode, outPrimitive.indexCount);
+    generateTangentsForStreamBuilder(outPrimitive);
     return true;
 }
 
