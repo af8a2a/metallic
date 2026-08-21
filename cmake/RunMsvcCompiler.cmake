@@ -38,7 +38,7 @@ string(REPLACE
 # Under Ninja, recent MSVC builds may switch redirected output to UTF-8. If
 # that stream is reported as OEM, CMake exposes this deterministic mojibake.
 string(REPLACE
-    "娉ㄦ剰: 鍖呭惈鏂囦欢:"
+    "注意: 包含文件:"
     "Note: including file:"
     compilerOutput
     "${compilerOutput}"
@@ -50,7 +50,7 @@ string(REPLACE
     "${compilerError}"
 )
 string(REPLACE
-    "娉ㄦ剰: 鍖呭惈鏂囦欢:"
+    "注意: 包含文件:"
     "Note: including file:"
     compilerError
     "${compilerError}"
