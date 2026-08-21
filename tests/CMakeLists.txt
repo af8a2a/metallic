@@ -108,6 +108,7 @@ if(WIN32)
 
     metallic_copy_streamline_runtime(MetallicRhiTests)
     metallic_copy_aftermath_runtime(MetallicRhiTests)
+    metallic_copy_nrc_runtime(MetallicRhiTests)
 endif()
 
 if(WIN32)

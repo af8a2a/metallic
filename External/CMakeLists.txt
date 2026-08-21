@@ -209,6 +209,9 @@ if(METALLIC_NRD_ROOT AND EXISTS "${METALLIC_NRD_ROOT}/CMakeLists.txt")
     set(NRD_EMBEDS_DXBC_SHADERS OFF CACHE BOOL "" FORCE)
     set(NRD_NORMAL_ENCODING "2" CACHE STRING "" FORCE)
     set(NRD_ROUGHNESS_ENCODING "1" CACHE STRING "" FORCE)
+    # Generate embedded shader blobs into the build tree; the source-tree
+    # default may be write-protected in some deployments.
+    set(NRD_SHADERS_PATH "${CMAKE_BINARY_DIR}/External/nrd-shaders" CACHE STRING "" FORCE)
     if(TARGET ShaderMake)
         set(SHADERMAKE_PATH "$<TARGET_FILE:ShaderMake>" CACHE STRING "" FORCE)
     endif()

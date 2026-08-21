@@ -1421,6 +1421,17 @@ struct VulkanDeviceFeatureSelection {
     bool partitionedAccelerationStructure = false;
     bool streamline = false;
     bool aftermath = false;
+    // Vulkan 1.2 core features required by the NRC SDK (scalar/standard layouts,
+    // fp16/int16 shader capabilities) and by SHaRC's 64-bit hash-grid atomics.
+    // Enabled opportunistically.
+    bool scalarBlockLayout = false;
+    bool uniformBufferStandardLayout = false;
+    bool shaderBufferInt64Atomics = false;
+    bool shaderFloat16 = false;
+    bool shaderInt16 = false;
+    // Extension availability used by enabledDeviceExtensions().
+    bool nvxBinaryImport = false;
+    bool nvxImageViewHandle = false;
 
     static VulkanDeviceFeatureSelection select(
         const VulkanDeviceFeatureRequest& request,
@@ -1482,6 +1493,13 @@ struct VulkanDeviceFeatureSelection {
             result.rayQuery &&
             result.pushDescriptor;
         result.aftermath = request.aftermath && aftermathSupported;
+        result.scalarBlockLayout = probe.vulkan12Features.scalarBlockLayout == VK_TRUE;
+        result.uniformBufferStandardLayout = probe.vulkan12Features.uniformBufferStandardLayout == VK_TRUE;
+        result.shaderBufferInt64Atomics = probe.vulkan12Features.shaderBufferInt64Atomics == VK_TRUE;
+        result.shaderFloat16 = probe.vulkan12Features.shaderFloat16 == VK_TRUE;
+        result.shaderInt16 = probe.features.features.shaderInt16 == VK_TRUE;
+        result.nvxBinaryImport = extensions.streamlineBinaryImport;
+        result.nvxImageViewHandle = extensions.streamlineImageViewHandle;
         return result;
     }
 
@@ -1586,6 +1604,11 @@ struct VulkanEnabledFeatureChain {
         vulkan12Features.runtimeDescriptorArray = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         vulkan12Features.bufferDeviceAddress = selection.usesBufferDeviceAddress() ? VK_TRUE : VK_FALSE;
         vulkan12Features.timelineSemaphore = VK_TRUE;
+        vulkan12Features.scalarBlockLayout = selection.scalarBlockLayout ? VK_TRUE : VK_FALSE;
+        vulkan12Features.uniformBufferStandardLayout = selection.uniformBufferStandardLayout ? VK_TRUE : VK_FALSE;
+        vulkan12Features.shaderBufferInt64Atomics = selection.shaderBufferInt64Atomics ? VK_TRUE : VK_FALSE;
+        vulkan12Features.shaderFloat16 = selection.shaderFloat16 ? VK_TRUE : VK_FALSE;
+        features.features.shaderInt16 = selection.shaderInt16 ? VK_TRUE : VK_FALSE;
         vulkan13Features.synchronization2 = VK_TRUE;
         vulkan13Features.dynamicRendering = VK_TRUE;
         vulkan13Features.shaderDemoteToHelperInvocation =
@@ -1707,6 +1730,29 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
 #endif
 #if defined(VK_NV_device_diagnostics_config)
         extensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+#endif
+    }
+    if (selection.scalarBlockLayout) {
+        // The NRC SDK requires these extension names to be enabled even where
+        // the functionality is core in Vulkan 1.2.
+        extensions.push_back(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
+        extensions.push_back(VK_KHR_UNIFORM_BUFFER_STANDARD_LAYOUT_EXTENSION_NAME);
+    }
+    if (selection.usesBufferDeviceAddress()) {
+        // The NRC SDK checks for the pre-promotion extension name as well.
+        extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+        extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        // NRC's device setup expects these NVIDIA kernel-launch extensions to
+        // be enabled; they are inert unless explicitly used.
+#ifdef VK_NVX_binary_import
+        if (selection.nvxBinaryImport) {
+            extensions.push_back(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
+        }
+#endif
+#ifdef VK_NVX_image_view_handle
+        if (selection.nvxImageViewHandle) {
+            extensions.push_back(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME);
+        }
 #endif
     }
     return extensions;
@@ -5578,6 +5624,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     if (debugUtilsAvailable) {
         instanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         deviceImpl->debugUtilsEnabled = true;
+    }
+    // Required by the NRC SDK's physical-device feature queries.
+    if (hasName(availableExtensions, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)) {
+        instanceExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
     }
 
     std::vector<const char*> instanceLayers;

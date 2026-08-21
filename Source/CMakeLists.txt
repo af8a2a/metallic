@@ -68,6 +68,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
     Runtime/Render/GAPI/Vulkan/VulkanMeshletStreamClas.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.cpp
     Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.cpp
     Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp
@@ -95,6 +96,7 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     metallic::aftermath
     metallic::nsight_events
     metallic::streamline
+    metallic::nrc
     nlohmann_json
     slang::slang
     spdlog::spdlog
@@ -273,6 +275,7 @@ if(WIN32)
 
     metallic_copy_streamline_runtime(Metallic)
     metallic_copy_aftermath_runtime(Metallic)
+    metallic_copy_nrc_runtime(Metallic)
 endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -325,6 +328,7 @@ function(configure_metallic_editor_sample target_name)
 
         metallic_copy_streamline_runtime(${target_name})
         metallic_copy_aftermath_runtime(${target_name})
+        metallic_copy_nrc_runtime(${target_name})
     endif()
 endfunction()
 

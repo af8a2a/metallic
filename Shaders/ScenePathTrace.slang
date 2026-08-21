@@ -20,6 +20,93 @@
 #include <rtxcr/HairChiangBSDF.hlsli>
 #endif
 
+// ---------------------------------------------------------------------------
+// Radiance cache integration (reference: RTXGI v2 SDK)
+//
+// The same entry point is compiled into several permutations:
+//   (no defines)      plain path tracing
+//   SHARC_UPDATE=1    sparse SHaRC update pass (populates the hash-grid cache)
+//   SHARC_QUERY=1     full-resolution pass with SHaRC early termination
+//   NRC_UPDATE=1      NRC training pass at reduced resolution
+//   NRC_QUERY=1       full-resolution pass creating NRC queries; outputs
+//                     linear HDR that the NRC resolve adds onto before the
+//                     separate tonemap pass
+// ---------------------------------------------------------------------------
+#if defined(SHARC_UPDATE) || defined(SHARC_QUERY)
+#define METALLIC_PT_SHARC 1
+#else
+#define METALLIC_PT_SHARC 0
+#endif
+
+#if defined(NRC_UPDATE) || defined(NRC_QUERY)
+#define METALLIC_PT_NRC 1
+#else
+#define METALLIC_PT_NRC 0
+#endif
+
+#if METALLIC_PT_SHARC
+#include "Sharc/SharcCommon.h"
+#endif
+
+#include "Nrc/Nrc.hlsli"
+
+// Cache mode pushed through the per-frame parameter buffer.
+#define METALLIC_CACHE_MODE_OFF 0
+#define METALLIC_CACHE_MODE_SHARC 1
+#define METALLIC_CACHE_MODE_NRC 2
+
+// Per-frame radiance-cache parameters (binding 20). Layout must match
+// ScenePathTraceCacheParams in BuiltinPassCommon.h byte for byte.
+struct ScenePathTraceCacheParams
+{
+    float4 sharcCameraPosition;
+    float4 sharcCameraPositionPrev;
+    float sharcSceneScale;
+    uint sharcEntriesNum;
+    uint sharcAccumulationFrameNum;
+    uint sharcStaleFrameNumMax;
+    uint frameIndex;
+    uint cacheMode;
+    uint sharcUpdateStride;
+    uint width;
+    uint height;
+    uint trainingWidth;
+    uint trainingHeight;
+    NrcConstants nrc;
+};
+
+[[vk::binding(20, 0)]]
+StructuredBuffer<ScenePathTraceCacheParams> gCacheParams;
+
+#if METALLIC_PT_SHARC
+[[vk::binding(21, 0)]]
+RWStructuredBuffer<uint64_t> gSharcHashEntries;
+
+[[vk::binding(22, 0)]]
+RWStructuredBuffer<SharcAccumulationData> gSharcAccumulation;
+
+[[vk::binding(23, 0)]]
+RWStructuredBuffer<SharcPackedData> gSharcResolved;
+#endif
+
+#if METALLIC_PT_NRC
+[[vk::binding(24, 0)]]
+RWStructuredBuffer<NrcPackedQueryPathInfo> gNrcQueryPathInfo;
+
+[[vk::binding(25, 0)]]
+RWStructuredBuffer<NrcPackedTrainingPathInfo> gNrcTrainingPathInfo;
+
+[[vk::binding(26, 0)]]
+RWStructuredBuffer<NrcPackedPathVertex> gNrcTrainingPathVertices;
+
+[[vk::binding(27, 0)]]
+RWStructuredBuffer<NrcRadianceParams> gNrcQueryRadianceParams;
+
+[[vk::binding(28, 0)]]
+RWStructuredBuffer<uint> gNrcCounters;
+#endif
+
+
 [[vk::binding(0, 0)]]
 RaytracingAccelerationStructure gScene;
 
@@ -152,8 +239,8 @@ struct ScenePathTracePush
     float environmentRotationRadians;
     uint environmentMode;
     uint environmentVisible;
-    uint padding0;
-    uint padding1;
+    uint outputLinear;      // when set, write linear HDR (tonemap happens in a follow-up pass; used by NRC query mode)
+    uint cacheMode;         // METALLIC_CACHE_MODE_*
     uint padding2;
 };
 
@@ -1173,13 +1260,33 @@ float3 applyNormalMap(
         normal);
 }
 
-float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint seed)
+// Per-path radiance-cache state. Members exist only in permutations that use
+// them; the plain permutation carries just the glossy cone tracker.
+struct PathTraceCacheContext
+{
+#if METALLIC_PT_SHARC
+    SharcParameters sharc;
+    SharcState sharcState;
+#endif
+#if METALLIC_PT_NRC
+    NrcContext nrc;
+    NrcPathState nrcPathState;
+#endif
+    float materialRoughnessPrev;
+};
+
+float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout PathTraceCacheContext cache, inout uint seed)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
     float previousBsdfPdf = 0.0;
     bool previousScatterDelta = true;
     uint maxDepth = clamp(push.maxDepth, 1u, 32u);
+    cache.materialRoughnessPrev = 1.0;
+
+#if METALLIC_PT_NRC
+    NrcSetSampleIndex(cache.nrc, 0u);
+#endif
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
@@ -1187,9 +1294,23 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             float misWeight = depth == 0u
                 ? 1.0
                 : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
-            radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u) * misWeight;
+            float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u) * misWeight;
+            radiance += throughput * missRadiance;
+#if METALLIC_PT_SHARC
+            SharcUpdateMiss(cache.sharc, cache.sharcState, missRadiance);
+#endif
+#if METALLIC_PT_NRC
+            NrcUpdateOnMiss(cache.nrcPathState);
+#endif
             break;
         }
+
+#if METALLIC_PT_SHARC && SHARC_UPDATE
+        // SHaRC accumulates each path segment independently: drop the signal
+        // gathered for the previous segment before evaluating this hit.
+        radiance = float3(0.0, 0.0, 0.0);
+        throughput = float3(1.0, 1.0, 1.0);
+#endif
 
         rayCone = propagateRayCone(rayCone, hit.t);
         PathTraceMaterial material = gMaterials[hit.materialIndex];
@@ -1414,6 +1535,58 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             continue;
         }
 
+        // ------------------------------------------------------------------
+        // Radiance caches (RTXGI SHaRC / NVIDIA NRC reference integration).
+        // Delta-lobe segments (ideal transmission, hair) skip the caches,
+        // mirroring the reference treatment of skipped delta vertices.
+        // ------------------------------------------------------------------
+#if METALLIC_PT_NRC
+        NrcSurfaceAttributes nrcSurface = (NrcSurfaceAttributes)0;
+        nrcSurface.encodedPosition = NrcEncodePosition(hit.position, cache.nrc.constants);
+        nrcSurface.roughness = roughness;
+        nrcSurface.specularF0 = f0;
+        nrcSurface.diffuseReflectance = baseColor * occlusion * (1.0 - metallic) * (1.0 - diffuseTransmission);
+        nrcSurface.shadingNormal = hit.normal;
+        nrcSurface.viewVector = -ray.direction;
+        nrcSurface.isDeltaLobe = transmission > 0.01;
+        NrcProgressState nrcProgressState = NrcUpdateOnHit(
+            cache.nrc,
+            cache.nrcPathState,
+            nrcSurface,
+            hit.t,
+            depth,
+            throughput,
+            radiance);
+        if (nrcProgressState == NrcProgressState::TerminateImmediately) {
+            break;
+        }
+#endif
+
+#if METALLIC_PT_SHARC
+        SharcHitData sharcHitData;
+        sharcHitData.positionWorld = hit.position;
+        sharcHitData.normalWorld = hit.geometryNormal;
+
+#if SHARC_QUERY
+        {
+            uint gridLevel = HashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
+            float voxelSize = HashGridGetVoxelSize(gridLevel, cache.sharc.hashGridParameters);
+            bool isValidHit = hit.t > voxelSize * sqrt(3.0);
+
+            float roughnessPrev = min(cache.materialRoughnessPrev, 0.99);
+            float alpha = roughnessPrev * roughnessPrev;
+            float footprint = hit.t * sqrt(max(0.5 * alpha * alpha / max(1.0 - alpha * alpha, 1e-6), 0.0));
+            isValidHit &= footprint > voxelSize;
+
+            float3 sharcRadiance;
+            if (isValidHit && SharcGetCachedRadiance(cache.sharc, sharcHitData, sharcRadiance)) {
+                radiance += sharcRadiance * throughput;
+                break; // Terminate the path once we've looked up into the cache
+            }
+        }
+#endif
+#endif
+
         EnvironmentLightSample lightSample;
         if (sampleEnvironmentLight(push, seed, lightSample)) {
             float3 lightDirection = lightSample.direction;
@@ -1456,11 +1629,29 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             }
         }
 
+#if METALLIC_PT_NRC
+        // The NRC query was created at this vertex; direct lighting and
+        // emissive terms have been added, so the path can terminate here.
+        if (nrcProgressState == NrcProgressState::TerminateAfterDirectLighting) {
+            break;
+        }
+#endif
+
+#if METALLIC_PT_SHARC && SHARC_UPDATE
+        // Feed the signal accumulated for this segment (emissive + direct
+        // lighting) into the cache. Returning false means the path must stop.
+        if (!SharcUpdateHit(cache.sharc, cache.sharcState, sharcHitData, radiance, rand(seed))) {
+            break;
+        }
+#endif
+
         float3 diffuseDirection = sampleCosineHemisphere(hit.normal, seed);
         float3 incidentDirection = ray.direction;
         float3 reflectedDirection = reflect(incidentDirection, hit.normal);
         float specularChance = saturate(0.08 + metallic * 0.72 + (1.0 - roughness) * 0.18);
+        bool sampledSpecularLobe = false;
         if (rand(seed) < specularChance) {
+            sampledSpecularLobe = true;
             float glossMix = roughness * roughness;
             ray.direction = safeNormalize(lerp(reflectedDirection, diffuseDirection, glossMix), reflectedDirection);
             throughput *= lerp(f0, baseColor, metallic * 0.35);
@@ -1488,7 +1679,25 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
         rayCone = expandRayConeAfterScatter(rayCone, previousBsdfPdf);
         ray.origin = offsetRay(hit.position, dot(ray.direction, hit.geometryNormal) > 0.0 ? hit.geometryNormal : -hit.geometryNormal);
 
-        if (depth >= 2u) {
+#if METALLIC_PT_SHARC
+        // Track the effective cone spread of the path so far for the glossy
+        // footprint test performed on the next hit.
+        cache.materialRoughnessPrev += sampledSpecularLobe ? roughness : 1.0;
+#endif
+#if METALLIC_PT_NRC
+        NrcSetBrdfPdf(cache.nrcPathState, previousBsdfPdf);
+#endif
+#if METALLIC_PT_SHARC && SHARC_UPDATE
+        // Hand the segment throughput to the cache; each segment is
+        // accumulated independently afterwards.
+        SharcSetThroughput(cache.sharcState, throughput);
+#endif
+
+        bool allowRussianRoulette = true;
+#if METALLIC_PT_NRC
+        allowRussianRoulette = NrcCanUseRussianRoulette(cache.nrcPathState);
+#endif
+        if (allowRussianRoulette && depth >= 2u) {
             float continueProbability = min(luminanceMax(throughput) + 0.05, 0.92);
             if (rand(seed) > continueProbability) {
                 break;
@@ -1497,7 +1706,41 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
         }
     }
 
+#if METALLIC_PT_NRC
+    NrcWriteFinalPathInfo(cache.nrc, cache.nrcPathState, throughput, radiance);
+#endif
+
     return radiance;
+}
+
+PathTraceCacheContext makeCacheContext()
+{
+    PathTraceCacheContext cache;
+    ScenePathTraceCacheParams params = gCacheParams[0];
+#if METALLIC_PT_SHARC
+    cache.sharc.hashGridParameters.cameraPosition = params.sharcCameraPosition.xyz;
+    cache.sharc.hashGridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+    cache.sharc.hashGridParameters.sceneScale = max(params.sharcSceneScale, 0.0001);
+    cache.sharc.hashGridParameters.levelBias = SHARC_GRID_LEVEL_BIAS;
+
+    cache.sharc.hashGridData.capacity = params.sharcEntriesNum;
+    cache.sharc.hashGridData.hashEntriesBuffer = gSharcHashEntries;
+    cache.sharc.accumulationBuffer = gSharcAccumulation;
+    cache.sharc.resolvedBuffer = gSharcResolved;
+    cache.sharc.radianceScale = 1.0e3;
+    SharcInit(cache.sharcState);
+#endif
+#if METALLIC_PT_NRC
+    NrcBuffers nrcBuffers;
+    nrcBuffers.queryPathInfo = gNrcQueryPathInfo;
+    nrcBuffers.trainingPathInfo = gNrcTrainingPathInfo;
+    nrcBuffers.trainingPathVertices = gNrcTrainingPathVertices;
+    nrcBuffers.queryRadianceParams = gNrcQueryRadianceParams;
+    nrcBuffers.countersData = gNrcCounters;
+    cache.nrc = NrcCreateContext(params.nrc, nrcBuffers, uint2(0, 0));
+#endif
+    cache.materialRoughnessPrev = 1.0;
+    return cache;
 }
 
 [shader("compute")]
@@ -1506,27 +1749,112 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
                         uniform ScenePathTracePush push)
 {
     uint2 pixel = dispatchThreadId.xy;
+    uint samples = clamp(push.samples, 1u, 16u);
+    uint2 outputPixel = pixel;
+    uint seed = 0u;
+
+#if SHARC_UPDATE
+    // Sparse update: one random sample per stride x stride block of pixels,
+    // with coverage distributed over time through the jitter and frame index.
+    ScenePathTraceCacheParams cacheParams = gCacheParams[0];
+    uint stride = max(cacheParams.sharcUpdateStride, 1u);
+    if (pixel.x >= (push.width + stride - 1u) / stride || pixel.y >= (push.height + stride - 1u) / stride) {
+        return;
+    }
+    seed = hash(
+        pixel.x +
+        pixel.y * max(push.width, 1u) +
+        (cacheParams.frameIndex + 1u) * 0x9e3779b9u);
+    float2 updateJitter = float2(rand(seed), rand(seed));
+    float2 samplePixel = (float2(pixel) + updateJitter) * float(stride);
+    if (samplePixel.x >= float(push.width) || samplePixel.y >= float(push.height)) {
+        return;
+    }
+    samples = 1u;
+#elif NRC_UPDATE
+    // NRC training pass: dispatch covers the training resolution; each thread
+    // traces one path at a jittered position in the corresponding full-res area.
+    ScenePathTraceCacheParams cacheParams = gCacheParams[0];
+    if (pixel.x >= cacheParams.trainingWidth || pixel.y >= cacheParams.trainingHeight) {
+        return;
+    }
+    seed = hash(
+        pixel.x +
+        pixel.y * max(cacheParams.trainingWidth, 1u) +
+        (cacheParams.frameIndex + 1u) * 0x9e3779b9u);
+    float2 updateJitter = float2(rand(seed), rand(seed));
+    float2 samplePixel = (float2(pixel) + updateJitter) *
+        float2(push.width, push.height) /
+        float2(max(cacheParams.trainingWidth, 1u), max(cacheParams.trainingHeight, 1u));
+    samplePixel = min(samplePixel, float2(push.width, push.height) - float2(0.001, 0.001));
+    samples = 1u;
+#elif NRC_QUERY
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;
     }
-
-    uint samples = clamp(push.samples, 1u, 16u);
-    uint seed = hash(
+    ScenePathTraceCacheParams cacheParams = gCacheParams[0];
+    seed = hash(
+        pixel.x +
+        pixel.y * max(push.width, 1u) +
+        (cacheParams.frameIndex + 1u) * 0x9e3779b9u);
+    float2 samplePixel = float2(pixel) + float2(0.5, 0.5);
+    samples = 1u;
+#else
+    if (pixel.x >= push.width || pixel.y >= push.height) {
+        return;
+    }
+    seed = hash(
         pixel.x +
         pixel.y * max(push.width, 1u) +
         (push.accumulationFrame + 1u) * 0x9e3779b9u);
+    float2 samplePixel = float2(pixel);
+#endif
+
+    PathTraceCacheContext cache = makeCacheContext();
+
     float3 color = float3(0.0, 0.0, 0.0);
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
+#if SHARC_UPDATE || NRC_UPDATE || NRC_QUERY
+        float2 jitter = float2(0.0, 0.0);
+#else
         float2 jitter = samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed));
-        float2 samplePixel = float2(pixel) + jitter;
+#endif
+#if !(SHARC_UPDATE || NRC_UPDATE || NRC_QUERY)
+        samplePixel = float2(outputPixel) + jitter;
+#endif
 
         Ray ray;
         ray.origin = rayOriginFromPixel(samplePixel, push);
         ray.direction = rayDirectionFromPixel(samplePixel, push);
         RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
-        color += pathTrace(ray, rayCone, push, seed);
+#if METALLIC_PT_NRC
+        cache.nrc.pixelIndex = outputPixel;
+        NrcSetSampleIndex(cache.nrc, sampleIndex);
+        cache.nrcPathState = NrcCreatePathState(cache.nrc.constants, rand(seed));
+#endif
+        color += pathTrace(ray, rayCone, push, cache, seed);
     }
+#if SHARC_UPDATE || NRC_UPDATE
+    // Cache update passes produce no image output.
+    return;
+#endif
     color /= float(samples);
+
+#if NRC_QUERY
+    // Linear HDR output: the NRC resolve adds the predicted query radiance on
+    // top of this image before the tonemap pass runs.
+    if (push.enableAccumulation != 0u) {
+        if (push.hasHistory != 0u) {
+            float accumulationWeight = 1.0 / float(push.accumulationFrame + 1u);
+            float3 previousColor = gHistoryPrevious[pixel].rgb;
+            color = lerp(previousColor, color, accumulationWeight);
+        }
+        gHistoryCurrent[pixel] = float4(color, 1.0);
+    } else {
+        gHistoryCurrent[pixel] = float4(color, 1.0);
+    }
+    return;
+#endif
 
     color = color / (color + float3(1.0, 1.0, 1.0));
     color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);

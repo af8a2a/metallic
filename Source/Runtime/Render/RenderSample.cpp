@@ -83,6 +83,62 @@ public:
     std::string previewOutput() const override { return "PathTrace.color"; }
 };
 
+class PathTracingSharcMeetMatSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "pathtracing-sharc-meet-mat"; }
+    std::string_view name() const override { return "Path Tracing / meet_mat / SHaRC"; }
+    std::string_view category() const override { return "PathTracing"; }
+    std::string_view description() const override
+    {
+        return "meet_mat path tracing accelerated with the RTXGI SHaRC spatial hash radiance cache.";
+    }
+    std::string scenePath() const override { return "Asset/meet_mat.glb"; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/pathtracing_meet_mat_sharc.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        return RenderSampleEnvironmentDesc{
+            .enabled = true,
+            .path = "Asset/ABeautifulGame/environment.hdr",
+            .intensity = 1.0f,
+            .rotationDegrees = 0.0f,
+            .visible = true,
+        };
+    }
+    std::string previewOutput() const override { return "PathTrace.color"; }
+};
+
+class PathTracingNrcMeetMatSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "pathtracing-nrc-meet-mat"; }
+    std::string_view name() const override { return "Path Tracing / meet_mat / NRC"; }
+    std::string_view category() const override { return "PathTracing"; }
+    std::string_view description() const override
+    {
+        return "meet_mat path tracing accelerated with the NVIDIA Neural Radiance Cache (requires an RTX GPU).";
+    }
+    std::string scenePath() const override { return "Asset/meet_mat.glb"; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/pathtracing_meet_mat_nrc.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        return RenderSampleEnvironmentDesc{
+            .enabled = true,
+            .path = "Asset/ABeautifulGame/environment.hdr",
+            .intensity = 1.0f,
+            .rotationDegrees = 0.0f,
+            .visible = true,
+        };
+    }
+    std::string previewOutput() const override { return "PathTrace.color"; }
+};
+
 class PathTracingSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-sample"; }
@@ -356,6 +412,18 @@ const RenderSample& pathTracingMeetMatSample()
     return sample;
 }
 
+const RenderSample& pathTracingSharcMeetMatSample()
+{
+    static const PathTracingSharcMeetMatSample sample;
+    return sample;
+}
+
+const RenderSample& pathTracingNrcMeetMatSample()
+{
+    static const PathTracingNrcMeetMatSample sample;
+    return sample;
+}
+
 const RenderSample& pathTracingSample()
 {
     static const PathTracingSample sample;
@@ -420,6 +488,8 @@ std::vector<const RenderSample*> builtInRenderSamples()
 {
     return {
         &pathTracingMeetMatSample(),
+        &pathTracingSharcMeetMatSample(),
+        &pathTracingNrcMeetMatSample(),
         &pathTracingSample(),
         &pathTracingDlssRrSample(),
         &rtxdiSample(),

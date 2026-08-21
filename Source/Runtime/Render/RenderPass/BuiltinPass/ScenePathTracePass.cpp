@@ -1,9 +1,14 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
 #include "Runtime/Render/SceneResourceManager.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
 #include "openpbr_data_constants.h"
+
+#if METALLIC_HAS_NRC
+#include <NrcCommon.h>
+#endif
 
 #ifndef METALLIC_HAS_RTXCR
 #define METALLIC_HAS_RTXCR 0
@@ -17,6 +22,75 @@ namespace metallic::render::builtin_pass {
 namespace {
 
 using OpenPBRLutScalar = uint16_t;
+
+// Radiance-cache related constants (RTXGI SHaRC / NVIDIA NRC integrations).
+constexpr uint32_t kSharcDefaultEntriesLog2 = 22;
+constexpr uint32_t kSharcMinEntriesLog2 = 16;
+constexpr uint32_t kSharcMaxEntriesLog2 = 24;
+constexpr uint32_t kSharcMaintenanceBlockSize = 256;
+constexpr uint32_t kSharcDefaultMaxAccumulatedFrames = 20;
+constexpr uint32_t kSharcDefaultStaleFrameNum = 60;
+constexpr uint32_t kSharcDefaultUpdateStride = 5;
+constexpr uint32_t kNrcMaxPathVertices = 8;
+
+enum class PathTracePermutation : uint32_t {
+    Base = 0,
+    SharcUpdate,
+    SharcQuery,
+    NrcUpdate,
+    NrcQuery,
+    Count
+};
+
+constexpr const char* toString(PathTracePermutation permutation)
+{
+    switch (permutation) {
+    case PathTracePermutation::Base:
+        return "base";
+    case PathTracePermutation::SharcUpdate:
+        return "sharc-update";
+    case PathTracePermutation::SharcQuery:
+        return "sharc-query";
+    case PathTracePermutation::NrcUpdate:
+        return "nrc-update";
+    case PathTracePermutation::NrcQuery:
+        return "nrc-query";
+    default:
+        return "?";
+    }
+}
+
+struct SceneSharcMaintenancePush {
+    float cameraPosition[4] = {};
+    float cameraPositionPrev[4] = {};
+    float sceneScale = 1.0f;
+    uint32_t entriesNum = 0;
+    uint32_t accumulationFrameNum = kSharcDefaultMaxAccumulatedFrames;
+    uint32_t staleFrameNumMax = kSharcDefaultStaleFrameNum;
+    uint32_t frameIndex = 0;
+};
+
+// The maintenance shader reads its parameters from the front of the shared
+// per-frame cache parameter buffer; keep the common prefix layout locked.
+static_assert(offsetof(SceneSharcMaintenancePush, cameraPosition) ==
+    offsetof(ScenePathTraceCacheParams, sharcCameraPosition));
+static_assert(offsetof(SceneSharcMaintenancePush, sceneScale) ==
+    offsetof(ScenePathTraceCacheParams, sharcSceneScale));
+static_assert(offsetof(SceneSharcMaintenancePush, entriesNum) ==
+    offsetof(ScenePathTraceCacheParams, sharcEntriesNum));
+static_assert(offsetof(SceneSharcMaintenancePush, accumulationFrameNum) ==
+    offsetof(ScenePathTraceCacheParams, sharcAccumulationFrameNum));
+static_assert(offsetof(SceneSharcMaintenancePush, staleFrameNumMax) ==
+    offsetof(ScenePathTraceCacheParams, sharcStaleFrameNumMax));
+static_assert(offsetof(SceneSharcMaintenancePush, frameIndex) ==
+    offsetof(ScenePathTraceCacheParams, frameIndex));
+
+struct ScenePathTraceTonemapPush {
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+};
 
 struct OpenPBRVec3 {
     float x;
@@ -532,6 +606,60 @@ public:
                 true),
             runtimeBoolSetting("accumulate", "Accumulate", true, true),
             runtimeBoolSetting("flipBitangent", "Flip Bitangent", false, true),
+            runtimeEnumSetting(
+                "cacheMode",
+                "Radiance Cache",
+                "off",
+                {
+                    {"Off", "off"},
+                    {"SHaRC (RTXGI)", "sharc"},
+                    {"NRC (NVIDIA)", "nrc"},
+                },
+                true),
+            runtimeIntSetting(
+                "sharc.entriesLog2",
+                "SHaRC Entries (log2)",
+                static_cast<int32_t>(kSharcDefaultEntriesLog2),
+                static_cast<int32_t>(kSharcMinEntriesLog2),
+                static_cast<int32_t>(kSharcMaxEntriesLog2),
+                true),
+            runtimeFloatSetting("sharc.sceneScale", "SHaRC Scene Scale", 0.0f, 0.0f, 1000.0f, true),
+            runtimeIntSetting(
+                "sharc.maxAccumulatedFrames",
+                "SHaRC Max Accumulated Frames",
+                static_cast<int32_t>(kSharcDefaultMaxAccumulatedFrames),
+                1,
+                1024,
+                false),
+            runtimeIntSetting(
+                "sharc.staleFrameNum",
+                "SHaRC Stale Frame Num",
+                static_cast<int32_t>(kSharcDefaultStaleFrameNum),
+                8,
+                1024,
+                false),
+            runtimeIntSetting(
+                "sharc.updateStride",
+                "SHaRC Update Stride",
+                static_cast<int32_t>(kSharcDefaultUpdateStride),
+                1,
+                16,
+                false),
+#if METALLIC_HAS_NRC
+            runtimeFloatSetting("nrc.maxExpectedRadiance", "NRC Max Expected Radiance", 1.0f, 0.01f, 100.0f, false),
+            runtimeEnumSetting(
+                "nrc.resolveMode",
+                "NRC Resolve Mode",
+                "add",
+                {
+                    {"Add Query Result", "add"},
+                    {"Replace Output", "replace"},
+                    {"Training Bounce Heatmap", "heatmap"},
+                    {"Query Index", "queryIndex"},
+                    {"Direct Cache View", "cacheView"},
+                },
+                false),
+#endif
         };
         appendCameraRuntimeSettings(
             settings,
@@ -610,69 +738,66 @@ public:
                 ? kScenePathTraceGuidesEntryPoint
                 : kScenePathTraceEntryPoint;
         }
-        const std::string shaderKey = std::string(moduleName) + "." + entryPointName;
+        const uint32_t requestedCacheMode = cacheModeFromProperties(properties());
+        uint32_t cacheMode = requestedCacheMode;
+        std::string cacheWarning;
+        if (cacheMode != kScenePathTraceCacheModeOff) {
+            if (useOpenPBR || exportGuides) {
+                cacheMode = kScenePathTraceCacheModeOff;
+                cacheWarning =
+                    "ScenePathTracePass radiance cache requires the standard BSDF without denoiser guides; cache disabled\n";
+            }
+#if METALLIC_HAS_NRC
+            else if (cacheMode == kScenePathTraceCacheModeNrc && !context.device->capabilities().rayQuery) {
+                cacheMode = kScenePathTraceCacheModeOff;
+            }
+#else
+            else if (cacheMode == kScenePathTraceCacheModeNrc) {
+                cacheMode = kScenePathTraceCacheModeOff;
+                cacheWarning =
+                    "ScenePathTracePass built without the NRC SDK (METALLIC_HAS_NRC=0); NRC cache disabled\n";
+            }
+#endif
+        }
+        cacheMode_ = cacheMode;
+        if (!cacheWarning.empty()) {
+            log += cacheWarning;
+        }
+
+        const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
+            "|cache=" + std::to_string(cacheMode_);
         if (useOpenPBR) {
             result = openPBRLuts_.prepare(*context.device, log);
             if (!result) {
-                rayQueryProgram_.clear();
+                clearPrograms();
                 compiledShaderKey_.clear();
                 return result;
             }
         }
         if (compiledShaderKey_ != shaderKey) {
-            rayQueryProgram_.clear();
+            clearPrograms();
             compiledShaderKey_.clear();
             resetAccumulation_ = true;
             hasPreviousCamera_ = false;
+            sharcResourcesRevision_ = 0;
         }
-        if (rayQueryProgram_.valid()) {
+
+        const bool baseReady = programs_[static_cast<size_t>(PathTracePermutation::Base)].valid();
+        const bool sharcReady = cacheMode_ != kScenePathTraceCacheModeSharc ||
+            (programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid() &&
+                programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid() &&
+                sharcClearProgram_.valid() && sharcResolveProgram_.valid());
+        const bool nrcReady = cacheMode_ != kScenePathTraceCacheModeNrc ||
+            (programs_[static_cast<size_t>(PathTracePermutation::NrcUpdate)].valid() &&
+                programs_[static_cast<size_t>(PathTracePermutation::NrcQuery)].valid() &&
+                tonemapProgram_.valid());
+        if (baseReady && sharcReady && nrcReady) {
             return {};
         }
 
-        ShaderCompileResult computeCompile;
-        const char* capabilities[] = {"spvRayQueryKHR"};
-        const SlangMacroDefine macroDefines[] = {
-            SlangMacroDefine{
-                .name = "METALLIC_HAS_RTXCR",
-                .value = METALLIC_HAS_RTXCR ? "1" : "0",
-            },
-        };
-#if METALLIC_HAS_RTXCR
-        const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
-#endif
-        result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
-                .moduleName = moduleName,
-                .entryPointName = entryPointName,
-                .searchPath = kTriangleShaderSearchPath,
-#if METALLIC_HAS_RTXCR
-                .additionalSearchPaths = additionalSearchPaths,
-                .additionalSearchPathCount =
-                    static_cast<uint32_t>(std::size(additionalSearchPaths)),
-#endif
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-                .macroDefines = macroDefines,
-                .macroDefineCount = static_cast<uint32_t>(std::size(macroDefines)),
-            },
-            computeCompile);
-        if (!result) {
-            log += "compileSlangShaderToSpirv(";
-            log += moduleName;
-            log += ".";
-            log += entryPointName;
-            log += ") returned ";
-            log += resultToString(result);
-            if (!computeCompile.diagnostics.empty()) {
-                log += ": ";
-                log += computeCompile.diagnostics;
-            }
-            log += '\n';
-            rayQueryProgram_.clear();
-            return result;
-        }
+        const char* capabilities[] = {"spvRayQueryKHR", "spvGroupNonUniformBallot"};
 
-        std::vector<SceneRayQueryBindingDesc> bindings{
+        std::vector<SceneRayQueryBindingDesc> baseBindings{
             SceneRayQueryBindingDesc{
                 .binding = 0,
                 .kind = SceneRayQueryBindingKind::AccelerationStructure,
@@ -724,65 +849,394 @@ public:
             },
         };
         if (useOpenPBR) {
-            bindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(SceneRayQueryBindingDesc{
                 .binding = kOpenPBRLut2DBinding,
                 .kind = SceneRayQueryBindingKind::SampledImage,
                 .descriptorCount = kOpenPBRLut2DCount,
             });
-            bindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(SceneRayQueryBindingDesc{
                 .binding = kOpenPBRLut3DBinding,
                 .kind = SceneRayQueryBindingKind::SampledImage,
                 .descriptorCount = kOpenPBRLut3DCount,
             });
         }
         if (exportGuides) {
-            bindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(SceneRayQueryBindingDesc{
                 .binding = kDlssRrAlbedoBinding,
                 .kind = SceneRayQueryBindingKind::StorageImage,
             });
-            bindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(SceneRayQueryBindingDesc{
                 .binding = kDlssRrSpecularAlbedoBinding,
                 .kind = SceneRayQueryBindingKind::StorageImage,
             });
-            bindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(SceneRayQueryBindingDesc{
                 .binding = kDlssRrNormalRoughnessBinding,
                 .kind = SceneRayQueryBindingKind::StorageImage,
             });
-            bindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(SceneRayQueryBindingDesc{
                 .binding = kDlssRrMotionVectorsBinding,
                 .kind = SceneRayQueryBindingKind::StorageImage,
             });
-            bindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(SceneRayQueryBindingDesc{
                 .binding = kDlssRrLinearDepthBinding,
                 .kind = SceneRayQueryBindingKind::StorageImage,
             });
-            bindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(SceneRayQueryBindingDesc{
                 .binding = kDlssRrSpecularHitDistanceBinding,
                 .kind = SceneRayQueryBindingKind::StorageImage,
             });
         }
-        std::string programLog;
-        result = rayQueryProgram_.initialize(
-            *context.device,
-            SceneRayQueryProgramDesc{
-                .spirv = computeCompile.spirv.data(),
-                .byteSize = static_cast<uint64_t>(computeCompile.spirv.size() * sizeof(uint32_t)),
-                .pushConstantSize = sizeof(ScenePathTracePush),
-                .bindings = bindings.data(),
-                .bindingCount = static_cast<uint32_t>(bindings.size()),
-                .debugName = useOpenPBR ? "ScenePathTracePass.OpenPBR" : "ScenePathTracePass",
-            },
-            programLog);
-        if (!programLog.empty()) {
-            if (!log.empty() && log.back() != '\n') {
+
+        auto compilePermutation =
+            [&](PathTracePermutation permutation,
+                std::span<const SlangMacroDefine> extraDefines,
+                const std::vector<SceneRayQueryBindingDesc>& permutationBindings,
+                SceneRayQueryProgram& outProgram) -> Result {
+            std::vector<SlangMacroDefine> defines{
+                SlangMacroDefine{
+                    .name = "METALLIC_HAS_RTXCR",
+                    .value = METALLIC_HAS_RTXCR ? "1" : "0",
+                },
+            };
+            defines.insert(defines.end(), extraDefines.begin(), extraDefines.end());
+#if METALLIC_HAS_RTXCR
+            const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
+#endif
+            ShaderCompileResult permutationCompile;
+            Result permutationResult = compileSlangShaderToSpirv(
+                SlangShaderDesc{
+                    .moduleName = moduleName,
+                    .entryPointName = entryPointName,
+                    .searchPath = kTriangleShaderSearchPath,
+#if METALLIC_HAS_RTXCR
+                    .additionalSearchPaths = additionalSearchPaths,
+                    .additionalSearchPathCount =
+                        static_cast<uint32_t>(std::size(additionalSearchPaths)),
+#endif
+                    .capabilities = capabilities,
+                    .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                    .macroDefines = defines.data(),
+                    .macroDefineCount = static_cast<uint32_t>(defines.size()),
+                },
+                permutationCompile);
+            if (!permutationResult) {
+                log += "compileSlangShaderToSpirv(";
+                log += moduleName;
+                log += ".";
+                log += entryPointName;
+                log += "[";
+                log += toString(permutation);
+                log += "]) returned ";
+                log += resultToString(permutationResult);
+                if (!permutationCompile.diagnostics.empty()) {
+                    log += ": ";
+                    log += permutationCompile.diagnostics;
+                }
                 log += '\n';
+                outProgram.clear();
+                return permutationResult;
             }
-            log += programLog;
+
+            std::string programLog;
+            const std::string debugName = std::string("ScenePathTracePass.") + toString(permutation);
+            permutationResult = outProgram.initialize(
+                *context.device,
+                SceneRayQueryProgramDesc{
+                    .spirv = permutationCompile.spirv.data(),
+                    .byteSize = static_cast<uint64_t>(permutationCompile.spirv.size() * sizeof(uint32_t)),
+                    .pushConstantSize = sizeof(ScenePathTracePush),
+                    .bindings = permutationBindings.data(),
+                    .bindingCount = static_cast<uint32_t>(permutationBindings.size()),
+                    .debugName = debugName.c_str(),
+                },
+                programLog);
+            if (!programLog.empty()) {
+                if (!log.empty() && log.back() != '\n') {
+                    log += '\n';
+                }
+                log += programLog;
+            }
+            if (!permutationResult) {
+                outProgram.clear();
+                return permutationResult;
+            }
+            return {};
+        };
+
+        const std::vector<SceneRayQueryBindingDesc> cacheBindings = [baseBindings]() {
+            std::vector<SceneRayQueryBindingDesc> bindings = baseBindings;
+            bindings.push_back(SceneRayQueryBindingDesc{
+                .binding = kScenePathTraceCacheParamsBinding,
+                .kind = SceneRayQueryBindingKind::StorageBuffer,
+            });
+            return bindings;
+        }();
+
+        if (!programs_[static_cast<size_t>(PathTracePermutation::Base)].valid()) {
+            result = compilePermutation(
+                PathTracePermutation::Base,
+                {},
+                baseBindings,
+                programs_[static_cast<size_t>(PathTracePermutation::Base)]);
+            if (!result) {
+                return result;
+            }
         }
-        if (!result) {
-            rayQueryProgram_.clear();
-            return result;
+
+        if (cacheMode_ == kScenePathTraceCacheModeSharc) {
+            const std::vector<SceneRayQueryBindingDesc> sharcBindings = [cacheBindings]() {
+                std::vector<SceneRayQueryBindingDesc> bindings = cacheBindings;
+                bindings.push_back(SceneRayQueryBindingDesc{
+                    .binding = kScenePathTraceSharcHashEntriesBinding,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                });
+                bindings.push_back(SceneRayQueryBindingDesc{
+                    .binding = kScenePathTraceSharcAccumulationBinding,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                });
+                bindings.push_back(SceneRayQueryBindingDesc{
+                    .binding = kScenePathTraceSharcResolvedBinding,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                });
+                return bindings;
+            }();
+
+            const std::array<SlangMacroDefine, 1> sharcUpdateDefines{
+                SlangMacroDefine{.name = "SHARC_UPDATE", .value = "1"},
+            };
+            if (!programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid()) {
+                result = compilePermutation(
+                    PathTracePermutation::SharcUpdate,
+                    sharcUpdateDefines,
+                    sharcBindings,
+                    programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)]);
+                if (!result) {
+                    return result;
+                }
+            }
+
+            const std::array<SlangMacroDefine, 1> sharcQueryDefines{
+                SlangMacroDefine{.name = "SHARC_QUERY", .value = "1"},
+            };
+            if (!programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid()) {
+                result = compilePermutation(
+                    PathTracePermutation::SharcQuery,
+                    sharcQueryDefines,
+                    sharcBindings,
+                    programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)]);
+                if (!result) {
+                    return result;
+                }
+            }
+
+            // SHaRC maintenance programs (clear + resolve).
+            const std::array<SceneRayQueryBindingDesc, 4> maintenanceBindings{
+                SceneRayQueryBindingDesc{
+                    .binding = 0,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                },
+                SceneRayQueryBindingDesc{
+                    .binding = 1,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                },
+                SceneRayQueryBindingDesc{
+                    .binding = 2,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                },
+                SceneRayQueryBindingDesc{
+                    .binding = 3,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                },
+            };
+            auto compileMaintenance =
+                [&](const char* entryPointName, SceneRayQueryProgram& outProgram) -> Result {
+                ShaderCompileResult maintenanceCompile;
+                Result maintenanceResult = compileSlangShaderToSpirv(
+                    SlangShaderDesc{
+                        .moduleName = kSceneSharcMaintenanceShaderModuleName,
+                        .entryPointName = entryPointName,
+                        .searchPath = kTriangleShaderSearchPath,
+                        .capabilities = capabilities,
+                        .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                    },
+                    maintenanceCompile);
+                if (!maintenanceResult) {
+                    log += "compileSlangShaderToSpirv(";
+                    log += kSceneSharcMaintenanceShaderModuleName;
+                    log += ".";
+                    log += entryPointName;
+                    log += ") returned ";
+                    log += resultToString(maintenanceResult);
+                    if (!maintenanceCompile.diagnostics.empty()) {
+                        log += ": ";
+                        log += maintenanceCompile.diagnostics;
+                    }
+                    log += '\n';
+                    outProgram.clear();
+                    return maintenanceResult;
+                }
+                std::string programLog;
+                const std::string maintenanceDebugName =
+                    std::string("ScenePathTracePass.") + entryPointName;
+                maintenanceResult = outProgram.initialize(
+                    *context.device,
+                    SceneRayQueryProgramDesc{
+                        .spirv = maintenanceCompile.spirv.data(),
+                        .byteSize = static_cast<uint64_t>(maintenanceCompile.spirv.size() * sizeof(uint32_t)),
+                        .pushConstantSize = sizeof(SceneSharcMaintenancePush),
+                        .bindings = maintenanceBindings.data(),
+                        .bindingCount = static_cast<uint32_t>(maintenanceBindings.size()),
+                        .debugName = maintenanceDebugName.c_str(),
+                        .requiresRayQuery = false,
+                    },
+                    programLog);
+                if (!programLog.empty()) {
+                    if (!log.empty() && log.back() != '\n') {
+                        log += '\n';
+                    }
+                    log += programLog;
+                }
+                if (!maintenanceResult) {
+                    outProgram.clear();
+                }
+                return maintenanceResult;
+            };
+            if (!sharcClearProgram_.valid()) {
+                result = compileMaintenance("sharcClearMain", sharcClearProgram_);
+                if (!result) {
+                    return result;
+                }
+            }
+            if (!sharcResolveProgram_.valid()) {
+                result = compileMaintenance("sharcResolveMain", sharcResolveProgram_);
+                if (!result) {
+                    return result;
+                }
+            }
         }
+
+#if METALLIC_HAS_NRC
+        if (cacheMode_ == kScenePathTraceCacheModeNrc) {
+            const std::vector<SceneRayQueryBindingDesc> nrcBindings = [cacheBindings]() {
+                std::vector<SceneRayQueryBindingDesc> bindings = cacheBindings;
+                bindings.push_back(SceneRayQueryBindingDesc{
+                    .binding = kScenePathTraceNrcQueryPathInfoBinding,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                });
+                bindings.push_back(SceneRayQueryBindingDesc{
+                    .binding = kScenePathTraceNrcTrainingPathInfoBinding,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                });
+                bindings.push_back(SceneRayQueryBindingDesc{
+                    .binding = kScenePathTraceNrcTrainingPathVerticesBinding,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                });
+                bindings.push_back(SceneRayQueryBindingDesc{
+                    .binding = kScenePathTraceNrcQueryRadianceParamsBinding,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                });
+                bindings.push_back(SceneRayQueryBindingDesc{
+                    .binding = kScenePathTraceNrcCountersBinding,
+                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                });
+                return bindings;
+            }();
+
+            const std::array<SlangMacroDefine, 1> nrcUpdateDefines{
+                SlangMacroDefine{.name = "NRC_UPDATE", .value = "1"},
+            };
+            if (!programs_[static_cast<size_t>(PathTracePermutation::NrcUpdate)].valid()) {
+                result = compilePermutation(
+                    PathTracePermutation::NrcUpdate,
+                    nrcUpdateDefines,
+                    nrcBindings,
+                    programs_[static_cast<size_t>(PathTracePermutation::NrcUpdate)]);
+                if (!result) {
+                    return result;
+                }
+            }
+
+            const std::array<SlangMacroDefine, 1> nrcQueryDefines{
+                SlangMacroDefine{.name = "NRC_QUERY", .value = "1"},
+            };
+            if (!programs_[static_cast<size_t>(PathTracePermutation::NrcQuery)].valid()) {
+                result = compilePermutation(
+                    PathTracePermutation::NrcQuery,
+                    nrcQueryDefines,
+                    nrcBindings,
+                    programs_[static_cast<size_t>(PathTracePermutation::NrcQuery)]);
+                if (!result) {
+                    return result;
+                }
+            }
+
+            // Tonemap pass producing the final displayable color after the
+            // NRC resolve has added the predicted radiance.
+            if (!tonemapProgram_.valid()) {
+                const std::array<SceneRayQueryBindingDesc, 2> tonemapBindings{
+                    SceneRayQueryBindingDesc{
+                        .binding = 0,
+                        .kind = SceneRayQueryBindingKind::StorageImage,
+                    },
+                    SceneRayQueryBindingDesc{
+                        .binding = 1,
+                        .kind = SceneRayQueryBindingKind::StorageImage,
+                    },
+                };
+                ShaderCompileResult tonemapCompile;
+                Result tonemapResult = compileSlangShaderToSpirv(
+                    SlangShaderDesc{
+                        .moduleName = kScenePathTraceTonemapShaderModuleName,
+                        .entryPointName = kScenePathTraceTonemapEntryPointName,
+                        .searchPath = kTriangleShaderSearchPath,
+                        .capabilities = capabilities,
+                        .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                    },
+                    tonemapCompile);
+                if (!tonemapResult) {
+                    log += "compileSlangShaderToSpirv(";
+                    log += kScenePathTraceTonemapShaderModuleName;
+                    log += ") returned ";
+                    log += resultToString(tonemapResult);
+                    if (!tonemapCompile.diagnostics.empty()) {
+                        log += ": ";
+                        log += tonemapCompile.diagnostics;
+                    }
+                    log += '\n';
+                    tonemapProgram_.clear();
+                    return tonemapResult;
+                }
+                std::string programLog;
+                tonemapResult = tonemapProgram_.initialize(
+                    *context.device,
+                    SceneRayQueryProgramDesc{
+                        .spirv = tonemapCompile.spirv.data(),
+                        .byteSize = static_cast<uint64_t>(tonemapCompile.spirv.size() * sizeof(uint32_t)),
+                        .pushConstantSize = sizeof(ScenePathTraceTonemapPush),
+                        .bindings = tonemapBindings.data(),
+                        .bindingCount = static_cast<uint32_t>(tonemapBindings.size()),
+                        .debugName = "ScenePathTracePass.Tonemap",
+                        .requiresRayQuery = false,
+                    },
+                    programLog);
+                if (!programLog.empty()) {
+                    if (!log.empty() && log.back() != '\n') {
+                        log += '\n';
+                    }
+                    log += programLog;
+                }
+                if (!tonemapResult) {
+                    tonemapProgram_.clear();
+                    return tonemapResult;
+                }
+            }
+        }
+#else
+        if (cacheMode_ == kScenePathTraceCacheModeNrc) {
+            // Already downgraded to off above; nothing to compile.
+        }
+#endif
+
         compiledShaderKey_ = shaderKey;
         return {};
     }
@@ -851,9 +1305,38 @@ public:
         TextureHandle motionVectors = exportGuides ? context.outputTexture("motionVectors") : TextureHandle{};
         TextureHandle linearDepth = exportGuides ? context.outputTexture("linearDepth") : TextureHandle{};
         TextureHandle specularHitDistance = exportGuides ? context.outputTexture("specularHitDistance") : TextureHandle{};
+
+        uint32_t cacheMode = cacheMode_;
+        SceneRayQueryProgram* renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
+        if (cacheMode == kScenePathTraceCacheModeSharc) {
+            if (!programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid() ||
+                !programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid() ||
+                !sharcClearProgram_.valid() ||
+                !sharcResolveProgram_.valid()) {
+                cacheMode = kScenePathTraceCacheModeOff;
+                renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
+            } else {
+                renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)];
+            }
+        } else if (cacheMode == kScenePathTraceCacheModeNrc) {
+#if METALLIC_HAS_NRC
+            if (!programs_[static_cast<size_t>(PathTracePermutation::NrcQuery)].valid() ||
+                !programs_[static_cast<size_t>(PathTracePermutation::NrcUpdate)].valid() ||
+                !tonemapProgram_.valid()) {
+                cacheMode = kScenePathTraceCacheModeOff;
+                renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
+            }
+#else
+            cacheMode = kScenePathTraceCacheModeOff;
+            renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
+#endif
+        }
+        cacheMode_ = cacheMode;
+
         if (!color.valid() ||
             color.view() == nullptr ||
-            !rayQueryProgram_.valid() ||
+            renderProgram == nullptr ||
+            !renderProgram->valid() ||
             !sceneResources_.valid() ||
             materialTextureViews[0] == nullptr ||
             environmentTextureView == nullptr ||
@@ -879,6 +1362,8 @@ public:
             environment.mapAvailable,
             push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
+        push.cacheMode = cacheMode;
+        push.outputLinear = cacheMode == kScenePathTraceCacheModeNrc ? 1u : 0u;
         const ScenePathTraceCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
         const bool previousCameraValid =
             hasPreviousCamera_ &&
@@ -1006,19 +1491,53 @@ public:
                 .textureView = specularHitDistance.view(),
             });
         }
-        result = rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = bindings.data(),
-            .bindingCount = static_cast<uint32_t>(bindings.size()),
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-            .groupCountZ = 1,
-        });
-        if (!result) {
-            return result;
+
+        if (cacheMode != kScenePathTraceCacheModeOff) {
+            result = ensureCacheParamsBuffer(*device_);
+            if (!result) {
+                return result;
+            }
         }
+
+        if (cacheMode == kScenePathTraceCacheModeSharc) {
+            result = executeSharcFrame(
+                context,
+                push,
+                bindings,
+                *renderProgram,
+                programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)]);
+            if (!result) {
+                return result;
+            }
+        } else if (cacheMode == kScenePathTraceCacheModeNrc) {
+#if METALLIC_HAS_NRC
+            result = executeNrcFrame(
+                context,
+                push,
+                bindings,
+                programs_[static_cast<size_t>(PathTracePermutation::NrcUpdate)],
+                programs_[static_cast<size_t>(PathTracePermutation::NrcQuery)],
+                historyCurrentView);
+            if (!result) {
+                return result;
+            }
+#endif
+        } else {
+            result = renderProgram->dispatch(SceneRayQueryDispatchDesc{
+                .commandBuffer = &context.commandBuffer(),
+                .bindings = bindings.data(),
+                .bindingCount = static_cast<uint32_t>(bindings.size()),
+                .pushData = &push,
+                .pushDataSize = sizeof(push),
+                .groupCountX = (context.width() + 7) / 8,
+                .groupCountY = (context.height() + 7) / 8,
+                .groupCountZ = 1,
+            });
+            if (!result) {
+                return result;
+            }
+        }
+
         if (push.enableAccumulation != 0 && context.historyResources() != nullptr) {
             context.historyResources()->markWritten(historyNameForContext(context));
         }
@@ -1048,7 +1567,10 @@ private:
         TextureView*& outPreviousView)
     {
         HistoryResourceManager* history = context.historyResources();
-        const bool accumulationEnabled = boolProperty(context.properties(), "accumulate", true);
+        // NRC mode always routes through the linear HDR history texture: the
+        // resolve pass adds predicted radiance before a separate tonemap pass.
+        const bool accumulationEnabled = push.cacheMode == kScenePathTraceCacheModeNrc ||
+            boolProperty(context.properties(), "accumulate", true);
         push.enableAccumulation = accumulationEnabled && history != nullptr ? 1u : 0u;
         push.hasHistory = 0;
         push.accumulationFrame = 0;
@@ -1060,7 +1582,8 @@ private:
             return {};
         }
 
-        const Format historyFormat = exportDenoiserGuides(context.properties())
+        const bool nrcHistory = push.cacheMode == kScenePathTraceCacheModeNrc;
+        const Format historyFormat = exportDenoiserGuides(context.properties()) || nrcHistory
             ? Format::Rgba16Sfloat
             : Format::Rgba8Unorm;
         const TextureDesc historyDesc{
@@ -1076,7 +1599,12 @@ private:
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
         };
-        const std::string historyName = historyNameForContext(context);
+        std::string historyName = historyNameForContext(context);
+        if (nrcHistory) {
+            // Distinct history slot: NRC mode accumulates linear HDR instead
+            // of tonemapped colors.
+            historyName += ".hdr";
+        }
         Result result = history->ensureTexture(
             historyName,
             historyDesc,
@@ -1110,6 +1638,7 @@ private:
 
         outCurrentView = current.view;
         outPreviousView = previous.view;
+        historyCurrentTexture_ = current.texture;
 
         if (previous.valid && !resetAccumulation_) {
             ++accumulationFrame_;
@@ -1122,6 +1651,555 @@ private:
         push.accumulationFrame = accumulationFrame_;
         return {};
     }
+
+    static uint32_t cacheModeFromProperties(const RenderGraphProperties& properties)
+    {
+        const std::string mode = stringProperty(properties, "cacheMode", "off");
+        if (mode == "sharc" || mode == "SHaRC") {
+            return kScenePathTraceCacheModeSharc;
+        }
+        if (mode == "nrc" || mode == "NRC") {
+            return kScenePathTraceCacheModeNrc;
+        }
+        return kScenePathTraceCacheModeOff;
+    }
+
+    void clearPrograms()
+    {
+        for (SceneRayQueryProgram& program : programs_) {
+            program.clear();
+        }
+        sharcClearProgram_.clear();
+        sharcResolveProgram_.clear();
+        tonemapProgram_.clear();
+    }
+
+    Result ensureCacheParamsBuffer(Device& device)
+    {
+        if (cacheParamsBuffer_ != nullptr) {
+            return {};
+        }
+        BufferDesc desc{
+            .size = sizeof(ScenePathTraceCacheParams),
+            .usage = BufferUsageBits::Storage,
+            .memoryLocation = MemoryLocation::HostUpload,
+        };
+        std::unique_ptr<Buffer> buffer;
+        Result result = device.createBuffer(desc, buffer);
+        if (!result || buffer == nullptr) {
+            spdlog::warn("[ScenePathTracePass] failed to create cache parameter buffer: {}",
+                result ? "null buffer" : resultToString(result));
+            return result ? makeError(Error::Failure) : result;
+        }
+        cacheParamsBuffer_ = std::move(buffer);
+        return {};
+    }
+
+    Result writeCacheParamsBuffer(CommandBuffer& commandBuffer, const ScenePathTraceCacheParams& params)
+    {
+        if (cacheParamsBuffer_ == nullptr) {
+            return makeError(Error::Failure);
+        }
+        void* mapped = cacheParamsBuffer_->map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, &params, sizeof(params));
+        cacheParamsBuffer_->flush(0, sizeof(params));
+        cacheParamsBuffer_->unmap();
+        (void)commandBuffer;
+        return {};
+    }
+
+    Result ensureSharcBuffers(Device& device, uint32_t entryCount)
+    {
+        if (sharcHashEntriesBuffer_ != nullptr && sharcAccumulationBuffer_ != nullptr &&
+            sharcResolvedBuffer_ != nullptr && entryCount == sharcEntryCount_) {
+            return {};
+        }
+
+        struct SharcBufferDesc {
+            uint64_t elementSize;
+            std::unique_ptr<Buffer>* target;
+            const char* label;
+        };
+        const std::array<SharcBufferDesc, 3> descs{
+            SharcBufferDesc{sizeof(uint64_t), &sharcHashEntriesBuffer_, "hash entries"},
+            SharcBufferDesc{sizeof(uint32_t) * 4, &sharcAccumulationBuffer_, "accumulation"},
+            SharcBufferDesc{sizeof(uint32_t) * 4, &sharcResolvedBuffer_, "resolved"},
+        };
+        for (const SharcBufferDesc& desc : descs) {
+            BufferDesc bufferDesc{
+                .size = static_cast<uint64_t>(entryCount) * desc.elementSize,
+                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::Device,
+            };
+            std::unique_ptr<Buffer> buffer;
+            Result result = device.createBuffer(bufferDesc, buffer);
+            if (!result || buffer == nullptr) {
+                spdlog::warn("[ScenePathTracePass] failed to create SHaRC {} buffer: {}",
+                    desc.label,
+                    result ? "null buffer" : resultToString(result));
+                for (const SharcBufferDesc& cleanup : descs) {
+                    cleanup.target->reset();
+                }
+                sharcEntryCount_ = 0;
+                return result ? makeError(Error::Failure) : result;
+            }
+            *desc.target = std::move(buffer);
+        }
+        sharcEntryCount_ = entryCount;
+        sharcClearPending_ = true;
+        return {};
+    }
+
+    Result executeSharcFrame(
+        RenderGraphExecutionContext& context,
+        ScenePathTracePush& push,
+        const std::vector<SceneRayQueryDispatchBinding>& baseBindings,
+        SceneRayQueryProgram& queryProgram,
+        SceneRayQueryProgram& updateProgram)
+    {
+        const uint32_t entriesLog2 = uintProperty(
+            context.properties(),
+            "sharc.entriesLog2",
+            kSharcDefaultEntriesLog2,
+            kSharcMinEntriesLog2,
+            kSharcMaxEntriesLog2);
+        const uint32_t entryCount = 1u << entriesLog2;
+
+        Result result = ensureSharcBuffers(*device_, entryCount);
+        if (!result) {
+            return result;
+        }
+
+        // Rebuild the cache whenever the scene, environment or capacity
+        // changes; SHaRC handles camera movement through level blending.
+        const uint64_t sharcRevision = sceneResourceRevision_ ^
+            (environmentResourceRevision_ * 0x9e3779b97f4a7c15ull) ^
+            (environmentSettingsRevision_ * 0xbf58476d1ce4e5b9ull) ^
+            (static_cast<uint64_t>(entryCount) << 8u);
+        if (sharcRevision != sharcResourcesRevision_) {
+            sharcResourcesRevision_ = sharcRevision;
+            sharcClearPending_ = true;
+        }
+
+        CommandBuffer& commandBuffer = context.commandBuffer();
+
+        ScenePathTraceCacheParams params;
+        copyFloat4(push.eye, params.sharcCameraPosition);
+        copyFloat4(push.previousEye, params.sharcCameraPositionPrev);
+        params.sharcEntriesNum = sharcEntryCount_;
+        params.frameIndex = push.accumulationFrame;
+        params.cacheMode = kScenePathTraceCacheModeSharc;
+        params.width = push.width;
+        params.height = push.height;
+        const float sceneScaleSetting = floatProperty(context.properties(), "sharc.sceneScale", 0.0f);
+        const float autoSceneScale = std::clamp(sceneResources_.bounds().radius() * 10.0f, 5.0f, 200.0f);
+        params.sharcSceneScale = sceneScaleSetting > 0.0f ? sceneScaleSetting : autoSceneScale;
+        params.sharcUpdateStride = uintProperty(
+            context.properties(), "sharc.updateStride", kSharcDefaultUpdateStride, 1, 16);
+
+        if (sharcClearPending_) {
+            sharcClearPending_ = false;
+            SceneSharcMaintenancePush clearPush;
+            clearPush.entriesNum = sharcEntryCount_;
+            result = dispatchSharcMaintenance(
+                commandBuffer,
+                sharcClearProgram_,
+                clearPush,
+                (sharcEntryCount_ + kSharcMaintenanceBlockSize - 1u) / kSharcMaintenanceBlockSize);
+            if (!result) {
+                return result;
+            }
+            barrierBuffers(commandBuffer, {sharcHashEntriesBuffer_.get(), sharcAccumulationBuffer_.get(), sharcResolvedBuffer_.get()});
+        }
+
+        result = writeCacheParamsBuffer(commandBuffer, params);
+        if (!result) {
+            return result;
+        }
+
+        // SHaRC update: sparse tracing over a stride x stride pixel block.
+        std::vector<SceneRayQueryDispatchBinding> updateBindings = baseBindings;
+        appendSharcDispatchBindings(updateBindings);
+        const uint32_t stride = std::max(params.sharcUpdateStride, 1u);
+        const uint32_t updateWidth = (push.width + stride - 1u) / stride;
+        const uint32_t updateHeight = (push.height + stride - 1u) / stride;
+        result = updateProgram.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &commandBuffer,
+            .bindings = updateBindings.data(),
+            .bindingCount = static_cast<uint32_t>(updateBindings.size()),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (updateWidth + 7) / 8,
+            .groupCountY = (updateHeight + 7) / 8,
+            .groupCountZ = 1,
+        });
+        if (!result) {
+            return result;
+        }
+        barrierBuffers(commandBuffer, {sharcHashEntriesBuffer_.get(), sharcAccumulationBuffer_.get(), sharcResolvedBuffer_.get()});
+
+        // SHaRC resolve: combine per-frame accumulation with previous data.
+        SceneSharcMaintenancePush resolvePush;
+        copyFloat4(push.eye, resolvePush.cameraPosition);
+        copyFloat4(push.previousEye, resolvePush.cameraPositionPrev);
+        resolvePush.sceneScale = params.sharcSceneScale;
+        resolvePush.entriesNum = sharcEntryCount_;
+        resolvePush.accumulationFrameNum = uintProperty(
+            context.properties(),
+            "sharc.maxAccumulatedFrames",
+            kSharcDefaultMaxAccumulatedFrames,
+            1,
+            1024);
+        resolvePush.staleFrameNumMax = uintProperty(
+            context.properties(),
+            "sharc.staleFrameNum",
+            kSharcDefaultStaleFrameNum,
+            8,
+            1024);
+        resolvePush.frameIndex = push.accumulationFrame;
+        result = dispatchSharcMaintenance(
+            commandBuffer,
+            sharcResolveProgram_,
+            resolvePush,
+            (sharcEntryCount_ + kSharcMaintenanceBlockSize - 1u) / kSharcMaintenanceBlockSize);
+        if (!result) {
+            return result;
+        }
+        barrierBuffers(commandBuffer, {sharcHashEntriesBuffer_.get(), sharcAccumulationBuffer_.get(), sharcResolvedBuffer_.get()});
+
+        // SHaRC render/query at full resolution with early termination.
+        std::vector<SceneRayQueryDispatchBinding> queryBindings = baseBindings;
+        appendSharcDispatchBindings(queryBindings);
+        return queryProgram.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &commandBuffer,
+            .bindings = queryBindings.data(),
+            .bindingCount = static_cast<uint32_t>(queryBindings.size()),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (push.width + 7) / 8,
+            .groupCountY = (push.height + 7) / 8,
+            .groupCountZ = 1,
+        });
+    }
+
+    Result dispatchSharcMaintenance(
+        CommandBuffer& commandBuffer,
+        SceneRayQueryProgram& program,
+        const SceneSharcMaintenancePush& maintenancePush,
+        uint32_t groupCount)
+    {
+        const std::array<SceneRayQueryDispatchBinding, 4> bindings{
+            SceneRayQueryDispatchBinding{.binding = 0, .buffer = sharcHashEntriesBuffer_.get()},
+            SceneRayQueryDispatchBinding{.binding = 1, .buffer = sharcAccumulationBuffer_.get()},
+            SceneRayQueryDispatchBinding{.binding = 2, .buffer = sharcResolvedBuffer_.get()},
+            SceneRayQueryDispatchBinding{.binding = 3, .buffer = cacheParamsBuffer_.get()},
+        };
+        return program.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &commandBuffer,
+            .bindings = bindings.data(),
+            .bindingCount = static_cast<uint32_t>(bindings.size()),
+            .pushData = &maintenancePush,
+            .pushDataSize = sizeof(maintenancePush),
+            .groupCountX = std::max(groupCount, 1u),
+            .groupCountY = 1,
+            .groupCountZ = 1,
+        });
+    }
+
+    void appendSharcDispatchBindings(std::vector<SceneRayQueryDispatchBinding>& bindings) const
+    {
+        bindings.push_back(SceneRayQueryDispatchBinding{
+            .binding = kScenePathTraceCacheParamsBinding,
+            .buffer = cacheParamsBuffer_.get(),
+        });
+        bindings.push_back(SceneRayQueryDispatchBinding{
+            .binding = kScenePathTraceSharcHashEntriesBinding,
+            .buffer = sharcHashEntriesBuffer_.get(),
+        });
+        bindings.push_back(SceneRayQueryDispatchBinding{
+            .binding = kScenePathTraceSharcAccumulationBinding,
+            .buffer = sharcAccumulationBuffer_.get(),
+        });
+        bindings.push_back(SceneRayQueryDispatchBinding{
+            .binding = kScenePathTraceSharcResolvedBinding,
+            .buffer = sharcResolvedBuffer_.get(),
+        });
+    }
+
+    static void barrierBuffers(
+        CommandBuffer& commandBuffer,
+        std::initializer_list<Buffer*> buffers)
+    {
+        std::vector<BufferBarrierDesc> barriers;
+        barriers.reserve(buffers.size());
+        for (Buffer* buffer : buffers) {
+            if (buffer == nullptr) {
+                continue;
+            }
+            barriers.push_back(BufferBarrierDesc{
+                .buffer = buffer,
+                .before = ResourceState::General,
+                .after = ResourceState::General,
+            });
+        }
+        if (!barriers.empty()) {
+            commandBuffer.barrier(BarrierDesc{
+                .buffers = barriers.data(),
+                .bufferCount = static_cast<uint32_t>(barriers.size()),
+            });
+        }
+    }
+
+#if METALLIC_HAS_NRC
+    static NrcResolveMode nrcResolveModeFromProperties(const RenderGraphProperties& properties)
+    {
+        const std::string mode = stringProperty(properties, "nrc.resolveMode", "add");
+        if (mode == "replace") {
+            return NrcResolveMode::ReplaceOutputWithQueryResult;
+        }
+        if (mode == "heatmap") {
+            return NrcResolveMode::TrainingBounceHeatMap;
+        }
+        if (mode == "queryIndex") {
+            return NrcResolveMode::QueryIndex;
+        }
+        if (mode == "cacheView") {
+            return NrcResolveMode::DirectCacheView;
+        }
+        return NrcResolveMode::AddQueryResultToOutput;
+    }
+
+    Result executeNrcFrame(
+        RenderGraphExecutionContext& context,
+        ScenePathTracePush& push,
+        const std::vector<SceneRayQueryDispatchBinding>& baseBindings,
+        SceneRayQueryProgram& updateProgram,
+        SceneRayQueryProgram& queryProgram,
+        TextureView* historyCurrentView)
+    {
+        if (device_ == nullptr || graphicsQueue_ == nullptr || historyCurrentView == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        CommandBuffer& commandBuffer = context.commandBuffer();
+
+        // NRC requires EndFrame after submission; defer it to the next frame's
+        // execute, when the previous command buffer is guaranteed submitted.
+        if (nrcEndFramePending_) {
+            nrcEndFramePending_ = false;
+            Result endResult = nrc_.endFrame(*graphicsQueue_);
+            if (!endResult) {
+                return endResult;
+            }
+        }
+        if (!nrc_.valid()) {
+            std::string nrcLog;
+            Result initResult = nrc_.initialize(*device_, nrcLog);
+            if (!initResult) {
+                spdlog::warn("[ScenePathTracePass] NRC initialization failed: {}", nrcLog);
+                return initResult;
+            }
+        }
+
+        const scene::Bounds& bounds = sceneResources_.bounds();
+        nrc::ContextSettings settings{};
+        settings.learnIrradiance = false;
+        settings.includeDirectLighting = false;
+        settings.requestReset =
+            sceneResourceRevision_ != nrcSceneRevision_ ||
+            environmentResourceRevision_ != nrcEnvironmentRevision_;
+        settings.sceneBoundsMin = nrc_float3{bounds.min.x, bounds.min.y, bounds.min.z};
+        settings.sceneBoundsMax = nrc_float3{bounds.max.x, bounds.max.y, bounds.max.z};
+        settings.smallestResolvableFeatureSize = std::max(bounds.radius() * 0.001f, 0.001f);
+        settings.frameDimensions = nrc_uint2{context.width(), context.height()};
+        const nrc_uint2 idealTraining =
+            nrc::ComputeIdealTrainingDimensions(settings.frameDimensions, 4);
+        settings.trainingDimensions = nrc_uint2{
+            std::min(idealTraining.x, context.width()),
+            std::min(idealTraining.y, context.height())};
+        settings.samplesPerPixel = 1;
+        settings.maxPathVertices = kNrcMaxPathVertices;
+
+        const bool reconfigure =
+            !nrcConfigured_ || settings != nrcContextSettings_ || settings.requestReset;
+        if (reconfigure) {
+            std::string configureLog;
+            Result configureResult = nrc_.configure(settings, *device_, configureLog);
+            if (!configureResult) {
+                spdlog::warn("[ScenePathTracePass] NRC configure failed: {}", configureLog);
+                return configureResult;
+            }
+            nrcContextSettings_ = settings;
+            nrcConfigured_ = true;
+            nrcSceneRevision_ = sceneResourceRevision_;
+            nrcEnvironmentRevision_ = environmentResourceRevision_;
+        }
+
+        nrc::FrameSettings frameSettings{};
+        frameSettings.maxExpectedAverageRadianceValue =
+            floatProperty(context.properties(), "nrc.maxExpectedRadiance", 1.0f);
+        frameSettings.resolveMode = nrcResolveModeFromProperties(context.properties());
+        Result result = nrc_.beginFrame(commandBuffer, frameSettings);
+        if (!result) {
+            return result;
+        }
+
+        ::NrcConstants nrcConstants;
+        result = nrc_.populateShaderConstants(nrcConstants);
+        if (!result) {
+            return result;
+        }
+
+        ScenePathTraceCacheParams params;
+        copyFloat4(push.eye, params.sharcCameraPosition);
+        copyFloat4(push.previousEye, params.sharcCameraPositionPrev);
+        params.sharcEntriesNum = 0;
+        params.frameIndex = push.accumulationFrame;
+        params.cacheMode = kScenePathTraceCacheModeNrc;
+        params.width = push.width;
+        params.height = push.height;
+        params.trainingWidth = nrcContextSettings_.trainingDimensions.x;
+        params.trainingHeight = nrcContextSettings_.trainingDimensions.y;
+        params.nrcFrameDimensions[0] = nrcConstants.frameDimensions.x;
+        params.nrcFrameDimensions[1] = nrcConstants.frameDimensions.y;
+        params.nrcTrainingDimensions[0] = nrcConstants.trainingDimensions.x;
+        params.nrcTrainingDimensions[1] = nrcConstants.trainingDimensions.y;
+        params.nrcScenePosScale[0] = nrcConstants.scenePosScale.x;
+        params.nrcScenePosScale[1] = nrcConstants.scenePosScale.y;
+        params.nrcScenePosScale[2] = nrcConstants.scenePosScale.z;
+        params.nrcSamplesPerPixel = nrcConstants.samplesPerPixel;
+        params.nrcScenePosBias[0] = nrcConstants.scenePosBias.x;
+        params.nrcScenePosBias[1] = nrcConstants.scenePosBias.y;
+        params.nrcScenePosBias[2] = nrcConstants.scenePosBias.z;
+        params.nrcMaxPathVertices = nrcConstants.maxPathVertices;
+        params.nrcLearnIrradiance = nrcConstants.learnIrradiance;
+        params.nrcRadianceCacheDirect = nrcConstants.radianceCacheDirect;
+        params.nrcRadianceUnpackMultiplier = nrcConstants.radianceUnpackMultiplier;
+        params.nrcResolveMode = static_cast<int32_t>(nrcConstants.resolveMode);
+        params.nrcEnableTerminationHeuristic = nrcConstants.enableTerminationHeuristic;
+        params.nrcSkipDeltaVertices = nrcConstants.skipDeltaVertices;
+        params.nrcTerminationHeuristicThreshold = nrcConstants.terminationHeuristicThreshold;
+        params.nrcTrainingTerminationHeuristicThreshold = nrcConstants.trainingTerminationHeuristicThreshold;
+        params.nrcProportionUnbiased = nrcConstants.proportionUnbiased;
+        result = writeCacheParamsBuffer(commandBuffer, params);
+        if (!result) {
+            return result;
+        }
+
+        std::vector<SceneRayQueryDispatchBinding> traceBindings = baseBindings;
+        traceBindings.push_back(SceneRayQueryDispatchBinding{
+            .binding = kScenePathTraceCacheParamsBinding,
+            .buffer = cacheParamsBuffer_.get(),
+        });
+        static constexpr nrc::BufferIdx kTraceBuffers[] = {
+            nrc::BufferIdx::QueryPathInfo,
+            nrc::BufferIdx::TrainingPathInfo,
+            nrc::BufferIdx::TrainingPathVertices,
+            nrc::BufferIdx::QueryRadianceParams,
+            nrc::BufferIdx::Counter,
+        };
+        static constexpr uint32_t kTraceBindings[] = {
+            kScenePathTraceNrcQueryPathInfoBinding,
+            kScenePathTraceNrcTrainingPathInfoBinding,
+            kScenePathTraceNrcTrainingPathVerticesBinding,
+            kScenePathTraceNrcQueryRadianceParamsBinding,
+            kScenePathTraceNrcCountersBinding,
+        };
+        for (size_t index = 0; index < std::size(kTraceBuffers); ++index) {
+            traceBindings.push_back(SceneRayQueryDispatchBinding{
+                .binding = kTraceBindings[index],
+                .buffer = nrc_.buffer(static_cast<uint32_t>(kTraceBuffers[index])),
+            });
+        }
+
+        // NRC update pass at training resolution writes training data only.
+        const uint32_t trainingWidth = std::max(params.trainingWidth, 1u);
+        const uint32_t trainingHeight = std::max(params.trainingHeight, 1u);
+        result = updateProgram.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &commandBuffer,
+            .bindings = traceBindings.data(),
+            .bindingCount = static_cast<uint32_t>(traceBindings.size()),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (trainingWidth + 7) / 8,
+            .groupCountY = (trainingHeight + 7) / 8,
+            .groupCountZ = 1,
+        });
+        if (!result) {
+            return result;
+        }
+
+        // NRC query pass at full resolution; linear HDR output into history.
+        result = queryProgram.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &commandBuffer,
+            .bindings = traceBindings.data(),
+            .bindingCount = static_cast<uint32_t>(traceBindings.size()),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (push.width + 7) / 8,
+            .groupCountY = (push.height + 7) / 8,
+            .groupCountZ = 1,
+        });
+        if (!result) {
+            return result;
+        }
+
+        // The path tracer wrote the training/query records; make them visible
+        // to the NRC library kernels.
+        barrierBuffers(commandBuffer, {cacheParamsBuffer_.get()});
+        for (size_t index = 0; index < std::size(kTraceBuffers); ++index) {
+            Buffer* buffer = nrc_.buffer(static_cast<uint32_t>(kTraceBuffers[index]));
+            if (buffer != nullptr) {
+                barrierBuffers(commandBuffer, {buffer});
+            }
+        }
+
+        result = nrc_.queryAndTrain(commandBuffer, nullptr);
+        if (!result) {
+            return result;
+        }
+        result = nrc_.resolve(commandBuffer, *historyCurrentView);
+        if (!result) {
+            return result;
+        }
+        nrcEndFramePending_ = true;
+
+        // Resolve wrote linear HDR into the history texture; tonemap it into
+        // the displayable color output.
+        Texture* historyTexture = historyCurrentTexture_;
+        if (historyTexture != nullptr) {
+            TextureBarrierDesc historyBarrier{
+                .texture = historyTexture,
+                .before = ResourceState::General,
+                .after = ResourceState::General,
+            };
+            commandBuffer.barrier(BarrierDesc{
+                .textures = &historyBarrier,
+                .textureCount = 1,
+            });
+        }
+        ScenePathTraceTonemapPush tonemapPush{
+            .width = push.width,
+            .height = push.height,
+        };
+        const std::array<SceneRayQueryDispatchBinding, 2> tonemapBindings{
+            SceneRayQueryDispatchBinding{.binding = 0, .textureView = historyCurrentView},
+            SceneRayQueryDispatchBinding{.binding = 1, .textureView = context.outputTexture("color").view()},
+        };
+        return tonemapProgram_.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &commandBuffer,
+            .bindings = tonemapBindings.data(),
+            .bindingCount = static_cast<uint32_t>(tonemapBindings.size()),
+            .pushData = &tonemapPush,
+            .pushDataSize = sizeof(tonemapPush),
+            .groupCountX = (push.width + 7) / 8,
+            .groupCountY = (push.height + 7) / 8,
+            .groupCountZ = 1,
+        });
+    }
+#endif
 
     static uint32_t uintProperty(
         const RenderGraphProperties& properties,
@@ -1378,8 +2456,28 @@ private:
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     OpenPBRLutResources openPBRLuts_;
-    SceneRayQueryProgram rayQueryProgram_;
+    std::array<SceneRayQueryProgram, static_cast<size_t>(PathTracePermutation::Count)> programs_;
+    SceneRayQueryProgram sharcClearProgram_;
+    SceneRayQueryProgram sharcResolveProgram_;
+    SceneRayQueryProgram tonemapProgram_;
     std::string compiledShaderKey_;
+    uint32_t cacheMode_ = kScenePathTraceCacheModeOff;
+    std::unique_ptr<Buffer> cacheParamsBuffer_;
+    std::unique_ptr<Buffer> sharcHashEntriesBuffer_;
+    std::unique_ptr<Buffer> sharcAccumulationBuffer_;
+    std::unique_ptr<Buffer> sharcResolvedBuffer_;
+    uint32_t sharcEntryCount_ = 0;
+    uint64_t sharcResourcesRevision_ = 0;
+    bool sharcClearPending_ = false;
+#if METALLIC_HAS_NRC
+    vulkan::NrcIntegration nrc_;
+    nrc::ContextSettings nrcContextSettings_{};
+    bool nrcConfigured_ = false;
+    bool nrcEndFramePending_ = false;
+    uint64_t nrcSceneRevision_ = 0;
+    uint64_t nrcEnvironmentRevision_ = 0;
+#endif
+    Texture* historyCurrentTexture_ = nullptr;
     uint64_t sceneResourceRevision_ = 0;
     uint64_t environmentResourceRevision_ = 0;
     uint64_t environmentSettingsRevision_ = 0;

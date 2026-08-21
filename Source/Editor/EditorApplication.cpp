@@ -1874,7 +1874,13 @@ int EditorApplication::run(
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
     startupSampleId_ = startupSampleId != nullptr ? startupSampleId : "";
     if (smokeTest_ && startupSampleId_.empty()) {
-        startupSampleId_ = "material-visualization-abeautiful-game";
+        // Allow headless verification of a specific built-in sample, e.g.
+        // METALLIC_SMOKE_TEST_SAMPLE=pathtracing-sharc-meet-mat
+        const char* smokeSample = std::getenv("METALLIC_SMOKE_TEST_SAMPLE");
+        startupSampleId_ =
+            smokeSample != nullptr && *smokeSample != '\0'
+                ? std::string(smokeSample)
+                : std::string("material-visualization-abeautiful-game");
     }
     startupScenePath_ = startupScenePath != nullptr ? startupScenePath : "";
     startupStreamAssetPath_ = startupStreamAssetPath != nullptr ? startupStreamAssetPath : "";

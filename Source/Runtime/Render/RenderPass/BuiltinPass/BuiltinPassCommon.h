@@ -83,6 +83,9 @@ inline constexpr const char* kRtxdiCompositeShaderModuleName = "RtxdiComposite";
 inline constexpr const char* kRtxdiCompositeEntryPoint = "rtxdiCompositeMain";
 inline constexpr const char* kScenePathTraceGuidesShaderModuleName = "ScenePathTraceGuides";
 inline constexpr const char* kScenePathTraceGuidesEntryPoint = "scenePathTraceGuidesMain";
+inline constexpr const char* kSceneSharcMaintenanceShaderModuleName = "SceneSharcMaintenance";
+inline constexpr const char* kScenePathTraceTonemapShaderModuleName = "ScenePathTraceTonemap";
+inline constexpr const char* kScenePathTraceTonemapEntryPointName = "scenePathTraceTonemapMain";
 inline constexpr const char* kOpenPBRRayQueryPathTraceShaderModuleName = "OpenPBRRayQueryPathTrace";
 inline constexpr const char* kOpenPBRRayQueryPathTraceEntryPoint = "openPbrRayQueryPathTraceMain";
 inline constexpr const char* kOpenPBRRayQueryPathTraceGuidesShaderModuleName = "OpenPBRRayQueryPathTraceGuides";
@@ -166,6 +169,21 @@ inline constexpr uint32_t kRtxdiBehaviorReGIR = 1u << 10u;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeProcedural = 0;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeMap = 1;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeDisabled = 2;
+// Radiance cache modes (RTXGI SHaRC / NVIDIA NRC reference integrations).
+inline constexpr uint32_t kScenePathTraceCacheModeOff = 0;
+inline constexpr uint32_t kScenePathTraceCacheModeSharc = 1;
+inline constexpr uint32_t kScenePathTraceCacheModeNrc = 2;
+// Extra descriptor bindings used by the radiance-cache permutations of
+// ScenePathTrace.slang. Must match the [[vk::binding]] annotations there.
+inline constexpr uint32_t kScenePathTraceCacheParamsBinding = 20;
+inline constexpr uint32_t kScenePathTraceSharcHashEntriesBinding = 21;
+inline constexpr uint32_t kScenePathTraceSharcAccumulationBinding = 22;
+inline constexpr uint32_t kScenePathTraceSharcResolvedBinding = 23;
+inline constexpr uint32_t kScenePathTraceNrcQueryPathInfoBinding = 24;
+inline constexpr uint32_t kScenePathTraceNrcTrainingPathInfoBinding = 25;
+inline constexpr uint32_t kScenePathTraceNrcTrainingPathVerticesBinding = 26;
+inline constexpr uint32_t kScenePathTraceNrcQueryRadianceParamsBinding = 27;
+inline constexpr uint32_t kScenePathTraceNrcCountersBinding = 28;
 inline constexpr uint32_t kNrdDenoiserModeReblur = 0;
 inline constexpr uint32_t kNrdDenoiserModeRelax = 1;
 inline constexpr uint32_t kNrdDenoiserModeReference = 2;
@@ -718,10 +736,55 @@ struct ScenePathTracePush {
     float environmentRotationRadians = 0.0f;
     uint32_t environmentMode = kScenePathTraceEnvironmentModeProcedural;
     uint32_t environmentVisible = 1;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
+    // When set, the shader writes linear HDR and a follow-up pass tonemaps
+    // (used by the NRC query permutation whose resolve adds radiance first).
+    uint32_t outputLinear = 0;
+    uint32_t cacheMode = kScenePathTraceCacheModeOff;
     uint32_t padding2 = 0;
 };
+
+// Per-frame parameters for the radiance-cache permutations of
+// ScenePathTrace.slang (binding kScenePathTraceCacheParamsBinding). Layout
+// must match struct ScenePathTraceCacheParams in the shader byte for byte;
+// nrc mirrors ::NrcConstants from the NRC SDK headers.
+struct ScenePathTraceCacheParams {
+    float sharcCameraPosition[4] = {};
+    float sharcCameraPositionPrev[4] = {};
+    float sharcSceneScale = 1.0f;
+    uint32_t sharcEntriesNum = 0;
+    uint32_t sharcAccumulationFrameNum = 128;
+    uint32_t sharcStaleFrameNumMax = 64;
+    uint32_t frameIndex = 0;
+    uint32_t cacheMode = kScenePathTraceCacheModeOff;
+    uint32_t sharcUpdateStride = 5;
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t trainingWidth = 1;
+    uint32_t trainingHeight = 1;
+    // ::NrcConstants (96 bytes)
+    uint32_t nrcFrameDimensions[2] = {};
+    uint32_t nrcTrainingDimensions[2] = {};
+    float nrcScenePosScale[3] = {};
+    uint32_t nrcSamplesPerPixel = 1;
+    float nrcScenePosBias[3] = {};
+    uint32_t nrcMaxPathVertices = 8;
+    uint32_t nrcLearnIrradiance = 0;
+    uint32_t nrcRadianceCacheDirect = 0;
+    float nrcRadianceUnpackMultiplier = 1.0f;
+    int32_t nrcResolveMode = 0;
+    uint32_t nrcEnableTerminationHeuristic = 1;
+    uint32_t nrcSkipDeltaVertices = 0;
+    float nrcTerminationHeuristicThreshold = 0.1f;
+    float nrcTrainingTerminationHeuristicThreshold = 0.1f;
+    float nrcProportionUnbiased = 0.0625f;
+    uint32_t nrcPad0 = 0;
+    uint32_t nrcPad1 = 0;
+    uint32_t nrcPad2 = 0;
+};
+
+static_assert(sizeof(ScenePathTraceCacheParams) == 172);
+static_assert(offsetof(ScenePathTraceCacheParams, nrcFrameDimensions) == 76);
+static_assert(sizeof(ScenePathTracePush) == 228);
 
 struct SceneRtxdiPush {
     float eye[4] = {};
