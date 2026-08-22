@@ -233,6 +233,9 @@ VkFormat toVkFormat(Format format)
         return VK_FORMAT_R8G8_UINT;
     case Format::Rg8Sint:
         return VK_FORMAT_R8G8_SINT;
+    // LibNTC stores latent features as packed 4-bit BGRA channels.
+    case Format::Bgra4Unorm:
+        return VK_FORMAT_A4R4G4B4_UNORM_PACK16;
     case Format::Bgra8Unorm:
         return VK_FORMAT_B8G8R8A8_UNORM;
     case Format::Bgra8Srgb:
@@ -337,6 +340,8 @@ Format fromVkFormat(VkFormat format)
         return Format::Rg8Uint;
     case VK_FORMAT_R8G8_SINT:
         return Format::Rg8Sint;
+    case VK_FORMAT_A4R4G4B4_UNORM_PACK16:
+        return Format::Bgra4Unorm;
     case VK_FORMAT_B8G8R8A8_UNORM:
         return Format::Bgra8Unorm;
     case VK_FORMAT_B8G8R8A8_SRGB:
@@ -626,6 +631,7 @@ uint32_t formatTexelByteSize(Format format)
     case Format::Rg8Snorm:
     case Format::Rg8Uint:
     case Format::Rg8Sint:
+    case Format::Bgra4Unorm:
     case Format::R16Unorm:
     case Format::R16Snorm:
     case Format::R16Uint:
@@ -1615,6 +1621,7 @@ struct VulkanDeviceFeatureProbe {
 
 struct VulkanDeviceFeatureSelection {
     bool shaderDemoteToHelperInvocation = false;
+    bool shaderIntegerDotProduct = false;
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
     bool meshShader = false;
@@ -1655,6 +1662,8 @@ struct VulkanDeviceFeatureSelection {
         VulkanDeviceFeatureSelection result;
         result.shaderDemoteToHelperInvocation =
             probe.vulkan13Features.shaderDemoteToHelperInvocation == VK_TRUE;
+        result.shaderIntegerDotProduct =
+            probe.vulkan13Features.shaderIntegerDotProduct == VK_TRUE;
         result.bindlessDescriptorHeap =
             request.bindlessDescriptorHeap &&
             extensions.descriptorHeap &&
@@ -1817,6 +1826,8 @@ struct VulkanEnabledFeatureChain {
         vulkan13Features.dynamicRendering = VK_TRUE;
         vulkan13Features.shaderDemoteToHelperInvocation =
             selection.shaderDemoteToHelperInvocation ? VK_TRUE : VK_FALSE;
+        vulkan13Features.shaderIntegerDotProduct =
+            selection.shaderIntegerDotProduct ? VK_TRUE : VK_FALSE;
         descriptorHeapFeatures.descriptorHeap = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         shaderObjectFeatures.shaderObject = selection.shaderObject ? VK_TRUE : VK_FALSE;
 #ifdef VK_EXT_mesh_shader
@@ -8262,6 +8273,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->partitionedAccelerationStructureEnabled =
         selectedFeatures.partitionedAccelerationStructure;
     deviceImpl->capabilities.aftermath = selectedFeatures.aftermath;
+    deviceImpl->capabilities.shaderIntegerDotProduct =
+        selectedFeatures.shaderIntegerDotProduct;
     deviceImpl->bufferDeviceAddressEnabled =
         selectedFeatures.bindlessDescriptorHeap ||
         selectedFeatures.rayTracingAccelerationStructure ||

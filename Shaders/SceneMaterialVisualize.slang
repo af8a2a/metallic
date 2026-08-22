@@ -1,3 +1,6 @@
+// NTC resources are shared with the path tracer and occupy bindings 29-33.
+#include "NeuralTextureSampling.slang"
+
 [[vk::binding(0, 0)]]
 RaytracingAccelerationStructure gScene;
 
@@ -36,8 +39,8 @@ struct MaterialVisualizeTextureInfo
 {
     uint textureIndex;
     uint texCoord;
-    uint padding0;
-    uint padding1;
+    uint ntcTextureSetIndex;
+    uint ntcChannelMapping;
     float4 transform0;
     float4 transform1;
 };
@@ -51,6 +54,10 @@ struct MaterialVisualizeMaterial
     float4 glassParams;
     float4 attenuationColor;
     float4 diffuseTransmission;
+    float4 rtxcrHairBaseColor;
+    float4 rtxcrHairParams0;
+    float4 rtxcrHairParams1;
+    float4 rtxcrHairDiffuseTint;
     MaterialVisualizeTextureInfo baseColorTexture;
     MaterialVisualizeTextureInfo metallicRoughnessTexture;
     MaterialVisualizeTextureInfo normalTexture;
@@ -109,7 +116,7 @@ struct SceneMaterialVisualizationPush
     uint mode;
     uint materialTextureCount;
     float bitangentFlip;
-    uint padding0;
+    uint ntcTextureSetCount;
     uint padding1;
     uint padding2;
 };
@@ -225,6 +232,13 @@ bool hasMaterialTexture(MaterialVisualizeTextureInfo textureInfo, SceneMaterialV
         textureInfo.textureIndex < kMaxMaterialTextures;
 }
 
+bool hasNeuralMaterialTexture(
+    MaterialVisualizeTextureInfo textureInfo,
+    SceneMaterialVisualizationPush push)
+{
+    return metallicHasNeuralTexture(textureInfo.ntcTextureSetIndex, push.ntcTextureSetCount);
+}
+
 float2 transformMaterialUv(MaterialVisualizeTextureInfo textureInfo, float2 uv)
 {
     return float2(
@@ -238,6 +252,29 @@ float4 loadMaterialTexture(
     float4 fallback,
     SceneMaterialVisualizationPush push)
 {
+    if (hasNeuralMaterialTexture(textureInfo, push)) {
+        uint2 dimensions;
+        uint mipCount;
+        if (!metallicNeuralTextureDimensions(
+                textureInfo.ntcTextureSetIndex,
+                push.ntcTextureSetCount,
+                0u,
+                dimensions,
+                mipCount)) {
+            return fallback;
+        }
+        float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
+        int2 texel = int2(min(
+            uint2(wrappedUv * float2(dimensions)),
+            dimensions - uint2(1u, 1u)));
+        return metallicSampleNeuralTexture(
+            textureInfo.ntcTextureSetIndex,
+            push.ntcTextureSetCount,
+            textureInfo.ntcChannelMapping,
+            texel,
+            0,
+            fallback);
+    }
     if (!hasMaterialTexture(textureInfo, push)) {
         return fallback;
     }

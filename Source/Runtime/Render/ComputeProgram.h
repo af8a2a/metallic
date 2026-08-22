@@ -14,6 +14,7 @@ enum class ComputeResourceBindingKind : uint8_t {
     StorageImage,
     StorageBuffer,
     SampledImage,
+    Sampler,
 };
 
 struct ComputeProgramBindingDesc {
@@ -35,7 +36,10 @@ struct ComputeProgramDesc {
 
 struct ComputeDispatchBinding {
     uint32_t binding = 0;
-    RayTracingAccelerationStructure* accelerationStructure = nullptr;
+    union {
+        RayTracingAccelerationStructure* accelerationStructure = nullptr;
+        const SamplerDesc* sampler;
+    };
     PartitionedAccelerationStructure* partitionedAccelerationStructure = nullptr;
     TextureView* textureView = nullptr;
     TextureView* const* textureViews = nullptr;

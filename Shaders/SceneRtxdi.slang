@@ -3,6 +3,7 @@
 
 #define NRD_HEADER_ONLY
 #include "NRD.hlsli"
+#include "NeuralTextureSampling.slang"
 
 [[vk::binding(0, 0)]]
 RaytracingAccelerationStructure gScene;
@@ -42,8 +43,8 @@ struct RtxdiTextureInfo
 {
     uint textureIndex;
     uint texCoord;
-    uint padding0;
-    uint padding1;
+    uint ntcTextureSetIndex;
+    uint ntcChannelMapping;
     float4 transform0;
     float4 transform1;
 };
@@ -57,6 +58,10 @@ struct RtxdiMaterial
     float4 glassParams;
     float4 attenuationColor;
     float4 diffuseTransmission;
+    float4 rtxcrHairBaseColor;
+    float4 rtxcrHairParams0;
+    float4 rtxcrHairParams1;
+    float4 rtxcrHairDiffuseTint;
     RtxdiTextureInfo baseColorTexture;
     RtxdiTextureInfo metallicRoughnessTexture;
     RtxdiTextureInfo normalTexture;
@@ -193,7 +198,7 @@ struct SceneRtxdiPush
     float exposure;
     float normalThreshold;
     float depthThreshold;
-    uint padding1;
+    uint ntcTextureSetCount;
     uint padding2;
 };
 
@@ -696,6 +701,11 @@ bool hasMaterialTexture(RtxdiTextureInfo textureInfo, SceneRtxdiPush push)
         textureInfo.textureIndex < kMaxMaterialTextures;
 }
 
+bool hasNeuralMaterialTexture(RtxdiTextureInfo textureInfo, SceneRtxdiPush push)
+{
+    return metallicHasNeuralTexture(textureInfo.ntcTextureSetIndex, push.ntcTextureSetCount);
+}
+
 float2 transformMaterialUv(RtxdiTextureInfo textureInfo, float2 uv)
 {
     return float2(
@@ -709,6 +719,29 @@ float4 loadMaterialTexture(
     float4 fallback,
     SceneRtxdiPush push)
 {
+    if (hasNeuralMaterialTexture(textureInfo, push)) {
+        uint2 dimensions;
+        uint mipCount;
+        if (!metallicNeuralTextureDimensions(
+                textureInfo.ntcTextureSetIndex,
+                push.ntcTextureSetCount,
+                0u,
+                dimensions,
+                mipCount)) {
+            return fallback;
+        }
+        float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
+        int2 texel = int2(min(
+            uint2(wrappedUv * float2(dimensions)),
+            dimensions - uint2(1u, 1u)));
+        return metallicSampleNeuralTexture(
+            textureInfo.ntcTextureSetIndex,
+            push.ntcTextureSetCount,
+            textureInfo.ntcChannelMapping,
+            texel,
+            0,
+            fallback);
+    }
     if (!hasMaterialTexture(textureInfo, push)) {
         return fallback;
     }

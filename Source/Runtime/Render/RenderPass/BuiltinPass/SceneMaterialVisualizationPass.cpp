@@ -2,6 +2,14 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/SceneResourceManager.h"
 
+#ifndef METALLIC_HAS_NTC
+#define METALLIC_HAS_NTC 0
+#endif
+
+#ifndef METALLIC_NTC_SHADER_INCLUDE_DIR
+#define METALLIC_NTC_SHADER_INCLUDE_DIR ""
+#endif
+
 namespace metallic::render::builtin_pass {
 namespace {
 
@@ -92,19 +100,38 @@ public:
         if (!result) {
             return result;
         }
-        if (rayQueryProgram_.valid()) {
+        const bool ntcActive = sceneResources_.neuralTextures().active();
+        if (rayQueryProgram_.valid() && compiledNtcActive_ == ntcActive) {
             return {};
         }
+        rayQueryProgram_.clear();
 
         ShaderCompileResult computeCompile;
         const char* capabilities[] = {"spvRayQueryKHR"};
+        const SlangMacroDefine ntcDefine[] = {
+            SlangMacroDefine{
+                .name = "METALLIC_HAS_NTC",
+                .value = "1",
+            },
+        };
+        std::vector<const char*> additionalSearchPaths;
+#if METALLIC_HAS_NTC
+        if (ntcActive) {
+            additionalSearchPaths.push_back(METALLIC_NTC_SHADER_INCLUDE_DIR);
+        }
+#endif
         result = compileSlangShaderToSpirv(
             SlangShaderDesc{
                 .moduleName = kSceneMaterialVisualizationShaderModuleName,
                 .entryPointName = kSceneMaterialVisualizationEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
+                .additionalSearchPaths = additionalSearchPaths.data(),
+                .additionalSearchPathCount =
+                    static_cast<uint32_t>(additionalSearchPaths.size()),
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                .macroDefines = ntcActive ? ntcDefine : nullptr,
+                .macroDefineCount = ntcActive ? 1u : 0u,
             },
             computeCompile);
         if (!result) {
@@ -123,7 +150,8 @@ public:
             return result;
         }
 
-        const ComputeProgramBindingDesc bindings[] = {
+        // Keep the conventional binding table stable; append NTC descriptors only when active.
+        std::vector<ComputeProgramBindingDesc> bindings{
             ComputeProgramBindingDesc{
                 .binding = 0,
                 .kind = ComputeResourceBindingKind::AccelerationStructure,
@@ -158,6 +186,29 @@ public:
                 .descriptorCount = kScenePathTraceMaxMaterialTextures,
             },
         };
+        if (ntcActive) {
+            bindings.push_back(ComputeProgramBindingDesc{
+                .binding = kNeuralTextureLatentsBinding,
+                .kind = ComputeResourceBindingKind::SampledImage,
+                .descriptorCount = kMaxNeuralTextureSets,
+            });
+            bindings.push_back(ComputeProgramBindingDesc{
+                .binding = kNeuralTextureConstantsBinding,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
+            });
+            bindings.push_back(ComputeProgramBindingDesc{
+                .binding = kNeuralTextureWeightsBinding,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
+            });
+            bindings.push_back(ComputeProgramBindingDesc{
+                .binding = kNeuralTextureSetInfoBinding,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
+            });
+            bindings.push_back(ComputeProgramBindingDesc{
+                .binding = kNeuralTextureSamplerBinding,
+                .kind = ComputeResourceBindingKind::Sampler,
+            });
+        }
         std::string programLog;
         result = rayQueryProgram_.initialize(
             *context.device,
@@ -165,8 +216,8 @@ public:
                 .spirv = computeCompile.spirv.data(),
                 .byteSize = static_cast<uint64_t>(computeCompile.spirv.size() * sizeof(uint32_t)),
                 .pushConstantSize = sizeof(SceneMaterialVisualizationPush),
-                .bindings = bindings,
-                .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+                .bindings = bindings.data(),
+                .bindingCount = static_cast<uint32_t>(bindings.size()),
                 .debugName = "SceneMaterialVisualizationPass",
             },
             programLog);
@@ -180,6 +231,7 @@ public:
             rayQueryProgram_.clear();
             return result;
         }
+        compiledNtcActive_ = ntcActive;
         return {};
     }
 
@@ -225,13 +277,14 @@ public:
         SceneMaterialVisualizationPush push;
         buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(), push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
+        push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
 
         Result result = sceneResources_.uploadMaterialTextures(context.commandBuffer());
         if (!result) {
             return result;
         }
 
-        const ComputeDispatchBinding bindings[] = {
+        std::vector<ComputeDispatchBinding> bindings{
             ComputeDispatchBinding{
                 .binding = 0,
                 .accelerationStructure =
@@ -267,16 +320,42 @@ public:
                 .textureViewCount = static_cast<uint32_t>(materialTextureViews.size()),
             },
         };
-        return rayQueryProgram_.dispatch(ComputeDispatchDesc{
+        const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
+        if (neuralTextures.active()) {
+            const auto& latentViews = neuralTextures.latentTextureViews();
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = kNeuralTextureLatentsBinding,
+                .textureViews = latentViews.data(),
+                .textureViewCount = static_cast<uint32_t>(latentViews.size()),
+            });
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = kNeuralTextureConstantsBinding,
+                .buffer = neuralTextures.constantsBuffer(),
+            });
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = kNeuralTextureWeightsBinding,
+                .buffer = neuralTextures.weightsBuffer(),
+            });
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = kNeuralTextureSetInfoBinding,
+                .buffer = neuralTextures.setInfoBuffer(),
+            });
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = kNeuralTextureSamplerBinding,
+                .sampler = &neuralTextures.latentSampler(),
+            });
+        }
+        result = rayQueryProgram_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
-            .bindings = bindings,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .bindings = bindings.data(),
+            .bindingCount = static_cast<uint32_t>(bindings.size()),
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = (context.width() + 7) / 8,
             .groupCountY = (context.height() + 7) / 8,
             .groupCountZ = 1,
         });
+        return result;
     }
 
 private:
@@ -469,6 +548,7 @@ private:
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     ComputeProgram rayQueryProgram_;
+    bool compiledNtcActive_ = false;
 };
 
 } // namespace

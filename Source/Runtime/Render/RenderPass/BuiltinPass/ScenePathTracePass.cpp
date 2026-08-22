@@ -18,6 +18,14 @@
 #define METALLIC_RTXCR_SHADER_INCLUDE_DIR ""
 #endif
 
+#ifndef METALLIC_HAS_NTC
+#define METALLIC_HAS_NTC 0
+#endif
+
+#ifndef METALLIC_NTC_SHADER_INCLUDE_DIR
+#define METALLIC_NTC_SHADER_INCLUDE_DIR ""
+#endif
+
 namespace metallic::render::builtin_pass {
 namespace {
 
@@ -721,6 +729,7 @@ public:
         const std::string bsdf = stringProperty(properties(), "bsdf", "standard");
         const bool useOpenPBR = bsdf == "openpbr" || bsdf == "OpenPBR";
         const bool exportGuides = exportDenoiserGuides(properties());
+        const bool ntcActive = sceneResources_.neuralTextures().active();
         const char* moduleName = nullptr;
         const char* entryPointName = nullptr;
         if (useOpenPBR) {
@@ -765,7 +774,8 @@ public:
         }
 
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
-            "|cache=" + std::to_string(cacheMode_);
+            "|cache=" + std::to_string(cacheMode_) +
+            "|ntc=" + (ntcActive ? "1" : "0");
         if (useOpenPBR) {
             result = openPBRLuts_.prepare(*context.device, log);
             if (!result) {
@@ -797,6 +807,7 @@ public:
 
         const char* capabilities[] = {"spvRayQueryKHR", "spvGroupNonUniformBallot"};
 
+        // Keep the conventional binding table stable; append NTC descriptors only when active.
         std::vector<ComputeProgramBindingDesc> baseBindings{
             ComputeProgramBindingDesc{
                 .binding = 0,
@@ -886,6 +897,29 @@ public:
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
         }
+        if (ntcActive) {
+            baseBindings.push_back(ComputeProgramBindingDesc{
+                .binding = kNeuralTextureLatentsBinding,
+                .kind = ComputeResourceBindingKind::SampledImage,
+                .descriptorCount = kMaxNeuralTextureSets,
+            });
+            baseBindings.push_back(ComputeProgramBindingDesc{
+                .binding = kNeuralTextureConstantsBinding,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
+            });
+            baseBindings.push_back(ComputeProgramBindingDesc{
+                .binding = kNeuralTextureWeightsBinding,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
+            });
+            baseBindings.push_back(ComputeProgramBindingDesc{
+                .binding = kNeuralTextureSetInfoBinding,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
+            });
+            baseBindings.push_back(ComputeProgramBindingDesc{
+                .binding = kNeuralTextureSamplerBinding,
+                .kind = ComputeResourceBindingKind::Sampler,
+            });
+        }
 
         auto compilePermutation =
             [&](PathTracePermutation permutation,
@@ -897,10 +931,20 @@ public:
                     .name = "METALLIC_HAS_RTXCR",
                     .value = METALLIC_HAS_RTXCR ? "1" : "0",
                 },
+                SlangMacroDefine{
+                    .name = "METALLIC_HAS_NTC",
+                    .value = ntcActive ? "1" : "0",
+                },
             };
             defines.insert(defines.end(), extraDefines.begin(), extraDefines.end());
+            std::vector<const char*> additionalSearchPaths;
 #if METALLIC_HAS_RTXCR
-            const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
+            additionalSearchPaths.push_back(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+#endif
+#if METALLIC_HAS_NTC
+            if (ntcActive) {
+                additionalSearchPaths.push_back(METALLIC_NTC_SHADER_INCLUDE_DIR);
+            }
 #endif
             ShaderCompileResult permutationCompile;
             Result permutationResult = compileSlangShaderToSpirv(
@@ -908,11 +952,9 @@ public:
                     .moduleName = moduleName,
                     .entryPointName = entryPointName,
                     .searchPath = kTriangleShaderSearchPath,
-#if METALLIC_HAS_RTXCR
-                    .additionalSearchPaths = additionalSearchPaths,
+                    .additionalSearchPaths = additionalSearchPaths.data(),
                     .additionalSearchPathCount =
-                        static_cast<uint32_t>(std::size(additionalSearchPaths)),
-#endif
+                        static_cast<uint32_t>(additionalSearchPaths.size()),
                     .capabilities = capabilities,
                     .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
                     .macroDefines = defines.data(),
@@ -1362,6 +1404,7 @@ public:
             environment.mapAvailable,
             push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
+        push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
         push.cacheMode = cacheMode;
         push.outputLinear = cacheMode == kScenePathTraceCacheModeNrc ? 1u : 0u;
         const ScenePathTraceCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
@@ -1490,6 +1533,31 @@ public:
             bindings.push_back(ComputeDispatchBinding{
                 .binding = kDlssRrSpecularHitDistanceBinding,
                 .textureView = specularHitDistance.view(),
+            });
+        }
+        const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
+        if (neuralTextures.active()) {
+            const auto& latentViews = neuralTextures.latentTextureViews();
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = kNeuralTextureLatentsBinding,
+                .textureViews = latentViews.data(),
+                .textureViewCount = static_cast<uint32_t>(latentViews.size()),
+            });
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = kNeuralTextureConstantsBinding,
+                .buffer = neuralTextures.constantsBuffer(),
+            });
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = kNeuralTextureWeightsBinding,
+                .buffer = neuralTextures.weightsBuffer(),
+            });
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = kNeuralTextureSetInfoBinding,
+                .buffer = neuralTextures.setInfoBuffer(),
+            });
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = kNeuralTextureSamplerBinding,
+                .sampler = &neuralTextures.latentSampler(),
             });
         }
 

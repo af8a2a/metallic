@@ -111,6 +111,7 @@ enum class Format : uint16_t {
     B10G11R11UfloatPack32,
     E5B9G9R9UfloatPack32,
     D32Sfloat,
+    Bgra4Unorm,
 };
 
 enum class QueueType : uint8_t {
@@ -311,6 +312,7 @@ struct DeviceCapabilities {
     bool streamline = false;
     bool streamlineDlssRr = false;
     bool aftermath = false;
+    bool shaderIntegerDotProduct = false;
     uint64_t bufferCopyOffsetAlignment = 1;
     uint64_t textureUploadBufferOffsetAlignment = 1;
     uint64_t textureUploadRowPitchAlignment = 1;

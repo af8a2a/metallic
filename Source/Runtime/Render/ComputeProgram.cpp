@@ -52,9 +52,17 @@ bool usesImageHeap(ComputeResourceBindingKind kind)
         kind == ComputeResourceBindingKind::StorageImage;
 }
 
+bool usesSamplerHeap(ComputeResourceBindingKind kind)
+{
+    // Samplers occupy their own bindless descriptor heap range and binding union member.
+    return kind == ComputeResourceBindingKind::Sampler;
+}
+
 ShaderBindingType shaderBindingType(ComputeResourceBindingKind kind)
 {
     switch (kind) {
+    case ComputeResourceBindingKind::Sampler:
+        return ShaderBindingType::Sampler;
     case ComputeResourceBindingKind::AccelerationStructure:
         return ShaderBindingType::AccelerationStructure;
     case ComputeResourceBindingKind::PartitionedAccelerationStructure:
@@ -84,10 +92,12 @@ struct ComputeProgram::Impl {
     uint32_t pushConstantSize = 0;
     uint32_t descriptorSetCount = 0;
     uint32_t bindlessPushDataSize = 0;
+    uint32_t samplerBasePushDataOffset = UINT32_MAX;
     uint32_t imageBasePushDataOffset = UINT32_MAX;
     uint32_t bufferBasePushDataOffset = UINT32_MAX;
     std::string debugName = "ComputeProgram";
     std::vector<BindingState> bindings;
+    std::vector<uint32_t> samplerBaseShaderIndices;
     std::vector<uint32_t> imageBaseShaderIndices;
     std::vector<uint32_t> bufferBaseShaderIndices;
 
@@ -104,9 +114,11 @@ struct ComputeProgram::Impl {
         pushConstantSize = 0;
         descriptorSetCount = 0;
         bindlessPushDataSize = 0;
+        samplerBasePushDataOffset = UINT32_MAX;
         imageBasePushDataOffset = UINT32_MAX;
         bufferBasePushDataOffset = UINT32_MAX;
         bindings.clear();
+        samplerBaseShaderIndices.clear();
         imageBaseShaderIndices.clear();
         bufferBaseShaderIndices.clear();
         debugName = "ComputeProgram";
@@ -157,6 +169,7 @@ Result ComputeProgram::initialize(
     impl_->descriptorSetCount = desc.descriptorSetCount;
     impl_->debugName = desc.debugName != nullptr ? desc.debugName : "ComputeProgram";
 
+    uint64_t samplerCount = 0;
     uint64_t sampledImageCount = 0;
     uint64_t storageImageCount = 0;
     uint64_t bufferCount = 0;
@@ -164,7 +177,8 @@ Result ComputeProgram::initialize(
     for (uint32_t bindingIndex = 0; bindingIndex < desc.bindingCount; ++bindingIndex) {
         const ComputeProgramBindingDesc& binding = desc.bindings[bindingIndex];
         const uint32_t descriptorCount = std::max(binding.descriptorCount, 1u);
-        if ((binding.kind == ComputeResourceBindingKind::AccelerationStructure ||
+        if ((binding.kind == ComputeResourceBindingKind::Sampler ||
+             binding.kind == ComputeResourceBindingKind::AccelerationStructure ||
              binding.kind == ComputeResourceBindingKind::PartitionedAccelerationStructure ||
              binding.kind == ComputeResourceBindingKind::StorageBuffer) &&
             descriptorCount != 1) {
@@ -175,6 +189,9 @@ Result ComputeProgram::initialize(
         const uint64_t slotCount =
             static_cast<uint64_t>(descriptorCount) * desc.descriptorSetCount;
         switch (binding.kind) {
+        case ComputeResourceBindingKind::Sampler:
+            samplerCount += slotCount;
+            break;
         case ComputeResourceBindingKind::SampledImage:
             sampledImageCount += slotCount;
             break;
@@ -187,7 +204,8 @@ Result ComputeProgram::initialize(
             bufferCount += slotCount;
             break;
         }
-        if (sampledImageCount + storageImageCount > UINT32_MAX ||
+        if (samplerCount > UINT32_MAX ||
+            sampledImageCount + storageImageCount > UINT32_MAX ||
             bufferCount > UINT32_MAX) {
             log = "ComputeProgram bindless heap sizing overflowed";
             clear();
@@ -198,11 +216,14 @@ Result ComputeProgram::initialize(
         });
     }
 
+    const bool hasSamplerBindings = samplerCount != 0;
     const bool hasImageBindings = sampledImageCount + storageImageCount != 0;
     const bool hasBufferBindings = bufferCount != 0;
     const bool dynamicDescriptorTables = desc.descriptorSetCount > 1;
     const uint32_t pushedHeapBaseCount = dynamicDescriptorTables
-        ? static_cast<uint32_t>(hasImageBindings) + static_cast<uint32_t>(hasBufferBindings)
+        ? static_cast<uint32_t>(hasSamplerBindings) +
+            static_cast<uint32_t>(hasImageBindings) +
+            static_cast<uint32_t>(hasBufferBindings)
         : 0u;
     if (desc.pushConstantSize >
         UINT32_MAX - pushedHeapBaseCount * static_cast<uint32_t>(sizeof(uint32_t))) {
@@ -211,6 +232,13 @@ Result ComputeProgram::initialize(
         return makeError(Error::InvalidArgument);
     }
     uint32_t nextPushDataOffset = desc.pushConstantSize;
+    if (hasSamplerBindings) {
+        impl_->samplerBaseShaderIndices.assign(desc.descriptorSetCount, UINT32_MAX);
+        if (dynamicDescriptorTables) {
+            impl_->samplerBasePushDataOffset = nextPushDataOffset;
+            nextPushDataOffset += sizeof(uint32_t);
+        }
+    }
     if (hasImageBindings) {
         impl_->imageBaseShaderIndices.assign(desc.descriptorSetCount, UINT32_MAX);
         if (dynamicDescriptorTables) {
@@ -229,6 +257,7 @@ Result ComputeProgram::initialize(
 
     Result result = device.createBindlessHeap(
         BindlessHeapDesc{
+            .maxSamplers = static_cast<uint32_t>(samplerCount),
             .maxSampledImages = static_cast<uint32_t>(sampledImageCount),
             .maxStorageImages = static_cast<uint32_t>(storageImageCount),
             .maxBuffers = static_cast<uint32_t>(bufferCount),
@@ -249,14 +278,22 @@ Result ComputeProgram::initialize(
          ++descriptorSetIndex) {
         for (Impl::BindingState& binding : impl_->bindings) {
             const uint32_t descriptorCount = std::max(binding.desc.descriptorCount, 1u);
-            std::vector<uint32_t>& groupBases = usesImageHeap(binding.desc.kind)
-                ? impl_->imageBaseShaderIndices
-                : impl_->bufferBaseShaderIndices;
+            std::vector<uint32_t>* groupBases = nullptr;
+            if (usesSamplerHeap(binding.desc.kind)) {
+                groupBases = &impl_->samplerBaseShaderIndices;
+            } else if (usesImageHeap(binding.desc.kind)) {
+                groupBases = &impl_->imageBaseShaderIndices;
+            } else {
+                groupBases = &impl_->bufferBaseShaderIndices;
+            }
             for (uint32_t descriptorIndex = 0;
                  descriptorIndex < descriptorCount;
                  ++descriptorIndex) {
                 BindlessHandle handle;
                 switch (binding.desc.kind) {
+                case ComputeResourceBindingKind::Sampler:
+                    result = impl_->heap->allocateSampler(handle);
+                    break;
                 case ComputeResourceBindingKind::AccelerationStructure:
                     result = impl_->heap->allocateAccelerationStructure(handle);
                     break;
@@ -278,14 +315,14 @@ Result ComputeProgram::initialize(
                     clear();
                     return result;
                 }
-                if (groupBases[descriptorSetIndex] == UINT32_MAX) {
-                    groupBases[descriptorSetIndex] = handle.shaderIndex;
+                if ((*groupBases)[descriptorSetIndex] == UINT32_MAX) {
+                    (*groupBases)[descriptorSetIndex] = handle.shaderIndex;
                 }
                 if (descriptorSetIndex == 0 && descriptorIndex == 0) {
                     binding.heapIndexOffset =
-                        handle.shaderIndex - groupBases[descriptorSetIndex];
+                        handle.shaderIndex - (*groupBases)[descriptorSetIndex];
                 }
-                const uint32_t expectedShaderIndex = groupBases[descriptorSetIndex] +
+                const uint32_t expectedShaderIndex = (*groupBases)[descriptorSetIndex] +
                     binding.heapIndexOffset + descriptorIndex;
                 if (handle.shaderIndex != expectedShaderIndex) {
                     log = "ComputeProgram descriptor-table allocation is not contiguous";
@@ -300,6 +337,7 @@ Result ComputeProgram::initialize(
     std::vector<ShaderBindingMappingDesc> mappings;
     mappings.reserve(impl_->bindings.size());
     for (const Impl::BindingState& binding : impl_->bindings) {
+        const bool samplerBinding = usesSamplerHeap(binding.desc.kind);
         const bool imageBinding = usesImageHeap(binding.desc.kind);
         mappings.push_back(ShaderBindingMappingDesc{
             .descriptorSet = 0,
@@ -310,7 +348,9 @@ Result ComputeProgram::initialize(
                 ? ShaderBindingSource::HeapIndexFromPushData
                 : ShaderBindingSource::HeapConstantOffset,
             .pushDataOffset = dynamicDescriptorTables
-                ? imageBinding
+                ? samplerBinding
+                    ? impl_->samplerBasePushDataOffset
+                    : imageBinding
                     ? impl_->imageBasePushDataOffset
                     : impl_->bufferBasePushDataOffset
                 : 0u,
@@ -393,6 +433,14 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
             &imageBase,
             sizeof(imageBase));
     }
+    if (impl_->samplerBasePushDataOffset != UINT32_MAX) {
+        const uint32_t samplerBase =
+            impl_->samplerBaseShaderIndices[desc.descriptorSetIndex];
+        std::memcpy(
+            pushData.data() + impl_->samplerBasePushDataOffset,
+            &samplerBase,
+            sizeof(samplerBase));
+    }
     if (impl_->bufferBasePushDataOffset != UINT32_MAX) {
         const uint32_t bufferBase =
             impl_->bufferBaseShaderIndices[desc.descriptorSetIndex];
@@ -430,6 +478,19 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
         }
         Result result;
         switch (expectedBinding.desc.kind) {
+        case ComputeResourceBindingKind::Sampler: {
+            if (binding->sampler == nullptr) {
+                spdlog::error(
+                    "[ComputeProgram:{}] invalid sampler binding {}",
+                    impl_->debugName,
+                    expectedBinding.desc.binding);
+                return makeError(Error::InvalidArgument);
+            }
+            result = impl_->heap->writeSampler(
+                expectedBinding.handles[firstHandle],
+                *binding->sampler);
+            break;
+        }
         case ComputeResourceBindingKind::AccelerationStructure: {
             if (binding->accelerationStructure == nullptr ||
                 !binding->accelerationStructure->valid()) {

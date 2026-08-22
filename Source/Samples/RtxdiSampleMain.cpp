@@ -18,10 +18,11 @@ void printUsage()
     spdlog::info(
         "MetallicRtxdiSample options:\n"
         "  --smoke-test                 Render eight ReSTIR/RELAX history frames and exit\n"
+        "  --scene <path>               Override the sample glTF scene\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization");
 }
 
-int runSmokeTest()
+int runSmokeTest(const std::string& scenePath)
 {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         spdlog::error("RTXDI smoke test failed to initialize SDL: {}", SDL_GetError());
@@ -35,6 +36,11 @@ int runSmokeTest()
     std::string message;
     if (!metallic::render::loadBuiltInRenderSample(kRtxdiSampleId, sample, message)) {
         spdlog::error("RTXDI smoke test failed to load Sample: {}", message);
+        return 1;
+    }
+    if (!scenePath.empty() &&
+        !metallic::render::setRenderSampleScenePath(sample, scenePath, message)) {
+        spdlog::error("RTXDI smoke test failed to override scene: {}", message);
         return 1;
     }
     if (!sample.desc.environment.has_value()) {
@@ -102,6 +108,7 @@ int main(int argc, char** argv)
 {
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
+    std::string scenePath;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         if (argument == "--help" || argument == "-h") {
@@ -116,15 +123,23 @@ int main(int argc, char** argv)
             waitForGraphicsDebugger = true;
             continue;
         }
+        if (argument == "--scene" && index + 1 < argc) {
+            scenePath = argv[++index];
+            continue;
+        }
         spdlog::error("Unknown argument: {}", argument);
         printUsage();
         return 1;
     }
 
     if (smokeTest) {
-        return runSmokeTest();
+        return runSmokeTest(scenePath);
     }
 
     metallic::EditorApplication app;
-    return app.run(false, waitForGraphicsDebugger, kRtxdiSampleId);
+    return app.run(
+        false,
+        waitForGraphicsDebugger,
+        kRtxdiSampleId,
+        scenePath.empty() ? nullptr : scenePath.c_str());
 }

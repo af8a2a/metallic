@@ -38,6 +38,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/MeshletStreamPageLoader.cpp
     Runtime/Render/MeshletStreamResidency.cpp
     Runtime/Render/MeshletStreamRuntime.cpp
+    Runtime/Render/NeuralTextureResources.cpp
     Runtime/Render/RayTracing/SceneAccelerationStructure.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp
@@ -103,6 +104,19 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     slang::slang
     spdlog::spdlog
 )
+
+if(TARGET libntc)
+    target_link_libraries(MetallicRuntimeRender PRIVATE libntc)
+    target_compile_definitions(MetallicRuntimeRender PRIVATE
+        METALLIC_HAS_NTC=1
+        METALLIC_NTC_SHADER_INCLUDE_DIR="${METALLIC_NTC_SHADER_INCLUDE_DIR}"
+    )
+else()
+    target_compile_definitions(MetallicRuntimeRender PRIVATE
+        METALLIC_HAS_NTC=0
+        METALLIC_NTC_SHADER_INCLUDE_DIR=""
+    )
+endif()
 
 if(TARGET NRD)
     target_link_libraries(MetallicRuntimeRender PUBLIC NRD)

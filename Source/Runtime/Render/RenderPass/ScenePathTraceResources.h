@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
+#include "Runtime/Render/NeuralTextureResources.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/Scene.h"
 
@@ -61,6 +62,7 @@ public:
     Buffer* materialBuffer() const;
     const std::array<TextureView*, kScenePathTraceMaxMaterialTextures>& materialTextureViews() const;
     uint32_t materialTextureCount() const;
+    const NeuralTextureResources& neuralTextures() const;
 
 private:
     struct Impl;

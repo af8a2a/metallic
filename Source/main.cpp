@@ -45,6 +45,7 @@ void printUsage()
     std::puts(
         "Metallic options:\n"
         "  --smoke-test                                  Render one frame and exit\n"
+        "  --scene <path>                                Override the sample glTF scene\n"
         "  --wait-for-graphics-debugger                  Wait before Vulkan initialization\n"
         "  --rhi-smoke-test                              Run the RHI smoke test\n"
         "  --rhi-triangle-preview-test                   Run the RHI triangle preview test\n"
@@ -167,6 +168,7 @@ int main(int argc, char** argv)
     bool waitForGraphicsDebugger = waitForGraphicsDebuggerFromEnv();
     std::filesystem::path buildMeshstreamSourcePath;
     std::filesystem::path buildMeshstreamOutputPath;
+    std::filesystem::path scenePath;
     metallic::scene::MeshletStreamPayloadCompression buildMeshstreamCompressionMode =
         metallic::scene::MeshletStreamPayloadCompression::None;
     uint32_t buildMeshstreamMaxNewGeometries = 0;
@@ -188,6 +190,12 @@ int main(int argc, char** argv)
             rhiValidation = false;
         } else if (argument == "--wait-for-graphics-debugger") {
             waitForGraphicsDebugger = true;
+        } else if (argument == "--scene") {
+            if (index + 1 >= argc) {
+                std::fputs("--scene requires a glTF scene path\n", stderr);
+                return 1;
+            }
+            scenePath = argv[++index];
         } else if (argument == "--build-meshstream") {
             if (index + 1 >= argc) {
                 std::fputs("--build-meshstream requires a source path\n", stderr);
@@ -255,6 +263,11 @@ int main(int argc, char** argv)
         return metallic::render::runRhiSmokeTest(rhiValidation);
     }
 
+    const std::string scenePathString = scenePath.string();
     metallic::EditorApplication app;
-    return app.run(smokeTest, waitForGraphicsDebugger);
+    return app.run(
+        smokeTest,
+        waitForGraphicsDebugger,
+        nullptr,
+        scenePathString.empty() ? nullptr : scenePathString.c_str());
 }

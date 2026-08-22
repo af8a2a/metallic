@@ -144,6 +144,7 @@ foreach(METALLIC_SETUP_MODULE IN ITEMS
     SetupNsight
     SetupAftermath
     SetupNrc
+    SetupNtc
 )
     set(METALLIC_SETUP_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/${METALLIC_SETUP_MODULE}.cmake")
     if(EXISTS "${METALLIC_SETUP_MODULE_PATH}")

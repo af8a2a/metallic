@@ -168,6 +168,14 @@ struct RenderTexture {
     std::string name;
     int32_t imageIndex = kInvalidSceneIndex;
     int32_t samplerIndex = kInvalidSceneIndex;
+    int32_t ntcImageIndex = kInvalidSceneIndex;
+    std::array<int8_t, 4> ntcChannels{-1, -1, -1, -1};
+    uint8_t ntcChannelCount = 0;
+
+    bool hasNeuralSource() const
+    {
+        return ntcImageIndex != kInvalidSceneIndex && ntcChannelCount > 0;
+    }
 };
 
 struct RenderTextureInfo {

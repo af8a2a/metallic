@@ -707,7 +707,7 @@ struct SceneMaterialVisualizationPush {
     uint32_t mode = kSceneMaterialVisualizationModeMaterial;
     uint32_t materialTextureCount = 0;
     float bitangentFlip = 1.0f;
-    uint32_t padding0 = 0;
+    uint32_t ntcTextureSetCount = 0;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
 };
@@ -741,7 +741,7 @@ struct ScenePathTracePush {
     // (used by the NRC query permutation whose resolve adds radiance first).
     uint32_t outputLinear = 0;
     uint32_t cacheMode = kScenePathTraceCacheModeOff;
-    uint32_t padding2 = 0;
+    uint32_t ntcTextureSetCount = 0;
 };
 
 // Per-frame parameters for the radiance-cache permutations of
@@ -824,7 +824,7 @@ struct SceneRtxdiPush {
     float exposure = 1.0f;
     float normalThreshold = 0.6f;
     float depthThreshold = 0.08f;
-    uint32_t padding1 = 0;
+    uint32_t ntcTextureSetCount = 0;
     uint32_t padding2 = 0;
 };
 

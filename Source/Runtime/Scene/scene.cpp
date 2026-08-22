@@ -72,6 +72,7 @@ constexpr const char* kExtensionMaterialsVolume = "KHR_materials_volume";
 constexpr const char* kExtensionMaterialsRtxcrHair = "NV_materials_hair";
 constexpr const char* kExtensionNodeVisibility = "KHR_node_visibility";
 constexpr const char* kExtensionTextureTransform = "KHR_texture_transform";
+constexpr const char* kExtensionTextureSwizzle = "NV_texture_swizzle";
 constexpr double kFallbackCameraYFov = 0.7853981633974483;
 constexpr size_t kMeshletClusterMaxVertices = 128;
 constexpr size_t kMeshletClusterMinTriangles = 32;
@@ -257,6 +258,7 @@ const std::unordered_set<std::string>& supportedRequiredExtensions()
         kExtensionMaterialsVolume,
         "KHR_mesh_quantization",
         kExtensionTextureTransform,
+        kExtensionTextureSwizzle,
     };
     return kExtensions;
 }
@@ -481,6 +483,67 @@ int32_t readIntValue(const tinygltf::Value& object, const char* key, int32_t fal
         return static_cast<int32_t>(value.GetNumberAsDouble());
     }
     return fallback;
+}
+
+bool readNtcTextureSwizzle(
+    const tinygltf::Texture& source,
+    const tinygltf::Model& model,
+    RenderTexture& texture)
+{
+    const auto extension = source.extensions.find(kExtensionTextureSwizzle);
+    if (extension == source.extensions.end()) {
+        return false;
+    }
+    const tinygltf::Value& value = extension->second;
+    if (!value.IsObject() || !value.Has("options")) {
+        return false;
+    }
+    const tinygltf::Value& options = value.Get("options");
+    if (!options.IsArray()) {
+        return false;
+    }
+
+    for (size_t optionIndex = 0; optionIndex < options.ArrayLen(); ++optionIndex) {
+        const tinygltf::Value& option = options.Get(optionIndex);
+        const int32_t imageIndex = readIntValue(option, "source", kInvalidSceneIndex);
+        if (imageIndex < 0 || static_cast<size_t>(imageIndex) >= model.images.size() ||
+            !option.IsObject() || !option.Has("channels")) {
+            continue;
+        }
+        const tinygltf::Image& image = model.images[static_cast<size_t>(imageIndex)];
+        if (image.mimeType != "image/vnd-nvidia.ntc" && lowerExtension(image.uri) != ".ntc") {
+            continue;
+        }
+
+        const tinygltf::Value& channels = option.Get("channels");
+        if (!channels.IsArray() || channels.ArrayLen() == 0 || channels.ArrayLen() > 4) {
+            continue;
+        }
+        std::array<int8_t, 4> parsedChannels{-1, -1, -1, -1};
+        bool valid = true;
+        for (size_t channelIndex = 0; channelIndex < channels.ArrayLen(); ++channelIndex) {
+            const tinygltf::Value& channel = channels.Get(channelIndex);
+            const int32_t channelValue = channel.IsInt()
+                ? channel.Get<int>()
+                : channel.IsNumber()
+                ? static_cast<int32_t>(channel.GetNumberAsDouble())
+                : -1;
+            if (channelValue < 0 || channelValue >= 16) {
+                valid = false;
+                break;
+            }
+            parsedChannels[channelIndex] = static_cast<int8_t>(channelValue);
+        }
+        if (!valid) {
+            continue;
+        }
+
+        texture.ntcImageIndex = imageIndex;
+        texture.ntcChannels = parsedChannels;
+        texture.ntcChannelCount = static_cast<uint8_t>(channels.ArrayLen());
+        return true;
+    }
+    return false;
 }
 
 bool readNodeVisibility(const tinygltf::Node& node)
@@ -2926,6 +2989,10 @@ bool Scene::compose(
                 imageBase,
                 texture.imageIndex,
                 source.images().size());
+            texture.ntcImageIndex = rebaseIndex(
+                imageBase,
+                texture.ntcImageIndex,
+                source.images().size());
             composed.textures_.push_back(std::move(texture));
         }
         const auto rebaseTexture = [&](RenderTextureInfo& info) {
@@ -3371,6 +3438,7 @@ bool Scene::loadInternal(
         texture.name = defaultName(gltfTexture.name, "Texture", static_cast<int32_t>(textureIndex));
         texture.imageIndex = gltfTexture.source;
         texture.samplerIndex = gltfTexture.sampler;
+        readNtcTextureSwizzle(gltfTexture, model, texture);
         textures_.push_back(std::move(texture));
     }
 

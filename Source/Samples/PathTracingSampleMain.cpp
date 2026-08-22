@@ -2,6 +2,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <string>
 #include <string_view>
 
 namespace {
@@ -15,6 +16,7 @@ void printUsage()
         "MetallicPathTracingSample options:\n"
         "  --dlss-rr                   Use the NVIDIA DLSS-RR denoiser graph\n"
         "  --smoke-test                 Render one frame and exit\n"
+        "  --scene <path>               Override the sample glTF scene\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization");
 }
 
@@ -25,6 +27,7 @@ int main(int argc, char** argv)
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
     const char* sampleId = kPathTracingSampleId;
+    std::string scenePath;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         if (argument == "--help" || argument == "-h") {
@@ -43,6 +46,10 @@ int main(int argc, char** argv)
             waitForGraphicsDebugger = true;
             continue;
         }
+        if (argument == "--scene" && index + 1 < argc) {
+            scenePath = argv[++index];
+            continue;
+        }
 
         spdlog::error("Unknown argument: {}", argument);
         printUsage();
@@ -50,5 +57,9 @@ int main(int argc, char** argv)
     }
 
     metallic::EditorApplication app;
-    return app.run(smokeTest, waitForGraphicsDebugger, sampleId);
+    return app.run(
+        smokeTest,
+        waitForGraphicsDebugger,
+        sampleId,
+        scenePath.empty() ? nullptr : scenePath.c_str());
 }
