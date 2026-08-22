@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <vector>
 
 #ifndef METALLIC_HAS_NRD
 #define METALLIC_HAS_NRD 0
@@ -15,10 +14,9 @@
 
 #if METALLIC_HAS_NRD
 #include <NRD.h>
-#include <volk.h>
 #endif
 
-namespace metallic::render::vulkan {
+namespace metallic::render {
 
 enum class NrdDenoiserMode : uint32_t {
     Reblur,
@@ -37,20 +35,21 @@ struct NrdTextureRef {
 
 using NrdUserTexturePool = std::array<NrdTextureRef, static_cast<size_t>(nrd::ResourceType::MAX_NUM)>;
 
-class NrdDenoiser {
+// White-box NRD integration hosted above the backend. It consumes NRD's
+// dispatch descriptions and records them exclusively through the public RHI.
+class NrdRuntime {
 public:
-    NrdDenoiser();
-    ~NrdDenoiser();
+    NrdRuntime();
+    ~NrdRuntime();
 
-    NrdDenoiser(NrdDenoiser&&) noexcept;
-    NrdDenoiser& operator=(NrdDenoiser&&) noexcept;
+    NrdRuntime(NrdRuntime&&) noexcept;
+    NrdRuntime& operator=(NrdRuntime&&) noexcept;
 
-    NrdDenoiser(const NrdDenoiser&) = delete;
-    NrdDenoiser& operator=(const NrdDenoiser&) = delete;
+    NrdRuntime(const NrdRuntime&) = delete;
+    NrdRuntime& operator=(const NrdRuntime&) = delete;
 
     Result initialize(
         Device& device,
-        Queue& queue,
         uint16_t width,
         uint16_t height,
         const NrdUserTexturePool& userTexturePool,
@@ -65,36 +64,20 @@ public:
     Result setCommonSettings(const nrd::CommonSettings& settings);
     Result setReblurSettings(const nrd::ReblurSettings& settings);
     Result setRelaxSettings(const nrd::RelaxSettings& settings);
-    Result denoise(NrdDenoiserMode mode, CommandBuffer& commandBuffer);
+    Result denoise(NrdDenoiserMode mode, CommandBuffer& commandBuffer, Streamer& streamer);
     Result denoiseIdentifiers(
         const nrd::Identifier* denoisers,
         uint32_t denoiserCount,
-        CommandBuffer& commandBuffer);
+        CommandBuffer& commandBuffer,
+        Streamer& streamer);
 
 private:
-    struct TextureResource {
-        std::unique_ptr<Texture> texture;
-        std::unique_ptr<TextureView> view;
-    };
-
-    struct Pipeline {
-        VkPipeline pipeline = VK_NULL_HANDLE;
-        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-        VkDescriptorSetLayout resourceDescriptorLayout = VK_NULL_HANDLE;
-        uint32_t bindingCount = 0;
-    };
-
-    Result createInternalTexture(
-        Device& device,
-        const nrd::TextureDesc& desc,
-        uint16_t width,
-        uint16_t height,
-        TextureResource& outResource,
-        std::string& log);
-    Result initializeInternalTextureLayouts(Device& device, Queue& queue, std::string& log);
-    Result createPipelines(std::string& log);
     Result setDenoiserSettings(nrd::Identifier identifier, const void* settings);
-    Result dispatch(CommandBuffer& commandBuffer, const nrd::DispatchDesc& dispatchDesc);
+    Result dispatch(
+        CommandBuffer& commandBuffer,
+        Streamer& streamer,
+        const nrd::DispatchDesc& dispatchDesc,
+        uint64_t& previousConstantAddress);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -102,4 +85,4 @@ private:
 
 #endif
 
-} // namespace metallic::render::vulkan
+} // namespace metallic::render

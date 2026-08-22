@@ -471,6 +471,30 @@ struct ShaderModuleDesc {
     uint64_t byteSize = 0;
 };
 
+enum class ShaderBindingType : uint8_t {
+    Sampler,
+    SampledImage,
+    StorageImage,
+    ConstantBuffer,
+    StorageBuffer,
+};
+
+enum class ShaderBindingSource : uint8_t {
+    HeapIndexFromPushData,
+    DeviceAddressFromPushData,
+};
+
+// Maps existing DescriptorSet/Binding decorations onto descriptor-heap data.
+// pushDataOffset is relative to the user payload passed to pushBindlessData().
+struct ShaderBindingMappingDesc {
+    uint32_t descriptorSet = 0;
+    uint32_t firstBinding = 0;
+    uint32_t bindingCount = 1;
+    ShaderBindingType type = ShaderBindingType::SampledImage;
+    ShaderBindingSource source = ShaderBindingSource::HeapIndexFromPushData;
+    uint32_t pushDataOffset = 0;
+};
+
 enum class PipelineCacheLoadStatus : uint8_t {
     NotFound,
     Loaded,
@@ -515,6 +539,8 @@ struct ComputePipelineDesc {
     const char* computeEntryPoint = "main";
     bool usesBindlessHeap = false;
     uint32_t bindlessUserPushDataSize = 0;
+    const ShaderBindingMappingDesc* bindingMappings = nullptr;
+    uint32_t bindingMappingCount = 0;
     class PipelineCache* pipelineCache = nullptr;
 };
 
@@ -669,6 +695,7 @@ struct StreamTextureDataDesc {
 struct BindlessHeapDesc {
     uint32_t maxSamplers = 0;
     uint32_t maxSampledImages = 0;
+    uint32_t maxStorageImages = 0;
     uint32_t maxBuffers = 0;
 };
 
@@ -676,6 +703,7 @@ enum class BindlessHandleKind : uint8_t {
     Invalid,
     Sampler,
     SampledImage,
+    StorageImage,
     Buffer,
 };
 
@@ -685,6 +713,40 @@ struct BindlessHandle {
     uint32_t shaderIndex = UINT32_MAX;
 
     bool valid() const { return kind != BindlessHandleKind::Invalid && index != UINT32_MAX; }
+};
+
+enum class SamplerFilter : uint8_t {
+    Nearest,
+    Linear,
+};
+
+enum class SamplerAddressMode : uint8_t {
+    Repeat,
+    MirroredRepeat,
+    ClampToEdge,
+    ClampToBorder,
+};
+
+struct SamplerDesc {
+    SamplerFilter minFilter = SamplerFilter::Linear;
+    SamplerFilter magFilter = SamplerFilter::Linear;
+    SamplerFilter mipFilter = SamplerFilter::Nearest;
+    SamplerAddressMode addressU = SamplerAddressMode::ClampToEdge;
+    SamplerAddressMode addressV = SamplerAddressMode::ClampToEdge;
+    SamplerAddressMode addressW = SamplerAddressMode::ClampToEdge;
+    float minLod = 0.0f;
+    float maxLod = 1000.0f;
+};
+
+struct BindlessSamplerWrite {
+    BindlessHandle handle;
+    SamplerDesc sampler;
+};
+
+struct BindlessImageWrite {
+    BindlessHandle handle;
+    class TextureView* view = nullptr;
+    ResourceState state = ResourceState::ShaderRead;
 };
 
 namespace detail {
@@ -820,6 +882,7 @@ public:
     Buffer& operator=(const Buffer&) = delete;
 
     const BufferDesc& desc() const;
+    uint64_t deviceAddress() const;
     void* map();
     void unmap();
     void flush(uint64_t offset = 0, uint64_t size = UINT64_MAX);
@@ -1040,10 +1103,16 @@ public:
     uint32_t imageShaderIndexBase() const;
     uint32_t bufferShaderIndexBase() const;
 
+    Result allocateSampler(BindlessHandle& outHandle);
     Result allocateSampledImage(BindlessHandle& outHandle);
+    Result allocateStorageImage(BindlessHandle& outHandle);
     Result allocateBuffer(BindlessHandle& outHandle);
     void release(BindlessHandle handle);
+    Result writeSampler(BindlessHandle handle, const SamplerDesc& sampler);
+    Result writeSamplers(const BindlessSamplerWrite* writes, uint32_t writeCount);
     Result writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state = ResourceState::ShaderRead);
+    Result writeStorageImage(BindlessHandle handle, TextureView& view);
+    Result writeImages(const BindlessImageWrite* writes, uint32_t writeCount);
     Result writeBufferView(BindlessHandle handle, BufferView& view);
     Result writeConstantBuffer(BindlessHandle handle, Buffer& buffer);
     Result writeStorageBuffer(BindlessHandle handle, Buffer& buffer);
@@ -1105,6 +1174,7 @@ public:
     void copyTexture(const TextureCopyDesc& desc);
     void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
     void copyBufferToTexture(const BufferTextureCopyDesc& desc);
+    void clearColorTexture(Texture& texture, ResourceState state, const ColorValue& color = {});
     void copyStreamedData(Streamer& streamer);
     void beginRendering(const RenderingDesc& desc);
     void clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect);
@@ -1114,6 +1184,7 @@ public:
     void setDepthStencilState(const DepthStencilState& state);
     void bindGraphicsPipeline(GraphicsPipeline& pipeline);
     void bindComputePipeline(ComputePipeline& pipeline);
+    void bindComputePipeline(ComputePipeline& pipeline, const void* bindlessData, uint32_t byteSize);
     void setGraphicsShaderObjectState();
     void bindGraphicsShaderObjectProgram(GraphicsShaderObjectProgram& program);
     void bindBindlessHeap(BindlessHeap& heap);

@@ -45,6 +45,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderGraph/RenderGraphNode.cpp
     Runtime/Render/RenderGraph/RenderGraphExecutor.cpp
     Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.cpp
+    Runtime/Render/RenderGraph/NrdRuntime.cpp
     Runtime/Render/RenderPass/BuiltinRenderPasses.cpp
     Runtime/Render/RenderPass/BuiltinPass/BunnyWireframePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ClearColorPass.cpp
@@ -69,7 +70,6 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
     Runtime/Render/GAPI/Vulkan/VulkanMeshletStreamClas.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.cpp
-    Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.cpp
     Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.cpp
     Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp
 )

@@ -1,6 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.h"
+#include "Runtime/Render/RenderGraph/NrdRuntime.h"
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/SceneResourceManager.h"
@@ -49,7 +49,7 @@ public:
             .format = Format::Rgba16Sfloat;
         reflection.addTextureOutput("normalRoughness", "NRD packed world normal and roughness")
             .storageReadWrite()
-            .format = vulkan::nrdNormalRoughnessFormat();
+            .format = nrdNormalRoughnessFormat();
         reflection.addTextureOutput("motionVectors", "NRD previous-minus-current UV motion")
             .storageReadWrite()
             .format = Format::Rgba16Sfloat;

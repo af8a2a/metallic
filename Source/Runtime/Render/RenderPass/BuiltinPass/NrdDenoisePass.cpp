@@ -1,6 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.h"
+#include "Runtime/Render/RenderGraph/NrdRuntime.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -37,7 +37,7 @@ public:
         RenderGraphField& normalRoughness = reflection.addTextureInput(
             "normalRoughness",
             "NRD packed normal and roughness").storageReadWrite();
-        normalRoughness.format = vulkan::nrdNormalRoughnessFormat();
+        normalRoughness.format = nrdNormalRoughnessFormat();
         normalRoughness.usage = TextureUsageBits::Sampled;
         RenderGraphField& motionVectors = reflection.addTextureInput(
             "motionVectors",
@@ -109,17 +109,16 @@ public:
         log = "NrdDenoisePass requires the NRD SDK target";
         return makeError(Error::Unsupported);
 #else
-        if (context.device == nullptr || context.graphicsQueue == nullptr) {
-            log = "NrdDenoisePass requires a device and graphics queue";
+        if (context.device == nullptr) {
+            log = "NrdDenoisePass requires a device";
             return makeError(Error::InvalidArgument);
         }
-        if (!context.device->capabilities().pushDescriptor) {
-            log = "NrdDenoisePass requires VK_KHR_push_descriptor";
+        if (!context.device->capabilities().bindlessDescriptorHeap) {
+            log = "NrdDenoisePass requires bindless descriptor heaps";
             return makeError(Error::Unsupported);
         }
 
         device_ = context.device;
-        queue_ = context.graphicsQueue;
         return {};
 #endif
     }
@@ -154,7 +153,7 @@ public:
             !validTexture(denoisedSpecular) ||
             !validTexture(validation) ||
             device_ == nullptr ||
-            queue_ == nullptr) {
+            context.streamer() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -443,15 +442,15 @@ private:
         matrix[14] = -(zNear * zFar) / (zFar - zNear);
     }
 
-    static vulkan::NrdDenoiserMode wrapperMode(uint32_t denoiserMode)
+    static NrdDenoiserMode runtimeMode(uint32_t denoiserMode)
     {
         if (denoiserMode == kNrdDenoiserModeRelax) {
-            return vulkan::NrdDenoiserMode::Relax;
+            return NrdDenoiserMode::Relax;
         }
         if (denoiserMode == kNrdDenoiserModeReference) {
-            return vulkan::NrdDenoiserMode::Reference;
+            return NrdDenoiserMode::Reference;
         }
-        return vulkan::NrdDenoiserMode::Reblur;
+        return NrdDenoiserMode::Reblur;
     }
 
     Result ensureNrd(
@@ -473,9 +472,9 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        vulkan::NrdUserTexturePool pool{};
+        NrdUserTexturePool pool{};
         auto put = [&pool](nrd::ResourceType resource, TextureHandle texture) {
-            pool[static_cast<size_t>(resource)] = vulkan::NrdTextureRef{
+            pool[static_cast<size_t>(resource)] = NrdTextureRef{
                 .texture = texture.texture(),
                 .view = texture.view(),
             };
@@ -501,9 +500,9 @@ private:
             nrd_->width() != width ||
             nrd_->height() != height;
         if (sizeChanged) {
-            nrd_ = std::make_unique<vulkan::NrdDenoiser>();
+            nrd_ = std::make_unique<NrdRuntime>();
             std::string log;
-            Result result = nrd_->initialize(*device_, *queue_, width, height, pool, log);
+            Result result = nrd_->initialize(*device_, width, height, pool, log);
             if (!result) {
                 nrd_.reset();
                 return result;
@@ -580,7 +579,11 @@ private:
             nrd_->setUserPoolTexture(nrd::ResourceType::IN_SIGNAL, *noisyDiffuse.texture(), *noisyDiffuse.view());
             nrd_->setUserPoolTexture(nrd::ResourceType::OUT_SIGNAL, *denoisedDiffuse.texture(), *denoisedDiffuse.view());
             nrd::Identifier referenceDiffuse = static_cast<nrd::Identifier>(nrd::Denoiser::REFERENCE);
-            result = nrd_->denoiseIdentifiers(&referenceDiffuse, 1, context.commandBuffer());
+            result = nrd_->denoiseIdentifiers(
+                &referenceDiffuse,
+                1,
+                context.commandBuffer(),
+                *context.streamer());
             if (!result) {
                 return result;
             }
@@ -588,7 +591,11 @@ private:
             nrd_->setUserPoolTexture(nrd::ResourceType::IN_SIGNAL, *noisySpecular.texture(), *noisySpecular.view());
             nrd_->setUserPoolTexture(nrd::ResourceType::OUT_SIGNAL, *denoisedSpecular.texture(), *denoisedSpecular.view());
             nrd::Identifier referenceSpecular = static_cast<nrd::Identifier>(nrd::Denoiser::REFERENCE) + 1;
-            return nrd_->denoiseIdentifiers(&referenceSpecular, 1, context.commandBuffer());
+            return nrd_->denoiseIdentifiers(
+                &referenceSpecular,
+                1,
+                context.commandBuffer(),
+                *context.streamer());
         }
 
         if (denoiserMode == kNrdDenoiserModeRelax) {
@@ -650,19 +657,21 @@ private:
                 return result;
             }
         }
-        return nrd_->denoise(wrapperMode(denoiserMode), context.commandBuffer());
+        return nrd_->denoise(
+            runtimeMode(denoiserMode),
+            context.commandBuffer(),
+            *context.streamer());
     }
 #endif
 
     Device* device_ = nullptr;
-    Queue* queue_ = nullptr;
     uint32_t frameIndex_ = 0;
     uint32_t lastDenoiserMode_ = std::numeric_limits<uint32_t>::max();
     uint32_t lastResetSerial_ = 0;
     NrdCameraSnapshot previousCamera_;
     bool hasPreviousCamera_ = false;
 #if METALLIC_HAS_NRD
-    std::unique_ptr<vulkan::NrdDenoiser> nrd_;
+    std::unique_ptr<NrdRuntime> nrd_;
 #endif
 };
 

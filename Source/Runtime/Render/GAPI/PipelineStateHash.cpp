@@ -9,7 +9,7 @@ namespace {
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 // Increment when an implicit RHI pipeline state changes without a desc change.
-constexpr uint32_t kPipelineStateHashVersion = 2;
+constexpr uint32_t kPipelineStateHashVersion = 3;
 constexpr uint32_t kGraphicsPipelineTag = 0x4750534fu;
 constexpr uint32_t kComputePipelineTag = 0x4350534fu;
 
@@ -91,6 +91,18 @@ uint64_t computePipelineStateHash(const ComputePipelineDesc& desc)
     hash = hashString(hash, desc.computeEntryPoint);
     hash = hashValue(hash, hashBool(desc.usesBindlessHeap));
     hash = hashValue(hash, desc.bindlessUserPushDataSize);
+    hash = hashValue(hash, desc.bindingMappingCount);
+    if (desc.bindingMappings != nullptr) {
+        for (uint32_t index = 0; index < desc.bindingMappingCount; ++index) {
+            const ShaderBindingMappingDesc& mapping = desc.bindingMappings[index];
+            hash = hashValue(hash, mapping.descriptorSet);
+            hash = hashValue(hash, mapping.firstBinding);
+            hash = hashValue(hash, mapping.bindingCount);
+            hash = hashValue(hash, static_cast<uint32_t>(mapping.type));
+            hash = hashValue(hash, static_cast<uint32_t>(mapping.source));
+            hash = hashValue(hash, mapping.pushDataOffset);
+        }
+    }
     return hash;
 }
 

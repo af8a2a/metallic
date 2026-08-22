@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -485,6 +486,33 @@ VkImageUsageFlags toVkImageUsage(TextureUsageBits usage)
         flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     }
     return flags != 0 ? flags : VK_IMAGE_USAGE_SAMPLED_BIT;
+}
+
+VkFilter toVkSamplerFilter(SamplerFilter filter)
+{
+    return filter == SamplerFilter::Nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+}
+
+VkSamplerMipmapMode toVkSamplerMipmapMode(SamplerFilter filter)
+{
+    return filter == SamplerFilter::Nearest
+        ? VK_SAMPLER_MIPMAP_MODE_NEAREST
+        : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+}
+
+VkSamplerAddressMode toVkSamplerAddressMode(SamplerAddressMode mode)
+{
+    switch (mode) {
+    case SamplerAddressMode::Repeat:
+        return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    case SamplerAddressMode::MirroredRepeat:
+        return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    case SamplerAddressMode::ClampToEdge:
+        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    case SamplerAddressMode::ClampToBorder:
+        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    }
+    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 }
 
 uint32_t formatTexelByteSize(Format format)
@@ -1045,6 +1073,21 @@ public:
         return vkWriteSamplerDescriptorsEXT(device_, 1, &samplerCreateInfo, &dstRange);
     }
 
+    VkResult writeSamplerDescriptors(
+        uint32_t descriptorCount,
+        const VkSamplerCreateInfo* samplerCreateInfos,
+        const VkHostAddressRangeEXT* dstRanges) const
+    {
+        if (!initialized() || descriptorCount == 0 || samplerCreateInfos == nullptr || dstRanges == nullptr) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        return vkWriteSamplerDescriptorsEXT(
+            device_,
+            descriptorCount,
+            samplerCreateInfos,
+            dstRanges);
+    }
+
     VkResult writeImageDescriptor(
         VkImage image,
         VkFormat format,
@@ -1079,6 +1122,17 @@ public:
             .size = static_cast<size_t>(imageDescriptorSize_),
         };
         return vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
+    }
+
+    VkResult writeResourceDescriptors(
+        uint32_t descriptorCount,
+        const VkResourceDescriptorInfoEXT* resourceInfos,
+        const VkHostAddressRangeEXT* dstRanges) const
+    {
+        if (!initialized() || descriptorCount == 0 || resourceInfos == nullptr || dstRanges == nullptr) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        return vkWriteResourceDescriptorsEXT(device_, descriptorCount, resourceInfos, dstRanges);
     }
 
     VkResult writeBufferDescriptor(
@@ -1858,6 +1912,20 @@ public:
         return size > 0 ? static_cast<uint32_t>(bufferRegionStartBytes_ / size) : 0;
     }
 
+    bool allocateSampler(BindlessHandle& outHandle)
+    {
+        uint32_t slot = 0;
+        if (!allocateSlot(maxSamplers_, nextSamplerSlot_, freeSamplerSlots_, slot)) {
+            return false;
+        }
+        outHandle = {
+            .kind = BindlessHandleKind::Sampler,
+            .index = slot,
+            .shaderIndex = slot,
+        };
+        return true;
+    }
+
     bool allocateSampledImage(BindlessHandle& outHandle)
     {
         uint32_t slot = 0;
@@ -1866,6 +1934,20 @@ public:
         }
         outHandle = {
             .kind = BindlessHandleKind::SampledImage,
+            .index = slot,
+            .shaderIndex = imageShaderIndexBase() + slot,
+        };
+        return true;
+    }
+
+    bool allocateStorageImage(BindlessHandle& outHandle)
+    {
+        uint32_t slot = 0;
+        if (!allocateSlot(maxImages_, nextImageSlot_, freeImageSlots_, slot)) {
+            return false;
+        }
+        outHandle = {
+            .kind = BindlessHandleKind::StorageImage,
             .index = slot,
             .shaderIndex = imageShaderIndexBase() + slot,
         };
@@ -1893,6 +1975,7 @@ public:
         }
         switch (handle.kind) {
         case BindlessHandleKind::SampledImage:
+        case BindlessHandleKind::StorageImage:
             if (handle.index < maxImages_) {
                 freeImageSlots_.push_back(handle.index);
             }
@@ -1912,6 +1995,79 @@ public:
         }
     }
 
+    VkResult writeSamplerDescriptors(
+        const BindlessHandle* handles,
+        const VkSamplerCreateInfo* samplerInfos,
+        uint32_t descriptorCount,
+        void* samplerHeapBase)
+    {
+        if (handles == nullptr || samplerInfos == nullptr || descriptorCount == 0 || samplerHeapBase == nullptr) {
+            return VK_ERROR_VALIDATION_FAILED_EXT;
+        }
+
+        std::vector<VkHostAddressRangeEXT> dstRanges(descriptorCount);
+        for (uint32_t index = 0; index < descriptorCount; ++index) {
+            const BindlessHandle handle = handles[index];
+            if (handle.kind != BindlessHandleKind::Sampler || handle.index >= maxSamplers_) {
+                return VK_ERROR_VALIDATION_FAILED_EXT;
+            }
+            dstRanges[index] = {
+                .address = static_cast<uint8_t*>(samplerHeapBase) + writer_.samplerOffset(handle.index),
+                .size = static_cast<size_t>(writer_.samplerDescriptorSize()),
+            };
+        }
+
+        const VkResult result = writer_.writeSamplerDescriptors(
+            descriptorCount,
+            samplerInfos,
+            dstRanges.data());
+        if (result == VK_SUCCESS) {
+            for (uint32_t index = 0; index < descriptorCount; ++index) {
+                samplerDirtyMin_ = std::min(samplerDirtyMin_, handles[index].index);
+                samplerDirtyMax_ = std::max(samplerDirtyMax_, handles[index].index);
+            }
+        }
+        return result;
+    }
+
+    VkResult writeImageDescriptors(
+        const BindlessHandle* handles,
+        const VkResourceDescriptorInfoEXT* resourceInfos,
+        uint32_t descriptorCount,
+        void* resourceHeapBase)
+    {
+        if (handles == nullptr || resourceInfos == nullptr || descriptorCount == 0 || resourceHeapBase == nullptr) {
+            return VK_ERROR_VALIDATION_FAILED_EXT;
+        }
+
+        std::vector<VkHostAddressRangeEXT> dstRanges(descriptorCount);
+        for (uint32_t index = 0; index < descriptorCount; ++index) {
+            const BindlessHandle handle = handles[index];
+            const bool validKind = handle.kind == BindlessHandleKind::SampledImage ||
+                handle.kind == BindlessHandleKind::StorageImage;
+            if (!validKind || handle.index >= maxImages_) {
+                return VK_ERROR_VALIDATION_FAILED_EXT;
+            }
+            const VkDeviceSize offset = imageRegionStartBytes_ + writer_.imageOffset(handle.index);
+            dstRanges[index] = {
+                .address = static_cast<uint8_t*>(resourceHeapBase) + offset,
+                .size = static_cast<size_t>(writer_.imageDescriptorSize()),
+            };
+        }
+
+        const VkResult result = writer_.writeResourceDescriptors(
+            descriptorCount,
+            resourceInfos,
+            dstRanges.data());
+        if (result == VK_SUCCESS) {
+            for (uint32_t index = 0; index < descriptorCount; ++index) {
+                const VkDeviceSize offset = imageRegionStartBytes_ + writer_.imageOffset(handles[index].index);
+                markResourceImageDirty(offset, writer_.imageDescriptorSize());
+            }
+        }
+        return result;
+    }
+
     VkResult writeImageDescriptor(
         BindlessHandle handle,
         VkImage image,
@@ -1921,7 +2077,8 @@ public:
         VkImageViewType viewType,
         void* resourceHeapBase)
     {
-        if (handle.kind != BindlessHandleKind::SampledImage ||
+        if ((handle.kind != BindlessHandleKind::SampledImage &&
+             handle.kind != BindlessHandleKind::StorageImage) ||
             handle.index >= maxImages_ ||
             resourceHeapBase == nullptr) {
             return VK_ERROR_VALIDATION_FAILED_EXT;
@@ -2601,7 +2758,13 @@ Result BindlessHeapImpl::initialize(DeviceImpl& owningDevice, const BindlessHeap
     if (!owningDevice.capabilities.bindlessDescriptorHeap) {
         return makeError(Error::Unsupported);
     }
-    if (heapDesc.maxSampledImages == 0 && heapDesc.maxBuffers == 0) {
+    if (heapDesc.maxSamplers == 0 &&
+        heapDesc.maxSampledImages == 0 &&
+        heapDesc.maxStorageImages == 0 &&
+        heapDesc.maxBuffers == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (heapDesc.maxSampledImages > std::numeric_limits<uint32_t>::max() - heapDesc.maxStorageImages) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -2623,10 +2786,14 @@ Result BindlessHeapImpl::initialize(DeviceImpl& owningDevice, const BindlessHeap
         }
     }
 
-    if (heap.setupResourceHeap(desc.maxSampledImages, desc.maxBuffers) == 0) {
-        return makeError(Error::Unsupported);
+    const uint32_t maxImages = desc.maxSampledImages + desc.maxStorageImages;
+    if (maxImages > 0 || desc.maxBuffers > 0) {
+        if (heap.setupResourceHeap(maxImages, desc.maxBuffers) == 0) {
+            return makeError(Error::Unsupported);
+        }
+        return createHeapBuffer(heap.resourceHeapSize(), heap.resourceHeapAlignment(), resourceHeap);
     }
-    return createHeapBuffer(heap.resourceHeapSize(), heap.resourceHeapAlignment(), resourceHeap);
+    return {};
 }
 
 Result BindlessHeapImpl::createHeapBuffer(VkDeviceSize size, VkDeviceSize alignment, BindlessHeapBuffer& outBuffer)
@@ -3191,6 +3358,18 @@ const BufferDesc& Buffer::desc() const
     return impl_ != nullptr ? impl_->desc : emptyDesc;
 }
 
+uint64_t Buffer::deviceAddress() const
+{
+    if (impl_ == nullptr || impl_->device == nullptr || impl_->buffer == VK_NULL_HANDLE) {
+        return 0;
+    }
+    VkBufferDeviceAddressInfo addressInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = impl_->buffer,
+    };
+    return vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
+}
+
 void* Buffer::map()
 {
     if (impl_ == nullptr || impl_->allocation == VK_NULL_HANDLE) {
@@ -3454,6 +3633,18 @@ uint32_t BindlessHeap::bufferShaderIndexBase() const
     return impl_ != nullptr ? impl_->heap.bufferShaderIndexBase() : 0;
 }
 
+Result BindlessHeap::allocateSampler(BindlessHandle& outHandle)
+{
+    outHandle = {};
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->heap.allocateSampler(outHandle)) {
+        return makeError(Error::OutOfMemory);
+    }
+    return {};
+}
+
 Result BindlessHeap::allocateSampledImage(BindlessHandle& outHandle)
 {
     outHandle = {};
@@ -3461,6 +3652,18 @@ Result BindlessHeap::allocateSampledImage(BindlessHandle& outHandle)
         return makeError(Error::InvalidArgument);
     }
     if (!impl_->heap.allocateSampledImage(outHandle)) {
+        return makeError(Error::OutOfMemory);
+    }
+    return {};
+}
+
+Result BindlessHeap::allocateStorageImage(BindlessHandle& outHandle)
+{
+    outHandle = {};
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->heap.allocateStorageImage(outHandle)) {
         return makeError(Error::OutOfMemory);
     }
     return {};
@@ -3485,36 +3688,142 @@ void BindlessHeap::release(BindlessHandle handle)
     }
 }
 
-Result BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state)
+Result BindlessHeap::writeSampler(BindlessHandle handle, const SamplerDesc& sampler)
+{
+    const BindlessSamplerWrite write{
+        .handle = handle,
+        .sampler = sampler,
+    };
+    return writeSamplers(&write, 1);
+}
+
+Result BindlessHeap::writeSamplers(const BindlessSamplerWrite* writes, uint32_t writeCount)
 {
     if (impl_ == nullptr ||
-        impl_->resourceHeap.mapped == nullptr ||
-        view.impl_ == nullptr ||
-        view.impl_->texture == nullptr ||
-        view.impl_->texture->impl_ == nullptr) {
-        return makeError(Error::InvalidArgument);
-    }
-    if (handle.kind != BindlessHandleKind::SampledImage) {
+        impl_->samplerHeap.mapped == nullptr ||
+        writes == nullptr ||
+        writeCount == 0) {
         return makeError(Error::InvalidArgument);
     }
 
-    const TextureDesc& textureDesc = view.impl_->texture->impl_->desc;
-    const TextureViewDesc& viewDesc = view.impl_->desc;
-    const VkImageSubresourceRange subresourceRange{
-        .aspectMask = aspectForFormat(textureDesc.format),
-        .baseMipLevel = viewDesc.baseMip,
-        .levelCount = viewDesc.mipCount,
-        .baseArrayLayer = viewDesc.baseLayer,
-        .layerCount = viewDesc.layerCount,
+    std::vector<BindlessHandle> handles(writeCount);
+    std::vector<VkSamplerCreateInfo> samplerInfos(writeCount);
+    for (uint32_t index = 0; index < writeCount; ++index) {
+        const BindlessSamplerWrite& write = writes[index];
+        if (write.handle.kind != BindlessHandleKind::Sampler ||
+            !std::isfinite(write.sampler.minLod) ||
+            !std::isfinite(write.sampler.maxLod) ||
+            write.sampler.maxLod < write.sampler.minLod) {
+            return makeError(Error::InvalidArgument);
+        }
+        handles[index] = write.handle;
+        samplerInfos[index] = {
+            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter = toVkSamplerFilter(write.sampler.magFilter),
+            .minFilter = toVkSamplerFilter(write.sampler.minFilter),
+            .mipmapMode = toVkSamplerMipmapMode(write.sampler.mipFilter),
+            .addressModeU = toVkSamplerAddressMode(write.sampler.addressU),
+            .addressModeV = toVkSamplerAddressMode(write.sampler.addressV),
+            .addressModeW = toVkSamplerAddressMode(write.sampler.addressW),
+            .minLod = write.sampler.minLod,
+            .maxLod = write.sampler.maxLod,
+        };
+    }
+
+    const VkResult result = impl_->heap.writeSamplerDescriptors(
+        handles.data(),
+        samplerInfos.data(),
+        writeCount,
+        impl_->samplerHeap.mapped);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+    impl_->flushSamplerDirty();
+    return {};
+}
+
+Result BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state)
+{
+    const BindlessImageWrite write{
+        .handle = handle,
+        .view = &view,
+        .state = state,
     };
-    const StateInfo imageState = stateInfo(state);
-    const VkResult result = impl_->heap.writeImageDescriptor(
-        handle,
-        view.impl_->texture->impl_->image,
-        view.impl_->format,
-        imageState.layout,
-        subresourceRange,
-        toVkImageViewType(textureDesc.type),
+    return writeImages(&write, 1);
+}
+
+Result BindlessHeap::writeStorageImage(BindlessHandle handle, TextureView& view)
+{
+    const BindlessImageWrite write{
+        .handle = handle,
+        .view = &view,
+        .state = ResourceState::General,
+    };
+    return writeImages(&write, 1);
+}
+
+Result BindlessHeap::writeImages(const BindlessImageWrite* writes, uint32_t writeCount)
+{
+    if (impl_ == nullptr ||
+        impl_->resourceHeap.mapped == nullptr ||
+        writes == nullptr ||
+        writeCount == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    std::vector<BindlessHandle> handles(writeCount);
+    std::vector<VkImageViewCreateInfo> viewInfos(writeCount);
+    std::vector<VkImageDescriptorInfoEXT> imageInfos(writeCount);
+    std::vector<VkResourceDescriptorInfoEXT> resourceInfos(writeCount);
+    for (uint32_t index = 0; index < writeCount; ++index) {
+        const BindlessImageWrite& write = writes[index];
+        TextureView* view = write.view;
+        const bool sampled = write.handle.kind == BindlessHandleKind::SampledImage;
+        const bool storage = write.handle.kind == BindlessHandleKind::StorageImage;
+        if ((!sampled && !storage) ||
+            view == nullptr ||
+            view->impl_ == nullptr ||
+            view->impl_->texture == nullptr ||
+            view->impl_->texture->impl_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        const TextureDesc& textureDesc = view->impl_->texture->impl_->desc;
+        if ((sampled && !hasFlag(textureDesc.usage, TextureUsageBits::Sampled)) ||
+            (storage && !hasFlag(textureDesc.usage, TextureUsageBits::Storage))) {
+            return makeError(Error::InvalidArgument);
+        }
+        const TextureViewDesc& viewDesc = view->impl_->desc;
+        handles[index] = write.handle;
+        viewInfos[index] = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = view->impl_->texture->impl_->image,
+            .viewType = toVkImageViewType(textureDesc.type),
+            .format = view->impl_->format,
+            .subresourceRange = {
+                .aspectMask = aspectForFormat(textureDesc.format),
+                .baseMipLevel = viewDesc.baseMip,
+                .levelCount = viewDesc.mipCount,
+                .baseArrayLayer = viewDesc.baseLayer,
+                .layerCount = viewDesc.layerCount,
+            },
+        };
+        imageInfos[index] = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_DESCRIPTOR_INFO_EXT,
+            .pView = &viewInfos[index],
+            .layout = stateInfo(write.state).layout,
+        };
+        resourceInfos[index] = {
+            .sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
+            .type = sampled ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .data = {.pImage = &imageInfos[index]},
+        };
+    }
+
+    const VkResult result = impl_->heap.writeImageDescriptors(
+        handles.data(),
+        resourceInfos.data(),
+        writeCount,
         impl_->resourceHeap.mapped);
     if (result != VK_SUCCESS) {
         return resultFromVk(result);
@@ -3926,6 +4235,33 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
         &copyRegion);
 }
 
+void CommandBuffer::clearColorTexture(Texture& texture, ResourceState state, const ColorValue& color)
+{
+    if (impl_ == nullptr || texture.impl_ == nullptr || texture.impl_->image == VK_NULL_HANDLE) {
+        return;
+    }
+    const TextureDesc& desc = texture.impl_->desc;
+    if (aspectForFormat(desc.format) != VK_IMAGE_ASPECT_COLOR_BIT) {
+        return;
+    }
+
+    const VkClearColorValue clearValue{{color.r, color.g, color.b, color.a}};
+    const VkImageSubresourceRange range{
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .baseMipLevel = 0,
+        .levelCount = desc.mipCount,
+        .baseArrayLayer = 0,
+        .layerCount = desc.layerCount,
+    };
+    vkCmdClearColorImage(
+        impl_->commandBuffer,
+        texture.impl_->image,
+        stateInfo(state).layout,
+        &clearValue,
+        1,
+        &range);
+}
+
 void CommandBuffer::beginRendering(const RenderingDesc& desc)
 {
     if (impl_ == nullptr) {
@@ -4205,6 +4541,28 @@ void CommandBuffer::bindComputePipeline(ComputePipeline& pipeline)
     }
 }
 
+void CommandBuffer::bindComputePipeline(
+    ComputePipeline& pipeline,
+    const void* bindlessData,
+    uint32_t byteSize)
+{
+    if (impl_ == nullptr ||
+        pipeline.impl_ == nullptr ||
+        (byteSize > 0 && bindlessData == nullptr)) {
+        return;
+    }
+    impl_->currentBindlessUserData.resize(byteSize);
+    if (byteSize > 0) {
+        std::memcpy(impl_->currentBindlessUserData.data(), bindlessData, byteSize);
+    }
+    vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.impl_->pipeline);
+    impl_->currentComputePipelineLayout = pipeline.impl_->layout;
+    impl_->currentComputePipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
+    if (impl_->currentComputePipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
+        pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
+    }
+}
+
 void CommandBuffer::setGraphicsShaderObjectState()
 {
     if (impl_ == nullptr ||
@@ -4361,6 +4719,9 @@ void CommandBuffer::bindGraphicsShaderObjectProgram(GraphicsShaderObjectProgram&
 void CommandBuffer::bindBindlessHeap(BindlessHeap& heap)
 {
     if (impl_ == nullptr || heap.impl_ == nullptr) {
+        return;
+    }
+    if (impl_->currentBindlessHeap == heap.impl_.get()) {
         return;
     }
 
@@ -5271,7 +5632,11 @@ Result Device::createComputePipeline(
     std::unique_ptr<ComputePipeline>& outComputePipeline)
 {
     outComputePipeline.reset();
-    if (impl_ == nullptr || desc.computeShader == nullptr || desc.computeShader->impl_ == nullptr) {
+    if (impl_ == nullptr ||
+        desc.computeShader == nullptr ||
+        desc.computeShader->impl_ == nullptr ||
+        (desc.bindingMappingCount > 0 && desc.bindingMappings == nullptr) ||
+        (!desc.usesBindlessHeap && desc.bindingMappingCount > 0)) {
         return makeError(Error::InvalidArgument);
     }
     activateVolkDevice(impl_->device);
@@ -5308,7 +5673,7 @@ Result Device::createComputePipeline(
         .pName = computeEntryPoint,
     };
 
-    std::array<VkDescriptorSetAndBindingMappingEXT, 3> bindlessMappings{};
+    std::vector<VkDescriptorSetAndBindingMappingEXT> bindlessMappings;
     VkShaderDescriptorSetAndBindingMappingInfoEXT bindlessMappingInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
     };
@@ -5329,22 +5694,96 @@ Result Device::createComputePipeline(
             return mapping;
         };
 
-        bindlessMappings[0] = makeHeapMapping(
-            0,
-            VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize()));
-        bindlessMappings[1] = makeHeapMapping(
-            2,
-            VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize()));
-        bindlessMappings[2] = makeHeapMapping(
-            2,
-            VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize()));
+        if (desc.bindingMappingCount == 0) {
+            bindlessMappings.resize(3);
+            bindlessMappings[0] = makeHeapMapping(
+                0,
+                VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
+                static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize()));
+            bindlessMappings[1] = makeHeapMapping(
+                2,
+                VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
+                    VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
+                    VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
+                static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize()));
+            bindlessMappings[2] = makeHeapMapping(
+                2,
+                VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
+                    VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
+                    VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
+                static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize()));
+        } else {
+            bindlessMappings.reserve(desc.bindingMappingCount);
+            for (uint32_t index = 0; index < desc.bindingMappingCount; ++index) {
+                const ShaderBindingMappingDesc& source = desc.bindingMappings[index];
+                if (source.bindingCount == 0) {
+                    return makeError(Error::InvalidArgument);
+                }
+
+                VkSpirvResourceTypeFlagsEXT resourceMask = 0;
+                uint32_t descriptorStride = 0;
+                switch (source.type) {
+                case ShaderBindingType::Sampler:
+                    resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT;
+                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize());
+                    break;
+                case ShaderBindingType::SampledImage:
+                    resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT;
+                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize());
+                    break;
+                case ShaderBindingType::StorageImage:
+                    resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
+                        VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT;
+                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize());
+                    break;
+                case ShaderBindingType::ConstantBuffer:
+                    resourceMask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT;
+                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize());
+                    break;
+                case ShaderBindingType::StorageBuffer:
+                    resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
+                        VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
+                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize());
+                    break;
+                }
+
+                const uint32_t valueSize = source.source == ShaderBindingSource::DeviceAddressFromPushData
+                    ? static_cast<uint32_t>(sizeof(uint64_t))
+                    : static_cast<uint32_t>(sizeof(uint32_t));
+                if (source.pushDataOffset > desc.bindlessUserPushDataSize ||
+                    valueSize > desc.bindlessUserPushDataSize - source.pushDataOffset ||
+                    (source.source == ShaderBindingSource::DeviceAddressFromPushData &&
+                     source.type != ShaderBindingType::ConstantBuffer &&
+                     source.type != ShaderBindingType::StorageBuffer)) {
+                    return makeError(Error::InvalidArgument);
+                }
+
+                VkDescriptorSetAndBindingMappingEXT mapping{
+                    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
+                    .descriptorSet = source.descriptorSet,
+                    .firstBinding = source.firstBinding,
+                    .bindingCount = source.bindingCount,
+                    .resourceMask = resourceMask,
+                };
+                const uint32_t pushOffset = static_cast<uint32_t>(sizeof(BindlessHeapPushConstants)) +
+                    source.pushDataOffset;
+                if (source.source == ShaderBindingSource::DeviceAddressFromPushData) {
+                    mapping.source = VK_DESCRIPTOR_MAPPING_SOURCE_PUSH_ADDRESS_EXT;
+                    mapping.sourceData.pushAddressOffset = pushOffset;
+                } else {
+                    mapping.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_PUSH_INDEX_EXT;
+                    mapping.sourceData.pushIndex.heapOffset = 0;
+                    mapping.sourceData.pushIndex.pushOffset = pushOffset;
+                    mapping.sourceData.pushIndex.heapIndexStride = descriptorStride;
+                    mapping.sourceData.pushIndex.heapArrayStride = descriptorStride;
+                    mapping.sourceData.pushIndex.samplerHeapOffset = 0;
+                    mapping.sourceData.pushIndex.samplerPushOffset = pushOffset;
+                    mapping.sourceData.pushIndex.samplerHeapIndexStride = descriptorStride;
+                    mapping.sourceData.pushIndex.samplerHeapArrayStride = descriptorStride;
+                }
+                bindlessMappings.push_back(mapping);
+            }
+        }
         bindlessMappingInfo.mappingCount = static_cast<uint32_t>(bindlessMappings.size());
         bindlessMappingInfo.pMappings = bindlessMappings.data();
         stage.pNext = &bindlessMappingInfo;
