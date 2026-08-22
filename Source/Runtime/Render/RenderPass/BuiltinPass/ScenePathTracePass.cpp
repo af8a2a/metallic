@@ -730,6 +730,8 @@ public:
         const bool useOpenPBR = bsdf == "openpbr" || bsdf == "OpenPBR";
         const bool exportGuides = exportDenoiserGuides(properties());
         const bool ntcActive = sceneResources_.neuralTextures().active();
+        const bool ntcCooperativeVector =
+            sceneResources_.neuralTextures().cooperativeVectorActive();
         const char* moduleName = nullptr;
         const char* entryPointName = nullptr;
         if (useOpenPBR) {
@@ -775,7 +777,8 @@ public:
 
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
             "|cache=" + std::to_string(cacheMode_) +
-            "|ntc=" + (ntcActive ? "1" : "0");
+            "|ntc=" + (ntcActive ? "1" : "0") +
+            "|coopvec=" + (ntcCooperativeVector ? "1" : "0");
         if (useOpenPBR) {
             result = openPBRLuts_.prepare(*context.device, log);
             if (!result) {
@@ -805,7 +808,13 @@ public:
             return {};
         }
 
-        const char* capabilities[] = {"spvRayQueryKHR", "spvGroupNonUniformBallot"};
+        std::vector<const char*> capabilities{
+            "spvRayQueryKHR",
+            "spvGroupNonUniformBallot",
+        };
+        if (ntcCooperativeVector) {
+            capabilities.push_back("spvCooperativeVectorNV");
+        }
 
         // Keep the conventional binding table stable; append NTC descriptors only when active.
         std::vector<ComputeProgramBindingDesc> baseBindings{
@@ -935,6 +944,10 @@ public:
                     .name = "METALLIC_HAS_NTC",
                     .value = ntcActive ? "1" : "0",
                 },
+                SlangMacroDefine{
+                    .name = "METALLIC_NTC_COOPERATIVE_VECTOR",
+                    .value = ntcCooperativeVector ? "1" : "0",
+                },
             };
             defines.insert(defines.end(), extraDefines.begin(), extraDefines.end());
             std::vector<const char*> additionalSearchPaths;
@@ -955,8 +968,8 @@ public:
                     .additionalSearchPaths = additionalSearchPaths.data(),
                     .additionalSearchPathCount =
                         static_cast<uint32_t>(additionalSearchPaths.size()),
-                    .capabilities = capabilities,
-                    .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                    .capabilities = capabilities.data(),
+                    .capabilityCount = static_cast<uint32_t>(capabilities.size()),
                     .macroDefines = defines.data(),
                     .macroDefineCount = static_cast<uint32_t>(defines.size()),
                 },
@@ -1098,8 +1111,8 @@ public:
                         .moduleName = kSceneSharcMaintenanceShaderModuleName,
                         .entryPointName = entryPointName,
                         .searchPath = kTriangleShaderSearchPath,
-                        .capabilities = capabilities,
-                        .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                        .capabilities = capabilities.data(),
+                        .capabilityCount = static_cast<uint32_t>(capabilities.size()),
                     },
                     maintenanceCompile);
                 if (!maintenanceResult) {
@@ -1231,8 +1244,8 @@ public:
                         .moduleName = kScenePathTraceTonemapShaderModuleName,
                         .entryPointName = kScenePathTraceTonemapEntryPointName,
                         .searchPath = kTriangleShaderSearchPath,
-                        .capabilities = capabilities,
-                        .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                        .capabilities = capabilities.data(),
+                        .capabilityCount = static_cast<uint32_t>(capabilities.size()),
                     },
                     tonemapCompile);
                 if (!tonemapResult) {

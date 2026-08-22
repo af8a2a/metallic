@@ -1276,7 +1276,12 @@ struct ScenePathTraceResources::Impl {
     {
         const uint64_t batchByteSize = pendingUploadByteSize();
         const uint32_t batchRegionCount = pendingUploadRegionCount();
-        Queue* uploadQueue = device.getQueue(QueueType::Copy);
+        // vkCmdConvertCooperativeVectorMatrixNV requires a graphics or compute
+        // capable command buffer, so keep CoopVec weight conversion off a
+        // transfer-only queue.
+        Queue* uploadQueue = neuralTextures.cooperativeVectorActive()
+            ? &graphicsQueue
+            : device.getQueue(QueueType::Copy);
         if (uploadQueue == nullptr) {
             uploadQueue = &graphicsQueue;
         }

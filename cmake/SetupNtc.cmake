@@ -29,14 +29,28 @@ if(METALLIC_ENABLE_NTC)
 endif()
 
 if(METALLIC_NTC_LIBRARY_ROOT)
-    # Metallic performs Generic INT8 inference directly in its Slang shaders.
-    # CUDA and LibNTC's precompiled decompression shaders are unnecessary for
-    # this path and would add large toolchain/runtime dependencies.
+    # Metallic performs inference directly in its Slang shaders. LibNTC's
+    # Vulkan backend is used only to query and convert cooperative-vector
+    # weights; CUDA, DX12, and precompiled decompression shaders remain unused.
     set(NTC_BUILD_SHARED OFF CACHE BOOL "" FORCE)
     set(NTC_WITH_CUDA OFF CACHE BOOL "" FORCE)
     set(NTC_WITH_DX12 OFF CACHE BOOL "" FORCE)
-    set(NTC_WITH_VULKAN OFF CACHE BOOL "" FORCE)
+    set(NTC_WITH_VULKAN ON CACHE BOOL "" FORCE)
     set(NTC_WITH_PREBUILT_SHADERS OFF CACHE BOOL "" FORCE)
+    if(NOT TARGET Vulkan-Headers AND NOT TARGET Vulkan::Headers)
+        find_path(METALLIC_NTC_VULKAN_HEADERS_DIR
+            NAMES vulkan/vulkan.hpp
+            HINTS "$ENV{VULKAN_SDK}"
+            PATH_SUFFIXES Include include)
+        if(NOT METALLIC_NTC_VULKAN_HEADERS_DIR)
+            message(FATAL_ERROR
+                "RTXNTC cooperative-vector support requires Vulkan SDK headers (vulkan/vulkan.hpp)")
+        endif()
+        add_library(MetallicNtcVulkanHeaders INTERFACE)
+        target_include_directories(MetallicNtcVulkanHeaders INTERFACE
+            "${METALLIC_NTC_VULKAN_HEADERS_DIR}")
+        add_library(Vulkan-Headers ALIAS MetallicNtcVulkanHeaders)
+    endif()
     add_subdirectory(
         "${METALLIC_NTC_LIBRARY_ROOT}"
         "${CMAKE_BINARY_DIR}/External/RTXNTC-Library")

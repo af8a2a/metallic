@@ -240,17 +240,28 @@ public:
             return result;
         }
         const bool ntcActive = sceneResources_.neuralTextures().active();
-        if (rayQueryProgram_.valid() && compiledNtcActive_ == ntcActive) {
+        const bool ntcCooperativeVector =
+            sceneResources_.neuralTextures().cooperativeVectorActive();
+        if (rayQueryProgram_.valid() &&
+            compiledNtcActive_ == ntcActive &&
+            compiledNtcCooperativeVector_ == ntcCooperativeVector) {
             return {};
         }
         rayQueryProgram_.clear();
 
         ShaderCompileResult computeCompile;
-        const char* capabilities[] = {"spvRayQueryKHR"};
+        std::vector<const char*> capabilities{"spvRayQueryKHR"};
+        if (ntcCooperativeVector) {
+            capabilities.push_back("spvCooperativeVectorNV");
+        }
         const SlangMacroDefine defines[] = {
             SlangMacroDefine{
                 .name = "METALLIC_HAS_NTC",
                 .value = ntcActive ? "1" : "0",
+            },
+            SlangMacroDefine{
+                .name = "METALLIC_NTC_COOPERATIVE_VECTOR",
+                .value = ntcCooperativeVector ? "1" : "0",
             },
         };
         std::vector<const char*> additionalSearchPaths;
@@ -267,8 +278,8 @@ public:
                 .additionalSearchPaths = additionalSearchPaths.data(),
                 .additionalSearchPathCount =
                     static_cast<uint32_t>(additionalSearchPaths.size()),
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                .capabilities = capabilities.data(),
+                .capabilityCount = static_cast<uint32_t>(capabilities.size()),
                 .macroDefines = defines,
                 .macroDefineCount = static_cast<uint32_t>(std::size(defines)),
             },
@@ -362,6 +373,7 @@ public:
             rayQueryProgram_.clear();
         } else {
             compiledNtcActive_ = ntcActive;
+            compiledNtcCooperativeVector_ = ntcCooperativeVector;
         }
         return result;
     }
@@ -1052,6 +1064,7 @@ private:
     ScenePathTraceResources sceneResources_;
     ComputeProgram rayQueryProgram_;
     bool compiledNtcActive_ = false;
+    bool compiledNtcCooperativeVector_ = false;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     SceneResourceManager* sceneResourceManager_ = nullptr;

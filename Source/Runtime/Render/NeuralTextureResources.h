@@ -21,6 +21,8 @@ inline constexpr uint32_t kNeuralTextureSamplerBinding = 33;
 
 struct NeuralTextureMemoryStats {
     uint32_t textureSetCount = 0;
+    uint32_t cooperativeVectorTextureSetCount = 0;
+    uint32_t genericInt8TextureSetCount = 0;
     uint32_t replacedTextureCount = 0;
     uint64_t conventionalTextureBytes = 0;
     uint64_t latentTextureBytes = 0;
@@ -51,6 +53,7 @@ public:
 
     bool active() const;
     bool uploaded() const;
+    bool cooperativeVectorActive() const;
     uint64_t pendingUploadByteSize() const;
     uint32_t pendingUploadRegionCount() const;
     uint32_t textureSetCount() const;

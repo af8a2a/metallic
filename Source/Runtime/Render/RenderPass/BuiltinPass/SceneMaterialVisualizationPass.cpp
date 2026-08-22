@@ -101,17 +101,28 @@ public:
             return result;
         }
         const bool ntcActive = sceneResources_.neuralTextures().active();
-        if (rayQueryProgram_.valid() && compiledNtcActive_ == ntcActive) {
+        const bool ntcCooperativeVector =
+            sceneResources_.neuralTextures().cooperativeVectorActive();
+        if (rayQueryProgram_.valid() &&
+            compiledNtcActive_ == ntcActive &&
+            compiledNtcCooperativeVector_ == ntcCooperativeVector) {
             return {};
         }
         rayQueryProgram_.clear();
 
         ShaderCompileResult computeCompile;
-        const char* capabilities[] = {"spvRayQueryKHR"};
-        const SlangMacroDefine ntcDefine[] = {
+        std::vector<const char*> capabilities{"spvRayQueryKHR"};
+        if (ntcCooperativeVector) {
+            capabilities.push_back("spvCooperativeVectorNV");
+        }
+        const SlangMacroDefine ntcDefines[] = {
             SlangMacroDefine{
                 .name = "METALLIC_HAS_NTC",
-                .value = "1",
+                .value = ntcActive ? "1" : "0",
+            },
+            SlangMacroDefine{
+                .name = "METALLIC_NTC_COOPERATIVE_VECTOR",
+                .value = ntcCooperativeVector ? "1" : "0",
             },
         };
         std::vector<const char*> additionalSearchPaths;
@@ -128,10 +139,10 @@ public:
                 .additionalSearchPaths = additionalSearchPaths.data(),
                 .additionalSearchPathCount =
                     static_cast<uint32_t>(additionalSearchPaths.size()),
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-                .macroDefines = ntcActive ? ntcDefine : nullptr,
-                .macroDefineCount = ntcActive ? 1u : 0u,
+                .capabilities = capabilities.data(),
+                .capabilityCount = static_cast<uint32_t>(capabilities.size()),
+                .macroDefines = ntcDefines,
+                .macroDefineCount = static_cast<uint32_t>(std::size(ntcDefines)),
             },
             computeCompile);
         if (!result) {
@@ -232,6 +243,7 @@ public:
             return result;
         }
         compiledNtcActive_ = ntcActive;
+        compiledNtcCooperativeVector_ = ntcCooperativeVector;
         return {};
     }
 
@@ -549,6 +561,7 @@ private:
     Queue* graphicsQueue_ = nullptr;
     ComputeProgram rayQueryProgram_;
     bool compiledNtcActive_ = false;
+    bool compiledNtcCooperativeVector_ = false;
 };
 
 } // namespace

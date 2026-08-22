@@ -15,6 +15,8 @@
 #endif
 
 #if METALLIC_HAS_NTC
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+
 #include <libntc/ntc.h>
 #include <libntc/wrappers.h>
 #endif
@@ -43,7 +45,8 @@ Result createUploadBuffer(
     Device& device,
     const void* data,
     uint64_t byteSize,
-    std::unique_ptr<Buffer>& outBuffer)
+    std::unique_ptr<Buffer>& outBuffer,
+    BufferUsageBits additionalUsage = BufferUsageBits::None)
 {
     if (data == nullptr || byteSize == 0) {
         return makeError(Error::InvalidArgument);
@@ -51,7 +54,7 @@ Result createUploadBuffer(
     Result result = device.createBuffer(
         BufferDesc{
             .size = byteSize,
-            .usage = BufferUsageBits::TransferSource,
+            .usage = BufferUsageBits::TransferSource | additionalUsage,
             .memoryLocation = MemoryLocation::HostUpload,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
         },
@@ -74,13 +77,16 @@ Result createDeviceStorageBuffer(
     Device& device,
     uint64_t byteSize,
     uint32_t structureStride,
-    std::unique_ptr<Buffer>& outBuffer)
+    std::unique_ptr<Buffer>& outBuffer,
+    BufferUsageBits additionalUsage = BufferUsageBits::None)
 {
     return device.createBuffer(
         BufferDesc{
             .size = byteSize,
             .structureStride = structureStride,
-            .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
+            .usage = BufferUsageBits::Storage |
+                BufferUsageBits::TransferDestination |
+                additionalUsage,
             .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
         },
@@ -118,6 +124,14 @@ struct NeuralTextureResources::Impl {
         std::vector<TextureUpload> uploads;
         ResourceState state = ResourceState::Undefined;
         uint64_t latentBytes = 0;
+#if METALLIC_HAS_NTC
+        std::unique_ptr<ntc::TextureSetMetadataWrapper> metadata;
+        ntc::InferenceWeightType weightType = ntc::InferenceWeightType::Unknown;
+        uint64_t sourceWeightOffset = 0;
+        uint64_t destinationWeightOffset = 0;
+        uint64_t sourceWeightSize = 0;
+        uint64_t destinationWeightSize = 0;
+#endif
     };
 
     void clear()
@@ -133,6 +147,9 @@ struct NeuralTextureResources::Impl {
         logicalTextureSetMap.clear();
         stats = {};
         uploadRecorded = false;
+#if METALLIC_HAS_NTC
+        context.Release();
+#endif
     }
 
 #if METALLIC_HAS_NTC
@@ -140,6 +157,9 @@ struct NeuralTextureResources::Impl {
         int32_t imageIndex = scene::kInvalidSceneIndex;
         NtcTextureSetConstants constants{};
         std::vector<uint8_t> weights;
+        std::unique_ptr<ntc::TextureSetMetadataWrapper> metadata;
+        ntc::InferenceWeightType weightType = ntc::InferenceWeightType::Unknown;
+        uint64_t convertedWeightSize = 0;
         std::vector<uint8_t> latentData;
         std::vector<TextureUpload> uploads;
         ntc::LatentTextureDesc desc{};
@@ -150,6 +170,8 @@ struct NeuralTextureResources::Impl {
         ntc::IContext& context,
         const scene::Scene& loadedScene,
         int32_t imageIndex,
+        bool preferCooperativeVector,
+        bool allowGenericInt8,
         PendingSet& outSet,
         std::string& error)
     {
@@ -183,18 +205,32 @@ struct NeuralTextureResources::Impl {
             return false;
         }
 
-        ntc::TextureSetMetadataWrapper metadata(&context);
-        status = context.CreateTextureSetMetadataFromStream(stream, metadata.ptr());
-        if (status != ntc::Status::Ok || metadata.Get() == nullptr) {
+        auto metadata = std::make_unique<ntc::TextureSetMetadataWrapper>(&context);
+        status = context.CreateTextureSetMetadataFromStream(stream, metadata->ptr());
+        if (status != ntc::Status::Ok || metadata->Get() == nullptr) {
             error = "failed to parse NTC image '" + image.uri + "': " +
                 ntc::StatusToString(status) + " (" + ntc::GetLastErrorMessage() + ")";
             return false;
         }
 
+        ntc::ITextureSetMetadata* metadataObject = metadata->Get();
+        ntc::InferenceWeightType weightType = ntc::InferenceWeightType::Unknown;
+        if (preferCooperativeVector &&
+            metadataObject->IsInferenceWeightTypeSupported(ntc::InferenceWeightType::CoopVecFP8)) {
+            weightType = ntc::InferenceWeightType::CoopVecFP8;
+        } else if (allowGenericInt8 &&
+            metadataObject->IsInferenceWeightTypeSupported(ntc::InferenceWeightType::GenericInt8)) {
+            weightType = ntc::InferenceWeightType::GenericInt8;
+        }
+        if (weightType == ntc::InferenceWeightType::Unknown) {
+            error = "NTC image has no GPU-supported inference weights: " + image.uri;
+            return false;
+        }
+
         ntc::InferenceData inferenceData;
         status = context.MakeInferenceData(
-            metadata.Get(),
-            ntc::InferenceWeightType::GenericInt8,
+            metadataObject,
+            weightType,
             0,
             &inferenceData);
         if (status != ntc::Status::Ok) {
@@ -203,7 +239,7 @@ struct NeuralTextureResources::Impl {
             return false;
         }
         outSet.constants = inferenceData.constants;
-        const ntc::TextureSetDesc colorDesc = metadata->GetDesc();
+        const ntc::TextureSetDesc colorDesc = metadataObject->GetDesc();
         if (colorDesc.width <= 0 || colorDesc.height <= 0 || colorDesc.mips <= 0) {
             error = "NTC image has an invalid color texture description: " + image.uri;
             return false;
@@ -216,21 +252,26 @@ struct NeuralTextureResources::Impl {
         const void* weights = nullptr;
         size_t weightSize = 0;
         size_t convertedWeightSize = 0;
-        status = metadata->GetInferenceWeights(
-            ntc::InferenceWeightType::GenericInt8,
+        status = metadataObject->GetInferenceWeights(
+            weightType,
             &weights,
             &weightSize,
             &convertedWeightSize);
+        const bool convertedSizeValid = weightType == ntc::InferenceWeightType::CoopVecFP8
+            ? convertedWeightSize > 0
+            : convertedWeightSize == 0;
         if (status != ntc::Status::Ok || weights == nullptr || weightSize == 0 ||
-            convertedWeightSize != 0) {
-            error = "failed to read Generic INT8 NTC weights for '" + image.uri + "': " +
+            !convertedSizeValid) {
+            error = "failed to read NTC inference weights for '" + image.uri + "': " +
                 ntc::StatusToString(status) + " (" + ntc::GetLastErrorMessage() + ")";
             return false;
         }
         outSet.weights.assign(
             static_cast<const uint8_t*>(weights),
             static_cast<const uint8_t*>(weights) + weightSize);
-        outSet.desc = metadata->GetLatentTextureDesc();
+        outSet.weightType = weightType;
+        outSet.convertedWeightSize = convertedWeightSize;
+        outSet.desc = metadataObject->GetLatentTextureDesc();
         if (outSet.desc.width <= 0 || outSet.desc.height <= 0 ||
             outSet.desc.arraySize <= 0 || outSet.desc.mipLevels <= 0) {
             error = "NTC image has an invalid latent texture description: " + image.uri;
@@ -241,7 +282,7 @@ struct NeuralTextureResources::Impl {
         for (int mipLevel = 0; mipLevel < outSet.desc.mipLevels; ++mipLevel) {
             for (int layer = 0; layer < outSet.desc.arraySize; ++layer) {
                 ntc::LatentTextureFootprint footprint;
-                status = metadata->GetLatentTextureFootprint(mipLevel, layer, footprint);
+                status = metadataObject->GetLatentTextureFootprint(mipLevel, layer, footprint);
                 if (status != ntc::Status::Ok || footprint.width <= 0 ||
                     footprint.height <= 0 || footprint.rowPitch == 0 ||
                     footprint.rowPitch > std::numeric_limits<uint32_t>::max() ||
@@ -302,10 +343,15 @@ struct NeuralTextureResources::Impl {
             }
         }
         outSet.imageIndex = imageIndex;
+        outSet.metadata = std::move(metadata);
         return true;
     }
 #endif
 
+#if METALLIC_HAS_NTC
+    // Declared before metadata owners so it is destroyed after them.
+    ntc::ContextWrapper context;
+#endif
     std::vector<TextureSet> sets;
     std::array<TextureView*, kMaxNeuralTextureSets> latentViews{};
     std::unique_ptr<Buffer> constantsBuffer;
@@ -361,21 +407,33 @@ Result NeuralTextureResources::prepare(
     if (referencedImages.empty()) {
         return {};
     }
-    if (!device.capabilities().shaderIntegerDotProduct) {
+    const bool cooperativeVectorAvailable = device.capabilities().cooperativeVector;
+    const bool genericInt8Available = device.capabilities().shaderIntegerDotProduct;
+    if (!cooperativeVectorAvailable && !genericInt8Available) {
         appendWarning(
             log,
-            "[NTC] Generic INT8 inference requires Vulkan shaderIntegerDotProduct; using conventional textures");
+            "[NTC] Inference requires VK_NV_cooperative_vector or Vulkan shaderIntegerDotProduct; using conventional textures");
         return {};
     }
 
-    ntc::ContextWrapper context;
+    const vulkan::NativeDevice nativeDevice = vulkan::nativeDevice(device);
+    if (nativeDevice.instance == VK_NULL_HANDLE ||
+        nativeDevice.physicalDevice == VK_NULL_HANDLE ||
+        nativeDevice.device == VK_NULL_HANDLE) {
+        appendWarning(log, "[NTC] Vulkan native device handles are unavailable; using conventional textures");
+        return {};
+    }
     ntc::ContextParameters contextParameters;
     contextParameters.cudaDevice = ntc::DisableCudaDevice;
-    contextParameters.enableCooperativeVector = false;
-    const ntc::Status contextStatus = ntc::CreateContext(context.ptr(), contextParameters);
+    contextParameters.graphicsApi = ntc::GraphicsAPI::Vulkan;
+    contextParameters.vkInstance = static_cast<void*>(nativeDevice.instance);
+    contextParameters.vkPhysicalDevice = static_cast<void*>(nativeDevice.physicalDevice);
+    contextParameters.vkDevice = static_cast<void*>(nativeDevice.device);
+    contextParameters.enableCooperativeVector = cooperativeVectorAvailable;
+    const ntc::Status contextStatus = ntc::CreateContext(impl_->context.ptr(), contextParameters);
     if ((contextStatus != ntc::Status::Ok &&
          contextStatus != ntc::Status::CudaUnavailable) ||
-        context.Get() == nullptr) {
+        impl_->context.Get() == nullptr) {
         appendWarning(
             log,
             std::string("[NTC] LibNTC context unavailable; using conventional textures: ") +
@@ -392,7 +450,14 @@ Result NeuralTextureResources::prepare(
         }
         Impl::PendingSet pending;
         std::string error;
-        if (!impl_->readSet(*context.Get(), loadedScene, imageIndex, pending, error)) {
+        if (!impl_->readSet(
+                *impl_->context.Get(),
+                loadedScene,
+                imageIndex,
+                cooperativeVectorAvailable,
+                genericInt8Available,
+                pending,
+                error)) {
             appendWarning(log, "[NTC] " + error + "; using conventional textures");
             continue;
         }
@@ -404,10 +469,11 @@ Result NeuralTextureResources::prepare(
     }
 
     std::vector<NtcTextureSetConstants> constants;
-    std::vector<uint8_t> weights;
+    std::vector<uint8_t> sourceWeights;
+    uint64_t destinationWeightBytes = 0;
     struct SetInfo {
         uint32_t weightOffset = 0;
-        uint32_t padding0 = 0;
+        uint32_t cooperativeVector = 0;
         uint32_t padding1 = 0;
         uint32_t padding2 = 0;
     };
@@ -418,21 +484,43 @@ Result NeuralTextureResources::prepare(
     impl_->sets.reserve(pendingSets.size());
 
     for (Impl::PendingSet& pending : pendingSets) {
-        const uint64_t weightOffset = alignUp(weights.size(), 4);
-        if (weightOffset > UINT32_MAX ||
-            weightOffset > std::numeric_limits<size_t>::max() - pending.weights.size()) {
+        const uint64_t sourceWeightOffset = alignUp(sourceWeights.size(), 64);
+        const uint64_t destinationWeightOffset = alignUp(destinationWeightBytes, 64);
+        const uint64_t destinationWeightSize = pending.convertedWeightSize > 0
+            ? pending.convertedWeightSize
+            : pending.weights.size();
+        if (destinationWeightOffset > UINT32_MAX ||
+            destinationWeightSize > UINT32_MAX - destinationWeightOffset ||
+            sourceWeightOffset > std::numeric_limits<size_t>::max() - pending.weights.size()) {
             appendWarning(log, "[NTC] Weight buffer exceeded the 32-bit shader offset range; using conventional textures");
             impl_->clear();
             return {};
         }
-        weights.resize(static_cast<size_t>(weightOffset));
-        weights.insert(weights.end(), pending.weights.begin(), pending.weights.end());
+        sourceWeights.resize(static_cast<size_t>(sourceWeightOffset));
+        sourceWeights.insert(sourceWeights.end(), pending.weights.begin(), pending.weights.end());
+        destinationWeightBytes = destinationWeightOffset + destinationWeightSize;
         constants.push_back(pending.constants);
-        setInfos.push_back(SetInfo{.weightOffset = static_cast<uint32_t>(weightOffset)});
+        const bool cooperativeVector =
+            pending.weightType == ntc::InferenceWeightType::CoopVecFP8;
+        setInfos.push_back(SetInfo{
+            .weightOffset = static_cast<uint32_t>(destinationWeightOffset),
+            .cooperativeVector = cooperativeVector ? 1u : 0u,
+        });
 
         Impl::TextureSet set;
         set.uploads = std::move(pending.uploads);
         set.latentBytes = pending.latentData.size();
+        set.metadata = std::move(pending.metadata);
+        set.weightType = pending.weightType;
+        set.sourceWeightOffset = sourceWeightOffset;
+        set.destinationWeightOffset = destinationWeightOffset;
+        set.sourceWeightSize = pending.weights.size();
+        set.destinationWeightSize = destinationWeightSize;
+        if (cooperativeVector) {
+            ++impl_->stats.cooperativeVectorTextureSetCount;
+        } else {
+            ++impl_->stats.genericInt8TextureSetCount;
+        }
         Result result = createUploadBuffer(
             device,
             pending.latentData.data(),
@@ -499,12 +587,24 @@ Result NeuralTextureResources::prepare(
         impl_->constantsUpload,
         impl_->constantsBuffer);
     if (result) {
-        result = createBufferPair(
-            weights.data(),
-            weights.size(),
-            0,
+        const BufferUsageBits cooperativeVectorUsage =
+            impl_->stats.cooperativeVectorTextureSetCount > 0
+            ? BufferUsageBits::ShaderDeviceAddress
+            : BufferUsageBits::None;
+        result = createUploadBuffer(
+            device,
+            sourceWeights.data(),
+            sourceWeights.size(),
             impl_->weightsUpload,
-            impl_->weightsBuffer);
+            cooperativeVectorUsage);
+        if (result) {
+            result = createDeviceStorageBuffer(
+                device,
+                destinationWeightBytes,
+                0,
+                impl_->weightsBuffer,
+                cooperativeVectorUsage);
+        }
     }
     if (result) {
         result = createBufferPair(
@@ -549,7 +649,7 @@ Result NeuralTextureResources::prepare(
         impl_->stats.latentTextureBytes += set.latentBytes;
     }
     impl_->stats.textureSetCount = static_cast<uint32_t>(impl_->sets.size());
-    impl_->stats.weightBytes = weights.size();
+    impl_->stats.weightBytes = destinationWeightBytes;
     impl_->stats.metadataBytes =
         constants.size() * sizeof(NtcTextureSetConstants) + setInfos.size() * sizeof(SetInfo);
     impl_->latentViews.fill(impl_->sets.front().view.get());
@@ -564,8 +664,10 @@ Result NeuralTextureResources::prepare(
             static_cast<double>(impl_->stats.conventionalTextureBytes)
         : 0.0;
     spdlog::info(
-        "[NTC] Prepared sets={} replacedTextures={} conventionalBytes={} neuralBytes={} savedBytes={} reduction={:.1f}%",
+        "[NTC] Prepared sets={} coopVecSets={} genericInt8Sets={} replacedTextures={} conventionalBytes={} neuralBytes={} savedBytes={} reduction={:.1f}%",
         impl_->stats.textureSetCount,
+        impl_->stats.cooperativeVectorTextureSetCount,
+        impl_->stats.genericInt8TextureSetCount,
         impl_->stats.replacedTextureCount,
         impl_->stats.conventionalTextureBytes,
         impl_->stats.neuralBytes(),
@@ -625,7 +727,6 @@ Result NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
         Buffer* destination;
     } bufferPairs[] = {
         {impl_->constantsUpload.get(), impl_->constantsBuffer.get()},
-        {impl_->weightsUpload.get(), impl_->weightsBuffer.get()},
         {impl_->setInfoUpload.get(), impl_->setInfoBuffer.get()},
     };
     for (const BufferPair& pair : bufferPairs) {
@@ -646,6 +747,90 @@ Result NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
         };
         commandBuffer.barrier(BarrierDesc{.buffers = &toGeneral, .bufferCount = 1});
     }
+
+#if METALLIC_HAS_NTC
+    if (impl_->weightsUpload == nullptr || impl_->weightsBuffer == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    const bool hasCooperativeVector = impl_->stats.cooperativeVectorTextureSetCount > 0;
+    vulkan::NativeBuffer nativeSource;
+    vulkan::NativeBuffer nativeDestination;
+    VkCommandBuffer nativeCommandBuffer = VK_NULL_HANDLE;
+    if (hasCooperativeVector) {
+        nativeSource = vulkan::nativeBuffer(*impl_->weightsUpload);
+        nativeDestination = vulkan::nativeBuffer(*impl_->weightsBuffer);
+        nativeCommandBuffer = vulkan::nativeCommandBuffer(commandBuffer);
+        if (nativeSource.buffer == VK_NULL_HANDLE ||
+            nativeDestination.buffer == VK_NULL_HANDLE ||
+            nativeCommandBuffer == VK_NULL_HANDLE ||
+            nativeSource.address == 0 || nativeDestination.address == 0 ||
+            (nativeSource.address & 63u) != 0 ||
+            (nativeDestination.address & 63u) != 0) {
+            spdlog::error("[NTC] Cooperative-vector weight buffers are not 64-byte aligned");
+            return makeError(Error::Failure);
+        }
+    }
+    for (Impl::TextureSet& set : impl_->sets) {
+        if (set.weightType == ntc::InferenceWeightType::CoopVecFP8) {
+            if (set.metadata == nullptr || set.metadata->Get() == nullptr) {
+                return makeError(Error::InvalidArgument);
+            }
+            const ntc::Status status = set.metadata->Get()->ConvertInferenceWeights(
+                set.weightType,
+                static_cast<void*>(nativeCommandBuffer),
+                static_cast<void*>(nativeSource.buffer),
+                set.sourceWeightOffset,
+                static_cast<void*>(nativeDestination.buffer),
+                set.destinationWeightOffset);
+            if (status != ntc::Status::Ok) {
+                spdlog::error(
+                    "[NTC] Cooperative-vector weight conversion failed: {} ({})",
+                    ntc::StatusToString(status),
+                    ntc::GetLastErrorMessage());
+                return makeError(Error::Failure);
+            }
+        } else {
+            commandBuffer.copyBuffer(BufferCopyDesc{
+                .source = impl_->weightsUpload.get(),
+                .destination = impl_->weightsBuffer.get(),
+                .sourceOffset = set.sourceWeightOffset,
+                .destinationOffset = set.destinationWeightOffset,
+                .size = set.sourceWeightSize,
+            });
+        }
+    }
+
+    if (hasCooperativeVector) {
+#ifdef VK_NV_cooperative_vector
+        VkMemoryBarrier2 memoryBarrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .srcStageMask =
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT |
+                VK_PIPELINE_STAGE_2_CONVERT_COOPERATIVE_VECTOR_MATRIX_BIT_NV,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
+        };
+        const VkDependencyInfo dependencyInfo{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .memoryBarrierCount = 1,
+            .pMemoryBarriers = &memoryBarrier,
+        };
+        vkCmdPipelineBarrier2(nativeCommandBuffer, &dependencyInfo);
+#else
+        return makeError(Error::Unsupported);
+#endif
+    } else {
+        BufferBarrierDesc toGeneral{
+            .buffer = impl_->weightsBuffer.get(),
+            .before = ResourceState::TransferDestination,
+            .after = ResourceState::General,
+            .offset = 0,
+            .size = impl_->weightsBuffer->desc().size,
+        };
+        commandBuffer.barrier(BarrierDesc{.buffers = &toGeneral, .bufferCount = 1});
+    }
+#endif
     impl_->uploadRecorded = true;
     return {};
 }
@@ -657,10 +842,16 @@ void NeuralTextureResources::releaseUploadBuffers()
     }
     for (Impl::TextureSet& set : impl_->sets) {
         set.uploadBuffer.reset();
+#if METALLIC_HAS_NTC
+        set.metadata.reset();
+#endif
     }
     impl_->constantsUpload.reset();
     impl_->weightsUpload.reset();
     impl_->setInfoUpload.reset();
+#if METALLIC_HAS_NTC
+    impl_->context.Release();
+#endif
 }
 
 void NeuralTextureResources::clear()
@@ -679,6 +870,11 @@ bool NeuralTextureResources::uploaded() const
     return !active() || impl_->uploadRecorded;
 }
 
+bool NeuralTextureResources::cooperativeVectorActive() const
+{
+    return active() && impl_->stats.cooperativeVectorTextureSetCount > 0;
+}
+
 uint64_t NeuralTextureResources::pendingUploadByteSize() const
 {
     if (!active() || impl_->uploadRecorded) {
@@ -689,7 +885,7 @@ uint64_t NeuralTextureResources::pendingUploadByteSize() const
         bytes += set.latentBytes;
     }
     bytes += impl_->constantsBuffer->desc().size;
-    bytes += impl_->weightsBuffer->desc().size;
+    bytes += impl_->weightsUpload != nullptr ? impl_->weightsUpload->desc().size : 0;
     bytes += impl_->setInfoBuffer->desc().size;
     return bytes;
 }
@@ -699,7 +895,7 @@ uint32_t NeuralTextureResources::pendingUploadRegionCount() const
     if (!active() || impl_->uploadRecorded) {
         return 0;
     }
-    uint64_t regions = 3;
+    uint64_t regions = 2 + impl_->sets.size();
     for (const Impl::TextureSet& set : impl_->sets) {
         regions += set.uploads.size();
     }

@@ -1369,6 +1369,9 @@ struct VulkanExtensionSet {
 #ifdef VK_NV_partitioned_acceleration_structure
     bool partitionedAccelerationStructure = false;
 #endif
+#ifdef VK_NV_cooperative_vector
+    bool cooperativeVector = false;
+#endif
 
     static VulkanExtensionSet query(VkPhysicalDevice physicalDevice)
     {
@@ -1404,6 +1407,9 @@ struct VulkanExtensionSet {
 #ifdef VK_NV_partitioned_acceleration_structure
         result.partitionedAccelerationStructure =
             result.has(VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+#endif
+#ifdef VK_NV_cooperative_vector
+        result.cooperativeVector = result.has(VK_NV_COOPERATIVE_VECTOR_EXTENSION_NAME);
 #endif
         return result;
     }
@@ -1488,6 +1494,11 @@ struct VulkanDeviceFeatureProbe {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV,
     };
 #endif
+#ifdef VK_NV_cooperative_vector
+    VkPhysicalDeviceCooperativeVectorFeaturesNV cooperativeVectorFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_VECTOR_FEATURES_NV,
+    };
+#endif
     VkPhysicalDeviceFeatures2 features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
     };
@@ -1531,6 +1542,11 @@ struct VulkanDeviceFeatureProbe {
 #ifdef VK_NV_partitioned_acceleration_structure
         if (extensions.partitionedAccelerationStructure) {
             appendPNext(featureTail, partitionedAccelerationStructureFeatures);
+        }
+#endif
+#ifdef VK_NV_cooperative_vector
+        if (extensions.cooperativeVector) {
+            appendPNext(featureTail, cooperativeVectorFeatures);
         }
 #endif
         vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
@@ -1622,6 +1638,7 @@ struct VulkanDeviceFeatureProbe {
 struct VulkanDeviceFeatureSelection {
     bool shaderDemoteToHelperInvocation = false;
     bool shaderIntegerDotProduct = false;
+    bool cooperativeVector = false;
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
     bool meshShader = false;
@@ -1664,6 +1681,12 @@ struct VulkanDeviceFeatureSelection {
             probe.vulkan13Features.shaderDemoteToHelperInvocation == VK_TRUE;
         result.shaderIntegerDotProduct =
             probe.vulkan13Features.shaderIntegerDotProduct == VK_TRUE;
+#ifdef VK_NV_cooperative_vector
+        result.cooperativeVector =
+            extensions.cooperativeVector &&
+            probe.cooperativeVectorFeatures.cooperativeVector == VK_TRUE &&
+            probe.vulkan12Features.bufferDeviceAddress == VK_TRUE;
+#endif
         result.bindlessDescriptorHeap =
             request.bindlessDescriptorHeap &&
             extensions.descriptorHeap &&
@@ -1719,6 +1742,7 @@ struct VulkanDeviceFeatureSelection {
     bool usesBufferDeviceAddress() const
     {
         return bindlessDescriptorHeap ||
+            cooperativeVector ||
             rayTracingAccelerationStructure ||
             rayQuery ||
             clusterAccelerationStructure ||
@@ -1741,6 +1765,7 @@ struct VulkanDeviceFeatureSelection {
     int32_t score() const
     {
         return (bindlessDescriptorHeap ? 16 : 0) +
+            (cooperativeVector ? 16 : 0) +
             (partitionedAccelerationStructure ? 128 : 0) +
             (clusterAccelerationStructure ? 64 : 0) +
             (streamline ? 32 : 0) +
@@ -1792,6 +1817,11 @@ struct VulkanEnabledFeatureChain {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV,
     };
 #endif
+#ifdef VK_NV_cooperative_vector
+    VkPhysicalDeviceCooperativeVectorFeaturesNV cooperativeVectorFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_VECTOR_FEATURES_NV,
+    };
+#endif
 #if defined(VK_NV_device_diagnostics_config)
     VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnosticsConfigFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV,
@@ -1828,6 +1858,10 @@ struct VulkanEnabledFeatureChain {
             selection.shaderDemoteToHelperInvocation ? VK_TRUE : VK_FALSE;
         vulkan13Features.shaderIntegerDotProduct =
             selection.shaderIntegerDotProduct ? VK_TRUE : VK_FALSE;
+#ifdef VK_NV_cooperative_vector
+        cooperativeVectorFeatures.cooperativeVector =
+            selection.cooperativeVector ? VK_TRUE : VK_FALSE;
+#endif
         descriptorHeapFeatures.descriptorHeap = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         shaderObjectFeatures.shaderObject = selection.shaderObject ? VK_TRUE : VK_FALSE;
 #ifdef VK_EXT_mesh_shader
@@ -1883,6 +1917,11 @@ struct VulkanEnabledFeatureChain {
             appendPNext(featureTail, partitionedAccelerationStructureFeatures);
         }
 #endif
+#ifdef VK_NV_cooperative_vector
+        if (selection.cooperativeVector) {
+            appendPNext(featureTail, cooperativeVectorFeatures);
+        }
+#endif
 #if defined(VK_NV_device_diagnostics_config)
         if (selection.aftermath) {
             appendPNext(featureTail, diagnosticsConfigFeatures);
@@ -1927,6 +1966,11 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
 #ifdef VK_NV_partitioned_acceleration_structure
     if (selection.partitionedAccelerationStructure) {
         extensions.push_back(VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+    }
+#endif
+#ifdef VK_NV_cooperative_vector
+    if (selection.cooperativeVector) {
+        extensions.push_back(VK_NV_COOPERATIVE_VECTOR_EXTENSION_NAME);
     }
 #endif
     if (selection.streamline) {
@@ -8275,12 +8319,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->capabilities.aftermath = selectedFeatures.aftermath;
     deviceImpl->capabilities.shaderIntegerDotProduct =
         selectedFeatures.shaderIntegerDotProduct;
-    deviceImpl->bufferDeviceAddressEnabled =
-        selectedFeatures.bindlessDescriptorHeap ||
-        selectedFeatures.rayTracingAccelerationStructure ||
-        selectedFeatures.rayQuery ||
-        selectedFeatures.clusterAccelerationStructure ||
-        selectedFeatures.partitionedAccelerationStructure;
+    deviceImpl->capabilities.cooperativeVector = selectedFeatures.cooperativeVector;
+    deviceImpl->bufferDeviceAddressEnabled = selectedFeatures.usesBufferDeviceAddress();
 
     if (deviceImpl->debugUtilsEnabled) {
         deviceImpl->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
@@ -8368,6 +8408,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         !selectedFeatures.aftermath) {
         spdlog::warn(
             "NVIDIA Nsight Aftermath initialized, but the selected Vulkan device is missing required diagnostics support.");
+    }
+    if (selectedFeatures.cooperativeVector) {
+        spdlog::info("[Vulkan] VK_NV_cooperative_vector enabled");
     }
 
     outDevice.reset(new Device(std::move(deviceImpl)));

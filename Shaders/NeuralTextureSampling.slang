@@ -1,10 +1,17 @@
 #ifndef METALLIC_HAS_NTC
 #define METALLIC_HAS_NTC 0
 #endif
+#ifndef METALLIC_NTC_COOPERATIVE_VECTOR
+#define METALLIC_NTC_COOPERATIVE_VECTOR 0
+#endif
 
 #if METALLIC_HAS_NTC
 
+#if METALLIC_NTC_COOPERATIVE_VECTOR
+#include <libntc/shaders/InferenceCoopVec.hlsli>
+#else
 #include <libntc/shaders/Inference.hlsli>
+#endif
 
 static const uint kMaxNeuralTextureSets = 64u;
 static const uint kInvalidNeuralTextureSetIndex = 0xffffffffu;
@@ -18,8 +25,8 @@ StructuredBuffer<NtcTextureSetConstants> gNtcTextureSetConstants;
 [[vk::binding(31, 0)]]
 ByteAddressBuffer gNtcWeights;
 
-// x is the byte offset of this texture set's Generic INT8 weights in
-// gNtcWeights. The remaining fields are reserved for future inference modes.
+// x is the byte offset of this texture set's weights in gNtcWeights.
+// y is 1 for converted CoopVec FP8 weights and 0 for Generic INT8 weights.
 [[vk::binding(32, 0)]]
 StructuredBuffer<uint4> gNtcTextureSetInfo;
 
@@ -72,16 +79,33 @@ float4 metallicSampleNeuralTexture(
     }
 
     NtcTextureSetConstants constants = gNtcTextureSetConstants[textureSetIndex];
-    bool sampled = NtcSampleTextureSet(
-        constants,
-        gNtcLatentTextures[textureSetIndex],
-        gNtcLatentSampler,
-        gNtcWeights,
-        gNtcTextureSetInfo[textureSetIndex].x,
-        texel,
-        mipLevel,
-        false,
-        channels);
+    bool sampled = false;
+#if METALLIC_NTC_COOPERATIVE_VECTOR
+    if (gNtcTextureSetInfo[textureSetIndex].y != 0u) {
+        sampled = NtcSampleTextureSet_CoopVec_FP8(
+            constants,
+            gNtcLatentTextures[textureSetIndex],
+            gNtcLatentSampler,
+            gNtcWeights,
+            gNtcTextureSetInfo[textureSetIndex].x,
+            texel,
+            mipLevel,
+            false,
+            channels);
+    } else
+#endif
+    {
+        sampled = NtcSampleTextureSet(
+            constants,
+            gNtcLatentTextures[textureSetIndex],
+            gNtcLatentSampler,
+            gNtcWeights,
+            gNtcTextureSetInfo[textureSetIndex].x,
+            texel,
+            mipLevel,
+            false,
+            channels);
+    }
     if (!sampled) {
         return fallback;
     }

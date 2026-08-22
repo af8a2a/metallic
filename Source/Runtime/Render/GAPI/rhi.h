@@ -313,6 +313,7 @@ struct DeviceCapabilities {
     bool streamlineDlssRr = false;
     bool aftermath = false;
     bool shaderIntegerDotProduct = false;
+    bool cooperativeVector = false;
     uint64_t bufferCopyOffsetAlignment = 1;
     uint64_t textureUploadBufferOffsetAlignment = 1;
     uint64_t textureUploadRowPitchAlignment = 1;
