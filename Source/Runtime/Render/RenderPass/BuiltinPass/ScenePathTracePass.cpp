@@ -615,6 +615,37 @@ public:
             runtimeBoolSetting("accumulate", "Accumulate", true, true),
             runtimeBoolSetting("flipBitangent", "Flip Bitangent", false, true),
             runtimeEnumSetting(
+                "debugView",
+                "OpenPBR Debug View",
+                "final",
+                {
+                    {"Final", "final"},
+                    {"Geometry Normal", "geometryNormal"},
+                    {"Shading Normal", "shadingNormal"},
+                    {"Normal Mapped", "mappedNormal"},
+                    {"Tangent", "tangent"},
+                    {"Bitangent", "bitangent"},
+                    {"Tangent Handedness", "tangentHandedness"},
+                    {"Texcoord", "texcoord"},
+                    {"Front Face", "frontFace"},
+                    {"Material ID", "material"},
+                    {"Instance ID", "instance"},
+                    {"Triangle ID", "triangle"},
+                    {"Base Color", "baseColor"},
+                    {"Normal Texture", "normalTexture"},
+                    {"Shadow Transmittance", "shadowTransmittance"},
+                    {"Shading Side", "shadingSide"},
+                },
+                true),
+            runtimeBoolSetting("debugDisableNormalMap", "Debug: Disable Normal Map", false, true),
+            runtimeBoolSetting("debugForceGeometryNormal", "Debug: Force Geometry Normal", false, true),
+            runtimeBoolSetting("debugDisableMaterialTextures", "Debug: Disable Material Textures", false, true),
+            runtimeBoolSetting("debugDisableDirectLighting", "Debug: Disable Direct Lighting", false, true),
+            runtimeBoolSetting("debugUseOpaqueShadows", "Debug: Use Opaque Shadows", false, true),
+            runtimeBoolSetting("debugDisableShadows", "Debug: Disable Shadows", false, true),
+            runtimeBoolSetting("debugDisableVolumeAttenuation", "Debug: Disable Volume Attenuation", false, true),
+            runtimeBoolSetting("debugDisableTransmission", "Debug: Disable Transmission", false, true),
+            runtimeEnumSetting(
                 "cacheMode",
                 "Radiance Cache",
                 "off",
@@ -1651,8 +1682,11 @@ private:
         HistoryResourceManager* history = context.historyResources();
         // NRC mode always routes through the linear HDR history texture: the
         // resolve pass adds predicted radiance before a separate tonemap pass.
-        const bool accumulationEnabled = push.cacheMode == kScenePathTraceCacheModeNrc ||
-            boolProperty(context.properties(), "accumulate", true);
+        const bool debugViewEnabled =
+            useOpenPBRBsdf(context.properties()) && push.debugView != kScenePathTraceDebugViewFinal;
+        const bool accumulationEnabled = !debugViewEnabled &&
+            (push.cacheMode == kScenePathTraceCacheModeNrc ||
+                boolProperty(context.properties(), "accumulate", true));
         push.enableAccumulation = accumulationEnabled && history != nullptr ? 1u : 0u;
         push.hasHistory = 0;
         push.accumulationFrame = 0;
@@ -2354,6 +2388,57 @@ private:
         return bsdf == "openpbr" || bsdf == "OpenPBR";
     }
 
+    static uint32_t debugViewFromProperties(const RenderGraphProperties& properties)
+    {
+        const std::string view = stringProperty(properties, "debugView", "final");
+        if (view == "geometryNormal") {
+            return kScenePathTraceDebugViewGeometryNormal;
+        }
+        if (view == "shadingNormal") {
+            return kScenePathTraceDebugViewShadingNormal;
+        }
+        if (view == "mappedNormal") {
+            return kScenePathTraceDebugViewMappedNormal;
+        }
+        if (view == "tangent") {
+            return kScenePathTraceDebugViewTangent;
+        }
+        if (view == "bitangent") {
+            return kScenePathTraceDebugViewBitangent;
+        }
+        if (view == "tangentHandedness") {
+            return kScenePathTraceDebugViewTangentHandedness;
+        }
+        if (view == "texcoord") {
+            return kScenePathTraceDebugViewTexcoord;
+        }
+        if (view == "frontFace") {
+            return kScenePathTraceDebugViewFrontFace;
+        }
+        if (view == "material") {
+            return kScenePathTraceDebugViewMaterial;
+        }
+        if (view == "instance") {
+            return kScenePathTraceDebugViewInstance;
+        }
+        if (view == "triangle") {
+            return kScenePathTraceDebugViewTriangle;
+        }
+        if (view == "baseColor") {
+            return kScenePathTraceDebugViewBaseColor;
+        }
+        if (view == "normalTexture") {
+            return kScenePathTraceDebugViewNormalTexture;
+        }
+        if (view == "shadowTransmittance") {
+            return kScenePathTraceDebugViewShadowTransmittance;
+        }
+        if (view == "shadingSide") {
+            return kScenePathTraceDebugViewShadingSide;
+        }
+        return kScenePathTraceDebugViewFinal;
+    }
+
     static std::string historyNameForContext(const RenderGraphExecutionContext& context)
     {
         std::string name(kScenePathTraceHistoryPrefix);
@@ -2521,6 +2606,31 @@ private:
         outPush.bitangentFlip = metallic::render::builtin_pass::boolProperty(&properties, "flipBitangent", false)
             ? -1.0f
             : 1.0f;
+        outPush.debugView = debugViewFromProperties(properties);
+        if (boolProperty(properties, "debugDisableNormalMap", false)) {
+            outPush.debugFlags |= kScenePathTraceDebugDisableNormalMap;
+        }
+        if (boolProperty(properties, "debugForceGeometryNormal", false)) {
+            outPush.debugFlags |= kScenePathTraceDebugForceGeometryNormal;
+        }
+        if (boolProperty(properties, "debugDisableMaterialTextures", false)) {
+            outPush.debugFlags |= kScenePathTraceDebugDisableMaterialTextures;
+        }
+        if (boolProperty(properties, "debugDisableDirectLighting", false)) {
+            outPush.debugFlags |= kScenePathTraceDebugDisableDirectLighting;
+        }
+        if (boolProperty(properties, "debugUseOpaqueShadows", false)) {
+            outPush.debugFlags |= kScenePathTraceDebugUseOpaqueShadows;
+        }
+        if (boolProperty(properties, "debugDisableShadows", false)) {
+            outPush.debugFlags |= kScenePathTraceDebugDisableShadows;
+        }
+        if (boolProperty(properties, "debugDisableVolumeAttenuation", false)) {
+            outPush.debugFlags |= kScenePathTraceDebugDisableVolumeAttenuation;
+        }
+        if (boolProperty(properties, "debugDisableTransmission", false)) {
+            outPush.debugFlags |= kScenePathTraceDebugDisableTransmission;
+        }
 
         outPush.environmentIntensity = std::max(environment.intensity, 0.0f);
         outPush.environmentRotationRadians = environment.rotationDegrees * (kPi / 180.0f);

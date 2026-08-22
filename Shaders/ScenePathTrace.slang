@@ -243,6 +243,8 @@ struct ScenePathTracePush
     uint outputLinear;      // when set, write linear HDR (tonemap happens in a follow-up pass; used by NRC query mode)
     uint cacheMode;         // METALLIC_CACHE_MODE_*
     uint ntcTextureSetCount;
+    uint debugView;
+    uint debugFlags;
 };
 
 struct Ray
@@ -267,6 +269,9 @@ struct HitInfo
     float3 bitangent;
     float2 texcoord;
     uint materialIndex;
+    uint instanceIndex;
+    uint primitiveIndex;
+    uint triangleIndex;
     float rayConeLodConstant;
     bool frontFace;
 };
@@ -279,6 +284,18 @@ float3 safeNormalize(float3 value, float3 fallback)
 {
     float lengthSquared = dot(value, value);
     return lengthSquared > 0.00000001 ? value * rsqrt(lengthSquared) : fallback;
+}
+
+float3 safeTriangleNormal(float3 edge1, float3 edge2, float3 fallback)
+{
+    float3 unnormalizedNormal = cross(edge1, edge2);
+    float normalLengthSquared = dot(unnormalizedNormal, unnormalizedNormal);
+    float edgeLengthProduct = dot(edge1, edge1) * dot(edge2, edge2);
+    if (edgeLengthProduct <= 0.0 ||
+        normalLengthSquared <= edgeLengthProduct * 1e-12) {
+        return fallback;
+    }
+    return unnormalizedNormal * rsqrt(normalLengthSquared);
 }
 
 uint hash(uint value)
@@ -1138,6 +1155,9 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.bitangent = float3(0.0, 0.0, 1.0);
     hit.texcoord = float2(0.0, 0.0);
     hit.materialIndex = 0u;
+    hit.instanceIndex = 0u;
+    hit.primitiveIndex = 0u;
+    hit.triangleIndex = 0u;
     hit.rayConeLodConstant = 0.0;
     hit.frontFace = true;
 
@@ -1187,8 +1207,12 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     float2 uv1 = v1.texcoord.xy;
     float2 uv2 = v2.texcoord.xy;
     float3 localPosition = p0 * weights.x + p1 * weights.y + p2 * weights.z;
-    float3 localGeometryNormal = safeNormalize(cross(p1 - p0, p2 - p0), float3(0.0, 1.0, 0.0));
     float3 localNormal = v0.normal.xyz * weights.x + v1.normal.xyz * weights.y + v2.normal.xyz * weights.z;
+    float3 localNormalFallback = safeNormalize(localNormal, float3(0.0, 1.0, 0.0));
+    float3 localGeometryNormal = safeTriangleNormal(
+        p1 - p0,
+        p2 - p0,
+        localNormalFallback);
     localNormal = dot(localNormal, localNormal) > 0.000001 ? safeNormalize(localNormal, localGeometryNormal) : localGeometryNormal;
     float4 localTangent = v0.tangent * weights.x + v1.tangent * weights.y + v2.tangent * weights.z;
     float3 localTangentDirection = dot(localTangent.xyz, localTangent.xyz) > 0.000001
@@ -1230,6 +1254,9 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
 
     hit.t = query.CommittedRayT();
     hit.materialIndex = instance.materialIndex;
+    hit.instanceIndex = instanceIndex;
+    hit.primitiveIndex = instance.primitiveIndex;
+    hit.triangleIndex = triangleIndex;
     hit.rayConeLodConstant = instance.rayConeLodConstant;
     return true;
 }

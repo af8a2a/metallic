@@ -1095,15 +1095,33 @@ public:
 };
 
 
-bool hasBoolRuntimeSetting(const render::RenderGraphPass& pass, const std::string& key)
+bool hasRuntimeSetting(
+    const render::RenderGraphPass& pass,
+    const std::string& key,
+    render::RenderGraphRuntimeSettingType type,
+    bool requireHistoryInvalidation = false)
 {
     const std::vector<render::RenderGraphRuntimeSetting> settings = pass.runtimeSettings();
     for (const render::RenderGraphRuntimeSetting& setting : settings) {
-        if (setting.key == key && setting.type == render::RenderGraphRuntimeSettingType::Bool) {
+        if (setting.key == key &&
+            setting.type == type &&
+            (!requireHistoryInvalidation || setting.invalidateHistory)) {
             return true;
         }
     }
     return false;
+}
+
+bool hasBoolRuntimeSetting(
+    const render::RenderGraphPass& pass,
+    const std::string& key,
+    bool requireHistoryInvalidation = false)
+{
+    return hasRuntimeSetting(
+        pass,
+        key,
+        render::RenderGraphRuntimeSettingType::Bool,
+        requireHistoryInvalidation);
 }
 
 class RenderGraphRuntimeSettingsDeclarationTest : public RhiTest {
@@ -1138,6 +1156,28 @@ public:
         }
         if (!hasBoolRuntimeSetting(*pathTrace, "flipBitangent")) {
             return RhiTestResult::fail("ScenePathTracePass missing Bool runtime setting flipBitangent");
+        }
+        if (!hasRuntimeSetting(
+                *pathTrace,
+                "debugView",
+                render::RenderGraphRuntimeSettingType::Enum,
+                true)) {
+            return RhiTestResult::fail("ScenePathTracePass missing history-invalidating debugView enum");
+        }
+        for (const char* key : {
+                 "debugDisableNormalMap",
+                 "debugForceGeometryNormal",
+                 "debugDisableMaterialTextures",
+                 "debugDisableDirectLighting",
+                 "debugUseOpaqueShadows",
+                 "debugDisableShadows",
+                 "debugDisableVolumeAttenuation",
+                 "debugDisableTransmission",
+             }) {
+            if (!hasBoolRuntimeSetting(*pathTrace, key, true)) {
+                return RhiTestResult::fail(
+                    std::string("ScenePathTracePass missing history-invalidating debug Bool setting ") + key);
+            }
         }
         if (!hasBoolRuntimeSetting(*rtxdi, "temporalReuse") ||
             !hasBoolRuntimeSetting(*rtxdi, "spatialReuse") ||
@@ -4360,11 +4400,12 @@ public:
         if (pathTrace == nullptr) {
             return RhiTestResult::fail("OpenPBR PathTracingSample is missing PathTrace node");
         }
-        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "maxDepth", 8) ||
-            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "samples", 1) ||
+        // User-reported close view whose glass sphere exposes a horizontal band.
+        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "maxDepth", 12) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "samples", 2) ||
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "accumulate", false) ||
-            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.eye", {-0.028353f, 0.083254f, 0.142950f}) ||
-            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.center", {0.0f, 0.075f, 0.0f})) {
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.eye", {-0.008599f, 0.073623f, 0.058931f}) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.center", {-1.384997f, -0.182991f, 2.025709f})) {
             return RhiTestResult::fail("failed to set OpenPBR PathTracingSample preview runtime properties");
         }
 
@@ -4375,7 +4416,7 @@ public:
             return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
-        result = preview.render(sample.graph, 128, 128, sample.desc.previewOutput);
+        result = preview.render(sample.graph, 576, 300, sample.desc.previewOutput);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(
@@ -4411,6 +4452,281 @@ public:
         }
 
         return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+    }
+};
+
+class RenderGraphOpenPBRPathTracingDebugViewsTest : public RhiTest {
+public:
+    RenderGraphOpenPBRPathTracingDebugViewsTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_openpbr_pathtracing_debug_views";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string message;
+        if (!render::loadBuiltInRenderSample("pathtracing-sample", sample, message)) {
+            return RhiTestResult::fail(message);
+        }
+
+        render::RenderGraphNode* pathTrace = sample.graph.findNode("PathTrace");
+        if (pathTrace == nullptr) {
+            return RhiTestResult::fail("OpenPBR PathTracingSample is missing PathTrace node");
+        }
+        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "maxDepth", 12) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "samples", 2) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "accumulate", false) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.eye", {-0.001590f, 0.072671f, 0.069807f}) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.center", {-2.046089f, 0.350581f, 1.323329f})) {
+            return RhiTestResult::fail("failed to set OpenPBR debug-view camera properties");
+        }
+
+        render::RenderGraphPreviewRenderer preview;
+        preview.setEnvironment(sampleEnvironmentSettings(sample.desc));
+        render::Result result = preview.initialize(false, true);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        struct DebugCase {
+            const char* name;
+            const char* view;
+            const char* enabledFlag;
+        };
+        const std::array debugFlags{
+            "debugDisableNormalMap",
+            "debugForceGeometryNormal",
+            "debugDisableMaterialTextures",
+            "debugDisableDirectLighting",
+            "debugUseOpaqueShadows",
+            "debugDisableShadows",
+            "debugDisableVolumeAttenuation",
+            "debugDisableTransmission",
+        };
+        const std::array cases{
+            DebugCase{"final", "final", nullptr},
+            DebugCase{"geometry_normal", "geometryNormal", nullptr},
+            DebugCase{"shading_normal", "shadingNormal", nullptr},
+            DebugCase{"mapped_normal", "mappedNormal", nullptr},
+            DebugCase{"tangent", "tangent", nullptr},
+            DebugCase{"bitangent", "bitangent", nullptr},
+            DebugCase{"tangent_handedness", "tangentHandedness", nullptr},
+            DebugCase{"texcoord", "texcoord", nullptr},
+            DebugCase{"front_face", "frontFace", nullptr},
+            DebugCase{"shading_side", "shadingSide", nullptr},
+            DebugCase{"triangle", "triangle", nullptr},
+            DebugCase{"base_color", "baseColor", nullptr},
+            DebugCase{"normal_texture", "normalTexture", nullptr},
+            DebugCase{"shadow_transmittance", "shadowTransmittance", nullptr},
+            DebugCase{"mapped_no_normal_map", "mappedNormal", "debugDisableNormalMap"},
+            DebugCase{"mapped_force_geometry", "mappedNormal", "debugForceGeometryNormal"},
+            DebugCase{"final_no_material_textures", "final", "debugDisableMaterialTextures"},
+            DebugCase{"final_no_direct_lighting", "final", "debugDisableDirectLighting"},
+            DebugCase{"final_opaque_shadows", "final", "debugUseOpaqueShadows"},
+            DebugCase{"final_unoccluded", "final", "debugDisableShadows"},
+            DebugCase{"final_no_volume_attenuation", "final", "debugDisableVolumeAttenuation"},
+            DebugCase{"final_no_transmission", "final", "debugDisableTransmission"},
+            DebugCase{"shadow_opaque", "shadowTransmittance", "debugUseOpaqueShadows"},
+            DebugCase{"shadow_unoccluded", "shadowTransmittance", "debugDisableShadows"},
+        };
+
+        std::vector<uint32_t> geometryNormalPixels;
+        std::vector<uint32_t> shadingNormalPixels;
+        std::vector<uint32_t> frontFacePixels;
+        std::vector<uint32_t> mappedNoNormalMapPixels;
+        std::vector<uint32_t> mappedForceGeometryPixels;
+        std::vector<uint32_t> shadowTransmittancePixels;
+        std::vector<uint32_t> shadowOpaquePixels;
+        std::vector<uint32_t> shadowUnoccludedPixels;
+        sample.graph.clearDirty();
+        for (const DebugCase& debugCase : cases) {
+            for (const char* flag : debugFlags) {
+                if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, flag, false)) {
+                    return RhiTestResult::fail(std::string("failed to clear OpenPBR debug flag ") + flag);
+                }
+            }
+            if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "debugView", debugCase.view) ||
+                (debugCase.enabledFlag != nullptr &&
+                 !sample.graph.setNodeRuntimeProperty(pathTrace->id, debugCase.enabledFlag, true))) {
+                return RhiTestResult::fail(std::string("failed to set OpenPBR debug case ") + debugCase.name);
+            }
+            if (sample.graph.dirty()) {
+                return RhiTestResult::fail(std::string("OpenPBR debug case dirtied graph: ") + debugCase.name);
+            }
+
+            result = preview.render(sample.graph, 576, 300, sample.desc.previewOutput);
+            if (!result) {
+                if (render::hasError(result, render::Error::Unsupported)) {
+                    return RhiTestResult::skip(
+                        std::string("OpenPBR debug views are unsupported on this device: ") +
+                        preview.lastLog());
+                }
+                return RhiTestResult::fail(
+                    std::string("OpenPBR debug case render returned ") +
+                    toString(result) +
+                    " for " +
+                    debugCase.name +
+                    ": " +
+                    preview.lastLog());
+            }
+            if (countVisiblePixels(preview.pixels()) < 512) {
+                return RhiTestResult::fail(
+                    std::string("OpenPBR debug case produced too few visible pixels: ") +
+                    debugCase.name);
+            }
+
+            const std::string caseName(debugCase.name);
+            if (caseName == "geometry_normal") {
+                geometryNormalPixels = preview.pixels();
+            }
+            if (caseName == "shading_normal") {
+                shadingNormalPixels = preview.pixels();
+            }
+            if (caseName == "front_face") {
+                frontFacePixels = preview.pixels();
+            }
+            if (caseName == "mapped_no_normal_map") {
+                mappedNoNormalMapPixels = preview.pixels();
+            }
+            if (caseName == "mapped_force_geometry") {
+                mappedForceGeometryPixels = preview.pixels();
+            }
+            if (caseName == "shadow_transmittance") {
+                shadowTransmittancePixels = preview.pixels();
+            }
+            if (caseName == "shadow_opaque") {
+                shadowOpaquePixels = preview.pixels();
+            }
+            if (caseName == "shadow_unoccluded") {
+                shadowUnoccludedPixels = preview.pixels();
+            }
+
+            const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+            const std::filesystem::path outputPath =
+                context.outputDirectory /
+                (std::string("render_graph_openpbr_debug_") + debugCase.name + ".png");
+            if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
+                return RhiTestResult::fail(message);
+            }
+        }
+
+        for (const char* flag : debugFlags) {
+            if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, flag, false)) {
+                return RhiTestResult::fail(std::string("failed to clear OpenPBR stability flag ") + flag);
+            }
+        }
+        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "accumulate", true) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "debugView", "shadowTransmittance")) {
+            return RhiTestResult::fail("failed to configure accumulated OpenPBR debug stability check");
+        }
+        result = preview.render(sample.graph, 576, 300, sample.desc.previewOutput);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("first accumulated OpenPBR debug render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const std::vector<uint32_t> firstStableDebugPixels = preview.pixels();
+        result = preview.render(sample.graph, 576, 300, sample.desc.previewOutput);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("second accumulated OpenPBR debug render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const uint64_t accumulatedDebugDifference =
+            sumAbsoluteRgbDifference(firstStableDebugPixels, preview.pixels());
+        if (accumulatedDebugDifference != 0) {
+            return RhiTestResult::fail(
+                "OpenPBR debug view changed while accumulation was enabled: difference=" +
+                std::to_string(accumulatedDebugDifference));
+        }
+
+        constexpr uint32_t kDebugWidth = 576;
+        constexpr uint32_t kDebugHeight = 300;
+        const size_t debugPixelCount = static_cast<size_t>(kDebugWidth) * kDebugHeight;
+        if (geometryNormalPixels.size() != debugPixelCount ||
+            shadingNormalPixels.size() != debugPixelCount ||
+            frontFacePixels.size() != debugPixelCount ||
+            mappedNoNormalMapPixels.size() != debugPixelCount ||
+            mappedForceGeometryPixels.size() != debugPixelCount ||
+            shadowTransmittancePixels.size() != debugPixelCount ||
+            shadowOpaquePixels.size() != debugPixelCount ||
+            shadowUnoccludedPixels.size() != debugPixelCount ||
+            firstStableDebugPixels.size() != debugPixelCount ||
+            preview.pixels().size() != debugPixelCount) {
+            return RhiTestResult::fail("OpenPBR captured debug views have unexpected dimensions");
+        }
+
+        constexpr uint64_t kNormalDebugDifferenceTolerance = 1024;
+        const uint64_t normalBypassDifference =
+            sumAbsoluteRgbDifference(shadingNormalPixels, mappedNoNormalMapPixels);
+        if (normalBypassDifference > kNormalDebugDifferenceTolerance) {
+            return RhiTestResult::fail(
+                "OpenPBR disable-normal-map view did not match shading normals: difference=" +
+                std::to_string(normalBypassDifference));
+        }
+        const uint64_t geometryOverrideDifference =
+            sumAbsoluteRgbDifference(geometryNormalPixels, mappedForceGeometryPixels);
+        if (geometryOverrideDifference > kNormalDebugDifferenceTolerance) {
+            return RhiTestResult::fail(
+                "OpenPBR force-geometry-normal view did not match geometry normals: difference=" +
+                std::to_string(geometryOverrideDifference));
+        }
+        if (sumAbsoluteRgbDifference(shadowTransmittancePixels, shadowOpaquePixels) < 1024 ||
+            sumAbsoluteRgbDifference(shadowTransmittancePixels, shadowUnoccludedPixels) < 1024) {
+            return RhiTestResult::fail("OpenPBR shadow debug modes did not produce distinct visibility results");
+        }
+
+        std::unordered_set<uint32_t> geometryNormalBins;
+        uint32_t surfacePixelCount = 0;
+        uint32_t backFacePixelCount = 0;
+        for (uint32_t y = 120; y < 240; ++y) {
+            for (uint32_t x = 170; x < 300; ++x) {
+                const size_t pixelIndex = static_cast<size_t>(y) * kDebugWidth + x;
+                const uint32_t frontFacePixel = frontFacePixels[pixelIndex];
+                const uint32_t frontFaceR = frontFacePixel & 0xffu;
+                const uint32_t frontFaceG = (frontFacePixel >> 8u) & 0xffu;
+                const uint32_t frontFaceB = (frontFacePixel >> 16u) & 0xffu;
+                const bool isFrontFace = frontFaceG > 200u && frontFaceR < 64u && frontFaceB < 80u;
+                const bool isBackFace = frontFaceR > 200u && frontFaceG < 64u && frontFaceB < 80u;
+                if (!isFrontFace && !isBackFace) {
+                    continue;
+                }
+
+                ++surfacePixelCount;
+                const uint32_t geometryPixel = geometryNormalPixels[pixelIndex];
+                const uint32_t r = geometryPixel & 0xffu;
+                const uint32_t g = (geometryPixel >> 8u) & 0xffu;
+                const uint32_t b = (geometryPixel >> 16u) & 0xffu;
+                geometryNormalBins.insert((r >> 4u) | ((g >> 4u) << 4u) | ((b >> 4u) << 8u));
+
+                if (isBackFace) {
+                    ++backFacePixelCount;
+                }
+            }
+        }
+        if (surfacePixelCount < 1024) {
+            return RhiTestResult::fail(
+                "OpenPBR primary glass sphere debug ROI contains too few surface pixels: pixels=" +
+                std::to_string(surfacePixelCount));
+        }
+        if (geometryNormalBins.size() < 8) {
+            return RhiTestResult::fail(
+                "OpenPBR geometry normals collapsed across the glass sphere: bins=" +
+                std::to_string(geometryNormalBins.size()));
+        }
+        if (backFacePixelCount != 0) {
+            return RhiTestResult::fail(
+                "OpenPBR primary glass sphere contains false back faces: pixels=" +
+                std::to_string(backFacePixelCount));
+        }
+
+        return RhiTestResult::pass("wrote OpenPBR path-tracing debug views");
     }
 };
 
@@ -7690,6 +8006,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphRtxdiShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPathTracingGuidesShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryClusterShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingSamplePreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingDebugViewsTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingEnvironmentRotationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceTransmissionTexturesPreviewTest);

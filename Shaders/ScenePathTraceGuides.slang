@@ -143,6 +143,7 @@ void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         (push.accumulationFrame + 1u) * 0x9e3779b9u);
     float3 color = float3(0.0, 0.0, 0.0);
     DlssRrGuideData guides = makeDefaultDlssRrGuideData(push);
+    PathTraceCacheContext cache = makeCacheContext();
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
         float2 jitter = samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed));
         float2 samplePixel = float2(pixel) + jitter;
@@ -151,7 +152,7 @@ void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         ray.origin = rayOriginFromPixel(samplePixel, push);
         ray.direction = rayDirectionFromPixel(samplePixel, push);
         RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
-        color += pathTrace(ray, rayCone, push, seed);
+        color += pathTrace(ray, rayCone, push, cache, seed);
 
         if (sampleIndex == 0u) {
             guides = evaluateStandardDlssRrGuides(ray, rayCone, samplePixel, push, seed);

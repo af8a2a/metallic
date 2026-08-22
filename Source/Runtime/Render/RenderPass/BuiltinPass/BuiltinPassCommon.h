@@ -170,6 +170,30 @@ inline constexpr uint32_t kRtxdiBehaviorReGIR = 1u << 10u;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeProcedural = 0;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeMap = 1;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeDisabled = 2;
+inline constexpr uint32_t kScenePathTraceDebugViewFinal = 0;
+inline constexpr uint32_t kScenePathTraceDebugViewGeometryNormal = 1;
+inline constexpr uint32_t kScenePathTraceDebugViewShadingNormal = 2;
+inline constexpr uint32_t kScenePathTraceDebugViewMappedNormal = 3;
+inline constexpr uint32_t kScenePathTraceDebugViewTangent = 4;
+inline constexpr uint32_t kScenePathTraceDebugViewBitangent = 5;
+inline constexpr uint32_t kScenePathTraceDebugViewTangentHandedness = 6;
+inline constexpr uint32_t kScenePathTraceDebugViewTexcoord = 7;
+inline constexpr uint32_t kScenePathTraceDebugViewFrontFace = 8;
+inline constexpr uint32_t kScenePathTraceDebugViewMaterial = 9;
+inline constexpr uint32_t kScenePathTraceDebugViewInstance = 10;
+inline constexpr uint32_t kScenePathTraceDebugViewTriangle = 11;
+inline constexpr uint32_t kScenePathTraceDebugViewBaseColor = 12;
+inline constexpr uint32_t kScenePathTraceDebugViewNormalTexture = 13;
+inline constexpr uint32_t kScenePathTraceDebugViewShadowTransmittance = 14;
+inline constexpr uint32_t kScenePathTraceDebugViewShadingSide = 15;
+inline constexpr uint32_t kScenePathTraceDebugDisableNormalMap = 1u << 0u;
+inline constexpr uint32_t kScenePathTraceDebugForceGeometryNormal = 1u << 1u;
+inline constexpr uint32_t kScenePathTraceDebugDisableMaterialTextures = 1u << 2u;
+inline constexpr uint32_t kScenePathTraceDebugDisableDirectLighting = 1u << 3u;
+inline constexpr uint32_t kScenePathTraceDebugUseOpaqueShadows = 1u << 4u;
+inline constexpr uint32_t kScenePathTraceDebugDisableTransmission = 1u << 5u;
+inline constexpr uint32_t kScenePathTraceDebugDisableShadows = 1u << 6u;
+inline constexpr uint32_t kScenePathTraceDebugDisableVolumeAttenuation = 1u << 7u;
 // Radiance cache modes (RTXGI SHaRC / NVIDIA NRC reference integrations).
 inline constexpr uint32_t kScenePathTraceCacheModeOff = 0;
 inline constexpr uint32_t kScenePathTraceCacheModeSharc = 1;
@@ -742,6 +766,8 @@ struct ScenePathTracePush {
     uint32_t outputLinear = 0;
     uint32_t cacheMode = kScenePathTraceCacheModeOff;
     uint32_t ntcTextureSetCount = 0;
+    uint32_t debugView = kScenePathTraceDebugViewFinal;
+    uint32_t debugFlags = 0;
 };
 
 // Per-frame parameters for the radiance-cache permutations of
@@ -785,7 +811,7 @@ struct ScenePathTraceCacheParams {
 
 static_assert(sizeof(ScenePathTraceCacheParams) == 172);
 static_assert(offsetof(ScenePathTraceCacheParams, nrcFrameDimensions) == 76);
-static_assert(sizeof(ScenePathTracePush) == 228);
+static_assert(sizeof(ScenePathTracePush) == 236);
 
 struct SceneRtxdiPush {
     float eye[4] = {};
