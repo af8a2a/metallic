@@ -515,6 +515,35 @@ VkSamplerAddressMode toVkSamplerAddressMode(SamplerAddressMode mode)
     return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 }
 
+#ifdef VK_NV_cluster_acceleration_structure
+VkClusterAccelerationStructureIndexFormatFlagBitsNV toVkClusterIndexFormat(
+    ClusterAccelerationStructureIndexFormat format)
+{
+    switch (format) {
+    case ClusterAccelerationStructureIndexFormat::Uint8:
+        return VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
+    case ClusterAccelerationStructureIndexFormat::Uint16:
+        return VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_16BIT_NV;
+    case ClusterAccelerationStructureIndexFormat::Uint32:
+        return VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_32BIT_NV;
+    }
+    return VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
+}
+
+uint64_t clusterIndexByteSize(ClusterAccelerationStructureIndexFormat format)
+{
+    switch (format) {
+    case ClusterAccelerationStructureIndexFormat::Uint8:
+        return 1;
+    case ClusterAccelerationStructureIndexFormat::Uint16:
+        return 2;
+    case ClusterAccelerationStructureIndexFormat::Uint32:
+        return 4;
+    }
+    return 0;
+}
+#endif
+
 uint32_t formatTexelByteSize(Format format)
 {
     switch (format) {
@@ -4791,6 +4820,258 @@ void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_
     }
 }
 
+Result CommandBuffer::buildClusterAccelerationStructureTriangles(
+    const ClusterAccelerationStructureTriangleBuildDesc& desc)
+{
+#ifndef VK_NV_cluster_acceleration_structure
+    (void)desc;
+    return makeError(Error::Unsupported);
+#else
+    if (impl_ == nullptr ||
+        impl_->device == nullptr ||
+        !impl_->device->clusterAccelerationStructureEnabled ||
+        vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
+        return makeError(Error::Unsupported);
+    }
+    if (desc.clusters == nullptr ||
+        desc.clusterCount == 0 ||
+        desc.maxClusterTriangleCount == 0 ||
+        desc.maxClusterVertexCount == 0 ||
+        desc.maxClusterUniqueGeometryCount == 0 ||
+        desc.vertexFormat == Format::Unknown ||
+        desc.scratchBuffer == nullptr ||
+        desc.buildInfoBuffer == nullptr ||
+        desc.destinationAddressBuffer == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    Buffer* scratchBuffer = desc.scratchBuffer;
+    Buffer* buildInfoBuffer = desc.buildInfoBuffer;
+    Buffer* destinationAddressBuffer = desc.destinationAddressBuffer;
+    if (scratchBuffer->impl_ == nullptr ||
+        buildInfoBuffer->impl_ == nullptr ||
+        destinationAddressBuffer->impl_ == nullptr ||
+        scratchBuffer->impl_->device != impl_->device ||
+        buildInfoBuffer->impl_->device != impl_->device ||
+        destinationAddressBuffer->impl_->device != impl_->device ||
+        !hasFlag(scratchBuffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) ||
+        !hasFlag(buildInfoBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
+        !hasFlag(buildInfoBuffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) ||
+        !hasFlag(destinationAddressBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
+        !hasFlag(destinationAddressBuffer->desc().usage, BufferUsageBits::ShaderDeviceAddress)) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const uint64_t buildInfoBytes = static_cast<uint64_t>(desc.clusterCount) *
+        sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV);
+    const uint64_t destinationAddressBytes =
+        static_cast<uint64_t>(desc.clusterCount) * sizeof(uint64_t);
+    if (buildInfoBytes > buildInfoBuffer->desc().size ||
+        destinationAddressBytes > destinationAddressBuffer->desc().size ||
+        desc.scratchBufferOffset > scratchBuffer->desc().size) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    std::vector<VkClusterAccelerationStructureBuildTriangleClusterInfoNV> buildInfos(
+        desc.clusterCount);
+    std::vector<uint64_t> destinationAddresses(desc.clusterCount);
+    std::vector<std::pair<Buffer*, uint64_t>> bufferAddresses;
+    bufferAddresses.reserve(6);
+    auto bufferAddress = [&bufferAddresses](Buffer& buffer) {
+        const auto iter = std::find_if(
+            bufferAddresses.begin(),
+            bufferAddresses.end(),
+            [&buffer](const auto& entry) { return entry.first == &buffer; });
+        if (iter != bufferAddresses.end()) {
+            return iter->second;
+        }
+        const uint64_t address = buffer.deviceAddress();
+        bufferAddresses.emplace_back(&buffer, address);
+        return address;
+    };
+    uint64_t totalTriangleCount = 0;
+    uint64_t totalVertexCount = 0;
+    for (uint32_t index = 0; index < desc.clusterCount; ++index) {
+        const ClusterAccelerationStructureTriangleBuildInfo& source = desc.clusters[index];
+        if (source.triangleCount == 0 ||
+            source.vertexCount == 0 ||
+            source.triangleCount > desc.maxClusterTriangleCount ||
+            source.vertexCount > desc.maxClusterVertexCount ||
+            source.triangleCount > 0x1ffu ||
+            source.vertexCount > 0x1ffu ||
+            source.positionTruncateBitCount > 0x3fu ||
+            source.geometryIndex > desc.maxGeometryIndexValue ||
+            source.geometryIndex > 0xffffffu ||
+            source.indexBufferStride == 0 ||
+            source.vertexBufferStride == 0 ||
+            source.indexBuffer == nullptr ||
+            source.vertexBuffer == nullptr ||
+            source.destinationBuffer == nullptr ||
+            source.destinationSize == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+        Buffer* indexBuffer = source.indexBuffer;
+        Buffer* vertexBuffer = source.vertexBuffer;
+        Buffer* destinationBuffer = source.destinationBuffer;
+        if (indexBuffer->impl_ == nullptr ||
+            vertexBuffer->impl_ == nullptr ||
+            destinationBuffer->impl_ == nullptr ||
+            indexBuffer->impl_->device != impl_->device ||
+            vertexBuffer->impl_->device != impl_->device ||
+            destinationBuffer->impl_->device != impl_->device ||
+            !hasFlag(indexBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
+            !hasFlag(vertexBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
+            !hasFlag(destinationBuffer->desc().usage, BufferUsageBits::AccelerationStructureStorage)) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        const uint64_t indexElementSize = clusterIndexByteSize(source.indexFormat);
+        const uint64_t indexCount = static_cast<uint64_t>(source.triangleCount) * 3u;
+        const uint64_t requiredIndexBytes = indexCount == 0
+            ? 0
+            : (indexCount - 1u) * source.indexBufferStride + indexElementSize;
+        const uint64_t requiredVertexBytes =
+            static_cast<uint64_t>(source.vertexCount) * source.vertexBufferStride;
+        if (indexElementSize == 0 ||
+            source.indexBufferStride < indexElementSize ||
+            source.indexBufferOffset > indexBuffer->desc().size ||
+            requiredIndexBytes > indexBuffer->desc().size - source.indexBufferOffset ||
+            source.vertexBufferOffset > vertexBuffer->desc().size ||
+            requiredVertexBytes > vertexBuffer->desc().size - source.vertexBufferOffset ||
+            source.destinationBufferOffset > destinationBuffer->desc().size ||
+            source.destinationSize >
+                destinationBuffer->desc().size - source.destinationBufferOffset) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        const uint64_t indexAddress = bufferAddress(*indexBuffer);
+        const uint64_t vertexAddress = bufferAddress(*vertexBuffer);
+        const uint64_t destinationAddress = bufferAddress(*destinationBuffer);
+        if (indexAddress == 0 || vertexAddress == 0 || destinationAddress == 0) {
+            return makeError(Error::Failure);
+        }
+
+        VkClusterAccelerationStructureBuildTriangleClusterInfoNV& buildInfo = buildInfos[index];
+        buildInfo.clusterID = source.clusterId;
+        buildInfo.triangleCount = source.triangleCount;
+        buildInfo.vertexCount = source.vertexCount;
+        buildInfo.positionTruncateBitCount = source.positionTruncateBitCount;
+        buildInfo.indexType = toVkClusterIndexFormat(source.indexFormat);
+        buildInfo.baseGeometryIndexAndGeometryFlags.geometryIndex = source.geometryIndex;
+        buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = source.opaque
+            ? VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV
+            : 0;
+        buildInfo.indexBufferStride = source.indexBufferStride;
+        buildInfo.vertexBufferStride = source.vertexBufferStride;
+        buildInfo.indexBuffer = indexAddress + source.indexBufferOffset;
+        buildInfo.vertexBuffer = vertexAddress + source.vertexBufferOffset;
+        destinationAddresses[index] = destinationAddress + source.destinationBufferOffset;
+
+        totalTriangleCount += source.triangleCount;
+        totalVertexCount += source.vertexCount;
+        if (totalTriangleCount > std::numeric_limits<uint32_t>::max() ||
+            totalVertexCount > std::numeric_limits<uint32_t>::max()) {
+            return makeError(Error::InvalidArgument);
+        }
+    }
+
+    void* mappedBuildInfos = buildInfoBuffer->map();
+    void* mappedDestinations = destinationAddressBuffer->map();
+    if (mappedBuildInfos == nullptr || mappedDestinations == nullptr) {
+        if (mappedBuildInfos != nullptr) {
+            buildInfoBuffer->unmap();
+        }
+        if (mappedDestinations != nullptr) {
+            destinationAddressBuffer->unmap();
+        }
+        return makeError(Error::Failure);
+    }
+    std::memcpy(mappedBuildInfos, buildInfos.data(), static_cast<size_t>(buildInfoBytes));
+    std::memcpy(
+        mappedDestinations,
+        destinationAddresses.data(),
+        static_cast<size_t>(destinationAddressBytes));
+    buildInfoBuffer->flush(0, buildInfoBytes);
+    destinationAddressBuffer->flush(0, destinationAddressBytes);
+    buildInfoBuffer->unmap();
+    destinationAddressBuffer->unmap();
+
+    const uint64_t buildInfoAddress = bufferAddress(*buildInfoBuffer);
+    const uint64_t destinationAddress = bufferAddress(*destinationAddressBuffer);
+    const uint64_t scratchAddress = bufferAddress(*scratchBuffer);
+    if (buildInfoAddress == 0 || destinationAddress == 0 || scratchAddress == 0) {
+        return makeError(Error::Failure);
+    }
+
+    VkClusterAccelerationStructureTriangleClusterInputNV triangleInput{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV,
+        .vertexFormat = toVkFormat(desc.vertexFormat),
+        .maxGeometryIndexValue = desc.maxGeometryIndexValue,
+        .maxClusterUniqueGeometryCount = desc.maxClusterUniqueGeometryCount,
+        .maxClusterTriangleCount = desc.maxClusterTriangleCount,
+        .maxClusterVertexCount = desc.maxClusterVertexCount,
+        .maxTotalTriangleCount = static_cast<uint32_t>(totalTriangleCount),
+        .maxTotalVertexCount = static_cast<uint32_t>(totalVertexCount),
+        .minPositionTruncateBitCount = desc.minPositionTruncateBitCount,
+    };
+    VkClusterAccelerationStructureInputInfoNV input{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+        .maxAccelerationStructureCount = desc.clusterCount,
+        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV,
+        .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
+        .opInput = {.pTriangleClusters = &triangleInput},
+    };
+    VkClusterAccelerationStructureCommandsInfoNV commands{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
+        .input = input,
+        .scratchData = scratchAddress + desc.scratchBufferOffset,
+        .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
+            .deviceAddress = destinationAddress,
+            .stride = sizeof(uint64_t),
+            .size = destinationAddressBytes,
+        },
+        .srcInfosArray = VkStridedDeviceAddressRegionKHR{
+            .deviceAddress = buildInfoAddress,
+            .stride = sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV),
+            .size = buildInfoBytes,
+        },
+    };
+
+    const VkMemoryBarrier2 inputBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+    };
+    const VkDependencyInfo inputDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &inputBarrier,
+    };
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &inputDependency);
+    vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
+
+    const VkMemoryBarrier2 outputBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_SHADER_READ_BIT,
+    };
+    const VkDependencyInfo outputDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &outputBarrier,
+    };
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &outputDependency);
+    return {};
+#endif
+}
+
 CommandPool::CommandPool(std::unique_ptr<detail::CommandPoolImpl> impl)
     : impl_(std::move(impl))
 {
@@ -4935,6 +5216,106 @@ const DeviceCapabilities& Device::capabilities() const
 {
     static const DeviceCapabilities emptyCapabilities;
     return impl_ != nullptr ? impl_->capabilities : emptyCapabilities;
+}
+
+Result Device::queryClusterAccelerationStructureProperties(
+    ClusterAccelerationStructureProperties& outProperties) const
+{
+    outProperties = {};
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->clusterAccelerationStructureEnabled ||
+        !impl_->capabilities.clusterAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+#ifndef VK_NV_cluster_acceleration_structure
+    return makeError(Error::Unsupported);
+#else
+    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
+    };
+    VkPhysicalDeviceProperties2 deviceProperties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &properties,
+    };
+    vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &deviceProperties);
+    if (properties.clusterByteAlignment == 0 ||
+        properties.clusterScratchByteAlignment == 0) {
+        return makeError(Error::Failure);
+    }
+    outProperties = ClusterAccelerationStructureProperties{
+        .clusterStorageAlignment = properties.clusterByteAlignment,
+        .scratchAlignment = properties.clusterScratchByteAlignment,
+        .triangleBuildInfoSize =
+            sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV),
+    };
+    return {};
+#endif
+}
+
+Result Device::queryClusterAccelerationStructureTriangleBuildSizes(
+    const ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
+    ClusterAccelerationStructureBuildSizes& outSizes) const
+{
+    outSizes = {};
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->clusterAccelerationStructureEnabled ||
+        !impl_->capabilities.clusterAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+    if (desc.maxClusterTriangleCount == 0 ||
+        desc.maxClusterVertexCount == 0 ||
+        desc.maxClusterUniqueGeometryCount == 0 ||
+        desc.maxTotalTriangleCount == 0 ||
+        desc.maxTotalVertexCount == 0 ||
+        desc.maxAccelerationStructureCount == 0 ||
+        desc.vertexFormat == Format::Unknown) {
+        return makeError(Error::InvalidArgument);
+    }
+#ifndef VK_NV_cluster_acceleration_structure
+    return makeError(Error::Unsupported);
+#else
+    activateVolkDevice(impl_->device);
+    if (vkGetClusterAccelerationStructureBuildSizesNV == nullptr) {
+        return makeError(Error::Unsupported);
+    }
+    const VkFormat vertexFormat = toVkFormat(desc.vertexFormat);
+    if (vertexFormat == VK_FORMAT_UNDEFINED) {
+        return makeError(Error::InvalidArgument);
+    }
+    VkClusterAccelerationStructureTriangleClusterInputNV triangleInput{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV,
+        .vertexFormat = vertexFormat,
+        .maxGeometryIndexValue = desc.maxGeometryIndexValue,
+        .maxClusterUniqueGeometryCount = desc.maxClusterUniqueGeometryCount,
+        .maxClusterTriangleCount = desc.maxClusterTriangleCount,
+        .maxClusterVertexCount = desc.maxClusterVertexCount,
+        .maxTotalTriangleCount = desc.maxTotalTriangleCount,
+        .maxTotalVertexCount = desc.maxTotalVertexCount,
+        .minPositionTruncateBitCount = desc.minPositionTruncateBitCount,
+    };
+    VkClusterAccelerationStructureInputInfoNV inputInfo{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+        .maxAccelerationStructureCount = desc.maxAccelerationStructureCount,
+        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV,
+        .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
+        .opInput = {.pTriangleClusters = &triangleInput},
+    };
+    VkAccelerationStructureBuildSizesInfoKHR sizes{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+    };
+    vkGetClusterAccelerationStructureBuildSizesNV(impl_->device, &inputInfo, &sizes);
+    outSizes = ClusterAccelerationStructureBuildSizes{
+        .accelerationStructureSize = sizes.accelerationStructureSize,
+        .updateScratchSize = sizes.updateScratchSize,
+        .buildScratchSize = sizes.buildScratchSize,
+    };
+    return {};
+#endif
 }
 
 Queue* Device::getQueue(QueueType type, uint32_t index)

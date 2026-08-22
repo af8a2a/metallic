@@ -34,7 +34,7 @@ bool buildMeshletStreamPageClusterOffsets(
         clusterCount += page.clusterCount;
         if (clusterCount > std::numeric_limits<uint32_t>::max()) {
             outOffsets.clear();
-            reason = "meshlet stream CLAS cluster IDs exceed the 32-bit Vulkan limit";
+            reason = "meshlet stream CLAS cluster IDs exceed the 32-bit limit";
             return false;
         }
     }

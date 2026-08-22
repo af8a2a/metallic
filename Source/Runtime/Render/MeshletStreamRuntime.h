@@ -19,9 +19,7 @@
 
 namespace metallic::render {
 
-namespace vulkan {
 class MeshletStreamClasPool;
-}
 
 inline constexpr const char* kMeshletStreamShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
 inline constexpr const char* kMeshletStreamShaderModuleName = "GPUDrivenStreamAsset";
@@ -462,7 +460,7 @@ public:
     const scene::Bounds& bounds() const { return drawBounds_; }
     const scene::MeshletStreamAsset& asset() const { return asset_; }
     const MeshletStreamResidencyManager& residency() const { return residency_; }
-    vulkan::MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }
+    MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }
 
 private:
     struct FallbackBlasPrimitive {
@@ -553,7 +551,7 @@ private:
     std::unique_ptr<ActiveBuildPass> activeBuildPass_;
     std::unique_ptr<BlasInputPass> blasInputPass_;
     std::unique_ptr<TlasInputPass> tlasInputPass_;
-    std::unique_ptr<vulkan::MeshletStreamClasPool> clasPool_;
+    std::unique_ptr<MeshletStreamClasPool> clasPool_;
     BindlessHandle pageHandle_;
     BindlessHandle activeGroupHandle_;
     BindlessHandle activeHeaderHandle_;

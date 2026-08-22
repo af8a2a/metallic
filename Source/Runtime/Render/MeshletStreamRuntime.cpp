@@ -1,6 +1,6 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
 
-#include "Runtime/Render/GAPI/Vulkan/VulkanMeshletStreamClas.h"
+#include "Runtime/Render/MeshletStreamClas.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/SlangCompiler.h"
 
@@ -1052,10 +1052,10 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             log = "MeshletStreamRuntime cluster RTX capacities are invalid";
             return makeError(Error::InvalidArgument);
         }
-        clasPool_ = std::make_unique<vulkan::MeshletStreamClasPool>();
+        clasPool_ = std::make_unique<MeshletStreamClasPool>();
         result = clasPool_->initialize(
             device,
-            vulkan::MeshletStreamClasPoolDesc{
+            MeshletStreamClasPoolDesc{
                 .asset = &asset_,
                 .maxStorageBytes = desc.maxClasBytes,
                 .maxBuildClusters = static_cast<uint32_t>(buildClusters),
@@ -2454,13 +2454,13 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
         return result;
     }
 
-    std::vector<vulkan::MeshletStreamClasPageBuild> clasBuilds;
+    std::vector<MeshletStreamClasPageBuild> clasBuilds;
     clasBuilds.reserve(
         residency_.newlyResidentPages().size() + residency_.residentPages().size());
     for (uint32_t pageIndex : residency_.newlyResidentPages()) {
         const uint64_t deviceOffset = residency_.deviceOffsetForPage(pageIndex);
         if (deviceOffset != UINT64_MAX) {
-            clasBuilds.push_back(vulkan::MeshletStreamClasPageBuild{
+            clasBuilds.push_back(MeshletStreamClasPageBuild{
                 .pageIndex = pageIndex,
                 .deviceOffsetBytes = deviceOffset,
             });
@@ -2472,7 +2472,7 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
         }
         const uint64_t deviceOffset = residency_.deviceOffsetForPage(pageIndex);
         if (deviceOffset != UINT64_MAX) {
-            clasBuilds.push_back(vulkan::MeshletStreamClasPageBuild{
+            clasBuilds.push_back(MeshletStreamClasPageBuild{
                 .pageIndex = pageIndex,
                 .deviceOffsetBytes = deviceOffset,
             });

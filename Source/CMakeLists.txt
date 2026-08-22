@@ -33,6 +33,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Subsystem/RenderSubsystem.cpp
     Runtime/Render/Subsystem/RenderWorld.cpp
     Runtime/Render/MeshletStreamClas.cpp
+    Runtime/Render/MeshletStreamClasPool.cpp
     Runtime/Render/MeshletStreamPageLoader.cpp
     Runtime/Render/MeshletStreamResidency.cpp
     Runtime/Render/MeshletStreamRuntime.cpp
@@ -68,7 +69,6 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/ScenePathTraceResources.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
-    Runtime/Render/GAPI/Vulkan/VulkanMeshletStreamClas.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.cpp
     Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.cpp
     Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp

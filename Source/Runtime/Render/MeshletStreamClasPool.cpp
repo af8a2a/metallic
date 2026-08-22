@@ -1,10 +1,6 @@
-#include "Runtime/Render/GAPI/Vulkan/VulkanMeshletStreamClas.h"
-
-#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/MeshletStreamClas.h"
-#include "Runtime/Render/MeshletStreamResidency.h"
 
-#include <volk.h>
+#include "Runtime/Render/MeshletStreamResidency.h"
 
 #include <algorithm>
 #include <cstring>
@@ -13,12 +9,8 @@
 #include <utility>
 #include <vector>
 
-namespace metallic::render::vulkan {
+namespace metallic::render {
 namespace {
-
-constexpr VkBuildAccelerationStructureFlagsKHR kClasBuildFlags =
-    VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-constexpr uint64_t kDefaultClasAlignment = 256;
 
 uint64_t alignUp(uint64_t value, uint64_t alignment)
 {
@@ -28,47 +20,7 @@ uint64_t alignUp(uint64_t value, uint64_t alignment)
     return ((value + alignment - 1u) / alignment) * alignment;
 }
 
-uint64_t clusterStorageAlignment(VkPhysicalDevice physicalDevice)
-{
-#ifdef VK_NV_cluster_acceleration_structure
-    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV clusterProperties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
-    };
-    VkPhysicalDeviceProperties2 properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-        .pNext = &clusterProperties,
-    };
-    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
-    return clusterProperties.clusterByteAlignment != 0
-        ? clusterProperties.clusterByteAlignment
-        : kDefaultClasAlignment;
-#else
-    (void)physicalDevice;
-    return kDefaultClasAlignment;
-#endif
-}
-
-uint64_t clusterScratchAlignment(VkPhysicalDevice physicalDevice)
-{
-#ifdef VK_NV_cluster_acceleration_structure
-    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV clusterProperties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
-    };
-    VkPhysicalDeviceProperties2 properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-        .pNext = &clusterProperties,
-    };
-    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
-    return clusterProperties.clusterScratchByteAlignment != 0
-        ? clusterProperties.clusterScratchByteAlignment
-        : kDefaultClasAlignment;
-#else
-    (void)physicalDevice;
-    return kDefaultClasAlignment;
-#endif
-}
-
-Result createBuffer(
+Result createClasBuffer(
     Device& device,
     uint64_t size,
     BufferUsageBits usage,
@@ -89,42 +41,6 @@ Result createBuffer(
         return result ? makeError(Error::Failure) : result;
     }
     return {};
-}
-
-void clusterBuildInputBarrier(VkCommandBuffer commandBuffer)
-{
-    VkMemoryBarrier2 barrier{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
-    };
-    VkDependencyInfo dependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 1,
-        .pMemoryBarriers = &barrier,
-    };
-    vkCmdPipelineBarrier2(commandBuffer, &dependency);
-}
-
-void clusterBuildOutputBarrier(VkCommandBuffer commandBuffer)
-{
-    VkMemoryBarrier2 barrier{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            VK_ACCESS_2_SHADER_READ_BIT,
-    };
-    VkDependencyInfo dependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 1,
-        .pMemoryBarriers = &barrier,
-    };
-    vkCmdPipelineBarrier2(commandBuffer, &dependency);
 }
 
 } // namespace
@@ -167,7 +83,7 @@ struct MeshletStreamClasPool::Impl {
     MeshletStreamClasPoolStats stats;
     uint64_t frameIndex = 0;
     uint64_t storageAddress = 0;
-    uint64_t scratchAddress = 0;
+    uint64_t scratchOffset = 0;
     uint64_t clusterStride = 0;
     uint32_t pageCount = 0;
     uint32_t clusterIdStride = 0;
@@ -246,12 +162,6 @@ Result MeshletStreamClasPool::initialize(
 {
     clear();
     log.clear();
-#ifndef VK_NV_cluster_acceleration_structure
-    (void)device;
-    (void)desc;
-    log = "VK_NV_cluster_acceleration_structure is unavailable in this Vulkan header";
-    return makeError(Error::Unsupported);
-#else
     if (desc.asset == nullptr ||
         !desc.asset->valid() ||
         desc.maxStorageBytes == 0 ||
@@ -265,15 +175,15 @@ Result MeshletStreamClasPool::initialize(
         return makeError(Error::Unsupported);
     }
 
-    const NativeDevice native = nativeDevice(device);
-    if (native.device == VK_NULL_HANDLE || native.physicalDevice == VK_NULL_HANDLE) {
-        log = "MeshletStreamClasPool native Vulkan device is unavailable";
-        return makeError(Error::InvalidArgument);
-    }
-    volkLoadDevice(native.device);
-    if (vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
-        log = "vkCmdBuildClusterAccelerationStructureIndirectNV is unavailable";
-        return makeError(Error::Unsupported);
+    ClusterAccelerationStructureProperties properties;
+    Result result = device.queryClusterAccelerationStructureProperties(properties);
+    if (!result ||
+        properties.clusterStorageAlignment == 0 ||
+        properties.scratchAlignment == 0 ||
+        properties.triangleBuildInfoSize == 0) {
+        log = std::string("queryClusterAccelerationStructureProperties returned ") +
+            resultToString(result);
+        return result ? makeError(Error::Failure) : result;
     }
 
     const uint32_t maxClusterVertices = desc.asset->maxClusterVertices();
@@ -287,10 +197,8 @@ Result MeshletStreamClasPool::initialize(
     }
 
     ClusterAccelerationStructureBuildSizes singleClusterSizes;
-    Result result = queryClusterAccelerationStructureTriangleBuildSizes(
-        device,
+    result = device.queryClusterAccelerationStructureTriangleBuildSizes(
         ClusterAccelerationStructureTriangleBuildSizesDesc{
-            .flags = kClasBuildFlags,
             .maxClusterTriangleCount = maxClusterTriangles,
             .maxClusterVertexCount = maxClusterVertices,
             .maxClusterUniqueGeometryCount = 1,
@@ -298,7 +206,7 @@ Result MeshletStreamClasPool::initialize(
             .minPositionTruncateBitCount = 0,
             .maxTotalTriangleCount = maxClusterTriangles,
             .maxTotalVertexCount = maxClusterVertices,
-            .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
+            .vertexFormat = Format::Rgb32Sfloat,
             .maxAccelerationStructureCount = 1,
         },
         singleClusterSizes);
@@ -309,10 +217,8 @@ Result MeshletStreamClasPool::initialize(
     }
 
     ClusterAccelerationStructureBuildSizes batchSizes;
-    result = queryClusterAccelerationStructureTriangleBuildSizes(
-        device,
+    result = device.queryClusterAccelerationStructureTriangleBuildSizes(
         ClusterAccelerationStructureTriangleBuildSizesDesc{
-            .flags = kClasBuildFlags,
             .maxClusterTriangleCount = maxClusterTriangles,
             .maxClusterVertexCount = maxClusterVertices,
             .maxClusterUniqueGeometryCount = 1,
@@ -320,7 +226,7 @@ Result MeshletStreamClasPool::initialize(
             .minPositionTruncateBitCount = 0,
             .maxTotalTriangleCount = desc.maxBuildClusters * maxClusterTriangles,
             .maxTotalVertexCount = desc.maxBuildClusters * maxClusterVertices,
-            .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
+            .vertexFormat = Format::Rgb32Sfloat,
             .maxAccelerationStructureCount = desc.maxBuildClusters,
         },
         batchSizes);
@@ -330,8 +236,9 @@ Result MeshletStreamClasPool::initialize(
         return result ? makeError(Error::Failure) : result;
     }
 
-    const uint64_t storageAlignment = clusterStorageAlignment(native.physicalDevice);
-    const uint64_t clusterStride = alignUp(singleClusterSizes.accelerationStructureSize, storageAlignment);
+    const uint64_t clusterStride = alignUp(
+        singleClusterSizes.accelerationStructureSize,
+        properties.clusterStorageAlignment);
     const uint64_t storageBytes = (desc.maxStorageBytes / clusterStride) * clusterStride;
     if (clusterStride == 0 || storageBytes < clusterStride) {
         log = "MeshletStreamClasPool storage budget cannot hold one maximum-size CLAS";
@@ -347,7 +254,7 @@ Result MeshletStreamClasPool::initialize(
         log = "MeshletStreamClasPool storage allocator initialization failed: " + reason;
         return makeError(Error::InvalidArgument);
     }
-    result = createBuffer(
+    result = createClasBuffer(
         device,
         storageBytes,
         BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::ShaderDeviceAddress,
@@ -360,9 +267,8 @@ Result MeshletStreamClasPool::initialize(
         return result;
     }
 
-    const uint64_t scratchAlignment = clusterScratchAlignment(native.physicalDevice);
-    const uint64_t scratchBytes = batchSizes.buildScratchSize + scratchAlignment - 1u;
-    result = createBuffer(
+    const uint64_t scratchBytes = batchSizes.buildScratchSize + properties.scratchAlignment - 1u;
+    result = createClasBuffer(
         device,
         scratchBytes,
         BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
@@ -382,7 +288,7 @@ Result MeshletStreamClasPool::initialize(
         clear();
         return makeError(Error::InvalidArgument);
     }
-    result = createBuffer(
+    result = createClasBuffer(
         device,
         clusterSlotCapacity * sizeof(uint64_t),
         BufferUsageBits::Storage |
@@ -406,7 +312,7 @@ Result MeshletStreamClasPool::initialize(
         return makeError(Error::Failure);
     }
 
-    result = createBuffer(
+    result = createClasBuffer(
         device,
         static_cast<uint64_t>(desc.asset->pageCount()) * sizeof(MeshletStreamClasPageEntry),
         BufferUsageBits::Storage,
@@ -431,12 +337,17 @@ Result MeshletStreamClasPool::initialize(
         return makeError(Error::Failure);
     }
 
+    if (desc.maxBuildClusters >
+        std::numeric_limits<uint64_t>::max() / properties.triangleBuildInfoSize) {
+        log = "MeshletStreamClasPool build-info capacity overflowed";
+        clear();
+        return makeError(Error::InvalidArgument);
+    }
     impl_->frames.resize(desc.queuedFrameCount);
     for (Impl::FrameResources& frame : impl_->frames) {
-        result = createBuffer(
+        result = createClasBuffer(
             device,
-            static_cast<uint64_t>(desc.maxBuildClusters) *
-                sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV),
+            static_cast<uint64_t>(desc.maxBuildClusters) * properties.triangleBuildInfoSize,
             BufferUsageBits::Storage |
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
@@ -448,7 +359,7 @@ Result MeshletStreamClasPool::initialize(
             clear();
             return result;
         }
-        result = createBuffer(
+        result = createClasBuffer(
             device,
             static_cast<uint64_t>(desc.maxBuildClusters) * sizeof(uint64_t),
             BufferUsageBits::Storage |
@@ -464,10 +375,17 @@ Result MeshletStreamClasPool::initialize(
         }
     }
 
-    const NativeBuffer nativeStorage = nativeBuffer(*impl_->storageBuffer);
-    const NativeBuffer nativeScratch = nativeBuffer(*impl_->scratchBuffer);
-    if (nativeStorage.address == 0 || nativeScratch.address == 0) {
+    const uint64_t storageAddress = impl_->storageBuffer->deviceAddress();
+    const uint64_t scratchAddress = impl_->scratchBuffer->deviceAddress();
+    if (storageAddress == 0 || scratchAddress == 0) {
         log = "MeshletStreamClasPool storage or scratch buffer has no device address";
+        clear();
+        return makeError(Error::Failure);
+    }
+    const uint64_t alignedScratchAddress = alignUp(scratchAddress, properties.scratchAlignment);
+    const uint64_t scratchOffset = alignedScratchAddress - scratchAddress;
+    if (scratchOffset > scratchBytes || batchSizes.buildScratchSize > scratchBytes - scratchOffset) {
+        log = "MeshletStreamClasPool aligned scratch range exceeded its buffer";
         clear();
         return makeError(Error::Failure);
     }
@@ -481,15 +399,15 @@ Result MeshletStreamClasPool::initialize(
         return makeError(Error::InvalidArgument);
     }
     if (clusterIdCapacity > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1ull) {
-        log = "MeshletStreamClasPool page-strided cluster IDs exceed the 32-bit Vulkan limit";
+        log = "MeshletStreamClasPool page-strided cluster IDs exceed the 32-bit limit";
         clear();
         return makeError(Error::InvalidArgument);
     }
 
     impl_->asset = desc.asset;
     impl_->pages.reserve(std::min(desc.maxBuildClusters, desc.asset->pageCount()));
-    impl_->storageAddress = nativeStorage.address;
-    impl_->scratchAddress = alignUp(nativeScratch.address, scratchAlignment);
+    impl_->storageAddress = storageAddress;
+    impl_->scratchOffset = scratchOffset;
     impl_->clusterStride = clusterStride;
     impl_->pageCount = desc.asset->pageCount();
     impl_->clusterIdStride = clusterIdStride;
@@ -501,7 +419,6 @@ Result MeshletStreamClasPool::initialize(
     impl_->stats.clusterStrideBytes = clusterStride;
     impl_->stats.scratchBytes = scratchBytes;
     return {};
-#endif
 }
 
 void MeshletStreamClasPool::clear()
@@ -549,22 +466,10 @@ Result MeshletStreamClasPool::cmdBuildPages(
     if (!ready()) {
         return makeError(Error::InvalidArgument);
     }
-#ifndef VK_NV_cluster_acceleration_structure
-    (void)commandBuffer;
-    (void)pageBuffer;
-    (void)pages;
-    return makeError(Error::Unsupported);
-#else
     if (!hasFlag(pageBuffer.desc().usage, BufferUsageBits::ShaderDeviceAddress) ||
-        !hasFlag(pageBuffer.desc().usage, BufferUsageBits::AccelerationStructureBuildInput)) {
+        !hasFlag(pageBuffer.desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
+        pageBuffer.deviceAddress() == 0) {
         log = "MeshletStreamClasPool page buffer lacks AS build-input device-address usage";
-        return makeError(Error::InvalidArgument);
-    }
-
-    const NativeBuffer nativePages = nativeBuffer(pageBuffer);
-    const VkCommandBuffer nativeCommands = nativeCommandBuffer(commandBuffer);
-    if (nativePages.address == 0 || nativeCommands == VK_NULL_HANDLE) {
-        log = "MeshletStreamClasPool native page buffer or command buffer is unavailable";
         return makeError(Error::InvalidArgument);
     }
 
@@ -575,13 +480,9 @@ Result MeshletStreamClasPool::cmdBuildPages(
         std::vector<uint64_t> addresses;
     };
     std::vector<PendingPage> pendingPages;
-    std::vector<VkClusterAccelerationStructureBuildTriangleClusterInfoNV> buildInfos;
-    std::vector<uint64_t> destinationAddresses;
+    std::vector<ClusterAccelerationStructureTriangleBuildInfo> buildInfos;
     pendingPages.reserve(pages.size());
     buildInfos.reserve(impl_->maxBuildClusters);
-    destinationAddresses.reserve(impl_->maxBuildClusters);
-    uint32_t totalTriangles = 0;
-    uint32_t totalVertices = 0;
 
     auto rollback = [this, &pendingPages]() {
         for (PendingPage& pending : pendingPages) {
@@ -620,8 +521,8 @@ Result MeshletStreamClasPool::cmdBuildPages(
         }
 
         const scene::MeshletStreamPageInfo& assetPage = impl_->asset->pages()[request.pageIndex];
-        if (request.deviceOffsetBytes > nativePages.size ||
-            assetPage.uncompressedSize > nativePages.size - request.deviceOffsetBytes) {
+        if (request.deviceOffsetBytes > pageBuffer.desc().size ||
+            assetPage.uncompressedSize > pageBuffer.desc().size - request.deviceOffsetBytes) {
             rollback();
             log = "MeshletStreamClasPool page-buffer range exceeded its bound";
             return makeError(Error::InvalidArgument);
@@ -663,28 +564,27 @@ Result MeshletStreamClasPool::cmdBuildPages(
 
         for (uint32_t clusterIndex = 0; clusterIndex < plan.clusters.size(); ++clusterIndex) {
             const MeshletStreamClasClusterInput& cluster = plan.clusters[clusterIndex];
-            VkClusterAccelerationStructureBuildTriangleClusterInfoNV buildInfo{};
-            buildInfo.clusterID = cluster.clusterId;
-            buildInfo.triangleCount = cluster.triangleCount;
-            buildInfo.vertexCount = cluster.vertexCount;
-            buildInfo.indexType = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
-            buildInfo.indexBufferStride = 1;
-            buildInfo.vertexBufferStride = sizeof(float) * 4u;
-            buildInfo.indexBuffer =
-                nativePages.address + request.deviceOffsetBytes + cluster.triangleOffsetBytes;
-            buildInfo.vertexBuffer =
-                nativePages.address + request.deviceOffsetBytes + cluster.vertexOffsetBytes;
-            buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags =
-                VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
-            buildInfos.push_back(buildInfo);
-
-            const uint64_t address =
-                impl_->storageAddress + allocation.offset +
+            const uint64_t destinationOffset = allocation.offset +
                 static_cast<uint64_t>(clusterIndex) * impl_->clusterStride;
-            destinationAddresses.push_back(address);
-            pending.addresses.push_back(address);
-            totalTriangles += cluster.triangleCount;
-            totalVertices += cluster.vertexCount;
+            buildInfos.push_back(ClusterAccelerationStructureTriangleBuildInfo{
+                .clusterId = cluster.clusterId,
+                .triangleCount = cluster.triangleCount,
+                .vertexCount = cluster.vertexCount,
+                .positionTruncateBitCount = 0,
+                .geometryIndex = 0,
+                .indexFormat = ClusterAccelerationStructureIndexFormat::Uint8,
+                .indexBufferStride = 1,
+                .vertexBufferStride = sizeof(float) * 4u,
+                .indexBuffer = &pageBuffer,
+                .indexBufferOffset = request.deviceOffsetBytes + cluster.triangleOffsetBytes,
+                .vertexBuffer = &pageBuffer,
+                .vertexBufferOffset = request.deviceOffsetBytes + cluster.vertexOffsetBytes,
+                .destinationBuffer = impl_->storageBuffer.get(),
+                .destinationBufferOffset = destinationOffset,
+                .destinationSize = impl_->clusterStride,
+                .opaque = true,
+            });
+            pending.addresses.push_back(impl_->storageAddress + destinationOffset);
         }
         pendingPages.push_back(std::move(pending));
     }
@@ -693,31 +593,12 @@ Result MeshletStreamClasPool::cmdBuildPages(
         return {};
     }
 
-    Impl::FrameResources& frame = impl_->frames[impl_->frameIndex % impl_->frames.size()];
-    void* mappedBuildInfos = frame.buildInfoBuffer->map();
-    void* mappedDestinations = frame.destinationAddressBuffer->map();
     void* mappedAddresses = impl_->addressBuffer->map();
-    if (mappedBuildInfos == nullptr || mappedDestinations == nullptr || mappedAddresses == nullptr) {
-        if (mappedBuildInfos != nullptr) {
-            frame.buildInfoBuffer->unmap();
-        }
-        if (mappedDestinations != nullptr) {
-            frame.destinationAddressBuffer->unmap();
-        }
-        if (mappedAddresses != nullptr) {
-            impl_->addressBuffer->unmap();
-        }
+    if (mappedAddresses == nullptr) {
         rollback();
-        log = "MeshletStreamClasPool build upload buffers did not map";
+        log = "MeshletStreamClasPool address buffer did not map";
         return makeError(Error::Failure);
     }
-
-    const uint64_t buildInfoBytes =
-        static_cast<uint64_t>(buildInfos.size()) * sizeof(buildInfos.front());
-    const uint64_t destinationBytes =
-        static_cast<uint64_t>(destinationAddresses.size()) * sizeof(destinationAddresses.front());
-    std::memcpy(mappedBuildInfos, buildInfos.data(), static_cast<size_t>(buildInfoBytes));
-    std::memcpy(mappedDestinations, destinationAddresses.data(), static_cast<size_t>(destinationBytes));
     for (const PendingPage& pending : pendingPages) {
         std::memcpy(
             static_cast<uint8_t*>(mappedAddresses) +
@@ -725,58 +606,31 @@ Result MeshletStreamClasPool::cmdBuildPages(
             pending.addresses.data(),
             pending.addresses.size() * sizeof(uint64_t));
     }
-    frame.buildInfoBuffer->flush(0, buildInfoBytes);
-    frame.destinationAddressBuffer->flush(0, destinationBytes);
     impl_->addressBuffer->flush();
-    frame.buildInfoBuffer->unmap();
-    frame.destinationAddressBuffer->unmap();
     impl_->addressBuffer->unmap();
 
-    const NativeBuffer nativeBuildInfos = nativeBuffer(*frame.buildInfoBuffer);
-    const NativeBuffer nativeDestinations = nativeBuffer(*frame.destinationAddressBuffer);
-    if (nativeBuildInfos.address == 0 || nativeDestinations.address == 0) {
+    Impl::FrameResources& frame = impl_->frames[impl_->frameIndex % impl_->frames.size()];
+    Result result = commandBuffer.buildClusterAccelerationStructureTriangles(
+        ClusterAccelerationStructureTriangleBuildDesc{
+            .clusters = buildInfos.data(),
+            .clusterCount = static_cast<uint32_t>(buildInfos.size()),
+            .maxClusterTriangleCount = impl_->asset->maxClusterTriangles(),
+            .maxClusterVertexCount = impl_->asset->maxClusterVertices(),
+            .maxClusterUniqueGeometryCount = 1,
+            .maxGeometryIndexValue = 0,
+            .minPositionTruncateBitCount = 0,
+            .vertexFormat = Format::Rgb32Sfloat,
+            .scratchBuffer = impl_->scratchBuffer.get(),
+            .scratchBufferOffset = impl_->scratchOffset,
+            .buildInfoBuffer = frame.buildInfoBuffer.get(),
+            .destinationAddressBuffer = frame.destinationAddressBuffer.get(),
+        });
+    if (!result) {
         rollback();
-        log = "MeshletStreamClasPool build upload buffers have no device address";
-        return makeError(Error::Failure);
+        log = std::string("buildClusterAccelerationStructureTriangles returned ") +
+            resultToString(result);
+        return result;
     }
-
-    VkClusterAccelerationStructureTriangleClusterInputNV triangleInput{
-        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV,
-        .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
-        .maxGeometryIndexValue = 0,
-        .maxClusterUniqueGeometryCount = 1,
-        .maxClusterTriangleCount = impl_->asset->maxClusterTriangles(),
-        .maxClusterVertexCount = impl_->asset->maxClusterVertices(),
-        .maxTotalTriangleCount = totalTriangles,
-        .maxTotalVertexCount = totalVertices,
-        .minPositionTruncateBitCount = 0,
-    };
-    VkClusterAccelerationStructureInputInfoNV input{
-        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
-        .maxAccelerationStructureCount = static_cast<uint32_t>(buildInfos.size()),
-        .flags = kClasBuildFlags,
-        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV,
-        .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
-        .opInput = {.pTriangleClusters = &triangleInput},
-    };
-    VkClusterAccelerationStructureCommandsInfoNV commands{
-        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
-        .input = input,
-        .scratchData = impl_->scratchAddress,
-        .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
-            .deviceAddress = nativeDestinations.address,
-            .stride = sizeof(uint64_t),
-            .size = destinationBytes,
-        },
-        .srcInfosArray = VkStridedDeviceAddressRegionKHR{
-            .deviceAddress = nativeBuildInfos.address,
-            .stride = sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV),
-            .size = buildInfoBytes,
-        },
-    };
-    clusterBuildInputBarrier(nativeCommands);
-    vkCmdBuildClusterAccelerationStructureIndirectNV(nativeCommands, &commands);
-    clusterBuildOutputBarrier(nativeCommands);
 
     for (PendingPage& pending : pendingPages) {
         Impl::PageEntry& page = impl_->pages.try_emplace(pending.pageIndex).first->second;
@@ -794,7 +648,6 @@ Result MeshletStreamClasPool::cmdBuildPages(
         impl_->stats.totalBuiltClusterCount += page.clusterCount;
     }
     return {};
-#endif
 }
 
 void MeshletStreamClasPool::retirePages(std::span<const uint32_t> pageIndices)
@@ -891,4 +744,4 @@ MeshletStreamClasPoolStats MeshletStreamClasPool::stats() const
     return result;
 }
 
-} // namespace metallic::render::vulkan
+} // namespace metallic::render

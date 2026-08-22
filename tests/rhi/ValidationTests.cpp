@@ -171,10 +171,9 @@ public:
             return RhiTestResult::fail("createDevice(cluster acceleration structure) returned a null device");
         }
 
-        render::vulkan::ClusterAccelerationStructureBuildSizes triangleSizes;
-        result = render::vulkan::queryClusterAccelerationStructureTriangleBuildSizes(
-            *device,
-            render::vulkan::ClusterAccelerationStructureTriangleBuildSizesDesc{
+        render::ClusterAccelerationStructureBuildSizes triangleSizes;
+        result = device->queryClusterAccelerationStructureTriangleBuildSizes(
+            render::ClusterAccelerationStructureTriangleBuildSizesDesc{
                 .maxClusterTriangleCount = 1,
                 .maxClusterVertexCount = 3,
                 .maxTotalTriangleCount = 1,

@@ -393,6 +393,71 @@ struct BufferBarrierDesc {
     uint64_t size = UINT64_MAX;
 };
 
+struct ClusterAccelerationStructureProperties {
+    uint64_t clusterStorageAlignment = 0;
+    uint64_t scratchAlignment = 0;
+    uint64_t triangleBuildInfoSize = 0;
+};
+
+struct ClusterAccelerationStructureBuildSizes {
+    uint64_t accelerationStructureSize = 0;
+    uint64_t updateScratchSize = 0;
+    uint64_t buildScratchSize = 0;
+};
+
+struct ClusterAccelerationStructureTriangleBuildSizesDesc {
+    uint32_t maxClusterTriangleCount = 0;
+    uint32_t maxClusterVertexCount = 0;
+    uint32_t maxClusterUniqueGeometryCount = 1;
+    uint32_t maxGeometryIndexValue = 0;
+    uint32_t minPositionTruncateBitCount = 0;
+    uint32_t maxTotalTriangleCount = 0;
+    uint32_t maxTotalVertexCount = 0;
+    Format vertexFormat = Format::Rgb32Sfloat;
+    uint32_t maxAccelerationStructureCount = 1;
+};
+
+enum class ClusterAccelerationStructureIndexFormat : uint8_t {
+    Uint8,
+    Uint16,
+    Uint32,
+};
+
+struct ClusterAccelerationStructureTriangleBuildInfo {
+    uint32_t clusterId = 0;
+    uint32_t triangleCount = 0;
+    uint32_t vertexCount = 0;
+    uint32_t positionTruncateBitCount = 0;
+    uint32_t geometryIndex = 0;
+    ClusterAccelerationStructureIndexFormat indexFormat =
+        ClusterAccelerationStructureIndexFormat::Uint8;
+    uint16_t indexBufferStride = 1;
+    uint16_t vertexBufferStride = 0;
+    class Buffer* indexBuffer = nullptr;
+    uint64_t indexBufferOffset = 0;
+    class Buffer* vertexBuffer = nullptr;
+    uint64_t vertexBufferOffset = 0;
+    class Buffer* destinationBuffer = nullptr;
+    uint64_t destinationBufferOffset = 0;
+    uint64_t destinationSize = 0;
+    bool opaque = true;
+};
+
+struct ClusterAccelerationStructureTriangleBuildDesc {
+    const ClusterAccelerationStructureTriangleBuildInfo* clusters = nullptr;
+    uint32_t clusterCount = 0;
+    uint32_t maxClusterTriangleCount = 0;
+    uint32_t maxClusterVertexCount = 0;
+    uint32_t maxClusterUniqueGeometryCount = 1;
+    uint32_t maxGeometryIndexValue = 0;
+    uint32_t minPositionTruncateBitCount = 0;
+    Format vertexFormat = Format::Rgb32Sfloat;
+    class Buffer* scratchBuffer = nullptr;
+    uint64_t scratchBufferOffset = 0;
+    class Buffer* buildInfoBuffer = nullptr;
+    class Buffer* destinationAddressBuffer = nullptr;
+};
+
 struct BarrierDesc {
     const TextureBarrierDesc* textures = nullptr;
     uint32_t textureCount = 0;
@@ -1193,6 +1258,8 @@ public:
     void drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     void drawMeshTasksIndirect(Buffer& buffer, uint64_t offset = 0);
     void dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
+    Result buildClusterAccelerationStructureTriangles(
+        const ClusterAccelerationStructureTriangleBuildDesc& desc);
 
 private:
     explicit CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl);
@@ -1288,6 +1355,11 @@ public:
         const GraphicsShaderObjectProgramDesc& desc,
         std::unique_ptr<GraphicsShaderObjectProgram>& outProgram);
     Result createBindlessHeap(const BindlessHeapDesc& desc, std::unique_ptr<BindlessHeap>& outBindlessHeap);
+    Result queryClusterAccelerationStructureProperties(
+        ClusterAccelerationStructureProperties& outProperties) const;
+    Result queryClusterAccelerationStructureTriangleBuildSizes(
+        const ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
+        ClusterAccelerationStructureBuildSizes& outSizes) const;
 
 private:
     explicit Device(std::unique_ptr<detail::DeviceImpl> impl);
