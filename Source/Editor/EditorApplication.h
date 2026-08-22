@@ -3,7 +3,7 @@
 #include "Editor/EditorProfiler.h"
 #include "Editor/NvmlMonitor.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.h"
+#include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Scene/SceneLoader.h"
@@ -129,8 +129,8 @@ private:
     void applyLoadedSceneToRenderGraph(const std::filesystem::path& path);
     void applyLoadedSceneCamera();
     void setEnvironmentPath(const std::filesystem::path& path);
-    void buildSceneRtx();
-    void clearSceneRtx();
+    void buildSceneAccelerationStructure();
+    void clearSceneAccelerationStructure();
     void addRenderGraphNode(std::string type, ImVec2 screenPosition);
     void markRenderGraphOutput(std::string outputName);
     void setActivePreviewOutput(std::string outputName);
@@ -208,7 +208,7 @@ private:
     render::RenderWorld renderWorld_;
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
     render::HistoryResourceManager historyResources_;
-    std::unique_ptr<render::vulkan::SceneRtxBuilder> sceneRtx_;
+    std::unique_ptr<render::SceneAccelerationStructureBuilder> sceneAccelerationStructure_;
     EditorProfiler profiler_;
     NvmlMonitor nvmlMonitor_;
     render::RenderGraph renderGraph_;
@@ -298,7 +298,7 @@ private:
     std::string activePreviewOutput_ = "Bunny.color";
     std::string renderGraphStatus_;
     std::string sceneStatus_ = "No scene loaded.";
-    std::string sceneRtxStatus_ = "RTX AS not built.";
+    std::string sceneAccelerationStructureStatus_ = "RTAS not built.";
     std::string startupSampleId_;
     std::string startupScenePath_;
     std::string startupStreamAssetPath_;

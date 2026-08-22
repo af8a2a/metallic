@@ -160,16 +160,16 @@ public:
             return result;
         }
 
-        const SceneRayQueryBindingDesc bindings[] = {
-            SceneRayQueryBindingDesc{
+        const ComputeProgramBindingDesc bindings[] = {
+            ComputeProgramBindingDesc{
                 .binding = 0,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             },
         };
         std::string programLog;
         result = program_.initialize(
             *context.device,
-            SceneRayQueryProgramDesc{
+            ComputeProgramDesc{
                 .spirv = compileResult.spirv.data(),
                 .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
                 .pushConstantSize = sizeof(RtxcrMaterialSamplePush),
@@ -244,13 +244,13 @@ public:
             0.01f,
             0.5f);
 
-        const SceneRayQueryDispatchBinding bindings[] = {
-            SceneRayQueryDispatchBinding{
+        const ComputeDispatchBinding bindings[] = {
+            ComputeDispatchBinding{
                 .binding = 0,
                 .textureView = color.view(),
             },
         };
-        return program_.dispatch(SceneRayQueryDispatchDesc{
+        return program_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
             .bindings = bindings,
             .bindingCount = static_cast<uint32_t>(std::size(bindings)),
@@ -263,7 +263,7 @@ public:
     }
 
 private:
-    SceneRayQueryProgram program_;
+    ComputeProgram program_;
 };
 
 } // namespace

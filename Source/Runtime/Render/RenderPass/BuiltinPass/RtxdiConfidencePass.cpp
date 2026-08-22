@@ -122,26 +122,26 @@ public:
             return result;
         }
 
-        const SceneRayQueryBindingDesc bindings[] = {
-            {.binding = 0, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 1, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 2, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 3, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 4, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 5, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 6, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 7, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 8, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 9, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 10, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 11, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 12, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 13, .kind = SceneRayQueryBindingKind::StorageImage},
+        const ComputeProgramBindingDesc bindings[] = {
+            {.binding = 0, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 1, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 3, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 4, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 5, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 6, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 7, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 8, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 9, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 10, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 11, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 12, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 13, .kind = ComputeResourceBindingKind::StorageImage},
         };
         std::string programLog;
         result = program_.initialize(
             *context.device,
-            SceneRayQueryProgramDesc{
+            ComputeProgramDesc{
                 .spirv = compileResult.spirv.data(),
                 .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
                 .pushConstantSize = sizeof(RtxdiConfidencePush),
@@ -256,7 +256,7 @@ public:
             3.0f);
         push.blendFactor = 1.0f / (historyLength + 1.0f);
 
-        const SceneRayQueryDispatchBinding bindings[] = {
+        const ComputeDispatchBinding bindings[] = {
             {.binding = 0, .textureView = noisyDiffuse.view()},
             {.binding = 1, .textureView = noisySpecular.view()},
             {.binding = 2, .textureView = baseColorMetalness.view()},
@@ -274,7 +274,7 @@ public:
         };
         auto dispatch = [&](uint32_t mode, uint32_t descriptorSetIndex, uint32_t width, uint32_t height) {
             push.mode = mode;
-            return program_.dispatch(SceneRayQueryDispatchDesc{
+            return program_.dispatch(ComputeDispatchDesc{
                 .commandBuffer = &context.commandBuffer(),
                 .bindings = bindings,
                 .bindingCount = static_cast<uint32_t>(std::size(bindings)),
@@ -560,7 +560,7 @@ private:
         return name;
     }
 
-    SceneRayQueryProgram program_;
+    ComputeProgram program_;
     ConfidenceGradientTexture gradientA_;
     ConfidenceGradientTexture gradientB_;
     uint32_t gradientWidth_ = 0;

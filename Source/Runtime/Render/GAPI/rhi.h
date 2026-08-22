@@ -395,8 +395,10 @@ struct BufferBarrierDesc {
 
 struct ClusterAccelerationStructureProperties {
     uint64_t clusterStorageAlignment = 0;
+    uint64_t bottomLevelStorageAlignment = 0;
     uint64_t scratchAlignment = 0;
     uint64_t triangleBuildInfoSize = 0;
+    uint64_t bottomLevelBuildInfoSize = 0;
 };
 
 struct ClusterAccelerationStructureBuildSizes {
@@ -456,6 +458,272 @@ struct ClusterAccelerationStructureTriangleBuildDesc {
     uint64_t scratchBufferOffset = 0;
     class Buffer* buildInfoBuffer = nullptr;
     class Buffer* destinationAddressBuffer = nullptr;
+};
+
+enum class RayTracingAccelerationStructureType : uint8_t {
+    BottomLevel,
+    TopLevel,
+};
+
+enum class RayTracingAccelerationStructureBuildMode : uint8_t {
+    Build,
+    Update,
+};
+
+enum class RayTracingAccelerationStructureBuildFlags : uint8_t {
+    None = 0,
+    PreferFastTrace = 1u << 0,
+    PreferFastBuild = 1u << 1,
+    AllowUpdate = 1u << 2,
+    AllowCompaction = 1u << 3,
+};
+
+constexpr RayTracingAccelerationStructureBuildFlags operator|(
+    RayTracingAccelerationStructureBuildFlags lhs,
+    RayTracingAccelerationStructureBuildFlags rhs)
+{
+    return static_cast<RayTracingAccelerationStructureBuildFlags>(
+        static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
+}
+
+constexpr bool hasFlag(
+    RayTracingAccelerationStructureBuildFlags value,
+    RayTracingAccelerationStructureBuildFlags flag)
+{
+    return (static_cast<uint8_t>(value) & static_cast<uint8_t>(flag)) != 0;
+}
+
+enum class RayTracingGeometryFlags : uint8_t {
+    None = 0,
+    Opaque = 1u << 0,
+    NoDuplicateAnyHitInvocation = 1u << 1,
+};
+
+constexpr RayTracingGeometryFlags operator|(
+    RayTracingGeometryFlags lhs,
+    RayTracingGeometryFlags rhs)
+{
+    return static_cast<RayTracingGeometryFlags>(
+        static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
+}
+
+constexpr bool hasFlag(RayTracingGeometryFlags value, RayTracingGeometryFlags flag)
+{
+    return (static_cast<uint8_t>(value) & static_cast<uint8_t>(flag)) != 0;
+}
+
+enum class RayTracingInstanceFlags : uint8_t {
+    None = 0,
+    TriangleFacingCullDisable = 1u << 0,
+    TriangleFrontCounterClockwise = 1u << 1,
+    ForceOpaque = 1u << 2,
+    ForceNonOpaque = 1u << 3,
+};
+
+constexpr RayTracingInstanceFlags operator|(
+    RayTracingInstanceFlags lhs,
+    RayTracingInstanceFlags rhs)
+{
+    return static_cast<RayTracingInstanceFlags>(
+        static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
+}
+
+constexpr bool hasFlag(RayTracingInstanceFlags value, RayTracingInstanceFlags flag)
+{
+    return (static_cast<uint8_t>(value) & static_cast<uint8_t>(flag)) != 0;
+}
+
+enum class RayTracingIndexType : uint8_t {
+    None,
+    Uint16,
+    Uint32,
+};
+
+struct RayTracingAccelerationStructureProperties {
+    uint64_t scratchAlignment = 1;
+    uint64_t instanceBufferAlignment = 16;
+    uint64_t instanceRecordSize = 0;
+};
+
+struct RayTracingTriangleGeometryDesc {
+    class Buffer* vertexBuffer = nullptr;
+    uint64_t vertexOffset = 0;
+    uint64_t vertexStride = 0;
+    Format vertexFormat = Format::Rgb32Sfloat;
+    uint32_t vertexCount = 0;
+    class Buffer* indexBuffer = nullptr;
+    uint64_t indexOffset = 0;
+    RayTracingIndexType indexType = RayTracingIndexType::Uint32;
+    uint32_t primitiveCount = 0;
+    RayTracingGeometryFlags flags = RayTracingGeometryFlags::Opaque;
+};
+
+struct RayTracingAccelerationStructureBuildInputs {
+    RayTracingAccelerationStructureType type =
+        RayTracingAccelerationStructureType::BottomLevel;
+    RayTracingAccelerationStructureBuildFlags flags =
+        RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
+    const RayTracingTriangleGeometryDesc* geometries = nullptr;
+    uint32_t geometryCount = 0;
+    uint32_t instanceCount = 0;
+};
+
+struct RayTracingAccelerationStructureBuildSizes {
+    uint64_t accelerationStructureSize = 0;
+    uint64_t buildScratchSize = 0;
+    uint64_t updateScratchSize = 0;
+};
+
+struct RayTracingAccelerationStructureDesc {
+    RayTracingAccelerationStructureType type =
+        RayTracingAccelerationStructureType::BottomLevel;
+    RayTracingAccelerationStructureBuildFlags buildFlags =
+        RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
+    uint64_t size = 0;
+};
+
+struct RayTracingInstanceDesc {
+    float transform[3][4] = {
+        {1.0f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f},
+    };
+    class RayTracingAccelerationStructure* bottomLevel = nullptr;
+    uint32_t customIndex = 0;
+    uint32_t shaderBindingTableRecordOffset = 0;
+    uint8_t mask = 0xff;
+    RayTracingInstanceFlags flags = RayTracingInstanceFlags::TriangleFacingCullDisable;
+};
+
+// GPU-writable instance record consumed by top-level acceleration-structure
+// builds. The packed fields use 24 low bits for the index/record offset and
+// 8 high bits for the mask/flags respectively.
+struct RayTracingGpuInstance {
+    float transform[3][4] = {
+        {1.0f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f},
+    };
+    uint32_t customIndexAndMask = 0;
+    uint32_t shaderBindingTableRecordOffsetAndFlags = 0;
+    uint64_t accelerationStructureReference = 0;
+};
+
+static_assert(sizeof(RayTracingGpuInstance) == 64);
+
+struct RayTracingAccelerationStructureBuildDesc {
+    class RayTracingAccelerationStructure* destination = nullptr;
+    class RayTracingAccelerationStructure* source = nullptr;
+    RayTracingAccelerationStructureBuildMode mode =
+        RayTracingAccelerationStructureBuildMode::Build;
+    const RayTracingTriangleGeometryDesc* geometries = nullptr;
+    uint32_t geometryCount = 0;
+    class Buffer* instanceBuffer = nullptr;
+    uint32_t instanceCount = 0;
+    class Buffer* scratchBuffer = nullptr;
+    uint64_t scratchBufferOffset = 0;
+};
+
+struct ClusterAccelerationStructureBottomLevelBuildSizesDesc {
+    RayTracingAccelerationStructureBuildFlags flags =
+        RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
+    uint32_t maxClusterCountPerAccelerationStructure = 0;
+    uint32_t maxTotalClusterCount = 0;
+    uint32_t maxAccelerationStructureCount = 1;
+};
+
+// GPU-writable input record for one cluster-based bottom-level acceleration
+// structure. clusterReferencesAddress points to an array of CLAS addresses.
+struct ClusterAccelerationStructureBottomLevelBuildInfo {
+    uint32_t clusterReferencesCount = 0;
+    uint32_t clusterReferencesStride = sizeof(uint64_t);
+    uint64_t clusterReferencesAddress = 0;
+};
+
+static_assert(sizeof(ClusterAccelerationStructureBottomLevelBuildInfo) == 16);
+
+enum class ClusterAccelerationStructureDestinationMode : uint8_t {
+    Implicit,
+    Explicit,
+};
+
+struct ClusterAccelerationStructureBottomLevelBuildDesc {
+    RayTracingAccelerationStructureBuildFlags flags =
+        RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
+    ClusterAccelerationStructureDestinationMode destinationMode =
+        ClusterAccelerationStructureDestinationMode::Implicit;
+    uint32_t maxClusterCountPerAccelerationStructure = 0;
+    uint32_t maxTotalClusterCount = 0;
+    uint32_t maxAccelerationStructureCount = 1;
+    class Buffer* buildInfoBuffer = nullptr;
+    uint64_t buildInfoBufferOffset = 0;
+    uint64_t buildInfoStride = sizeof(ClusterAccelerationStructureBottomLevelBuildInfo);
+    uint64_t buildInfoSize = 0;
+    class Buffer* buildInfoCountBuffer = nullptr;
+    uint64_t buildInfoCountBufferOffset = 0;
+    class Buffer* destinationStorageBuffer = nullptr;
+    uint64_t destinationStorageBufferOffset = 0;
+    class Buffer* destinationAddressBuffer = nullptr;
+    uint64_t destinationAddressBufferOffset = 0;
+    uint64_t destinationAddressStride = sizeof(uint64_t);
+    uint64_t destinationAddressSize = 0;
+    class Buffer* destinationSizeBuffer = nullptr;
+    uint64_t destinationSizeBufferOffset = 0;
+    uint64_t destinationSizeStride = sizeof(uint32_t);
+    uint64_t destinationSizeSize = 0;
+    class Buffer* scratchBuffer = nullptr;
+    uint64_t scratchBufferOffset = 0;
+};
+
+struct PartitionedAccelerationStructureBuildInputs {
+    RayTracingAccelerationStructureBuildFlags flags =
+        RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
+    uint32_t instanceCount = 0;
+    uint32_t partitionCount = 1;
+    uint32_t maxInstancePerPartitionCount = 0;
+    uint32_t maxInstanceInGlobalPartitionCount = 0;
+    uint32_t maxOperationCount = 1;
+    bool allowInstanceUpdate = false;
+    bool allowPartitionTranslation = false;
+};
+
+struct PartitionedAccelerationStructureBuildSizes {
+    uint64_t accelerationStructureSize = 0;
+    uint64_t updateScratchSize = 0;
+    uint64_t buildScratchSize = 0;
+    uint64_t operationInfoSize = 0;
+    uint64_t operationCountSize = 0;
+    uint64_t instanceWriteInfoSize = 0;
+    uint64_t instanceUpdateInfoSize = 0;
+    uint64_t partitionWriteInfoSize = 0;
+};
+
+struct PartitionedAccelerationStructureDesc {
+    PartitionedAccelerationStructureBuildInputs inputs;
+    PartitionedAccelerationStructureBuildSizes sizes;
+};
+
+struct PartitionedAccelerationStructureInstanceDesc {
+    float transform[3][4] = {
+        {1.0f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f},
+    };
+    class RayTracingAccelerationStructure* bottomLevel = nullptr;
+    uint32_t instanceIndex = 0;
+    uint32_t partitionIndex = 0;
+    uint32_t customIndex = 0;
+    uint32_t shaderBindingTableRecordOffset = 0;
+    uint8_t mask = 0xff;
+    RayTracingInstanceFlags flags = RayTracingInstanceFlags::TriangleFacingCullDisable;
+};
+
+struct PartitionedAccelerationStructureBuildDesc {
+    class PartitionedAccelerationStructure* destination = nullptr;
+    class Buffer* instanceBuffer = nullptr;
+    uint32_t instanceCount = 0;
+    class Buffer* scratchBuffer = nullptr;
+    uint64_t scratchBufferOffset = 0;
 };
 
 struct BarrierDesc {
@@ -542,15 +810,21 @@ enum class ShaderBindingType : uint8_t {
     StorageImage,
     ConstantBuffer,
     StorageBuffer,
+    AccelerationStructure,
+    PartitionedAccelerationStructure,
 };
 
 enum class ShaderBindingSource : uint8_t {
+    HeapConstantOffset,
     HeapIndexFromPushData,
     DeviceAddressFromPushData,
 };
 
 // Maps existing DescriptorSet/Binding decorations onto descriptor-heap data.
 // pushDataOffset is relative to the user payload passed to pushBindlessData().
+// heapIndexOffset is expressed in descriptors. It is an absolute heap index
+// for HeapConstantOffset and is added to the pushed heap index for
+// HeapIndexFromPushData, allowing several bindings to share one pushed base.
 struct ShaderBindingMappingDesc {
     uint32_t descriptorSet = 0;
     uint32_t firstBinding = 0;
@@ -558,6 +832,7 @@ struct ShaderBindingMappingDesc {
     ShaderBindingType type = ShaderBindingType::SampledImage;
     ShaderBindingSource source = ShaderBindingSource::HeapIndexFromPushData;
     uint32_t pushDataOffset = 0;
+    uint32_t heapIndexOffset = 0;
 };
 
 enum class PipelineCacheLoadStatus : uint8_t {
@@ -770,6 +1045,8 @@ enum class BindlessHandleKind : uint8_t {
     SampledImage,
     StorageImage,
     Buffer,
+    AccelerationStructure,
+    PartitionedAccelerationStructure,
 };
 
 struct BindlessHandle {
@@ -825,6 +1102,8 @@ struct SemaphoreImpl;
 struct SwapchainSemaphoreImpl;
 struct BufferImpl;
 struct BufferViewImpl;
+struct RayTracingAccelerationStructureImpl;
+struct PartitionedAccelerationStructureImpl;
 struct TextureImpl;
 struct TextureViewImpl;
 struct StreamerImpl;
@@ -987,6 +1266,56 @@ private:
     friend class BindlessHeap;
     friend struct detail::DeviceImpl;
     friend struct detail::VulkanNativeAccess;
+};
+
+class RayTracingAccelerationStructure {
+public:
+    RayTracingAccelerationStructure() = default;
+    ~RayTracingAccelerationStructure();
+    RayTracingAccelerationStructure(RayTracingAccelerationStructure&&) noexcept;
+    RayTracingAccelerationStructure& operator=(RayTracingAccelerationStructure&&) noexcept;
+
+    RayTracingAccelerationStructure(const RayTracingAccelerationStructure&) = delete;
+    RayTracingAccelerationStructure& operator=(const RayTracingAccelerationStructure&) = delete;
+
+    const RayTracingAccelerationStructureDesc& desc() const;
+    bool valid() const;
+
+private:
+    explicit RayTracingAccelerationStructure(
+        std::unique_ptr<detail::RayTracingAccelerationStructureImpl> impl);
+
+    std::unique_ptr<detail::RayTracingAccelerationStructureImpl> impl_;
+
+    friend class Device;
+    friend class CommandBuffer;
+    friend class BindlessHeap;
+    friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
+};
+
+class PartitionedAccelerationStructure {
+public:
+    PartitionedAccelerationStructure() = default;
+    ~PartitionedAccelerationStructure();
+    PartitionedAccelerationStructure(PartitionedAccelerationStructure&&) noexcept;
+    PartitionedAccelerationStructure& operator=(PartitionedAccelerationStructure&&) noexcept;
+
+    PartitionedAccelerationStructure(const PartitionedAccelerationStructure&) = delete;
+    PartitionedAccelerationStructure& operator=(const PartitionedAccelerationStructure&) = delete;
+
+    const PartitionedAccelerationStructureDesc& desc() const;
+    bool valid() const;
+
+private:
+    explicit PartitionedAccelerationStructure(
+        std::unique_ptr<detail::PartitionedAccelerationStructureImpl> impl);
+
+    std::unique_ptr<detail::PartitionedAccelerationStructureImpl> impl_;
+
+    friend class Device;
+    friend class CommandBuffer;
+    friend class BindlessHeap;
 };
 
 class Texture {
@@ -1172,6 +1501,8 @@ public:
     Result allocateSampledImage(BindlessHandle& outHandle);
     Result allocateStorageImage(BindlessHandle& outHandle);
     Result allocateBuffer(BindlessHandle& outHandle);
+    Result allocateAccelerationStructure(BindlessHandle& outHandle);
+    Result allocatePartitionedAccelerationStructure(BindlessHandle& outHandle);
     void release(BindlessHandle handle);
     Result writeSampler(BindlessHandle handle, const SamplerDesc& sampler);
     Result writeSamplers(const BindlessSamplerWrite* writes, uint32_t writeCount);
@@ -1181,6 +1512,12 @@ public:
     Result writeBufferView(BindlessHandle handle, BufferView& view);
     Result writeConstantBuffer(BindlessHandle handle, Buffer& buffer);
     Result writeStorageBuffer(BindlessHandle handle, Buffer& buffer);
+    Result writeAccelerationStructure(
+        BindlessHandle handle,
+        RayTracingAccelerationStructure& accelerationStructure);
+    Result writePartitionedAccelerationStructure(
+        BindlessHandle handle,
+        PartitionedAccelerationStructure& accelerationStructure);
 
 private:
     explicit BindlessHeap(std::unique_ptr<detail::BindlessHeapImpl> impl);
@@ -1235,6 +1572,7 @@ public:
     void beginDebugLabel(const DebugLabelDesc& desc);
     void endDebugLabel();
     void barrier(const BarrierDesc& desc);
+    void hostWriteBarrier();
     void copyBuffer(const BufferCopyDesc& desc);
     void copyTexture(const TextureCopyDesc& desc);
     void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
@@ -1260,6 +1598,12 @@ public:
     void dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     Result buildClusterAccelerationStructureTriangles(
         const ClusterAccelerationStructureTriangleBuildDesc& desc);
+    Result buildClusterAccelerationStructureBottomLevels(
+        const ClusterAccelerationStructureBottomLevelBuildDesc& desc);
+    Result buildPartitionedAccelerationStructure(
+        const PartitionedAccelerationStructureBuildDesc& desc);
+    Result buildRayTracingAccelerationStructure(
+        const RayTracingAccelerationStructureBuildDesc& desc);
 
 private:
     explicit CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl);
@@ -1343,6 +1687,22 @@ public:
     Result createSemaphore(std::unique_ptr<Semaphore>& outSemaphore);
     Result createSwapchainSemaphore(std::unique_ptr<SwapchainSemaphore>& outSemaphore);
     Result createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& outBuffer);
+    Result queryRayTracingAccelerationStructureProperties(
+        RayTracingAccelerationStructureProperties& outProperties) const;
+    Result queryRayTracingAccelerationStructureBuildSizes(
+        const RayTracingAccelerationStructureBuildInputs& inputs,
+        RayTracingAccelerationStructureBuildSizes& outSizes) const;
+    Result createRayTracingAccelerationStructure(
+        const RayTracingAccelerationStructureDesc& desc,
+        std::unique_ptr<RayTracingAccelerationStructure>& outAccelerationStructure);
+    Result createRayTracingInstanceBuffer(
+        const RayTracingInstanceDesc* instances,
+        uint32_t instanceCount,
+        std::unique_ptr<Buffer>& outBuffer);
+    Result writeRayTracingInstances(
+        Buffer& buffer,
+        const RayTracingInstanceDesc* instances,
+        uint32_t instanceCount);
     Result createBufferView(Buffer& buffer, const BufferViewDesc& desc, std::unique_ptr<BufferView>& outBufferView);
     Result createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& outTexture);
     Result createTextureView(Texture& texture, const TextureViewDesc& desc, std::unique_ptr<TextureView>& outTextureView);
@@ -1360,6 +1720,19 @@ public:
     Result queryClusterAccelerationStructureTriangleBuildSizes(
         const ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
         ClusterAccelerationStructureBuildSizes& outSizes) const;
+    Result queryClusterAccelerationStructureBottomLevelBuildSizes(
+        const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc,
+        ClusterAccelerationStructureBuildSizes& outSizes) const;
+    Result queryPartitionedAccelerationStructureBuildSizes(
+        const PartitionedAccelerationStructureBuildInputs& inputs,
+        PartitionedAccelerationStructureBuildSizes& outSizes) const;
+    Result createPartitionedAccelerationStructure(
+        const PartitionedAccelerationStructureDesc& desc,
+        std::unique_ptr<PartitionedAccelerationStructure>& outAccelerationStructure);
+    Result createPartitionedAccelerationStructureInstanceBuffer(
+        const PartitionedAccelerationStructureInstanceDesc* instances,
+        uint32_t instanceCount,
+        std::unique_ptr<Buffer>& outBuffer);
 
 private:
     explicit Device(std::unique_ptr<detail::DeviceImpl> impl);

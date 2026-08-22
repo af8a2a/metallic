@@ -201,10 +201,9 @@ public:
             return RhiTestResult::fail("triangle CLAS size query returned zero build size");
         }
 
-        render::vulkan::ClusterAccelerationStructureBuildSizes bottomLevelSizes;
-        result = render::vulkan::queryClusterAccelerationStructureBottomLevelBuildSizes(
-            *device,
-            render::vulkan::ClusterAccelerationStructureBottomLevelBuildSizesDesc{
+        render::ClusterAccelerationStructureBuildSizes bottomLevelSizes;
+        result = device->queryClusterAccelerationStructureBottomLevelBuildSizes(
+            render::ClusterAccelerationStructureBottomLevelBuildSizesDesc{
                 .maxClusterCountPerAccelerationStructure = 1,
                 .maxTotalClusterCount = 1,
             },
@@ -247,10 +246,9 @@ public:
             return RhiTestResult::fail("createDevice(partitioned acceleration structure) returned a null device");
         }
 
-        render::vulkan::PartitionedAccelerationStructureBuildSizes sizes;
-        result = render::vulkan::queryPartitionedAccelerationStructureBuildSizes(
-            *device,
-            render::vulkan::PartitionedAccelerationStructureBuildSizesDesc{
+        render::PartitionedAccelerationStructureBuildSizes sizes;
+        result = device->queryPartitionedAccelerationStructureBuildSizes(
+            render::PartitionedAccelerationStructureBuildInputs{
                 .instanceCount = 1,
                 .partitionCount = 1,
                 .maxInstancePerPartitionCount = 1,

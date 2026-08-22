@@ -1779,7 +1779,7 @@ struct ScenePathTraceResources::Impl {
         sourceVisibilityRevision = sourceScene.visibilityRevision();
     }
 
-    SceneRtxBuilder rtxBuilder;
+    SceneAccelerationStructureBuilder rtxBuilder;
     Device* device = nullptr;
     Queue* graphicsQueue = nullptr;
     scene::Bounds drawBounds;
@@ -1913,7 +1913,7 @@ Result ScenePathTraceResources::prepare(
 
     std::string rtxLog;
     {
-        SceneResourceLogScope scope("build RTX acceleration structures for render pass");
+        SceneResourceLogScope scope("build ray tracing acceleration structures for render pass");
         Queue* accelerationQueue = device.getQueue(QueueType::Compute);
         if (accelerationQueue == nullptr) {
             accelerationQueue = &graphicsQueue;
@@ -2362,7 +2362,7 @@ Result ScenePathTraceResources::syncRuntimeScene(
             accelerationQueue = &graphicsQueue;
         }
         if (impl_->rtxBuilder.buildState() ==
-            vulkan::SceneRtxBuildState::Building) {
+            SceneAccelerationStructureBuildState::Building) {
             result = accelerationQueue->waitIdle();
             if (!result) {
                 appendLogBlock(
@@ -2446,12 +2446,12 @@ const scene::Bounds& ScenePathTraceResources::bounds() const
     return impl_->drawBounds;
 }
 
-SceneRtxBuilder& ScenePathTraceResources::accelerationStructure()
+SceneAccelerationStructureBuilder& ScenePathTraceResources::accelerationStructure()
 {
     return impl_->rtxBuilder;
 }
 
-const SceneRtxBuilder& ScenePathTraceResources::accelerationStructure() const
+const SceneAccelerationStructureBuilder& ScenePathTraceResources::accelerationStructure() const
 {
     return impl_->rtxBuilder;
 }
@@ -2499,7 +2499,7 @@ bool ScenePathTraceResources::textureUploadsReady() const
 bool ScenePathTraceResources::gpuWorkComplete()
 {
     const bool accelerationStructureComplete =
-        impl_->rtxBuilder.buildState() != vulkan::SceneRtxBuildState::Building ||
+        impl_->rtxBuilder.buildState() != SceneAccelerationStructureBuildState::Building ||
         impl_->rtxBuilder.pollBuild();
     return impl_->textureUploadsReady() && accelerationStructureComplete;
 }

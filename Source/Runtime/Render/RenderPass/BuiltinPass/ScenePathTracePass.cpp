@@ -797,101 +797,101 @@ public:
 
         const char* capabilities[] = {"spvRayQueryKHR", "spvGroupNonUniformBallot"};
 
-        std::vector<SceneRayQueryBindingDesc> baseBindings{
-            SceneRayQueryBindingDesc{
+        std::vector<ComputeProgramBindingDesc> baseBindings{
+            ComputeProgramBindingDesc{
                 .binding = 0,
-                .kind = SceneRayQueryBindingKind::AccelerationStructure,
+                .kind = ComputeResourceBindingKind::AccelerationStructure,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 1,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 2,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 3,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 4,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 5,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 6,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 7,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 8,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 9,
-                .kind = SceneRayQueryBindingKind::SampledImage,
+                .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kScenePathTraceMaxMaterialTextures,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 10,
-                .kind = SceneRayQueryBindingKind::SampledImage,
+                .kind = ComputeResourceBindingKind::SampledImage,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = kEnvironmentImportancePdfBinding,
-                .kind = SceneRayQueryBindingKind::SampledImage,
+                .kind = ComputeResourceBindingKind::SampledImage,
             },
         };
         if (useOpenPBR) {
-            baseBindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kOpenPBRLut2DBinding,
-                .kind = SceneRayQueryBindingKind::SampledImage,
+                .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kOpenPBRLut2DCount,
             });
-            baseBindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kOpenPBRLut3DBinding,
-                .kind = SceneRayQueryBindingKind::SampledImage,
+                .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kOpenPBRLut3DCount,
             });
         }
         if (exportGuides) {
-            baseBindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kDlssRrAlbedoBinding,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             });
-            baseBindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kDlssRrSpecularAlbedoBinding,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             });
-            baseBindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kDlssRrNormalRoughnessBinding,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             });
-            baseBindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kDlssRrMotionVectorsBinding,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             });
-            baseBindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kDlssRrLinearDepthBinding,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             });
-            baseBindings.push_back(SceneRayQueryBindingDesc{
+            baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kDlssRrSpecularHitDistanceBinding,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             });
         }
 
         auto compilePermutation =
             [&](PathTracePermutation permutation,
                 std::span<const SlangMacroDefine> extraDefines,
-                const std::vector<SceneRayQueryBindingDesc>& permutationBindings,
-                SceneRayQueryProgram& outProgram) -> Result {
+                const std::vector<ComputeProgramBindingDesc>& permutationBindings,
+                ComputeProgram& outProgram) -> Result {
             std::vector<SlangMacroDefine> defines{
                 SlangMacroDefine{
                     .name = "METALLIC_HAS_RTXCR",
@@ -941,7 +941,7 @@ public:
             const std::string debugName = std::string("ScenePathTracePass.") + toString(permutation);
             permutationResult = outProgram.initialize(
                 *context.device,
-                SceneRayQueryProgramDesc{
+                ComputeProgramDesc{
                     .spirv = permutationCompile.spirv.data(),
                     .byteSize = static_cast<uint64_t>(permutationCompile.spirv.size() * sizeof(uint32_t)),
                     .pushConstantSize = sizeof(ScenePathTracePush),
@@ -963,11 +963,11 @@ public:
             return {};
         };
 
-        const std::vector<SceneRayQueryBindingDesc> cacheBindings = [baseBindings]() {
-            std::vector<SceneRayQueryBindingDesc> bindings = baseBindings;
-            bindings.push_back(SceneRayQueryBindingDesc{
+        const std::vector<ComputeProgramBindingDesc> cacheBindings = [baseBindings]() {
+            std::vector<ComputeProgramBindingDesc> bindings = baseBindings;
+            bindings.push_back(ComputeProgramBindingDesc{
                 .binding = kScenePathTraceCacheParamsBinding,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             });
             return bindings;
         }();
@@ -984,19 +984,19 @@ public:
         }
 
         if (cacheMode_ == kScenePathTraceCacheModeSharc) {
-            const std::vector<SceneRayQueryBindingDesc> sharcBindings = [cacheBindings]() {
-                std::vector<SceneRayQueryBindingDesc> bindings = cacheBindings;
-                bindings.push_back(SceneRayQueryBindingDesc{
+            const std::vector<ComputeProgramBindingDesc> sharcBindings = [cacheBindings]() {
+                std::vector<ComputeProgramBindingDesc> bindings = cacheBindings;
+                bindings.push_back(ComputeProgramBindingDesc{
                     .binding = kScenePathTraceSharcHashEntriesBinding,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(SceneRayQueryBindingDesc{
+                bindings.push_back(ComputeProgramBindingDesc{
                     .binding = kScenePathTraceSharcAccumulationBinding,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(SceneRayQueryBindingDesc{
+                bindings.push_back(ComputeProgramBindingDesc{
                     .binding = kScenePathTraceSharcResolvedBinding,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
                 return bindings;
             }();
@@ -1030,26 +1030,26 @@ public:
             }
 
             // SHaRC maintenance programs (clear + resolve).
-            const std::array<SceneRayQueryBindingDesc, 4> maintenanceBindings{
-                SceneRayQueryBindingDesc{
+            const std::array<ComputeProgramBindingDesc, 4> maintenanceBindings{
+                ComputeProgramBindingDesc{
                     .binding = 0,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 },
-                SceneRayQueryBindingDesc{
+                ComputeProgramBindingDesc{
                     .binding = 1,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 },
-                SceneRayQueryBindingDesc{
+                ComputeProgramBindingDesc{
                     .binding = 2,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 },
-                SceneRayQueryBindingDesc{
+                ComputeProgramBindingDesc{
                     .binding = 3,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 },
             };
             auto compileMaintenance =
-                [&](const char* entryPointName, SceneRayQueryProgram& outProgram) -> Result {
+                [&](const char* entryPointName, ComputeProgram& outProgram) -> Result {
                 ShaderCompileResult maintenanceCompile;
                 Result maintenanceResult = compileSlangShaderToSpirv(
                     SlangShaderDesc{
@@ -1080,7 +1080,7 @@ public:
                     std::string("ScenePathTracePass.") + entryPointName;
                 maintenanceResult = outProgram.initialize(
                     *context.device,
-                    SceneRayQueryProgramDesc{
+                    ComputeProgramDesc{
                         .spirv = maintenanceCompile.spirv.data(),
                         .byteSize = static_cast<uint64_t>(maintenanceCompile.spirv.size() * sizeof(uint32_t)),
                         .pushConstantSize = sizeof(SceneSharcMaintenancePush),
@@ -1117,27 +1117,27 @@ public:
 
 #if METALLIC_HAS_NRC
         if (cacheMode_ == kScenePathTraceCacheModeNrc) {
-            const std::vector<SceneRayQueryBindingDesc> nrcBindings = [cacheBindings]() {
-                std::vector<SceneRayQueryBindingDesc> bindings = cacheBindings;
-                bindings.push_back(SceneRayQueryBindingDesc{
+            const std::vector<ComputeProgramBindingDesc> nrcBindings = [cacheBindings]() {
+                std::vector<ComputeProgramBindingDesc> bindings = cacheBindings;
+                bindings.push_back(ComputeProgramBindingDesc{
                     .binding = kScenePathTraceNrcQueryPathInfoBinding,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(SceneRayQueryBindingDesc{
+                bindings.push_back(ComputeProgramBindingDesc{
                     .binding = kScenePathTraceNrcTrainingPathInfoBinding,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(SceneRayQueryBindingDesc{
+                bindings.push_back(ComputeProgramBindingDesc{
                     .binding = kScenePathTraceNrcTrainingPathVerticesBinding,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(SceneRayQueryBindingDesc{
+                bindings.push_back(ComputeProgramBindingDesc{
                     .binding = kScenePathTraceNrcQueryRadianceParamsBinding,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(SceneRayQueryBindingDesc{
+                bindings.push_back(ComputeProgramBindingDesc{
                     .binding = kScenePathTraceNrcCountersBinding,
-                    .kind = SceneRayQueryBindingKind::StorageBuffer,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
                 return bindings;
             }();
@@ -1173,14 +1173,14 @@ public:
             // Tonemap pass producing the final displayable color after the
             // NRC resolve has added the predicted radiance.
             if (!tonemapProgram_.valid()) {
-                const std::array<SceneRayQueryBindingDesc, 2> tonemapBindings{
-                    SceneRayQueryBindingDesc{
+                const std::array<ComputeProgramBindingDesc, 2> tonemapBindings{
+                    ComputeProgramBindingDesc{
                         .binding = 0,
-                        .kind = SceneRayQueryBindingKind::StorageImage,
+                        .kind = ComputeResourceBindingKind::StorageImage,
                     },
-                    SceneRayQueryBindingDesc{
+                    ComputeProgramBindingDesc{
                         .binding = 1,
-                        .kind = SceneRayQueryBindingKind::StorageImage,
+                        .kind = ComputeResourceBindingKind::StorageImage,
                     },
                 };
                 ShaderCompileResult tonemapCompile;
@@ -1209,7 +1209,7 @@ public:
                 std::string programLog;
                 tonemapResult = tonemapProgram_.initialize(
                     *context.device,
-                    SceneRayQueryProgramDesc{
+                    ComputeProgramDesc{
                         .spirv = tonemapCompile.spirv.data(),
                         .byteSize = static_cast<uint64_t>(tonemapCompile.spirv.size() * sizeof(uint32_t)),
                         .pushConstantSize = sizeof(ScenePathTraceTonemapPush),
@@ -1307,7 +1307,7 @@ public:
         TextureHandle specularHitDistance = exportGuides ? context.outputTexture("specularHitDistance") : TextureHandle{};
 
         uint32_t cacheMode = cacheMode_;
-        SceneRayQueryProgram* renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
+        ComputeProgram* renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
         if (cacheMode == kScenePathTraceCacheModeSharc) {
             if (!programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid() ||
                 !programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid() ||
@@ -1398,54 +1398,55 @@ public:
             }
         }
 
-        std::vector<SceneRayQueryDispatchBinding> bindings{
-            SceneRayQueryDispatchBinding{
+        std::vector<ComputeDispatchBinding> bindings{
+            ComputeDispatchBinding{
                 .binding = 0,
-                .accelerationStructure = &sceneResources_.accelerationStructure(),
+                .accelerationStructure =
+                    sceneResources_.accelerationStructure().accelerationStructure(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 1,
                 .textureView = color.view(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 2,
                 .buffer = sceneResources_.vertexBuffer(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 3,
                 .buffer = sceneResources_.indexBuffer(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 4,
                 .buffer = sceneResources_.primitiveBuffer(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 5,
                 .buffer = sceneResources_.instanceBuffer(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 6,
                 .buffer = sceneResources_.materialBuffer(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 7,
                 .textureView = historyCurrentView,
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 8,
                 .textureView = historyPreviousView,
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 9,
                 .textureViews = materialTextureViews.data(),
                 .textureViewCount = static_cast<uint32_t>(materialTextureViews.size()),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 10,
                 .textureViews = environmentTextureViews,
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = kEnvironmentImportancePdfBinding,
                 .textureViews = environmentImportancePdfViews,
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentImportancePdfViews)),
@@ -1454,39 +1455,39 @@ public:
         if (useOpenPBR) {
             const auto& lut2DViews = openPBRLuts_.lut2DViews();
             const auto& lut3DViews = openPBRLuts_.lut3DViews();
-            bindings.push_back(SceneRayQueryDispatchBinding{
+            bindings.push_back(ComputeDispatchBinding{
                 .binding = kOpenPBRLut2DBinding,
                 .textureViews = lut2DViews.data(),
                 .textureViewCount = static_cast<uint32_t>(lut2DViews.size()),
             });
-            bindings.push_back(SceneRayQueryDispatchBinding{
+            bindings.push_back(ComputeDispatchBinding{
                 .binding = kOpenPBRLut3DBinding,
                 .textureViews = lut3DViews.data(),
                 .textureViewCount = static_cast<uint32_t>(lut3DViews.size()),
             });
         }
         if (exportGuides) {
-            bindings.push_back(SceneRayQueryDispatchBinding{
+            bindings.push_back(ComputeDispatchBinding{
                 .binding = kDlssRrAlbedoBinding,
                 .textureView = albedo.view(),
             });
-            bindings.push_back(SceneRayQueryDispatchBinding{
+            bindings.push_back(ComputeDispatchBinding{
                 .binding = kDlssRrSpecularAlbedoBinding,
                 .textureView = specularAlbedo.view(),
             });
-            bindings.push_back(SceneRayQueryDispatchBinding{
+            bindings.push_back(ComputeDispatchBinding{
                 .binding = kDlssRrNormalRoughnessBinding,
                 .textureView = normalRoughness.view(),
             });
-            bindings.push_back(SceneRayQueryDispatchBinding{
+            bindings.push_back(ComputeDispatchBinding{
                 .binding = kDlssRrMotionVectorsBinding,
                 .textureView = motionVectors.view(),
             });
-            bindings.push_back(SceneRayQueryDispatchBinding{
+            bindings.push_back(ComputeDispatchBinding{
                 .binding = kDlssRrLinearDepthBinding,
                 .textureView = linearDepth.view(),
             });
-            bindings.push_back(SceneRayQueryDispatchBinding{
+            bindings.push_back(ComputeDispatchBinding{
                 .binding = kDlssRrSpecularHitDistanceBinding,
                 .textureView = specularHitDistance.view(),
             });
@@ -1523,7 +1524,7 @@ public:
             }
 #endif
         } else {
-            result = renderProgram->dispatch(SceneRayQueryDispatchDesc{
+            result = renderProgram->dispatch(ComputeDispatchDesc{
                 .commandBuffer = &context.commandBuffer(),
                 .bindings = bindings.data(),
                 .bindingCount = static_cast<uint32_t>(bindings.size()),
@@ -1666,7 +1667,7 @@ private:
 
     void clearPrograms()
     {
-        for (SceneRayQueryProgram& program : programs_) {
+        for (ComputeProgram& program : programs_) {
             program.clear();
         }
         sharcClearProgram_.clear();
@@ -1756,9 +1757,9 @@ private:
     Result executeSharcFrame(
         RenderGraphExecutionContext& context,
         ScenePathTracePush& push,
-        const std::vector<SceneRayQueryDispatchBinding>& baseBindings,
-        SceneRayQueryProgram& queryProgram,
-        SceneRayQueryProgram& updateProgram)
+        const std::vector<ComputeDispatchBinding>& baseBindings,
+        ComputeProgram& queryProgram,
+        ComputeProgram& updateProgram)
     {
         const uint32_t entriesLog2 = uintProperty(
             context.properties(),
@@ -1821,12 +1822,12 @@ private:
         }
 
         // SHaRC update: sparse tracing over a stride x stride pixel block.
-        std::vector<SceneRayQueryDispatchBinding> updateBindings = baseBindings;
+        std::vector<ComputeDispatchBinding> updateBindings = baseBindings;
         appendSharcDispatchBindings(updateBindings);
         const uint32_t stride = std::max(params.sharcUpdateStride, 1u);
         const uint32_t updateWidth = (push.width + stride - 1u) / stride;
         const uint32_t updateHeight = (push.height + stride - 1u) / stride;
-        result = updateProgram.dispatch(SceneRayQueryDispatchDesc{
+        result = updateProgram.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = updateBindings.data(),
             .bindingCount = static_cast<uint32_t>(updateBindings.size()),
@@ -1871,9 +1872,9 @@ private:
         barrierBuffers(commandBuffer, {sharcHashEntriesBuffer_.get(), sharcAccumulationBuffer_.get(), sharcResolvedBuffer_.get()});
 
         // SHaRC render/query at full resolution with early termination.
-        std::vector<SceneRayQueryDispatchBinding> queryBindings = baseBindings;
+        std::vector<ComputeDispatchBinding> queryBindings = baseBindings;
         appendSharcDispatchBindings(queryBindings);
-        return queryProgram.dispatch(SceneRayQueryDispatchDesc{
+        return queryProgram.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = queryBindings.data(),
             .bindingCount = static_cast<uint32_t>(queryBindings.size()),
@@ -1887,17 +1888,17 @@ private:
 
     Result dispatchSharcMaintenance(
         CommandBuffer& commandBuffer,
-        SceneRayQueryProgram& program,
+        ComputeProgram& program,
         const SceneSharcMaintenancePush& maintenancePush,
         uint32_t groupCount)
     {
-        const std::array<SceneRayQueryDispatchBinding, 4> bindings{
-            SceneRayQueryDispatchBinding{.binding = 0, .buffer = sharcHashEntriesBuffer_.get()},
-            SceneRayQueryDispatchBinding{.binding = 1, .buffer = sharcAccumulationBuffer_.get()},
-            SceneRayQueryDispatchBinding{.binding = 2, .buffer = sharcResolvedBuffer_.get()},
-            SceneRayQueryDispatchBinding{.binding = 3, .buffer = cacheParamsBuffer_.get()},
+        const std::array<ComputeDispatchBinding, 4> bindings{
+            ComputeDispatchBinding{.binding = 0, .buffer = sharcHashEntriesBuffer_.get()},
+            ComputeDispatchBinding{.binding = 1, .buffer = sharcAccumulationBuffer_.get()},
+            ComputeDispatchBinding{.binding = 2, .buffer = sharcResolvedBuffer_.get()},
+            ComputeDispatchBinding{.binding = 3, .buffer = cacheParamsBuffer_.get()},
         };
-        return program.dispatch(SceneRayQueryDispatchDesc{
+        return program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = bindings.data(),
             .bindingCount = static_cast<uint32_t>(bindings.size()),
@@ -1909,21 +1910,21 @@ private:
         });
     }
 
-    void appendSharcDispatchBindings(std::vector<SceneRayQueryDispatchBinding>& bindings) const
+    void appendSharcDispatchBindings(std::vector<ComputeDispatchBinding>& bindings) const
     {
-        bindings.push_back(SceneRayQueryDispatchBinding{
+        bindings.push_back(ComputeDispatchBinding{
             .binding = kScenePathTraceCacheParamsBinding,
             .buffer = cacheParamsBuffer_.get(),
         });
-        bindings.push_back(SceneRayQueryDispatchBinding{
+        bindings.push_back(ComputeDispatchBinding{
             .binding = kScenePathTraceSharcHashEntriesBinding,
             .buffer = sharcHashEntriesBuffer_.get(),
         });
-        bindings.push_back(SceneRayQueryDispatchBinding{
+        bindings.push_back(ComputeDispatchBinding{
             .binding = kScenePathTraceSharcAccumulationBinding,
             .buffer = sharcAccumulationBuffer_.get(),
         });
-        bindings.push_back(SceneRayQueryDispatchBinding{
+        bindings.push_back(ComputeDispatchBinding{
             .binding = kScenePathTraceSharcResolvedBinding,
             .buffer = sharcResolvedBuffer_.get(),
         });
@@ -1975,9 +1976,9 @@ private:
     Result executeNrcFrame(
         RenderGraphExecutionContext& context,
         ScenePathTracePush& push,
-        const std::vector<SceneRayQueryDispatchBinding>& baseBindings,
-        SceneRayQueryProgram& updateProgram,
-        SceneRayQueryProgram& queryProgram,
+        const std::vector<ComputeDispatchBinding>& baseBindings,
+        ComputeProgram& updateProgram,
+        ComputeProgram& queryProgram,
         TextureView* historyCurrentView)
     {
         if (device_ == nullptr || graphicsQueue_ == nullptr || historyCurrentView == nullptr) {
@@ -2088,8 +2089,8 @@ private:
             return result;
         }
 
-        std::vector<SceneRayQueryDispatchBinding> traceBindings = baseBindings;
-        traceBindings.push_back(SceneRayQueryDispatchBinding{
+        std::vector<ComputeDispatchBinding> traceBindings = baseBindings;
+        traceBindings.push_back(ComputeDispatchBinding{
             .binding = kScenePathTraceCacheParamsBinding,
             .buffer = cacheParamsBuffer_.get(),
         });
@@ -2108,7 +2109,7 @@ private:
             kScenePathTraceNrcCountersBinding,
         };
         for (size_t index = 0; index < std::size(kTraceBuffers); ++index) {
-            traceBindings.push_back(SceneRayQueryDispatchBinding{
+            traceBindings.push_back(ComputeDispatchBinding{
                 .binding = kTraceBindings[index],
                 .buffer = nrc_.buffer(static_cast<uint32_t>(kTraceBuffers[index])),
             });
@@ -2117,7 +2118,7 @@ private:
         // NRC update pass at training resolution writes training data only.
         const uint32_t trainingWidth = std::max(params.trainingWidth, 1u);
         const uint32_t trainingHeight = std::max(params.trainingHeight, 1u);
-        result = updateProgram.dispatch(SceneRayQueryDispatchDesc{
+        result = updateProgram.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = traceBindings.data(),
             .bindingCount = static_cast<uint32_t>(traceBindings.size()),
@@ -2132,7 +2133,7 @@ private:
         }
 
         // NRC query pass at full resolution; linear HDR output into history.
-        result = queryProgram.dispatch(SceneRayQueryDispatchDesc{
+        result = queryProgram.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = traceBindings.data(),
             .bindingCount = static_cast<uint32_t>(traceBindings.size()),
@@ -2184,11 +2185,11 @@ private:
             .width = push.width,
             .height = push.height,
         };
-        const std::array<SceneRayQueryDispatchBinding, 2> tonemapBindings{
-            SceneRayQueryDispatchBinding{.binding = 0, .textureView = historyCurrentView},
-            SceneRayQueryDispatchBinding{.binding = 1, .textureView = context.outputTexture("color").view()},
+        const std::array<ComputeDispatchBinding, 2> tonemapBindings{
+            ComputeDispatchBinding{.binding = 0, .textureView = historyCurrentView},
+            ComputeDispatchBinding{.binding = 1, .textureView = context.outputTexture("color").view()},
         };
-        return tonemapProgram_.dispatch(SceneRayQueryDispatchDesc{
+        return tonemapProgram_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = tonemapBindings.data(),
             .bindingCount = static_cast<uint32_t>(tonemapBindings.size()),
@@ -2456,10 +2457,10 @@ private:
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     OpenPBRLutResources openPBRLuts_;
-    std::array<SceneRayQueryProgram, static_cast<size_t>(PathTracePermutation::Count)> programs_;
-    SceneRayQueryProgram sharcClearProgram_;
-    SceneRayQueryProgram sharcResolveProgram_;
-    SceneRayQueryProgram tonemapProgram_;
+    std::array<ComputeProgram, static_cast<size_t>(PathTracePermutation::Count)> programs_;
+    ComputeProgram sharcClearProgram_;
+    ComputeProgram sharcResolveProgram_;
+    ComputeProgram tonemapProgram_;
     std::string compiledShaderKey_;
     uint32_t cacheMode_ = kScenePathTraceCacheModeOff;
     std::unique_ptr<Buffer> cacheParamsBuffer_;

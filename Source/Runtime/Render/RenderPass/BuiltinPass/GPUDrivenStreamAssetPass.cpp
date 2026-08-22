@@ -1,5 +1,5 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.h"
+#include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
@@ -1350,19 +1350,19 @@ private:
             return result;
         }
 
-        const vulkan::SceneRayQueryBindingDesc bindings[] = {
-            vulkan::SceneRayQueryBindingDesc{
+        const ComputeProgramBindingDesc bindings[] = {
+            ComputeProgramBindingDesc{
                 .binding = 0,
-                .kind = vulkan::SceneRayQueryBindingKind::AccelerationStructure,
+                .kind = ComputeResourceBindingKind::AccelerationStructure,
             },
-            vulkan::SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 1,
-                .kind = vulkan::SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             },
         };
         return rayQueryProgram_.initialize(
             device,
-            vulkan::SceneRayQueryProgramDesc{
+            ComputeProgramDesc{
                 .spirv = compileResult.spirv.data(),
                 .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
                 .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
@@ -1558,7 +1558,9 @@ private:
         TextureHandle color,
         const MeshletStreamFrameDesc& frame)
     {
-        if (!streamRuntime_.tlasReady() || streamRuntime_.tlasHandle() == 0 || color.view() == nullptr) {
+        if (!streamRuntime_.tlasReady() ||
+            streamRuntime_.accelerationStructure() == nullptr ||
+            color.view() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -1588,17 +1590,17 @@ private:
         push.width = context.width();
         push.height = context.height();
 
-        const vulkan::SceneRayQueryDispatchBinding bindings[] = {
-            vulkan::SceneRayQueryDispatchBinding{
+        const ComputeDispatchBinding bindings[] = {
+            ComputeDispatchBinding{
                 .binding = 0,
-                .accelerationStructureHandle = streamRuntime_.tlasHandle(),
+                .accelerationStructure = streamRuntime_.accelerationStructure(),
             },
-            vulkan::SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 1,
                 .textureView = color.view(),
             },
         };
-        return rayQueryProgram_.dispatch(vulkan::SceneRayQueryDispatchDesc{
+        return rayQueryProgram_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
             .bindings = bindings,
             .bindingCount = static_cast<uint32_t>(std::size(bindings)),
@@ -1648,7 +1650,7 @@ private:
     const scene::Scene* gpuSceneSource_ = nullptr;
     GPUSceneSourceOverrideToken gpuSceneSourceToken_;
     bool hzbValid_ = false;
-    vulkan::SceneRayQueryProgram rayQueryProgram_;
+    ComputeProgram rayQueryProgram_;
     bool rtasVisualization_ = false;
 };
 

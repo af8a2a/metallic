@@ -1,6 +1,7 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/SceneRtx.h"
+#include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/ScenePathTraceResources.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"

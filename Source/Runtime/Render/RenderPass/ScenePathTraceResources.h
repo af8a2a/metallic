@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/SceneRtx.h"
+#include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/Scene.h"
 
@@ -52,8 +52,8 @@ public:
     uint64_t revision() const;
 
     const scene::Bounds& bounds() const;
-    SceneRtxBuilder& accelerationStructure();
-    const SceneRtxBuilder& accelerationStructure() const;
+    SceneAccelerationStructureBuilder& accelerationStructure();
+    const SceneAccelerationStructureBuilder& accelerationStructure() const;
     Buffer* vertexBuffer() const;
     Buffer* indexBuffer() const;
     Buffer* primitiveBuffer() const;

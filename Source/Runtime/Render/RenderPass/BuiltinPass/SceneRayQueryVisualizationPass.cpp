@@ -77,7 +77,7 @@ public:
             transformRevision_ == transformRevision &&
             visibilityRevision_ == visibilityRevision &&
             clusterIdShaderEnabled_ == clusterIdSupported &&
-            (!clusterIdRequested || clusterRtxBuilder_.valid())) {
+            (!clusterIdRequested || clusterAccelerationStructureBuilder_.valid())) {
             return {};
         }
 
@@ -92,7 +92,7 @@ public:
         }
 
         drawBounds_ = loadedScene.bounds();
-        clusterRtxBuilder_.clear();
+        clusterAccelerationStructureBuilder_.clear();
         rayQueryProgram_.clear();
 
         if (context.sceneResourceManager == nullptr) {
@@ -115,12 +115,16 @@ public:
         sceneResources_ = *snapshot->pathTraceResources;
         const std::string rtxBuildLog = log;
         if (clusterIdSupported) {
-            result = clusterRtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
+            result = clusterAccelerationStructureBuilder_.build(
+                *context.device,
+                *context.graphicsQueue,
+                loadedScene,
+                log);
             if (!result) {
                 if (clusterIdRequested) {
                     return result;
                 }
-                clusterRtxBuilder_.clear();
+                clusterAccelerationStructureBuilder_.clear();
                 log = rtxBuildLog;
             }
         }
@@ -168,19 +172,19 @@ public:
             return result;
         }
 
-        const SceneRayQueryBindingDesc bindings[] = {
-            SceneRayQueryBindingDesc{
+        const ComputeProgramBindingDesc bindings[] = {
+            ComputeProgramBindingDesc{
                 .binding = 0,
-                .kind = SceneRayQueryBindingKind::AccelerationStructure,
+                .kind = ComputeResourceBindingKind::AccelerationStructure,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 1,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             },
         };
         result = rayQueryProgram_.initialize(
             *context.device,
-            SceneRayQueryProgramDesc{
+            ComputeProgramDesc{
                 .spirv = computeCompile.spirv.data(),
                 .byteSize = static_cast<uint64_t>(computeCompile.spirv.size() * sizeof(uint32_t)),
                 .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
@@ -236,24 +240,23 @@ public:
         SceneRayQueryVisualizationPush push;
         buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
         const bool useClusterId = push.mode == kRayQueryVisualizationGranularityClusterId;
-        if (useClusterId && !clusterRtxBuilder_.valid()) {
+        if (useClusterId && !clusterAccelerationStructureBuilder_.valid()) {
             return makeError(Error::Unsupported);
         }
 
-        const SceneRayQueryDispatchBinding bindings[] = {
-            SceneRayQueryDispatchBinding{
+        const ComputeDispatchBinding bindings[] = {
+            ComputeDispatchBinding{
                 .binding = 0,
                 .accelerationStructure = useClusterId
-                    ? nullptr
-                    : &sceneResources_.accelerationStructure(),
-                .clusterAccelerationStructure = useClusterId ? &clusterRtxBuilder_ : nullptr,
+                    ? clusterAccelerationStructureBuilder_.accelerationStructure()
+                    : sceneResources_.accelerationStructure().accelerationStructure(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 1,
                 .textureView = color.view(),
             },
         };
-        return rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
+        return rayQueryProgram_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
             .bindings = bindings,
             .bindingCount = static_cast<uint32_t>(std::size(bindings)),
@@ -294,10 +297,14 @@ private:
         }
 
         if (clusterIdShaderEnabled_ &&
-            (sceneResourcesChanged || clusterRtxBuilder_.valid())) {
-            Result result = clusterRtxBuilder_.build(*device_, *graphicsQueue_, *runtimeScene, log);
+            (sceneResourcesChanged || clusterAccelerationStructureBuilder_.valid())) {
+            Result result = clusterAccelerationStructureBuilder_.build(
+                *device_,
+                *graphicsQueue_,
+                *runtimeScene,
+                log);
             if (!result) {
-                clusterRtxBuilder_.clear();
+                clusterAccelerationStructureBuilder_.clear();
                 drawBounds_ = runtimeScene->bounds();
                 stampSceneState(*runtimeScene);
                 spdlog::warn(
@@ -488,8 +495,8 @@ private:
     }
 
     ScenePathTraceResources sceneResources_;
-    SceneClusterRtxBuilder clusterRtxBuilder_;
-    SceneRayQueryProgram rayQueryProgram_;
+    SceneClusterAccelerationStructureBuilder clusterAccelerationStructureBuilder_;
+    ComputeProgram rayQueryProgram_;
     scene::Bounds drawBounds_;
     uint64_t resourceIdentity_ = 0;
     uint64_t structuralRevision_ = 0;

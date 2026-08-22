@@ -1,7 +1,8 @@
 #include "RhiTest.h"
 
 #include "Runtime/Render/MeshletStreamClas.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.h"
+#include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
+#include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/RenderPass/ScenePathTraceResources.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
@@ -19,12 +20,12 @@
 namespace metallic::tests {
 namespace {
 
-class SceneRtxAccelerationStructureBuildTest : public RhiTest {
+class SceneAccelerationStructureBuildTest : public RhiTest {
 public:
-    SceneRtxAccelerationStructureBuildTest()
+    SceneAccelerationStructureBuildTest()
     {
         type = RhiTestType::Resource;
-        name = "scene_rtx_acceleration_structure_build";
+        name = "scene_acceleration_structure_build";
     }
 
     RhiTestResult run(RhiTestContext& context) override
@@ -32,7 +33,7 @@ public:
         std::unique_ptr<render::Device> device;
         render::Result result = render::createDevice(
             render::DeviceDesc{
-                .applicationName = "Metallic Scene RTX Test",
+                .applicationName = "Metallic Scene Acceleration Structure Test",
                 .enableValidation = context.enableValidation,
                 .enableRayTracingAccelerationStructure = true,
             },
@@ -49,7 +50,7 @@ public:
 
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail("scene RTX test device has no graphics queue");
+            return RhiTestResult::fail("scene acceleration structure test device has no graphics queue");
         }
 
         scene::Scene loadedScene;
@@ -61,12 +62,12 @@ public:
                 loadResult.error.empty() ? "failed to load Stanford Bunny scene" : loadResult.error);
         }
 
-        render::vulkan::SceneRtxBuilder builder;
+        render::SceneAccelerationStructureBuilder builder;
         std::string log;
         result = builder.beginBuild(*device, *graphicsQueue, loadedScene, log);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("SceneRtxBuilder::beginBuild returned ") +
+                std::string("SceneAccelerationStructureBuilder::beginBuild returned ") +
                 toString(result) +
                 ": " +
                 log);
@@ -76,31 +77,31 @@ public:
             std::this_thread::yield();
         }
         if (!builder.valid()) {
-            return RhiTestResult::fail("SceneRtxBuilder asynchronous build did not produce a valid TLAS");
+            return RhiTestResult::fail("SceneAccelerationStructureBuilder asynchronous build did not produce a valid TLAS");
         }
 
-        const render::vulkan::SceneRtxStats& stats = builder.stats();
+        const render::SceneAccelerationStructureStats& stats = builder.stats();
         if (stats.blasCount == 0 || stats.instanceCount == 0 || stats.triangleCount == 0) {
-            return RhiTestResult::fail("SceneRtxBuilder produced empty RTX stats");
+            return RhiTestResult::fail("SceneAccelerationStructureBuilder produced empty RTAS stats");
         }
 
-        const render::vulkan::SceneRtxStats statsBeforeUpdate = stats;
+        const render::SceneAccelerationStructureStats statsBeforeUpdate = stats;
         const int32_t movedNodeIndex = loadedScene.renderNodes().front().nodeIndex;
         if (movedNodeIndex < 0 || static_cast<size_t>(movedNodeIndex) >= loadedScene.nodes().size()) {
-            return RhiTestResult::fail("SceneRtxBuilder test scene has no editable instance owner");
+            return RhiTestResult::fail("SceneAccelerationStructureBuilder test scene has no editable instance owner");
         }
         float4x4 movedLocal = loadedScene.nodes()[static_cast<size_t>(movedNodeIndex)].localMatrix;
         movedLocal.a03 += 2.0f;
         if (!loadedScene.setNodeLocalMatrix(movedNodeIndex, movedLocal)) {
-            return RhiTestResult::fail("failed to move the RTX test instance");
+            return RhiTestResult::fail("failed to move the RTAS test instance");
         }
         result = builder.updateInstanceTransforms(*device, *graphicsQueue, loadedScene, log);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("SceneRtxBuilder::updateInstanceTransforms returned ") +
+                std::string("SceneAccelerationStructureBuilder::updateInstanceTransforms returned ") +
                 toString(result) + ": " + log);
         }
-        const render::vulkan::SceneRtxStats& statsAfterUpdate = builder.stats();
+        const render::SceneAccelerationStructureStats& statsAfterUpdate = builder.stats();
         if (statsAfterUpdate.blasCount != statsBeforeUpdate.blasCount ||
             statsAfterUpdate.instanceCount != statsBeforeUpdate.instanceCount ||
             statsAfterUpdate.triangleCount != statsBeforeUpdate.triangleCount) {
@@ -119,16 +120,16 @@ public:
                 loadedScene.renderNodes().begin(),
                 loadedScene.renderNodes().end(),
                 [](const scene::RenderNode& node) { return node.visible; })) {
-            return RhiTestResult::fail("failed to hide every RTX test instance");
+            return RhiTestResult::fail("failed to hide every RTAS test instance");
         }
 
         result = builder.build(*device, *graphicsQueue, loadedScene, log);
         if (!result || !builder.valid()) {
             return RhiTestResult::fail(
-                std::string("SceneRtxBuilder empty-scene build returned ") +
+                std::string("SceneAccelerationStructureBuilder empty-scene build returned ") +
                 toString(result) + ": " + log);
         }
-        const render::vulkan::SceneRtxStats emptyStats = builder.stats();
+        const render::SceneAccelerationStructureStats emptyStats = builder.stats();
         if (emptyStats.blasCount == 0 ||
             emptyStats.instanceCount != 0 ||
             emptyStats.triangleCount == 0) {
@@ -139,7 +140,7 @@ public:
             loadedScene.nodes()[static_cast<size_t>(movedNodeIndex)].localMatrix;
         hiddenMovedLocal.a13 += 1.0f;
         if (!loadedScene.setNodeLocalMatrix(movedNodeIndex, hiddenMovedLocal)) {
-            return RhiTestResult::fail("failed to move a hidden RTX test instance");
+            return RhiTestResult::fail("failed to move a hidden RTAS test instance");
         }
         result = builder.updateInstanceTransforms(*device, *graphicsQueue, loadedScene, log);
         if (!result || builder.stats().instanceCount != 0) {
@@ -236,12 +237,12 @@ public:
     }
 };
 
-class SceneClusterRtxAccelerationStructureBuildTest : public RhiTest {
+class SceneClusterAccelerationStructureBuildTest : public RhiTest {
 public:
-    SceneClusterRtxAccelerationStructureBuildTest()
+    SceneClusterAccelerationStructureBuildTest()
     {
         type = RhiTestType::Resource;
-        name = "scene_cluster_rtx_acceleration_structure_build";
+        name = "scene_cluster_acceleration_structure_build";
     }
 
     RhiTestResult run(RhiTestContext& context) override
@@ -249,7 +250,7 @@ public:
         std::unique_ptr<render::Device> device;
         render::Result result = render::createDevice(
             render::DeviceDesc{
-                .applicationName = "Metallic Scene Cluster RTX Test",
+                .applicationName = "Metallic Scene Cluster Acceleration Structure Test",
                 .enableValidation = context.enableValidation,
                 .enableClusterAccelerationStructure = true,
             },
@@ -266,7 +267,7 @@ public:
 
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail("scene cluster RTX test device has no graphics queue");
+            return RhiTestResult::fail("scene cluster RTAS test device has no graphics queue");
         }
 
         scene::Scene loadedScene;
@@ -278,46 +279,46 @@ public:
                 loadResult.error.empty() ? "failed to load Stanford Bunny scene" : loadResult.error);
         }
 
-        render::vulkan::SceneClusterRtxBuilder builder;
+        render::SceneClusterAccelerationStructureBuilder builder;
         std::string log;
         result = builder.build(*device, *graphicsQueue, loadedScene, log);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(
-                    std::string("SceneClusterRtxBuilder::build returned ") +
+                    std::string("SceneClusterAccelerationStructureBuilder::build returned ") +
                     toString(result) +
                     ": " +
                     log);
             }
             return RhiTestResult::fail(
-                std::string("SceneClusterRtxBuilder::build returned ") +
+                std::string("SceneClusterAccelerationStructureBuilder::build returned ") +
                 toString(result) +
                 ": " +
                 log);
         }
         if (!builder.valid()) {
-            return RhiTestResult::fail("SceneClusterRtxBuilder did not produce a valid TLAS");
+            return RhiTestResult::fail("SceneClusterAccelerationStructureBuilder did not produce a valid TLAS");
         }
 
-        const render::vulkan::SceneClusterRtxStats& stats = builder.stats();
+        const render::SceneClusterAccelerationStructureStats& stats = builder.stats();
         if (stats.clasCount == 0 ||
             stats.clusterBlasCount == 0 ||
             stats.instanceCount == 0 ||
             stats.clusterTriangleCount == 0 ||
             stats.accelerationStructureBytes == 0) {
-            return RhiTestResult::fail("SceneClusterRtxBuilder produced empty cluster RTX stats");
+            return RhiTestResult::fail("SceneClusterAccelerationStructureBuilder produced empty cluster RTAS stats");
         }
 
         return RhiTestResult::pass(log);
     }
 };
 
-class ScenePartitionedRtxAccelerationStructureBuildTest : public RhiTest {
+class ScenePartitionedAccelerationStructureBuildTest : public RhiTest {
 public:
-    ScenePartitionedRtxAccelerationStructureBuildTest()
+    ScenePartitionedAccelerationStructureBuildTest()
     {
         type = RhiTestType::Resource;
-        name = "scene_partitioned_rtx_acceleration_structure_build";
+        name = "scene_partitioned_acceleration_structure_build";
     }
 
     RhiTestResult run(RhiTestContext& context) override
@@ -325,7 +326,7 @@ public:
         std::unique_ptr<render::Device> device;
         render::Result result = render::createDevice(
             render::DeviceDesc{
-                .applicationName = "Metallic Scene Partitioned RTX Test",
+                .applicationName = "Metallic Scene Partitioned Acceleration Structure Test",
                 .enableValidation = context.enableValidation,
                 .enablePartitionedAccelerationStructure = true,
             },
@@ -342,7 +343,8 @@ public:
 
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail("scene partitioned RTX test device has no graphics queue");
+            return RhiTestResult::fail(
+                "scene partitioned acceleration structure test device has no graphics queue");
         }
 
         scene::Scene loadedScene;
@@ -354,35 +356,35 @@ public:
                 loadResult.error.empty() ? "failed to load Stanford Bunny scene" : loadResult.error);
         }
 
-        render::vulkan::ScenePartitionedRtxBuilder builder;
+        render::ScenePartitionedAccelerationStructureBuilder builder;
         std::string log;
         result = builder.build(*device, *graphicsQueue, loadedScene, log);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(
-                    std::string("ScenePartitionedRtxBuilder::build returned ") +
+                    std::string("ScenePartitionedAccelerationStructureBuilder::build returned ") +
                     toString(result) +
                     ": " +
                     log);
             }
             return RhiTestResult::fail(
-                std::string("ScenePartitionedRtxBuilder::build returned ") +
+                std::string("ScenePartitionedAccelerationStructureBuilder::build returned ") +
                 toString(result) +
                 ": " +
                 log);
         }
         if (!builder.valid()) {
-            return RhiTestResult::fail("ScenePartitionedRtxBuilder did not produce a valid PTLAS");
+            return RhiTestResult::fail("ScenePartitionedAccelerationStructureBuilder did not produce a valid PTLAS");
         }
 
-        const render::vulkan::ScenePartitionedRtxStats& stats = builder.stats();
+        const render::ScenePartitionedAccelerationStructureStats& stats = builder.stats();
         if (stats.blasCount == 0 ||
             stats.instanceCount == 0 ||
             stats.partitionCount == 0 ||
             stats.triangleCount == 0 ||
             stats.accelerationStructureBytes == 0 ||
             stats.operationBytes == 0) {
-            return RhiTestResult::fail("ScenePartitionedRtxBuilder produced empty PTLAS stats");
+            return RhiTestResult::fail("ScenePartitionedAccelerationStructureBuilder produced empty PTLAS stats");
         }
 
         return RhiTestResult::pass(log);
@@ -647,9 +649,9 @@ public:
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(SceneRtxAccelerationStructureBuildTest);
-METALLIC_REGISTER_RHI_TEST(SceneClusterRtxAccelerationStructureBuildTest);
-METALLIC_REGISTER_RHI_TEST(ScenePartitionedRtxAccelerationStructureBuildTest);
+METALLIC_REGISTER_RHI_TEST(SceneAccelerationStructureBuildTest);
+METALLIC_REGISTER_RHI_TEST(SceneClusterAccelerationStructureBuildTest);
+METALLIC_REGISTER_RHI_TEST(ScenePartitionedAccelerationStructureBuildTest);
 METALLIC_REGISTER_RHI_TEST(MeshletStreamClasPoolBuildTest);
 
 } // namespace

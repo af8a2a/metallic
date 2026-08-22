@@ -2032,7 +2032,8 @@ bool EditorApplication::initialize()
         renderWorld_.setScene(&scene_);
         graphExecutor_ = std::make_unique<render::RenderGraphExecutor>(subsystemHost_, renderWorld_);
         graphExecutor_->bindRuntimeScene(&scene_);
-        sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
+        sceneAccelerationStructure_ =
+            std::make_unique<render::SceneAccelerationStructureBuilder>();
         if (!startupSampleId_.empty()) {
             loadBuiltInSample(startupSampleId_.c_str());
         } else {
@@ -2352,7 +2353,7 @@ void EditorApplication::shutdown()
 
     graphExecutor_.reset();
     subsystemHost_.shutdown();
-    sceneRtx_.reset();
+    sceneAccelerationStructure_.reset();
 
     if (viewportSampler_ != VK_NULL_HANDLE && device_ != nullptr) {
         const render::vulkan::NativeDevice nativeDevice = render::vulkan::nativeDevice(*device_);
@@ -2712,12 +2713,12 @@ void EditorApplication::drawScenePanel()
         requestPendingSceneAction(PendingSceneAction::Clear);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Build RTX AS")) {
-        buildSceneRtx();
+    if (ImGui::Button("Build RTAS")) {
+        buildSceneAccelerationStructure();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Clear RTX AS")) {
-        clearSceneRtx();
+    if (ImGui::Button("Clear RTAS")) {
+        clearSceneAccelerationStructure();
     }
 
     if (pendingSceneLoad_.valid() || pendingSceneResourcePreparation_) {
@@ -2743,21 +2744,22 @@ void EditorApplication::drawScenePanel()
     if (!sceneStatus_.empty()) {
         ImGui::TextWrapped("%s", sceneStatus_.c_str());
     }
-    if (!sceneRtxStatus_.empty()) {
-        ImGui::TextWrapped("%s", sceneRtxStatus_.c_str());
+    if (!sceneAccelerationStructureStatus_.empty()) {
+        ImGui::TextWrapped("%s", sceneAccelerationStructureStatus_.c_str());
     }
-    if (sceneRtx_ != nullptr && sceneRtx_->valid()) {
-        const render::vulkan::SceneRtxStats& rtxStats = sceneRtx_->stats();
+    if (sceneAccelerationStructure_ != nullptr && sceneAccelerationStructure_->valid()) {
+        const render::SceneAccelerationStructureStats& accelerationStructureStats =
+            sceneAccelerationStructure_->stats();
         ImGui::Text(
-            "RTX AS: %u BLAS, %u instances, %llu triangles",
-            rtxStats.blasCount,
-            rtxStats.instanceCount,
-            static_cast<unsigned long long>(rtxStats.triangleCount));
+            "RTAS: %u BLAS, %u instances, %llu triangles",
+            accelerationStructureStats.blasCount,
+            accelerationStructureStats.instanceCount,
+            static_cast<unsigned long long>(accelerationStructureStats.triangleCount));
         ImGui::Text(
-            "RTX memory: geometry %llu bytes, AS %llu bytes, scratch %llu bytes",
-            static_cast<unsigned long long>(rtxStats.geometryBytes),
-            static_cast<unsigned long long>(rtxStats.accelerationStructureBytes),
-            static_cast<unsigned long long>(rtxStats.scratchBytes));
+            "RTAS memory: geometry %llu bytes, AS %llu bytes, scratch %llu bytes",
+            static_cast<unsigned long long>(accelerationStructureStats.geometryBytes),
+            static_cast<unsigned long long>(accelerationStructureStats.accelerationStructureBytes),
+            static_cast<unsigned long long>(accelerationStructureStats.scratchBytes));
     }
     const scene::LoadResult& loadResult = scene_.lastLoadResult();
     if (!loadResult.warning.empty()) {
@@ -3358,19 +3360,20 @@ void EditorApplication::drawStatisticsPanel()
         ImGui::TextDisabled("Bounds: unavailable");
     }
 
-    if (sceneRtx_ != nullptr && sceneRtx_->valid()) {
-        const render::vulkan::SceneRtxStats& rtxStats = sceneRtx_->stats();
+    if (sceneAccelerationStructure_ != nullptr && sceneAccelerationStructure_->valid()) {
+        const render::SceneAccelerationStructureStats& accelerationStructureStats =
+            sceneAccelerationStructure_->stats();
         ImGui::Separator();
         ImGui::Text(
-            "RTX AS: %u BLAS, %u instances, %llu triangles",
-            rtxStats.blasCount,
-            rtxStats.instanceCount,
-            static_cast<unsigned long long>(rtxStats.triangleCount));
+            "RTAS: %u BLAS, %u instances, %llu triangles",
+            accelerationStructureStats.blasCount,
+            accelerationStructureStats.instanceCount,
+            static_cast<unsigned long long>(accelerationStructureStats.triangleCount));
         ImGui::Text(
-            "RTX memory: geometry %llu bytes, AS %llu bytes, scratch %llu bytes",
-            static_cast<unsigned long long>(rtxStats.geometryBytes),
-            static_cast<unsigned long long>(rtxStats.accelerationStructureBytes),
-            static_cast<unsigned long long>(rtxStats.scratchBytes));
+            "RTAS memory: geometry %llu bytes, AS %llu bytes, scratch %llu bytes",
+            static_cast<unsigned long long>(accelerationStructureStats.geometryBytes),
+            static_cast<unsigned long long>(accelerationStructureStats.accelerationStructureBytes),
+            static_cast<unsigned long long>(accelerationStructureStats.scratchBytes));
     }
 
     if (ImGui::Button("Copy to Clipboard")) {
@@ -3853,11 +3856,13 @@ void EditorApplication::notifySceneTransformChanged()
         viewportPreviewValid_ = false;
     }
     viewportPreviewNeedsRender_ = true;
-    if (sceneRtx_ != nullptr && sceneRtx_->valid()) {
-        sceneRtx_->clear();
-        sceneRtxStatus_ = "Static RTX AS cleared after a scene transform edit; rebuild it if needed.";
+    if (sceneAccelerationStructure_ != nullptr && sceneAccelerationStructure_->valid()) {
+        sceneAccelerationStructure_->clear();
+        sceneAccelerationStructureStatus_ =
+            "Static RTAS cleared after a scene transform edit; rebuild it if needed.";
     } else {
-        sceneRtxStatus_ = "Runtime RTX passes will synchronize transforms on the next frame.";
+        sceneAccelerationStructureStatus_ =
+            "Runtime ray tracing passes will synchronize transforms on the next frame.";
     }
 }
 
@@ -4225,7 +4230,7 @@ void EditorApplication::executePendingSceneAction()
     switch (action) {
     case PendingSceneAction::Clear:
         cancelSceneLoad();
-        clearSceneRtx();
+        clearSceneAccelerationStructure();
         scene_.clear();
         renderWorld_.notifySceneChanged();
         resetTransformHistory();
@@ -4302,7 +4307,7 @@ void EditorApplication::drawUnsavedSceneModal()
             historyFrameIndex_ = 0;
             viewportPreviewValid_ = false;
             viewportPreviewNeedsRender_ = true;
-            clearSceneRtx();
+            clearSceneAccelerationStructure();
             sceneStatus_ = std::move(message);
             ImGui::CloseCurrentPopup();
             executePendingSceneAction();
@@ -6000,14 +6005,14 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         return;
     }
 
-    clearSceneRtx();
+    clearSceneAccelerationStructure();
     scene_.clear();
     renderWorld_.notifySceneChanged();
     resetTransformHistory();
     sceneSelection_ = SceneSelection{};
     sceneStatus_ = "StreamAsset-only sample: editor scene loading skipped for " + sample.desc.scenePath;
     spdlog::info(
-        "[Startup] Skipped editor scene and static RTX loading for StreamAsset-only sample '{}'",
+        "[Startup] Skipped editor scene and static RTAS loading for StreamAsset-only sample '{}'",
         sample.desc.name);
 }
 
@@ -6490,7 +6495,7 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
         return;
     }
 
-    clearSceneRtx();
+    clearSceneAccelerationStructure();
     if (graphExecutor_ != nullptr) {
         graphExecutor_->acceptSceneResourcePreparation();
     }
@@ -6528,7 +6533,7 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     viewportPreviewNeedsRender_ = true;
     applyLoadedSceneToRenderGraph(sourcePath);
     applyLoadedSceneCamera();
-    sceneRtxStatus_ = "RTX AS will be prepared by the active render pass.";
+    sceneAccelerationStructureStatus_ = "RTAS will be prepared by the active render pass.";
 
     const scene::SceneStats& stats = scene_.stats();
     sceneStatus_ = "Loaded " + sourcePath.string() + " (" + std::to_string(stats.renderNodeCount) +
@@ -6546,47 +6551,52 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
         stats.textureCount);
 }
 
-void EditorApplication::buildSceneRtx()
+void EditorApplication::buildSceneAccelerationStructure()
 {
-    StartupLogScope scope("Editor RTX acceleration structure build");
+    StartupLogScope scope("Editor ray tracing acceleration structure build");
 
-    if (sceneRtx_ == nullptr) {
-        sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
+    if (sceneAccelerationStructure_ == nullptr) {
+        sceneAccelerationStructure_ =
+            std::make_unique<render::SceneAccelerationStructureBuilder>();
     }
     if (device_ == nullptr || graphicsQueue_ == nullptr) {
-        sceneRtxStatus_ = "RTX AS build failed: RHI device is not initialized.";
+        sceneAccelerationStructureStatus_ = "RTAS build failed: RHI device is not initialized.";
         return;
     }
     if (!scene_.valid()) {
-        sceneRtxStatus_ = "RTX AS build failed: load a glTF scene first.";
+        sceneAccelerationStructureStatus_ = "RTAS build failed: load a glTF scene first.";
         return;
     }
 
     std::string log;
-    const render::Result result = sceneRtx_->build(*device_, *graphicsQueue_, scene_, log);
-    sceneRtxStatus_ = log.empty()
-        ? std::string("RTX AS build returned ") + render::resultToString(result)
+    const render::Result result =
+        sceneAccelerationStructure_->build(*device_, *graphicsQueue_, scene_, log);
+    sceneAccelerationStructureStatus_ = log.empty()
+        ? std::string("RTAS build returned ") + render::resultToString(result)
         : log;
     if (result) {
-        const render::vulkan::SceneRtxStats& stats = sceneRtx_->stats();
+        const render::SceneAccelerationStructureStats& stats =
+            sceneAccelerationStructure_->stats();
         spdlog::info(
-            "[Startup] Editor RTX build completed blas={} instances={} triangles={} asBytes={} scratchBytes={}",
+            "[Startup] Editor RTAS build completed blas={} instances={} triangles={} asBytes={} scratchBytes={}",
             stats.blasCount,
             stats.instanceCount,
             stats.triangleCount,
             stats.accelerationStructureBytes,
             stats.scratchBytes);
     } else {
-        spdlog::warn("[Startup] Editor RTX build failed: {}", sceneRtxStatus_);
+        spdlog::warn(
+            "[Startup] Editor RTAS build failed: {}",
+            sceneAccelerationStructureStatus_);
     }
 }
 
-void EditorApplication::clearSceneRtx()
+void EditorApplication::clearSceneAccelerationStructure()
 {
-    if (sceneRtx_ != nullptr) {
-        sceneRtx_->clear();
+    if (sceneAccelerationStructure_ != nullptr) {
+        sceneAccelerationStructure_->clear();
     }
-    sceneRtxStatus_ = "RTX AS not built.";
+    sceneAccelerationStructureStatus_ = "RTAS not built.";
 }
 
 void EditorApplication::addRenderGraphNode(std::string type, ImVec2 screenPosition)

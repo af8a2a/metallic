@@ -258,41 +258,41 @@ public:
             return result;
         }
 
-        const SceneRayQueryBindingDesc bindings[] = {
-            {.binding = 0, .kind = SceneRayQueryBindingKind::AccelerationStructure},
-            {.binding = 1, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 2, .kind = SceneRayQueryBindingKind::StorageBuffer},
-            {.binding = 3, .kind = SceneRayQueryBindingKind::StorageBuffer},
-            {.binding = 4, .kind = SceneRayQueryBindingKind::StorageBuffer},
-            {.binding = 5, .kind = SceneRayQueryBindingKind::StorageBuffer},
-            {.binding = 6, .kind = SceneRayQueryBindingKind::StorageBuffer},
+        const ComputeProgramBindingDesc bindings[] = {
+            {.binding = 0, .kind = ComputeResourceBindingKind::AccelerationStructure},
+            {.binding = 1, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 2, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 3, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 4, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 5, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 6, .kind = ComputeResourceBindingKind::StorageBuffer},
             {
                 .binding = 7,
-                .kind = SceneRayQueryBindingKind::SampledImage,
+                .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kScenePathTraceMaxMaterialTextures,
             },
-            {.binding = 8, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 9, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 10, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 11, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 12, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 13, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 14, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 15, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 16, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 17, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 18, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 19, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 20, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 21, .kind = SceneRayQueryBindingKind::SampledImage},
-            {.binding = 22, .kind = SceneRayQueryBindingKind::SampledImage},
-            {.binding = 23, .kind = SceneRayQueryBindingKind::SampledImage},
-            {.binding = 24, .kind = SceneRayQueryBindingKind::StorageBuffer},
+            {.binding = 8, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 9, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 10, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 11, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 12, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 13, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 14, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 15, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 16, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 17, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 18, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 19, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 20, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 21, .kind = ComputeResourceBindingKind::SampledImage},
+            {.binding = 22, .kind = ComputeResourceBindingKind::SampledImage},
+            {.binding = 23, .kind = ComputeResourceBindingKind::SampledImage},
+            {.binding = 24, .kind = ComputeResourceBindingKind::StorageBuffer},
         };
         std::string programLog;
         result = rayQueryProgram_.initialize(
             *context.device,
-            SceneRayQueryProgramDesc{
+            ComputeProgramDesc{
                 .spirv = computeCompile.spirv.data(),
                 .byteSize = static_cast<uint64_t>(computeCompile.spirv.size() * sizeof(uint32_t)),
                 .pushConstantSize = sizeof(SceneRtxdiPush),
@@ -521,8 +521,12 @@ public:
         TextureView* const environmentTextureViews[] = {environmentTextureView};
         TextureView* const localLightPdfViews[] = {localLightPdf_.view()};
         TextureView* const environmentImportanceTextureViews[] = {environmentImportanceTextureView};
-        const SceneRayQueryDispatchBinding bindings[] = {
-            {.binding = 0, .accelerationStructure = &sceneResources_.accelerationStructure()},
+        const ComputeDispatchBinding bindings[] = {
+            {
+                .binding = 0,
+                .accelerationStructure =
+                    sceneResources_.accelerationStructure().accelerationStructure(),
+            },
             {.binding = 1, .textureView = color.view()},
             {.binding = 2, .buffer = sceneResources_.vertexBuffer()},
             {.binding = 3, .buffer = sceneResources_.indexBuffer()},
@@ -564,7 +568,7 @@ public:
             },
             {.binding = 24, .buffer = reGIR_.buffer()},
         };
-        result = rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
+        result = rayQueryProgram_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
             .bindings = bindings,
             .bindingCount = static_cast<uint32_t>(std::size(bindings)),
@@ -967,7 +971,7 @@ private:
     }
 
     ScenePathTraceResources sceneResources_;
-    SceneRayQueryProgram rayQueryProgram_;
+    ComputeProgram rayQueryProgram_;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     SceneResourceManager* sceneResourceManager_ = nullptr;

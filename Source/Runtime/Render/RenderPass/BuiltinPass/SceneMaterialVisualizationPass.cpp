@@ -123,45 +123,45 @@ public:
             return result;
         }
 
-        const SceneRayQueryBindingDesc bindings[] = {
-            SceneRayQueryBindingDesc{
+        const ComputeProgramBindingDesc bindings[] = {
+            ComputeProgramBindingDesc{
                 .binding = 0,
-                .kind = SceneRayQueryBindingKind::AccelerationStructure,
+                .kind = ComputeResourceBindingKind::AccelerationStructure,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 1,
-                .kind = SceneRayQueryBindingKind::StorageImage,
+                .kind = ComputeResourceBindingKind::StorageImage,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 2,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 3,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 4,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 5,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 6,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 7,
-                .kind = SceneRayQueryBindingKind::SampledImage,
+                .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kScenePathTraceMaxMaterialTextures,
             },
         };
         std::string programLog;
         result = rayQueryProgram_.initialize(
             *context.device,
-            SceneRayQueryProgramDesc{
+            ComputeProgramDesc{
                 .spirv = computeCompile.spirv.data(),
                 .byteSize = static_cast<uint64_t>(computeCompile.spirv.size() * sizeof(uint32_t)),
                 .pushConstantSize = sizeof(SceneMaterialVisualizationPush),
@@ -231,42 +231,43 @@ public:
             return result;
         }
 
-        const SceneRayQueryDispatchBinding bindings[] = {
-            SceneRayQueryDispatchBinding{
+        const ComputeDispatchBinding bindings[] = {
+            ComputeDispatchBinding{
                 .binding = 0,
-                .accelerationStructure = &sceneResources_.accelerationStructure(),
+                .accelerationStructure =
+                    sceneResources_.accelerationStructure().accelerationStructure(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 1,
                 .textureView = color.view(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 2,
                 .buffer = sceneResources_.vertexBuffer(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 3,
                 .buffer = sceneResources_.indexBuffer(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 4,
                 .buffer = sceneResources_.primitiveBuffer(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 5,
                 .buffer = sceneResources_.instanceBuffer(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 6,
                 .buffer = sceneResources_.materialBuffer(),
             },
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 7,
                 .textureViews = materialTextureViews.data(),
                 .textureViewCount = static_cast<uint32_t>(materialTextureViews.size()),
             },
         };
-        return rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
+        return rayQueryProgram_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
             .bindings = bindings,
             .bindingCount = static_cast<uint32_t>(std::size(bindings)),
@@ -467,7 +468,7 @@ private:
     SceneResourceManager* sceneResourceManager_ = nullptr;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
-    SceneRayQueryProgram rayQueryProgram_;
+    ComputeProgram rayQueryProgram_;
 };
 
 } // namespace

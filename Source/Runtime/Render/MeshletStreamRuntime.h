@@ -231,16 +231,6 @@ struct MeshletStreamGpuBlasBuildInfo {
     uint32_t clusterReferencesAddressHigh = 0;
 };
 
-struct MeshletStreamGpuTlasInstance {
-    float transform0[4] = {};
-    float transform1[4] = {};
-    float transform2[4] = {};
-    uint32_t customIndexMask = 0;
-    uint32_t shaderBindingTableFlags = 0;
-    uint32_t accelerationStructureReferenceLow = 0;
-    uint32_t accelerationStructureReferenceHigh = 0;
-};
-
 struct MeshletStreamGpuParams {
     float eye[4] = {};
     float center[4] = {};
@@ -369,7 +359,6 @@ static_assert(sizeof(MeshletStreamGpuTraversalWorkItem) == 16);
 static_assert(sizeof(MeshletStreamGpuBlasHeader) == 32);
 static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
-static_assert(sizeof(MeshletStreamGpuTlasInstance) == 64);
 static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGpuParams) == 272);
 static_assert(sizeof(MeshletStreamGpuRasterBindings) == 64);
@@ -440,7 +429,7 @@ public:
 
     bool ready() const;
     bool tlasReady() const { return tlasBuilt_; }
-    uint64_t tlasHandle() const;
+    RayTracingAccelerationStructure* accelerationStructure() const;
 
     Result cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame);
     Result cmdPreTraversal(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame);
@@ -543,8 +532,8 @@ private:
     std::unique_ptr<Buffer> fallbackBlasDestinationBuffer_;
     std::unique_ptr<Buffer> fallbackBlasAddressBuffer_;
     std::unique_ptr<Buffer> tlasInstanceBuffer_;
-    std::unique_ptr<Buffer> tlasStorageBuffer_;
     std::unique_ptr<Buffer> tlasScratchBuffer_;
+    std::unique_ptr<RayTracingAccelerationStructure> tlas_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<UpdatePass> updatePass_;
     std::unique_ptr<TraversalPass> traversalPass_;
@@ -611,12 +600,6 @@ private:
     uint32_t blasBuildCapacity_ = 0;
     uint32_t maxBlasClustersPerBuild_ = 0;
     uint64_t blasClusterReferenceAddress_ = 0;
-    uint64_t blasStorageAddress_ = 0;
-    uint64_t blasScratchAddress_ = 0;
-    uint64_t fallbackBlasScratchAddress_ = 0;
-    uint64_t tlasScratchAddress_ = 0;
-    uint64_t tlasHandle_ = 0;
-    uint64_t nativeDeviceHandle_ = 0;
     bool tlasBuilt_ = false;
     std::vector<FallbackBlasPrimitive> fallbackBlasPrimitives_;
     uint32_t currentFrameUploadCount_ = 0;

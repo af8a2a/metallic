@@ -22,6 +22,7 @@ if(WIN32)
 endif()
 
 add_library(MetallicRuntimeRender STATIC
+    Runtime/Render/ComputeProgram.cpp
     Runtime/Render/HistoryResources.cpp
     Runtime/Render/ImportanceSampling.cpp
     Runtime/Render/ReGIR.cpp
@@ -37,6 +38,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/MeshletStreamPageLoader.cpp
     Runtime/Render/MeshletStreamResidency.cpp
     Runtime/Render/MeshletStreamRuntime.cpp
+    Runtime/Render/RayTracing/SceneAccelerationStructure.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp
     Runtime/Render/GAPI/Streamer.cpp
@@ -70,7 +72,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.cpp
-    Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.cpp
+    Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.cpp
     Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp
 )
 

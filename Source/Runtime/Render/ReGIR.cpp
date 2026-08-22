@@ -1,5 +1,5 @@
 #include "Runtime/Render/ReGIR.h"
-#include "Runtime/Render/GAPI/SceneRtx.h"
+#include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <array>
@@ -83,7 +83,7 @@ ReGIRGridLayout computeReGIRGridLayout(uint32_t gridSize, uint32_t lightsPerCell
 }
 
 struct ReGIRLightSelector::Impl {
-    SceneRayQueryProgram program;
+    ComputeProgram program;
     ReGIRGridLayout layout;
     std::unique_ptr<Buffer> buffer;
     std::vector<std::unique_ptr<Buffer>> retiredBuffers;
@@ -133,13 +133,13 @@ Result ReGIRLightSelector::initialize(Device& device, std::string& log)
         return compile;
     }
 
-    const SceneRayQueryBindingDesc bindings[] = {
-        {.binding = 0, .kind = SceneRayQueryBindingKind::SampledImage},
-        {.binding = 1, .kind = SceneRayQueryBindingKind::StorageBuffer},
+    const ComputeProgramBindingDesc bindings[] = {
+        {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
+        {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer},
     };
     return impl_->program.initialize(
         device,
-        SceneRayQueryProgramDesc{
+        ComputeProgramDesc{
             .spirv = compileResult.spirv.data(),
             .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
             .pushConstantSize = sizeof(BuildReGIRPush),
@@ -214,7 +214,7 @@ Result ReGIRLightSelector::build(
     impl_->state = ResourceState::General;
 
     TextureView* const pdfViews[] = {&localLightPdf};
-    const SceneRayQueryDispatchBinding bindings[] = {
+    const ComputeDispatchBinding bindings[] = {
         {
             .binding = 0,
             .textureViews = pdfViews,
@@ -237,7 +237,7 @@ Result ReGIRLightSelector::build(
     push.lightIntensity = parameters.lightIntensity;
     push.samplingJitter = parameters.samplingJitter;
 
-    Result result = impl_->program.dispatch(SceneRayQueryDispatchDesc{
+    Result result = impl_->program.dispatch(ComputeDispatchDesc{
         .commandBuffer = &commandBuffer,
         .bindings = bindings,
         .bindingCount = static_cast<uint32_t>(std::size(bindings)),

@@ -515,6 +515,76 @@ VkSamplerAddressMode toVkSamplerAddressMode(SamplerAddressMode mode)
     return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 }
 
+VkAccelerationStructureTypeKHR toVkAccelerationStructureType(
+    RayTracingAccelerationStructureType type)
+{
+    return type == RayTracingAccelerationStructureType::TopLevel
+        ? VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR
+        : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+}
+
+VkBuildAccelerationStructureFlagsKHR toVkAccelerationStructureBuildFlags(
+    RayTracingAccelerationStructureBuildFlags flags)
+{
+    VkBuildAccelerationStructureFlagsKHR result = 0;
+    if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::PreferFastTrace)) {
+        result |= VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    }
+    if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::PreferFastBuild)) {
+        result |= VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+    }
+    if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowUpdate)) {
+        result |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+    }
+    if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowCompaction)) {
+        result |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
+    }
+    return result;
+}
+
+VkGeometryFlagsKHR toVkGeometryFlags(RayTracingGeometryFlags flags)
+{
+    VkGeometryFlagsKHR result = 0;
+    if (hasFlag(flags, RayTracingGeometryFlags::Opaque)) {
+        result |= VK_GEOMETRY_OPAQUE_BIT_KHR;
+    }
+    if (hasFlag(flags, RayTracingGeometryFlags::NoDuplicateAnyHitInvocation)) {
+        result |= VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
+    }
+    return result;
+}
+
+VkGeometryInstanceFlagsKHR toVkInstanceFlags(RayTracingInstanceFlags flags)
+{
+    VkGeometryInstanceFlagsKHR result = 0;
+    if (hasFlag(flags, RayTracingInstanceFlags::TriangleFacingCullDisable)) {
+        result |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+    }
+    if (hasFlag(flags, RayTracingInstanceFlags::TriangleFrontCounterClockwise)) {
+        result |= VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR;
+    }
+    if (hasFlag(flags, RayTracingInstanceFlags::ForceOpaque)) {
+        result |= VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+    }
+    if (hasFlag(flags, RayTracingInstanceFlags::ForceNonOpaque)) {
+        result |= VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
+    }
+    return result;
+}
+
+VkIndexType toVkRayTracingIndexType(RayTracingIndexType type)
+{
+    switch (type) {
+    case RayTracingIndexType::None:
+        return VK_INDEX_TYPE_NONE_KHR;
+    case RayTracingIndexType::Uint16:
+        return VK_INDEX_TYPE_UINT16;
+    case RayTracingIndexType::Uint32:
+        return VK_INDEX_TYPE_UINT32;
+    }
+    return VK_INDEX_TYPE_NONE_KHR;
+}
+
 #ifdef VK_NV_cluster_acceleration_structure
 VkClusterAccelerationStructureIndexFormatFlagBitsNV toVkClusterIndexFormat(
     ClusterAccelerationStructureIndexFormat format)
@@ -1184,6 +1254,57 @@ public:
         VkResourceDescriptorInfoEXT resourceInfo{
             .sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
             .type = type,
+            .data = {.pAddressRange = &addressRange},
+        };
+        const VkHostAddressRangeEXT dstRange{
+            .address = dst,
+            .size = static_cast<size_t>(bufferDescriptorSize_),
+        };
+        return vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
+    }
+
+    VkResult writeAccelerationStructureDescriptor(
+        VkDeviceAddress accelerationStructureAddress,
+        VkDeviceSize accelerationStructureSize,
+        void* dst) const
+    {
+        if (!initialized() || dst == nullptr || accelerationStructureAddress == 0 ||
+            accelerationStructureSize == 0) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+
+        VkDeviceAddressRangeEXT addressRange{
+            .address = accelerationStructureAddress,
+            .size = accelerationStructureSize,
+        };
+        VkResourceDescriptorInfoEXT resourceInfo{
+            .sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
+            .type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+            .data = {.pAddressRange = &addressRange},
+        };
+        const VkHostAddressRangeEXT dstRange{
+            .address = dst,
+            .size = static_cast<size_t>(bufferDescriptorSize_),
+        };
+        return vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
+    }
+
+    VkResult writePartitionedAccelerationStructureDescriptor(
+        VkDeviceAddress accelerationStructureAddress,
+        VkDeviceSize accelerationStructureSize,
+        void* dst) const
+    {
+        if (!initialized() || dst == nullptr || accelerationStructureAddress == 0 ||
+            accelerationStructureSize == 0) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        VkDeviceAddressRangeEXT addressRange{
+            .address = accelerationStructureAddress,
+            .size = accelerationStructureSize,
+        };
+        VkResourceDescriptorInfoEXT resourceInfo{
+            .sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
+            .type = VK_DESCRIPTOR_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_NV,
             .data = {.pAddressRange = &addressRange},
         };
         const VkHostAddressRangeEXT dstRange{
@@ -2010,6 +2131,8 @@ public:
             }
             break;
         case BindlessHandleKind::Buffer:
+        case BindlessHandleKind::AccelerationStructure:
+        case BindlessHandleKind::PartitionedAccelerationStructure:
             if (handle.index < maxBuffers_) {
                 freeBufferSlots_.push_back(handle.index);
             }
@@ -2146,6 +2269,50 @@ public:
         const VkDeviceSize offset = bufferRegionStartBytes_ + writer_.bufferOffset(handle.index);
         void* dst = static_cast<uint8_t*>(resourceHeapBase) + offset;
         const VkResult result = writer_.writeBufferDescriptor(address, size, type, dst);
+        if (result == VK_SUCCESS) {
+            markResourceBufferDirty(offset, descriptorSize);
+        }
+        return result;
+    }
+
+    VkResult writeAccelerationStructureDescriptor(
+        BindlessHandle handle,
+        VkDeviceAddress address,
+        VkDeviceSize size,
+        void* resourceHeapBase)
+    {
+        if (handle.kind != BindlessHandleKind::AccelerationStructure ||
+            handle.index >= maxBuffers_ || resourceHeapBase == nullptr) {
+            return VK_ERROR_VALIDATION_FAILED_EXT;
+        }
+
+        const VkDeviceSize descriptorSize = writer_.bufferDescriptorSize();
+        const VkDeviceSize offset = bufferRegionStartBytes_ + writer_.bufferOffset(handle.index);
+        void* dst = static_cast<uint8_t*>(resourceHeapBase) + offset;
+        const VkResult result = writer_.writeAccelerationStructureDescriptor(address, size, dst);
+        if (result == VK_SUCCESS) {
+            markResourceBufferDirty(offset, descriptorSize);
+        }
+        return result;
+    }
+
+    VkResult writePartitionedAccelerationStructureDescriptor(
+        BindlessHandle handle,
+        VkDeviceAddress address,
+        VkDeviceSize size,
+        void* resourceHeapBase)
+    {
+        if (handle.kind != BindlessHandleKind::PartitionedAccelerationStructure ||
+            handle.index >= maxBuffers_ || resourceHeapBase == nullptr) {
+            return VK_ERROR_VALIDATION_FAILED_EXT;
+        }
+        const VkDeviceSize descriptorSize = writer_.bufferDescriptorSize();
+        const VkDeviceSize offset = bufferRegionStartBytes_ + writer_.bufferOffset(handle.index);
+        void* dst = static_cast<uint8_t*>(resourceHeapBase) + offset;
+        const VkResult result = writer_.writePartitionedAccelerationStructureDescriptor(
+            address,
+            size,
+            dst);
         if (result == VK_SUCCESS) {
             markResourceBufferDirty(offset, descriptorSize);
         }
@@ -2323,6 +2490,25 @@ struct BufferImpl {
     void* mapped = nullptr;
 };
 
+struct RayTracingAccelerationStructureImpl {
+    DeviceImpl* device = nullptr;
+    RayTracingAccelerationStructureDesc desc;
+    std::unique_ptr<Buffer> storage;
+    VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
+    VkDeviceAddress address = 0;
+
+    ~RayTracingAccelerationStructureImpl();
+};
+
+struct PartitionedAccelerationStructureImpl {
+    DeviceImpl* device = nullptr;
+    PartitionedAccelerationStructureDesc desc;
+    std::unique_ptr<Buffer> storage;
+    std::unique_ptr<Buffer> operationBuffer;
+    std::unique_ptr<Buffer> operationCountBuffer;
+    VkDeviceAddress address = 0;
+};
+
 struct BufferViewImpl {
     DeviceImpl* device = nullptr;
     Buffer* buffer = nullptr;
@@ -2391,6 +2577,7 @@ struct ComputePipelineImpl {
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     bool usesBindlessHeap = false;
+    uint32_t bindlessUserDataOffset = sizeof(BindlessHeapPushConstants);
     uint64_t psoHash = 0;
     bool pipelineCacheHit = false;
 };
@@ -2421,6 +2608,7 @@ struct CommandBufferImpl {
     bool currentComputePipelineUsesBindlessHeap = false;
     bool currentGraphicsShaderObjectUsesBindlessHeap = false;
     bool currentGraphicsShaderObjectBound = false;
+    uint32_t currentBindlessUserDataOffset = sizeof(BindlessHeapPushConstants);
     Viewport currentViewport;
     Rect currentScissor;
     bool hasCurrentViewport = false;
@@ -2500,6 +2688,15 @@ struct DeviceImpl {
     ~DeviceImpl();
     void addQueue(VkQueue queue, uint32_t familyIndex, QueueType type);
 };
+
+RayTracingAccelerationStructureImpl::~RayTracingAccelerationStructureImpl()
+{
+    if (device != nullptr && accelerationStructure != VK_NULL_HANDLE) {
+        activateVolkDevice(device->device);
+        vkDestroyAccelerationStructureKHR(device->device, accelerationStructure, nullptr);
+        accelerationStructure = VK_NULL_HANDLE;
+    }
+}
 
 DeviceImpl::~DeviceImpl()
 {
@@ -3399,6 +3596,54 @@ uint64_t Buffer::deviceAddress() const
     return vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
 }
 
+RayTracingAccelerationStructure::RayTracingAccelerationStructure(
+    std::unique_ptr<detail::RayTracingAccelerationStructureImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+RayTracingAccelerationStructure::~RayTracingAccelerationStructure() = default;
+RayTracingAccelerationStructure::RayTracingAccelerationStructure(
+    RayTracingAccelerationStructure&&) noexcept = default;
+RayTracingAccelerationStructure& RayTracingAccelerationStructure::operator=(
+    RayTracingAccelerationStructure&&) noexcept = default;
+
+const RayTracingAccelerationStructureDesc& RayTracingAccelerationStructure::desc() const
+{
+    static const RayTracingAccelerationStructureDesc emptyDesc;
+    return impl_ != nullptr ? impl_->desc : emptyDesc;
+}
+
+bool RayTracingAccelerationStructure::valid() const
+{
+    return impl_ != nullptr &&
+        impl_->accelerationStructure != VK_NULL_HANDLE &&
+        impl_->address != 0;
+}
+
+PartitionedAccelerationStructure::PartitionedAccelerationStructure(
+    std::unique_ptr<detail::PartitionedAccelerationStructureImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+PartitionedAccelerationStructure::~PartitionedAccelerationStructure() = default;
+PartitionedAccelerationStructure::PartitionedAccelerationStructure(
+    PartitionedAccelerationStructure&&) noexcept = default;
+PartitionedAccelerationStructure& PartitionedAccelerationStructure::operator=(
+    PartitionedAccelerationStructure&&) noexcept = default;
+
+const PartitionedAccelerationStructureDesc& PartitionedAccelerationStructure::desc() const
+{
+    static const PartitionedAccelerationStructureDesc emptyDesc;
+    return impl_ != nullptr ? impl_->desc : emptyDesc;
+}
+
+bool PartitionedAccelerationStructure::valid() const
+{
+    return impl_ != nullptr && impl_->storage != nullptr && impl_->address != 0;
+}
+
 void* Buffer::map()
 {
     if (impl_ == nullptr || impl_->allocation == VK_NULL_HANDLE) {
@@ -3771,6 +4016,26 @@ Result BindlessHeap::writeSamplers(const BindlessSamplerWrite* writes, uint32_t 
     return {};
 }
 
+Result BindlessHeap::allocateAccelerationStructure(BindlessHandle& outHandle)
+{
+    outHandle = {};
+    if (impl_ == nullptr || !impl_->heap.allocateBuffer(outHandle)) {
+        return makeError(impl_ == nullptr ? Error::InvalidArgument : Error::OutOfMemory);
+    }
+    outHandle.kind = BindlessHandleKind::AccelerationStructure;
+    return {};
+}
+
+Result BindlessHeap::allocatePartitionedAccelerationStructure(BindlessHandle& outHandle)
+{
+    outHandle = {};
+    if (impl_ == nullptr || !impl_->heap.allocateBuffer(outHandle)) {
+        return makeError(impl_ == nullptr ? Error::InvalidArgument : Error::OutOfMemory);
+    }
+    outHandle.kind = BindlessHandleKind::PartitionedAccelerationStructure;
+    return {};
+}
+
 Result BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state)
 {
     const BindlessImageWrite write{
@@ -3928,6 +4193,49 @@ Result BindlessHeap::writeStorageBuffer(BindlessHandle handle, Buffer& buffer)
     return {};
 }
 
+Result BindlessHeap::writeAccelerationStructure(
+    BindlessHandle handle,
+    RayTracingAccelerationStructure& accelerationStructure)
+{
+    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr ||
+        accelerationStructure.impl_ == nullptr || !accelerationStructure.valid() ||
+        accelerationStructure.impl_->device != impl_->device) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const VkResult result = impl_->heap.writeAccelerationStructureDescriptor(
+        handle,
+        accelerationStructure.impl_->address,
+        accelerationStructure.impl_->desc.size,
+        impl_->resourceHeap.mapped);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+    impl_->flushResourceDirty();
+    return {};
+}
+
+Result BindlessHeap::writePartitionedAccelerationStructure(
+    BindlessHandle handle,
+    PartitionedAccelerationStructure& accelerationStructure)
+{
+    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr ||
+        accelerationStructure.impl_ == nullptr || !accelerationStructure.valid() ||
+        accelerationStructure.impl_->device != impl_->device) {
+        return makeError(Error::InvalidArgument);
+    }
+    const VkResult result = impl_->heap.writePartitionedAccelerationStructureDescriptor(
+        handle,
+        accelerationStructure.impl_->address,
+        accelerationStructure.impl_->desc.sizes.accelerationStructureSize,
+        impl_->resourceHeap.mapped);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+    impl_->flushResourceDirty();
+    return {};
+}
+
 CommandBuffer::CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl)
     : impl_(std::move(impl))
 {
@@ -3959,6 +4267,7 @@ Result CommandBuffer::begin()
     impl_->currentComputePipelineUsesBindlessHeap = false;
     impl_->currentGraphicsShaderObjectUsesBindlessHeap = false;
     impl_->currentGraphicsShaderObjectBound = false;
+    impl_->currentBindlessUserDataOffset = sizeof(BindlessHeapPushConstants);
     impl_->hasCurrentViewport = false;
     impl_->hasCurrentScissor = false;
     impl_->currentBindlessUserData.clear();
@@ -4264,6 +4573,27 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
         &copyRegion);
 }
 
+void CommandBuffer::hostWriteBarrier()
+{
+    if (impl_ == nullptr) {
+        return;
+    }
+    const VkMemoryBarrier2 barrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT |
+            VK_ACCESS_2_MEMORY_WRITE_BIT,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+}
+
 void CommandBuffer::clearColorTexture(Texture& texture, ResourceState state, const ColorValue& color)
 {
     if (impl_ == nullptr || texture.impl_ == nullptr || texture.impl_->image == VK_NULL_HANDLE) {
@@ -4509,21 +4839,25 @@ void pushCurrentBindlessData(detail::CommandBufferImpl& commandBuffer, detail::B
             &push);
     }
 
-    const size_t payloadSize = sizeof(push) + commandBuffer.currentBindlessUserData.size();
+    const size_t payloadSize = commandBuffer.currentBindlessUserDataOffset +
+        commandBuffer.currentBindlessUserData.size();
     const bool needsDescriptorHeapPush =
         commandBuffer.currentGraphicsPipelineUsesBindlessHeap ||
         commandBuffer.currentComputePipelineUsesBindlessHeap ||
         commandBuffer.currentGraphicsShaderObjectUsesBindlessHeap;
     if (needsDescriptorHeapPush &&
+        payloadSize > 0 &&
         commandBuffer.device != nullptr &&
         commandBuffer.device->bindlessDescriptorHeapEnabled &&
         commandBuffer.device->descriptorHeapWriter.maxPushDataSize() >= payloadSize &&
         vkCmdPushDataEXT != nullptr) {
-        std::vector<uint8_t> payload(payloadSize);
-        std::memcpy(payload.data(), &push, sizeof(push));
+        std::vector<uint8_t> payload(payloadSize, 0);
+        if (commandBuffer.currentBindlessUserDataOffset != 0) {
+            std::memcpy(payload.data(), &push, sizeof(push));
+        }
         if (!commandBuffer.currentBindlessUserData.empty()) {
             std::memcpy(
-                payload.data() + sizeof(push),
+                payload.data() + commandBuffer.currentBindlessUserDataOffset,
                 commandBuffer.currentBindlessUserData.data(),
                 commandBuffer.currentBindlessUserData.size());
         }
@@ -4552,6 +4886,7 @@ void CommandBuffer::bindGraphicsPipeline(GraphicsPipeline& pipeline)
     impl_->currentGraphicsPipelineLayout = pipeline.impl_->layout;
     impl_->currentGraphicsPipelineBindlessPushStages = pipeline.impl_->bindlessPushStages;
     impl_->currentGraphicsPipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
+    impl_->currentBindlessUserDataOffset = sizeof(BindlessHeapPushConstants);
     if (impl_->currentGraphicsPipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
         pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
     }
@@ -4565,6 +4900,7 @@ void CommandBuffer::bindComputePipeline(ComputePipeline& pipeline)
     vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.impl_->pipeline);
     impl_->currentComputePipelineLayout = pipeline.impl_->layout;
     impl_->currentComputePipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
+    impl_->currentBindlessUserDataOffset = pipeline.impl_->bindlessUserDataOffset;
     if (impl_->currentComputePipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
         pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
     }
@@ -4587,6 +4923,7 @@ void CommandBuffer::bindComputePipeline(
     vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.impl_->pipeline);
     impl_->currentComputePipelineLayout = pipeline.impl_->layout;
     impl_->currentComputePipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
+    impl_->currentBindlessUserDataOffset = pipeline.impl_->bindlessUserDataOffset;
     if (impl_->currentComputePipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
         pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
     }
@@ -4740,6 +5077,7 @@ void CommandBuffer::bindGraphicsShaderObjectProgram(GraphicsShaderObjectProgram&
     impl_->currentGraphicsPipelineUsesBindlessHeap = false;
     impl_->currentGraphicsShaderObjectBound = true;
     impl_->currentGraphicsShaderObjectUsesBindlessHeap = program.impl_->usesBindlessHeap;
+    impl_->currentBindlessUserDataOffset = sizeof(BindlessHeapPushConstants);
     if (impl_->currentGraphicsShaderObjectUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
         pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
     }
@@ -4818,6 +5156,219 @@ void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_
     if (impl_ != nullptr && groupCountX > 0 && groupCountY > 0 && groupCountZ > 0) {
         vkCmdDispatch(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
     }
+}
+
+Result CommandBuffer::buildRayTracingAccelerationStructure(
+    const RayTracingAccelerationStructureBuildDesc& desc)
+{
+    if (impl_ == nullptr || desc.destination == nullptr ||
+        desc.destination->impl_ == nullptr || !desc.destination->valid() ||
+        desc.destination->impl_->device != impl_->device ||
+        desc.scratchBuffer == nullptr || desc.scratchBuffer->impl_ == nullptr ||
+        desc.scratchBuffer->impl_->device != impl_->device ||
+        !hasFlag(desc.scratchBuffer->desc().usage, BufferUsageBits::Storage)) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->device->rayTracingAccelerationStructureEnabled ||
+        !impl_->device->capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+
+    const RayTracingAccelerationStructureDesc& destinationDesc =
+        desc.destination->impl_->desc;
+    if (desc.mode == RayTracingAccelerationStructureBuildMode::Update) {
+        if (!hasFlag(
+                destinationDesc.buildFlags,
+                RayTracingAccelerationStructureBuildFlags::AllowUpdate) ||
+            desc.source == nullptr || desc.source->impl_ == nullptr ||
+            !desc.source->valid() || desc.source->impl_->device != impl_->device ||
+            desc.source->impl_->desc.type != destinationDesc.type) {
+            return makeError(Error::InvalidArgument);
+        }
+    } else if (desc.source != nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    std::vector<VkAccelerationStructureGeometryKHR> geometries;
+    std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
+    if (destinationDesc.type == RayTracingAccelerationStructureType::BottomLevel) {
+        if (desc.geometries == nullptr || desc.geometryCount == 0 ||
+            desc.instanceBuffer != nullptr || desc.instanceCount != 0) {
+            return makeError(Error::InvalidArgument);
+        }
+        geometries.reserve(desc.geometryCount);
+        ranges.reserve(desc.geometryCount);
+        for (uint32_t index = 0; index < desc.geometryCount; ++index) {
+            const RayTracingTriangleGeometryDesc& source = desc.geometries[index];
+            if (source.vertexBuffer == nullptr || source.vertexBuffer->impl_ == nullptr ||
+                source.vertexBuffer->impl_->device != impl_->device ||
+                source.vertexCount == 0 || source.vertexStride == 0 ||
+                source.primitiveCount == 0 || source.vertexFormat == Format::Unknown ||
+                source.vertexOffset >= source.vertexBuffer->desc().size ||
+                !hasFlag(
+                    source.vertexBuffer->desc().usage,
+                    BufferUsageBits::AccelerationStructureBuildInput)) {
+                return makeError(Error::InvalidArgument);
+            }
+            const VkDeviceAddress vertexAddress = source.vertexBuffer->deviceAddress();
+            const VkFormat vertexFormat = toVkFormat(source.vertexFormat);
+            if (vertexAddress == 0 || vertexFormat == VK_FORMAT_UNDEFINED) {
+                return makeError(Error::Failure);
+            }
+
+            VkDeviceAddress indexAddress = 0;
+            if (source.indexType != RayTracingIndexType::None) {
+                if (source.indexBuffer == nullptr || source.indexBuffer->impl_ == nullptr ||
+                    source.indexBuffer->impl_->device != impl_->device ||
+                    source.indexOffset >= source.indexBuffer->desc().size ||
+                    !hasFlag(
+                        source.indexBuffer->desc().usage,
+                        BufferUsageBits::AccelerationStructureBuildInput)) {
+                    return makeError(Error::InvalidArgument);
+                }
+                indexAddress = source.indexBuffer->deviceAddress();
+                if (indexAddress == 0) {
+                    return makeError(Error::Failure);
+                }
+            }
+
+            VkAccelerationStructureGeometryTrianglesDataKHR triangles{
+                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
+                .vertexFormat = vertexFormat,
+                .vertexData = {.deviceAddress = vertexAddress + source.vertexOffset},
+                .vertexStride = source.vertexStride,
+                .maxVertex = source.vertexCount - 1,
+                .indexType = toVkRayTracingIndexType(source.indexType),
+                .indexData = {.deviceAddress = indexAddress == 0 ? 0 : indexAddress + source.indexOffset},
+            };
+            VkAccelerationStructureGeometryKHR geometry{
+                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+                .geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR,
+                .flags = toVkGeometryFlags(source.flags),
+            };
+            geometry.geometry.triangles = triangles;
+            geometries.push_back(geometry);
+            ranges.push_back(VkAccelerationStructureBuildRangeInfoKHR{
+                .primitiveCount = source.primitiveCount,
+            });
+        }
+    } else {
+        if (desc.geometries != nullptr || desc.geometryCount != 0 ||
+            desc.instanceBuffer == nullptr || desc.instanceBuffer->impl_ == nullptr ||
+            desc.instanceBuffer->impl_->device != impl_->device || desc.instanceCount == 0 ||
+            !hasFlag(
+                desc.instanceBuffer->desc().usage,
+                BufferUsageBits::AccelerationStructureBuildInput)) {
+            return makeError(Error::InvalidArgument);
+        }
+        const VkDeviceAddress instanceAddress = desc.instanceBuffer->deviceAddress();
+        if (instanceAddress == 0 || (instanceAddress & 15u) != 0) {
+            return makeError(Error::Failure);
+        }
+        VkAccelerationStructureGeometryInstancesDataKHR instances{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+            .arrayOfPointers = VK_FALSE,
+            .data = {.deviceAddress = instanceAddress},
+        };
+        VkAccelerationStructureGeometryKHR geometry{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+            .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR,
+        };
+        geometry.geometry.instances = instances;
+        geometries.push_back(geometry);
+        ranges.push_back(VkAccelerationStructureBuildRangeInfoKHR{
+            .primitiveCount = desc.instanceCount,
+        });
+    }
+
+    const VkDeviceAddress scratchBase = desc.scratchBuffer->deviceAddress();
+    if (scratchBase == 0 || desc.scratchBufferOffset >= desc.scratchBuffer->desc().size) {
+        return makeError(Error::Failure);
+    }
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
+    };
+    VkPhysicalDeviceProperties2 properties2{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &properties,
+    };
+    vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &properties2);
+    const uint64_t scratchAlignment = std::max<uint64_t>(
+        1,
+        properties.minAccelerationStructureScratchOffsetAlignment);
+    const VkDeviceAddress unalignedScratchAddress = scratchBase + desc.scratchBufferOffset;
+    const VkDeviceAddress scratchAddress =
+        (unalignedScratchAddress + scratchAlignment - 1u) & ~(scratchAlignment - 1u);
+    const uint64_t alignedScratchOffset = scratchAddress - scratchBase;
+
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+        .type = toVkAccelerationStructureType(destinationDesc.type),
+        .flags = toVkAccelerationStructureBuildFlags(destinationDesc.buildFlags),
+        .mode = desc.mode == RayTracingAccelerationStructureBuildMode::Update
+            ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
+            : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+        .srcAccelerationStructure = desc.source != nullptr
+            ? desc.source->impl_->accelerationStructure
+            : VK_NULL_HANDLE,
+        .dstAccelerationStructure = desc.destination->impl_->accelerationStructure,
+        .geometryCount = static_cast<uint32_t>(geometries.size()),
+        .pGeometries = geometries.data(),
+        .scratchData = {.deviceAddress = scratchAddress},
+    };
+    std::vector<uint32_t> primitiveCounts;
+    primitiveCounts.reserve(ranges.size());
+    for (const VkAccelerationStructureBuildRangeInfoKHR& range : ranges) {
+        primitiveCounts.push_back(range.primitiveCount);
+    }
+    VkAccelerationStructureBuildSizesInfoKHR sizes{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+    };
+    vkGetAccelerationStructureBuildSizesKHR(
+        impl_->device->device,
+        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+        &buildInfo,
+        primitiveCounts.data(),
+        &sizes);
+    const uint64_t requiredScratchSize =
+        desc.mode == RayTracingAccelerationStructureBuildMode::Update
+        ? sizes.updateScratchSize
+        : sizes.buildScratchSize;
+    if (requiredScratchSize == 0 ||
+        alignedScratchOffset >= desc.scratchBuffer->desc().size ||
+        requiredScratchSize > desc.scratchBuffer->desc().size - alignedScratchOffset ||
+        sizes.accelerationStructureSize > destinationDesc.size) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> rangePointers;
+    rangePointers.reserve(ranges.size());
+    for (const VkAccelerationStructureBuildRangeInfoKHR& range : ranges) {
+        rangePointers.push_back(&range);
+    }
+    vkCmdBuildAccelerationStructuresKHR(
+        impl_->commandBuffer,
+        1,
+        &buildInfo,
+        rangePointers.data());
+
+    const VkMemoryBarrier2 barrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
+            VK_ACCESS_2_SHADER_READ_BIT,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+    return {};
 }
 
 Result CommandBuffer::buildClusterAccelerationStructureTriangles(
@@ -5072,6 +5623,368 @@ Result CommandBuffer::buildClusterAccelerationStructureTriangles(
 #endif
 }
 
+Result CommandBuffer::buildClusterAccelerationStructureBottomLevels(
+    const ClusterAccelerationStructureBottomLevelBuildDesc& desc)
+{
+#ifndef VK_NV_cluster_acceleration_structure
+    (void)desc;
+    return makeError(Error::Unsupported);
+#else
+    if (impl_ == nullptr || impl_->device == nullptr ||
+        !impl_->device->clusterAccelerationStructureEnabled ||
+        vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
+        return makeError(Error::Unsupported);
+    }
+    if (desc.maxClusterCountPerAccelerationStructure == 0 ||
+        desc.maxTotalClusterCount == 0 ||
+        desc.maxAccelerationStructureCount == 0 ||
+        desc.buildInfoBuffer == nullptr ||
+        desc.destinationAddressBuffer == nullptr ||
+        desc.scratchBuffer == nullptr ||
+        desc.buildInfoStride < sizeof(ClusterAccelerationStructureBottomLevelBuildInfo) ||
+        desc.destinationAddressStride < sizeof(uint64_t)) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    auto validateBuffer = [this](Buffer* buffer, BufferUsageBits usage) {
+        return buffer != nullptr && buffer->impl_ != nullptr &&
+            buffer->impl_->device == impl_->device &&
+            hasFlag(buffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) &&
+            hasFlag(buffer->desc().usage, usage);
+    };
+    if (!validateBuffer(
+            desc.buildInfoBuffer,
+            BufferUsageBits::AccelerationStructureBuildInput) ||
+        !validateBuffer(desc.destinationAddressBuffer, BufferUsageBits::Storage) ||
+        !validateBuffer(desc.scratchBuffer, BufferUsageBits::Storage) ||
+        (desc.buildInfoCountBuffer != nullptr &&
+         !validateBuffer(desc.buildInfoCountBuffer, BufferUsageBits::Storage)) ||
+        (desc.destinationSizeBuffer != nullptr &&
+         !validateBuffer(desc.destinationSizeBuffer, BufferUsageBits::Storage))) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.destinationMode == ClusterAccelerationStructureDestinationMode::Implicit) {
+        if (!validateBuffer(
+                desc.destinationStorageBuffer,
+                BufferUsageBits::AccelerationStructureStorage)) {
+            return makeError(Error::InvalidArgument);
+        }
+    } else if (!hasFlag(
+                   desc.destinationAddressBuffer->desc().usage,
+                   BufferUsageBits::AccelerationStructureBuildInput)) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const uint64_t buildInfoSize = desc.buildInfoSize != 0
+        ? desc.buildInfoSize
+        : static_cast<uint64_t>(desc.maxAccelerationStructureCount) *
+            desc.buildInfoStride;
+    const uint64_t destinationAddressSize = desc.destinationAddressSize != 0
+        ? desc.destinationAddressSize
+        : static_cast<uint64_t>(desc.maxAccelerationStructureCount) *
+            desc.destinationAddressStride;
+    const uint64_t destinationSizeSize = desc.destinationSizeBuffer != nullptr
+        ? (desc.destinationSizeSize != 0
+            ? desc.destinationSizeSize
+            : static_cast<uint64_t>(desc.maxAccelerationStructureCount) *
+                desc.destinationSizeStride)
+        : 0;
+    auto rangeValid = [](const Buffer& buffer, uint64_t offset, uint64_t size) {
+        return offset <= buffer.desc().size && size <= buffer.desc().size - offset;
+    };
+    if (!rangeValid(*desc.buildInfoBuffer, desc.buildInfoBufferOffset, buildInfoSize) ||
+        !rangeValid(
+            *desc.destinationAddressBuffer,
+            desc.destinationAddressBufferOffset,
+            destinationAddressSize) ||
+        !rangeValid(*desc.scratchBuffer, desc.scratchBufferOffset, 1) ||
+        (desc.buildInfoCountBuffer != nullptr &&
+         !rangeValid(
+             *desc.buildInfoCountBuffer,
+             desc.buildInfoCountBufferOffset,
+             sizeof(uint32_t))) ||
+        (desc.destinationSizeBuffer != nullptr &&
+         !rangeValid(
+             *desc.destinationSizeBuffer,
+             desc.destinationSizeBufferOffset,
+             destinationSizeSize))) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const uint64_t buildInfoAddress = desc.buildInfoBuffer->deviceAddress();
+    const uint64_t destinationAddress = desc.destinationAddressBuffer->deviceAddress();
+    const uint64_t scratchBase = desc.scratchBuffer->deviceAddress();
+    const uint64_t destinationStorageAddress =
+        desc.destinationStorageBuffer != nullptr
+        ? desc.destinationStorageBuffer->deviceAddress()
+        : 0;
+    const uint64_t countAddress = desc.buildInfoCountBuffer != nullptr
+        ? desc.buildInfoCountBuffer->deviceAddress()
+        : 0;
+    const uint64_t sizeAddress = desc.destinationSizeBuffer != nullptr
+        ? desc.destinationSizeBuffer->deviceAddress()
+        : 0;
+    if (buildInfoAddress == 0 || destinationAddress == 0 || scratchBase == 0 ||
+        (desc.destinationMode == ClusterAccelerationStructureDestinationMode::Implicit &&
+         destinationStorageAddress == 0) ||
+        (desc.buildInfoCountBuffer != nullptr && countAddress == 0) ||
+        (desc.destinationSizeBuffer != nullptr && sizeAddress == 0)) {
+        return makeError(Error::Failure);
+    }
+
+    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
+    };
+    VkPhysicalDeviceProperties2 properties2{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &properties,
+    };
+    vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &properties2);
+    const uint64_t scratchAlignment = std::max<uint64_t>(
+        1,
+        properties.clusterScratchByteAlignment);
+    const uint64_t unalignedScratchAddress = scratchBase + desc.scratchBufferOffset;
+    const uint64_t scratchAddress =
+        (unalignedScratchAddress + scratchAlignment - 1u) & ~(scratchAlignment - 1u);
+    if (scratchAddress < scratchBase ||
+        scratchAddress >= scratchBase + desc.scratchBuffer->desc().size) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    VkClusterAccelerationStructureClustersBottomLevelInputNV bottomLevelInput{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
+        .maxTotalClusterCount = desc.maxTotalClusterCount,
+        .maxClusterCountPerAccelerationStructure =
+            desc.maxClusterCountPerAccelerationStructure,
+    };
+    VkClusterAccelerationStructureInputInfoNV input{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+        .maxAccelerationStructureCount = desc.maxAccelerationStructureCount,
+        .flags = toVkAccelerationStructureBuildFlags(desc.flags),
+        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV,
+        .opMode = desc.destinationMode ==
+                ClusterAccelerationStructureDestinationMode::Implicit
+            ? VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV
+            : VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
+        .opInput = {.pClustersBottomLevel = &bottomLevelInput},
+    };
+    VkClusterAccelerationStructureCommandsInfoNV commands{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
+        .input = input,
+        .dstImplicitData = desc.destinationMode ==
+                ClusterAccelerationStructureDestinationMode::Implicit
+            ? destinationStorageAddress + desc.destinationStorageBufferOffset
+            : 0,
+        .scratchData = scratchAddress,
+        .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
+            .deviceAddress = destinationAddress + desc.destinationAddressBufferOffset,
+            .stride = desc.destinationAddressStride,
+            .size = destinationAddressSize,
+        },
+        .dstSizesArray = VkStridedDeviceAddressRegionKHR{
+            .deviceAddress = sizeAddress == 0
+                ? 0
+                : sizeAddress + desc.destinationSizeBufferOffset,
+            .stride = desc.destinationSizeStride,
+            .size = destinationSizeSize,
+        },
+        .srcInfosArray = VkStridedDeviceAddressRegionKHR{
+            .deviceAddress = buildInfoAddress + desc.buildInfoBufferOffset,
+            .stride = desc.buildInfoStride,
+            .size = buildInfoSize,
+        },
+        .srcInfosCount = countAddress == 0
+            ? 0
+            : countAddress + desc.buildInfoCountBufferOffset,
+    };
+
+    const VkMemoryBarrier2 inputBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT |
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT |
+            VK_ACCESS_2_MEMORY_READ_BIT |
+            VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+    };
+    const VkDependencyInfo inputDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &inputBarrier,
+    };
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &inputDependency);
+    vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
+
+    const VkMemoryBarrier2 outputBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
+            VK_ACCESS_2_SHADER_READ_BIT,
+    };
+    const VkDependencyInfo outputDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &outputBarrier,
+    };
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &outputDependency);
+    return {};
+#endif
+}
+
+Result CommandBuffer::buildPartitionedAccelerationStructure(
+    const PartitionedAccelerationStructureBuildDesc& desc)
+{
+#ifndef VK_NV_partitioned_acceleration_structure
+    (void)desc;
+    return makeError(Error::Unsupported);
+#else
+    if (impl_ == nullptr || impl_->device == nullptr ||
+        !impl_->device->partitionedAccelerationStructureEnabled ||
+        vkCmdBuildPartitionedAccelerationStructuresNV == nullptr) {
+        return makeError(Error::Unsupported);
+    }
+    if (desc.destination == nullptr || desc.destination->impl_ == nullptr ||
+        !desc.destination->valid() ||
+        desc.destination->impl_->device != impl_->device ||
+        desc.instanceBuffer == nullptr || desc.instanceBuffer->impl_ == nullptr ||
+        desc.instanceBuffer->impl_->device != impl_->device ||
+        desc.scratchBuffer == nullptr || desc.scratchBuffer->impl_ == nullptr ||
+        desc.scratchBuffer->impl_->device != impl_->device ||
+        desc.instanceCount == 0 ||
+        desc.instanceCount != desc.destination->impl_->desc.inputs.instanceCount ||
+        !hasFlag(
+            desc.instanceBuffer->desc().usage,
+            BufferUsageBits::AccelerationStructureBuildInput) ||
+        !hasFlag(desc.scratchBuffer->desc().usage, BufferUsageBits::Storage)) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const uint64_t instanceAddress = desc.instanceBuffer->deviceAddress();
+    const uint64_t scratchBase = desc.scratchBuffer->deviceAddress();
+    const uint64_t operationAddress =
+        desc.destination->impl_->operationBuffer->deviceAddress();
+    const uint64_t operationCountAddress =
+        desc.destination->impl_->operationCountBuffer->deviceAddress();
+    if (instanceAddress == 0 || scratchBase == 0 || operationAddress == 0 ||
+        operationCountAddress == 0) {
+        return makeError(Error::Failure);
+    }
+
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
+    };
+    VkPhysicalDeviceProperties2 properties2{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &properties,
+    };
+    vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &properties2);
+    const uint64_t scratchAlignment = std::max<uint64_t>(
+        1,
+        properties.minAccelerationStructureScratchOffsetAlignment);
+    const uint64_t unalignedScratchAddress = scratchBase + desc.scratchBufferOffset;
+    const uint64_t scratchAddress =
+        (unalignedScratchAddress + scratchAlignment - 1u) & ~(scratchAlignment - 1u);
+    const uint64_t alignedScratchOffset = scratchAddress - scratchBase;
+    if (alignedScratchOffset >= desc.scratchBuffer->desc().size ||
+        desc.destination->impl_->desc.sizes.buildScratchSize >
+            desc.scratchBuffer->desc().size - alignedScratchOffset) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    VkBuildPartitionedAccelerationStructureIndirectCommandNV operation{
+        .opType = VK_PARTITIONED_ACCELERATION_STRUCTURE_OP_TYPE_WRITE_INSTANCE_NV,
+        .argCount = desc.instanceCount,
+        .argData = VkStridedDeviceAddressNV{
+            .startAddress = instanceAddress,
+            .strideInBytes = sizeof(VkPartitionedAccelerationStructureWriteInstanceDataNV),
+        },
+    };
+    void* mappedOperation = desc.destination->impl_->operationBuffer->map();
+    void* mappedOperationCount = desc.destination->impl_->operationCountBuffer->map();
+    if (mappedOperation == nullptr || mappedOperationCount == nullptr) {
+        if (mappedOperation != nullptr) {
+            desc.destination->impl_->operationBuffer->unmap();
+        }
+        if (mappedOperationCount != nullptr) {
+            desc.destination->impl_->operationCountBuffer->unmap();
+        }
+        return makeError(Error::Failure);
+    }
+    std::memcpy(mappedOperation, &operation, sizeof(operation));
+    const uint32_t operationCount = 1;
+    std::memcpy(mappedOperationCount, &operationCount, sizeof(operationCount));
+    desc.destination->impl_->operationBuffer->flush(0, sizeof(operation));
+    desc.destination->impl_->operationCountBuffer->flush(0, sizeof(operationCount));
+    desc.destination->impl_->operationBuffer->unmap();
+    desc.destination->impl_->operationCountBuffer->unmap();
+
+    const PartitionedAccelerationStructureBuildInputs& inputs =
+        desc.destination->impl_->desc.inputs;
+    VkPartitionedAccelerationStructureFlagsNV partitionedFlags{
+        .sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_FLAGS_NV,
+        .enablePartitionTranslation = inputs.allowPartitionTranslation ? VK_TRUE : VK_FALSE,
+    };
+    VkPartitionedAccelerationStructureInstancesInputNV inputInfo{
+        .sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCES_INPUT_NV,
+        .pNext = &partitionedFlags,
+        .flags = toVkAccelerationStructureBuildFlags(inputs.flags),
+        .instanceCount = inputs.instanceCount,
+        .maxInstancePerPartitionCount = inputs.maxInstancePerPartitionCount,
+        .partitionCount = inputs.partitionCount,
+        .maxInstanceInGlobalPartitionCount = inputs.maxInstanceInGlobalPartitionCount,
+    };
+    VkBuildPartitionedAccelerationStructureInfoNV buildInfo{
+        .sType = VK_STRUCTURE_TYPE_BUILD_PARTITIONED_ACCELERATION_STRUCTURE_INFO_NV,
+        .input = inputInfo,
+        .srcAccelerationStructureData = 0,
+        .dstAccelerationStructureData = desc.destination->impl_->address,
+        .scratchData = scratchAddress,
+        .srcInfos = operationAddress,
+        .srcInfosCount = operationCountAddress,
+    };
+    const VkMemoryBarrier2 inputBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT |
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT |
+            VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+    };
+    const VkDependencyInfo inputDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &inputBarrier,
+    };
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &inputDependency);
+    vkCmdBuildPartitionedAccelerationStructuresNV(impl_->commandBuffer, &buildInfo);
+
+    const VkMemoryBarrier2 outputBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+    };
+    const VkDependencyInfo outputDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &outputBarrier,
+    };
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &outputDependency);
+    return {};
+#endif
+}
+
 CommandPool::CommandPool(std::unique_ptr<detail::CommandPoolImpl> impl)
     : impl_(std::move(impl))
 {
@@ -5218,6 +6131,305 @@ const DeviceCapabilities& Device::capabilities() const
     return impl_ != nullptr ? impl_->capabilities : emptyCapabilities;
 }
 
+Result Device::queryRayTracingAccelerationStructureProperties(
+    RayTracingAccelerationStructureProperties& outProperties) const
+{
+    outProperties = {};
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->rayTracingAccelerationStructureEnabled ||
+        !impl_->capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
+    };
+    VkPhysicalDeviceProperties2 properties2{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &properties,
+    };
+    vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties2);
+    outProperties = RayTracingAccelerationStructureProperties{
+        .scratchAlignment = std::max<uint64_t>(
+            1,
+            properties.minAccelerationStructureScratchOffsetAlignment),
+        .instanceBufferAlignment = 16,
+        .instanceRecordSize = sizeof(RayTracingGpuInstance),
+    };
+    return {};
+}
+
+Result Device::queryRayTracingAccelerationStructureBuildSizes(
+    const RayTracingAccelerationStructureBuildInputs& inputs,
+    RayTracingAccelerationStructureBuildSizes& outSizes) const
+{
+    outSizes = {};
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->rayTracingAccelerationStructureEnabled ||
+        !impl_->capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+
+    activateVolkDevice(impl_->device);
+    std::vector<VkAccelerationStructureGeometryKHR> geometries;
+    std::vector<uint32_t> primitiveCounts;
+    if (inputs.type == RayTracingAccelerationStructureType::BottomLevel) {
+        if (inputs.geometries == nullptr || inputs.geometryCount == 0 ||
+            inputs.instanceCount != 0) {
+            return makeError(Error::InvalidArgument);
+        }
+        geometries.reserve(inputs.geometryCount);
+        primitiveCounts.reserve(inputs.geometryCount);
+        for (uint32_t index = 0; index < inputs.geometryCount; ++index) {
+            const RayTracingTriangleGeometryDesc& source = inputs.geometries[index];
+            if (source.vertexBuffer == nullptr || source.vertexBuffer->impl_ == nullptr ||
+                source.vertexBuffer->impl_->device != impl_.get() ||
+                source.vertexCount == 0 || source.vertexStride == 0 ||
+                source.primitiveCount == 0 || source.vertexFormat == Format::Unknown ||
+                source.vertexOffset >= source.vertexBuffer->desc().size ||
+                !hasFlag(
+                    source.vertexBuffer->desc().usage,
+                    BufferUsageBits::AccelerationStructureBuildInput)) {
+                return makeError(Error::InvalidArgument);
+            }
+            const VkDeviceAddress vertexAddress = source.vertexBuffer->deviceAddress();
+            const VkFormat vertexFormat = toVkFormat(source.vertexFormat);
+            if (vertexAddress == 0 || vertexFormat == VK_FORMAT_UNDEFINED) {
+                return makeError(Error::InvalidArgument);
+            }
+
+            VkDeviceAddress indexAddress = 0;
+            if (source.indexType != RayTracingIndexType::None) {
+                if (source.indexBuffer == nullptr || source.indexBuffer->impl_ == nullptr ||
+                    source.indexBuffer->impl_->device != impl_.get() ||
+                    source.indexOffset >= source.indexBuffer->desc().size ||
+                    !hasFlag(
+                        source.indexBuffer->desc().usage,
+                        BufferUsageBits::AccelerationStructureBuildInput)) {
+                    return makeError(Error::InvalidArgument);
+                }
+                indexAddress = source.indexBuffer->deviceAddress();
+                if (indexAddress == 0) {
+                    return makeError(Error::Failure);
+                }
+            }
+
+            VkAccelerationStructureGeometryTrianglesDataKHR triangles{
+                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
+                .vertexFormat = vertexFormat,
+                .vertexData = {.deviceAddress = vertexAddress + source.vertexOffset},
+                .vertexStride = source.vertexStride,
+                .maxVertex = source.vertexCount - 1,
+                .indexType = toVkRayTracingIndexType(source.indexType),
+                .indexData = {.deviceAddress = indexAddress == 0 ? 0 : indexAddress + source.indexOffset},
+            };
+            VkAccelerationStructureGeometryKHR geometry{
+                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+                .geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR,
+                .geometry = {.triangles = triangles},
+                .flags = toVkGeometryFlags(source.flags),
+            };
+            geometries.push_back(geometry);
+            primitiveCounts.push_back(source.primitiveCount);
+        }
+    } else {
+        if (inputs.geometries != nullptr || inputs.geometryCount != 0 ||
+            inputs.instanceCount == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+        VkAccelerationStructureGeometryInstancesDataKHR instances{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+        };
+        geometries.push_back(VkAccelerationStructureGeometryKHR{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+            .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR,
+            .geometry = {.instances = instances},
+        });
+        primitiveCounts.push_back(inputs.instanceCount);
+    }
+
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+        .type = toVkAccelerationStructureType(inputs.type),
+        .flags = toVkAccelerationStructureBuildFlags(inputs.flags),
+        .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+        .geometryCount = static_cast<uint32_t>(geometries.size()),
+        .pGeometries = geometries.data(),
+    };
+    VkAccelerationStructureBuildSizesInfoKHR sizes{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+    };
+    vkGetAccelerationStructureBuildSizesKHR(
+        impl_->device,
+        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+        &buildInfo,
+        primitiveCounts.data(),
+        &sizes);
+    if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0) {
+        return makeError(Error::Failure);
+    }
+    outSizes = RayTracingAccelerationStructureBuildSizes{
+        .accelerationStructureSize = sizes.accelerationStructureSize,
+        .buildScratchSize = sizes.buildScratchSize,
+        .updateScratchSize = sizes.updateScratchSize,
+    };
+    return {};
+}
+
+Result Device::createRayTracingAccelerationStructure(
+    const RayTracingAccelerationStructureDesc& desc,
+    std::unique_ptr<RayTracingAccelerationStructure>& outAccelerationStructure)
+{
+    outAccelerationStructure.reset();
+    if (impl_ == nullptr || desc.size == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->rayTracingAccelerationStructureEnabled ||
+        !impl_->capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+
+    std::unique_ptr<Buffer> storage;
+    Result result = createBuffer(
+        BufferDesc{
+            .size = desc.size,
+            .usage = BufferUsageBits::AccelerationStructureStorage |
+                BufferUsageBits::ShaderDeviceAddress,
+            .memoryLocation = MemoryLocation::Device,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
+        },
+        storage);
+    if (!result) {
+        return result;
+    }
+
+    activateVolkDevice(impl_->device);
+    VkAccelerationStructureCreateInfoKHR createInfo{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
+        .buffer = storage->impl_->buffer,
+        .size = desc.size,
+        .type = toVkAccelerationStructureType(desc.type),
+    };
+    VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
+    const VkResult vkResult = vkCreateAccelerationStructureKHR(
+        impl_->device,
+        &createInfo,
+        nullptr,
+        &accelerationStructure);
+    if (vkResult != VK_SUCCESS) {
+        return resultFromVk(vkResult);
+    }
+
+    VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
+        .accelerationStructure = accelerationStructure,
+    };
+    const VkDeviceAddress address = vkGetAccelerationStructureDeviceAddressKHR(
+        impl_->device,
+        &addressInfo);
+    if (address == 0) {
+        vkDestroyAccelerationStructureKHR(impl_->device, accelerationStructure, nullptr);
+        return makeError(Error::Failure);
+    }
+
+    auto accelerationStructureImpl =
+        std::make_unique<detail::RayTracingAccelerationStructureImpl>();
+    accelerationStructureImpl->device = impl_.get();
+    accelerationStructureImpl->desc = desc;
+    accelerationStructureImpl->storage = std::move(storage);
+    accelerationStructureImpl->accelerationStructure = accelerationStructure;
+    accelerationStructureImpl->address = address;
+    outAccelerationStructure.reset(
+        new RayTracingAccelerationStructure(std::move(accelerationStructureImpl)));
+    return {};
+}
+
+Result Device::createRayTracingInstanceBuffer(
+    const RayTracingInstanceDesc* instances,
+    uint32_t instanceCount,
+    std::unique_ptr<Buffer>& outBuffer)
+{
+    outBuffer.reset();
+    if (impl_ == nullptr || instances == nullptr || instanceCount == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    Result result = createBuffer(
+        BufferDesc{
+            .size = static_cast<uint64_t>(instanceCount) * sizeof(RayTracingGpuInstance),
+            .structureStride = sizeof(RayTracingGpuInstance),
+            .usage = BufferUsageBits::AccelerationStructureBuildInput |
+                BufferUsageBits::ShaderDeviceAddress,
+            .memoryLocation = MemoryLocation::HostUpload,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
+        },
+        outBuffer);
+    if (!result) {
+        return result;
+    }
+    result = writeRayTracingInstances(*outBuffer, instances, instanceCount);
+    if (!result) {
+        outBuffer.reset();
+    }
+    return result;
+}
+
+Result Device::writeRayTracingInstances(
+    Buffer& buffer,
+    const RayTracingInstanceDesc* instances,
+    uint32_t instanceCount)
+{
+    if (impl_ == nullptr || buffer.impl_ == nullptr || buffer.impl_->device != impl_.get() ||
+        instances == nullptr || instanceCount == 0 ||
+        !hasFlag(buffer.desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
+        static_cast<uint64_t>(instanceCount) * sizeof(RayTracingGpuInstance) >
+            buffer.desc().size) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    static_assert(sizeof(RayTracingGpuInstance) == sizeof(VkAccelerationStructureInstanceKHR));
+    static_assert(
+        offsetof(RayTracingGpuInstance, accelerationStructureReference) ==
+        offsetof(VkAccelerationStructureInstanceKHR, accelerationStructureReference));
+    std::vector<RayTracingGpuInstance> encoded(instanceCount);
+    for (uint32_t index = 0; index < instanceCount; ++index) {
+        const RayTracingInstanceDesc& source = instances[index];
+        if (source.bottomLevel == nullptr || source.bottomLevel->impl_ == nullptr ||
+            source.bottomLevel->impl_->device != impl_.get() ||
+            source.bottomLevel->impl_->desc.type !=
+                RayTracingAccelerationStructureType::BottomLevel ||
+            !source.bottomLevel->valid() || source.customIndex > 0x00ffffffu ||
+            source.shaderBindingTableRecordOffset > 0x00ffffffu) {
+            return makeError(Error::InvalidArgument);
+        }
+        RayTracingGpuInstance& destination = encoded[index];
+        std::memcpy(
+            destination.transform,
+            source.transform,
+            sizeof(destination.transform));
+        destination.customIndexAndMask =
+            (source.customIndex & 0x00ffffffu) |
+            (static_cast<uint32_t>(source.mask) << 24u);
+        destination.shaderBindingTableRecordOffsetAndFlags =
+            (source.shaderBindingTableRecordOffset & 0x00ffffffu) |
+            (static_cast<uint32_t>(toVkInstanceFlags(source.flags)) << 24u);
+        destination.accelerationStructureReference = source.bottomLevel->impl_->address;
+    }
+
+    void* mapped = buffer.map();
+    if (mapped == nullptr) {
+        return makeError(Error::Failure);
+    }
+    const uint64_t byteSize = static_cast<uint64_t>(encoded.size()) * sizeof(encoded[0]);
+    std::memcpy(mapped, encoded.data(), static_cast<size_t>(byteSize));
+    buffer.flush(0, byteSize);
+    buffer.unmap();
+    return {};
+}
+
 Result Device::queryClusterAccelerationStructureProperties(
     ClusterAccelerationStructureProperties& outProperties) const
 {
@@ -5246,9 +6458,12 @@ Result Device::queryClusterAccelerationStructureProperties(
     }
     outProperties = ClusterAccelerationStructureProperties{
         .clusterStorageAlignment = properties.clusterByteAlignment,
+        .bottomLevelStorageAlignment = properties.clusterBottomLevelByteAlignment,
         .scratchAlignment = properties.clusterScratchByteAlignment,
         .triangleBuildInfoSize =
             sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV),
+        .bottomLevelBuildInfoSize =
+            sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV),
     };
     return {};
 #endif
@@ -5314,6 +6529,251 @@ Result Device::queryClusterAccelerationStructureTriangleBuildSizes(
         .updateScratchSize = sizes.updateScratchSize,
         .buildScratchSize = sizes.buildScratchSize,
     };
+    return {};
+#endif
+}
+
+Result Device::queryClusterAccelerationStructureBottomLevelBuildSizes(
+    const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc,
+    ClusterAccelerationStructureBuildSizes& outSizes) const
+{
+    outSizes = {};
+    if (impl_ == nullptr ||
+        desc.maxClusterCountPerAccelerationStructure == 0 ||
+        desc.maxTotalClusterCount == 0 ||
+        desc.maxAccelerationStructureCount == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->clusterAccelerationStructureEnabled ||
+        !impl_->capabilities.clusterAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+#ifndef VK_NV_cluster_acceleration_structure
+    return makeError(Error::Unsupported);
+#else
+    activateVolkDevice(impl_->device);
+    if (vkGetClusterAccelerationStructureBuildSizesNV == nullptr) {
+        return makeError(Error::Unsupported);
+    }
+    VkClusterAccelerationStructureClustersBottomLevelInputNV bottomLevelInput{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
+        .maxTotalClusterCount = desc.maxTotalClusterCount,
+        .maxClusterCountPerAccelerationStructure =
+            desc.maxClusterCountPerAccelerationStructure,
+    };
+    VkClusterAccelerationStructureInputInfoNV inputInfo{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+        .maxAccelerationStructureCount = desc.maxAccelerationStructureCount,
+        .flags = toVkAccelerationStructureBuildFlags(desc.flags),
+        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV,
+        .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV,
+        .opInput = {.pClustersBottomLevel = &bottomLevelInput},
+    };
+    VkAccelerationStructureBuildSizesInfoKHR sizes{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+    };
+    vkGetClusterAccelerationStructureBuildSizesNV(impl_->device, &inputInfo, &sizes);
+    if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0) {
+        return makeError(Error::Failure);
+    }
+    outSizes = ClusterAccelerationStructureBuildSizes{
+        .accelerationStructureSize = sizes.accelerationStructureSize,
+        .updateScratchSize = sizes.updateScratchSize,
+        .buildScratchSize = sizes.buildScratchSize,
+    };
+    return {};
+#endif
+}
+
+Result Device::queryPartitionedAccelerationStructureBuildSizes(
+    const PartitionedAccelerationStructureBuildInputs& inputs,
+    PartitionedAccelerationStructureBuildSizes& outSizes) const
+{
+    outSizes = {};
+    if (impl_ == nullptr || inputs.instanceCount == 0 ||
+        inputs.partitionCount == 0 || inputs.maxInstancePerPartitionCount == 0 ||
+        inputs.maxOperationCount == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->partitionedAccelerationStructureEnabled ||
+        !impl_->capabilities.partitionedAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+#ifndef VK_NV_partitioned_acceleration_structure
+    return makeError(Error::Unsupported);
+#else
+    activateVolkDevice(impl_->device);
+    if (vkGetPartitionedAccelerationStructuresBuildSizesNV == nullptr) {
+        return makeError(Error::Unsupported);
+    }
+    VkPartitionedAccelerationStructureFlagsNV partitionedFlags{
+        .sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_FLAGS_NV,
+        .enablePartitionTranslation = inputs.allowPartitionTranslation ? VK_TRUE : VK_FALSE,
+    };
+    VkPartitionedAccelerationStructureInstancesInputNV inputInfo{
+        .sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCES_INPUT_NV,
+        .pNext = &partitionedFlags,
+        .flags = toVkAccelerationStructureBuildFlags(inputs.flags),
+        .instanceCount = inputs.instanceCount,
+        .maxInstancePerPartitionCount = inputs.maxInstancePerPartitionCount,
+        .partitionCount = inputs.partitionCount,
+        .maxInstanceInGlobalPartitionCount = inputs.maxInstanceInGlobalPartitionCount,
+    };
+    VkAccelerationStructureBuildSizesInfoKHR sizes{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+    };
+    vkGetPartitionedAccelerationStructuresBuildSizesNV(impl_->device, &inputInfo, &sizes);
+    if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0) {
+        return makeError(Error::Failure);
+    }
+    outSizes = PartitionedAccelerationStructureBuildSizes{
+        .accelerationStructureSize = sizes.accelerationStructureSize,
+        .updateScratchSize = sizes.updateScratchSize,
+        .buildScratchSize = sizes.buildScratchSize,
+        .operationInfoSize = static_cast<uint64_t>(inputs.maxOperationCount) *
+            sizeof(VkBuildPartitionedAccelerationStructureIndirectCommandNV),
+        .operationCountSize = sizeof(uint32_t),
+        .instanceWriteInfoSize = static_cast<uint64_t>(inputs.instanceCount) *
+            sizeof(VkPartitionedAccelerationStructureWriteInstanceDataNV),
+        .instanceUpdateInfoSize = inputs.allowInstanceUpdate
+            ? static_cast<uint64_t>(inputs.instanceCount) *
+                sizeof(VkPartitionedAccelerationStructureUpdateInstanceDataNV)
+            : 0,
+        .partitionWriteInfoSize = inputs.allowPartitionTranslation
+            ? static_cast<uint64_t>(inputs.partitionCount + 1u) *
+                sizeof(VkPartitionedAccelerationStructureWritePartitionTranslationDataNV)
+            : 0,
+    };
+    return {};
+#endif
+}
+
+Result Device::createPartitionedAccelerationStructure(
+    const PartitionedAccelerationStructureDesc& desc,
+    std::unique_ptr<PartitionedAccelerationStructure>& outAccelerationStructure)
+{
+    outAccelerationStructure.reset();
+    if (impl_ == nullptr || desc.sizes.accelerationStructureSize == 0 ||
+        desc.sizes.operationInfoSize == 0 || desc.sizes.operationCountSize == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    PartitionedAccelerationStructureBuildSizes expectedSizes;
+    Result result = queryPartitionedAccelerationStructureBuildSizes(
+        desc.inputs,
+        expectedSizes);
+    if (!result) {
+        return result;
+    }
+    if (desc.sizes.accelerationStructureSize < expectedSizes.accelerationStructureSize ||
+        desc.sizes.operationInfoSize < expectedSizes.operationInfoSize ||
+        desc.sizes.operationCountSize < expectedSizes.operationCountSize) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    auto implementation = std::make_unique<detail::PartitionedAccelerationStructureImpl>();
+    implementation->device = impl_.get();
+    implementation->desc = desc;
+    result = createBuffer(
+        BufferDesc{
+            .size = desc.sizes.accelerationStructureSize,
+            .usage = BufferUsageBits::AccelerationStructureStorage |
+                BufferUsageBits::ShaderDeviceAddress,
+            .memoryLocation = MemoryLocation::Device,
+        },
+        implementation->storage);
+    if (!result) {
+        return result;
+    }
+    result = createBuffer(
+        BufferDesc{
+            .size = desc.sizes.operationInfoSize,
+            .usage = BufferUsageBits::Storage |
+                BufferUsageBits::AccelerationStructureBuildInput |
+                BufferUsageBits::ShaderDeviceAddress,
+            .memoryLocation = MemoryLocation::HostUpload,
+        },
+        implementation->operationBuffer);
+    if (!result) {
+        return result;
+    }
+    result = createBuffer(
+        BufferDesc{
+            .size = desc.sizes.operationCountSize,
+            .usage = BufferUsageBits::Storage |
+                BufferUsageBits::AccelerationStructureBuildInput |
+                BufferUsageBits::ShaderDeviceAddress,
+            .memoryLocation = MemoryLocation::HostUpload,
+        },
+        implementation->operationCountBuffer);
+    if (!result) {
+        return result;
+    }
+    implementation->address = implementation->storage->deviceAddress();
+    if (implementation->address == 0) {
+        return makeError(Error::Failure);
+    }
+    outAccelerationStructure.reset(
+        new PartitionedAccelerationStructure(std::move(implementation)));
+    return {};
+}
+
+Result Device::createPartitionedAccelerationStructureInstanceBuffer(
+    const PartitionedAccelerationStructureInstanceDesc* instances,
+    uint32_t instanceCount,
+    std::unique_ptr<Buffer>& outBuffer)
+{
+    outBuffer.reset();
+    if (impl_ == nullptr || instances == nullptr || instanceCount == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+#ifndef VK_NV_partitioned_acceleration_structure
+    return makeError(Error::Unsupported);
+#else
+    std::vector<VkPartitionedAccelerationStructureWriteInstanceDataNV> encoded(instanceCount);
+    for (uint32_t index = 0; index < instanceCount; ++index) {
+        const PartitionedAccelerationStructureInstanceDesc& source = instances[index];
+        if (source.bottomLevel == nullptr || source.bottomLevel->impl_ == nullptr ||
+            source.bottomLevel->impl_->device != impl_.get() ||
+            source.bottomLevel->desc().type !=
+                RayTracingAccelerationStructureType::BottomLevel ||
+            !source.bottomLevel->valid() || source.customIndex > 0x00ffffffu ||
+            source.shaderBindingTableRecordOffset > 0x00ffffffu) {
+            return makeError(Error::InvalidArgument);
+        }
+        VkPartitionedAccelerationStructureWriteInstanceDataNV& destination = encoded[index];
+        std::memcpy(destination.transform.matrix, source.transform, sizeof(source.transform));
+        destination.instanceID = source.customIndex;
+        destination.instanceMask = source.mask;
+        destination.instanceContributionToHitGroupIndex =
+            source.shaderBindingTableRecordOffset;
+        destination.instanceFlags = static_cast<VkPartitionedAccelerationStructureInstanceFlagsNV>(
+            toVkInstanceFlags(source.flags));
+        destination.instanceIndex = source.instanceIndex;
+        destination.partitionIndex = source.partitionIndex;
+        destination.accelerationStructure = source.bottomLevel->impl_->address;
+    }
+    Result result = createBuffer(
+        BufferDesc{
+            .size = static_cast<uint64_t>(encoded.size()) * sizeof(encoded[0]),
+            .structureStride = sizeof(encoded[0]),
+            .usage = BufferUsageBits::Storage |
+                BufferUsageBits::AccelerationStructureBuildInput |
+                BufferUsageBits::ShaderDeviceAddress,
+            .memoryLocation = MemoryLocation::HostUpload,
+        },
+        outBuffer);
+    if (!result) {
+        return result;
+    }
+    void* mapped = outBuffer->map();
+    if (mapped == nullptr) {
+        outBuffer.reset();
+        return makeError(Error::Failure);
+    }
+    const uint64_t byteSize = static_cast<uint64_t>(encoded.size()) * sizeof(encoded[0]);
+    std::memcpy(mapped, encoded.data(), static_cast<size_t>(byteSize));
+    outBuffer->flush(0, byteSize);
+    outBuffer->unmap();
     return {};
 #endif
 }
@@ -6021,12 +7481,15 @@ Result Device::createComputePipeline(
         return makeError(Error::InvalidArgument);
     }
     activateVolkDevice(impl_->device);
+    const uint32_t bindlessUserDataOffset = desc.bindingMappingCount == 0
+        ? static_cast<uint32_t>(sizeof(BindlessHeapPushConstants))
+        : 0u;
     if (desc.usesBindlessHeap) {
         if (!impl_->capabilities.bindlessDescriptorHeap) {
             return makeError(Error::Unsupported);
         }
         const VkDeviceSize requiredPushDataSize =
-            sizeof(BindlessHeapPushConstants) + desc.bindlessUserPushDataSize;
+            bindlessUserDataOffset + desc.bindlessUserPushDataSize;
         if (impl_->descriptorHeapWriter.maxPushDataSize() < requiredPushDataSize) {
             return makeError(Error::Unsupported);
         }
@@ -6126,16 +7589,26 @@ Result Device::createComputePipeline(
                         VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
                     descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize());
                     break;
+                case ShaderBindingType::AccelerationStructure:
+                case ShaderBindingType::PartitionedAccelerationStructure:
+                    resourceMask = VK_SPIRV_RESOURCE_TYPE_ACCELERATION_STRUCTURE_BIT_EXT;
+                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize());
+                    break;
                 }
 
-                const uint32_t valueSize = source.source == ShaderBindingSource::DeviceAddressFromPushData
-                    ? static_cast<uint32_t>(sizeof(uint64_t))
-                    : static_cast<uint32_t>(sizeof(uint32_t));
-                if (source.pushDataOffset > desc.bindlessUserPushDataSize ||
-                    valueSize > desc.bindlessUserPushDataSize - source.pushDataOffset ||
+                const uint32_t valueSize = source.source == ShaderBindingSource::HeapConstantOffset
+                    ? 0u
+                    : source.source == ShaderBindingSource::DeviceAddressFromPushData
+                        ? static_cast<uint32_t>(sizeof(uint64_t))
+                        : static_cast<uint32_t>(sizeof(uint32_t));
+                if ((valueSize != 0 &&
+                     (source.pushDataOffset > desc.bindlessUserPushDataSize ||
+                      valueSize > desc.bindlessUserPushDataSize - source.pushDataOffset)) ||
                     (source.source == ShaderBindingSource::DeviceAddressFromPushData &&
                      source.type != ShaderBindingType::ConstantBuffer &&
-                     source.type != ShaderBindingType::StorageBuffer)) {
+                     source.type != ShaderBindingType::StorageBuffer &&
+                     source.type != ShaderBindingType::AccelerationStructure &&
+                     source.type != ShaderBindingType::PartitionedAccelerationStructure)) {
                     return makeError(Error::InvalidArgument);
                 }
 
@@ -6146,18 +7619,31 @@ Result Device::createComputePipeline(
                     .bindingCount = source.bindingCount,
                     .resourceMask = resourceMask,
                 };
-                const uint32_t pushOffset = static_cast<uint32_t>(sizeof(BindlessHeapPushConstants)) +
-                    source.pushDataOffset;
+                const uint32_t pushOffset = bindlessUserDataOffset + source.pushDataOffset;
+                const uint64_t heapOffset =
+                    static_cast<uint64_t>(source.heapIndexOffset) * descriptorStride;
+                if (heapOffset > UINT32_MAX) {
+                    return makeError(Error::InvalidArgument);
+                }
                 if (source.source == ShaderBindingSource::DeviceAddressFromPushData) {
+                    if (source.heapIndexOffset != 0) {
+                        return makeError(Error::InvalidArgument);
+                    }
                     mapping.source = VK_DESCRIPTOR_MAPPING_SOURCE_PUSH_ADDRESS_EXT;
                     mapping.sourceData.pushAddressOffset = pushOffset;
+                } else if (source.source == ShaderBindingSource::HeapConstantOffset) {
+                    mapping.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT;
+                    mapping.sourceData.constantOffset.heapOffset = static_cast<uint32_t>(heapOffset);
+                    mapping.sourceData.constantOffset.heapArrayStride = descriptorStride;
+                    mapping.sourceData.constantOffset.samplerHeapOffset = static_cast<uint32_t>(heapOffset);
+                    mapping.sourceData.constantOffset.samplerHeapArrayStride = descriptorStride;
                 } else {
                     mapping.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_PUSH_INDEX_EXT;
-                    mapping.sourceData.pushIndex.heapOffset = 0;
+                    mapping.sourceData.pushIndex.heapOffset = static_cast<uint32_t>(heapOffset);
                     mapping.sourceData.pushIndex.pushOffset = pushOffset;
                     mapping.sourceData.pushIndex.heapIndexStride = descriptorStride;
                     mapping.sourceData.pushIndex.heapArrayStride = descriptorStride;
-                    mapping.sourceData.pushIndex.samplerHeapOffset = 0;
+                    mapping.sourceData.pushIndex.samplerHeapOffset = static_cast<uint32_t>(heapOffset);
                     mapping.sourceData.pushIndex.samplerPushOffset = pushOffset;
                     mapping.sourceData.pushIndex.samplerHeapIndexStride = descriptorStride;
                     mapping.sourceData.pushIndex.samplerHeapArrayStride = descriptorStride;
@@ -6213,6 +7699,7 @@ Result Device::createComputePipeline(
     pipelineImpl->layout = layout;
     pipelineImpl->pipeline = pipeline;
     pipelineImpl->usesBindlessHeap = desc.usesBindlessHeap;
+    pipelineImpl->bindlessUserDataOffset = bindlessUserDataOffset;
     pipelineImpl->psoHash = psoHash;
     pipelineImpl->pipelineCacheHit = pipelineCache != nullptr &&
         pipelineCache->recordPsoLocked(psoHash);
@@ -6970,178 +8457,6 @@ struct VulkanNativeAccess {
         return view.impl_ != nullptr ? view.impl_->view : VK_NULL_HANDLE;
     }
 
-    static Result queryClusterAccelerationStructureTriangleBuildSizes(
-        Device& device,
-        const vulkan::ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
-        vulkan::ClusterAccelerationStructureBuildSizes& outSizes)
-    {
-        outSizes = {};
-        if (device.impl_ == nullptr) {
-            return makeError(Error::InvalidArgument);
-        }
-        if (!device.impl_->clusterAccelerationStructureEnabled ||
-            !device.impl_->capabilities.clusterAccelerationStructure) {
-            return makeError(Error::Unsupported);
-        }
-        if (desc.maxClusterTriangleCount == 0 ||
-            desc.maxClusterVertexCount == 0 ||
-            desc.maxClusterUniqueGeometryCount == 0 ||
-            desc.maxTotalTriangleCount == 0 ||
-            desc.maxTotalVertexCount == 0 ||
-            desc.maxAccelerationStructureCount == 0 ||
-            desc.vertexFormat == VK_FORMAT_UNDEFINED) {
-            return makeError(Error::InvalidArgument);
-        }
-
-#ifdef VK_NV_cluster_acceleration_structure
-        activateVolkDevice(device.impl_->device);
-        VkClusterAccelerationStructureTriangleClusterInputNV triangleInput{
-            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV,
-            .vertexFormat = desc.vertexFormat,
-            .maxGeometryIndexValue = desc.maxGeometryIndexValue,
-            .maxClusterUniqueGeometryCount = desc.maxClusterUniqueGeometryCount,
-            .maxClusterTriangleCount = desc.maxClusterTriangleCount,
-            .maxClusterVertexCount = desc.maxClusterVertexCount,
-            .maxTotalTriangleCount = desc.maxTotalTriangleCount,
-            .maxTotalVertexCount = desc.maxTotalVertexCount,
-            .minPositionTruncateBitCount = desc.minPositionTruncateBitCount,
-        };
-        VkClusterAccelerationStructureInputInfoNV inputInfo{
-            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
-            .maxAccelerationStructureCount = desc.maxAccelerationStructureCount,
-            .flags = desc.flags,
-            .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV,
-            .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
-            .opInput = {.pTriangleClusters = &triangleInput},
-        };
-        VkAccelerationStructureBuildSizesInfoKHR sizeInfo{
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
-        };
-        vkGetClusterAccelerationStructureBuildSizesNV(device.impl_->device, &inputInfo, &sizeInfo);
-        outSizes = vulkan::ClusterAccelerationStructureBuildSizes{
-            .accelerationStructureSize = sizeInfo.accelerationStructureSize,
-            .updateScratchSize = sizeInfo.updateScratchSize,
-            .buildScratchSize = sizeInfo.buildScratchSize,
-        };
-        return {};
-#else
-        return makeError(Error::Unsupported);
-#endif
-    }
-
-    static Result queryClusterAccelerationStructureBottomLevelBuildSizes(
-        Device& device,
-        const vulkan::ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc,
-        vulkan::ClusterAccelerationStructureBuildSizes& outSizes)
-    {
-        outSizes = {};
-        if (device.impl_ == nullptr) {
-            return makeError(Error::InvalidArgument);
-        }
-        if (!device.impl_->clusterAccelerationStructureEnabled ||
-            !device.impl_->capabilities.clusterAccelerationStructure) {
-            return makeError(Error::Unsupported);
-        }
-        if (desc.maxClusterCountPerAccelerationStructure == 0 ||
-            desc.maxTotalClusterCount == 0 ||
-            desc.maxAccelerationStructureCount == 0) {
-            return makeError(Error::InvalidArgument);
-        }
-
-#ifdef VK_NV_cluster_acceleration_structure
-        activateVolkDevice(device.impl_->device);
-        VkClusterAccelerationStructureClustersBottomLevelInputNV bottomLevelInput{
-            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
-            .maxTotalClusterCount = desc.maxTotalClusterCount,
-            .maxClusterCountPerAccelerationStructure = desc.maxClusterCountPerAccelerationStructure,
-        };
-        VkClusterAccelerationStructureInputInfoNV inputInfo{
-            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
-            .maxAccelerationStructureCount = desc.maxAccelerationStructureCount,
-            .flags = desc.flags,
-            .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV,
-            .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV,
-            .opInput = {.pClustersBottomLevel = &bottomLevelInput},
-        };
-        VkAccelerationStructureBuildSizesInfoKHR sizeInfo{
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
-        };
-        vkGetClusterAccelerationStructureBuildSizesNV(device.impl_->device, &inputInfo, &sizeInfo);
-        outSizes = vulkan::ClusterAccelerationStructureBuildSizes{
-            .accelerationStructureSize = sizeInfo.accelerationStructureSize,
-            .updateScratchSize = sizeInfo.updateScratchSize,
-            .buildScratchSize = sizeInfo.buildScratchSize,
-        };
-        return {};
-#else
-        return makeError(Error::Unsupported);
-#endif
-    }
-
-    static Result queryPartitionedAccelerationStructureBuildSizes(
-        Device& device,
-        const vulkan::PartitionedAccelerationStructureBuildSizesDesc& desc,
-        vulkan::PartitionedAccelerationStructureBuildSizes& outSizes)
-    {
-        outSizes = {};
-        if (device.impl_ == nullptr) {
-            return makeError(Error::InvalidArgument);
-        }
-        if (!device.impl_->partitionedAccelerationStructureEnabled ||
-            !device.impl_->capabilities.partitionedAccelerationStructure) {
-            return makeError(Error::Unsupported);
-        }
-        if (desc.instanceCount == 0 ||
-            desc.partitionCount == 0 ||
-            desc.maxInstancePerPartitionCount == 0 ||
-            desc.maxOperationCount == 0) {
-            return makeError(Error::InvalidArgument);
-        }
-
-#ifdef VK_NV_partitioned_acceleration_structure
-        activateVolkDevice(device.impl_->device);
-        VkPartitionedAccelerationStructureFlagsNV partitionedFlags{
-            .sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_FLAGS_NV,
-            .enablePartitionTranslation = desc.allowPartitionTranslation ? VK_TRUE : VK_FALSE,
-        };
-        VkPartitionedAccelerationStructureInstancesInputNV inputInfo{
-            .sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCES_INPUT_NV,
-            .pNext = &partitionedFlags,
-            .flags = desc.flags,
-            .instanceCount = desc.instanceCount,
-            .maxInstancePerPartitionCount = desc.maxInstancePerPartitionCount,
-            .partitionCount = desc.partitionCount,
-            .maxInstanceInGlobalPartitionCount = desc.maxInstanceInGlobalPartitionCount,
-        };
-        VkAccelerationStructureBuildSizesInfoKHR sizeInfo{
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
-        };
-        vkGetPartitionedAccelerationStructuresBuildSizesNV(device.impl_->device, &inputInfo, &sizeInfo);
-        outSizes = vulkan::PartitionedAccelerationStructureBuildSizes{
-            .accelerationStructureSize = sizeInfo.accelerationStructureSize,
-            .updateScratchSize = sizeInfo.updateScratchSize,
-            .buildScratchSize = sizeInfo.buildScratchSize,
-            .operationInfoSize =
-                static_cast<uint64_t>(desc.maxOperationCount) *
-                sizeof(VkBuildPartitionedAccelerationStructureIndirectCommandNV),
-            .operationCountSize = sizeof(uint32_t),
-            .instanceWriteInfoSize =
-                static_cast<uint64_t>(desc.instanceCount) *
-                sizeof(VkPartitionedAccelerationStructureWriteInstanceDataNV),
-            .instanceUpdateInfoSize = desc.allowInstanceUpdate
-                ? static_cast<uint64_t>(desc.instanceCount) *
-                    sizeof(VkPartitionedAccelerationStructureUpdateInstanceDataNV)
-                : 0,
-            .partitionWriteInfoSize = desc.allowPartitionTranslation
-                ? static_cast<uint64_t>(desc.partitionCount + 1u) *
-                    sizeof(VkPartitionedAccelerationStructureWritePartitionTranslationDataNV)
-                : 0,
-        };
-        return {};
-#else
-        return makeError(Error::Unsupported);
-#endif
-    }
 };
 
 } // namespace detail
@@ -7181,39 +8496,6 @@ VkFormat nativeSwapchainFormat(Swapchain& swapchain)
 VkImageView nativeImageView(TextureView& view)
 {
     return detail::VulkanNativeAccess::nativeImageView(view);
-}
-
-Result queryClusterAccelerationStructureTriangleBuildSizes(
-    Device& device,
-    const ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
-    ClusterAccelerationStructureBuildSizes& outSizes)
-{
-    return detail::VulkanNativeAccess::queryClusterAccelerationStructureTriangleBuildSizes(
-        device,
-        desc,
-        outSizes);
-}
-
-Result queryClusterAccelerationStructureBottomLevelBuildSizes(
-    Device& device,
-    const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc,
-    ClusterAccelerationStructureBuildSizes& outSizes)
-{
-    return detail::VulkanNativeAccess::queryClusterAccelerationStructureBottomLevelBuildSizes(
-        device,
-        desc,
-        outSizes);
-}
-
-Result queryPartitionedAccelerationStructureBuildSizes(
-    Device& device,
-    const PartitionedAccelerationStructureBuildSizesDesc& desc,
-    PartitionedAccelerationStructureBuildSizes& outSizes)
-{
-    return detail::VulkanNativeAccess::queryPartitionedAccelerationStructureBuildSizes(
-        device,
-        desc,
-        outSizes);
 }
 
 } // namespace vulkan

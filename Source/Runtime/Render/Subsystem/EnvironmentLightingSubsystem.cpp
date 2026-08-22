@@ -1,5 +1,5 @@
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
-#include "Runtime/Render/GAPI/SceneRtx.h"
+#include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #define STB_IMAGE_STATIC
@@ -67,7 +67,7 @@ struct EnvironmentLightingSubsystem::DecodeJob {
 };
 
 struct EnvironmentLightingSubsystem::GpuPrecompute {
-    SceneRayQueryProgram program;
+    ComputeProgram program;
 
     Result initialize(Device& device, std::string& log)
     {
@@ -88,22 +88,22 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             return result;
         }
         const std::array bindings{
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 0,
-                .kind = SceneRayQueryBindingKind::SampledImage,
+                .kind = ComputeResourceBindingKind::SampledImage,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 1,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            SceneRayQueryBindingDesc{
+            ComputeProgramBindingDesc{
                 .binding = 2,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
         };
         return program.initialize(
             device,
-            SceneRayQueryProgramDesc{
+            ComputeProgramDesc{
                 .spirv = compileResult.spirv.data(),
                 .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
                 .pushConstantSize = sizeof(EnvironmentLightingPrecomputePush),
@@ -132,13 +132,13 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             (partialCount + dispatchWidth - 1u) / dispatchWidth;
         TextureView* const radianceViews[] = {&radianceView};
         const std::array bindings{
-            SceneRayQueryDispatchBinding{
+            ComputeDispatchBinding{
                 .binding = 0,
                 .textureViews = radianceViews,
                 .textureViewCount = static_cast<uint32_t>(std::size(radianceViews)),
             },
-            SceneRayQueryDispatchBinding{.binding = 1, .buffer = &partials},
-            SceneRayQueryDispatchBinding{.binding = 2, .buffer = &coefficients},
+            ComputeDispatchBinding{.binding = 1, .buffer = &partials},
+            ComputeDispatchBinding{.binding = 2, .buffer = &coefficients},
         };
         EnvironmentLightingPrecomputePush push{
             .width = width,
@@ -146,7 +146,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             .partialCount = partialCount,
             .dispatchWidth = dispatchWidth,
         };
-        Result result = program.dispatch(SceneRayQueryDispatchDesc{
+        Result result = program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = bindings.data(),
             .bindingCount = static_cast<uint32_t>(bindings.size()),
@@ -169,7 +169,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
         };
         commandBuffer.barrier(BarrierDesc{.buffers = &partialsBarrier, .bufferCount = 1});
         push.mode = 1;
-        return program.dispatch(SceneRayQueryDispatchDesc{
+        return program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = bindings.data(),
             .bindingCount = static_cast<uint32_t>(bindings.size()),

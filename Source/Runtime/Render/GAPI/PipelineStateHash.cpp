@@ -101,6 +101,7 @@ uint64_t computePipelineStateHash(const ComputePipelineDesc& desc)
             hash = hashValue(hash, static_cast<uint32_t>(mapping.type));
             hash = hashValue(hash, static_cast<uint32_t>(mapping.source));
             hash = hashValue(hash, mapping.pushDataOffset);
+            hash = hashValue(hash, mapping.heapIndexOffset);
         }
     }
     return hash;

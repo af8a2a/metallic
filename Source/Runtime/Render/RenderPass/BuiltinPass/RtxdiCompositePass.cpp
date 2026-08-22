@@ -61,17 +61,17 @@ public:
             return result;
         }
 
-        const SceneRayQueryBindingDesc bindings[] = {
-            {.binding = 0, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 1, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 2, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 3, .kind = SceneRayQueryBindingKind::StorageImage},
-            {.binding = 4, .kind = SceneRayQueryBindingKind::StorageImage},
+        const ComputeProgramBindingDesc bindings[] = {
+            {.binding = 0, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 1, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 3, .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = 4, .kind = ComputeResourceBindingKind::StorageImage},
         };
         std::string programLog;
         result = program_.initialize(
             *context.device,
-            SceneRayQueryProgramDesc{
+            ComputeProgramDesc{
                 .spirv = compileResult.spirv.data(),
                 .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
                 .pushConstantSize = sizeof(RtxdiCompositePush),
@@ -109,14 +109,14 @@ public:
         push.width = context.width();
         push.height = context.height();
         push.exposure = floatProperty(context.properties(), "exposure", 1.0f, 0.05f, 8.0f);
-        const SceneRayQueryDispatchBinding bindings[] = {
+        const ComputeDispatchBinding bindings[] = {
             {.binding = 0, .textureView = denoisedDiffuse.view()},
             {.binding = 1, .textureView = denoisedSpecular.view()},
             {.binding = 2, .textureView = baseColorMetalness.view()},
             {.binding = 3, .textureView = emissive.view()},
             {.binding = 4, .textureView = color.view()},
         };
-        return program_.dispatch(SceneRayQueryDispatchDesc{
+        return program_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
             .bindings = bindings,
             .bindingCount = static_cast<uint32_t>(std::size(bindings)),
@@ -152,7 +152,7 @@ private:
         return std::isfinite(value) ? std::clamp(value, minimum, maximum) : fallback;
     }
 
-    SceneRayQueryProgram program_;
+    ComputeProgram program_;
 };
 
 } // namespace

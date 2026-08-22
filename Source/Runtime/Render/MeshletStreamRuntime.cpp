@@ -1,12 +1,10 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
 
 #include "Runtime/Render/MeshletStreamClas.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -22,95 +20,12 @@ namespace {
 
 inline constexpr bool kDefaultReversedZ = true;
 
-#ifdef VK_NV_cluster_acceleration_structure
-static_assert(
-    sizeof(MeshletStreamGpuBlasBuildInfo) ==
-    sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV));
-static_assert(
-    offsetof(MeshletStreamGpuBlasBuildInfo, clusterReferencesCount) ==
-    offsetof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, clusterReferencesCount));
-static_assert(
-    offsetof(MeshletStreamGpuBlasBuildInfo, clusterReferencesStride) ==
-    offsetof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, clusterReferencesStride));
-static_assert(
-    offsetof(MeshletStreamGpuBlasBuildInfo, clusterReferencesAddressLow) ==
-    offsetof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, clusterReferences));
-static_assert(sizeof(MeshletStreamGpuTlasInstance) == sizeof(VkAccelerationStructureInstanceKHR));
-static_assert(
-    offsetof(MeshletStreamGpuTlasInstance, accelerationStructureReferenceLow) ==
-    offsetof(VkAccelerationStructureInstanceKHR, accelerationStructureReference));
-#endif
-
 uint64_t alignUp(uint64_t value, uint64_t alignment)
 {
     if (alignment <= 1) {
         return value;
     }
     return ((value + alignment - 1) / alignment) * alignment;
-}
-
-uint64_t clusterScratchAlignment(VkPhysicalDevice physicalDevice)
-{
-#ifdef VK_NV_cluster_acceleration_structure
-    if (physicalDevice == VK_NULL_HANDLE) {
-        return 256;
-    }
-    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV clusterProperties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
-    };
-    VkPhysicalDeviceProperties2 properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-        .pNext = &clusterProperties,
-    };
-    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
-    return clusterProperties.clusterScratchByteAlignment != 0
-        ? clusterProperties.clusterScratchByteAlignment
-        : 256;
-#else
-    (void)physicalDevice;
-    return 256;
-#endif
-}
-
-uint64_t clusterBottomLevelAlignment(VkPhysicalDevice physicalDevice)
-{
-#ifdef VK_NV_cluster_acceleration_structure
-    if (physicalDevice == VK_NULL_HANDLE) {
-        return 256;
-    }
-    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV clusterProperties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
-    };
-    VkPhysicalDeviceProperties2 properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-        .pNext = &clusterProperties,
-    };
-    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
-    return clusterProperties.clusterBottomLevelByteAlignment != 0
-        ? clusterProperties.clusterBottomLevelByteAlignment
-        : 256;
-#else
-    (void)physicalDevice;
-    return 256;
-#endif
-}
-
-uint64_t accelerationStructureScratchAlignment(VkPhysicalDevice physicalDevice)
-{
-    if (physicalDevice == VK_NULL_HANDLE) {
-        return 256;
-    }
-    VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationProperties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
-    };
-    VkPhysicalDeviceProperties2 properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-        .pNext = &accelerationProperties,
-    };
-    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
-    return accelerationProperties.minAccelerationStructureScratchOffsetAlignment != 0
-        ? accelerationProperties.minAccelerationStructureScratchOffsetAlignment
-        : 256;
 }
 
 std::string resultMessage(std::string_view label, const Result& result)
@@ -1199,6 +1114,13 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     }
     traversalWorkBufferState_ = ResourceState::Undefined;
     if (clasPool_ != nullptr) {
+        ClusterAccelerationStructureProperties clusterProperties;
+        result = device.queryClusterAccelerationStructureProperties(clusterProperties);
+        if (!result) {
+            log = std::string("queryClusterAccelerationStructureProperties(stream BLAS) returned ") +
+                resultToString(result);
+            return result;
+        }
         result = createNamedBuffer(
             device,
             BufferDesc{
@@ -1240,7 +1162,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
 
         uint32_t referenceLimit = blasClusterReferenceCapacity_;
         uint32_t buildLimit = std::min(desc.maxBlasBuilds, asset_.instanceCount());
-        vulkan::ClusterAccelerationStructureBuildSizes blasSizes;
+        ClusterAccelerationStructureBuildSizes blasSizes;
         struct BlasCapacityPlan {
             uint32_t referenceCount = 0;
             uint32_t buildCount = 0;
@@ -1282,10 +1204,9 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 return makeError(Error::OutOfMemory);
             }
 
-            result = vulkan::queryClusterAccelerationStructureBottomLevelBuildSizes(
-                device,
-                vulkan::ClusterAccelerationStructureBottomLevelBuildSizesDesc{
-                    .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+            result = device.queryClusterAccelerationStructureBottomLevelBuildSizes(
+                ClusterAccelerationStructureBottomLevelBuildSizesDesc{
+                    .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
                     .maxClusterCountPerAccelerationStructure = blasPlan.maxClustersPerBuild,
                     .maxTotalClusterCount = blasPlan.referenceCount,
                     .maxAccelerationStructureCount = blasPlan.buildCount,
@@ -1392,7 +1313,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
         blasClusterReferenceBufferState_ = ResourceState::Undefined;
-        blasClusterReferenceAddress_ = vulkan::nativeBuffer(*blasClusterReferenceBuffer_).address;
+        blasClusterReferenceAddress_ = blasClusterReferenceBuffer_->deviceAddress();
         if (blasClusterReferenceAddress_ == 0) {
             log = "MeshletStreamRuntime BLAS cluster reference buffer has no device address";
             return makeError(Error::Failure);
@@ -1412,10 +1333,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         if (!result) {
             return result;
         }
-        blasStorageAddress_ = vulkan::nativeBuffer(*blasStorageBuffer_).address;
-
-        const vulkan::NativeDevice nativeDevice = vulkan::nativeDevice(device);
-        const uint64_t scratchAlignment = clusterScratchAlignment(nativeDevice.physicalDevice);
+        const uint64_t scratchAlignment = clusterProperties.scratchAlignment;
         result = createNamedBuffer(
             device,
             BufferDesc{
@@ -1429,10 +1347,6 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         if (!result) {
             return result;
         }
-        blasScratchAddress_ = alignUp(
-            vulkan::nativeBuffer(*blasScratchBuffer_).address,
-            scratchAlignment);
-
         result = createNamedBuffer(
             device,
             BufferDesc{
@@ -1462,10 +1376,10 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
 
-        if (blasStorageAddress_ == 0 ||
-            blasScratchAddress_ == 0 ||
-            vulkan::nativeBuffer(*blasAddressBuffer_).address == 0 ||
-            vulkan::nativeBuffer(*blasSizeBuffer_).address == 0) {
+        if (blasStorageBuffer_->deviceAddress() == 0 ||
+            blasScratchBuffer_->deviceAddress() == 0 ||
+            blasAddressBuffer_->deviceAddress() == 0 ||
+            blasSizeBuffer_->deviceAddress() == 0) {
             log = "MeshletStreamRuntime dynamic BLAS buffers have no device addresses";
             return makeError(Error::Failure);
         }
@@ -1479,12 +1393,12 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return makeError(Error::OutOfMemory);
         }
 
-        const uint64_t bottomLevelAlignment = clusterBottomLevelAlignment(nativeDevice.physicalDevice);
+        const uint64_t bottomLevelAlignment = clusterProperties.bottomLevelStorageAlignment;
         if (bottomLevelAlignment == 0) {
             log = "MeshletStreamRuntime fallback BLAS alignment is unavailable";
             return makeError(Error::Failure);
         }
-        std::unordered_map<uint32_t, vulkan::ClusterAccelerationStructureBuildSizes> sizeCache;
+        std::unordered_map<uint32_t, ClusterAccelerationStructureBuildSizes> sizeCache;
         uint64_t totalFallbackReferences = 0;
         uint64_t fallbackStorageBytes = 0;
         uint64_t fallbackScratchBytes = 0;
@@ -1508,10 +1422,9 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             const uint32_t clusterCount = static_cast<uint32_t>(primitiveReferences);
             auto [iter, inserted] = sizeCache.try_emplace(clusterCount);
             if (inserted) {
-                result = vulkan::queryClusterAccelerationStructureBottomLevelBuildSizes(
-                    device,
-                    vulkan::ClusterAccelerationStructureBottomLevelBuildSizesDesc{
-                        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+                result = device.queryClusterAccelerationStructureBottomLevelBuildSizes(
+                    ClusterAccelerationStructureBottomLevelBuildSizesDesc{
+                        .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
                         .maxClusterCountPerAccelerationStructure = clusterCount,
                         .maxTotalClusterCount = clusterCount,
                         .maxAccelerationStructureCount = 1,
@@ -1578,7 +1491,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
         const uint64_t fallbackStorageAddress =
-            vulkan::nativeBuffer(*fallbackBlasStorageBuffer_).address;
+            fallbackBlasStorageBuffer_->deviceAddress();
 
         result = createNamedBuffer(
             device,
@@ -1593,10 +1506,6 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         if (!result) {
             return result;
         }
-        fallbackBlasScratchAddress_ = alignUp(
-            vulkan::nativeBuffer(*fallbackBlasScratchBuffer_).address,
-            scratchAlignment);
-
         result = createNamedBuffer(
             device,
             BufferDesc{
@@ -1614,7 +1523,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
         const uint64_t fallbackReferenceAddress =
-            vulkan::nativeBuffer(*fallbackBlasReferenceBuffer_).address;
+            fallbackBlasReferenceBuffer_->deviceAddress();
 
         auto createFallbackHostBuffer = [&device, &log](
                                             uint64_t size,
@@ -1710,10 +1619,10 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         fallbackBlasAddressBuffer_->unmap();
 
         if (fallbackStorageAddress == 0 ||
-            fallbackBlasScratchAddress_ == 0 ||
+            fallbackBlasScratchBuffer_->deviceAddress() == 0 ||
             fallbackReferenceAddress == 0 ||
-            vulkan::nativeBuffer(*fallbackBlasBuildInfoBuffer_).address == 0 ||
-            vulkan::nativeBuffer(*fallbackBlasDestinationBuffer_).address == 0) {
+            fallbackBlasBuildInfoBuffer_->deviceAddress() == 0 ||
+            fallbackBlasDestinationBuffer_->deviceAddress() == 0) {
             log = "MeshletStreamRuntime fallback BLAS buffers have no device addresses";
             return makeError(Error::Failure);
         }
@@ -1721,8 +1630,9 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         result = createNamedBuffer(
             device,
             BufferDesc{
-                .size = static_cast<uint64_t>(asset_.instanceCount()) * sizeof(MeshletStreamGpuTlasInstance),
-                .structureStride = sizeof(MeshletStreamGpuTlasInstance),
+                .size = static_cast<uint64_t>(asset_.instanceCount()) *
+                    sizeof(RayTracingGpuInstance),
+                .structureStride = sizeof(RayTracingGpuInstance),
                 .usage = BufferUsageBits::Storage |
                     BufferUsageBits::AccelerationStructureBuildInput |
                     BufferUsageBits::ShaderDeviceAddress,
@@ -1735,72 +1645,32 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
         tlasInstanceBufferState_ = ResourceState::Undefined;
-        const vulkan::NativeBuffer nativeTlasInstances =
-            vulkan::nativeBuffer(*tlasInstanceBuffer_);
-        if (nativeTlasInstances.address == 0) {
-            log = "MeshletStreamRuntime TLAS instance buffer has no device address";
-            return makeError(Error::Failure);
-        }
-
-        VkAccelerationStructureGeometryKHR tlasGeometry{
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
-            .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR,
-            .geometry = {.instances = VkAccelerationStructureGeometryInstancesDataKHR{
-                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
-                .arrayOfPointers = VK_FALSE,
-                .data = {.deviceAddress = nativeTlasInstances.address},
-            }},
+        const RayTracingAccelerationStructureBuildInputs tlasInputs{
+            .type = RayTracingAccelerationStructureType::TopLevel,
+            .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
+            .instanceCount = asset_.instanceCount(),
         };
-        VkAccelerationStructureBuildGeometryInfoKHR tlasBuildInfo{
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-            .type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-            .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
-            .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
-            .geometryCount = 1,
-            .pGeometries = &tlasGeometry,
-        };
-        const uint32_t tlasInstanceCount = asset_.instanceCount();
-        VkAccelerationStructureBuildSizesInfoKHR tlasSizes{
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
-        };
-        vkGetAccelerationStructureBuildSizesKHR(
-            nativeDevice.device,
-            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
-            &tlasBuildInfo,
-            &tlasInstanceCount,
-            &tlasSizes);
-        if (tlasSizes.accelerationStructureSize == 0 || tlasSizes.buildScratchSize == 0) {
-            log = "MeshletStreamRuntime TLAS build size query returned zero";
-            return makeError(Error::Failure);
-        }
-
-        result = createNamedBuffer(
-            device,
-            BufferDesc{
-                .size = tlasSizes.accelerationStructureSize,
-                .usage = BufferUsageBits::AccelerationStructureStorage |
-                    BufferUsageBits::ShaderDeviceAddress,
-                .memoryLocation = MemoryLocation::Device,
-            },
-            tlasStorageBuffer_,
-            log,
-            "MeshletStreamRuntime TLAS storage");
+        RayTracingAccelerationStructureBuildSizes tlasSizes;
+        result = device.queryRayTracingAccelerationStructureBuildSizes(tlasInputs, tlasSizes);
         if (!result) {
+            log = resultMessage(
+                "queryRayTracingAccelerationStructureBuildSizes(MeshletStreamRuntime TLAS)",
+                result);
             return result;
         }
-        const vulkan::NativeBuffer nativeTlasStorage =
-            vulkan::nativeBuffer(*tlasStorageBuffer_);
-        if (nativeTlasStorage.buffer == VK_NULL_HANDLE) {
-            log = "MeshletStreamRuntime TLAS storage buffer is unavailable";
-            return makeError(Error::Failure);
-        }
 
-        const uint64_t tlasScratchAlignment =
-            accelerationStructureScratchAlignment(nativeDevice.physicalDevice);
+        RayTracingAccelerationStructureProperties rtasProperties;
+        result = device.queryRayTracingAccelerationStructureProperties(rtasProperties);
+        if (!result) {
+            log = resultMessage(
+                "queryRayTracingAccelerationStructureProperties(MeshletStreamRuntime)",
+                result);
+            return result;
+        }
         result = createNamedBuffer(
             device,
             BufferDesc{
-                .size = tlasSizes.buildScratchSize + tlasScratchAlignment - 1u,
+                .size = tlasSizes.buildScratchSize + rtasProperties.scratchAlignment - 1u,
                 .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
                 .memoryLocation = MemoryLocation::Device,
             },
@@ -1810,36 +1680,19 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         if (!result) {
             return result;
         }
-        tlasScratchAddress_ = alignUp(
-            vulkan::nativeBuffer(*tlasScratchBuffer_).address,
-            tlasScratchAlignment);
-        if (tlasScratchAddress_ == 0) {
-            log = "MeshletStreamRuntime TLAS scratch buffer has no device address";
-            return makeError(Error::Failure);
+        result = device.createRayTracingAccelerationStructure(
+            RayTracingAccelerationStructureDesc{
+                .type = RayTracingAccelerationStructureType::TopLevel,
+                .buildFlags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
+                .size = tlasSizes.accelerationStructureSize,
+            },
+            tlas_);
+        if (!result) {
+            log = resultMessage(
+                "createRayTracingAccelerationStructure(MeshletStreamRuntime TLAS)",
+                result);
+            return result;
         }
-
-        VkAccelerationStructureCreateInfoKHR tlasCreateInfo{
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
-            .buffer = nativeTlasStorage.buffer,
-            .offset = 0,
-            .size = tlasSizes.accelerationStructureSize,
-            .type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-        };
-        VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
-        const VkResult vkResult = vkCreateAccelerationStructureKHR(
-            nativeDevice.device,
-            &tlasCreateInfo,
-            nullptr,
-            &tlas);
-        if (vkResult != VK_SUCCESS || tlas == VK_NULL_HANDLE) {
-            log = "vkCreateAccelerationStructureKHR(MeshletStreamRuntime TLAS) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-        static_assert(sizeof(tlas) == sizeof(tlasHandle_));
-        static_assert(sizeof(nativeDevice.device) == sizeof(nativeDeviceHandle_));
-        tlasHandle_ = std::bit_cast<uint64_t>(tlas);
-        nativeDeviceHandle_ = std::bit_cast<uint64_t>(nativeDevice.device);
     }
     result = createNamedBuffer(
         device,
@@ -2189,15 +2042,6 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
 
 void MeshletStreamRuntime::reset()
 {
-    if (nativeDeviceHandle_ != 0 && tlasHandle_ != 0) {
-        const VkDevice device = std::bit_cast<VkDevice>(nativeDeviceHandle_);
-        const VkAccelerationStructureKHR tlas =
-            std::bit_cast<VkAccelerationStructureKHR>(tlasHandle_);
-        volkLoadDevice(device);
-        vkDestroyAccelerationStructureKHR(device, tlas, nullptr);
-    }
-    tlasHandle_ = 0;
-    nativeDeviceHandle_ = 0;
     tlasBuilt_ = false;
     residency_.reset();
     asset_.close();
@@ -2241,8 +2085,8 @@ void MeshletStreamRuntime::reset()
     fallbackBlasDestinationBuffer_.reset();
     fallbackBlasAddressBuffer_.reset();
     tlasInstanceBuffer_.reset();
-    tlasStorageBuffer_.reset();
     tlasScratchBuffer_.reset();
+    tlas_.reset();
     bindlessHeap_.reset();
     updatePass_.reset();
     traversalPass_.reset();
@@ -2309,10 +2153,6 @@ void MeshletStreamRuntime::reset()
     blasBuildCapacity_ = 0;
     maxBlasClustersPerBuild_ = 0;
     blasClusterReferenceAddress_ = 0;
-    blasStorageAddress_ = 0;
-    blasScratchAddress_ = 0;
-    fallbackBlasScratchAddress_ = 0;
-    tlasScratchAddress_ = 0;
     fallbackBlasPrimitives_.clear();
     currentFrameUploadCount_ = 0;
     previousFrameParams_ = {};
@@ -2368,14 +2208,14 @@ bool MeshletStreamRuntime::ready() const
                 fallbackBlasDestinationBuffer_ != nullptr &&
                 fallbackBlasAddressBuffer_ != nullptr &&
                 tlasInstanceBuffer_ != nullptr &&
-                tlasStorageBuffer_ != nullptr &&
                 tlasScratchBuffer_ != nullptr &&
-                tlasHandle_ != 0));
+                tlas_ != nullptr &&
+                tlas_->valid()));
 }
 
-uint64_t MeshletStreamRuntime::tlasHandle() const
+RayTracingAccelerationStructure* MeshletStreamRuntime::accelerationStructure() const
 {
-    return tlasBuilt_ ? tlasHandle_ : 0;
+    return tlasBuilt_ ? tlas_.get() : nullptr;
 }
 
 Result MeshletStreamRuntime::cmdBeginFrame(
@@ -3237,23 +3077,7 @@ Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
         return makeError(Error::InvalidArgument);
     }
 
-    const VkCommandBuffer nativeCommandBuffer = vulkan::nativeCommandBuffer(commandBuffer);
-    if (nativeCommandBuffer == VK_NULL_HANDLE) {
-        return makeError(Error::InvalidArgument);
-    }
-    const VkMemoryBarrier2 hostBarrier{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
-        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-    };
-    const VkDependencyInfo dependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 1,
-        .pMemoryBarriers = &hostBarrier,
-    };
-    vkCmdPipelineBarrier2(nativeCommandBuffer, &dependency);
+    commandBuffer.hostWriteBarrier();
 
     auto dispatchPhase = [this, &commandBuffer](uint32_t phase, uint32_t threadCount) {
         MeshletStreamUserPush push = userPush();
@@ -3298,10 +3122,6 @@ Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
 
 Result MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
 {
-#ifndef VK_NV_cluster_acceleration_structure
-    (void)commandBuffer;
-    return makeError(Error::Unsupported);
-#else
     if (clasPool_ == nullptr ||
         blasBuildCapacity_ == 0 ||
         maxBlasClustersPerBuild_ == 0 ||
@@ -3314,99 +3134,31 @@ Result MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
         blasSizeBuffer_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-
-    const VkCommandBuffer nativeCommands = vulkan::nativeCommandBuffer(commandBuffer);
-    const vulkan::NativeBuffer nativeHeader = vulkan::nativeBuffer(*blasHeaderBuffer_);
-    const vulkan::NativeBuffer nativeBuildInfos = vulkan::nativeBuffer(*blasBuildInfoBuffer_);
-    const vulkan::NativeBuffer nativeAddresses = vulkan::nativeBuffer(*blasAddressBuffer_);
-    const vulkan::NativeBuffer nativeSizes = vulkan::nativeBuffer(*blasSizeBuffer_);
-    if (nativeCommands == VK_NULL_HANDLE ||
-        nativeHeader.address == 0 ||
-        nativeBuildInfos.address == 0 ||
-        nativeAddresses.address == 0 ||
-        nativeSizes.address == 0 ||
-        blasStorageAddress_ == 0 ||
-        blasScratchAddress_ == 0) {
-        return makeError(Error::InvalidArgument);
-    }
-
-    const VkMemoryBarrier2 buildInputBarrier{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-    };
-    const VkDependencyInfo inputDependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 1,
-        .pMemoryBarriers = &buildInputBarrier,
-    };
-    vkCmdPipelineBarrier2(nativeCommands, &inputDependency);
-
-    VkClusterAccelerationStructureClustersBottomLevelInputNV blasInput{
-        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
-        .maxTotalClusterCount = blasClusterReferenceCapacity_,
-        .maxClusterCountPerAccelerationStructure = maxBlasClustersPerBuild_,
-    };
-    const VkClusterAccelerationStructureInputInfoNV input{
-        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
-        .maxAccelerationStructureCount = blasBuildCapacity_,
-        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
-        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV,
-        .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV,
-        .opInput = {.pClustersBottomLevel = &blasInput},
-    };
-    const VkClusterAccelerationStructureCommandsInfoNV commands{
-        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
-        .input = input,
-        .dstImplicitData = blasStorageAddress_,
-        .scratchData = blasScratchAddress_,
-        .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
-            .deviceAddress = nativeAddresses.address,
-            .stride = sizeof(uint64_t),
-            .size = nativeAddresses.size,
-        },
-        .dstSizesArray = VkStridedDeviceAddressRegionKHR{
-            .deviceAddress = nativeSizes.address,
-            .stride = sizeof(uint32_t),
-            .size = nativeSizes.size,
-        },
-        .srcInfosArray = VkStridedDeviceAddressRegionKHR{
-            .deviceAddress = nativeBuildInfos.address,
-            .stride = sizeof(MeshletStreamGpuBlasBuildInfo),
-            .size = nativeBuildInfos.size,
-        },
-        .srcInfosCount = nativeHeader.address + offsetof(MeshletStreamGpuBlasHeader, blasBuildCount),
-    };
-    vkCmdBuildClusterAccelerationStructureIndirectNV(nativeCommands, &commands);
-
-    const VkMemoryBarrier2 buildOutputBarrier{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            VK_ACCESS_2_SHADER_READ_BIT,
-    };
-    const VkDependencyInfo outputDependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 1,
-        .pMemoryBarriers = &buildOutputBarrier,
-    };
-    vkCmdPipelineBarrier2(nativeCommands, &outputDependency);
-    return {};
-#endif
+    return commandBuffer.buildClusterAccelerationStructureBottomLevels(
+        ClusterAccelerationStructureBottomLevelBuildDesc{
+            .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
+            .destinationMode = ClusterAccelerationStructureDestinationMode::Implicit,
+            .maxClusterCountPerAccelerationStructure = maxBlasClustersPerBuild_,
+            .maxTotalClusterCount = blasClusterReferenceCapacity_,
+            .maxAccelerationStructureCount = blasBuildCapacity_,
+            .buildInfoBuffer = blasBuildInfoBuffer_.get(),
+            .buildInfoStride = sizeof(MeshletStreamGpuBlasBuildInfo),
+            .buildInfoSize = blasBuildInfoBuffer_->desc().size,
+            .buildInfoCountBuffer = blasHeaderBuffer_.get(),
+            .buildInfoCountBufferOffset = offsetof(
+                MeshletStreamGpuBlasHeader,
+                blasBuildCount),
+            .destinationStorageBuffer = blasStorageBuffer_.get(),
+            .destinationAddressBuffer = blasAddressBuffer_.get(),
+            .destinationAddressSize = blasAddressBuffer_->desc().size,
+            .destinationSizeBuffer = blasSizeBuffer_.get(),
+            .destinationSizeSize = blasSizeBuffer_->desc().size,
+            .scratchBuffer = blasScratchBuffer_.get(),
+        });
 }
 
 Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
 {
-#ifndef VK_NV_cluster_acceleration_structure
-    (void)commandBuffer;
-    return makeError(Error::Unsupported);
-#else
     if (clasPool_ == nullptr ||
         fallbackBlasStorageBuffer_ == nullptr ||
         fallbackBlasScratchBuffer_ == nullptr ||
@@ -3456,7 +3208,7 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
     }
 
     const uint64_t fallbackStorageAddress =
-        vulkan::nativeBuffer(*fallbackBlasStorageBuffer_).address;
+        fallbackBlasStorageBuffer_->deviceAddress();
     for (uint32_t fallbackIndex : readyFallbackIndices) {
         const FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
         const uint32_t primitiveIndex = fallback.primitiveIndex;
@@ -3487,91 +3239,41 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
     fallbackBlasReferenceBuffer_->unmap();
     fallbackBlasAddressBuffer_->unmap();
 
-    const VkCommandBuffer nativeCommands = vulkan::nativeCommandBuffer(commandBuffer);
-    const vulkan::NativeBuffer nativeBuildInfos =
-        vulkan::nativeBuffer(*fallbackBlasBuildInfoBuffer_);
-    const vulkan::NativeBuffer nativeDestinations =
-        vulkan::nativeBuffer(*fallbackBlasDestinationBuffer_);
-    if (nativeCommands == VK_NULL_HANDLE ||
-        nativeBuildInfos.address == 0 ||
-        nativeDestinations.address == 0 ||
+    if (fallbackBlasBuildInfoBuffer_->deviceAddress() == 0 ||
+        fallbackBlasDestinationBuffer_->deviceAddress() == 0 ||
         fallbackStorageAddress == 0 ||
-        fallbackBlasScratchAddress_ == 0) {
+        fallbackBlasScratchBuffer_->deviceAddress() == 0) {
         return makeError(Error::InvalidArgument);
     }
-
-    const VkMemoryBarrier2 inputBarrier{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT |
-            VK_ACCESS_2_MEMORY_READ_BIT |
-            VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-    };
-    const VkDependencyInfo inputDependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 1,
-        .pMemoryBarriers = &inputBarrier,
-    };
-    vkCmdPipelineBarrier2(nativeCommands, &inputDependency);
 
     for (uint32_t fallbackIndex : readyFallbackIndices) {
         FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
         const uint32_t clusterCount = fallback.referenceCount;
-        VkClusterAccelerationStructureClustersBottomLevelInputNV blasInput{
-            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
-            .maxTotalClusterCount = clusterCount,
-            .maxClusterCountPerAccelerationStructure = clusterCount,
-        };
-        const VkClusterAccelerationStructureInputInfoNV input{
-            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
-            .maxAccelerationStructureCount = 1,
-            .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
-            .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV,
-            .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
-            .opInput = {.pClustersBottomLevel = &blasInput},
-        };
-        const VkClusterAccelerationStructureCommandsInfoNV commands{
-            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
-            .input = input,
-            .scratchData = fallbackBlasScratchAddress_,
-            .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
-                .deviceAddress = nativeDestinations.address +
+        const Result result = commandBuffer.buildClusterAccelerationStructureBottomLevels(
+            ClusterAccelerationStructureBottomLevelBuildDesc{
+                .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
+                .destinationMode = ClusterAccelerationStructureDestinationMode::Explicit,
+                .maxClusterCountPerAccelerationStructure = clusterCount,
+                .maxTotalClusterCount = clusterCount,
+                .maxAccelerationStructureCount = 1,
+                .buildInfoBuffer = fallbackBlasBuildInfoBuffer_.get(),
+                .buildInfoBufferOffset =
+                    static_cast<uint64_t>(fallbackIndex) *
+                    sizeof(MeshletStreamGpuBlasBuildInfo),
+                .buildInfoStride = sizeof(MeshletStreamGpuBlasBuildInfo),
+                .buildInfoSize = sizeof(MeshletStreamGpuBlasBuildInfo),
+                .destinationAddressBuffer = fallbackBlasDestinationBuffer_.get(),
+                .destinationAddressBufferOffset =
                     static_cast<uint64_t>(fallbackIndex) * sizeof(uint64_t),
-                .stride = sizeof(uint64_t),
-                .size = sizeof(uint64_t),
-            },
-            .srcInfosArray = VkStridedDeviceAddressRegionKHR{
-                .deviceAddress = nativeBuildInfos.address +
-                    static_cast<uint64_t>(fallbackIndex) * sizeof(MeshletStreamGpuBlasBuildInfo),
-                .stride = sizeof(MeshletStreamGpuBlasBuildInfo),
-                .size = sizeof(MeshletStreamGpuBlasBuildInfo),
-            },
-        };
-        vkCmdBuildClusterAccelerationStructureIndirectNV(nativeCommands, &commands);
-
-        const VkMemoryBarrier2 buildBarrier{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-            .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-            .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
-                VK_ACCESS_2_SHADER_READ_BIT,
-        };
-        const VkDependencyInfo buildDependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .memoryBarrierCount = 1,
-            .pMemoryBarriers = &buildBarrier,
-        };
-        vkCmdPipelineBarrier2(nativeCommands, &buildDependency);
+                .destinationAddressSize = sizeof(uint64_t),
+                .scratchBuffer = fallbackBlasScratchBuffer_.get(),
+            });
+        if (!result) {
+            return result;
+        }
         fallback.built = true;
     }
     return {};
-#endif
 }
 
 Result MeshletStreamRuntime::buildTlasInstances(CommandBuffer& commandBuffer)
@@ -3583,23 +3285,7 @@ Result MeshletStreamRuntime::buildTlasInstances(CommandBuffer& commandBuffer)
         tlasInstanceBuffer_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    const VkCommandBuffer nativeCommands = vulkan::nativeCommandBuffer(commandBuffer);
-    if (nativeCommands == VK_NULL_HANDLE) {
-        return makeError(Error::InvalidArgument);
-    }
-    const VkMemoryBarrier2 hostBarrier{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
-        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-    };
-    const VkDependencyInfo dependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 1,
-        .pMemoryBarriers = &hostBarrier,
-    };
-    vkCmdPipelineBarrier2(nativeCommands, &dependency);
+    commandBuffer.hostWriteBarrier();
     return tlasInputPass_->dispatch(
         commandBuffer,
         *bindlessHeap_,
@@ -3613,75 +3299,24 @@ Result MeshletStreamRuntime::buildTlasInstances(CommandBuffer& commandBuffer)
 
 Result MeshletStreamRuntime::cmdBuildTlas(CommandBuffer& commandBuffer)
 {
-    if (tlasHandle_ == 0 ||
-        tlasScratchAddress_ == 0 ||
+    if (tlas_ == nullptr ||
+        !tlas_->valid() ||
+        tlasScratchBuffer_ == nullptr ||
         tlasInstanceBuffer_ == nullptr ||
         asset_.instanceCount() == 0) {
         return makeError(Error::InvalidArgument);
     }
-    const VkCommandBuffer nativeCommands = vulkan::nativeCommandBuffer(commandBuffer);
-    const vulkan::NativeBuffer nativeInstances = vulkan::nativeBuffer(*tlasInstanceBuffer_);
-    if (nativeCommands == VK_NULL_HANDLE || nativeInstances.address == 0) {
-        return makeError(Error::InvalidArgument);
+    const Result result = commandBuffer.buildRayTracingAccelerationStructure(
+        RayTracingAccelerationStructureBuildDesc{
+            .destination = tlas_.get(),
+            .mode = RayTracingAccelerationStructureBuildMode::Build,
+            .instanceBuffer = tlasInstanceBuffer_.get(),
+            .instanceCount = asset_.instanceCount(),
+            .scratchBuffer = tlasScratchBuffer_.get(),
+        });
+    if (!result) {
+        return result;
     }
-
-    const VkMemoryBarrier2 inputBarrier{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-    };
-    const VkDependencyInfo inputDependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 1,
-        .pMemoryBarriers = &inputBarrier,
-    };
-    vkCmdPipelineBarrier2(nativeCommands, &inputDependency);
-
-    VkAccelerationStructureGeometryKHR geometry{
-        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
-        .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR,
-        .geometry = {.instances = VkAccelerationStructureGeometryInstancesDataKHR{
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
-            .arrayOfPointers = VK_FALSE,
-            .data = {.deviceAddress = nativeInstances.address},
-        }},
-    };
-    const VkAccelerationStructureKHR tlas =
-        std::bit_cast<VkAccelerationStructureKHR>(tlasHandle_);
-    const VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
-        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-        .type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
-        .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
-        .dstAccelerationStructure = tlas,
-        .geometryCount = 1,
-        .pGeometries = &geometry,
-        .scratchData = {.deviceAddress = tlasScratchAddress_},
-    };
-    const VkAccelerationStructureBuildRangeInfoKHR range{
-        .primitiveCount = asset_.instanceCount(),
-    };
-    const VkAccelerationStructureBuildRangeInfoKHR* ranges[] = {&range};
-    vkCmdBuildAccelerationStructuresKHR(nativeCommands, 1, &buildInfo, ranges);
-
-    const VkMemoryBarrier2 outputBarrier{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            VK_ACCESS_2_SHADER_READ_BIT,
-    };
-    const VkDependencyInfo outputDependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 1,
-        .pMemoryBarriers = &outputBarrier,
-    };
-    vkCmdPipelineBarrier2(nativeCommands, &outputDependency);
     tlasBuilt_ = true;
     return {};
 }

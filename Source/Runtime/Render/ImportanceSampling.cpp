@@ -1,5 +1,5 @@
 #include "Runtime/Render/ImportanceSampling.h"
-#include "Runtime/Render/GAPI/SceneRtx.h"
+#include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <algorithm>
@@ -327,7 +327,7 @@ uint32_t dimensionAtMip(uint32_t dimension, uint32_t mipLevel)
 } // namespace
 
 struct ImportancePdfCompute::Impl {
-    SceneRayQueryProgram program;
+    ComputeProgram program;
 };
 
 ImportancePdfCompute::ImportancePdfCompute()
@@ -365,22 +365,22 @@ Result ImportancePdfCompute::initialize(Device& device, std::string& log)
         return compile;
     }
 
-    const SceneRayQueryBindingDesc bindings[] = {
-        {.binding = 0, .kind = SceneRayQueryBindingKind::SampledImage},
+    const ComputeProgramBindingDesc bindings[] = {
+        {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
         {
             .binding = 1,
-            .kind = SceneRayQueryBindingKind::StorageImage,
+            .kind = ComputeResourceBindingKind::StorageImage,
             .descriptorCount = kImportancePdfMaxMipCount,
         },
         {
             .binding = 2,
-            .kind = SceneRayQueryBindingKind::StorageImage,
+            .kind = ComputeResourceBindingKind::StorageImage,
             .descriptorCount = kImportancePdfMaxMipCount,
         },
     };
     return impl_->program.initialize(
         device,
-        SceneRayQueryProgramDesc{
+        ComputeProgramDesc{
             .spirv = compileResult.spirv.data(),
             .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
             .pushConstantSize = sizeof(PrepareLightsPdfPush),
@@ -406,7 +406,7 @@ Result ImportancePdfCompute::buildLocalLights(
     }
 
     TextureView* const environmentViews[] = {&environmentMap};
-    const SceneRayQueryDispatchBinding bindings[] = {
+    const ComputeDispatchBinding bindings[] = {
         {
             .binding = 0,
             .textureViews = environmentViews,
@@ -424,7 +424,7 @@ Result ImportancePdfCompute::buildLocalLights(
         },
     };
     auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t descriptorSetIndex) {
-        return impl_->program.dispatch(SceneRayQueryDispatchDesc{
+        return impl_->program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = bindings,
             .bindingCount = static_cast<uint32_t>(std::size(bindings)),
@@ -479,7 +479,7 @@ Result ImportancePdfCompute::buildEnvironment(
     }
 
     TextureView* const environmentViews[] = {&environmentMap};
-    const SceneRayQueryDispatchBinding bindings[] = {
+    const ComputeDispatchBinding bindings[] = {
         {
             .binding = 0,
             .textureViews = environmentViews,
@@ -497,7 +497,7 @@ Result ImportancePdfCompute::buildEnvironment(
         },
     };
     auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t descriptorSetIndex) {
-        return impl_->program.dispatch(SceneRayQueryDispatchDesc{
+        return impl_->program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = bindings,
             .bindingCount = static_cast<uint32_t>(std::size(bindings)),
