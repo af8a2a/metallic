@@ -113,6 +113,12 @@ void drawProfilerTableNode(
     ImGui::TableNextColumn();
     drawDuration(node.cpuMilliseconds);
     ImGui::TableNextColumn();
+    if (node.gpuTimingAvailable) {
+        ImGui::Text("%.3f", node.gpuMilliseconds);
+    } else {
+        ImGui::TextDisabled("--");
+    }
+    ImGui::TableNextColumn();
     drawDuration(aggregate.average);
     ImGui::TableNextColumn();
     drawDuration(aggregate.minimum);
@@ -138,7 +144,7 @@ void drawProfilerTable(const EditorProfiler::Frame& frame, const std::vector<Edi
 
     if (!ImGui::BeginTable(
             "ProfilerTable",
-            5,
+            6,
             ImGuiTableFlags_Borders |
                 ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_Resizable |
@@ -149,6 +155,7 @@ void drawProfilerTable(const EditorProfiler::Frame& frame, const std::vector<Edi
 
     ImGui::TableSetupColumn("Timer", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("Last CPU ms", ImGuiTableColumnFlags_WidthFixed, 92.0f);
+    ImGui::TableSetupColumn("Last GPU ms", ImGuiTableColumnFlags_WidthFixed, 92.0f);
     ImGui::TableSetupColumn("Avg", ImGuiTableColumnFlags_WidthFixed, 72.0f);
     ImGui::TableSetupColumn("Min", ImGuiTableColumnFlags_WidthFixed, 72.0f);
     ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_WidthFixed, 72.0f);
@@ -336,6 +343,33 @@ void drawPieChart(const EditorProfiler::Frame& frame)
     }
 }
 
+void applyRenderGraphGpuStats(
+    std::vector<EditorProfiler::Node>& nodes,
+    const render::RenderGraphExecutionStats& stats)
+{
+    for (EditorProfiler::Node& node : nodes) {
+        if (node.renderGraphExecutionId != stats.executionId) {
+            continue;
+        }
+        if (node.renderGraphNodeId == UINT32_MAX) {
+            node.gpuMilliseconds = stats.gpuMilliseconds;
+            node.gpuTimingAvailable = stats.gpuTimingAvailable;
+            continue;
+        }
+
+        const auto iter = std::find_if(
+            stats.nodes.begin(),
+            stats.nodes.end(),
+            [&](const render::RenderGraphNodeExecutionStat& stat) {
+                return stat.id == node.renderGraphNodeId;
+            });
+        if (iter != stats.nodes.end()) {
+            node.gpuMilliseconds = iter->gpuMilliseconds;
+            node.gpuTimingAvailable = iter->gpuTimingAvailable;
+        }
+    }
+}
+
 } // namespace
 
 EditorProfiler::FrameScope::FrameScope(EditorProfiler* profiler)
@@ -430,12 +464,32 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
         "RenderGraph Passes",
         colorFromName("RenderGraph Passes"),
         stats.cpuMilliseconds);
+    currentNodes_[group].gpuMilliseconds = stats.gpuMilliseconds;
+    currentNodes_[group].gpuTimingAvailable = stats.gpuTimingAvailable;
+    currentNodes_[group].renderGraphExecutionId = stats.executionId;
     for (const render::RenderGraphNodeExecutionStat& stat : stats.nodes) {
-        addFinishedSection(
+        const size_t nodeIndex = addFinishedSection(
             group,
             stat.name + " (" + stat.type + ")",
             colorFromName(stat.type),
             stat.cpuMilliseconds);
+        currentNodes_[nodeIndex].gpuMilliseconds = stat.gpuMilliseconds;
+        currentNodes_[nodeIndex].gpuTimingAvailable = stat.gpuTimingAvailable;
+        currentNodes_[nodeIndex].renderGraphExecutionId = stats.executionId;
+        currentNodes_[nodeIndex].renderGraphNodeId = stat.id;
+    }
+}
+
+void EditorProfiler::updateRenderGraphGpuStats(const render::RenderGraphExecutionStats& stats)
+{
+    if (!stats.gpuTimingAvailable) {
+        return;
+    }
+
+    applyRenderGraphGpuStats(currentNodes_, stats);
+    applyRenderGraphGpuStats(latestFrame_.nodes, stats);
+    for (Frame& frame : history_) {
+        applyRenderGraphGpuStats(frame.nodes, stats);
     }
 }
 

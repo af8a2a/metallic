@@ -2519,12 +2519,22 @@ struct QueueImpl {
     DeviceImpl* device = nullptr;
     VkQueue queue = VK_NULL_HANDLE;
     uint32_t familyIndex = 0;
+    uint32_t timestampValidBits = 0;
     QueueType type = QueueType::Graphics;
 };
 
 struct FenceImpl {
     DeviceImpl* device = nullptr;
     VkFence fence = VK_NULL_HANDLE;
+};
+
+struct TimestampQueryPoolImpl {
+    DeviceImpl* device = nullptr;
+    TimestampQueryPoolDesc desc;
+    VkQueryPool queryPool = VK_NULL_HANDLE;
+    uint32_t queueFamilyIndex = 0;
+    uint32_t timestampValidBits = 0;
+    double timestampPeriodNanoseconds = 0.0;
 };
 
 struct SemaphoreImpl {
@@ -2654,6 +2664,7 @@ struct CommandBufferImpl {
     DeviceImpl* device = nullptr;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    uint32_t queueFamilyIndex = 0;
     VkPipelineLayout currentGraphicsPipelineLayout = VK_NULL_HANDLE;
     VkPipelineLayout currentComputePipelineLayout = VK_NULL_HANDLE;
     VkShaderStageFlags currentGraphicsPipelineBindlessPushStages =
@@ -2741,7 +2752,11 @@ struct DeviceImpl {
     std::vector<std::unique_ptr<Queue>> queues;
 
     ~DeviceImpl();
-    void addQueue(VkQueue queue, uint32_t familyIndex, QueueType type);
+    void addQueue(
+        VkQueue queue,
+        uint32_t familyIndex,
+        uint32_t timestampValidBits,
+        QueueType type);
 };
 
 RayTracingAccelerationStructureImpl::~RayTracingAccelerationStructureImpl()
@@ -2996,12 +3011,17 @@ bool PipelineCacheImpl::recordPsoLocked(uint64_t psoHash)
     return cacheHit;
 }
 
-void DeviceImpl::addQueue(VkQueue queue, uint32_t familyIndex, QueueType type)
+void DeviceImpl::addQueue(
+    VkQueue queue,
+    uint32_t familyIndex,
+    uint32_t timestampValidBits,
+    QueueType type)
 {
     auto impl = std::make_unique<QueueImpl>();
     impl->device = this;
     impl->queue = queue;
     impl->familyIndex = familyIndex;
+    impl->timestampValidBits = timestampValidBits;
     impl->type = type;
     queues.emplace_back(new Queue(std::move(impl)));
 }
@@ -3483,6 +3503,11 @@ QueueType Queue::type() const
     return impl_ != nullptr ? impl_->type : QueueType::Graphics;
 }
 
+uint32_t Queue::timestampValidBits() const
+{
+    return impl_ != nullptr ? impl_->timestampValidBits : 0;
+}
+
 Fence::Fence(std::unique_ptr<detail::FenceImpl> impl)
     : impl_(std::move(impl))
 {
@@ -3529,6 +3554,87 @@ bool Fence::isSignaled() const
 {
     return impl_ != nullptr &&
         vkGetFenceStatus(impl_->device->device, impl_->fence) == VK_SUCCESS;
+}
+
+TimestampQueryPool::TimestampQueryPool(std::unique_ptr<detail::TimestampQueryPoolImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+TimestampQueryPool::~TimestampQueryPool()
+{
+    if (impl_ != nullptr && impl_->queryPool != VK_NULL_HANDLE) {
+        activateVolkDevice(impl_->device->device);
+        vkDestroyQueryPool(impl_->device->device, impl_->queryPool, nullptr);
+        impl_->queryPool = VK_NULL_HANDLE;
+    }
+}
+
+TimestampQueryPool::TimestampQueryPool(TimestampQueryPool&&) noexcept = default;
+TimestampQueryPool& TimestampQueryPool::operator=(TimestampQueryPool&&) noexcept = default;
+
+const TimestampQueryPoolDesc& TimestampQueryPool::desc() const
+{
+    static const TimestampQueryPoolDesc kEmptyDesc;
+    return impl_ != nullptr ? impl_->desc : kEmptyDesc;
+}
+
+Result TimestampQueryPool::readResults(
+    uint32_t firstQuery,
+    uint32_t queryCount,
+    TimestampQueryResult* outResults) const
+{
+    if (impl_ == nullptr ||
+        outResults == nullptr ||
+        queryCount == 0 ||
+        firstQuery >= impl_->desc.queryCount ||
+        queryCount > impl_->desc.queryCount - firstQuery) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    struct RawTimestampQueryResult {
+        uint64_t value = 0;
+        uint64_t available = 0;
+    };
+    std::vector<RawTimestampQueryResult> rawResults(queryCount);
+    activateVolkDevice(impl_->device->device);
+    const VkResult result = vkGetQueryPoolResults(
+        impl_->device->device,
+        impl_->queryPool,
+        firstQuery,
+        queryCount,
+        rawResults.size() * sizeof(RawTimestampQueryResult),
+        rawResults.data(),
+        sizeof(RawTimestampQueryResult),
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    if (result != VK_SUCCESS && result != VK_NOT_READY) {
+        return resultFromVk(result);
+    }
+
+    for (uint32_t index = 0; index < queryCount; ++index) {
+        outResults[index] = TimestampQueryResult{
+            .value = rawResults[index].value,
+            .available = rawResults[index].available != 0,
+        };
+    }
+    return {};
+}
+
+double TimestampQueryPool::durationMilliseconds(
+    uint64_t beginTimestamp,
+    uint64_t endTimestamp) const
+{
+    if (impl_ == nullptr ||
+        impl_->timestampValidBits == 0 ||
+        impl_->timestampPeriodNanoseconds <= 0.0) {
+        return 0.0;
+    }
+
+    const uint64_t mask = impl_->timestampValidBits >= 64
+        ? std::numeric_limits<uint64_t>::max()
+        : (uint64_t{1} << impl_->timestampValidBits) - 1u;
+    const uint64_t delta = (endTimestamp - beginTimestamp) & mask;
+    return static_cast<double>(delta) * impl_->timestampPeriodNanoseconds / 1'000'000.0;
 }
 
 Semaphore::Semaphore(std::unique_ptr<detail::SemaphoreImpl> impl)
@@ -4374,6 +4480,50 @@ void CommandBuffer::endDebugLabel()
     }
 
     impl_->device->cmdEndDebugUtilsLabel(impl_->commandBuffer);
+}
+
+Result CommandBuffer::resetTimestampQueries(
+    TimestampQueryPool& queryPool,
+    uint32_t firstQuery,
+    uint32_t queryCount)
+{
+    if (impl_ == nullptr ||
+        queryPool.impl_ == nullptr ||
+        impl_->device != queryPool.impl_->device ||
+        queryPool.impl_->queueFamilyIndex != impl_->queueFamilyIndex ||
+        queryCount == 0 ||
+        firstQuery >= queryPool.impl_->desc.queryCount ||
+        queryCount > queryPool.impl_->desc.queryCount - firstQuery) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    vkCmdResetQueryPool(
+        impl_->commandBuffer,
+        queryPool.impl_->queryPool,
+        firstQuery,
+        queryCount);
+    return {};
+}
+
+Result CommandBuffer::writeTimestamp(
+    TimestampQueryPool& queryPool,
+    uint32_t queryIndex,
+    PipelineStageBits stage)
+{
+    if (impl_ == nullptr ||
+        queryPool.impl_ == nullptr ||
+        impl_->device != queryPool.impl_->device ||
+        queryPool.impl_->queueFamilyIndex != impl_->queueFamilyIndex ||
+        queryIndex >= queryPool.impl_->desc.queryCount) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    vkCmdWriteTimestamp2(
+        impl_->commandBuffer,
+        toVkPipelineStages(stage),
+        queryPool.impl_->queryPool,
+        queryIndex);
+    return {};
 }
 
 void CommandBuffer::barrier(const BarrierDesc& desc)
@@ -6088,6 +6238,7 @@ Result CommandPool::createCommandBuffer(std::unique_ptr<CommandBuffer>& outComma
     commandBufferImpl->device = impl_->device;
     commandBufferImpl->pool = impl_->pool;
     commandBufferImpl->commandBuffer = commandBuffer;
+    commandBufferImpl->queueFamilyIndex = impl_->queueFamilyIndex;
     outCommandBuffer.reset(new CommandBuffer(std::move(commandBufferImpl)));
     return {};
 }
@@ -6930,6 +7081,46 @@ Result Device::createFence(bool signaled, std::unique_ptr<Fence>& outFence)
     fenceImpl->device = impl_.get();
     fenceImpl->fence = fence;
     outFence.reset(new Fence(std::move(fenceImpl)));
+    return {};
+}
+
+Result Device::createTimestampQueryPool(
+    Queue& queue,
+    const TimestampQueryPoolDesc& desc,
+    std::unique_ptr<TimestampQueryPool>& outQueryPool)
+{
+    outQueryPool.reset();
+    if (impl_ == nullptr ||
+        queue.impl_ == nullptr ||
+        queue.impl_->device != impl_.get() ||
+        desc.queryCount == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (queue.impl_->timestampValidBits == 0 ||
+        impl_->capabilities.timestampPeriodNanoseconds <= 0.0) {
+        return makeError(Error::Unsupported);
+    }
+
+    activateVolkDevice(impl_->device);
+    VkQueryPoolCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        .queryType = VK_QUERY_TYPE_TIMESTAMP,
+        .queryCount = desc.queryCount,
+    };
+    VkQueryPool queryPool = VK_NULL_HANDLE;
+    const VkResult result = vkCreateQueryPool(impl_->device, &createInfo, nullptr, &queryPool);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+
+    auto queryPoolImpl = std::make_unique<detail::TimestampQueryPoolImpl>();
+    queryPoolImpl->device = impl_.get();
+    queryPoolImpl->desc = desc;
+    queryPoolImpl->queryPool = queryPool;
+    queryPoolImpl->queueFamilyIndex = queue.impl_->familyIndex;
+    queryPoolImpl->timestampValidBits = queue.impl_->timestampValidBits;
+    queryPoolImpl->timestampPeriodNanoseconds = impl_->capabilities.timestampPeriodNanoseconds;
+    outQueryPool.reset(new TimestampQueryPool(std::move(queryPoolImpl)));
     return {};
 }
 
@@ -8259,6 +8450,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         deviceImpl->pipelineCacheFileIdentity.compatibilityKey.data() + 16,
         selectedProperties.pipelineCacheUUID,
         VK_UUID_SIZE);
+    deviceImpl->capabilities.timestampPeriodNanoseconds =
+        static_cast<double>(selectedProperties.limits.timestampPeriod);
+    deviceImpl->capabilities.timestampQueries =
+        deviceImpl->graphicsFamily < selectedQueueFamilies.size() &&
+        selectedQueueFamilies[deviceImpl->graphicsFamily].timestampValidBits != 0 &&
+        deviceImpl->capabilities.timestampPeriodNanoseconds > 0.0;
     deviceImpl->capabilities.bufferCopyOffsetAlignment =
         std::max<uint64_t>(selectedProperties.limits.optimalBufferCopyOffsetAlignment, 1);
     deviceImpl->capabilities.textureUploadBufferOffsetAlignment =
@@ -8350,11 +8547,19 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     vkGetDeviceQueue(deviceImpl->device, deviceImpl->graphicsFamily, 0, &graphicsQueue);
-    deviceImpl->addQueue(graphicsQueue, deviceImpl->graphicsFamily, QueueType::Graphics);
+    deviceImpl->addQueue(
+        graphicsQueue,
+        deviceImpl->graphicsFamily,
+        selectedQueueFamilies[deviceImpl->graphicsFamily].timestampValidBits,
+        QueueType::Graphics);
 
     VkQueue computeQueue = VK_NULL_HANDLE;
     vkGetDeviceQueue(deviceImpl->device, deviceImpl->computeFamily, 0, &computeQueue);
-    deviceImpl->addQueue(computeQueue, deviceImpl->computeFamily, QueueType::Compute);
+    deviceImpl->addQueue(
+        computeQueue,
+        deviceImpl->computeFamily,
+        selectedQueueFamilies[deviceImpl->computeFamily].timestampValidBits,
+        QueueType::Compute);
 
     if (deviceImpl->copyQueueIndex != UINT32_MAX) {
         VkQueue copyQueue = VK_NULL_HANDLE;
@@ -8364,7 +8569,11 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             deviceImpl->copyQueueIndex,
             &copyQueue);
         if (copyQueue != VK_NULL_HANDLE && copyQueue != graphicsQueue && copyQueue != computeQueue) {
-            deviceImpl->addQueue(copyQueue, deviceImpl->copyFamily, QueueType::Copy);
+            deviceImpl->addQueue(
+                copyQueue,
+                deviceImpl->copyFamily,
+                selectedQueueFamilies[deviceImpl->copyFamily].timestampValidBits,
+                QueueType::Copy);
             deviceImpl->capabilities.independentCopyQueue = true;
         } else {
             deviceImpl->copyQueueIndex = UINT32_MAX;

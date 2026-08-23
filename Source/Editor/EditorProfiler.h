@@ -19,6 +19,10 @@ public:
         std::string name;
         uint32_t color = 0;
         double cpuMilliseconds = 0.0;
+        double gpuMilliseconds = 0.0;
+        bool gpuTimingAvailable = false;
+        uint64_t renderGraphExecutionId = UINT64_MAX;
+        uint32_t renderGraphNodeId = UINT32_MAX;
         size_t parent = 0;
         std::vector<size_t> children;
         Clock::time_point beginTime;
@@ -64,6 +68,7 @@ public:
     FrameScope beginFrame();
     Scope scope(std::string_view name, uint32_t color = 0);
     void addRenderGraphStats(const render::RenderGraphExecutionStats& stats);
+    void updateRenderGraphGpuStats(const render::RenderGraphExecutionStats& stats);
     void drawWindow(bool* open);
 
 private:

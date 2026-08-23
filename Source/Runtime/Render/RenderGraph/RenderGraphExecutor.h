@@ -21,10 +21,15 @@ struct RenderGraphNodeExecutionStat {
     std::string name;
     std::string type;
     double cpuMilliseconds = 0.0;
+    double gpuMilliseconds = 0.0;
+    bool gpuTimingAvailable = false;
 };
 
 struct RenderGraphExecutionStats {
+    uint64_t executionId = 0;
     double cpuMilliseconds = 0.0;
+    double gpuMilliseconds = 0.0;
+    bool gpuTimingAvailable = false;
     std::vector<RenderGraphNodeExecutionStat> nodes;
 };
 
@@ -83,6 +88,7 @@ public:
     RenderGraphResource* outputResource(std::string_view fullName);
     const RenderGraphResource* outputResource(std::string_view fullName) const;
     const RenderGraphExecutionStats& executionStats() const;
+    Result collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats);
     const RenderGraphStreamingStats& streamingStats() const;
     bool compiled() const;
     uint32_t width() const;

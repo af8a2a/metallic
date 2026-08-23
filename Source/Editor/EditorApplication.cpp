@@ -2429,6 +2429,20 @@ bool EditorApplication::renderFrame()
             running_ = false;
             return false;
         }
+
+        if (graphExecutor_ != nullptr) {
+            std::vector<render::RenderGraphExecutionStats> completedGpuStats;
+            result = graphExecutor_->collectCompletedGpuExecutionStats(completedGpuStats);
+            if (!result) {
+                spdlog::warn(
+                    "RenderGraph GPU timestamp query read failed with Result {}",
+                    render::resultToString(result));
+            } else {
+                for (const render::RenderGraphExecutionStats& stats : completedGpuStats) {
+                    profiler_.updateRenderGraphGpuStats(stats);
+                }
+            }
+        }
     }
 
     if (swapchainOutOfDate_ ||

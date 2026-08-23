@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
@@ -137,6 +138,15 @@ struct RenderGraphExecutor::Impl {
         std::unordered_set<std::string> bufferResourceSet;
     };
 
+    struct GpuTimingSlot {
+        uint32_t firstQuery = 0;
+        uint32_t queryCount = 0;
+        bool pending = false;
+        RenderGraphExecutionStats stats;
+    };
+
+    static constexpr uint32_t kGpuTimingSlotCount = 3;
+
     Device* device = nullptr;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -157,6 +167,12 @@ struct RenderGraphExecutor::Impl {
     std::vector<std::unique_ptr<CommandBuffer>> submittedCommandBuffers;
     std::unique_ptr<Semaphore> submittedTimelineSemaphore;
     uint64_t submittedTimelineValue = 0;
+    std::unique_ptr<TimestampQueryPool> gpuTimestampQueryPool;
+    std::array<GpuTimingSlot, kGpuTimingSlotCount> gpuTimingSlots;
+    std::vector<RenderGraphExecutionStats> completedGpuExecutionStats;
+    GpuTimingSlot* activeGpuTimingSlot = nullptr;
+    uint32_t nextGpuTimingSlot = 0;
+    bool activeGpuTimingValid = false;
     RenderGraphExecutionStats lastExecutionStats;
     uint64_t executionFrameIndex = 0;
     bool hasSubmittedWork = false;
@@ -637,6 +653,159 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
+    void initializeGpuTiming(Device& graphDevice)
+    {
+        gpuTimestampQueryPool.reset();
+        gpuTimingSlots = {};
+        completedGpuExecutionStats.clear();
+        activeGpuTimingSlot = nullptr;
+        nextGpuTimingSlot = 0;
+        activeGpuTimingValid = false;
+
+        Queue* graphicsQueue = graphDevice.getQueue(QueueType::Graphics);
+        if (executionList.empty() ||
+            graphicsQueue == nullptr ||
+            !graphDevice.capabilities().timestampQueries ||
+            graphicsQueue->timestampValidBits() == 0) {
+            return;
+        }
+
+        const uint64_t queriesPerSlot64 = static_cast<uint64_t>(executionList.size()) * 2ull;
+        const uint64_t totalQueryCount64 = queriesPerSlot64 * kGpuTimingSlotCount;
+        if (queriesPerSlot64 > std::numeric_limits<uint32_t>::max() ||
+            totalQueryCount64 > std::numeric_limits<uint32_t>::max()) {
+            spdlog::warn("[RenderGraph] GPU timing disabled because the timestamp query count is too large");
+            return;
+        }
+
+        const uint32_t queriesPerSlot = static_cast<uint32_t>(queriesPerSlot64);
+        Result result = graphDevice.createTimestampQueryPool(
+            *graphicsQueue,
+            TimestampQueryPoolDesc{.queryCount = static_cast<uint32_t>(totalQueryCount64)},
+            gpuTimestampQueryPool);
+        if (!result || gpuTimestampQueryPool == nullptr) {
+            spdlog::warn(
+                "[RenderGraph] GPU timestamp queries are unavailable: {}",
+                resultToString(result));
+            gpuTimestampQueryPool.reset();
+            return;
+        }
+
+        for (uint32_t slotIndex = 0; slotIndex < kGpuTimingSlotCount; ++slotIndex) {
+            gpuTimingSlots[slotIndex].firstQuery = slotIndex * queriesPerSlot;
+            gpuTimingSlots[slotIndex].queryCount = queriesPerSlot;
+        }
+    }
+
+    Result resolveGpuTimings()
+    {
+        if (gpuTimestampQueryPool == nullptr) {
+            return {};
+        }
+
+        for (GpuTimingSlot& slot : gpuTimingSlots) {
+            if (!slot.pending || slot.queryCount == 0) {
+                continue;
+            }
+
+            std::vector<TimestampQueryResult> queryResults(slot.queryCount);
+            Result result = gpuTimestampQueryPool->readResults(
+                slot.firstQuery,
+                slot.queryCount,
+                queryResults.data());
+            if (!result) {
+                return result;
+            }
+            if (!std::all_of(
+                    queryResults.begin(),
+                    queryResults.end(),
+                    [](const TimestampQueryResult& value) { return value.available; })) {
+                continue;
+            }
+
+            const size_t timedNodeCount = std::min(
+                slot.stats.nodes.size(),
+                queryResults.size() / 2);
+            for (size_t nodeIndex = 0; nodeIndex < timedNodeCount; ++nodeIndex) {
+                RenderGraphNodeExecutionStat& node = slot.stats.nodes[nodeIndex];
+                const TimestampQueryResult& begin = queryResults[nodeIndex * 2];
+                const TimestampQueryResult& end = queryResults[nodeIndex * 2 + 1];
+                node.gpuMilliseconds = gpuTimestampQueryPool->durationMilliseconds(
+                    begin.value,
+                    end.value);
+                node.gpuTimingAvailable = true;
+            }
+            if (timedNodeCount > 0) {
+                slot.stats.gpuMilliseconds = gpuTimestampQueryPool->durationMilliseconds(
+                    queryResults.front().value,
+                    queryResults[timedNodeCount * 2 - 1].value);
+                slot.stats.gpuTimingAvailable = true;
+            }
+
+            completedGpuExecutionStats.push_back(std::move(slot.stats));
+            slot.stats = {};
+            slot.pending = false;
+        }
+        return {};
+    }
+
+    void beginGpuTiming(CommandBuffer& commandBuffer)
+    {
+        activeGpuTimingSlot = nullptr;
+        activeGpuTimingValid = false;
+        if (gpuTimestampQueryPool == nullptr) {
+            return;
+        }
+
+        Result resolveResult = resolveGpuTimings();
+        if (!resolveResult) {
+            spdlog::warn(
+                "[RenderGraph] Failed to resolve GPU timestamp queries: {}",
+                resultToString(resolveResult));
+            return;
+        }
+
+        for (uint32_t offset = 0; offset < kGpuTimingSlotCount; ++offset) {
+            const uint32_t slotIndex = (nextGpuTimingSlot + offset) % kGpuTimingSlotCount;
+            GpuTimingSlot& slot = gpuTimingSlots[slotIndex];
+            if (slot.pending) {
+                continue;
+            }
+
+            Result resetResult = commandBuffer.resetTimestampQueries(
+                *gpuTimestampQueryPool,
+                slot.firstQuery,
+                slot.queryCount);
+            if (!resetResult) {
+                return;
+            }
+            slot.stats = {};
+            activeGpuTimingSlot = &slot;
+            activeGpuTimingValid = true;
+            nextGpuTimingSlot = (slotIndex + 1) % kGpuTimingSlotCount;
+            return;
+        }
+    }
+
+    void finishGpuTiming(bool completed)
+    {
+        if (activeGpuTimingSlot == nullptr) {
+            return;
+        }
+
+        if (completed &&
+            activeGpuTimingValid &&
+            lastExecutionStats.nodes.size() * 2 == activeGpuTimingSlot->queryCount) {
+            activeGpuTimingSlot->stats = lastExecutionStats;
+            activeGpuTimingSlot->pending = true;
+        } else {
+            activeGpuTimingSlot->stats = {};
+            activeGpuTimingSlot->pending = false;
+        }
+        activeGpuTimingSlot = nullptr;
+        activeGpuTimingValid = false;
+    }
+
     Result prepareCommandPool(QueueType type, Queue& queue, CommandPool*& outCommandPool)
     {
         outCommandPool = nullptr;
@@ -831,12 +1000,32 @@ struct RenderGraphExecutor::Impl {
             .name = markerName.c_str(),
             .color = debugLabelColorFromArgb(markerColor),
         });
+        bool gpuTimingRecorded = false;
+        uint32_t gpuEndQuery = 0;
+        if (activeGpuTimingSlot != nullptr && activeGpuTimingValid) {
+            const uint32_t gpuBeginQuery = activeGpuTimingSlot->firstQuery +
+                static_cast<uint32_t>(lastExecutionStats.nodes.size()) * 2u;
+            gpuEndQuery = gpuBeginQuery + 1u;
+            Result timestampResult = commandBuffer.writeTimestamp(
+                *gpuTimestampQueryPool,
+                gpuBeginQuery,
+                PipelineStageBits::TopOfPipe);
+            gpuTimingRecorded = timestampResult.has_value();
+            activeGpuTimingValid = gpuTimingRecorded;
+        }
         const auto cpuBegin = std::chrono::steady_clock::now();
         Result result = node.pass->execute(context);
         if (result && upload != nullptr) {
             upload->flush(commandBuffer);
         }
         const auto cpuEnd = std::chrono::steady_clock::now();
+        if (gpuTimingRecorded) {
+            Result timestampResult = commandBuffer.writeTimestamp(
+                *gpuTimestampQueryPool,
+                gpuEndQuery,
+                PipelineStageBits::BottomOfPipe);
+            activeGpuTimingValid = timestampResult.has_value();
+        }
         commandBuffer.endDebugLabel();
         lastExecutionStats.nodes.push_back(RenderGraphNodeExecutionStat{
             .id = node.id,
@@ -1124,6 +1313,7 @@ Result RenderGraphExecutor::compile(
         return resourceResult;
     }
 
+    impl_->initializeGpuTiming(device);
     impl_->isCompiled = true;
     log = "RenderGraph compiled";
     return {};
@@ -1170,7 +1360,8 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
         impl_->historyResources = nullptr;
         return result;
     }
-    impl_->lastExecutionStats = {};
+    impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex};
+    impl_->beginGpuTiming(commandBuffer);
     const auto cpuBegin = std::chrono::steady_clock::now();
     for (Impl::CompiledNode& node : impl_->executionList) {
         result = impl_->executeNode(commandBuffer, node);
@@ -1193,6 +1384,7 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
         spdlog::error("[RenderGraph] {}", subsystemLog);
     }
 
+    impl_->finishGpuTiming(graphResult.has_value() && postResult.has_value());
     impl_->historyResources = nullptr;
     return graphResult ? postResult : graphResult;
 }
@@ -1339,7 +1531,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         queueContext.resetForCurrentSubmit = false;
     }
 
-    impl_->lastExecutionStats = {};
+    impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex};
     const auto cpuBegin = std::chrono::steady_clock::now();
     std::vector<Impl::SubmissionSegment> segments;
     CommandBuffer* currentCommandBuffer = nullptr;
@@ -1592,6 +1784,19 @@ const RenderGraphResource* RenderGraphExecutor::outputResource(std::string_view 
 const RenderGraphExecutionStats& RenderGraphExecutor::executionStats() const
 {
     return impl_->lastExecutionStats;
+}
+
+Result RenderGraphExecutor::collectCompletedGpuExecutionStats(
+    std::vector<RenderGraphExecutionStats>& outStats)
+{
+    outStats.clear();
+    Result result = impl_->resolveGpuTimings();
+    if (!result) {
+        return result;
+    }
+    outStats = std::move(impl_->completedGpuExecutionStats);
+    impl_->completedGpuExecutionStats.clear();
+    return {};
 }
 
 const RenderGraphStreamingStats& RenderGraphExecutor::streamingStats() const

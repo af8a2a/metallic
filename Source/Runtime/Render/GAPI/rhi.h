@@ -284,6 +284,15 @@ struct DebugLabelDesc {
     ColorValue color{0.35f, 0.55f, 1.0f, 1.0f};
 };
 
+struct TimestampQueryPoolDesc {
+    uint32_t queryCount = 0;
+};
+
+struct TimestampQueryResult {
+    uint64_t value = 0;
+    bool available = false;
+};
+
 struct DeviceDesc {
     const char* applicationName = "Metallic";
     bool enableValidation = false;
@@ -314,6 +323,8 @@ struct DeviceCapabilities {
     bool aftermath = false;
     bool shaderIntegerDotProduct = false;
     bool cooperativeVector = false;
+    bool timestampQueries = false;
+    double timestampPeriodNanoseconds = 0.0;
     uint64_t bufferCopyOffsetAlignment = 1;
     uint64_t textureUploadBufferOffsetAlignment = 1;
     uint64_t textureUploadRowPitchAlignment = 1;
@@ -1101,6 +1112,7 @@ struct SwapchainImpl;
 struct CommandPoolImpl;
 struct CommandBufferImpl;
 struct FenceImpl;
+struct TimestampQueryPoolImpl;
 struct SemaphoreImpl;
 struct SwapchainSemaphoreImpl;
 struct BufferImpl;
@@ -1133,6 +1145,7 @@ public:
     Result submit(const QueueSubmitDesc& desc);
     Result waitIdle();
     QueueType type() const;
+    uint32_t timestampValidBits() const;
 
 private:
     explicit Queue(std::unique_ptr<detail::QueueImpl> impl);
@@ -1269,6 +1282,32 @@ private:
     friend class BindlessHeap;
     friend struct detail::DeviceImpl;
     friend struct detail::VulkanNativeAccess;
+};
+
+class TimestampQueryPool {
+public:
+    TimestampQueryPool() = default;
+    ~TimestampQueryPool();
+    TimestampQueryPool(TimestampQueryPool&&) noexcept;
+    TimestampQueryPool& operator=(TimestampQueryPool&&) noexcept;
+
+    TimestampQueryPool(const TimestampQueryPool&) = delete;
+    TimestampQueryPool& operator=(const TimestampQueryPool&) = delete;
+
+    const TimestampQueryPoolDesc& desc() const;
+    Result readResults(
+        uint32_t firstQuery,
+        uint32_t queryCount,
+        TimestampQueryResult* outResults) const;
+    double durationMilliseconds(uint64_t beginTimestamp, uint64_t endTimestamp) const;
+
+private:
+    explicit TimestampQueryPool(std::unique_ptr<detail::TimestampQueryPoolImpl> impl);
+
+    std::unique_ptr<detail::TimestampQueryPoolImpl> impl_;
+
+    friend class Device;
+    friend class CommandBuffer;
 };
 
 class RayTracingAccelerationStructure {
@@ -1574,6 +1613,14 @@ public:
     Result end();
     void beginDebugLabel(const DebugLabelDesc& desc);
     void endDebugLabel();
+    Result resetTimestampQueries(
+        TimestampQueryPool& queryPool,
+        uint32_t firstQuery,
+        uint32_t queryCount);
+    Result writeTimestamp(
+        TimestampQueryPool& queryPool,
+        uint32_t queryIndex,
+        PipelineStageBits stage);
     void barrier(const BarrierDesc& desc);
     void hostWriteBarrier();
     void copyBuffer(const BufferCopyDesc& desc);
@@ -1686,6 +1733,10 @@ public:
     Result createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapchain>& outSwapchain);
     Result createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& outCommandPool);
     Result createFence(bool signaled, std::unique_ptr<Fence>& outFence);
+    Result createTimestampQueryPool(
+        Queue& queue,
+        const TimestampQueryPoolDesc& desc,
+        std::unique_ptr<TimestampQueryPool>& outQueryPool);
     Result createSemaphore(const SemaphoreDesc& desc, std::unique_ptr<Semaphore>& outSemaphore);
     Result createSemaphore(std::unique_ptr<Semaphore>& outSemaphore);
     Result createSwapchainSemaphore(std::unique_ptr<SwapchainSemaphore>& outSemaphore);

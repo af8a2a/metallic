@@ -5284,6 +5284,26 @@ public:
             return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
         }
 
+        if (device->capabilities().timestampQueries) {
+            std::vector<render::RenderGraphExecutionStats> completedGpuStats;
+            result = executor.collectCompletedGpuExecutionStats(completedGpuStats);
+            if (!result) {
+                return RhiTestResult::fail(
+                    std::string("collectCompletedGpuExecutionStats returned ") + toString(result));
+            }
+            if (completedGpuStats.size() != 1 ||
+                !completedGpuStats[0].gpuTimingAvailable ||
+                completedGpuStats[0].nodes.size() != 2 ||
+                !std::all_of(
+                    completedGpuStats[0].nodes.begin(),
+                    completedGpuStats[0].nodes.end(),
+                    [](const render::RenderGraphNodeExecutionStat& stat) {
+                        return stat.gpuTimingAvailable;
+                    })) {
+                return RhiTestResult::fail("RenderGraph pass GPU timestamps were incomplete");
+            }
+        }
+
         readbackBuffer->invalidate();
         void* mapped = readbackBuffer->map();
         if (mapped == nullptr) {
