@@ -2422,8 +2422,12 @@ bool EditorApplication::renderFrame()
     }
 
     if (frameFence_ != nullptr) {
-        auto profileScope = profiler_.scope("Wait Frame Fence");
-        render::Result result = frameFence_->wait();
+        auto frameFenceScope = profiler_.scope("Wait Frame Fence");
+        render::Result result;
+        {
+            auto profileScope = profiler_.scope("Wait Fence Signal");
+            result = frameFence_->wait();
+        }
         if (!result) {
             spdlog::error("frameFence wait before UI failed with Result {}", render::resultToString(result));
             running_ = false;
@@ -2432,12 +2436,16 @@ bool EditorApplication::renderFrame()
 
         if (graphExecutor_ != nullptr) {
             std::vector<render::RenderGraphExecutionStats> completedGpuStats;
-            result = graphExecutor_->collectCompletedGpuExecutionStats(completedGpuStats);
+            {
+                auto profileScope = profiler_.scope("Resolve GPU Queries");
+                result = graphExecutor_->collectCompletedGpuExecutionStats(completedGpuStats);
+            }
             if (!result) {
                 spdlog::warn(
                     "RenderGraph GPU timestamp query read failed with Result {}",
                     render::resultToString(result));
             } else {
+                auto profileScope = profiler_.scope("Update GPU Profiler");
                 for (const render::RenderGraphExecutionStats& stats : completedGpuStats) {
                     profiler_.updateRenderGraphGpuStats(stats);
                 }
