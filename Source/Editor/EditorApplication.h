@@ -2,6 +2,7 @@
 
 #include "Editor/EditorProfiler.h"
 #include "Editor/NvmlMonitor.h"
+#include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/HistoryResources.h"
@@ -31,7 +32,8 @@ public:
         bool waitForGraphicsDebugger = false,
         const char* startupSampleId = nullptr,
         const char* startupScenePath = nullptr,
-        const char* startupStreamAssetPath = nullptr);
+        const char* startupStreamAssetPath = nullptr,
+        bool enableNsightGraphicsCapture = false);
 
 private:
     enum class PendingSceneAction : int32_t;
@@ -145,6 +147,10 @@ private:
     void destroyViewportTexture();
     bool renderGraphPreview();
     bool renderVulkanFrame();
+    void initializeNsightGraphicsCapture();
+    void requestNsightGraphicsCapture();
+    void pollNsightGraphicsCapture();
+    void advanceNsightGraphicsCaptureAfterPresent();
     int graphInputAttributeId(const render::RenderGraphNode& node, uint32_t fieldIndex) const;
     int graphOutputAttributeId(const render::RenderGraphNode& node, uint32_t fieldIndex) const;
 
@@ -186,6 +192,12 @@ private:
         CommitLoadedScene,
     };
 
+    enum class NsightGraphicsCaptureFramePhase : uint8_t {
+        Idle,
+        WaitingForStartPresent,
+        CapturingNextFrame,
+    };
+
     struct SceneEditCommand {
         scene::SceneEntity object = scene::kNullSceneEntity;
         uint64_t sceneLifetimeRevision = 0;
@@ -211,6 +223,7 @@ private:
     std::unique_ptr<render::SceneAccelerationStructureBuilder> sceneAccelerationStructure_;
     EditorProfiler profiler_;
     NvmlMonitor nvmlMonitor_;
+    render::profiling::NsightGraphicsCapture nsightGraphicsCapture_;
     render::RenderGraph renderGraph_;
     scene::SceneDocument scene_;
     scene::SceneLoader sceneLoader_;
@@ -241,6 +254,7 @@ private:
     bool running_ = true;
     bool smokeTest_ = false;
     bool waitForGraphicsDebugger_ = false;
+    bool nsightGraphicsCaptureRequested_ = false;
     bool imguiContextCreated_ = false;
     bool imnodesContextCreated_ = false;
     bool imguiPlatformInitialized_ = false;
@@ -264,6 +278,8 @@ private:
     bool sceneNonTransformDirty_ = false;
     bool inspectorTransformEditing_ = false;
     bool inspectorPropertyEditing_ = false;
+    NsightGraphicsCaptureFramePhase nsightGraphicsCaptureFramePhase_ =
+        NsightGraphicsCaptureFramePhase::Idle;
     int viewportCameraDragButton_ = -1;
     GizmoOperation gizmoOperation_ = GizmoOperation::Translate;
     float translateSnap_ = 0.5f;

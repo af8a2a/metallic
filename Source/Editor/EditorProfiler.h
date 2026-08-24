@@ -15,6 +15,15 @@ class EditorProfiler {
 public:
     using Clock = std::chrono::steady_clock;
 
+    struct GraphicsCaptureControls {
+        bool sdkCompiled = false;
+        bool runtimeEnabled = false;
+        bool canCapture = false;
+        bool capturePending = false;
+        const char* statusText = "";
+        const char* capturePath = "";
+    };
+
     struct Node {
         std::string name;
         uint32_t color = 0;
@@ -69,7 +78,7 @@ public:
     Scope scope(std::string_view name, uint32_t color = 0);
     void addRenderGraphStats(const render::RenderGraphExecutionStats& stats);
     void updateRenderGraphGpuStats(const render::RenderGraphExecutionStats& stats);
-    void drawWindow(bool* open);
+    bool drawWindow(bool* open, const GraphicsCaptureControls& graphicsCapture);
 
 private:
     size_t beginSection(std::string_view name, uint32_t color);

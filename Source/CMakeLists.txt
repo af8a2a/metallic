@@ -71,6 +71,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
     Runtime/Render/RenderPass/ScenePathTraceResources.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp
+    Runtime/Render/Profiling/NsightGraphicsCapture.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.cpp
     Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.cpp
@@ -103,6 +104,10 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     nlohmann_json
     slang::slang
     spdlog::spdlog
+)
+
+target_link_libraries(MetallicRuntimeRender PRIVATE
+    metallic::nsight_graphics_capture
 )
 
 if(TARGET libntc)

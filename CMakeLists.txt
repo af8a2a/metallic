@@ -142,6 +142,7 @@ foreach(METALLIC_SETUP_MODULE IN ITEMS
     SetupSlang
     SetupStreamline
     SetupNsight
+    SetupNsightGraphicsCapture
     SetupAftermath
     SetupNrc
     SetupNtc

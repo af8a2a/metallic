@@ -493,17 +493,58 @@ void EditorProfiler::updateRenderGraphGpuStats(const render::RenderGraphExecutio
     }
 }
 
-void EditorProfiler::drawWindow(bool* open)
+bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graphicsCapture)
 {
     if (open != nullptr && !*open) {
-        return;
+        return false;
     }
 
+    bool captureRequested = false;
     ImGui::SetNextWindowSize(ImVec2(520.0f, 360.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Profiler", open)) {
         ImGui::End();
-        return;
+        return false;
     }
+
+    ImGui::BeginDisabled(!graphicsCapture.canCapture);
+    if (ImGui::Button("Export Current View Capture")) {
+        captureRequested = true;
+    }
+    ImGui::EndDisabled();
+
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (!graphicsCapture.sdkCompiled) {
+            ImGui::SetTooltip("Nsight Graphics SDK was not available when Metallic was built.");
+        } else if (!graphicsCapture.runtimeEnabled) {
+            ImGui::SetTooltip("Restart Metallic with --nsight-capture to enable startup-time injection.");
+        } else if (graphicsCapture.capturePending) {
+            ImGui::SetTooltip("A Graphics Capture is already being written.");
+        } else if (!graphicsCapture.canCapture) {
+            ImGui::SetTooltip(
+                "%s",
+                graphicsCapture.statusText != nullptr && graphicsCapture.statusText[0] != '\0'
+                    ? graphicsCapture.statusText
+                    : "The current View is not ready for capture.");
+        } else {
+            ImGui::SetTooltip("Capture the current View during the next complete presented frame.");
+        }
+    }
+
+    ImGui::SameLine();
+    if (graphicsCapture.capturePending) {
+        ImGui::TextDisabled("Capturing next full frame...");
+    } else if (graphicsCapture.statusText != nullptr && graphicsCapture.statusText[0] != '\0') {
+        ImGui::TextDisabled("%s", graphicsCapture.statusText);
+    }
+
+    if (graphicsCapture.capturePath != nullptr && graphicsCapture.capturePath[0] != '\0') {
+        ImGui::TextWrapped("Last capture: %s", graphicsCapture.capturePath);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Copy Path")) {
+            ImGui::SetClipboardText(graphicsCapture.capturePath);
+        }
+    }
+    ImGui::Separator();
 
     if (ImGui::BeginTabBar("ProfilerTabs")) {
         if (ImGui::BeginTabItem("Table")) {
@@ -526,6 +567,7 @@ void EditorProfiler::drawWindow(bool* open)
     }
 
     ImGui::End();
+    return captureRequested;
 }
 
 size_t EditorProfiler::beginSection(std::string_view name, uint32_t color)

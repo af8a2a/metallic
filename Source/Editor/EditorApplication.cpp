@@ -30,6 +30,7 @@
 #include <cmath>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <iterator>
 #include <limits>
@@ -58,6 +59,16 @@ constexpr float kMaxViewportCameraSpeed = 100.0f;
 constexpr float kViewportCameraWheelSpeedStep = 1.25f;
 constexpr float kMaxDollyDisplacement = 0.99f;
 constexpr const char* kDefaultRenderSampleId = "pathtracing-sample";
+
+bool environmentFlagEnabled(const char* name)
+{
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' &&
+        std::string_view(value) != "0" &&
+        std::string_view(value) != "false" &&
+        std::string_view(value) != "FALSE";
+}
+
 constexpr const char* kDefaultImGuiIni = R"ini([Window][Viewport]
 Pos=0,28
 Size=1821,794
@@ -1856,7 +1867,8 @@ int EditorApplication::run(
     bool waitForGraphicsDebugger,
     const char* startupSampleId,
     const char* startupScenePath,
-    const char* startupStreamAssetPath)
+    const char* startupStreamAssetPath,
+    bool enableNsightGraphicsCapture)
 {
     const auto taskInitialization = task::initializeTaskSystem();
     if (!taskInitialization) {
@@ -1872,6 +1884,9 @@ int EditorApplication::run(
 
     smokeTest_ = smokeTest;
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
+    nsightGraphicsCaptureRequested_ =
+        enableNsightGraphicsCapture ||
+        environmentFlagEnabled("METALLIC_NSIGHT_GRAPHICS_CAPTURE");
     startupSampleId_ = startupSampleId != nullptr ? startupSampleId : "";
     if (smokeTest_ && startupSampleId_.empty()) {
         // Allow headless verification of a specific built-in sample, e.g.
@@ -1885,13 +1900,16 @@ int EditorApplication::run(
     startupScenePath_ = startupScenePath != nullptr ? startupScenePath : "";
     startupStreamAssetPath_ = startupStreamAssetPath != nullptr ? startupStreamAssetPath : "";
     spdlog::info(
-        "[Startup] Run requested smokeTest={} waitForGraphicsDebugger={} startupSample='{}' "
+        "[Startup] Run requested smokeTest={} waitForGraphicsDebugger={} nsightCapture={} startupSample='{}' "
         "sceneOverride='{}' streamAssetOverride='{}'",
         smokeTest_,
         waitForGraphicsDebugger_,
+        nsightGraphicsCaptureRequested_,
         startupSampleId_,
         startupScenePath_,
         startupStreamAssetPath_);
+
+    initializeNsightGraphicsCapture();
 
     if (!initialize()) {
         shutdown();
@@ -1948,6 +1966,87 @@ int EditorApplication::run(
 
     shutdown();
     return 0;
+}
+
+void EditorApplication::initializeNsightGraphicsCapture()
+{
+    if (!nsightGraphicsCaptureRequested_) {
+        return;
+    }
+    if (!render::profiling::NsightGraphicsCapture::compiledAvailable()) {
+        spdlog::warn(
+            "Nsight Graphics Capture was requested, but the SDK was not available when Metallic was built.");
+        return;
+    }
+
+    render::profiling::NsightGraphicsCaptureConfig config;
+    config.installationRoot =
+        render::profiling::NsightGraphicsCapture::defaultInstallationRoot();
+    config.outputDirectory =
+        std::filesystem::path(PROJECT_SOURCE_DIR) / "Captures" / "NsightGraphics";
+    config.showHud = true;
+
+    std::string error;
+    if (!nsightGraphicsCapture_.initializeBeforeGraphics(config, error)) {
+        spdlog::warn("Nsight Graphics Capture initialization failed: {}", error);
+        return;
+    }
+
+    spdlog::info(
+        "Nsight Graphics Capture initialized; captures will be written under '{}'",
+        config.outputDirectory.string());
+}
+
+void EditorApplication::requestNsightGraphicsCapture()
+{
+    if (!nsightGraphicsCaptureRequested_ || !viewportPreviewValid_) {
+        return;
+    }
+
+    std::string error;
+    if (!nsightGraphicsCapture_.requestCapture(
+            render::profiling::NsightGraphicsCaptureRequest{
+                .framesBeforeStart = 0,
+                .framesToCapture = 1,
+            },
+            error)) {
+        spdlog::warn("Nsight Graphics Capture request failed: {}", error);
+        return;
+    }
+
+    nsightGraphicsCaptureFramePhase_ =
+        NsightGraphicsCaptureFramePhase::WaitingForStartPresent;
+    spdlog::info("Nsight Graphics Capture queued for the next full View frame.");
+}
+
+void EditorApplication::pollNsightGraphicsCapture()
+{
+    if (!nsightGraphicsCapture_.hasOutstandingCapture()) {
+        return;
+    }
+
+    const render::profiling::NsightGraphicsCapturePollResult result =
+        nsightGraphicsCapture_.poll();
+    if (result.state == render::profiling::NsightGraphicsCaptureState::CaptureCompleted) {
+        nsightGraphicsCaptureFramePhase_ = NsightGraphicsCaptureFramePhase::Idle;
+        spdlog::info("Nsight Graphics Capture completed: {}", result.capturePath.string());
+    } else if (result.state == render::profiling::NsightGraphicsCaptureState::Error) {
+        nsightGraphicsCaptureFramePhase_ = NsightGraphicsCaptureFramePhase::Idle;
+        spdlog::warn("Nsight Graphics Capture failed: {}", result.message);
+    }
+}
+
+void EditorApplication::advanceNsightGraphicsCaptureAfterPresent()
+{
+    if (nsightGraphicsCaptureFramePhase_ ==
+        NsightGraphicsCaptureFramePhase::WaitingForStartPresent) {
+        nsightGraphicsCaptureFramePhase_ =
+            NsightGraphicsCaptureFramePhase::CapturingNextFrame;
+        viewportPreviewNeedsRender_ = true;
+    } else if (nsightGraphicsCaptureFramePhase_ ==
+               NsightGraphicsCaptureFramePhase::CapturingNextFrame) {
+        nsightGraphicsCaptureFramePhase_ = NsightGraphicsCaptureFramePhase::Idle;
+    }
 }
 
 bool EditorApplication::initialize()
@@ -2421,6 +2520,11 @@ bool EditorApplication::renderFrame()
         return true;
     }
 
+    {
+        auto profileScope = profiler_.scope("Poll Nsight Capture");
+        pollNsightGraphicsCapture();
+    }
+
     if (frameFence_ != nullptr) {
         auto frameFenceScope = profiler_.scope("Wait Frame Fence");
         render::Result result;
@@ -2715,7 +2819,31 @@ void EditorApplication::drawPanels()
     }
     ImGui::End();
 
-    profiler_.drawWindow(&profilerOpen_);
+    const auto captureState = nsightGraphicsCapture_.state();
+    const bool captureReady =
+        captureState == render::profiling::NsightGraphicsCaptureState::Ready ||
+        captureState == render::profiling::NsightGraphicsCaptureState::CaptureCompleted;
+    std::string captureStatus = nsightGraphicsCapture_.statusText();
+    if (!render::profiling::NsightGraphicsCapture::compiledAvailable()) {
+        captureStatus = "Nsight Graphics SDK is not available in this build.";
+    } else if (!nsightGraphicsCaptureRequested_) {
+        captureStatus = "Restart with --nsight-capture to enable Graphics Capture.";
+    } else if (captureReady && !viewportPreviewValid_) {
+        captureStatus = "The current View is not ready for capture.";
+    }
+    const std::string capturePath = nsightGraphicsCapture_.capturePath().string();
+    const EditorProfiler::GraphicsCaptureControls captureControls{
+        .sdkCompiled = render::profiling::NsightGraphicsCapture::compiledAvailable(),
+        .runtimeEnabled = nsightGraphicsCaptureRequested_,
+        .canCapture = captureReady && viewportPreviewValid_ &&
+            !nsightGraphicsCapture_.hasOutstandingCapture(),
+        .capturePending = nsightGraphicsCapture_.hasOutstandingCapture(),
+        .statusText = captureStatus.c_str(),
+        .capturePath = capturePath.c_str(),
+    };
+    if (profiler_.drawWindow(&profilerOpen_, captureControls)) {
+        requestNsightGraphicsCapture();
+    }
     nvmlMonitor_.drawWindow(&nvmlMonitorOpen_);
 }
 
@@ -5932,6 +6060,8 @@ bool EditorApplication::renderVulkanFrame()
     if (smokeTest_) {
         spdlog::info("[Smoke] Presented editor frame");
     }
+
+    advanceNsightGraphicsCaptureAfterPresent();
 
     return true;
 }
