@@ -268,6 +268,7 @@ Result createMeshShader(Device& device, std::unique_ptr<ShaderModule>& outShader
         ShaderModuleDesc{
             .code = meshCompile.spirv.data(),
             .byteSize = static_cast<uint64_t>(meshCompile.spirv.size() * sizeof(uint32_t)),
+            .debugName = "GPUDrivenStreamAsset.mesh",
         },
         outShader);
     if (!result || outShader == nullptr) {
@@ -293,10 +294,13 @@ Result createStreamShader(
     if (!result) {
         return result;
     }
+    const std::string shaderDebugName =
+        std::string(kMeshletStreamShaderModuleName) + "." + entryPoint;
     result = device.createShaderModule(
         ShaderModuleDesc{
             .code = compileResult.spirv.data(),
             .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+            .debugName = shaderDebugName.c_str(),
         },
         outShader);
     if (!result || outShader == nullptr) {

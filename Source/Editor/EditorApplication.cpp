@@ -4,6 +4,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "imnodes.h"
 #include "imgui.h"
@@ -1889,7 +1890,8 @@ int EditorApplication::run(
     const char* startupSampleId,
     const char* startupScenePath,
     const char* startupStreamAssetPath,
-    bool enableNsightGraphicsCapture)
+    bool enableNsightGraphicsCapture,
+    bool enableNsightShaderDebug)
 {
     const auto taskInitialization = task::initializeTaskSystem();
     if (!taskInitialization) {
@@ -1908,6 +1910,15 @@ int EditorApplication::run(
     nsightGraphicsCaptureRequested_ =
         enableNsightGraphicsCapture ||
         environmentFlagEnabled("METALLIC_NSIGHT_GRAPHICS_CAPTURE");
+    nsightShaderDebugRequested_ =
+        enableNsightShaderDebug ||
+        environmentFlagEnabled("METALLIC_NSIGHT_SHADER_DEBUG");
+    const render::SlangShaderDebugMode shaderDebugMode = nsightShaderDebugRequested_
+        ? render::SlangShaderDebugMode::ShaderDebug
+        : nsightGraphicsCaptureRequested_
+        ? render::SlangShaderDebugMode::CaptureSymbols
+        : render::SlangShaderDebugMode::Disabled;
+    render::setSlangShaderDebugMode(shaderDebugMode);
     startupSampleId_ = startupSampleId != nullptr ? startupSampleId : "";
     if (smokeTest_ && startupSampleId_.empty()) {
         // Allow headless verification of a specific built-in sample, e.g.
@@ -1921,11 +1932,17 @@ int EditorApplication::run(
     startupScenePath_ = startupScenePath != nullptr ? startupScenePath : "";
     startupStreamAssetPath_ = startupStreamAssetPath != nullptr ? startupStreamAssetPath : "";
     spdlog::info(
-        "[Startup] Run requested smokeTest={} waitForGraphicsDebugger={} nsightCapture={} startupSample='{}' "
+        "[Startup] Run requested smokeTest={} waitForGraphicsDebugger={} nsightCapture={} "
+        "shaderDebugMode={} startupSample='{}' "
         "sceneOverride='{}' streamAssetOverride='{}'",
         smokeTest_,
         waitForGraphicsDebugger_,
         nsightGraphicsCaptureRequested_,
+        shaderDebugMode == render::SlangShaderDebugMode::ShaderDebug
+            ? "unoptimized"
+            : shaderDebugMode == render::SlangShaderDebugMode::CaptureSymbols
+            ? "capture-symbols"
+            : "disabled",
         startupSampleId_,
         startupScenePath_,
         startupStreamAssetPath_);
@@ -2851,6 +2868,8 @@ void EditorApplication::drawPanels()
         captureStatus = "Restart with --nsight-capture to enable Graphics Capture.";
     } else if (captureReady && !viewportPreviewValid_) {
         captureStatus = "The current View is not ready for capture.";
+    } else if (captureReady) {
+        captureStatus += " Optimized Slang source symbols are enabled.";
     }
     const std::string capturePath = nsightGraphicsCapture_.capturePath().string();
     const EditorProfiler::GraphicsCaptureControls captureControls{

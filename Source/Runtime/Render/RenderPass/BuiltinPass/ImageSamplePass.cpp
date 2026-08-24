@@ -278,10 +278,13 @@ private:
             return result;
         }
 
+        const std::string shaderDebugName =
+            std::string(kImageSampleShaderModuleName) + "." + entryPointName;
         result = device.createShaderModule(
             ShaderModuleDesc{
                 .code = compileResult.spirv.data(),
                 .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+                .debugName = shaderDebugName.c_str(),
             },
             outShaderModule);
         if (!result) {

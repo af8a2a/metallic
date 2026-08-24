@@ -402,6 +402,34 @@ Shaders/*.slang          <- Pass compile() 中选择的 shader 模块
 | GPU 监控 | NVML 动态加载 | 编辑器可选监控，不作为 RHI 基础依赖 |
 | 测试 | GoogleTest | task/scene/rhi 三类测试入口 |
 
+### 12.1 Nsight Graphics 捕获与 Shader 调试
+
+Profiler 可以通过 Nsight Graphics SDK 导出当前 View 的 Graphics Capture。使用 `--nsight-capture` 启动时，Metallic 会在 Vulkan 初始化前加载 Nsight Capture runtime，并为 Slang 生成的 SPIR-V 嵌入保留优化的 `NonSemantic.Shader.DebugInfo.100` 源码调试信息。应用启动后，在 Profiler 中点击 **Export Current View Capture** 捕获下一帧完整 View：
+
+```powershell
+# Profiler 导出带优化符号的 Graphics Capture
+build\Source\Metallic.exe --nsight-capture
+```
+
+带优化符号的 Capture 适合 Shader Browser、源码查看、Shader Editing 和 Shader Profiler 源码归因，同时尽量保持有代表性的性能行为。Graphics Capture 不提供断点和单步执行；这类实时调试需要从 Nsight Graphics 的 **Shader Debugger Activity** 启动 Metallic，并使用无优化 shader 调试模式：
+
+```powershell
+# 从 Nsight Shader Debugger Activity 启动，用于断点和单步
+build\Source\Metallic.exe --nsight-shader-debug
+```
+
+也可以通过环境变量为主编辑器或独立 Sample 启用无优化调试信息：
+
+```powershell
+# 当前 PowerShell 会话中启用 Shader Debug 模式
+$env:METALLIC_NSIGHT_SHADER_DEBUG = "1"
+build\Source\Metallic.exe
+```
+
+`--nsight-capture` 和 `--nsight-shader-debug` 可以同时使用；此时仍启用应用内 Graphics Capture，但 shader 使用无优化调试配置。普通、带优化捕获符号和无优化调试三种 Slang 编译模式具有独立的磁盘缓存键，不需要手动清理旧的无符号缓存。多配置生成器下，可执行文件路径通常为 `build\Source\Debug\Metallic.exe`。
+
+调试信息可能把 shader 源码和本地文件路径嵌入 SPIR-V，进而进入 `.ngfx-capture` 文件。共享 Capture 前应按源码文件检查其分发范围。无优化模式会改变 shader 性能和指令布局，不应将其用于性能结论。
+
 顶层配置还提供 `METALLIC_BUILD_TESTS` 和实验性的 `METALLIC_CLUSTER_LOD_TOPOLOGY_NYX` 选项。
 
 ## 13. 扩展指南

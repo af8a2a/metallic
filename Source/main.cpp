@@ -1,5 +1,6 @@
 #include "Editor/EditorApplication.h"
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include <cstdlib>
@@ -48,6 +49,7 @@ void printUsage()
         "  --scene <path>                                Override the sample glTF scene\n"
         "  --wait-for-graphics-debugger                  Wait before Vulkan initialization\n"
         "  --nsight-capture                              Enable Profiler Graphics Capture export\n"
+        "  --nsight-shader-debug                         Emit unoptimized shader debug information\n"
         "  --rhi-smoke-test                              Run the RHI smoke test\n"
         "  --rhi-triangle-preview-test                   Run the RHI triangle preview test\n"
         "  --rhi-bindless-descriptor-heap-smoke-test     Run the bindless descriptor heap smoke test\n"
@@ -168,6 +170,7 @@ int main(int argc, char** argv)
     bool rhiValidation = true;
     bool waitForGraphicsDebugger = waitForGraphicsDebuggerFromEnv();
     bool nsightGraphicsCapture = false;
+    bool nsightShaderDebug = false;
     std::filesystem::path buildMeshstreamSourcePath;
     std::filesystem::path buildMeshstreamOutputPath;
     std::filesystem::path scenePath;
@@ -194,6 +197,8 @@ int main(int argc, char** argv)
             waitForGraphicsDebugger = true;
         } else if (argument == "--nsight-capture") {
             nsightGraphicsCapture = true;
+        } else if (argument == "--nsight-shader-debug") {
+            nsightShaderDebug = true;
         } else if (argument == "--scene") {
             if (index + 1 >= argc) {
                 std::fputs("--scene requires a glTF scene path\n", stderr);
@@ -275,5 +280,6 @@ int main(int argc, char** argv)
         nullptr,
         scenePathString.empty() ? nullptr : scenePathString.c_str(),
         nullptr,
-        nsightGraphicsCapture);
+        nsightGraphicsCapture,
+        nsightShaderDebug);
 }

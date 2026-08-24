@@ -1926,10 +1926,12 @@ private:
             log += '\n';
             return result;
         }
+        const std::string shaderDebugName = std::string(moduleName) + "." + entryPoint;
         result = device.createShaderModule(
             ShaderModuleDesc{
                 .code = compileResult.spirv.data(),
                 .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+                .debugName = shaderDebugName.c_str(),
             },
             outShader);
         if (!result) {

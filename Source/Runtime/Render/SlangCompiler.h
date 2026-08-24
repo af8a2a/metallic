@@ -9,6 +9,12 @@ namespace metallic::render {
 
 inline constexpr const char* kDefaultSlangProfileName = "spirv_1_6";
 
+enum class SlangShaderDebugMode : uint8_t {
+    Disabled,
+    CaptureSymbols,
+    ShaderDebug,
+};
+
 struct SlangMacroDefine {
     const char* name = nullptr;
     const char* value = "1";
@@ -38,6 +44,10 @@ struct SlangShaderCacheOptions {
     bool enableDiskCache = true;
     bool* outCacheHit = nullptr;
 };
+
+// Process-global compilation policy. Configure it before shader compilation begins.
+void setSlangShaderDebugMode(SlangShaderDebugMode mode) noexcept;
+SlangShaderDebugMode slangShaderDebugMode() noexcept;
 
 Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult);
 Result compileSlangShaderToSpirv(

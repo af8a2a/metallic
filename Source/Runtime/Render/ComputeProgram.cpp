@@ -364,6 +364,7 @@ Result ComputeProgram::initialize(
         ShaderModuleDesc{
             .code = desc.spirv,
             .byteSize = desc.byteSize,
+            .debugName = impl_->debugName.c_str(),
         },
         impl_->shader);
     if (!result) {

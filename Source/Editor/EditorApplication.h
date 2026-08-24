@@ -33,7 +33,8 @@ public:
         const char* startupSampleId = nullptr,
         const char* startupScenePath = nullptr,
         const char* startupStreamAssetPath = nullptr,
-        bool enableNsightGraphicsCapture = false);
+        bool enableNsightGraphicsCapture = false,
+        bool enableNsightShaderDebug = false);
 
 private:
     enum class PendingSceneAction : int32_t;
@@ -255,6 +256,7 @@ private:
     bool smokeTest_ = false;
     bool waitForGraphicsDebugger_ = false;
     bool nsightGraphicsCaptureRequested_ = false;
+    bool nsightShaderDebugRequested_ = false;
     bool imguiContextCreated_ = false;
     bool imnodesContextCreated_ = false;
     bool imguiPlatformInitialized_ = false;

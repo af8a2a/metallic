@@ -526,7 +526,9 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
                     ? graphicsCapture.statusText
                     : "The current View is not ready for capture.");
         } else {
-            ImGui::SetTooltip("Capture the current View during the next complete presented frame.");
+            ImGui::SetTooltip(
+                "Capture the current View during the next complete presented frame. "
+                "Optimized Slang source symbols are embedded in captured SPIR-V.");
         }
     }
 

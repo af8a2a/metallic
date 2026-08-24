@@ -44,6 +44,7 @@ constexpr const char* kBindlessSmokeFragmentEntryPoint = "bindlessSmokeFragmentM
 constexpr uint32_t kSpirvMagic = 0x07230203u;
 constexpr uint32_t kSpirvVersion16 = 0x00010600u;
 constexpr uint16_t kSpirvOpExtension = 10u;
+constexpr uint16_t kSpirvOpExtInstImport = 11u;
 constexpr uint16_t kSpirvOpCapability = 17u;
 constexpr uint16_t kSpirvOpRayQueryGetIntersectionClusterIdNv = 5345u;
 constexpr uint32_t kSpirvRayTracingClusterAccelerationStructureNv = 5437u;
@@ -135,6 +136,30 @@ bool spirvContainsExtension(const std::vector<uint32_t>& spirv, std::string_view
             const char* limit = begin + static_cast<size_t>(wordCount - 1) * sizeof(uint32_t);
             const char* end = std::find(begin, limit, '\0');
             if (end != limit && std::string_view(begin, static_cast<size_t>(end - begin)) == expectedExtension) {
+                return true;
+            }
+        }
+        wordIndex += wordCount;
+    }
+    return false;
+}
+
+bool spirvContainsExtendedInstructionSet(
+    const std::vector<uint32_t>& spirv,
+    std::string_view expectedSet)
+{
+    for (size_t wordIndex = 5; wordIndex < spirv.size();) {
+        const uint32_t instruction = spirv[wordIndex];
+        const uint16_t wordCount = static_cast<uint16_t>(instruction >> 16u);
+        const uint16_t opcode = static_cast<uint16_t>(instruction & 0xffffu);
+        if (wordCount == 0 || wordIndex + wordCount > spirv.size()) {
+            return false;
+        }
+        if (opcode == kSpirvOpExtInstImport && wordCount >= 3) {
+            const char* begin = reinterpret_cast<const char*>(spirv.data() + wordIndex + 2);
+            const char* limit = begin + static_cast<size_t>(wordCount - 2) * sizeof(uint32_t);
+            const char* end = std::find(begin, limit, '\0');
+            if (end != limit && std::string_view(begin, static_cast<size_t>(end - begin)) == expectedSet) {
                 return true;
             }
         }
@@ -2353,6 +2378,16 @@ public:
 
     RhiTestResult run(RhiTestContext& context) override
     {
+        struct ShaderDebugModeGuard {
+            render::SlangShaderDebugMode previousMode = render::slangShaderDebugMode();
+
+            ~ShaderDebugModeGuard()
+            {
+                render::setSlangShaderDebugMode(previousMode);
+            }
+        } shaderDebugModeGuard;
+        render::setSlangShaderDebugMode(render::SlangShaderDebugMode::Disabled);
+
         const std::filesystem::path testRoot =
             context.outputDirectory / "slang_shader_disk_cache";
         std::error_code fileError;
@@ -2442,6 +2477,36 @@ public:
             return RhiTestResult::fail("rebuilt shader did not become the new disk cache entry");
         }
 
+        render::setSlangShaderDebugMode(render::SlangShaderDebugMode::CaptureSymbols);
+        render::ShaderCompileResult symbolCompile;
+        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, symbolCompile);
+        if (!result || symbolCompile.spirv.empty() || cacheHit ||
+            !spirvContainsExtendedInstructionSet(
+                symbolCompile.spirv,
+                "NonSemantic.Shader.DebugInfo.100")) {
+            return RhiTestResult::fail(
+                "capture-symbol shader compile did not emit NonSemantic debug information");
+        }
+        render::ShaderCompileResult cachedSymbolCompile;
+        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedSymbolCompile);
+        if (!result || !cacheHit || cachedSymbolCompile.spirv != symbolCompile.spirv) {
+            return RhiTestResult::fail("capture-symbol shader did not use its isolated cache entry");
+        }
+
+        render::setSlangShaderDebugMode(render::SlangShaderDebugMode::ShaderDebug);
+        render::ShaderCompileResult unoptimizedDebugCompile;
+        result = render::compileSlangShaderToSpirv(
+            shaderDesc,
+            cacheOptions,
+            unoptimizedDebugCompile);
+        if (!result || unoptimizedDebugCompile.spirv.empty() || cacheHit ||
+            !spirvContainsExtendedInstructionSet(
+                unoptimizedDebugCompile.spirv,
+                "NonSemantic.Shader.DebugInfo.100")) {
+            return RhiTestResult::fail(
+                "unoptimized shader-debug compile did not emit NonSemantic debug information");
+        }
+
         size_t cacheFileCount = 0;
         for (const std::filesystem::directory_entry& entry :
              std::filesystem::directory_iterator(cacheDirectory)) {
@@ -2449,11 +2514,12 @@ public:
                 ? 1u
                 : 0u;
         }
-        if (cacheFileCount != 1) {
-            return RhiTestResult::fail("shader cache did not maintain one entry per compile request");
+        if (cacheFileCount != 3) {
+            return RhiTestResult::fail(
+                "shader cache did not isolate normal, capture-symbol, and shader-debug modes");
         }
         return RhiTestResult::pass(
-            "validated SPIR-V cold compile, warm hit, and include-content invalidation");
+            "validated SPIR-V cache invalidation and isolated NonSemantic debug modes");
     }
 };
 

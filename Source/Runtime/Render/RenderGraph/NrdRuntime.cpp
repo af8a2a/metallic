@@ -497,6 +497,7 @@ Result NrdRuntime::initialize(
             ShaderModuleDesc{
                 .code = static_cast<const uint32_t*>(pipelineDesc.computeShaderSPIRV.bytecode),
                 .byteSize = pipelineDesc.computeShaderSPIRV.size,
+                .debugName = pipelineDesc.shaderIdentifier,
             },
             shader);
         if (!result || shader == nullptr) {

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -36,13 +37,15 @@ namespace {
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 1;
-constexpr uint32_t kShaderCacheRequestVersion = 2;
+constexpr uint32_t kShaderCacheRequestVersion = 3;
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 constexpr uint32_t kSpirvMagic = 0x07230203u;
+
+std::atomic<SlangShaderDebugMode> gSlangShaderDebugMode{SlangShaderDebugMode::Disabled};
 
 struct ShaderCacheHeader {
     std::array<char, 8> magic{};
@@ -104,7 +107,7 @@ std::filesystem::path normalizedAbsolutePath(
     return pathError ? path.lexically_normal() : resolved.lexically_normal();
 }
 
-uint64_t shaderRequestHash(const SlangShaderDesc& desc)
+uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode debugMode)
 {
     uint64_t hash = kFnvOffset;
     hash = hashValue(hash, kShaderCacheRequestVersion);
@@ -112,6 +115,7 @@ uint64_t shaderRequestHash(const SlangShaderDesc& desc)
     hash = hashText(hash, desc.moduleName);
     hash = hashText(hash, desc.entryPointName);
     hash = hashText(hash, desc.profileName != nullptr ? desc.profileName : kDefaultSlangProfileName);
+    hash = hashValue(hash, static_cast<uint8_t>(debugMode));
     const std::string searchPath = normalizedAbsolutePath(desc.searchPath).generic_string();
     hash = hashText(hash, searchPath.c_str());
     hash = hashValue(hash, desc.additionalSearchPathCount);
@@ -447,6 +451,16 @@ void appendDiagnostics(slang::IBlob* diagnostics, std::string& outDiagnostics)
 
 } // namespace
 
+void setSlangShaderDebugMode(SlangShaderDebugMode mode) noexcept
+{
+    gSlangShaderDebugMode.store(mode, std::memory_order_relaxed);
+}
+
+SlangShaderDebugMode slangShaderDebugMode() noexcept
+{
+    return gSlangShaderDebugMode.load(std::memory_order_relaxed);
+}
+
 Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult)
 {
     return compileSlangShaderToSpirv(desc, SlangShaderCacheOptions{}, outResult);
@@ -473,7 +487,8 @@ Result compileSlangShaderToSpirv(
         }
     }
 
-    const uint64_t requestHash = shaderRequestHash(desc);
+    const SlangShaderDebugMode debugMode = slangShaderDebugMode();
+    const uint64_t requestHash = shaderRequestHash(desc, debugMode);
     const std::filesystem::path cachePath = shaderCachePath(cacheOptions, requestHash);
     if (cacheOptions.enableDiskCache && loadCachedShader(cachePath, requestHash, outResult.spirv)) {
         if (cacheOptions.outCacheHit != nullptr) {
@@ -521,7 +536,32 @@ Result compileSlangShaderToSpirv(
         searchPaths.push_back(searchPath.c_str());
     }
     std::vector<slang::CompilerOptionEntry> compilerOptions;
-    compilerOptions.reserve(desc.capabilityCount + desc.macroDefineCount);
+    compilerOptions.reserve(desc.capabilityCount + desc.macroDefineCount + 3u);
+    if (debugMode != SlangShaderDebugMode::Disabled) {
+        compilerOptions.push_back(slang::CompilerOptionEntry{
+            .name = slang::CompilerOptionName::EmitSpirvDirectly,
+            .value = slang::CompilerOptionValue{
+                .kind = slang::CompilerOptionValueKind::Int,
+                .intValue0 = 1,
+            },
+        });
+        compilerOptions.push_back(slang::CompilerOptionEntry{
+            .name = slang::CompilerOptionName::DebugInformation,
+            .value = slang::CompilerOptionValue{
+                .kind = slang::CompilerOptionValueKind::Int,
+                .intValue0 = static_cast<int32_t>(SLANG_DEBUG_INFO_LEVEL_STANDARD),
+            },
+        });
+        if (debugMode == SlangShaderDebugMode::ShaderDebug) {
+            compilerOptions.push_back(slang::CompilerOptionEntry{
+                .name = slang::CompilerOptionName::Optimization,
+                .value = slang::CompilerOptionValue{
+                    .kind = slang::CompilerOptionValueKind::Int,
+                    .intValue0 = static_cast<int32_t>(SLANG_OPTIMIZATION_LEVEL_NONE),
+                },
+            });
+        }
+    }
     for (uint32_t capabilityIndex = 0;
          desc.capabilities != nullptr && capabilityIndex < desc.capabilityCount;
          ++capabilityIndex) {

@@ -2747,6 +2747,7 @@ struct DeviceImpl {
     bool clusterAccelerationStructureEnabled = false;
     bool partitionedAccelerationStructureEnabled = false;
     bool streamlineInitialized = false;
+    PFN_vkSetDebugUtilsObjectNameEXT setDebugUtilsObjectName = nullptr;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
     std::vector<std::unique_ptr<Queue>> queues;
@@ -7435,6 +7436,16 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
         return resultFromVk(result);
     }
     profiling::registerNsightAftermathShaderBinary(desc.code, desc.byteSize);
+    if (desc.debugName != nullptr && desc.debugName[0] != '\0' &&
+        impl_->setDebugUtilsObjectName != nullptr) {
+        const VkDebugUtilsObjectNameInfoEXT nameInfo{
+            .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+            .objectType = VK_OBJECT_TYPE_SHADER_MODULE,
+            .objectHandle = reinterpret_cast<uint64_t>(module),
+            .pObjectName = desc.debugName,
+        };
+        impl_->setDebugUtilsObjectName(impl_->device, &nameInfo);
+    }
 
     auto shaderImpl = std::make_unique<detail::ShaderModuleImpl>();
     shaderImpl->device = impl_.get();
@@ -8520,6 +8531,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->bufferDeviceAddressEnabled = selectedFeatures.usesBufferDeviceAddress();
 
     if (deviceImpl->debugUtilsEnabled) {
+        deviceImpl->setDebugUtilsObjectName = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+            vkGetDeviceProcAddr(deviceImpl->device, "vkSetDebugUtilsObjectNameEXT"));
         deviceImpl->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
             vkGetDeviceProcAddr(deviceImpl->device, "vkCmdBeginDebugUtilsLabelEXT"));
         deviceImpl->cmdEndDebugUtilsLabel = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
@@ -8815,10 +8828,12 @@ Result createSlangShaderModule(
         spdlog::warn("{}", compileResult.diagnostics);
     }
 
+    const std::string shaderDebugName = std::string(moduleName) + "." + entryPointName;
     return device.createShaderModule(
         ShaderModuleDesc{
             .code = compileResult.spirv.data(),
             .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+            .debugName = shaderDebugName.c_str(),
         },
         outShaderModule);
 }

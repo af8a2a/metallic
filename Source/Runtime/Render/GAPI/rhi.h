@@ -816,6 +816,7 @@ struct RasterizationState {
 struct ShaderModuleDesc {
     const uint32_t* code = nullptr;
     uint64_t byteSize = 0;
+    const char* debugName = nullptr;
 };
 
 enum class ShaderBindingType : uint8_t {
