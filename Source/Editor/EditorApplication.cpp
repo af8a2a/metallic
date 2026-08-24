@@ -71,31 +71,25 @@ bool environmentFlagEnabled(const char* name)
 
 constexpr const char* kDefaultImGuiIni = R"ini([Window][Viewport]
 Pos=0,28
-Size=1821,794
+Size=1588,794
 Collapsed=0
 DockId=0x00000003,0
 
-[Window][Scene Browser]
+[Window][Scene]
 Pos=1824,28
 Size=576,1322
 Collapsed=0
 DockId=0x00000002,0
 
-[Window][Inspector]
-Pos=1824,28
-Size=576,1322
-Collapsed=0
-DockId=0x00000002,1
-
 [Window][Assets]
 Pos=0,825
-Size=1821,525
+Size=1588,525
 Collapsed=0
 DockId=0x00000004,0
 
 [Window][Console]
 Pos=0,825
-Size=1821,525
+Size=1588,525
 Collapsed=0
 DockId=0x00000004,1
 
@@ -110,42 +104,69 @@ Size=400,400
 Collapsed=0
 
 [Window][Render Graph Editor]
-Pos=504,153
-Size=1830,1140
+Pos=206,372
+Size=1828,1070
 Collapsed=0
 
 [Window][Profiler]
 Pos=0,825
-Size=1821,525
-Collapsed=0
-DockId=0x00000004,3
-
-[Window][NVML Monitor]
-Pos=0,825
-Size=1821,525
+Size=1588,525
 Collapsed=0
 DockId=0x00000004,2
 
-[Window][Statistics]
+[Window][NVML Monitor]
 Pos=0,825
-Size=1821,525
+Size=1588,525
 Collapsed=0
-DockId=0x00000004,4
+DockId=0x00000004,3
 
-[Table][0x331D395F,5]
+[Window][Scene Browser]
+Pos=1591,28
+Size=809,1073
+Collapsed=0
+DockId=0x00000007,1
+
+[Window][Inspector]
+Pos=1591,1104
+Size=809,246
+Collapsed=0
+DockId=0x00000008,0
+
+[Window][Statistics]
+Pos=1591,28
+Size=809,1073
+Collapsed=0
+DockId=0x00000007,0
+
+[Window][Unsaved Scene Changes]
+Pos=942,3
+Size=498,172
+Collapsed=0
+
+[Table][0x2AFDBD75,2]
 RefScale=20
 Column 0  Weight=1.0000
-Column 1  Width=92
-Column 2  Width=72
+Column 1  Width=168
+
+[Table][0x331D395F,6]
+RefScale=20
+Column 0  Weight=1.0000
+Column 1  Width=209
+Column 2  Width=139
 Column 3  Width=72
 Column 4  Width=72
+Column 5  Width=72
 
 [Docking][Data]
-DockSpace     ID=0xB0446515 Window=0x3660BDC2 Pos=0,28 Size=2400,1322 Split=X
-  DockNode    ID=0x00000001 Parent=0xB0446515 SizeRef=1821,1350 Split=Y
-    DockNode  ID=0x00000003 Parent=0x00000001 SizeRef=1821,794 CentralNode=1 Selected=0xC450F867
-    DockNode  ID=0x00000004 Parent=0x00000001 SizeRef=1821,525 Selected=0x9B5D3198
-  DockNode    ID=0x00000002 Parent=0xB0446515 SizeRef=576,1350 Selected=0xE601B12F
+DockSpace       ID=0xB0446515 Window=0x3660BDC2 Pos=0,28 Size=2400,1322 Split=X
+  DockNode      ID=0x00000006 Parent=0xB0446515 SizeRef=1588,1322 Split=X
+    DockNode    ID=0x00000001 Parent=0x00000006 SizeRef=1821,1350 Split=Y
+      DockNode  ID=0x00000003 Parent=0x00000001 SizeRef=1821,794 CentralNode=1 Selected=0xC450F867
+      DockNode  ID=0x00000004 Parent=0x00000001 SizeRef=1821,525 Selected=0x9B5D3198
+    DockNode    ID=0x00000002 Parent=0x00000006 SizeRef=576,1350 Selected=0xE601B12F
+  DockNode      ID=0x00000005 Parent=0xB0446515 SizeRef=809,1322 Split=Y Selected=0x2732FE10
+    DockNode    ID=0x00000007 Parent=0x00000005 SizeRef=892,1073 Selected=0x2732FE10
+    DockNode    ID=0x00000008 Parent=0x00000005 SizeRef=892,246 Selected=0x36DC96AB
 
 )ini";
 
