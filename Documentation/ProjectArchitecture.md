@@ -397,12 +397,25 @@ Shaders/*.slang          <- Pass compile() 中选择的 shader 模块
 | 并行任务 | stdexec | TaskSystem 基础依赖 |
 | 去噪 | NRD | 找到 `NRD` 目标时定义 `METALLIC_HAS_NRD=1`，否则 Pass 返回不支持 |
 | Ray Reconstruction | NVIDIA Streamline | Windows/Vulkan 可选；SDK 不完整时编译为不支持 |
-| GPU 标记 | NVTX/Nsight Events | 找不到头文件时 marker 为空操作 |
+| GPU 标记 | NVTX/Nsight Events | 官方 NVTX v3 固定 vendored 于 `External/NVTX`（header-only）；禁用或找不到时 marker 为空操作 |
 | GPU 崩溃分析 | Nsight Aftermath | Windows/Vulkan 可选，并复制运行时 DLL |
 | GPU 监控 | NVML 动态加载 | 编辑器可选监控，不作为 RHI 基础依赖 |
 | 测试 | GoogleTest | task/scene/rhi 三类测试入口 |
 
-### 12.1 Nsight Graphics 捕获与 Shader 调试
+### 12.1 NVTX CPU 性能标记
+
+Metallic 的 CPU 侧 NVTX 标记由 `Source/Runtime/Render/Profiling/NsightEvents.h` 统一封装，官方 NVTX v3 头文件固定 vendored 在 `External/NVTX`（header-only，MSVC 下用 `__declspec(selectany)` 实现 link-once，不需要链接库），由 `cmake/SetupNsight.cmake` 接入；`METALLIC_ENABLE_NSIGHT_EVENTS=OFF` 或找不到头文件时所有 marker 退化为空操作，`METALLIC_NVTX_ROOT` 可指向其他 NVTX 检出。
+
+标记使用两个独立 domain，便于在 Nsight Systems 中分开过滤编辑器循环与渲染后端：
+
+- `Metallic.Editor`：编辑器主循环的 `Frame` range（payload 为帧序号）。
+- `Metallic.Render`：渲染侧 range，包括 `Render Graph Execute`（payload 为执行帧序号）、每个 Render Pass（payload 为节点 ID，颜色按 pass 类型哈希）、`Submit`（payload 为命令缓冲数量）、`Fence Wait`（payload 为超时时间）、`Semaphore Wait`（payload 为 timeline 值），以及 Streamer 的 `Buffer Upload`/`Texture Upload`/`Constant Upload`（payload 为字节数）与 `Upload Copies`（payload 为拷贝数量）。
+
+category 使用 `NsightCategory` 枚举的固定数值（Frame=1、EditorUi=2、RenderGraph=3、RenderPass=4、QueueSubmit=5、FenceWait=6、ResourceUpload=7），数值保持稳定以便工具跨会话过滤；颜色按 category 固定分配，Render Pass 例外地按 pass 类型着色。用 Nsight Systems 的 Timeline 视图按 domain/category 过滤即可看到上述 CPU range 分层。
+
+NsightEvents.h 在包含 `<nvtx3/nvToolsExt.h>` 时对 Windows 临时定义 `WIN32_LEAN_AND_MEAN`：NVTX 实现头会包含 `<windows.h>`，完整版会带入 `winspool.h`，其 ANSI/WIDE 别名宏 `#define DeviceCapabilities DeviceCapabilitiesA` 会破坏 RHI 同名类型。若翻译单元此前已完整包含 `windows.h`，封装头也会 `#undef DeviceCapabilities` 兜底。
+
+### 12.2 Nsight Graphics 捕获与 Shader 调试
 
 Profiler 可以通过 Nsight Graphics SDK 导出当前 View 的 Graphics Capture。使用 `--nsight-capture` 启动时，Metallic 会在 Vulkan 初始化前加载 Nsight Capture runtime，并为 Slang 生成的 SPIR-V 嵌入保留优化的 `NonSemantic.Shader.DebugInfo.100` 源码调试信息。应用启动后，在 Profiler 中点击 **Export Current View Capture** 捕获下一帧完整 View：
 

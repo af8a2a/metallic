@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -1971,6 +1972,11 @@ int EditorApplication::run(
             (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "accumulate", false);
         }
         auto profileFrame = profiler_.beginFrame();
+        const render::profiling::NsightProfileRange frameMarker(
+            render::profiling::NsightDomain::Editor,
+            "Frame",
+            render::profiling::NsightCategory::Frame,
+            0);
         {
             auto profileScope = profiler_.scope("Poll Events");
             pollEvents();
@@ -1983,7 +1989,13 @@ int EditorApplication::run(
         }
     }
 
+    uint64_t nsightFrameIndex = 0;
     while (running_) {
+        const render::profiling::NsightProfileRange frameMarker(
+            render::profiling::NsightDomain::Editor,
+            "Frame",
+            render::profiling::NsightCategory::Frame,
+            nsightFrameIndex++);
         auto profileFrame = profiler_.beginFrame();
         {
             auto profileScope = profiler_.scope("Poll Events");

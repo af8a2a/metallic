@@ -1,4 +1,5 @@
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/Profiling/NsightEvents.h"
 
 #include <algorithm>
 #include <cstring>
@@ -205,6 +206,12 @@ struct StreamerImpl {
             return {};
         }
 
+        const profiling::NsightProfileRange uploadMarker(
+            profiling::NsightDomain::Render,
+            "Buffer Upload",
+            profiling::NsightCategory::ResourceUpload,
+            dataSize);
+
         const uint64_t alignment = std::max<uint64_t>(
             std::max(streamDesc.placementAlignment, 1u),
             device != nullptr ? device->capabilities().bufferCopyOffsetAlignment : 1);
@@ -330,6 +337,12 @@ struct StreamerImpl {
             return {};
         }
 
+        const profiling::NsightProfileRange uploadMarker(
+            profiling::NsightDomain::Render,
+            "Texture Upload",
+            profiling::NsightCategory::ResourceUpload,
+            dataSize);
+
         const uint64_t localOffset = alignUp(
             dynamicBufferOffset,
             capabilities.textureUploadBufferOffsetAlignment);
@@ -397,6 +410,12 @@ struct StreamerImpl {
             return kInvalidStreamOffset;
         }
 
+        const profiling::NsightProfileRange uploadMarker(
+            profiling::NsightDomain::Render,
+            "Constant Upload",
+            profiling::NsightCategory::ResourceUpload,
+            byteSize);
+
         const uint64_t alignment = device != nullptr
             ? device->capabilities().constantBufferOffsetAlignment
             : 1;
@@ -429,6 +448,11 @@ struct StreamerImpl {
     void copyStreamedData(CommandBuffer& commandBuffer)
     {
         std::lock_guard lock(mutex);
+        const profiling::NsightProfileRange copyMarker(
+            profiling::NsightDomain::Render,
+            "Upload Copies",
+            profiling::NsightCategory::ResourceUpload,
+            bufferRequests.size() + textureRequests.size());
         for (const BufferCopyRequest& request : bufferRequests) {
             commandBuffer.copyBuffer(BufferCopyDesc{
                 .source = request.source,

@@ -4,6 +4,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/NsightAftermath.h"
+#include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <SDL3/SDL.h>
@@ -3405,6 +3406,12 @@ Result Queue::submit(const QueueSubmitDesc& desc)
         return makeError(Error::InvalidArgument);
     }
 
+    const profiling::NsightProfileRange submitMarker(
+        profiling::NsightDomain::Render,
+        "Submit",
+        profiling::NsightCategory::QueueSubmit,
+        desc.commandBufferCount);
+
     std::vector<VkSemaphoreSubmitInfo> waitSemaphores;
     waitSemaphores.reserve(desc.waitSemaphoreCount + desc.waitSwapchainSemaphoreCount);
     for (uint32_t index = 0; index < desc.waitSemaphoreCount; ++index) {
@@ -3530,6 +3537,12 @@ Result Fence::wait(uint64_t timeoutNanoseconds)
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+
+    const profiling::NsightProfileRange waitMarker(
+        profiling::NsightDomain::Render,
+        "Fence Wait",
+        profiling::NsightCategory::FenceWait,
+        timeoutNanoseconds);
 
     const VkResult result = vkWaitForFences(
         impl_->device->device,
@@ -3659,6 +3672,12 @@ Result Semaphore::wait(uint64_t value, uint64_t timeoutNanoseconds)
     if (impl_ == nullptr || impl_->semaphore == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
     }
+
+    const profiling::NsightProfileRange waitMarker(
+        profiling::NsightDomain::Render,
+        "Semaphore Wait",
+        profiling::NsightCategory::FenceWait,
+        value);
 
     VkSemaphoreWaitInfo waitInfo{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,

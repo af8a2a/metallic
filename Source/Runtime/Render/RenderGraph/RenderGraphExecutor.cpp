@@ -993,9 +993,11 @@ struct RenderGraphExecutor::Impl {
         const std::string markerName = passProfileMarkerName(node.name, node.type);
         const uint32_t markerColor = profiling::nsightColorFromName(node.type);
         const profiling::NsightProfileRange passMarker(
+            profiling::NsightDomain::Render,
             markerName.c_str(),
-            markerColor,
-            node.id);
+            profiling::NsightCategory::RenderPass,
+            node.id,
+            markerColor);
         commandBuffer.beginDebugLabel(DebugLabelDesc{
             .name = markerName.c_str(),
             .color = debugLabelColorFromArgb(markerColor),
@@ -1328,6 +1330,11 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
     impl_->historyResources = historyResources;
     std::string subsystemLog;
     const uint64_t frameIndex = impl_->executionFrameIndex++;
+    const profiling::NsightProfileRange executeMarker(
+        profiling::NsightDomain::Render,
+        "Render Graph Execute",
+        profiling::NsightCategory::RenderGraph,
+        frameIndex);
     Result result = impl_->subsystemHost->beginFrame(
         frameIndex,
         static_cast<uint32_t>(frameIndex % impl_->subsystemHost->frameSlotCount()),
