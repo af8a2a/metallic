@@ -30,14 +30,35 @@ function(metallic_copy_streamline_runtime target_name)
             )
         endif()
     endforeach()
+
+    # Remove Streamline files that older builds deployed next to this
+    # executable; Streamline enumerates every sl.*.dll there, so leaving them
+    # in place would load them again.
+    set(METALLIC_STREAMLINE_OBSOLETE_TARGET_FILES "")
+    foreach(METALLIC_STREAMLINE_OBSOLETE_FILE IN LISTS METALLIC_STREAMLINE_OBSOLETE_RUNTIME_FILES)
+        get_filename_component(METALLIC_STREAMLINE_OBSOLETE_NAME
+            "${METALLIC_STREAMLINE_OBSOLETE_FILE}" NAME)
+        list(APPEND METALLIC_STREAMLINE_OBSOLETE_TARGET_FILES
+            "$<TARGET_FILE_DIR:${target_name}>/${METALLIC_STREAMLINE_OBSOLETE_NAME}"
+        )
+    endforeach()
+    if(METALLIC_STREAMLINE_OBSOLETE_TARGET_FILES)
+        add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E rm -f ${METALLIC_STREAMLINE_OBSOLETE_TARGET_FILES}
+            VERBATIM
+        )
+    endif()
 endfunction()
 
 function(metallic_streamline_is_usable sdk_root out_var)
     if(EXISTS "${sdk_root}/include/sl.h" AND
+       EXISTS "${sdk_root}/include/sl_dlss.h" AND
        EXISTS "${sdk_root}/include/sl_dlss_d.h" AND
        EXISTS "${sdk_root}/lib/x64/sl.interposer.lib" AND
        EXISTS "${sdk_root}/bin/x64/sl.interposer.dll" AND
        EXISTS "${sdk_root}/bin/x64/sl.common.dll" AND
+       EXISTS "${sdk_root}/bin/x64/sl.dlss.dll" AND
+       EXISTS "${sdk_root}/bin/x64/nvngx_dlss.dll" AND
        EXISTS "${sdk_root}/bin/x64/sl.dlss_d.dll" AND
        EXISTS "${sdk_root}/bin/x64/nvngx_dlssd.dll")
         set(${out_var} TRUE PARENT_SCOPE)
@@ -178,32 +199,46 @@ set(METALLIC_STREAMLINE_SCRIPTS_DIR "${METALLIC_STREAMLINE_SDK_ROOT}/scripts")
 
 metallic_streamline_is_usable("${METALLIC_STREAMLINE_SDK_ROOT}" METALLIC_STREAMLINE_USABLE)
 if(METALLIC_STREAMLINE_USABLE)
-    file(TO_CMAKE_PATH "${METALLIC_STREAMLINE_BIN_DIR}" METALLIC_STREAMLINE_BIN_DIR_CMAKE)
-
     metallic_set_streamline_available(1)
     add_compile_definitions(
         STREAMLINE_FEATURE_DLSS_RR=1
-        "METALLIC_STREAMLINE_BIN_DIR=\"${METALLIC_STREAMLINE_BIN_DIR_CMAKE}\""
         "METALLIC_STREAMLINE_INTERPOSER_DLL=\"sl.interposer.dll\""
     )
     target_include_directories(metallic_streamline INTERFACE "${METALLIC_STREAMLINE_INCLUDE_DIR}")
     target_link_libraries(metallic_streamline INTERFACE "${METALLIC_STREAMLINE_LIBRARY}")
     target_compile_definitions(metallic_streamline INTERFACE
         STREAMLINE_FEATURE_DLSS_RR=1
-        "METALLIC_STREAMLINE_BIN_DIR=\"${METALLIC_STREAMLINE_BIN_DIR_CMAKE}\""
         "METALLIC_STREAMLINE_INTERPOSER_DLL=\"sl.interposer.dll\""
     )
 
-    file(GLOB METALLIC_STREAMLINE_RUNTIME_DLLS
-        "${METALLIC_STREAMLINE_BIN_DIR}/*.dll"
+    # Deploy only the DLSS-SR and DLSS-RR runtime. Streamline loads and
+    # signature-verifies every sl.*.dll it finds next to sl.interposer.dll
+    # before filtering by requested features, so shipping additional plugins
+    # would slow down startup. NvLowLatencyVk.dll is required unconditionally
+    # by the shared Vulkan platform layer inside sl.common.
+    set(METALLIC_STREAMLINE_RUNTIME_FILES
+        "${METALLIC_STREAMLINE_BIN_DIR}/sl.interposer.dll"
+        "${METALLIC_STREAMLINE_BIN_DIR}/sl.common.dll"
+        "${METALLIC_STREAMLINE_BIN_DIR}/sl.dlss.dll"
+        "${METALLIC_STREAMLINE_BIN_DIR}/nvngx_dlss.dll"
+        "${METALLIC_STREAMLINE_BIN_DIR}/sl.dlss_d.dll"
+        "${METALLIC_STREAMLINE_BIN_DIR}/nvngx_dlssd.dll"
+        "${METALLIC_STREAMLINE_BIN_DIR}/NvLowLatencyVk.dll"
+        "${METALLIC_STREAMLINE_SCRIPTS_DIR}/sl.common.json"
+        "${METALLIC_STREAMLINE_SCRIPTS_DIR}/sl.interposer.json"
+        CACHE INTERNAL "NVIDIA Streamline runtime files to copy next to executables"
     )
-    file(GLOB METALLIC_STREAMLINE_RUNTIME_JSONS
+
+    # SDK runtime files outside the supported DLSS-SR/DLSS-RR set, deployed
+    # next to executables by older builds and therefore removed on copy.
+    file(GLOB METALLIC_STREAMLINE_SDK_RUNTIME_FILES
+        "${METALLIC_STREAMLINE_BIN_DIR}/*.dll"
         "${METALLIC_STREAMLINE_SCRIPTS_DIR}/*.json"
     )
-    set(METALLIC_STREAMLINE_RUNTIME_FILES
-        ${METALLIC_STREAMLINE_RUNTIME_DLLS}
-        ${METALLIC_STREAMLINE_RUNTIME_JSONS}
-        CACHE INTERNAL "NVIDIA Streamline runtime files to copy next to executables"
+    list(REMOVE_ITEM METALLIC_STREAMLINE_SDK_RUNTIME_FILES ${METALLIC_STREAMLINE_RUNTIME_FILES})
+    set(METALLIC_STREAMLINE_OBSOLETE_RUNTIME_FILES
+        ${METALLIC_STREAMLINE_SDK_RUNTIME_FILES}
+        CACHE INTERNAL "NVIDIA Streamline runtime files to remove from executable directories"
     )
     message(STATUS "NVIDIA Streamline enabled: ${METALLIC_STREAMLINE_SDK_ROOT}")
 else()

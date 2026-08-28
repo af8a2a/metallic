@@ -9,7 +9,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
 #include <mutex>
 #include <type_traits>
 #include <vector>
@@ -540,11 +539,9 @@ Result initializeStreamlinePreDevice(std::string& log)
         return {};
     }
 
-    const std::wstring pluginPath = std::filesystem::path(METALLIC_STREAMLINE_BIN_DIR).wstring();
-    const wchar_t* pluginPaths[] = {pluginPath.c_str()};
     const sl::Feature features[] = {
+        sl::kFeatureDLSS,
         sl::kFeatureDLSS_RR,
-        sl::kFeaturePCL,
     };
 
     sl::Preferences preferences;
@@ -552,15 +549,16 @@ Result initializeStreamlinePreDevice(std::string& log)
     preferences.engine = sl::EngineType::eCustom;
     // Leave projectId/engineVersion empty so NGX uses the registered applicationId.
     preferences.applicationId = 231313132;
-    preferences.pathsToPlugins = pluginPaths;
-    preferences.numPathsToPlugins = static_cast<uint32_t>(std::size(pluginPaths));
+    // Leave pathsToPlugins unset so Streamline scans the executable directory,
+    // where the build deploys only the DLSS-SR/DLSS-RR plugin set; Streamline
+    // loads and signature-verifies every sl.*.dll it finds there before
+    // filtering by requested features.
     preferences.featuresToLoad = features;
     preferences.numFeaturesToLoad = static_cast<uint32_t>(std::size(features));
     preferences.logLevel = sl::LogLevel::eDefault;
     preferences.logMessageCallback = streamlineLogCallback;
     preferences.flags =
         sl::PreferenceFlags::eDisableCLStateTracking |
-        sl::PreferenceFlags::eLoadDownloadedPlugins |
         sl::PreferenceFlags::eDisableDebugText |
         sl::PreferenceFlags::eUseManualHooking |
         sl::PreferenceFlags::eUseFrameBasedResourceTagging;
