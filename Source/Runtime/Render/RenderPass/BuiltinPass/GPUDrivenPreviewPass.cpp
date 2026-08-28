@@ -936,9 +936,13 @@ public:
         if (context.device == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        if (!context.device->capabilities().meshShader ||
+        // Slang 2026.1.2 lowers fragment SV_PrimitiveID to the SPIR-V Geometry
+        // capability even when it is sourced by a mesh shader primitive output.
+        if (!context.device->capabilities().taskShader ||
+            !context.device->capabilities().meshShader ||
+            !context.device->capabilities().geometryShader ||
             !context.device->capabilities().bindlessDescriptorHeap) {
-            log = "GPUDrivenPreviewPass requires meshShader and bindlessDescriptorHeap capabilities";
+            log = "GPUDrivenPreviewPass requires taskShader, meshShader, geometryShader, and bindlessDescriptorHeap capabilities";
             return makeError(Error::Unsupported);
         }
         GPUSceneSubsystem* gpuSceneSubsystem = context.subsystem<GPUSceneSubsystem>();
@@ -1241,6 +1245,7 @@ public:
             const bool doubleSided = (bucketIndex & 1u) != 0u;
             result = context.device->createGraphicsPipeline(
                 GraphicsPipelineDesc{
+                    .taskShader = amplificationShader_.get(),
                     .meshShader = meshShader_.get(),
                     .fragmentShader = masked ? maskedFragmentShader_.get() : fragmentShader_.get(),
                     .colorFormat = Format::R32Uint,
@@ -1893,7 +1898,7 @@ private:
         Device& device,
         const char* moduleName,
         const char* entryPoint,
-        bool meshShader,
+        bool meshShadingShader,
         std::unique_ptr<ShaderModule>& outShader,
         std::string& log,
         const SlangMacroDefine* macroDefines = nullptr,
@@ -1906,8 +1911,10 @@ private:
                 .moduleName = moduleName,
                 .entryPointName = entryPoint,
                 .searchPath = kTriangleShaderSearchPath,
-                .capabilities = meshShader ? capabilities : nullptr,
-                .capabilityCount = meshShader ? static_cast<uint32_t>(std::size(capabilities)) : 0u,
+                .capabilities = meshShadingShader ? capabilities : nullptr,
+                .capabilityCount = meshShadingShader
+                    ? static_cast<uint32_t>(std::size(capabilities))
+                    : 0u,
                 .macroDefines = macroDefines,
                 .macroDefineCount = macroDefineCount,
             },
@@ -1948,16 +1955,16 @@ private:
         struct ShaderRequest {
             const char* moduleName = kGPUDrivenPreviewShaderModuleName;
             const char* entryPoint = nullptr;
-            bool meshShader = false;
+            bool meshShadingShader = false;
             std::unique_ptr<ShaderModule>* shader = nullptr;
         };
         const std::array<ShaderRequest, 10> requests{
+            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewAmplificationEntryPoint, true, &amplificationShader_},
             ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewMeshEntryPoint, true, &meshShader_},
             ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewFragmentEntryPoint, false, &fragmentShader_},
             ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewMaskedFragmentEntryPoint, false, &maskedFragmentShader_},
             ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewResetEntryPoint, false, &resetShader_},
             ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewInstanceCullEntryPoint, false, &instanceCullShader_},
-            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewCompactEntryPoint, false, &compactShader_},
             ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewHzbEntryPoint, false, &hzbShader_},
             ShaderRequest{kGPUDrivenDeferredShaderModuleName, kGPUDrivenPreviewDeferredEntryPoint, false, &deferredShader_},
             ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewCompositeVertexEntryPoint, false, &compositeVertexShader_},
@@ -1976,7 +1983,7 @@ private:
                 device,
                 request.moduleName,
                 request.entryPoint,
-                request.meshShader,
+                request.meshShadingShader,
                 *request.shader,
                 log,
                 isDeferred ? openPBRDefines.data() : nullptr,
@@ -2001,7 +2008,7 @@ private:
                     device,
                     request.moduleName,
                     request.entryPoint,
-                    request.meshShader,
+                    request.meshShadingShader,
                     *request.shader,
                     log);
                 if (!streamResult) {
@@ -2047,10 +2054,6 @@ private:
             return result;
         }
         result = createCompute(*instanceCullShader_, instanceCullPipeline_, "instance cull");
-        if (!result) {
-            return result;
-        }
-        result = createCompute(*compactShader_, compactPipeline_, "compact");
         if (!result) {
             return result;
         }
@@ -2141,9 +2144,7 @@ private:
         uint32_t width,
         uint32_t height) const
     {
-        const uint32_t visibleMeshletCapacity = std::max(
-            drawTaskCount_ * kGPUDrivenPreviewMeshletChunkCount,
-            1u);
+        constexpr uint32_t visibleMeshletCapacity = 1u;
         GPUSceneViewDesc desc{
             .frameSlotCount = std::max(frameSlotCount_, 1u),
             .instanceCapacity = std::max(instanceCount_, 1u),
@@ -2312,9 +2313,7 @@ private:
             log = "GPUDrivenPreviewPass could not query its GPUScene View allocation";
             return makeError(Error::Failure);
         }
-        const uint32_t requiredVisibleMeshletCapacity = std::max(
-            drawTaskCount_ * kGPUDrivenPreviewMeshletChunkCount,
-            1u);
+        constexpr uint32_t requiredVisibleMeshletCapacity = 1u;
         bool capacityGrowth =
             instanceCount_ > currentViewResources.desc.instanceCapacity;
         for (uint32_t bucketIndex = 0;
@@ -2552,21 +2551,19 @@ private:
             return makeError(Error::InvalidArgument);
         }
         GPUDrivenPreviewUserPush push = makePush(passIndex);
-        const GPUSceneCullRecordDesc desc{
+        const GPUSceneInstanceCullRecordDesc desc{
             .phase = passIndex == 0
                 ? GPUSceneCullPhase::Early
                 : GPUSceneCullPhase::Late,
             .bindlessHeap = bindlessHeap_.get(),
             .resetPipeline = resetPipeline_.get(),
             .instanceCullPipeline = instanceCullPipeline_.get(),
-            .compactPipeline = compactPipeline_.get(),
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .instanceGroupCountX = divideRoundUp(instanceCount_, 64u),
-            .meshletGroupCountX = divideRoundUp(activeMeshletCount_, 64u),
         };
         std::string log;
-        Result result = gpuSceneSubsystem_->recordCull(
+        Result result = gpuSceneSubsystem_->recordInstanceCull(
             commandBuffer,
             gpuSceneView_,
             activeFrameSlot_,
@@ -2586,17 +2583,6 @@ private:
         LoadOp loadOp,
         bool projectWithCullingCamera = false)
     {
-        GPUDrivenPreviewFrameSlotResources& slot = activeFrameResources();
-        barrierBuffer(
-            commandBuffer,
-            *slot.visibleMeshletBuffers[passIndex],
-            ResourceState::General,
-            ResourceState::ShaderRead);
-        barrierBuffer(
-            commandBuffer,
-            *slot.indirectBuffers[passIndex],
-            ResourceState::General,
-            ResourceState::IndirectArgument);
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -2640,22 +2626,12 @@ private:
             const GPUDrivenPreviewUserPush push =
                 makePush(passIndex, bucketIndex, projectWithCullingCamera);
             commandBuffer.pushBindlessData(&push, sizeof(push));
-            commandBuffer.drawMeshTasksIndirect(
-                *slot.indirectBuffers[passIndex],
-                static_cast<uint64_t>(bucketIndex) *
-                    kGPUDrivenPreviewIndirectArgumentUintCount * sizeof(uint32_t));
+            commandBuffer.drawMeshTasks(
+                divideRoundUp(
+                    activeMeshletCount_,
+                    kGPUDrivenPreviewAmplificationGroupSize));
         }
         commandBuffer.endRendering();
-        barrierBuffer(
-            commandBuffer,
-            *slot.visibleMeshletBuffers[passIndex],
-            ResourceState::ShaderRead,
-            ResourceState::General);
-        barrierBuffer(
-            commandBuffer,
-            *slot.indirectBuffers[passIndex],
-            ResourceState::IndirectArgument,
-            ResourceState::General);
     }
 
     Result buildHzb(CommandBuffer& commandBuffer)
@@ -4676,9 +4652,7 @@ private:
         }
         outParams.materialTextureCount = std::max(materialTextureCount, 1u);
         outParams.materialCount = std::max(materialCount, 1u);
-        outParams.visibleMeshletCapacity =
-            maxMeshletRangeCount(baseMeshletRange, lodLevelRanges) *
-            kGPUDrivenPreviewMeshletChunkCount;
+        outParams.visibleMeshletCapacity = 1u;
         outParams.environmentIntensity = std::max(environment.intensity, 0.0f);
         outParams.environmentRotationRadians =
             environment.rotationDegrees * (kPi / 180.0f);
@@ -4809,12 +4783,12 @@ private:
     BindlessHandle streamVisibleInstanceIdsHandle_;
     BindlessHandle streamVisibleInstanceCounterHandle_;
     std::array<BindlessHandle, 2> streamHzbHandles_;
+    std::unique_ptr<ShaderModule> amplificationShader_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<ShaderModule> maskedFragmentShader_;
     std::unique_ptr<ShaderModule> resetShader_;
     std::unique_ptr<ShaderModule> instanceCullShader_;
-    std::unique_ptr<ShaderModule> compactShader_;
     std::unique_ptr<ShaderModule> hzbShader_;
     std::unique_ptr<ShaderModule> deferredShader_;
     std::unique_ptr<ShaderModule> compositeVertexShader_;
@@ -4828,7 +4802,6 @@ private:
     std::unique_ptr<GraphicsPipeline> compositePipeline_;
     std::unique_ptr<ComputePipeline> resetPipeline_;
     std::unique_ptr<ComputePipeline> instanceCullPipeline_;
-    std::unique_ptr<ComputePipeline> compactPipeline_;
     std::unique_ptr<ComputePipeline> hzbPipeline_;
     std::unique_ptr<ComputePipeline> deferredPipeline_;
     std::unique_ptr<GraphicsPipeline> streamVisibilityPipeline_;

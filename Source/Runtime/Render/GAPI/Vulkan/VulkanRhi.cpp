@@ -1425,6 +1425,8 @@ struct VulkanDeviceFeatureRequest {
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
     bool meshShader = false;
+    bool taskShader = false;
+    bool geometryShader = false;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool pushDescriptor = false;
@@ -1439,6 +1441,8 @@ struct VulkanDeviceFeatureRequest {
             .bindlessDescriptorHeap = desc.enableBindlessDescriptorHeap,
             .shaderObject = desc.enableShaderObject,
             .meshShader = desc.enableMeshShader,
+            .taskShader = desc.enableTaskShader,
+            .geometryShader = desc.enableGeometryShader,
             .rayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure,
             .rayQuery = desc.enableRayQuery,
             .pushDescriptor = desc.enablePushDescriptor,
@@ -1634,6 +1638,16 @@ struct VulkanDeviceFeatureProbe {
         return false;
 #endif
     }
+
+    bool supportsTaskShader(const VulkanExtensionSet& extensions) const
+    {
+#ifdef VK_EXT_mesh_shader
+        return extensions.meshShader && meshShaderFeatures.taskShader == VK_TRUE;
+#else
+        (void)extensions;
+        return false;
+#endif
+    }
 };
 
 struct VulkanDeviceFeatureSelection {
@@ -1643,6 +1657,8 @@ struct VulkanDeviceFeatureSelection {
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
     bool meshShader = false;
+    bool taskShader = false;
+    bool geometryShader = false;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool pushDescriptor = false;
@@ -1676,6 +1692,7 @@ struct VulkanDeviceFeatureSelection {
         const bool streamlineSupported = probe.supportsStreamline(extensions, accelerationStructureSupported);
         const bool aftermathSupported = probe.supportsAftermath(extensions);
         const bool meshShaderSupported = probe.supportsMeshShader(extensions);
+        const bool taskShaderSupported = probe.supportsTaskShader(extensions);
 
         VulkanDeviceFeatureSelection result;
         result.shaderDemoteToHelperInvocation =
@@ -1702,6 +1719,9 @@ struct VulkanDeviceFeatureSelection {
             extensions.shaderObject &&
             probe.shaderObjectFeatures.shaderObject == VK_TRUE;
         result.meshShader = request.meshShader && meshShaderSupported;
+        result.taskShader = request.taskShader && taskShaderSupported;
+        result.geometryShader =
+            request.geometryShader && probe.features.features.geometryShader == VK_TRUE;
         result.rayTracingAccelerationStructure =
             (request.rayTracingAccelerationStructure ||
                 request.rayQuery ||
@@ -1756,6 +1776,8 @@ struct VulkanDeviceFeatureSelection {
         return (!request.bindlessDescriptorHeap || bindlessDescriptorHeap) &&
             (!request.shaderObject || shaderObject) &&
             (!request.meshShader || meshShader) &&
+            (!request.taskShader || taskShader) &&
+            (!request.geometryShader || geometryShader) &&
             (!request.rayTracingAccelerationStructure || rayTracingAccelerationStructure) &&
             (!request.rayQuery || rayQuery) &&
             (!request.pushDescriptor || pushDescriptor) &&
@@ -1772,6 +1794,7 @@ struct VulkanDeviceFeatureSelection {
             (streamline ? 32 : 0) +
             (shaderObject ? 8 : 0) +
             (meshShader ? 8 : 0) +
+            (taskShader ? 8 : 0) +
             (rayTracingAccelerationStructure ? 4 : 0) +
             (rayQuery ? 2 : 0) +
             (pushDescriptor ? 1 : 0);
@@ -1853,6 +1876,7 @@ struct VulkanEnabledFeatureChain {
         vulkan12Features.shaderBufferInt64Atomics = selection.shaderBufferInt64Atomics ? VK_TRUE : VK_FALSE;
         vulkan12Features.shaderFloat16 = selection.shaderFloat16 ? VK_TRUE : VK_FALSE;
         features.features.shaderInt16 = selection.shaderInt16 ? VK_TRUE : VK_FALSE;
+        features.features.geometryShader = selection.geometryShader ? VK_TRUE : VK_FALSE;
         vulkan13Features.synchronization2 = VK_TRUE;
         vulkan13Features.dynamicRendering = VK_TRUE;
         vulkan13Features.shaderDemoteToHelperInvocation =
@@ -1867,6 +1891,7 @@ struct VulkanEnabledFeatureChain {
         shaderObjectFeatures.shaderObject = selection.shaderObject ? VK_TRUE : VK_FALSE;
 #ifdef VK_EXT_mesh_shader
         meshShaderFeatures.meshShader = selection.meshShader ? VK_TRUE : VK_FALSE;
+        meshShaderFeatures.taskShader = selection.taskShader ? VK_TRUE : VK_FALSE;
 #endif
         accelerationStructureFeatures.accelerationStructure =
             selection.rayTracingAccelerationStructure ? VK_TRUE : VK_FALSE;
@@ -1895,7 +1920,7 @@ struct VulkanEnabledFeatureChain {
             appendPNext(featureTail, shaderObjectFeatures);
         }
 #ifdef VK_EXT_mesh_shader
-        if (selection.meshShader) {
+        if (selection.meshShader || selection.taskShader) {
             appendPNext(featureTail, meshShaderFeatures);
         }
 #endif
@@ -1945,7 +1970,7 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
         extensions.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
     }
 #ifdef VK_EXT_mesh_shader
-    if (selection.meshShader) {
+    if (selection.meshShader || selection.taskShader) {
         extensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
     }
 #endif
@@ -7498,10 +7523,12 @@ Result Device::createGraphicsPipeline(
     std::unique_ptr<GraphicsPipeline>& outGraphicsPipeline)
 {
     outGraphicsPipeline.reset();
+    const bool usesTaskShader = desc.taskShader != nullptr;
     const bool usesMeshShader = desc.meshShader != nullptr;
     const bool usesVertexShader = desc.vertexShader != nullptr;
     if (impl_ == nullptr ||
         usesMeshShader == usesVertexShader ||
+        (usesTaskShader && !usesMeshShader) ||
         desc.fragmentShader == nullptr ||
         desc.fragmentShader->impl_ == nullptr ||
         desc.colorFormat == Format::Unknown) {
@@ -7510,11 +7537,17 @@ Result Device::createGraphicsPipeline(
     if (usesVertexShader && desc.vertexShader->impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    if (usesTaskShader && desc.taskShader->impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
     if (usesMeshShader && desc.meshShader->impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
     activateVolkDevice(impl_->device);
     if (usesMeshShader && !impl_->capabilities.meshShader) {
+        return makeError(Error::Unsupported);
+    }
+    if (usesTaskShader && !impl_->capabilities.taskShader) {
         return makeError(Error::Unsupported);
     }
     if (desc.usesBindlessHeap && !impl_->capabilities.bindlessDescriptorHeap) {
@@ -7540,13 +7573,23 @@ Result Device::createGraphicsPipeline(
     }
 
     const char* vertexEntryPoint = desc.vertexEntryPoint != nullptr ? desc.vertexEntryPoint : "main";
+    const char* taskEntryPoint = desc.taskEntryPoint != nullptr ? desc.taskEntryPoint : "main";
     const char* meshEntryPoint = desc.meshEntryPoint != nullptr ? desc.meshEntryPoint : "main";
     const char* fragmentEntryPoint = desc.fragmentEntryPoint != nullptr ? desc.fragmentEntryPoint : "main";
     std::vector<VkPipelineShaderStageCreateInfo> stages;
-    stages.reserve(2);
+    stages.reserve(usesTaskShader ? 3u : 2u);
     VkShaderStageFlags graphicsShaderStages = VK_SHADER_STAGE_FRAGMENT_BIT;
     if (usesMeshShader) {
 #ifdef VK_EXT_mesh_shader
+        if (usesTaskShader) {
+            stages.push_back(VkPipelineShaderStageCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_TASK_BIT_EXT,
+                .module = desc.taskShader->impl_->module,
+                .pName = taskEntryPoint,
+            });
+            graphicsShaderStages |= VK_SHADER_STAGE_TASK_BIT_EXT;
+        }
         stages.push_back(VkPipelineShaderStageCreateInfo{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .stage = VK_SHADER_STAGE_MESH_BIT_EXT,
@@ -8531,6 +8574,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->capabilities.shaderObject = selectedFeatures.shaderObject;
     deviceImpl->shaderObjectEnabled = selectedFeatures.shaderObject;
     deviceImpl->capabilities.meshShader = selectedFeatures.meshShader;
+    deviceImpl->capabilities.taskShader = selectedFeatures.taskShader;
+    deviceImpl->capabilities.geometryShader = selectedFeatures.geometryShader;
     deviceImpl->capabilities.rayTracingAccelerationStructure = selectedFeatures.rayTracingAccelerationStructure;
     deviceImpl->rayTracingAccelerationStructureEnabled = selectedFeatures.rayTracingAccelerationStructure;
     deviceImpl->capabilities.rayQuery = selectedFeatures.rayQuery;

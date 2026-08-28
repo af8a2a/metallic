@@ -55,13 +55,14 @@ inline constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "Scen
 inline constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQueryVisualizeMain";
 inline constexpr const char* kGPUDrivenPreviewShaderModuleName = "GPUDrivenPreview";
 inline constexpr const char* kGPUDrivenDeferredShaderModuleName = "GPUDrivenDeferred";
+inline constexpr const char* kGPUDrivenPreviewAmplificationEntryPoint =
+    "gpuDrivenPreviewAmplificationMain";
 inline constexpr const char* kGPUDrivenPreviewMeshEntryPoint = "gpuDrivenPreviewMeshMain";
 inline constexpr const char* kGPUDrivenPreviewFragmentEntryPoint = "gpuDrivenPreviewFragmentMain";
 inline constexpr const char* kGPUDrivenPreviewMaskedFragmentEntryPoint =
     "gpuDrivenPreviewMaskedFragmentMain";
 inline constexpr const char* kGPUDrivenPreviewResetEntryPoint = "gpuDrivenPreviewResetMain";
 inline constexpr const char* kGPUDrivenPreviewInstanceCullEntryPoint = "gpuDrivenPreviewInstanceCullMain";
-inline constexpr const char* kGPUDrivenPreviewCompactEntryPoint = "gpuDrivenPreviewCompactMain";
 inline constexpr const char* kGPUDrivenPreviewHzbEntryPoint = "gpuDrivenPreviewHzbMain";
 inline constexpr const char* kGPUDrivenPreviewDeferredEntryPoint = "gpuDrivenPreviewDeferredMain";
 inline constexpr const char* kGPUDrivenPreviewCompositeVertexEntryPoint =
@@ -109,10 +110,8 @@ inline constexpr uint32_t kGPUDrivenPreviewModePrimitive = 1;
 inline constexpr uint32_t kGPUDrivenPreviewModeLod = 2;
 inline constexpr uint32_t kGPUDrivenPreviewModeShaded = 3;
 inline constexpr uint32_t kGPUDrivenPreviewModeBaseColor = 4;
-inline constexpr uint32_t kGPUDrivenPreviewMeshletTriangleChunkSize = 64;
-inline constexpr uint32_t kGPUDrivenPreviewMeshletChunkCount = 2;
+inline constexpr uint32_t kGPUDrivenPreviewAmplificationGroupSize = 32;
 inline constexpr uint32_t kGPUDrivenPreviewDrawBucketCount = 4;
-inline constexpr uint32_t kGPUDrivenPreviewIndirectArgumentUintCount = 4;
 inline constexpr uint32_t kGPUDrivenPreviewMeshletDoubleSided = 1u << 0u;
 inline constexpr uint32_t kGPUDrivenPreviewMeshletAlphaMasked = 1u << 1u;
 inline constexpr uint32_t kGPUDrivenPreviewMeshletAlphaBlend = 1u << 2u;

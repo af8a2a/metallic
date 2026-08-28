@@ -2221,6 +2221,8 @@ bool EditorApplication::initializeRhi()
                 .enableBindlessDescriptorHeap = true,
                 .enableShaderObject = true,
                 .enableMeshShader = true,
+                .enableTaskShader = true,
+                .enableGeometryShader = true,
                 .enableRayTracingAccelerationStructure = true,
                 .enableRayQuery = true,
                 .enablePushDescriptor = true,

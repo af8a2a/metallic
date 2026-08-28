@@ -2624,9 +2624,31 @@ public:
 
     RhiTestResult run(RhiTestContext&) override
     {
-        render::ShaderCompileResult meshCompile;
+        render::ShaderCompileResult amplificationCompile;
         const char* capabilities[] = {"spvMeshShadingEXT"};
         render::Result result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "GPUDrivenPreview",
+                .entryPointName = "gpuDrivenPreviewAmplificationMain",
+                .searchPath = kShaderSearchPath,
+                .capabilities = capabilities,
+                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+            },
+            amplificationCompile);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreview amplification shader compile returned ") +
+                toString(result) +
+                ": " +
+                amplificationCompile.diagnostics);
+        }
+        if (amplificationCompile.spirv.empty()) {
+            return RhiTestResult::fail(
+                "GPUDrivenPreview amplification shader produced empty SPIR-V");
+        }
+
+        render::ShaderCompileResult meshCompile;
+        result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
                 .moduleName = "GPUDrivenPreview",
                 .entryPointName = "gpuDrivenPreviewMeshMain",
@@ -2665,11 +2687,10 @@ public:
             return RhiTestResult::fail("GPUDrivenPreview fragment shader produced empty SPIR-V");
         }
 
-        constexpr std::array<const char*, 7> additionalEntryPoints{
+        constexpr std::array<const char*, 6> additionalEntryPoints{
             "gpuDrivenPreviewMaskedFragmentMain",
             "gpuDrivenPreviewResetMain",
             "gpuDrivenPreviewInstanceCullMain",
-            "gpuDrivenPreviewCompactMain",
             "gpuDrivenPreviewHzbMain",
             "gpuDrivenPreviewCompositeVertexMain",
             "gpuDrivenPreviewCompositeFragmentMain",
@@ -2718,7 +2739,9 @@ public:
         additionalWordCount += deferredCompile.spirv.size();
 
         return RhiTestResult::pass(
-            std::string("compiled GPUDrivenPreview shaders, mesh words=") +
+            std::string("compiled GPUDrivenPreview shaders, amplification words=") +
+            std::to_string(amplificationCompile.spirv.size()) +
+            ", mesh words=" +
             std::to_string(meshCompile.spirv.size()) +
             ", fragment words=" +
             std::to_string(fragmentCompile.spirv.size()) +
@@ -5739,6 +5762,8 @@ public:
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
                 .enableMeshShader = true,
+                .enableTaskShader = true,
+                .enableGeometryShader = true,
             },
             device);
         if (!result) {
@@ -5764,11 +5789,13 @@ public:
         result = executor.compile(*device, graph, 128, 96, log);
         const bool hasRequiredCapabilities =
             device->capabilities().meshShader &&
+            device->capabilities().taskShader &&
+            device->capabilities().geometryShader &&
             device->capabilities().bindlessDescriptorHeap;
         if (!hasRequiredCapabilities) {
             if (!render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::fail(
-                    std::string("expected Unsupported without mesh shader capabilities, got ") +
+                    std::string("expected Unsupported without task/mesh/geometry shader capabilities, got ") +
                     toString(result) +
                     ": " +
                     log);
@@ -6614,6 +6641,8 @@ public:
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
                 .enableMeshShader = true,
+                .enableTaskShader = true,
+                .enableGeometryShader = true,
             },
             device);
         if (!result) {
@@ -6670,6 +6699,8 @@ public:
         result = executor.compile(*device, graph, kWidth, kHeight, log);
         const bool hasRequiredCapabilities =
             device->capabilities().meshShader &&
+            device->capabilities().taskShader &&
+            device->capabilities().geometryShader &&
             device->capabilities().bindlessDescriptorHeap;
         if (!hasRequiredCapabilities) {
             if (!render::hasError(result, render::Error::Unsupported)) {
@@ -6678,7 +6709,7 @@ public:
                     toString(result) + ": " + log);
             }
             return RhiTestResult::skip(
-                "GPUDrivenPreviewPass mixed producer mode requires mesh shaders and bindless descriptors");
+                "GPUDrivenPreviewPass mixed producer mode requires task/mesh/geometry shaders and bindless descriptors");
         }
         if (!result) {
             return RhiTestResult::fail(

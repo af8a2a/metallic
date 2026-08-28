@@ -299,6 +299,8 @@ struct DeviceDesc {
     bool enableBindlessDescriptorHeap = false;
     bool enableShaderObject = false;
     bool enableMeshShader = false;
+    bool enableTaskShader = false;
+    bool enableGeometryShader = false;
     bool enableRayTracingAccelerationStructure = false;
     bool enableRayQuery = false;
     bool enablePushDescriptor = false;
@@ -313,6 +315,8 @@ struct DeviceCapabilities {
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
     bool meshShader = false;
+    bool taskShader = false;
+    bool geometryShader = false;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool pushDescriptor = false;
@@ -875,9 +879,11 @@ struct PipelineCacheStats {
 
 struct GraphicsPipelineDesc {
     class ShaderModule* vertexShader = nullptr;
+    class ShaderModule* taskShader = nullptr;
     class ShaderModule* meshShader = nullptr;
     class ShaderModule* fragmentShader = nullptr;
     const char* vertexEntryPoint = "main";
+    const char* taskEntryPoint = "main";
     const char* meshEntryPoint = "main";
     const char* fragmentEntryPoint = "main";
     Format colorFormat = Format::Unknown;

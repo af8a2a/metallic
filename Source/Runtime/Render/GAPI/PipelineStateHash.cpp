@@ -9,7 +9,7 @@ namespace {
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 // Increment when an implicit RHI pipeline state changes without a desc change.
-constexpr uint32_t kPipelineStateHashVersion = 3;
+constexpr uint32_t kPipelineStateHashVersion = 4;
 constexpr uint32_t kGraphicsPipelineTag = 0x4750534fu;
 constexpr uint32_t kComputePipelineTag = 0x4350534fu;
 
@@ -59,8 +59,14 @@ uint64_t graphicsPipelineStateHash(const GraphicsPipelineDesc& desc)
     uint64_t hash = kFnvOffset;
     hash = hashValue(hash, kPipelineStateHashVersion);
     hash = hashValue(hash, kGraphicsPipelineTag);
+    const bool usesTaskShader = desc.taskShader != nullptr;
     const bool usesMeshShader = desc.meshShader != nullptr;
+    hash = hashValue(hash, hashBool(usesTaskShader));
     hash = hashValue(hash, hashBool(usesMeshShader));
+    if (usesTaskShader) {
+        hash = hashValue(hash, desc.taskShader->contentHash());
+        hash = hashString(hash, desc.taskEntryPoint);
+    }
     if (usesMeshShader) {
         hash = hashValue(hash, desc.meshShader->contentHash());
         hash = hashString(hash, desc.meshEntryPoint);

@@ -1911,6 +1911,8 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
             .enableBindlessDescriptorHeap = true,
             .enableShaderObject = true,
             .enableMeshShader = true,
+            .enableTaskShader = true,
+            .enableGeometryShader = true,
             .enableRayTracingAccelerationStructure = enableRayQuery,
             .enableRayQuery = enableRayQuery,
             .enablePushDescriptor = enableRayQuery,

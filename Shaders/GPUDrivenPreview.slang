@@ -2,9 +2,7 @@
 
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
-static const uint kMeshletTriangleChunkSize = 64;
-static const uint kMeshletChunkCount = 2;
-static const uint kMaxMeshOutputVertices = kMeshletTriangleChunkSize * 3;
+static const uint kAmplificationGroupSize = 32;
 
 static const uint kCullInstanceFrustum = 1u << 0u;
 static const uint kCullInstanceHzb = 1u << 1u;
@@ -15,7 +13,6 @@ static const uint kInstanceDoubleSided = 1u << 1u;
 static const uint kInstanceAlphaMasked = 1u << 2u;
 static const uint kInstanceAlphaBlend = 1u << 3u;
 static const uint kDrawBucketCount = 4u;
-static const uint kIndirectArgumentUintCount = 4u;
 static const uint kInvalidTextureIndex = 0xffffffffu;
 
 struct GPUDrivenPreviewPush
@@ -209,10 +206,34 @@ struct CameraData
 struct GPUDrivenPreviewVertexOutput
 {
     float4 position : SV_Position;
-    nointerpolation uint visibilityId : TEXCOORD0;
+    [vk::location(0)]
     float2 texcoord : TEXCOORD1;
+    [vk::location(1)]
     nointerpolation uint materialIndex : TEXCOORD2;
 };
+
+struct GPUDrivenPreviewPrimitiveOutput
+{
+    uint visibilityId : SV_PrimitiveID;
+};
+
+struct GPUDrivenPreviewFragmentInput
+{
+    float4 position : SV_Position;
+    [vk::location(0)]
+    float2 texcoord : TEXCOORD1;
+    [vk::location(1)]
+    nointerpolation uint materialIndex : TEXCOORD2;
+    uint visibilityId : SV_PrimitiveID;
+};
+
+struct GPUDrivenPreviewAmplificationPayload
+{
+    uint meshletDrawIndices[kAmplificationGroupSize];
+};
+
+groupshared GPUDrivenPreviewAmplificationPayload g_AmplificationPayload;
+groupshared uint g_AmplificationVisibleCount;
 
 struct FullscreenVertexOutput
 {
@@ -553,16 +574,6 @@ void gpuDrivenPreviewResetMain(
     uint3 dispatchThreadId : SV_DispatchThreadID,
     uniform GPUDrivenPreviewPush push)
 {
-    uint handleIndex = push.passIndex == 0 ? push.indirectBuffer0 : push.indirectBuffer1;
-    DescriptorHandle<RWStructuredBuffer<uint>> indirectHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + handleIndex, 0));
-    for (uint bucketIndex = 0u; bucketIndex < kDrawBucketCount; ++bucketIndex) {
-        uint argumentOffset = bucketIndex * kIndirectArgumentUintCount;
-        indirectHandle[argumentOffset] = 0u;
-        indirectHandle[argumentOffset + 1u] = 1u;
-        indirectHandle[argumentOffset + 2u] = 1u;
-        indirectHandle[argumentOffset + 3u] = 0u;
-    }
     if (push.passIndex == 0u) {
         DescriptorHandle<RWStructuredBuffer<uint>> visibleInstanceCounterHandle =
             DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
@@ -664,98 +675,102 @@ void gpuDrivenPreviewInstanceCullMain(
     }
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void gpuDrivenPreviewCompactMain(
-    uint3 dispatchThreadId : SV_DispatchThreadID,
+[shader("amplification")]
+[numthreads(kAmplificationGroupSize, 1, 1)]
+void gpuDrivenPreviewAmplificationMain(
+    uint3 groupID : SV_GroupID,
+    uint groupThreadIndex : SV_GroupIndex,
     uniform GPUDrivenPreviewPush push)
 {
+    if (groupThreadIndex == 0u) {
+        g_AmplificationVisibleCount = 0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(
+            push.bufferShaderIndexBase + push.paramsBuffer,
+            0));
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshletHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.bufferShaderIndexBase + push.meshletBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(
+            push.bufferShaderIndexBase + push.meshletBuffer,
+            0));
     DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> meshletDrawHandle =
         DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(
             push.bufferShaderIndexBase + push.meshletDrawBuffer,
             0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instanceHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(
+            push.bufferShaderIndexBase + push.instanceBuffer,
+            0));
     DescriptorHandle<StructuredBuffer<uint>> visibilityHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.instanceVisibilityBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(
+            push.bufferShaderIndexBase + push.instanceVisibilityBuffer,
+            0));
 
     GPUDrivenPreviewParams params = paramsHandle[0];
-    uint localMeshletIndex = dispatchThreadId.x;
-    if (localMeshletIndex >= params.meshletCount) {
-        return;
-    }
-
     StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
     StructuredBuffer<VisibleClusterRecord> meshletDraws = meshletDrawHandle;
+    StructuredBuffer<GPUDrivenPreviewInstance> instances = instanceHandle;
     StructuredBuffer<uint> visibility = visibilityHandle;
-    uint meshletIndex = params.meshletOffset + localMeshletIndex;
-    VisibleClusterRecord meshletDraw = meshletDraws[meshletIndex];
-    GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.clusterIndex];
-    uint expectedVisibility = push.passIndex == 0 ? 1u : 3u;
-    if (visibility[meshletDraw.instanceIndex] != expectedVisibility) {
-        return;
-    }
 
-    uint bucketIndex = visibleClusterDrawBucket(meshletDraw);
-    if (bucketIndex >= kDrawBucketCount) {
-        return;
-    }
-
-    uint visibleHandleIndex = push.passIndex == 0 ? push.visibleMeshletBuffer0 : push.visibleMeshletBuffer1;
-    uint indirectHandleIndex = push.passIndex == 0 ? push.indirectBuffer0 : push.indirectBuffer1;
-    DescriptorHandle<RWStructuredBuffer<uint>> visibleHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + visibleHandleIndex, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> indirectHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + indirectHandleIndex, 0));
-
-    uint chunkCount = min(
-        kMeshletChunkCount,
-        (meshlet.ranges.w + kMeshletTriangleChunkSize - 1u) /
-            kMeshletTriangleChunkSize);
-    uint argumentOffset = bucketIndex * kIndirectArgumentUintCount;
-    uint outputIndex = indirectHandle[argumentOffset];
-    uint acceptedChunkCount = 0u;
-    for (;;) {
-        uint desiredCount = min(
-            outputIndex + chunkCount,
-            params.visibleMeshletCapacity);
-        uint observedCount = 0u;
-        InterlockedCompareExchange(
-            indirectHandle[argumentOffset],
-            outputIndex,
-            desiredCount,
-            observedCount);
-        if (observedCount == outputIndex) {
-            acceptedChunkCount = desiredCount - outputIndex;
-            break;
+    uint localMeshletIndex =
+        groupID.x * kAmplificationGroupSize + groupThreadIndex;
+    uint meshletDrawIndex = params.meshletOffset + localMeshletIndex;
+    bool visible = localMeshletIndex < params.meshletCount;
+    if (visible) {
+        VisibleClusterRecord meshletDraw = meshletDraws[meshletDrawIndex];
+        uint expectedVisibility = push.passIndex == 0u ? 1u : 3u;
+        visible = meshletDraw.instanceIndex < params.instanceCount &&
+            visibleClusterSource(meshletDraw) == kVisibleClusterSourceResident &&
+            visibleClusterDrawBucket(meshletDraw) == push.mipLevel &&
+            push.mipLevel < kDrawBucketCount &&
+            visibility[meshletDraw.instanceIndex] == expectedVisibility;
+        // Stream culling reuses the shared visibility state after resident
+        // culling, so producer ownership must be checked independently here.
+        if (visible && push.streamOwnerMaskBuffer != kInvalidTextureIndex) {
+            DescriptorHandle<StructuredBuffer<uint>> streamOwnerMaskHandle =
+                DescriptorHandle<StructuredBuffer<uint>>(uint2(
+                    push.bufferShaderIndexBase + push.streamOwnerMaskBuffer,
+                    0));
+            StructuredBuffer<uint> streamOwnerMask = streamOwnerMaskHandle;
+            visible = streamOwnerMask[meshletDraw.instanceIndex] == 0u;
         }
-        outputIndex = observedCount;
-    }
-    for (uint chunkIndex = 0u; chunkIndex < kMeshletChunkCount; ++chunkIndex) {
-        if (chunkIndex < acceptedChunkCount) {
-            visibleHandle[
-                bucketIndex * params.visibleMeshletCapacity + outputIndex + chunkIndex] =
-                (meshletIndex << 1u) | chunkIndex;
+        if (visible) {
+            GPUDrivenPreviewInstance instance = instances[meshletDraw.instanceIndex];
+            GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.clusterIndex];
+            visible = meshletVisible(
+                meshlet,
+                instance.identity.w,
+                instanceTransform(instance),
+                params);
         }
     }
-    if (acceptedChunkCount < chunkCount) {
-        uint ignored = 0u;
-        InterlockedAdd(
-            indirectHandle[argumentOffset + 3u],
-            chunkCount - acceptedChunkCount,
-            ignored);
+
+    if (visible) {
+        uint payloadIndex = 0u;
+        InterlockedAdd(g_AmplificationVisibleCount, 1u, payloadIndex);
+        g_AmplificationPayload.meshletDrawIndices[payloadIndex] = meshletDrawIndex;
     }
+    GroupMemoryBarrierWithGroupSync();
+
+    DispatchMesh(
+        g_AmplificationVisibleCount,
+        1u,
+        1u,
+        g_AmplificationPayload);
 }
 
 [shader("mesh")]
-[numthreads(1, 1, 1)]
+[numthreads(128, 1, 1)]
 [outputtopology("triangle")]
 void gpuDrivenPreviewMeshMain(
     uint3 groupID : SV_GroupID,
-    out vertices GPUDrivenPreviewVertexOutput vertices[kMaxMeshOutputVertices],
-    out indices uint3 triangles[kMeshletTriangleChunkSize],
+    uint groupThreadIndex : SV_GroupIndex,
+    in payload GPUDrivenPreviewAmplificationPayload payload,
+    out vertices GPUDrivenPreviewVertexOutput vertices[kMaxMeshletVertices],
+    out indices uint3 triangles[kMaxMeshletTriangles],
+    out primitives GPUDrivenPreviewPrimitiveOutput primitives[kMaxMeshletTriangles],
     uniform GPUDrivenPreviewPush push)
 {
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> positionHandle =
@@ -780,10 +795,6 @@ void gpuDrivenPreviewMeshMain(
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(
             push.bufferShaderIndexBase + push.instanceBuffer,
             0));
-    uint visibleHandleIndex = push.passIndex == 0 ? push.visibleMeshletBuffer0 : push.visibleMeshletBuffer1;
-    DescriptorHandle<StructuredBuffer<uint>> visibleHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + visibleHandleIndex, 0));
-
     StructuredBuffer<GPUDrivenPreviewVertex> verticesBuffer = positionHandle;
     StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
     StructuredBuffer<VisibleClusterRecord> meshletDraws = meshletDrawHandle;
@@ -792,72 +803,65 @@ void gpuDrivenPreviewMeshMain(
     StructuredBuffer<GPUDrivenPreviewParams> paramsBuffer = paramsHandle;
     StructuredBuffer<GPUDrivenPreviewGeometry> geometries = geometryHandle;
     StructuredBuffer<GPUDrivenPreviewInstance> instances = instanceHandle;
-    StructuredBuffer<uint> visibleMeshlets = visibleHandle;
     GPUDrivenPreviewParams params = paramsBuffer[0];
 
-    uint meshletChunk = visibleMeshlets[
-        push.mipLevel * params.visibleMeshletCapacity + groupID.x];
-    uint meshletIndex = meshletChunk >> 1u;
-    uint chunkIndex = meshletChunk & 1u;
-    VisibleClusterRecord meshletDraw = meshletDraws[meshletIndex];
+    uint meshletDrawIndex = payload.meshletDrawIndices[groupID.x];
+    VisibleClusterRecord meshletDraw = meshletDraws[meshletDrawIndex];
     GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.clusterIndex];
     GPUDrivenPreviewGeometry geometry = geometries[meshletDraw.dataIndex];
     GPUDrivenPreviewInstance instance = instances[meshletDraw.instanceIndex];
     SceneTransform transform = instanceTransform(instance);
-    if (!meshletVisible(meshlet, instance.identity.w, transform, params)) {
+    uint vertexCount = meshlet.ranges.y;
+    uint triangleCount = meshlet.ranges.w;
+    if (vertexCount > kMaxMeshletVertices ||
+        triangleCount > kMaxMeshletTriangles) {
         SetMeshOutputCounts(0, 0);
         return;
     }
 
-    uint triangleStart = chunkIndex * kMeshletTriangleChunkSize;
-    if (triangleStart >= meshlet.ranges.w) {
-        SetMeshOutputCounts(0, 0);
-        return;
-    }
-    uint triangleCount = min(
-        meshlet.ranges.w - triangleStart,
-        kMeshletTriangleChunkSize);
-    uint vertexCount = triangleCount * 3u;
     SetMeshOutputCounts(vertexCount, triangleCount);
 
     CameraData projectionCamera = push.projectWithCullingCamera != 0u ?
         cullingCamera(params) : renderCamera(params);
-    for (uint vertexIndex = 0; vertexIndex < kMaxMeshOutputVertices; ++vertexIndex) {
-        if (vertexIndex < vertexCount) {
-            uint chunkTriangleIndex = vertexIndex / 3u;
-            uint triangleCorner = vertexIndex % 3u;
-            uint meshletTriangleIndex = triangleStart + chunkTriangleIndex;
-            uint localVertexIndex = loadPackedMeshletTriangleIndex(
-                meshletTriangles,
-                meshlet.ranges.z,
-                meshletTriangleIndex,
-                triangleCorner);
-            uint positionIndex = geometry.payload.x +
-                meshletVertices[meshlet.ranges.x + localVertexIndex];
-            float3 worldPosition = transformPoint(transform, verticesBuffer[positionIndex].position.xyz);
-            float4 position = projectPosition(worldPosition, projectionCamera);
-            position.y = -position.y;
-            vertices[vertexIndex].position = position;
-            vertices[vertexIndex].visibilityId =
-                packVisibilityId(meshletIndex, meshletTriangleIndex);
-            vertices[vertexIndex].texcoord = verticesBuffer[positionIndex].texcoord.xy;
-            vertices[vertexIndex].materialIndex = instance.identity.y;
-        }
+    if (groupThreadIndex < vertexCount) {
+        uint positionIndex = geometry.payload.x +
+            meshletVertices[meshlet.ranges.x + groupThreadIndex];
+        GPUDrivenPreviewVertex vertex = verticesBuffer[positionIndex];
+        float3 worldPosition = transformPoint(
+            transform,
+            vertex.position.xyz);
+        float4 position = projectPosition(worldPosition, projectionCamera);
+        position.y = -position.y;
+        vertices[groupThreadIndex].position = position;
+        vertices[groupThreadIndex].texcoord = vertex.texcoord.xy;
+        vertices[groupThreadIndex].materialIndex = instance.identity.y;
     }
 
-    for (uint triangleIndex = 0; triangleIndex < kMeshletTriangleChunkSize; ++triangleIndex) {
-        if (triangleIndex < triangleCount) {
-            triangles[triangleIndex] = uint3(
-                triangleIndex * 3u,
-                triangleIndex * 3u + 1u,
-                triangleIndex * 3u + 2u);
-        }
+    if (groupThreadIndex < triangleCount) {
+        triangles[groupThreadIndex] = uint3(
+            loadPackedMeshletTriangleIndex(
+                meshletTriangles,
+                meshlet.ranges.z,
+                groupThreadIndex,
+                0u),
+            loadPackedMeshletTriangleIndex(
+                meshletTriangles,
+                meshlet.ranges.z,
+                groupThreadIndex,
+                1u),
+            loadPackedMeshletTriangleIndex(
+                meshletTriangles,
+                meshlet.ranges.z,
+                groupThreadIndex,
+                2u));
+        primitives[groupThreadIndex].visibilityId =
+            packVisibilityId(meshletDrawIndex, groupThreadIndex);
     }
 }
 
 [shader("fragment")]
 uint gpuDrivenPreviewFragmentMain(
-    GPUDrivenPreviewVertexOutput input,
+    GPUDrivenPreviewFragmentInput input,
     uniform GPUDrivenPreviewPush push) : SV_Target0
 {
     return input.visibilityId;
@@ -865,7 +869,7 @@ uint gpuDrivenPreviewFragmentMain(
 
 [shader("fragment")]
 uint gpuDrivenPreviewMaskedFragmentMain(
-    GPUDrivenPreviewVertexOutput input,
+    GPUDrivenPreviewFragmentInput input,
     uniform GPUDrivenPreviewPush push) : SV_Target0
 {
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
