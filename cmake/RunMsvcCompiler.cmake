@@ -30,7 +30,7 @@ execute_process(
 )
 
 string(REPLACE
-    "注意: 包含文件:"
+    "娉ㄦ剰: 鍖呭惈鏂囦欢:"
     "Note: including file:"
     compilerOutput
     "${compilerOutput}"
@@ -44,7 +44,7 @@ string(REPLACE
     "${compilerOutput}"
 )
 string(REPLACE
-    "注意: 包含文件:"
+    "娉ㄦ剰: 鍖呭惈鏂囦欢:"
     "Note: including file:"
     compilerError
     "${compilerError}"

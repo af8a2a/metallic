@@ -1,5 +1,9 @@
 #include "GPUDrivenRasterCommon.slang"
 
+#ifndef GPU_DRIVEN_AMPLIFICATION_WAVE_OPS
+#define GPU_DRIVEN_AMPLIFICATION_WAVE_OPS 1
+#endif
+
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
 static const uint kAmplificationGroupSize = 32;
@@ -682,11 +686,6 @@ void gpuDrivenPreviewAmplificationMain(
     uint groupThreadIndex : SV_GroupIndex,
     uniform GPUDrivenPreviewPush push)
 {
-    if (groupThreadIndex == 0u) {
-        g_AmplificationVisibleCount = 0u;
-    }
-    GroupMemoryBarrierWithGroupSync();
-
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(
             push.bufferShaderIndexBase + push.paramsBuffer,
@@ -747,18 +746,62 @@ void gpuDrivenPreviewAmplificationMain(
         }
     }
 
-    if (visible) {
-        uint payloadIndex = 0u;
-        InterlockedAdd(g_AmplificationVisibleCount, 1u, payloadIndex);
-        g_AmplificationPayload.meshletDrawIndices[payloadIndex] = meshletDrawIndex;
+    uint visibleCount = 0u;
+#if GPU_DRIVEN_AMPLIFICATION_WAVE_OPS
+    uint wavePrefix = WavePrefixCountBits(visible);
+    uint waveVisibleCount = WaveActiveCountBits(visible);
+    visibleCount = waveVisibleCount;
+
+    // The Vulkan pipeline requests a full Wave32 when supported. On NVIDIA,
+    // this 32-thread task group becomes one native wave and matches the D3D12
+    // sample's zero-atomic payload compaction path.
+    if (WaveGetLaneCount() == kAmplificationGroupSize) {
+        if (visible) {
+            g_AmplificationPayload.meshletDrawIndices[wavePrefix] =
+                meshletDrawIndex;
+        }
+    } else {
+        // Keep the wave path valid when required subgroup size 32 is
+        // unavailable. Each subgroup reserves one contiguous payload range.
+        if (groupThreadIndex == 0u) {
+            g_AmplificationVisibleCount = 0u;
+        }
+        GroupMemoryBarrierWithGroupSync();
+
+        uint waveBase = 0u;
+        if (WaveIsFirstLane()) {
+            InterlockedAdd(
+                g_AmplificationVisibleCount,
+                waveVisibleCount,
+                waveBase);
+        }
+        waveBase = WaveReadLaneFirst(waveBase);
+        if (visible) {
+            g_AmplificationPayload.meshletDrawIndices[waveBase + wavePrefix] =
+                meshletDrawIndex;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        visibleCount = g_AmplificationVisibleCount;
+    }
+#else
+    // Some Vulkan task-shader implementations do not expose subgroup ballot.
+    // Retain a portable groupshared compaction path for those devices.
+    if (groupThreadIndex == 0u) {
+        g_AmplificationVisibleCount = 0u;
     }
     GroupMemoryBarrierWithGroupSync();
 
-    DispatchMesh(
-        g_AmplificationVisibleCount,
-        1u,
-        1u,
-        g_AmplificationPayload);
+    if (visible) {
+        uint payloadIndex = 0u;
+        InterlockedAdd(g_AmplificationVisibleCount, 1u, payloadIndex);
+        g_AmplificationPayload.meshletDrawIndices[payloadIndex] =
+            meshletDrawIndex;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    visibleCount = g_AmplificationVisibleCount;
+#endif
+
+    DispatchMesh(visibleCount, 1u, 1u, g_AmplificationPayload);
 }
 
 [shader("mesh")]

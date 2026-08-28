@@ -300,7 +300,12 @@ struct DeviceDesc {
     bool enableShaderObject = false;
     bool enableMeshShader = false;
     bool enableTaskShader = false;
+    bool enableTaskShaderSubgroupBallot = false;
     bool enableGeometryShader = false;
+    bool enableSubgroupSizeControl = false;
+    bool enableComputeFullSubgroups = false;
+    // Soft device-selection preference; pipelines opt in separately.
+    uint32_t preferredTaskSubgroupSize = 0;
     bool enableRayTracingAccelerationStructure = false;
     bool enableRayQuery = false;
     bool enablePushDescriptor = false;
@@ -317,6 +322,14 @@ struct DeviceCapabilities {
     bool meshShader = false;
     bool taskShader = false;
     bool geometryShader = false;
+    bool subgroupSizeControl = false;
+    bool computeFullSubgroups = false;
+    bool taskShaderSubgroupBallot = false;
+    bool taskShaderSubgroupSizeControl = false;
+    uint32_t subgroupSize = 0;
+    uint32_t minSubgroupSize = 0;
+    uint32_t maxSubgroupSize = 0;
+    uint32_t maxComputeWorkgroupSubgroups = 0;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool pushDescriptor = false;
@@ -886,6 +899,9 @@ struct GraphicsPipelineDesc {
     const char* taskEntryPoint = "main";
     const char* meshEntryPoint = "main";
     const char* fragmentEntryPoint = "main";
+    uint32_t taskRequiredSubgroupSize = 0;
+    // Full-subgroup mode is accepted only with a fixed required subgroup size.
+    bool taskRequireFullSubgroups = false;
     Format colorFormat = Format::Unknown;
     Format depthStencilFormat = Format::Unknown;
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;

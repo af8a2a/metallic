@@ -2625,7 +2625,10 @@ public:
     RhiTestResult run(RhiTestContext&) override
     {
         render::ShaderCompileResult amplificationCompile;
-        const char* capabilities[] = {"spvMeshShadingEXT"};
+        const char* capabilities[] = {
+            "spvMeshShadingEXT",
+            "spvGroupNonUniformBallot",
+        };
         render::Result result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
                 .moduleName = "GPUDrivenPreview",
@@ -2645,6 +2648,38 @@ public:
         if (amplificationCompile.spirv.empty()) {
             return RhiTestResult::fail(
                 "GPUDrivenPreview amplification shader produced empty SPIR-V");
+        }
+
+        const render::SlangMacroDefine atomicFallbackDefine{
+            "GPU_DRIVEN_AMPLIFICATION_WAVE_OPS",
+            "0",
+        };
+        const char* atomicFallbackCapabilities[] = {
+            "spvMeshShadingEXT",
+        };
+        render::ShaderCompileResult atomicFallbackCompile;
+        result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "GPUDrivenPreview",
+                .entryPointName = "gpuDrivenPreviewAmplificationMain",
+                .searchPath = kShaderSearchPath,
+                .capabilities = atomicFallbackCapabilities,
+                .capabilityCount = static_cast<uint32_t>(
+                    std::size(atomicFallbackCapabilities)),
+                .macroDefines = &atomicFallbackDefine,
+                .macroDefineCount = 1u,
+            },
+            atomicFallbackCompile);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreview atomic amplification fallback compile returned ") +
+                toString(result) +
+                ": " +
+                atomicFallbackCompile.diagnostics);
+        }
+        if (atomicFallbackCompile.spirv.empty()) {
+            return RhiTestResult::fail(
+                "GPUDrivenPreview atomic amplification fallback produced empty SPIR-V");
         }
 
         render::ShaderCompileResult meshCompile;
@@ -5763,7 +5798,11 @@ public:
                 .enableBindlessDescriptorHeap = true,
                 .enableMeshShader = true,
                 .enableTaskShader = true,
+                .enableTaskShaderSubgroupBallot = true,
                 .enableGeometryShader = true,
+                .enableSubgroupSizeControl = true,
+                .enableComputeFullSubgroups = true,
+                .preferredTaskSubgroupSize = 32,
             },
             device);
         if (!result) {
@@ -6642,7 +6681,11 @@ public:
                 .enableBindlessDescriptorHeap = true,
                 .enableMeshShader = true,
                 .enableTaskShader = true,
+                .enableTaskShaderSubgroupBallot = true,
                 .enableGeometryShader = true,
+                .enableSubgroupSizeControl = true,
+                .enableComputeFullSubgroups = true,
+                .preferredTaskSubgroupSize = 32,
             },
             device);
         if (!result) {

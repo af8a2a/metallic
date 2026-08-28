@@ -938,13 +938,34 @@ public:
         }
         // Slang 2026.1.2 lowers fragment SV_PrimitiveID to the SPIR-V Geometry
         // capability even when it is sourced by a mesh shader primitive output.
-        if (!context.device->capabilities().taskShader ||
-            !context.device->capabilities().meshShader ||
-            !context.device->capabilities().geometryShader ||
-            !context.device->capabilities().bindlessDescriptorHeap) {
+        const DeviceCapabilities& capabilities = context.device->capabilities();
+        if (!capabilities.taskShader ||
+            !capabilities.meshShader ||
+            !capabilities.geometryShader ||
+            !capabilities.bindlessDescriptorHeap) {
             log = "GPUDrivenPreviewPass requires taskShader, meshShader, geometryShader, and bindlessDescriptorHeap capabilities";
             return makeError(Error::Unsupported);
         }
+        amplificationWaveOps_ = capabilities.taskShaderSubgroupBallot;
+        amplificationWave32_ =
+            amplificationWaveOps_ &&
+            capabilities.subgroupSizeControl &&
+            capabilities.computeFullSubgroups &&
+            capabilities.taskShaderSubgroupSizeControl &&
+            capabilities.minSubgroupSize <=
+                kGPUDrivenPreviewAmplificationGroupSize &&
+            capabilities.maxSubgroupSize >=
+                kGPUDrivenPreviewAmplificationGroupSize;
+        spdlog::info(
+            "[GPUDrivenPreviewPass] Amplification subgroup mode={} native={} range={}..{}",
+            amplificationWave32_
+                ? "required Wave32"
+                : (amplificationWaveOps_
+                    ? "wave-aggregated variable subgroup"
+                    : "groupshared atomic fallback"),
+            capabilities.subgroupSize,
+            capabilities.minSubgroupSize,
+            capabilities.maxSubgroupSize);
         GPUSceneSubsystem* gpuSceneSubsystem = context.subsystem<GPUSceneSubsystem>();
         if (gpuSceneSubsystem == nullptr) {
             log = "GPUDrivenPreviewPass requires GPUSceneSubsystem";
@@ -1248,6 +1269,10 @@ public:
                     .taskShader = amplificationShader_.get(),
                     .meshShader = meshShader_.get(),
                     .fragmentShader = masked ? maskedFragmentShader_.get() : fragmentShader_.get(),
+                    .taskRequiredSubgroupSize = amplificationWave32_
+                        ? kGPUDrivenPreviewAmplificationGroupSize
+                        : 0u,
+                    .taskRequireFullSubgroups = amplificationWave32_,
                     .colorFormat = Format::R32Uint,
                     .depthStencilFormat = Format::D32Sfloat,
                     .rasterization = RasterizationState{
@@ -1905,7 +1930,10 @@ private:
         uint32_t macroDefineCount = 0)
     {
         ShaderCompileResult compileResult;
-        const char* capabilities[] = {"spvMeshShadingEXT"};
+        const char* capabilities[] = {
+            "spvMeshShadingEXT",
+            "spvGroupNonUniformBallot",
+        };
         Result result = compileSlangShaderToSpirv(
             SlangShaderDesc{
                 .moduleName = moduleName,
@@ -1976,8 +2004,22 @@ private:
             SlangMacroDefine{"GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE", lut2DShaderBase.c_str()},
             SlangMacroDefine{"GPU_DRIVEN_OPENPBR_LUT_3D_SHADER_BASE", lut3DShaderBase.c_str()},
         };
+        const SlangMacroDefine amplificationDefine{
+            "GPU_DRIVEN_AMPLIFICATION_WAVE_OPS",
+            amplificationWaveOps_ ? "1" : "0",
+        };
         for (const ShaderRequest& request : requests) {
             const bool isDeferred = request.moduleName == kGPUDrivenDeferredShaderModuleName;
+            const bool isAmplification = request.shader == &amplificationShader_;
+            const SlangMacroDefine* macroDefines = nullptr;
+            uint32_t macroDefineCount = 0;
+            if (isAmplification) {
+                macroDefines = &amplificationDefine;
+                macroDefineCount = 1u;
+            } else if (isDeferred) {
+                macroDefines = openPBRDefines.data();
+                macroDefineCount = static_cast<uint32_t>(openPBRDefines.size());
+            }
             const auto shaderCompileBegin = GPUDrivenCompileClock::now();
             Result result = createShader(
                 device,
@@ -1986,8 +2028,8 @@ private:
                 request.meshShadingShader,
                 *request.shader,
                 log,
-                isDeferred ? openPBRDefines.data() : nullptr,
-                isDeferred ? static_cast<uint32_t>(openPBRDefines.size()) : 0u);
+                macroDefines,
+                macroDefineCount);
             if (!result) {
                 return result;
             }
@@ -4851,6 +4893,8 @@ private:
     bool frozenCullingCameraValid_ = false;
     bool environmentBindingValid_ = false;
     bool streamEnabled_ = false;
+    bool amplificationWaveOps_ = false;
+    bool amplificationWave32_ = false;
     uint64_t environmentResourceRevision_ = 0;
 };
 

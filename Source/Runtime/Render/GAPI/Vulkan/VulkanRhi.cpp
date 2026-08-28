@@ -1426,7 +1426,11 @@ struct VulkanDeviceFeatureRequest {
     bool shaderObject = false;
     bool meshShader = false;
     bool taskShader = false;
+    bool taskShaderSubgroupBallot = false;
     bool geometryShader = false;
+    bool subgroupSizeControl = false;
+    bool computeFullSubgroups = false;
+    uint32_t preferredTaskSubgroupSize = 0;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool pushDescriptor = false;
@@ -1441,8 +1445,17 @@ struct VulkanDeviceFeatureRequest {
             .bindlessDescriptorHeap = desc.enableBindlessDescriptorHeap,
             .shaderObject = desc.enableShaderObject,
             .meshShader = desc.enableMeshShader,
-            .taskShader = desc.enableTaskShader,
+            .taskShader = desc.enableTaskShader ||
+                desc.enableTaskShaderSubgroupBallot ||
+                desc.preferredTaskSubgroupSize != 0,
+            .taskShaderSubgroupBallot =
+                desc.enableTaskShaderSubgroupBallot,
             .geometryShader = desc.enableGeometryShader,
+            .subgroupSizeControl = desc.enableSubgroupSizeControl ||
+                desc.preferredTaskSubgroupSize != 0,
+            .computeFullSubgroups = desc.enableComputeFullSubgroups,
+            .preferredTaskSubgroupSize =
+                desc.preferredTaskSubgroupSize,
             .rayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure,
             .rayQuery = desc.enableRayQuery,
             .pushDescriptor = desc.enablePushDescriptor,
@@ -1504,6 +1517,15 @@ struct VulkanDeviceFeatureProbe {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_VECTOR_FEATURES_NV,
     };
 #endif
+    VkPhysicalDeviceSubgroupProperties subgroupProperties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES,
+    };
+    VkPhysicalDeviceSubgroupSizeControlProperties subgroupSizeControlProperties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES,
+    };
+    VkPhysicalDeviceProperties2 properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+    };
     VkPhysicalDeviceFeatures2 features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
     };
@@ -1555,6 +1577,10 @@ struct VulkanDeviceFeatureProbe {
         }
 #endif
         vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
+
+        properties.pNext = &subgroupProperties;
+        subgroupProperties.pNext = &subgroupSizeControlProperties;
+        vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
     }
 
     bool supportsRequiredCoreFeatures() const
@@ -1648,6 +1674,40 @@ struct VulkanDeviceFeatureProbe {
         return false;
 #endif
     }
+
+    bool supportsSubgroupSizeControl() const
+    {
+        return vulkan13Features.subgroupSizeControl == VK_TRUE &&
+            subgroupSizeControlProperties.minSubgroupSize > 0 &&
+            subgroupSizeControlProperties.maxSubgroupSize >=
+                subgroupSizeControlProperties.minSubgroupSize;
+    }
+
+    bool supportsTaskShaderSubgroupBallot() const
+    {
+#ifdef VK_EXT_mesh_shader
+        constexpr VkSubgroupFeatureFlags kRequiredOperations =
+            VK_SUBGROUP_FEATURE_BASIC_BIT |
+            VK_SUBGROUP_FEATURE_BALLOT_BIT;
+        return (subgroupProperties.supportedStages &
+                   VK_SHADER_STAGE_TASK_BIT_EXT) != 0 &&
+            (subgroupProperties.supportedOperations & kRequiredOperations) ==
+                kRequiredOperations;
+#else
+        return false;
+#endif
+    }
+
+    bool supportsTaskShaderSubgroupSizeControl() const
+    {
+#ifdef VK_EXT_mesh_shader
+        return supportsSubgroupSizeControl() &&
+            (subgroupSizeControlProperties.requiredSubgroupSizeStages &
+                VK_SHADER_STAGE_TASK_BIT_EXT) != 0;
+#else
+        return false;
+#endif
+    }
 };
 
 struct VulkanDeviceFeatureSelection {
@@ -1659,6 +1719,14 @@ struct VulkanDeviceFeatureSelection {
     bool meshShader = false;
     bool taskShader = false;
     bool geometryShader = false;
+    bool subgroupSizeControl = false;
+    bool computeFullSubgroups = false;
+    bool taskShaderSubgroupBallot = false;
+    bool taskShaderSubgroupSizeControl = false;
+    uint32_t subgroupSize = 0;
+    uint32_t minSubgroupSize = 0;
+    uint32_t maxSubgroupSize = 0;
+    uint32_t maxComputeWorkgroupSubgroups = 0;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool pushDescriptor = false;
@@ -1693,6 +1761,8 @@ struct VulkanDeviceFeatureSelection {
         const bool aftermathSupported = probe.supportsAftermath(extensions);
         const bool meshShaderSupported = probe.supportsMeshShader(extensions);
         const bool taskShaderSupported = probe.supportsTaskShader(extensions);
+        const bool subgroupSizeControlSupported =
+            probe.supportsSubgroupSizeControl();
 
         VulkanDeviceFeatureSelection result;
         result.shaderDemoteToHelperInvocation =
@@ -1722,6 +1792,29 @@ struct VulkanDeviceFeatureSelection {
         result.taskShader = request.taskShader && taskShaderSupported;
         result.geometryShader =
             request.geometryShader && probe.features.features.geometryShader == VK_TRUE;
+        result.subgroupSizeControl =
+            (request.subgroupSizeControl ||
+                request.computeFullSubgroups ||
+                request.preferredTaskSubgroupSize != 0) &&
+            subgroupSizeControlSupported;
+        result.computeFullSubgroups =
+            request.computeFullSubgroups &&
+            result.subgroupSizeControl &&
+            probe.vulkan13Features.computeFullSubgroups == VK_TRUE;
+        result.taskShaderSubgroupBallot =
+            result.taskShader &&
+            probe.supportsTaskShaderSubgroupBallot();
+        result.taskShaderSubgroupSizeControl =
+            result.taskShader &&
+            result.subgroupSizeControl &&
+            probe.supportsTaskShaderSubgroupSizeControl();
+        result.subgroupSize = probe.subgroupProperties.subgroupSize;
+        result.minSubgroupSize =
+            probe.subgroupSizeControlProperties.minSubgroupSize;
+        result.maxSubgroupSize =
+            probe.subgroupSizeControlProperties.maxSubgroupSize;
+        result.maxComputeWorkgroupSubgroups =
+            probe.subgroupSizeControlProperties.maxComputeWorkgroupSubgroups;
         result.rayTracingAccelerationStructure =
             (request.rayTracingAccelerationStructure ||
                 request.rayQuery ||
@@ -1777,7 +1870,14 @@ struct VulkanDeviceFeatureSelection {
             (!request.shaderObject || shaderObject) &&
             (!request.meshShader || meshShader) &&
             (!request.taskShader || taskShader) &&
+            (!request.taskShaderSubgroupBallot ||
+                taskShaderSubgroupBallot) &&
             (!request.geometryShader || geometryShader) &&
+            (!request.subgroupSizeControl || subgroupSizeControl) &&
+            (!request.computeFullSubgroups || computeFullSubgroups) &&
+            (request.preferredTaskSubgroupSize == 0 ||
+                supportsTaskSubgroupSize(
+                    request.preferredTaskSubgroupSize)) &&
             (!request.rayTracingAccelerationStructure || rayTracingAccelerationStructure) &&
             (!request.rayQuery || rayQuery) &&
             (!request.pushDescriptor || pushDescriptor) &&
@@ -1785,7 +1885,16 @@ struct VulkanDeviceFeatureSelection {
             (!request.partitionedAccelerationStructure || partitionedAccelerationStructure);
     }
 
-    int32_t score() const
+    bool supportsTaskSubgroupSize(uint32_t size) const
+    {
+        return size != 0 &&
+            (size & (size - 1u)) == 0 &&
+            taskShaderSubgroupSizeControl &&
+            minSubgroupSize <= size &&
+            maxSubgroupSize >= size;
+    }
+
+    int32_t score(const VulkanDeviceFeatureRequest& request) const
     {
         return (bindlessDescriptorHeap ? 16 : 0) +
             (cooperativeVector ? 16 : 0) +
@@ -1795,6 +1904,13 @@ struct VulkanDeviceFeatureSelection {
             (shaderObject ? 8 : 0) +
             (meshShader ? 8 : 0) +
             (taskShader ? 8 : 0) +
+            (taskShaderSubgroupBallot ? 4 : 0) +
+            (taskShaderSubgroupSizeControl ? 4 : 0) +
+            (supportsTaskSubgroupSize(request.preferredTaskSubgroupSize)
+                ? 8
+                : 0) +
+            (subgroupSizeControl ? 8 : 0) +
+            (computeFullSubgroups ? 4 : 0) +
             (rayTracingAccelerationStructure ? 4 : 0) +
             (rayQuery ? 2 : 0) +
             (pushDescriptor ? 1 : 0);
@@ -1877,6 +1993,10 @@ struct VulkanEnabledFeatureChain {
         vulkan12Features.shaderFloat16 = selection.shaderFloat16 ? VK_TRUE : VK_FALSE;
         features.features.shaderInt16 = selection.shaderInt16 ? VK_TRUE : VK_FALSE;
         features.features.geometryShader = selection.geometryShader ? VK_TRUE : VK_FALSE;
+        vulkan13Features.subgroupSizeControl =
+            selection.subgroupSizeControl ? VK_TRUE : VK_FALSE;
+        vulkan13Features.computeFullSubgroups =
+            selection.computeFullSubgroups ? VK_TRUE : VK_FALSE;
         vulkan13Features.synchronization2 = VK_TRUE;
         vulkan13Features.dynamicRendering = VK_TRUE;
         vulkan13Features.shaderDemoteToHelperInvocation =
@@ -7281,6 +7401,13 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
         &allocation,
         nullptr);
     if (result != VK_SUCCESS) {
+        spdlog::error(
+            "[Vulkan] vmaCreateBuffer failed VkResult={} size={} usage=0x{:x} memoryLocation={} queueFamilyCount={}",
+            static_cast<int32_t>(result),
+            desc.size,
+            static_cast<uint64_t>(usage),
+            static_cast<uint32_t>(desc.memoryLocation),
+            queueFamilies.size());
         return resultFromVk(result);
     }
 
@@ -7550,6 +7677,34 @@ Result Device::createGraphicsPipeline(
     if (usesTaskShader && !impl_->capabilities.taskShader) {
         return makeError(Error::Unsupported);
     }
+    const bool configuresTaskSubgroups =
+        desc.taskRequiredSubgroupSize != 0 ||
+        desc.taskRequireFullSubgroups;
+    if (configuresTaskSubgroups && !usesTaskShader) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.taskRequireFullSubgroups &&
+        desc.taskRequiredSubgroupSize == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.taskRequiredSubgroupSize != 0 &&
+        (desc.taskRequiredSubgroupSize &
+            (desc.taskRequiredSubgroupSize - 1u)) != 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.taskRequiredSubgroupSize != 0 &&
+        (!impl_->capabilities.subgroupSizeControl ||
+         !impl_->capabilities.taskShaderSubgroupSizeControl ||
+         desc.taskRequiredSubgroupSize <
+             impl_->capabilities.minSubgroupSize ||
+         desc.taskRequiredSubgroupSize >
+             impl_->capabilities.maxSubgroupSize)) {
+        return makeError(Error::Unsupported);
+    }
+    if (desc.taskRequireFullSubgroups &&
+        !impl_->capabilities.computeFullSubgroups) {
+        return makeError(Error::Unsupported);
+    }
     if (desc.usesBindlessHeap && !impl_->capabilities.bindlessDescriptorHeap) {
         return makeError(Error::Unsupported);
     }
@@ -7578,10 +7733,12 @@ Result Device::createGraphicsPipeline(
     const char* fragmentEntryPoint = desc.fragmentEntryPoint != nullptr ? desc.fragmentEntryPoint : "main";
     std::vector<VkPipelineShaderStageCreateInfo> stages;
     stages.reserve(usesTaskShader ? 3u : 2u);
+    size_t taskStageIndex = std::numeric_limits<size_t>::max();
     VkShaderStageFlags graphicsShaderStages = VK_SHADER_STAGE_FRAGMENT_BIT;
     if (usesMeshShader) {
 #ifdef VK_EXT_mesh_shader
         if (usesTaskShader) {
+            taskStageIndex = stages.size();
             stages.push_back(VkPipelineShaderStageCreateInfo{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = VK_SHADER_STAGE_TASK_BIT_EXT,
@@ -7656,6 +7813,26 @@ Result Device::createGraphicsPipeline(
         bindlessMappingInfo.pMappings = bindlessMappings.data();
         for (VkPipelineShaderStageCreateInfo& stage : stages) {
             stage.pNext = &bindlessMappingInfo;
+        }
+    }
+
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo taskSubgroupSizeInfo{
+        .sType =
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+        .requiredSubgroupSize = desc.taskRequiredSubgroupSize,
+    };
+    if (configuresTaskSubgroups) {
+        if (taskStageIndex >= stages.size()) {
+            return makeError(Error::InvalidArgument);
+        }
+        VkPipelineShaderStageCreateInfo& taskStage = stages[taskStageIndex];
+        if (desc.taskRequireFullSubgroups) {
+            taskStage.flags |=
+                VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
+        }
+        if (desc.taskRequiredSubgroupSize != 0) {
+            taskSubgroupSizeInfo.pNext = taskStage.pNext;
+            taskStage.pNext = &taskSubgroupSizeInfo;
         }
     }
 
@@ -8392,7 +8569,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             physicalDevice,
             extensions,
             probe);
-        const int32_t featureScore = featureSelection.score();
+        const int32_t featureScore =
+            featureSelection.score(requestedFeatures);
         if (featureScore > bestCandidate.featureScore) {
             bestCandidate = VulkanPhysicalDeviceCandidate{
                 .physicalDevice = physicalDevice,
@@ -8576,6 +8754,21 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->capabilities.meshShader = selectedFeatures.meshShader;
     deviceImpl->capabilities.taskShader = selectedFeatures.taskShader;
     deviceImpl->capabilities.geometryShader = selectedFeatures.geometryShader;
+    deviceImpl->capabilities.subgroupSizeControl =
+        selectedFeatures.subgroupSizeControl;
+    deviceImpl->capabilities.computeFullSubgroups =
+        selectedFeatures.computeFullSubgroups;
+    deviceImpl->capabilities.taskShaderSubgroupBallot =
+        selectedFeatures.taskShaderSubgroupBallot;
+    deviceImpl->capabilities.taskShaderSubgroupSizeControl =
+        selectedFeatures.taskShaderSubgroupSizeControl;
+    deviceImpl->capabilities.subgroupSize = selectedFeatures.subgroupSize;
+    deviceImpl->capabilities.minSubgroupSize =
+        selectedFeatures.minSubgroupSize;
+    deviceImpl->capabilities.maxSubgroupSize =
+        selectedFeatures.maxSubgroupSize;
+    deviceImpl->capabilities.maxComputeWorkgroupSubgroups =
+        selectedFeatures.maxComputeWorkgroupSubgroups;
     deviceImpl->capabilities.rayTracingAccelerationStructure = selectedFeatures.rayTracingAccelerationStructure;
     deviceImpl->rayTracingAccelerationStructureEnabled = selectedFeatures.rayTracingAccelerationStructure;
     deviceImpl->capabilities.rayQuery = selectedFeatures.rayQuery;
