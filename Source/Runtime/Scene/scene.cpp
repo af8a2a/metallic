@@ -1324,7 +1324,11 @@ size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, Output& output)
                 const size_t targetSize =
                     static_cast<size_t>((merged.size() / 3u) * config.simplify_ratio) * 3u;
                 TaskResult& result = results[taskIndex];
+#if MESHOPTIMIZER_VERSION >= 1020
+                result.bounds = clod::mergeGroups(clusters, group);
+#else
                 result.bounds = clod::boundsMerge(clusters, group);
+#endif
                 float error = 0.0f;
                 std::vector<unsigned int> simplified =
                     clod::simplify(config, mesh, merged, locks, targetSize, &error);
