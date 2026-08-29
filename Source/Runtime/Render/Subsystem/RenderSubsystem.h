@@ -35,6 +35,12 @@ struct RenderSubsystemFrameContext {
     uint32_t frameSlot = 0;
 };
 
+class RenderSubsystemShaderReload {
+public:
+    virtual ~RenderSubsystemShaderReload() = default;
+    virtual void commit() noexcept = 0;
+};
+
 class IRenderSubsystem {
 public:
     virtual ~IRenderSubsystem() = default;
@@ -50,6 +56,14 @@ public:
     }
     virtual Result recordPreGraph(const RenderSubsystemFrameContext&, std::string&) { return {}; }
     virtual Result recordPostGraph(const RenderSubsystemFrameContext&, std::string&) { return {}; }
+    virtual Result prepareShaderReload(
+        const RenderSubsystemInitContext&,
+        std::unique_ptr<RenderSubsystemShaderReload>& outReload,
+        std::string&)
+    {
+        outReload.reset();
+        return {};
+    }
     virtual void endFrame(const RenderSubsystemFrameContext&) {}
     virtual void shutdown() {}
 };
@@ -135,6 +149,7 @@ public:
         Streamer* streamer,
         std::span<const RenderSubsystemId> requiredSubsystems,
         std::string& log);
+    Result reloadShaders(std::string& log);
     void endFrame();
     void shutdown();
 

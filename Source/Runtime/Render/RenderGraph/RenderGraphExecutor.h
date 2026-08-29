@@ -58,6 +58,9 @@ public:
         uint32_t height,
         const RenderGraphCompileOptions& options,
         std::string& log);
+    // Call between frames, with no recorded-but-unsubmitted command buffers that
+    // reference this graph. On failure the current passes and resources stay valid.
+    Result reloadShaders(std::string& log);
     Result execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources = nullptr);
     Result execute(const RenderGraphSubmitDesc& desc);
     Result waitForSubmittedWork(uint64_t timeoutNanoseconds = UINT64_MAX);

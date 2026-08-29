@@ -58,6 +58,10 @@ public:
         RenderChangeBits& changes,
         std::string& log) override;
     Result recordPreGraph(const RenderSubsystemFrameContext& context, std::string& log) override;
+    Result prepareShaderReload(
+        const RenderSubsystemInitContext& context,
+        std::unique_ptr<RenderSubsystemShaderReload>& outReload,
+        std::string& log) override;
     void shutdown() override;
 
     const EnvironmentLightingSnapshot& snapshot() const { return snapshot_; }
@@ -68,6 +72,7 @@ private:
     struct DecodeJob;
     struct GpuPrecompute;
     struct Resources;
+    class ShaderReload;
 
     void requestEnvironment(const EnvironmentSettings& settings, uint64_t settingsRevision);
     void startDecodeJob(const std::filesystem::path& path, uint64_t generation);

@@ -36,6 +36,7 @@ struct SlangShaderDesc {
 struct ShaderCompileResult {
     std::vector<uint32_t> spirv;
     std::string diagnostics;
+    std::vector<std::string> dependencies;
 };
 
 struct SlangShaderCacheOptions {
@@ -48,6 +49,20 @@ struct SlangShaderCacheOptions {
 // Process-global compilation policy. Configure it before shader compilation begins.
 void setSlangShaderDebugMode(SlangShaderDebugMode mode) noexcept;
 SlangShaderDebugMode slangShaderDebugMode() noexcept;
+
+// Successful shader compiles automatically register their complete Slang
+// dependency list. Poll this from the interactive frame loop to detect stable
+// source edits, including edits to included files. Passing zero disables the
+// save debounce and is useful for deterministic tests.
+std::vector<std::string> pollSlangShaderChanges(
+    uint32_t debounceMilliseconds = 150,
+    uint32_t retryMilliseconds = 1000);
+// Accept the most recently reported source snapshots after every affected
+// pipeline has been committed. Failed reloads intentionally stay dirty and are
+// reported again after retryMilliseconds, so fixing a newly-added include is
+// sufficient to recover without touching an already-known file.
+void acknowledgeSlangShaderChanges();
+void resetSlangShaderHotReloadTracking();
 
 Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult);
 Result compileSlangShaderToSpirv(

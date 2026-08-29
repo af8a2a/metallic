@@ -214,6 +214,40 @@ ensure_git_submodule(
     "OpenUSD"
 )
 add_subdirectory(External)
+
+# spdlog follows BUILD_SHARED_LIBS even when SPDLOG_BUILD_SHARED is disabled.
+# When a shared build is requested, keep every executable self-contained by
+# deploying the generated DLL beside it. The utility target is intentionally
+# always out of date so rebuilding a focused executable also restores a DLL
+# that was removed from its output directory.
+function(metallic_copy_spdlog_runtime target_name)
+    if(NOT WIN32 OR NOT TARGET ${target_name} OR NOT TARGET spdlog::spdlog)
+        return()
+    endif()
+
+    get_target_property(spdlog_runtime_target spdlog::spdlog ALIASED_TARGET)
+    if(NOT spdlog_runtime_target)
+        set(spdlog_runtime_target spdlog::spdlog)
+    endif()
+    get_target_property(spdlog_target_type ${spdlog_runtime_target} TYPE)
+    if(NOT spdlog_target_type STREQUAL "SHARED_LIBRARY")
+        return()
+    endif()
+
+    set(runtime_target "${target_name}SpdlogRuntime")
+    add_custom_target(${runtime_target}
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:${target_name}>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:${spdlog_runtime_target}>"
+            "$<TARGET_FILE_DIR:${target_name}>"
+        DEPENDS ${spdlog_runtime_target}
+        COMMENT "Deploying spdlog runtime for ${target_name}"
+        VERBATIM
+    )
+    add_dependencies(${target_name} ${runtime_target})
+endfunction()
+
 add_subdirectory(Source)
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/Tools/CMakeLists.txt")

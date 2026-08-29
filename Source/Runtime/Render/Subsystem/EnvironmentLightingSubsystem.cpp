@@ -183,6 +183,31 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
     }
 };
 
+class EnvironmentLightingSubsystem::ShaderReload final : public RenderSubsystemShaderReload {
+public:
+    ShaderReload(
+        EnvironmentLightingSubsystem& owner,
+        ImportancePdfCompute pdfCompute,
+        std::unique_ptr<GpuPrecompute> gpuPrecompute)
+        : owner_(owner)
+        , pdfCompute_(std::move(pdfCompute))
+        , gpuPrecompute_(std::move(gpuPrecompute))
+    {
+    }
+
+    void commit() noexcept override
+    {
+        owner_.pdfCompute_ = std::move(pdfCompute_);
+        owner_.gpuPrecompute_ = std::move(gpuPrecompute_);
+        owner_.requestInitialized_ = false;
+    }
+
+private:
+    EnvironmentLightingSubsystem& owner_;
+    ImportancePdfCompute pdfCompute_;
+    std::unique_ptr<GpuPrecompute> gpuPrecompute_;
+};
+
 struct EnvironmentLightingSubsystem::Resources {
     std::unique_ptr<Texture> radiance;
     std::unique_ptr<TextureView> radianceView;
@@ -382,6 +407,36 @@ Result EnvironmentLightingSubsystem::recordPreGraph(
         return {};
     }
     return publishDecoded(context, std::move(*readyDecode_), log);
+}
+
+Result EnvironmentLightingSubsystem::prepareShaderReload(
+    const RenderSubsystemInitContext& context,
+    std::unique_ptr<RenderSubsystemShaderReload>& outReload,
+    std::string& log)
+{
+    outReload.reset();
+    if (device_ != &context.device) {
+        log = "EnvironmentLightingSubsystem belongs to another Device";
+        return makeError(Error::InvalidArgument);
+    }
+
+    ImportancePdfCompute nextPdfCompute;
+    Result result = nextPdfCompute.initialize(context.device, log);
+    if (!result) {
+        return result;
+    }
+    auto nextGpuPrecompute = std::make_unique<GpuPrecompute>();
+    result = nextGpuPrecompute->initialize(context.device, log);
+    if (!result) {
+        return result;
+    }
+
+    outReload = std::make_unique<ShaderReload>(
+        *this,
+        std::move(nextPdfCompute),
+        std::move(nextGpuPrecompute));
+    log = "reloaded environment importance and spherical-harmonics shaders";
+    return {};
 }
 
 Result EnvironmentLightingSubsystem::publishDecoded(

@@ -48,6 +48,7 @@ if(WIN32)
     target_compile_definitions(MetallicSceneTests PRIVATE NOMINMAX)
 endif()
 metallic_copy_openusd_runtime(MetallicSceneTests)
+metallic_copy_spdlog_runtime(MetallicSceneTests)
 
 add_test(
     NAME MetallicSceneTests
@@ -112,6 +113,7 @@ if(WIN32)
     metallic_copy_nrc_runtime(MetallicRhiTests)
 endif()
 metallic_copy_openusd_runtime(MetallicRhiTests)
+metallic_copy_spdlog_runtime(MetallicRhiTests)
 
 if(WIN32)
     set(METALLIC_TEST_SDL_RUNTIME_TARGET "")

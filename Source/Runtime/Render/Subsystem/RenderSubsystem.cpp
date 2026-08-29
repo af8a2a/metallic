@@ -287,6 +287,46 @@ Result RenderSubsystemHost::recordPostGraph(
     return firstFailure;
 }
 
+Result RenderSubsystemHost::reloadShaders(std::string& log)
+{
+    log.clear();
+    if (device_ == nullptr || frameActive_) {
+        log = "RenderSubsystemHost shader reload requires an initialized host outside a frame";
+        return makeError(Error::InvalidArgument);
+    }
+
+    std::vector<std::unique_ptr<RenderSubsystemShaderReload>> preparedReloads;
+    preparedReloads.reserve(activeOrder_.size());
+    for (const std::string& id : activeOrder_) {
+        std::string subsystemLog;
+        std::unique_ptr<RenderSubsystemShaderReload> preparedReload;
+        Result result = records_.at(id)->instance->prepareShaderReload(
+            RenderSubsystemInitContext{*device_, *this},
+            preparedReload,
+            subsystemLog);
+        if (!result) {
+            log = "Render subsystem '" + id + "' shader reload failed";
+            if (!subsystemLog.empty()) {
+                log += ": " + subsystemLog;
+            }
+            return result;
+        }
+        if (!subsystemLog.empty()) {
+            if (!log.empty()) {
+                log += '\n';
+            }
+            log += "Render subsystem '" + id + "': " + subsystemLog;
+        }
+        if (preparedReload != nullptr) {
+            preparedReloads.push_back(std::move(preparedReload));
+        }
+    }
+    for (const std::unique_ptr<RenderSubsystemShaderReload>& preparedReload : preparedReloads) {
+        preparedReload->commit();
+    }
+    return {};
+}
+
 void RenderSubsystemHost::endFrame()
 {
     if (!frameActive_) {

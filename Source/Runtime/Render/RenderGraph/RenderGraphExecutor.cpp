@@ -1321,6 +1321,131 @@ Result RenderGraphExecutor::compile(
     return {};
 }
 
+Result RenderGraphExecutor::reloadShaders(std::string& log)
+{
+    RenderGraphLogScope reloadScope("transactional shader reload");
+    log.clear();
+    if (!impl_->isCompiled || impl_->device == nullptr || impl_->executionList.empty()) {
+        log = "RenderGraph shader reload requires a compiled graph";
+        return makeError(Error::InvalidArgument);
+    }
+
+    Result result = impl_->waitForSubmittedWork(UINT64_MAX);
+    if (!result) {
+        log = resultMessage("RenderGraph waitForSubmittedWork before shader reload", result);
+        return result;
+    }
+    result = impl_->device->waitIdle();
+    if (!result) {
+        log = resultMessage("Device waitIdle before shader reload", result);
+        return result;
+    }
+
+    SceneResourcesSubsystem* sceneResources = impl_->sceneResourcesSubsystem();
+    if (sceneResources == nullptr) {
+        log = "RenderGraph shader reload requires render.scene-resources";
+        return makeError(Error::Failure);
+    }
+    const RenderGraphCompileContext compileContext{
+        .device = impl_->device,
+        .graphicsQueue = impl_->device->getQueue(QueueType::Graphics),
+        .runtimeScene = impl_->runtimeScene,
+        .sceneResourceManager = &sceneResources->manager(),
+        .renderWorld = impl_->world,
+        .subsystemHost = impl_->subsystemHost,
+        .width = impl_->width,
+        .height = impl_->height,
+        .defaultFormat = impl_->defaultFormat,
+    };
+
+    std::vector<Impl::CompiledNode> replacements;
+    replacements.reserve(impl_->executionList.size());
+    std::string reloadDetails;
+    for (const Impl::CompiledNode& compiledNode : impl_->executionList) {
+        std::unique_ptr<RenderGraphPass> pass = createRenderGraphPass(compiledNode.type);
+        if (pass == nullptr) {
+            log = "Shader reload could not recreate pass '" + compiledNode.name +
+                "' of type '" + compiledNode.type + "'";
+            return makeError(Error::InvalidArgument);
+        }
+        pass->setProperties(compiledNode.staticProperties);
+        const RenderGraphPassKind kind = pass->kind();
+        const QueueType queueType = pass->queueType();
+        RenderPassReflection reflection = pass->reflect(compileContext);
+        const std::span<const RenderSubsystemId> oldSubsystems =
+            compiledNode.pass->requiredSubsystems();
+        const std::span<const RenderSubsystemId> newSubsystems = pass->requiredSubsystems();
+        const bool subsystemRequirementsMatch =
+            oldSubsystems.size() == newSubsystems.size() &&
+            std::equal(oldSubsystems.begin(), oldSubsystems.end(), newSubsystems.begin());
+        if (kind != compiledNode.kind ||
+            queueType != compiledNode.queueType ||
+            reflection != compiledNode.reflection ||
+            !subsystemRequirementsMatch) {
+            log = "Shader reload rejected pass '" + compiledNode.name +
+                "' because its render-graph contract changed; rebuild the graph instead";
+            return makeError(Error::InvalidArgument);
+        }
+
+        std::string passLog;
+        {
+            RenderGraphLogScope scope(
+                "reload shaders for pass '" + compiledNode.name + "' (" +
+                compiledNode.type + ")");
+            result = pass->compile(compileContext, passLog);
+        }
+        if (!result) {
+            log = "Shader reload failed for pass '" + compiledNode.name + "' (" +
+                compiledNode.type + ")";
+            if (!passLog.empty()) {
+                log += ": " + passLog;
+            }
+            return result;
+        }
+        if (!passLog.empty()) {
+            if (!reloadDetails.empty()) {
+                reloadDetails += '\n';
+            }
+            reloadDetails += compiledNode.name + ": " + passLog;
+        }
+        pass->setProperties(compiledNode.effectiveProperties);
+        replacements.push_back(Impl::CompiledNode{
+            .id = compiledNode.id,
+            .name = compiledNode.name,
+            .type = compiledNode.type,
+            .kind = kind,
+            .queueType = queueType,
+            .staticProperties = compiledNode.staticProperties,
+            .runtimeProperties = compiledNode.runtimeProperties,
+            .effectiveProperties = compiledNode.effectiveProperties,
+            .pass = std::move(pass),
+            .reflection = std::move(reflection),
+        });
+    }
+
+    std::string subsystemLog;
+    result = impl_->subsystemHost->reloadShaders(subsystemLog);
+    if (!result) {
+        log = subsystemLog.empty()
+            ? "Render subsystem shader reload failed"
+            : std::move(subsystemLog);
+        return result;
+    }
+
+    impl_->executionList = std::move(replacements);
+    log = "Reloaded shaders for " + std::to_string(impl_->executionList.size()) +
+        " render pass(es)";
+    if (!subsystemLog.empty()) {
+        log += '\n';
+        log += subsystemLog;
+    }
+    if (!reloadDetails.empty()) {
+        log += '\n';
+        log += reloadDetails;
+    }
+    return {};
+}
+
 Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources)
 {
     if (!impl_->isCompiled) {

@@ -107,6 +107,8 @@ struct RenderGraphField {
     uint32_t structureStride = 0;
     MemoryLocation memoryLocation = MemoryLocation::Device;
 
+    bool operator==(const RenderGraphField&) const = default;
+
     RenderGraphField& texture2D(uint32_t newWidth = 0, uint32_t newHeight = 0);
     RenderGraphField& buffer(uint64_t newSize, uint32_t newStructureStride = 0);
     RenderGraphField& setOptional(bool value = true);
@@ -137,6 +139,8 @@ public:
         std::string_view name,
         RenderGraphFieldVisibility visibility) const;
     const std::vector<RenderGraphField>& fields() const { return fields_; }
+
+    bool operator==(const RenderPassReflection&) const = default;
 
 private:
     std::vector<RenderGraphField> fields_;

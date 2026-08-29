@@ -42,6 +42,7 @@ private:
     bool initialize();
     void shutdown();
     void pollEvents();
+    void pollShaderHotReload();
     bool renderFrame();
     void drawDockspace();
     void drawPanels();

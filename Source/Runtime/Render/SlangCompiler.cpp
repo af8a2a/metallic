@@ -14,10 +14,13 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -36,7 +39,7 @@ namespace {
 
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
-constexpr uint32_t kShaderCacheVersion = 1;
+constexpr uint32_t kShaderCacheVersion = 2;
 constexpr uint32_t kShaderCacheRequestVersion = 3;
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
@@ -44,8 +47,37 @@ constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 constexpr uint32_t kSpirvMagic = 0x07230203u;
+constexpr auto kShaderDependencyHashInterval = std::chrono::milliseconds(500);
 
 std::atomic<SlangShaderDebugMode> gSlangShaderDebugMode{SlangShaderDebugMode::Disabled};
+
+struct ShaderDependencyStamp {
+    bool exists = false;
+    uintmax_t fileSize = 0;
+    std::filesystem::file_time_type writeTime{};
+    uint64_t contentHash = 0;
+
+    bool operator==(const ShaderDependencyStamp&) const = default;
+};
+
+struct ShaderDependencySnapshot {
+    std::filesystem::path path;
+    ShaderDependencyStamp stamp;
+};
+
+struct TrackedShaderDependency {
+    std::filesystem::path path;
+    ShaderDependencyStamp acceptedStamp;
+    std::optional<ShaderDependencyStamp> pendingStamp;
+    std::chrono::steady_clock::time_point pendingSince{};
+    ShaderDependencyStamp reportedStamp;
+    std::chrono::steady_clock::time_point lastReportedAt{};
+    std::chrono::steady_clock::time_point nextContentHashAt{};
+    bool dirty = false;
+};
+
+std::mutex gShaderDependencyMutex;
+std::unordered_map<std::string, TrackedShaderDependency> gShaderDependencies;
 
 struct ShaderCacheHeader {
     std::array<char, 8> magic{};
@@ -105,6 +137,138 @@ std::filesystem::path normalizedAbsolutePath(
     }
     resolved = std::filesystem::absolute(resolved, pathError);
     return pathError ? path.lexically_normal() : resolved.lexically_normal();
+}
+
+bool hashFileContents(const std::filesystem::path& path, uint64_t& outHash);
+
+bool sameShaderDependencyMetadata(
+    const ShaderDependencyStamp& left,
+    const ShaderDependencyStamp& right)
+{
+    return left.exists == right.exists &&
+        left.fileSize == right.fileSize &&
+        left.writeTime == right.writeTime;
+}
+
+ShaderDependencyStamp shaderDependencyMetadata(const std::filesystem::path& path)
+{
+    std::error_code fileError;
+    const std::filesystem::file_time_type writeTime =
+        std::filesystem::last_write_time(path, fileError);
+    if (fileError) {
+        return {};
+    }
+    const uintmax_t fileSize = std::filesystem::file_size(path, fileError);
+    if (fileError) {
+        return {};
+    }
+    return ShaderDependencyStamp{
+        .exists = true,
+        .fileSize = fileSize,
+        .writeTime = writeTime,
+    };
+}
+
+ShaderDependencyStamp shaderDependencyStamp(const std::filesystem::path& path)
+{
+    ShaderDependencyStamp stamp = shaderDependencyMetadata(path);
+    if (!stamp.exists || !hashFileContents(path, stamp.contentHash)) {
+        return {};
+    }
+    return stamp;
+}
+
+ShaderDependencyStamp currentTrackedDependencyStamp(
+    TrackedShaderDependency& tracked,
+    std::chrono::steady_clock::time_point now,
+    bool forceContentHash)
+{
+    ShaderDependencyStamp current = shaderDependencyMetadata(tracked.path);
+    if (!current.exists) {
+        return current;
+    }
+
+    const ShaderDependencyStamp* reusable = nullptr;
+    if (tracked.pendingStamp.has_value() &&
+        sameShaderDependencyMetadata(current, *tracked.pendingStamp)) {
+        reusable = &*tracked.pendingStamp;
+    } else if (tracked.dirty &&
+        sameShaderDependencyMetadata(current, tracked.reportedStamp)) {
+        reusable = &tracked.reportedStamp;
+    } else if (sameShaderDependencyMetadata(current, tracked.acceptedStamp)) {
+        reusable = &tracked.acceptedStamp;
+    }
+
+    if (!forceContentHash && reusable != nullptr && now < tracked.nextContentHashAt) {
+        current.contentHash = reusable->contentHash;
+        return current;
+    }
+    if (!hashFileContents(tracked.path, current.contentHash)) {
+        return {};
+    }
+    tracked.nextContentHashAt = now + kShaderDependencyHashInterval;
+    return current;
+}
+
+bool snapshotShaderDependencies(
+    std::span<const std::filesystem::path> dependencies,
+    std::vector<ShaderDependencySnapshot>& outSnapshots)
+{
+    outSnapshots.clear();
+    outSnapshots.reserve(dependencies.size());
+    for (const std::filesystem::path& dependency : dependencies) {
+        const std::filesystem::path normalized = normalizedAbsolutePath(dependency);
+        ShaderDependencyStamp stamp = shaderDependencyStamp(normalized);
+        if (!stamp.exists) {
+            outSnapshots.clear();
+            return false;
+        }
+        outSnapshots.push_back(ShaderDependencySnapshot{
+            .path = normalized,
+            .stamp = stamp,
+        });
+    }
+    return true;
+}
+
+bool shaderDependencySnapshotsMatch(std::span<const ShaderDependencySnapshot> snapshots)
+{
+    return std::all_of(
+        snapshots.begin(),
+        snapshots.end(),
+        [](const ShaderDependencySnapshot& snapshot) {
+            return shaderDependencyStamp(snapshot.path) == snapshot.stamp;
+        });
+}
+
+void registerShaderDependencies(std::span<const ShaderDependencySnapshot> dependencies)
+{
+    const auto now = std::chrono::steady_clock::now();
+    std::scoped_lock lock(gShaderDependencyMutex);
+    for (const ShaderDependencySnapshot& dependency : dependencies) {
+        const std::string key = dependency.path.generic_string();
+        if (key.empty()) {
+            continue;
+        }
+        auto [iter, inserted] = gShaderDependencies.try_emplace(key);
+        if (inserted) {
+            iter->second.path = dependency.path;
+            iter->second.acceptedStamp = dependency.stamp;
+            iter->second.nextContentHashAt = now + kShaderDependencyHashInterval;
+        }
+    }
+}
+
+void publishShaderDependencies(
+    std::span<const ShaderDependencySnapshot> dependencies,
+    ShaderCompileResult& outResult)
+{
+    outResult.dependencies.clear();
+    outResult.dependencies.reserve(dependencies.size());
+    for (const ShaderDependencySnapshot& dependency : dependencies) {
+        outResult.dependencies.push_back(dependency.path.generic_string());
+    }
+    registerShaderDependencies(dependencies);
 }
 
 uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode debugMode)
@@ -218,9 +382,11 @@ bool readPayloadBytes(
 bool loadCachedShader(
     const std::filesystem::path& path,
     uint64_t requestHash,
-    std::vector<uint32_t>& outSpirv)
+    std::vector<uint32_t>& outSpirv,
+    std::vector<ShaderDependencySnapshot>& outDependencies)
 {
     outSpirv.clear();
+    outDependencies.clear();
     std::error_code fileError;
     const uint64_t fileSize = std::filesystem::file_size(path, fileError);
     if (fileError || fileSize < sizeof(ShaderCacheHeader) ||
@@ -259,6 +425,8 @@ bool loadCachedShader(
     }
 
     size_t offset = 0;
+    std::vector<ShaderDependencySnapshot> dependencies;
+    dependencies.reserve(header.dependencyCount);
     for (uint32_t dependencyIndex = 0;
          dependencyIndex < header.dependencyCount;
          ++dependencyIndex) {
@@ -278,11 +446,15 @@ bool loadCachedShader(
             dependencyPath.find('\0') != std::string::npos) {
             return false;
         }
-        uint64_t currentContentHash = 0;
-        if (!hashFileContents(std::filesystem::path(dependencyPath), currentContentHash) ||
-            currentContentHash != dependencyHeader.contentHash) {
+        const std::filesystem::path dependency(dependencyPath);
+        ShaderDependencyStamp stamp = shaderDependencyStamp(dependency);
+        if (!stamp.exists || stamp.contentHash != dependencyHeader.contentHash) {
             return false;
         }
+        dependencies.push_back(ShaderDependencySnapshot{
+            .path = dependency,
+            .stamp = stamp,
+        });
     }
 
     if (header.spirvByteSize != payload.size() - offset) {
@@ -298,6 +470,11 @@ bool loadCachedShader(
         outSpirv.clear();
         return false;
     }
+    if (!shaderDependencySnapshotsMatch(dependencies)) {
+        outSpirv.clear();
+        return false;
+    }
+    outDependencies = std::move(dependencies);
     return true;
 }
 
@@ -363,7 +540,7 @@ std::vector<std::filesystem::path> collectShaderDependencies(
 bool saveCachedShader(
     const std::filesystem::path& path,
     uint64_t requestHash,
-    std::span<const std::filesystem::path> dependencies,
+    std::span<const ShaderDependencySnapshot> dependencies,
     std::span<const uint32_t> spirv)
 {
     if (dependencies.empty() || dependencies.size() > kMaxShaderDependencyCount ||
@@ -373,16 +550,15 @@ bool saveCachedShader(
     }
 
     std::vector<uint8_t> payload;
-    for (const std::filesystem::path& dependency : dependencies) {
-        const std::string dependencyPath = dependency.generic_string();
-        uint64_t contentHash = 0;
+    for (const ShaderDependencySnapshot& dependency : dependencies) {
+        const std::string dependencyPath = dependency.path.generic_string();
         if (dependencyPath.empty() || dependencyPath.size() > kMaxShaderDependencyPathSize ||
-            !hashFileContents(dependency, contentHash)) {
+            !dependency.stamp.exists) {
             return false;
         }
         const ShaderCacheDependencyHeader dependencyHeader{
             .pathSize = static_cast<uint32_t>(dependencyPath.size()),
-            .contentHash = contentHash,
+            .contentHash = dependency.stamp.contentHash,
         };
         appendPayloadValue(payload, dependencyHeader);
         appendPayloadBytes(payload, dependencyPath.data(), dependencyPath.size());
@@ -461,6 +637,89 @@ SlangShaderDebugMode slangShaderDebugMode() noexcept
     return gSlangShaderDebugMode.load(std::memory_order_relaxed);
 }
 
+std::vector<std::string> pollSlangShaderChanges(
+    uint32_t debounceMilliseconds,
+    uint32_t retryMilliseconds)
+{
+    const auto now = std::chrono::steady_clock::now();
+    const auto debounce = std::chrono::milliseconds(debounceMilliseconds);
+    const auto retry = std::chrono::milliseconds(retryMilliseconds);
+    std::vector<std::string> changedFiles;
+
+    std::scoped_lock lock(gShaderDependencyMutex);
+    for (auto& [path, tracked] : gShaderDependencies) {
+        const ShaderDependencyStamp currentStamp = currentTrackedDependencyStamp(
+            tracked,
+            now,
+            debounceMilliseconds == 0 || tracked.pendingStamp.has_value());
+        if (!tracked.dirty && currentStamp == tracked.acceptedStamp) {
+            tracked.pendingStamp.reset();
+            continue;
+        }
+
+        if (tracked.dirty) {
+            if (currentStamp == tracked.acceptedStamp) {
+                tracked.dirty = false;
+                tracked.pendingStamp.reset();
+                continue;
+            }
+            if (currentStamp == tracked.reportedStamp) {
+                tracked.pendingStamp.reset();
+                if (now - tracked.lastReportedAt >= retry) {
+                    tracked.lastReportedAt = now;
+                    changedFiles.push_back(path);
+                }
+                continue;
+            }
+        }
+
+        if (!tracked.pendingStamp.has_value() || *tracked.pendingStamp != currentStamp) {
+            tracked.pendingStamp = currentStamp;
+            tracked.pendingSince = now;
+        }
+        if (now - tracked.pendingSince < debounce) {
+            continue;
+        }
+        tracked.dirty = true;
+        tracked.reportedStamp = currentStamp;
+        tracked.lastReportedAt = now;
+        tracked.pendingStamp.reset();
+        changedFiles.push_back(path);
+    }
+    std::sort(changedFiles.begin(), changedFiles.end());
+    return changedFiles;
+}
+
+void acknowledgeSlangShaderChanges()
+{
+    const auto now = std::chrono::steady_clock::now();
+    std::scoped_lock lock(gShaderDependencyMutex);
+    for (auto& [path, tracked] : gShaderDependencies) {
+        (void)path;
+        if (!tracked.dirty) {
+            continue;
+        }
+
+        const ShaderDependencyStamp currentStamp = currentTrackedDependencyStamp(
+            tracked,
+            now,
+            true);
+        tracked.acceptedStamp = tracked.reportedStamp;
+        tracked.dirty = false;
+        tracked.pendingStamp.reset();
+        if (currentStamp != tracked.acceptedStamp) {
+            tracked.pendingStamp = currentStamp;
+            tracked.pendingSince = now;
+        }
+    }
+}
+
+void resetSlangShaderHotReloadTracking()
+{
+    std::scoped_lock lock(gShaderDependencyMutex);
+    gShaderDependencies.clear();
+}
+
 Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult)
 {
     return compileSlangShaderToSpirv(desc, SlangShaderCacheOptions{}, outResult);
@@ -490,10 +749,13 @@ Result compileSlangShaderToSpirv(
     const SlangShaderDebugMode debugMode = slangShaderDebugMode();
     const uint64_t requestHash = shaderRequestHash(desc, debugMode);
     const std::filesystem::path cachePath = shaderCachePath(cacheOptions, requestHash);
-    if (cacheOptions.enableDiskCache && loadCachedShader(cachePath, requestHash, outResult.spirv)) {
+    std::vector<ShaderDependencySnapshot> cachedDependencies;
+    if (cacheOptions.enableDiskCache &&
+        loadCachedShader(cachePath, requestHash, outResult.spirv, cachedDependencies)) {
         if (cacheOptions.outCacheHit != nullptr) {
             *cacheOptions.outCacheHit = true;
         }
+        publishShaderDependencies(cachedDependencies, outResult);
         spdlog::info(
             "[ShaderCache] Loaded {}.{} from '{}'",
             desc.moduleName,
@@ -614,6 +876,18 @@ Result compileSlangShaderToSpirv(
     if (module == nullptr) {
         return makeError(Error::Failure);
     }
+    const std::vector<std::filesystem::path> dependencies = collectShaderDependencies(
+        *module,
+        normalizedSearchPaths);
+    std::vector<ShaderDependencySnapshot> dependencySnapshots;
+    if (!snapshotShaderDependencies(dependencies, dependencySnapshots)) {
+        outResult.diagnostics += "Could not snapshot every Slang source dependency.\n";
+        return makeError(Error::Failure);
+    }
+    // Register the discovered files before later compilation stages. This lets
+    // a fix to an included file trigger another attempt even when linking or
+    // code generation fails.
+    registerShaderDependencies(dependencySnapshots);
 
     diagnostics.setNull();
     Slang::ComPtr<slang::IEntryPoint> entryPoint;
@@ -658,11 +932,15 @@ Result compileSlangShaderToSpirv(
 
     outResult.spirv.resize(byteSize / sizeof(uint32_t));
     std::memcpy(outResult.spirv.data(), shaderCode->getBufferPointer(), byteSize);
+    if (!shaderDependencySnapshotsMatch(dependencySnapshots)) {
+        outResult.spirv.clear();
+        outResult.diagnostics +=
+            "A Slang source dependency changed during compilation; retry after the save completes.\n";
+        return makeError(Error::Failure);
+    }
+    publishShaderDependencies(dependencySnapshots, outResult);
     if (cacheOptions.enableDiskCache) {
-        const std::vector<std::filesystem::path> dependencies = collectShaderDependencies(
-            *module,
-            normalizedSearchPaths);
-        if (!saveCachedShader(cachePath, requestHash, dependencies, outResult.spirv)) {
+        if (!saveCachedShader(cachePath, requestHash, dependencySnapshots, outResult.spirv)) {
             spdlog::debug(
                 "[ShaderCache] Could not persist {}.{} to '{}'",
                 desc.moduleName,

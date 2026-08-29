@@ -415,6 +415,64 @@ public:
     }
 };
 
+struct TestShaderReloadState {
+    bool failCompile = false;
+    bool changeReflection = false;
+    uint32_t nextInstanceId = 0;
+    uint32_t compileCount = 0;
+    uint32_t lastSuccessfulCompileInstanceId = 0;
+    std::vector<uint32_t> destroyedInstanceIds;
+};
+
+TestShaderReloadState& testShaderReloadState()
+{
+    static TestShaderReloadState state;
+    return state;
+}
+
+class TestShaderReloadPass final : public render::RasterPass {
+public:
+    TestShaderReloadPass()
+        : instanceId_(++testShaderReloadState().nextInstanceId)
+    {
+    }
+
+    ~TestShaderReloadPass() override
+    {
+        testShaderReloadState().destroyedInstanceIds.push_back(instanceId_);
+    }
+
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addOutput("color", "Shader reload output color");
+        if (testShaderReloadState().changeReflection) {
+            reflection.addOutput("changedContract", "Intentionally changed shader reload contract");
+        }
+        return reflection;
+    }
+
+    render::Result compile(const render::RenderGraphCompileContext&, std::string& log) override
+    {
+        TestShaderReloadState& state = testShaderReloadState();
+        ++state.compileCount;
+        if (state.failCompile) {
+            log = "intentional shader reload compile failure";
+            return render::makeError(render::Error::Failure);
+        }
+        state.lastSuccessfulCompileInstanceId = instanceId_;
+        return {};
+    }
+
+    render::Result execute(render::RenderGraphExecutionContext&) override
+    {
+        return {};
+    }
+
+private:
+    uint32_t instanceId_ = 0;
+};
+
 class TestMissingSubsystemPass final : public render::ComputePass {
 public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
@@ -492,6 +550,10 @@ void registerTestPass()
         "TestResizeCompilePass",
         "Test-only pass that counts RenderGraph compile calls",
         []() { return std::make_unique<TestResizeCompilePass>(); });
+    render::registerRenderGraphPassType(
+        "TestShaderReloadPass",
+        "Test-only pass that validates transactional shader reload",
+        []() { return std::make_unique<TestShaderReloadPass>(); });
     render::registerRenderGraphPassType(
         "TestMissingSubsystemPass",
         "Test-only pass with an intentionally missing subsystem",
@@ -2387,6 +2449,17 @@ public:
             }
         } shaderDebugModeGuard;
         render::setSlangShaderDebugMode(render::SlangShaderDebugMode::Disabled);
+        struct ShaderHotReloadTrackingGuard {
+            ShaderHotReloadTrackingGuard()
+            {
+                render::resetSlangShaderHotReloadTracking();
+            }
+
+            ~ShaderHotReloadTrackingGuard()
+            {
+                render::resetSlangShaderHotReloadTracking();
+            }
+        } shaderHotReloadTrackingGuard;
 
         const std::filesystem::path testRoot =
             context.outputDirectory / "slang_shader_disk_cache";
@@ -2406,6 +2479,10 @@ public:
         const std::filesystem::path sourcePath = sourceDirectory / "ShaderCacheTest.slang";
         const std::filesystem::path dependencyPath =
             sourceDirectory / "ShaderCacheValue.slang";
+        const std::string normalizedSourcePath =
+            std::filesystem::absolute(sourcePath).lexically_normal().generic_string();
+        const std::string normalizedDependencyPath =
+            std::filesystem::absolute(dependencyPath).lexically_normal().generic_string();
         const auto writeShader = [&]() {
             std::ofstream stream(sourcePath, std::ios::binary | std::ios::trunc);
             stream << "#include \"ShaderCacheValue.slang\"\n"
@@ -2452,16 +2529,58 @@ public:
                 ": " +
                 firstCompile.diagnostics);
         }
+        if (std::find(
+                firstCompile.dependencies.begin(),
+                firstCompile.dependencies.end(),
+                normalizedSourcePath) == firstCompile.dependencies.end() ||
+            std::find(
+                firstCompile.dependencies.begin(),
+                firstCompile.dependencies.end(),
+                normalizedDependencyPath) == firstCompile.dependencies.end()) {
+            return RhiTestResult::fail(
+                "initial shader compile did not publish its module and include dependencies");
+        }
 
+        render::resetSlangShaderHotReloadTracking();
         render::ShaderCompileResult cachedCompile;
         result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedCompile);
         if (!result || !cacheHit ||
             cachedCompile.spirv != firstCompile.spirv) {
             return RhiTestResult::fail("unchanged shader source did not hit the SPIR-V disk cache");
         }
+        if (cachedCompile.dependencies != firstCompile.dependencies) {
+            return RhiTestResult::fail(
+                "cached shader compile did not restore the complete dependency list");
+        }
+        if (!render::pollSlangShaderChanges(0).empty()) {
+            return RhiTestResult::fail(
+                "cached shader dependency registration reported an unchanged file");
+        }
 
         if (!writeDependency(123456u)) {
             return RhiTestResult::fail("failed to update shader cache dependency source");
+        }
+        const std::vector<std::string> changedDependencies =
+            render::pollSlangShaderChanges(0);
+        if (changedDependencies.size() != 1 ||
+            changedDependencies.front() != normalizedDependencyPath) {
+            return RhiTestResult::fail(
+                "included shader edit was not reported as the only hot-reload dependency change");
+        }
+        if (!render::pollSlangShaderChanges(0).empty()) {
+            return RhiTestResult::fail(
+                "included shader edit ignored the default retry interval");
+        }
+        const std::vector<std::string> retriedDependencies =
+            render::pollSlangShaderChanges(0, 0);
+        if (retriedDependencies != changedDependencies) {
+            return RhiTestResult::fail(
+                "unacknowledged shader edit was not reported again after its retry interval");
+        }
+        render::acknowledgeSlangShaderChanges();
+        if (!render::pollSlangShaderChanges(0, 0).empty()) {
+            return RhiTestResult::fail(
+                "acknowledged shader edit remained pending");
         }
         render::ShaderCompileResult changedCompile;
         result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, changedCompile);
@@ -2518,8 +2637,57 @@ public:
             return RhiTestResult::fail(
                 "shader cache did not isolate normal, capture-symbol, and shader-debug modes");
         }
+
+        std::error_code stampError;
+        const uintmax_t originalDependencySize =
+            std::filesystem::file_size(dependencyPath, stampError);
+        if (stampError) {
+            return RhiTestResult::fail(
+                "failed to read shader dependency size before content-only edit");
+        }
+        const std::filesystem::file_time_type originalDependencyWriteTime =
+            std::filesystem::last_write_time(dependencyPath, stampError);
+        if (stampError) {
+            return RhiTestResult::fail(
+                "failed to read shader dependency timestamp before content-only edit");
+        }
+        if (!writeDependency(654321u)) {
+            return RhiTestResult::fail(
+                "failed to rewrite shader dependency with same-size content");
+        }
+        const uintmax_t rewrittenDependencySize =
+            std::filesystem::file_size(dependencyPath, stampError);
+        if (stampError || rewrittenDependencySize != originalDependencySize) {
+            return RhiTestResult::fail(
+                "shader dependency content-only edit did not preserve its file size");
+        }
+        std::filesystem::last_write_time(
+            dependencyPath,
+            originalDependencyWriteTime,
+            stampError);
+        if (stampError) {
+            return RhiTestResult::fail(
+                "failed to restore shader dependency timestamp after content-only edit");
+        }
+        const std::vector<std::string> contentOnlyChanges =
+            render::pollSlangShaderChanges(0);
+        if (contentOnlyChanges.size() != 1 ||
+            contentOnlyChanges.front() != normalizedDependencyPath) {
+            return RhiTestResult::fail(
+                "same-size shader edit with restored timestamp was not detected");
+        }
+        render::acknowledgeSlangShaderChanges();
+
+        render::resetSlangShaderHotReloadTracking();
+        if (!writeDependency(765432u)) {
+            return RhiTestResult::fail("failed to update dependency after resetting hot-reload tracking");
+        }
+        if (!render::pollSlangShaderChanges(0).empty()) {
+            return RhiTestResult::fail(
+                "resetSlangShaderHotReloadTracking did not clear registered dependencies");
+        }
         return RhiTestResult::pass(
-            "validated SPIR-V cache invalidation and isolated NonSemantic debug modes");
+            "validated dependency polling, SPIR-V cache invalidation, and isolated NonSemantic debug modes");
     }
 };
 
@@ -5223,6 +5391,109 @@ public:
         }
 
         return RhiTestResult::pass();
+    }
+};
+
+class RenderGraphShaderReloadTransactionTest : public RhiTest {
+public:
+    RenderGraphShaderReloadTransactionTest()
+    {
+        type = RhiTestType::Resource;
+        name = "render_graph_shader_reload_transaction";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        registerTestPass();
+
+        TestShaderReloadState& state = testShaderReloadState();
+        state = {};
+        struct StateGuard {
+            TestShaderReloadState& state;
+
+            ~StateGuard()
+            {
+                state.failCompile = false;
+                state.changeReflection = false;
+            }
+        } stateGuard{state};
+        const auto wasDestroyed = [&state](uint32_t instanceId) {
+            return std::find(
+                       state.destroyedInstanceIds.begin(),
+                       state.destroyedInstanceIds.end(),
+                       instanceId) != state.destroyedInstanceIds.end();
+        };
+
+        render::RenderGraph graph;
+        graph.setName("ShaderReloadTransaction");
+        graph.addNode("TestShaderReloadPass", "Reload");
+        if (!graph.markOutput("Reload.color")) {
+            return RhiTestResult::fail("failed to mark shader reload test output");
+        }
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        render::Result result = executor.compile(context.device, graph, 32, 24, log);
+        if (!result || !executor.compiled()) {
+            return RhiTestResult::fail(
+                std::string("initial shader reload graph compile returned ") +
+                toString(result) + ": " + log);
+        }
+        const render::RenderGraphResource* output = executor.outputResource("Reload.color");
+        if (output == nullptr || output->desc.width != 32 || output->desc.height != 24) {
+            return RhiTestResult::fail("initial shader reload output resource is invalid");
+        }
+        const uint32_t initialInstanceId = state.lastSuccessfulCompileInstanceId;
+        if (initialInstanceId == 0) {
+            return RhiTestResult::fail("initial shader reload pass did not compile");
+        }
+
+        result = executor.reloadShaders(log);
+        const uint32_t reloadedInstanceId = state.lastSuccessfulCompileInstanceId;
+        if (!result || !executor.compiled() || reloadedInstanceId == initialInstanceId ||
+            !wasDestroyed(initialInstanceId)) {
+            return RhiTestResult::fail(
+                std::string("successful shader reload did not transactionally replace the pass: ") +
+                toString(result) + ": " + log);
+        }
+        if (executor.outputResource("Reload.color") != output) {
+            return RhiTestResult::fail("successful shader reload replaced graph resources");
+        }
+
+        state.failCompile = true;
+        const uint32_t compileCountBeforeFailure = state.compileCount;
+        result = executor.reloadShaders(log);
+        if (result || !render::hasError(result, render::Error::Failure) ||
+            state.compileCount != compileCountBeforeFailure + 1 ||
+            state.lastSuccessfulCompileInstanceId != reloadedInstanceId) {
+            return RhiTestResult::fail(
+                "failed shader reload did not preserve the last successful pass state: " + log);
+        }
+        if (!executor.compiled() || executor.outputResource("Reload.color") != output ||
+            wasDestroyed(reloadedInstanceId)) {
+            return RhiTestResult::fail(
+                "failed shader reload invalidated the compiled graph or its output resource");
+        }
+
+        state.failCompile = false;
+        state.changeReflection = true;
+        const uint32_t compileCountBeforeContractChange = state.compileCount;
+        result = executor.reloadShaders(log);
+        if (result || !render::hasError(result, render::Error::InvalidArgument) ||
+            state.compileCount != compileCountBeforeContractChange ||
+            log.find("contract changed") == std::string::npos) {
+            return RhiTestResult::fail(
+                "shader reload did not reject a changed render-graph reflection contract: " + log);
+        }
+        if (!executor.compiled() || executor.outputResource("Reload.color") != output ||
+            state.lastSuccessfulCompileInstanceId != reloadedInstanceId ||
+            wasDestroyed(reloadedInstanceId)) {
+            return RhiTestResult::fail(
+                "reflection rejection invalidated the last successful shader pass");
+        }
+
+        return RhiTestResult::pass(
+            "validated successful replacement and last-good preservation across shader reload failures");
     }
 };
 
@@ -8172,6 +8443,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest)
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceTransmissionTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceAlphaMaskPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphResizeReusesCompiledPassesTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphShaderReloadTransactionTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);

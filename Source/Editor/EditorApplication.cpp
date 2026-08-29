@@ -1923,6 +1923,7 @@ int EditorApplication::run(
         ? render::SlangShaderDebugMode::CaptureSymbols
         : render::SlangShaderDebugMode::Disabled;
     render::setSlangShaderDebugMode(shaderDebugMode);
+    render::resetSlangShaderHotReloadTracking();
     startupSampleId_ = startupSampleId != nullptr ? startupSampleId : "";
     if (smokeTest_ && startupSampleId_.empty()) {
         // Allow headless verification of a specific built-in sample, e.g.
@@ -2566,6 +2567,57 @@ void EditorApplication::pollEvents()
     }
 }
 
+void EditorApplication::pollShaderHotReload()
+{
+    const std::vector<std::string> changedFiles = render::pollSlangShaderChanges();
+    if (changedFiles.empty()) {
+        return;
+    }
+
+    std::string changedFileList;
+    for (const std::string& path : changedFiles) {
+        if (!changedFileList.empty()) {
+            changedFileList += ", ";
+        }
+        const std::filesystem::path filePath(path);
+        changedFileList += filePath.filename().empty()
+            ? filePath.generic_string()
+            : filePath.filename().string();
+    }
+    spdlog::info(
+        "[ShaderHotReload] Detected {} changed shader source file(s): {}",
+        changedFiles.size(),
+        changedFileList);
+
+    if (graphExecutor_ == nullptr || !graphExecutor_->compiled()) {
+        renderGraphStatus_ = "Shader source changed; the next RenderGraph compile will use "
+            "the new source: " + changedFileList;
+        viewportPreviewNeedsRender_ = true;
+        return;
+    }
+
+    std::string reloadLog;
+    const render::Result result = graphExecutor_->reloadShaders(reloadLog);
+    if (!result) {
+        renderGraphStatus_ = "Shader hot reload failed; kept the previous pipelines: " + reloadLog;
+        spdlog::error(
+            "[ShaderHotReload] Reload failed with Result {}: {}",
+            render::resultToString(result),
+            reloadLog);
+        return;
+    }
+
+    render::acknowledgeSlangShaderChanges();
+    historyResources_.invalidateAll();
+    historyFrameIndex_ = 0;
+    viewportPreviewNeedsRender_ = true;
+    renderGraphStatus_ = "Shader hot reload succeeded for " + changedFileList;
+    if (!reloadLog.empty()) {
+        renderGraphStatus_ += "\n" + reloadLog;
+    }
+    spdlog::info("[ShaderHotReload] {}", renderGraphStatus_);
+}
+
 bool EditorApplication::renderFrame()
 {
     int framebufferWidth = 0;
@@ -2614,6 +2666,11 @@ bool EditorApplication::renderFrame()
                 }
             }
         }
+    }
+
+    {
+        auto profileScope = profiler_.scope("Shader Hot Reload");
+        pollShaderHotReload();
     }
 
     if (swapchainOutOfDate_ ||
