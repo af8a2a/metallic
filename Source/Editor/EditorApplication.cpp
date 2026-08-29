@@ -247,6 +247,8 @@ bool isSceneFilePath(const std::filesystem::path& path)
         return static_cast<char>(std::tolower(value));
     });
     return extension == ".gltf" || extension == ".glb" ||
+        extension == ".usd" || extension == ".usda" ||
+        extension == ".usdc" || extension == ".usdz" ||
         filename.ends_with(".metallic_scene.json");
 }
 
@@ -406,10 +408,11 @@ std::filesystem::path openSceneFileDialog(
     openFilename.lStructSize = sizeof(openFilename);
     openFilename.hwndOwner = owner;
     openFilename.lpstrFilter =
-        L"Metallic Scene Files (*.gltf;*.glb;*.metallic_scene.json)\0*.gltf;*.glb;*.metallic_scene.json\0"
+        L"Metallic Scene Files (*.gltf;*.glb;*.usd;*.usda;*.usdc;*.usdz;*.metallic_scene.json)\0*.gltf;*.glb;*.usd;*.usda;*.usdc;*.usdz;*.metallic_scene.json\0"
         L"Metallic Scene Document (*.metallic_scene.json)\0*.metallic_scene.json\0"
         L"glTF Text (*.gltf)\0*.gltf\0"
         L"glTF Binary (*.glb)\0*.glb\0"
+        L"Universal Scene Description (*.usd;*.usda;*.usdc;*.usdz)\0*.usd;*.usda;*.usdc;*.usdz\0"
         L"All Files (*.*)\0*.*\0";
     openFilename.nFilterIndex = 1;
     openFilename.lpstrFile = filename.data();
@@ -2909,7 +2912,7 @@ void EditorApplication::drawScenePanel()
 {
     ImGui::Begin("Scene Browser");
 
-    ImGui::TextUnformatted(scene_.sources().size() > 1u ? "Composite Scene" : "glTF Scene");
+    ImGui::TextUnformatted(scene_.sources().size() > 1u ? "Composite Scene" : "3D Scene");
     if (scene_.valid()) {
         ImGui::TextWrapped("Path: %s", scene_.sourcePath().string().c_str());
         ImGui::Text("Document: %s%s", scene_.documentPath().string().c_str(), scene_.dirty() ? " *" : "");
@@ -3002,7 +3005,7 @@ void EditorApplication::drawScenePanel()
     if (!scene_.valid()) {
         ImGui::Separator();
         ImGui::TextDisabled(
-            "Load a .gltf, .glb, or .metallic_scene.json file to inspect its scene graph.");
+            "Load a glTF, USD, or .metallic_scene.json file to inspect its scene graph.");
         ImGui::End();
         return;
     }
@@ -3042,7 +3045,7 @@ void EditorApplication::drawScenePanel()
     if (ImGui::CollapsingHeader("Asset Info")) {
         const scene::SceneAssetInfo& asset = scene_.assetInfo();
         ImGui::Text("Path: %s", scene_.sourcePath().string().c_str());
-        ImGui::Text("glTF Version: %s", asset.version.empty() ? "-" : asset.version.c_str());
+        ImGui::Text("Format Version: %s", asset.version.empty() ? "-" : asset.version.c_str());
         if (!asset.generator.empty()) {
             ImGui::TextWrapped("Generator: %s", asset.generator.c_str());
         }
@@ -6491,7 +6494,7 @@ void EditorApplication::applyLoadedSceneCamera()
         graphExecutor_->syncRuntimeProperties(renderGraph_);
     }
     viewportPreviewNeedsRender_ = true;
-    renderGraphStatus_ = "Applied glTF camera: " + selectedCamera->name;
+    renderGraphStatus_ = "Applied scene camera: " + selectedCamera->name;
 }
 
 void EditorApplication::setEnvironmentPath(const std::filesystem::path& path)
@@ -6774,7 +6777,7 @@ void EditorApplication::buildSceneAccelerationStructure()
         return;
     }
     if (!scene_.valid()) {
-        sceneAccelerationStructureStatus_ = "RTAS build failed: load a glTF scene first.";
+        sceneAccelerationStructureStatus_ = "RTAS build failed: load a 3D scene first.";
         return;
     }
 

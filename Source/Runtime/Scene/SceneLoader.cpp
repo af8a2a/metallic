@@ -12,6 +12,7 @@
 #include <limits>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -32,6 +33,44 @@ uint64_t rgba8ByteSize(uint32_t width, uint32_t height)
     return static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
 }
 
+std::filesystem::path imagePathForUri(
+    const SceneDocument& scene,
+    std::string uri)
+{
+#ifndef _WIN32
+    std::replace(uri.begin(), uri.end(), '\\', '/');
+#endif
+    std::filesystem::path imagePath = std::move(uri);
+    if (imagePath.is_relative()) {
+        imagePath = scene.filename().parent_path() / imagePath;
+    }
+    return imagePath;
+}
+
+template <typename ImageSourceT>
+bool queryImageInfo(
+    const SceneDocument& scene,
+    const ImageSourceT& source,
+    int& width,
+    int& height,
+    int& channels)
+{
+    if (!source.encodedData.empty() &&
+        source.encodedData.size() <= static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return stbi_info_from_memory(
+                   source.encodedData.data(),
+                   static_cast<int>(source.encodedData.size()),
+                   &width,
+                   &height,
+                   &channels) != 0;
+    }
+    if (!source.uri.empty() && source.uri.rfind("data:", 0) != 0) {
+        const std::filesystem::path imagePath = imagePathForUri(scene, source.uri);
+        return stbi_info(imagePath.string().c_str(), &width, &height, &channels) != 0;
+    }
+    return false;
+}
+
 uint64_t estimatedDecodedByteSize(const SceneDocument& scene, size_t imageIndex)
 {
     if (imageIndex >= scene.images().size()) {
@@ -41,29 +80,27 @@ uint64_t estimatedDecodedByteSize(const SceneDocument& scene, size_t imageIndex)
     int width = 0;
     int height = 0;
     int channels = 0;
-    int valid = 0;
-    if (!image.encodedData.empty() &&
-        image.encodedData.size() <= static_cast<size_t>(std::numeric_limits<int>::max())) {
-        valid = stbi_info_from_memory(
-            image.encodedData.data(),
-            static_cast<int>(image.encodedData.size()),
-            &width,
-            &height,
-            &channels);
-    } else if (!image.uri.empty() && image.uri.rfind("data:", 0) != 0) {
-        std::filesystem::path imagePath = image.uri;
-        if (imagePath.is_relative()) {
-            imagePath = scene.filename().parent_path() / imagePath;
+    size_t sourceCount = 1;
+    bool valid = false;
+    if (image.channelComposition.has_value()) {
+        sourceCount = std::max<size_t>(image.channelComposition->sources.size(), 1u);
+        for (const RenderImage::ChannelSource& source : image.channelComposition->sources) {
+            if (queryImageInfo(scene, source, width, height, channels)) {
+                valid = true;
+                break;
+            }
         }
-        valid = stbi_info(imagePath.string().c_str(), &width, &height, &channels);
+    } else {
+        valid = queryImageInfo(scene, image, width, height, channels);
     }
-    if (valid == 0 || width <= 0 || height <= 0) {
+    if (!valid || width <= 0 || height <= 0) {
         return std::max<uint64_t>(image.encodedData.size(), 1u);
     }
     const uint64_t baseBytes = rgba8ByteSize(
         static_cast<uint32_t>(width),
         static_cast<uint32_t>(height));
-    return baseBytes + baseBytes / 3u + 4u;
+    const uint64_t workingBytes = baseBytes * static_cast<uint64_t>(sourceCount + 1u);
+    return workingBytes + baseBytes / 3u + 4u;
 }
 
 std::vector<uint8_t> buildNextMip(
@@ -104,68 +141,89 @@ struct DecodedImageResult {
     std::string warning;
 };
 
-DecodedImageResult decodeImage(const SceneDocument& scene, size_t imageIndex)
+void appendDecodeWarning(std::string& warning, std::string message)
 {
-    DecodedImageResult result;
-    if (imageIndex >= scene.images().size()) {
-        result.warning = "image index is out of range";
-        return result;
+    if (message.empty()) {
+        return;
     }
+    if (!warning.empty() && warning.back() != '\n') {
+        warning += '\n';
+    }
+    warning += std::move(message);
+}
 
-    const RenderImage& image = scene.images()[imageIndex];
+struct LoadedImageSource {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::vector<uint8_t> pixels;
+};
+
+template <typename ImageSourceT>
+LoadedImageSource loadImageSource(
+    const SceneDocument& scene,
+    const ImageSourceT& source,
+    std::string_view label,
+    std::string& warning)
+{
+    LoadedImageSource result;
     int width = 0;
     int height = 0;
     int channelCount = 0;
     stbi_uc* decoded = nullptr;
-    if (!image.encodedData.empty()) {
-        if (image.encodedData.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
-            result.warning = "embedded image is too large to decode";
+    if (!source.encodedData.empty()) {
+        if (source.encodedData.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            appendDecodeWarning(warning, std::string(label) + " is too large to decode");
             return result;
         }
         decoded = stbi_load_from_memory(
-            image.encodedData.data(),
-            static_cast<int>(image.encodedData.size()),
+            source.encodedData.data(),
+            static_cast<int>(source.encodedData.size()),
             &width,
             &height,
             &channelCount,
             4);
-    } else if (!image.uri.empty()) {
-        if (image.uri.rfind("data:", 0) == 0) {
-            result.warning = "data URI material textures are not supported yet";
+    } else if (!source.uri.empty()) {
+        if (source.uri.rfind("data:", 0) == 0) {
+            appendDecodeWarning(
+                warning,
+                "data URI material textures are not supported yet");
             return result;
         }
-        std::filesystem::path imagePath = image.uri;
-        if (imagePath.is_relative()) {
-            imagePath = scene.filename().parent_path() / imagePath;
-        }
+        const std::filesystem::path imagePath = imagePathForUri(scene, source.uri);
         decoded = stbi_load(imagePath.string().c_str(), &width, &height, &channelCount, 4);
     }
 
     if (decoded == nullptr || width <= 0 || height <= 0) {
-        result.warning = "failed to decode image '" +
-            (image.name.empty() ? image.uri : image.name) + "'";
+        std::string message = "failed to decode image '" + std::string(label) + "'";
         if (const char* reason = stbi_failure_reason()) {
-            result.warning += ": ";
-            result.warning += reason;
+            message += ": ";
+            message += reason;
         }
+        appendDecodeWarning(warning, std::move(message));
         if (decoded != nullptr) {
             stbi_image_free(decoded);
         }
         return result;
     }
 
-    const uint64_t byteSize = rgba8ByteSize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+    const uint64_t byteSize = rgba8ByteSize(
+        static_cast<uint32_t>(width),
+        static_cast<uint32_t>(height));
     if (byteSize > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
         stbi_image_free(decoded);
-        result.warning = "decoded image is too large";
+        appendDecodeWarning(warning, std::string(label) + " is too large");
         return result;
     }
 
-    RenderImage::Mip baseMip;
-    baseMip.width = static_cast<uint32_t>(width);
-    baseMip.height = static_cast<uint32_t>(height);
-    baseMip.pixels.assign(decoded, decoded + static_cast<size_t>(byteSize));
+    result.width = static_cast<uint32_t>(width);
+    result.height = static_cast<uint32_t>(height);
+    result.pixels.assign(decoded, decoded + static_cast<size_t>(byteSize));
     stbi_image_free(decoded);
+    return result;
+}
+
+void appendMipChain(DecodedImageResult& result, RenderImage::Mip baseMip)
+{
     result.mips.push_back(std::move(baseMip));
     while (result.mips.back().width > 1 || result.mips.back().height > 1) {
         const RenderImage::Mip& source = result.mips.back();
@@ -175,6 +233,86 @@ DecodedImageResult decodeImage(const SceneDocument& scene, size_t imageIndex)
         mip.pixels = buildNextMip(source.pixels.data(), source.width, source.height);
         result.mips.push_back(std::move(mip));
     }
+}
+
+DecodedImageResult decodeImage(const SceneDocument& scene, size_t imageIndex)
+{
+    DecodedImageResult result;
+    if (imageIndex >= scene.images().size()) {
+        result.warning = "image index is out of range";
+        return result;
+    }
+
+    const RenderImage& image = scene.images()[imageIndex];
+    if (image.channelComposition.has_value()) {
+        const RenderImage::ChannelComposition& composition = *image.channelComposition;
+        std::vector<LoadedImageSource> sources;
+        sources.reserve(composition.sources.size());
+        uint32_t targetWidth = 0;
+        uint32_t targetHeight = 0;
+        for (const RenderImage::ChannelSource& source : composition.sources) {
+            const std::string label = source.uri.empty() ? image.name : source.uri;
+            LoadedImageSource loaded = loadImageSource(scene, source, label, result.warning);
+            if (targetWidth == 0 && !loaded.pixels.empty()) {
+                targetWidth = loaded.width;
+                targetHeight = loaded.height;
+            }
+            sources.push_back(std::move(loaded));
+        }
+        if (targetWidth == 0 || targetHeight == 0) {
+            targetWidth = 1;
+            targetHeight = 1;
+        }
+
+        RenderImage::Mip baseMip;
+        baseMip.width = targetWidth;
+        baseMip.height = targetHeight;
+        baseMip.pixels.resize(static_cast<size_t>(rgba8ByteSize(targetWidth, targetHeight)));
+        for (uint32_t y = 0; y < targetHeight; ++y) {
+            for (uint32_t x = 0; x < targetWidth; ++x) {
+                const size_t targetOffset =
+                    (static_cast<size_t>(y) * targetWidth + x) * 4u;
+                for (size_t channel = 0; channel < 4; ++channel) {
+                    uint8_t value = composition.constants[channel];
+                    const int32_t sourceIndex = composition.sourceIndices[channel];
+                    if (sourceIndex >= 0 && static_cast<size_t>(sourceIndex) < sources.size()) {
+                        const LoadedImageSource& source = sources[static_cast<size_t>(sourceIndex)];
+                        if (!source.pixels.empty()) {
+                            const uint32_t sourceX = std::min(
+                                static_cast<uint32_t>(
+                                    static_cast<uint64_t>(x) * source.width / targetWidth),
+                                source.width - 1u);
+                            const uint32_t sourceY = std::min(
+                                static_cast<uint32_t>(
+                                    static_cast<uint64_t>(y) * source.height / targetHeight),
+                                source.height - 1u);
+                            const uint8_t sourceChannel = std::min<uint8_t>(
+                                composition.sourceChannels[channel],
+                                3u);
+                            const size_t sourceOffset =
+                                (static_cast<size_t>(sourceY) * source.width + sourceX) * 4u;
+                            value = source.pixels[sourceOffset + sourceChannel];
+                        }
+                    }
+                    baseMip.pixels[targetOffset + channel] = value;
+                }
+            }
+        }
+        appendMipChain(result, std::move(baseMip));
+        return result;
+    }
+
+    const std::string label = image.name.empty() ? image.uri : image.name;
+    LoadedImageSource loaded = loadImageSource(scene, image, label, result.warning);
+    if (loaded.pixels.empty()) {
+        return result;
+    }
+
+    RenderImage::Mip baseMip;
+    baseMip.width = loaded.width;
+    baseMip.height = loaded.height;
+    baseMip.pixels = std::move(loaded.pixels);
+    appendMipChain(result, std::move(baseMip));
     return result;
 }
 

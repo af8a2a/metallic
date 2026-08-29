@@ -1,5 +1,5 @@
 /*
- * CPU glTF scene import and traversal code.
+ * CPU scene import and traversal code.
  *
  * Portions are adapted from NVIDIA nvpro_core2 nvvkgltf scene traversal ideas.
  * SPDX-FileCopyrightText: Copyright (c) 2019-2026 NVIDIA CORPORATION.
@@ -7,6 +7,7 @@
  */
 
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Scene/UsdSceneImporter.h"
 
 #include "meshoptimizer.h"
 #define CLUSTERLOD_IMPLEMENTATION
@@ -2880,7 +2881,7 @@ bool Scene::compose(
             }
             error = "Failed to load composed scene source '" + sourceDesc.id + "': " +
                 (source.lastLoadResult().error.empty()
-                        ? std::string("unknown glTF load failure")
+                        ? std::string("unknown scene load failure")
                         : source.lastLoadResult().error);
             return false;
         }
@@ -3314,11 +3315,425 @@ bool saveMeshletCache(
         reason);
 }
 
+bool Scene::loadUsdInternal(
+    const std::filesystem::path& filename,
+    const SceneLoadProgressCallback& progressCallback,
+    bool deferMeshletBuild)
+{
+    resourceIdentity_ = nextSceneResourceIdentity();
+    clearParsedData();
+    lastLoadResult_ = {};
+    lastLoadResult_.filename = filename;
+    SceneLoadScope loadScope(filename);
+
+    const auto cancelLoad = [this]() {
+        lastLoadResult_.error = "Scene load cancelled.";
+        clearParsedData();
+        return false;
+    };
+
+    if (!reportSceneLoadProgress(
+            progressCallback,
+            SceneLoadPhase::Parsing,
+            0.01f,
+            0,
+            1,
+            filename.string())) {
+        return cancelLoad();
+    }
+
+    std::error_code existsError;
+    if (!std::filesystem::exists(filename, existsError)) {
+        lastLoadResult_.error = "Scene file does not exist: " + filename.string();
+        return false;
+    }
+
+    detail::UsdImportedScene imported;
+    const auto usdImportBegin = SceneLoadClock::now();
+    if (!detail::importUsdScene(filename, imported)) {
+        lastLoadResult_.warning = std::move(imported.warning);
+        lastLoadResult_.error = imported.error.empty()
+            ? "OpenUSD failed to import the USD scene"
+            : std::move(imported.error);
+        logSceneLoadStep("OpenUSD file import failed", usdImportBegin);
+        return false;
+    }
+    logSceneLoadStep("OpenUSD file import", usdImportBegin);
+    lastLoadResult_.warning = std::move(imported.warning);
+    if (!reportSceneLoadProgress(
+            progressCallback,
+            SceneLoadPhase::Parsing,
+            0.10f,
+            1,
+            1,
+            filename.filename().string())) {
+        return cancelLoad();
+    }
+
+    filename_ = filename;
+    sources_.push_back(SceneSourceDesc{
+        .id = "main",
+        .path = filename,
+        .mountMatrix = float4x4::Identity(),
+        .enabled = true,
+    });
+    sceneIndex_ = 0;
+    lastLoadResult_.sceneIndex = sceneIndex_;
+    sceneName_ = imported.name.empty() ? filename.stem().string() : imported.name;
+    assetInfo_ = std::move(imported.assetInfo);
+    meshes_ = std::move(imported.meshes);
+    images_ = std::move(imported.images);
+    textures_ = std::move(imported.textures);
+    materials_ = std::move(imported.materials);
+    stats_.meshCount = meshes_.size();
+    stats_.materialCount = materials_.size();
+    stats_.textureCount = textures_.size();
+    stats_.imageCount = images_.size();
+    if (!reportSceneLoadProgress(
+            progressCallback,
+            SceneLoadPhase::Images,
+            0.15f,
+            images_.size(),
+            images_.size())) {
+        return cancelLoad();
+    }
+
+    const auto sceneGraphBegin = SceneLoadClock::now();
+    for (size_t nodeIndex = 0; nodeIndex < imported.nodes.size(); ++nodeIndex) {
+        const detail::UsdImportedNode& importedNode = imported.nodes[nodeIndex];
+        if (importedNode.meshIndex != kInvalidSceneIndex &&
+            !validIndex(importedNode.meshIndex, meshes_.size())) {
+            lastLoadResult_.error = "USD node references an out-of-range mesh";
+            clearParsedData();
+            return false;
+        }
+        if (importedNode.cameraIndex != kInvalidSceneIndex &&
+            !validIndex(importedNode.cameraIndex, imported.cameras.size())) {
+            lastLoadResult_.error = "USD node references an out-of-range camera";
+            clearParsedData();
+            return false;
+        }
+
+        SceneObject object = sceneGraph_.createObject(
+            importedNode.name,
+            static_cast<int32_t>(nodeIndex),
+            importedNode.localMatrix,
+            importedNode.visible,
+            "main",
+            static_cast<int32_t>(nodeIndex));
+        if (!object) {
+            lastLoadResult_.error = "USD node contains a non-finite local transform";
+            clearParsedData();
+            return false;
+        }
+        if (importedNode.meshIndex != kInvalidSceneIndex) {
+            object.addComponent<MeshComponent>(importedNode.meshIndex);
+        }
+        if (importedNode.cameraIndex != kInvalidSceneIndex) {
+            const CameraProperties& properties =
+                imported.cameras[static_cast<size_t>(importedNode.cameraIndex)].properties;
+            object.addComponent<CameraComponent>(CameraComponent{
+                .cameraIndex = importedNode.cameraIndex,
+                .authoredProperties = properties,
+                .properties = properties,
+            });
+        }
+    }
+
+    for (size_t nodeIndex = 0; nodeIndex < imported.nodes.size(); ++nodeIndex) {
+        const int32_t parentIndex = imported.nodes[nodeIndex].parent;
+        if (parentIndex == kInvalidSceneIndex) {
+            continue;
+        }
+        if (!validIndex(parentIndex, imported.nodes.size()) ||
+            !sceneGraph_.setParent(
+                sceneGraph_.objectFromSourceNode(static_cast<int32_t>(nodeIndex)).entity(),
+                sceneGraph_.objectFromSourceNode(parentIndex).entity())) {
+            lastLoadResult_.error = "USD node hierarchy is invalid or cyclic";
+            clearParsedData();
+            return false;
+        }
+    }
+
+    std::vector<SceneEntity> rootObjects;
+    rootObjects.reserve(imported.rootNodeIndices.size());
+    for (const int32_t rootNodeIndex : imported.rootNodeIndices) {
+        if (!validIndex(rootNodeIndex, imported.nodes.size())) {
+            lastLoadResult_.error = "USD stage references an out-of-range root node";
+            clearParsedData();
+            return false;
+        }
+        rootObjects.push_back(sceneGraph_.objectFromSourceNode(rootNodeIndex).entity());
+    }
+    if (!sceneGraph_.setRoots(rootObjects) && rootObjects != sceneGraph_.roots()) {
+        lastLoadResult_.error = "USD roots must be valid, unique, and hierarchy-disjoint";
+        clearParsedData();
+        return false;
+    }
+    sceneGraph_.updateTransforms();
+    sceneGraph_.resetRevisions();
+    syncSceneNodeProjection();
+
+    std::vector<uint32_t> remainingMeshUses(meshes_.size(), 0u);
+    for (const detail::UsdImportedNode& node : imported.nodes) {
+        if (validIndex(node.meshIndex, remainingMeshUses.size())) {
+            ++remainingMeshUses[static_cast<size_t>(node.meshIndex)];
+        }
+    }
+
+    std::function<void(int32_t)> traverseNode;
+    uint64_t traversedNodeCount = 0;
+    bool traversalCancelled = false;
+    traverseNode = [&](int32_t nodeIndex) {
+        if (traversalCancelled) {
+            return;
+        }
+        const SceneNode& node = nodes_[static_cast<size_t>(nodeIndex)];
+        const detail::UsdImportedNode& importedNode = imported.nodes[static_cast<size_t>(nodeIndex)];
+        SceneObject object = sceneGraph_.objectFromSourceNode(nodeIndex);
+
+        if (validIndex(importedNode.cameraIndex, imported.cameras.size())) {
+            const detail::UsdImportedCamera& importedCamera =
+                imported.cameras[static_cast<size_t>(importedNode.cameraIndex)];
+            const CameraComponent& cameraComponent = object.getComponent<CameraComponent>();
+            RenderCamera camera;
+            camera.name = importedCamera.name;
+            camera.nodeIndex = nodeIndex;
+            camera.cameraIndex = importedNode.cameraIndex;
+            applyCameraProperties(camera, cameraComponent.properties);
+            camera.eye = matrixTranslation(node.worldMatrix);
+            const float3 forward = normalizedOr(
+                transformVector(node.worldMatrix, float3(0.0f, 0.0f, -1.0f)),
+                float3(0.0f, 0.0f, -1.0f));
+            camera.center = camera.eye + forward;
+            camera.up = normalizedOr(
+                transformVector(node.worldMatrix, float3(0.0f, 1.0f, 0.0f)),
+                float3(0.0f, 1.0f, 0.0f));
+            camera.object = object.entity();
+            camera.visible = node.visible;
+            CameraComponent boundCameraComponent = cameraComponent;
+            boundCameraComponent.renderCameraIndex = static_cast<int32_t>(cameras_.size());
+            object.addOrReplaceComponent<CameraComponent>(std::move(boundCameraComponent));
+            cameras_.push_back(std::move(camera));
+        }
+
+        if (validIndex(importedNode.meshIndex, imported.meshPrimitives.size())) {
+            const size_t meshIndex = static_cast<size_t>(importedNode.meshIndex);
+            const bool movePrimitives = remainingMeshUses[meshIndex] <= 1u;
+            if (remainingMeshUses[meshIndex] != 0u) {
+                --remainingMeshUses[meshIndex];
+            }
+            std::vector<RenderPrimitive>& prototypes = imported.meshPrimitives[meshIndex];
+            for (size_t primitiveIndex = 0; primitiveIndex < prototypes.size(); ++primitiveIndex) {
+                RenderPrimitive primitive;
+                if (movePrimitives) {
+                    primitive = std::move(prototypes[primitiveIndex]);
+                } else {
+                    primitive = prototypes[primitiveIndex];
+                }
+                if (primitive.tangents.empty()) {
+                    generateTangents(primitive);
+                }
+
+                RenderNode renderNode;
+                renderNode.object = object.entity();
+                renderNode.nodeIndex = nodeIndex;
+                renderNode.renderPrimitiveIndex = static_cast<int32_t>(renderPrimitives_.size());
+                renderNode.materialIndex = primitive.materialIndex;
+                renderNode.worldMatrix = node.worldMatrix;
+                renderNode.transformRevision = transformRevision();
+                renderNode.visible = node.visible;
+
+                bounds_.include(transformBounds(primitive.localBounds, node.worldMatrix));
+                stats_.triangleCount += primitive.triangleCount;
+                renderPrimitives_.push_back(std::move(primitive));
+                if (MeshComponent* mesh = object.tryGetComponent<MeshComponent>()) {
+                    mesh->renderNodeIndices.push_back(static_cast<int32_t>(renderNodes_.size()));
+                }
+                renderNodes_.push_back(std::move(renderNode));
+            }
+        }
+
+        for (const int32_t child : importedNode.children) {
+            if (validIndex(child, imported.nodes.size())) {
+                traverseNode(child);
+            }
+        }
+
+        ++traversedNodeCount;
+        const float fraction = 0.15f + 0.10f * static_cast<float>(traversedNodeCount) /
+            static_cast<float>(std::max<size_t>(imported.nodes.size(), 1u));
+        traversalCancelled = !reportSceneLoadProgress(
+            progressCallback,
+            SceneLoadPhase::Geometry,
+            fraction,
+            traversedNodeCount,
+            imported.nodes.size(),
+            node.name);
+    };
+
+    for (const int32_t rootNodeIndex : rootNodeIndices_) {
+        traverseNode(rootNodeIndex);
+        if (traversalCancelled) {
+            return cancelLoad();
+        }
+    }
+    logSceneLoadStep("USD scene graph traversal and primitive extraction", sceneGraphBegin);
+
+    const std::filesystem::path meshletCachePath = meshletCachePathFor(filename_);
+    lastLoadResult_.meshletCachePath = meshletCachePath;
+    std::string meshletCacheReason;
+    const auto meshletCacheBegin = SceneLoadClock::now();
+    if (loadMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
+        deferredMeshletBuild_ = false;
+        lastLoadResult_.meshletCacheLoaded = true;
+        spdlog::info(
+            "[SceneLoad] Meshlet cache loaded '{}' in {:.2f} ms",
+            meshletCachePath.string(),
+            sceneLoadElapsedMilliseconds(meshletCacheBegin));
+        if (!reportSceneLoadProgress(
+                progressCallback,
+                SceneLoadPhase::Geometry,
+                0.40f,
+                renderPrimitives_.size(),
+                renderPrimitives_.size(),
+                "Meshlet cache")) {
+            return cancelLoad();
+        }
+    } else {
+        spdlog::info(
+            "[SceneLoad] Meshlet cache unavailable '{}' reason='{}' checked in {:.2f} ms",
+            meshletCachePath.string(),
+            meshletCacheReason,
+            sceneLoadElapsedMilliseconds(meshletCacheBegin));
+        if (!meshletCacheReason.empty()) {
+            appendWarning(lastLoadResult_.warning, "Meshlet cache ignored: " + meshletCacheReason);
+        }
+
+        if (deferMeshletBuild) {
+            deferredMeshletBuild_ = true;
+            if (!reportSceneLoadProgress(
+                    progressCallback,
+                    SceneLoadPhase::Geometry,
+                    0.25f,
+                    0,
+                    renderPrimitives_.size(),
+                    "Meshlets queued")) {
+                return cancelLoad();
+            }
+        } else {
+            const auto meshletBuildBegin = SceneLoadClock::now();
+            for (size_t primitiveIndex = 0; primitiveIndex < renderPrimitives_.size(); ++primitiveIndex) {
+                RenderPrimitive& primitive = renderPrimitives_[primitiveIndex];
+                buildMeshletClusters(primitive);
+                buildMeshletLods(primitive);
+                const float fraction = 0.25f + 0.15f * static_cast<float>(primitiveIndex + 1u) /
+                    static_cast<float>(std::max<size_t>(renderPrimitives_.size(), 1u));
+                if (!reportSceneLoadProgress(
+                        progressCallback,
+                        SceneLoadPhase::Geometry,
+                        fraction,
+                        primitiveIndex + 1u,
+                        renderPrimitives_.size(),
+                        primitive.name)) {
+                    return cancelLoad();
+                }
+            }
+            logSceneLoadStep("meshlet build", meshletBuildBegin);
+
+            const auto meshletSaveBegin = SceneLoadClock::now();
+            if (saveMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
+                lastLoadResult_.meshletCacheSaved = true;
+                spdlog::info(
+                    "[SceneLoad] Meshlet cache saved '{}' in {:.2f} ms",
+                    meshletCachePath.string(),
+                    sceneLoadElapsedMilliseconds(meshletSaveBegin));
+            } else if (!meshletCacheReason.empty()) {
+                spdlog::warn(
+                    "[SceneLoad] Meshlet cache save failed '{}' reason='{}' in {:.2f} ms",
+                    meshletCachePath.string(),
+                    meshletCacheReason,
+                    sceneLoadElapsedMilliseconds(meshletSaveBegin));
+                appendWarning(lastLoadResult_.warning, "Meshlet cache save failed: " + meshletCacheReason);
+            }
+        }
+    }
+    accumulateMeshletStats(renderPrimitives_, stats_);
+
+    if (cameras_.empty()) {
+        SceneObject fallbackCamera = sceneGraph_.createObject("Fallback Camera");
+        fallbackCamera.addComponent<GeneratedComponent>();
+        RenderCamera camera = makeFallbackCamera(bounds_);
+        const CameraProperties properties{
+            .type = camera.type,
+            .yfov = camera.yfov,
+            .aspectRatio = camera.aspectRatio,
+            .xmag = camera.xmag,
+            .ymag = camera.ymag,
+            .znear = camera.znear,
+            .zfar = camera.zfar,
+        };
+        fallbackCamera.addComponent<CameraComponent>(CameraComponent{
+            .cameraIndex = kInvalidSceneIndex,
+            .renderCameraIndex = 0,
+            .authoredProperties = properties,
+            .properties = properties,
+        });
+        camera.object = fallbackCamera.entity();
+        cameras_.push_back(std::move(camera));
+    }
+    sceneGraph_.resetRevisions();
+
+    stats_.primitiveCount = renderPrimitives_.size();
+    stats_.renderNodeCount = renderNodes_.size();
+    sourceRenderNodeRanges_.push_back(SourceRenderNodeRange{
+        .sourceId = "main",
+        .offset = 0,
+        .count = renderNodes_.size(),
+    });
+    if (!reportSceneLoadProgress(
+            progressCallback,
+            SceneLoadPhase::Finalizing,
+            0.97f,
+            1,
+            1,
+            sceneName_)) {
+        return cancelLoad();
+    }
+    lastLoadResult_.success = true;
+    loadScope.markSuccess();
+    spdlog::info(
+        "[SceneLoad] Summary format=USD scene='{}' nodes={} renderNodes={} primitives={} triangles={} meshes={} materials={} textures={} images={} meshletCacheLoaded={} meshletCacheSaved={}",
+        sceneName_,
+        nodes_.size(),
+        stats_.renderNodeCount,
+        stats_.primitiveCount,
+        stats_.triangleCount,
+        stats_.meshCount,
+        stats_.materialCount,
+        stats_.textureCount,
+        stats_.imageCount,
+        lastLoadResult_.meshletCacheLoaded,
+        lastLoadResult_.meshletCacheSaved);
+    (void)reportSceneLoadProgress(
+        progressCallback,
+        SceneLoadPhase::Completed,
+        1.0f,
+        1,
+        1,
+        sceneName_);
+    return true;
+}
+
 bool Scene::loadInternal(
     const std::filesystem::path& filename,
     const SceneLoadProgressCallback& progressCallback,
     bool deferMeshletBuild)
 {
+    if (detail::isUsdScenePath(filename)) {
+        return loadUsdInternal(filename, progressCallback, deferMeshletBuild);
+    }
+
     resourceIdentity_ = nextSceneResourceIdentity();
     clearParsedData();
     lastLoadResult_ = {};

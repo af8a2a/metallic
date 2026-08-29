@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <array>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -149,11 +150,24 @@ struct RenderPrimitive {
 };
 
 struct RenderImage {
+    struct ChannelSource {
+        std::string uri;
+        std::vector<uint8_t> encodedData;
+    };
+
+    struct ChannelComposition {
+        std::vector<ChannelSource> sources;
+        std::array<int32_t, 4> sourceIndices{-1, -1, -1, -1};
+        std::array<uint8_t, 4> sourceChannels{0, 1, 2, 3};
+        std::array<uint8_t, 4> constants{0, 0, 0, 255};
+    };
+
     std::string name;
     std::string uri;
     std::string mimeType;
     int32_t bufferView = kInvalidSceneIndex;
     std::vector<uint8_t> encodedData;
+    std::optional<ChannelComposition> channelComposition;
     struct Mip {
         uint32_t width = 0;
         uint32_t height = 0;
@@ -272,7 +286,7 @@ struct RenderLight {
     bool visible = true;
 };
 
-// Stable description of one glTF asset mounted into a composed scene. The id,
+// Stable description of one 3D asset mounted into a composed scene. The id,
 // not its vector position or an EnTT entity value, is the serialized identity.
 struct SceneSourceDesc {
     std::string id;
@@ -369,6 +383,10 @@ private:
     };
 
     bool loadInternal(
+        const std::filesystem::path& filename,
+        const SceneLoadProgressCallback& progressCallback,
+        bool deferMeshletBuild);
+    bool loadUsdInternal(
         const std::filesystem::path& filename,
         const SceneLoadProgressCallback& progressCallback,
         bool deferMeshletBuild);

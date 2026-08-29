@@ -8,6 +8,7 @@
 namespace {
 
 constexpr const char* kGPUDrivenSampleId = "gpu-driven-sample";
+constexpr const char* kGPUDrivenUsdSampleId = "gpu-driven-usd";
 constexpr const char* kGPUDrivenStreamAssetSampleId = "gpu-driven-streamasset";
 constexpr const char* kGPUDrivenTerrainP0SampleId = "gpu-driven-terrain-p0";
 constexpr const char* kGPUDrivenTerrainP1SampleId = "gpu-driven-terrain-p1-unified";
@@ -20,12 +21,13 @@ void printUsage()
         "  --smoke-test                 Render one frame and exit\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization\n"
         "  --visibility-buffer          Load the visibility-buffer variant (default)\n"
+        "  --usd                        Load Super Sponza through OpenUSD\n"
         "  --streamasset                Load the default meshlet StreamAsset variant\n"
         "  --terrain-p0                 Load the generated Houdini height-field StreamAsset\n"
         "  --terrain-p1                 Load the unified GPUScene/StreamAsset terrain pipeline\n"
         "  --legacy-preloaded           Alias for the visibility-buffer variant\n"
         "  --rtas-visualization         Load the RTAS visualization variant\n"
-        "  --scene <source.gltf>        Override the sample source scene\n"
+        "  --scene <source>             Override the sample source scene (glTF or USD)\n"
         "  --streamasset-path <file>    Override the StreamAsset cache path");
 }
 
@@ -54,6 +56,10 @@ int main(int argc, char** argv)
         }
         if (argument == "--streamasset") {
             sampleId = kGPUDrivenStreamAssetSampleId;
+            continue;
+        }
+        if (argument == "--usd") {
+            sampleId = kGPUDrivenUsdSampleId;
             continue;
         }
         if (argument == "--terrain-p0") {

@@ -50,3 +50,9 @@
 [submodule "External/RTXCR-Geometry"]
 	path = External/RTXCR-Geometry
 	url = https://github.com/NVIDIA-RTX/RTXCR-Geometry-Library.git
+[submodule "External/OpenUSD"]
+	path = External/OpenUSD
+	url = https://github.com/PixarAnimationStudios/OpenUSD.git
+[submodule "External/oneTBB"]
+	path = External/oneTBB
+	url = https://github.com/oneapi-src/oneTBB.git

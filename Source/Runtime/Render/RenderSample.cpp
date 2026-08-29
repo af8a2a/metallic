@@ -304,6 +304,38 @@ public:
     std::string previewOutput() const override { return "GPUDriven.color"; }
 };
 
+class GPUDrivenUsdSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "gpu-driven-usd"; }
+    std::string_view name() const override { return "GPUDrivenSample / USD"; }
+    std::string_view category() const override { return "GPUDriven"; }
+    std::string_view description() const override
+    {
+        return "Super Sponza loaded from its Y-up USDA scene, including Preview Surface materials and GeomSubset bindings.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/SuperSponza/NewSponza_Main_USD_Yup_003.usda";
+    }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        return RenderSampleEnvironmentDesc{
+            .enabled = true,
+            .path = "Asset/ABeautifulGame/environment.hdr",
+            .intensity = 3.0f,
+            .rotationDegrees = 0.0f,
+            .visible = true,
+        };
+    }
+    std::string previewOutput() const override { return "GPUDriven.color"; }
+};
+
 class GPUDrivenRtasVisualizationSample final : public RenderSample {
 public:
     std::string_view id() const override { return "gpu-driven-rtas-visualization"; }
@@ -460,6 +492,12 @@ const RenderSample& gpuDrivenSample()
     return sample;
 }
 
+const RenderSample& gpuDrivenUsdSample()
+{
+    static const GPUDrivenUsdSample sample;
+    return sample;
+}
+
 const RenderSample& gpuDrivenRtasVisualizationSample()
 {
     static const GPUDrivenRtasVisualizationSample sample;
@@ -496,6 +534,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &rtxcrMaterialSample(),
         &materialVisualizationABeautifulGameSample(),
         &gpuDrivenSample(),
+        &gpuDrivenUsdSample(),
         &gpuDrivenStreamAssetSample(),
         &gpuDrivenTerrainP0Sample(),
         &gpuDrivenTerrainP1UnifiedSample(),

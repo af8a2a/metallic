@@ -244,6 +244,148 @@ target_compile_definitions(tinygltf INTERFACE
     TINYGLTF_NO_STB_IMAGE_WRITE
 )
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/oneTBB/CMakeLists.txt")
+    set(_METALLIC_BUILD_SHARED_LIBS "${BUILD_SHARED_LIBS}")
+    set(BUILD_SHARED_LIBS ON)
+    set(TBB_TEST OFF CACHE BOOL "Build oneTBB tests" FORCE)
+    set(TBB_EXAMPLES OFF CACHE BOOL "Build oneTBB examples" FORCE)
+    set(TBB_STRICT OFF CACHE BOOL "Treat oneTBB warnings as errors" FORCE)
+    set(TBBMALLOC_BUILD OFF CACHE BOOL "Build oneTBB allocator" FORCE)
+    set(TBBMALLOC_PROXY_BUILD OFF CACHE BOOL "Build oneTBB allocator proxy" FORCE)
+    set(TBB4PY_BUILD OFF CACHE BOOL "Build oneTBB Python bindings" FORCE)
+    set(TBB_ENABLE_IPO OFF CACHE BOOL "Enable oneTBB IPO" FORCE)
+    set(_METALLIC_CMAKE_POLICY_VERSION_MINIMUM "${CMAKE_POLICY_VERSION_MINIMUM}")
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    add_subdirectory(oneTBB)
+    set(CMAKE_POLICY_VERSION_MINIMUM "${_METALLIC_CMAKE_POLICY_VERSION_MINIMUM}")
+    unset(_METALLIC_CMAKE_POLICY_VERSION_MINIMUM)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/OpenUSD/CMakeLists.txt")
+    if(NOT TARGET TBB::tbb)
+        message(FATAL_ERROR "OpenUSD requires the vendored oneTBB target")
+    endif()
+
+    set(TBB_FOUND TRUE)
+    set(PXR_FIND_TBB_IN_CONFIG OFF CACHE BOOL "Use the in-tree oneTBB target" FORCE)
+    set(PXR_BUILD_TESTS OFF CACHE BOOL "Build OpenUSD tests" FORCE)
+    set(PXR_BUILD_EXAMPLES OFF CACHE BOOL "Build OpenUSD examples" FORCE)
+    set(PXR_BUILD_TUTORIALS OFF CACHE BOOL "Build OpenUSD tutorials" FORCE)
+    set(PXR_BUILD_USD_TOOLS OFF CACHE BOOL "Build OpenUSD command-line tools" FORCE)
+    set(PXR_BUILD_IMAGING OFF CACHE BOOL "Build OpenUSD imaging" FORCE)
+    set(PXR_BUILD_USD_IMAGING OFF CACHE BOOL "Build OpenUSD imaging adapters" FORCE)
+    set(PXR_BUILD_USD_VALIDATION OFF CACHE BOOL "Build OpenUSD validation" FORCE)
+    set(PXR_BUILD_EXEC OFF CACHE BOOL "Build OpenUSD execution framework" FORCE)
+    set(PXR_BUILD_USDVIEW OFF CACHE BOOL "Build usdview" FORCE)
+    set(PXR_ENABLE_PYTHON_SUPPORT OFF CACHE BOOL "Build OpenUSD Python bindings" FORCE)
+    set(PXR_ENABLE_GL_SUPPORT OFF CACHE BOOL "Build OpenUSD OpenGL support" FORCE)
+    set(PXR_ENABLE_METAL_SUPPORT OFF CACHE BOOL "Build OpenUSD Metal support" FORCE)
+    set(PXR_ENABLE_VULKAN_SUPPORT OFF CACHE BOOL "Build OpenUSD Vulkan support" FORCE)
+    set(PXR_ENABLE_MATERIALX_SUPPORT OFF CACHE BOOL "Build OpenUSD MaterialX support" FORCE)
+    set(PXR_BUILD_MONOLITHIC ON CACHE BOOL "Build one OpenUSD shared library" FORCE)
+    set(PXR_PREFER_SAFETY_OVER_SPEED ON CACHE BOOL "Validate malformed USD input" FORCE)
+    add_subdirectory(OpenUSD)
+
+    set(BUILD_SHARED_LIBS "${_METALLIC_BUILD_SHARED_LIBS}")
+    unset(_METALLIC_BUILD_SHARED_LIBS)
+
+    add_library(metallic_openusd INTERFACE)
+    add_library(metallic::openusd ALIAS metallic_openusd)
+    target_link_libraries(metallic_openusd INTERFACE usd_m)
+    target_include_directories(metallic_openusd SYSTEM INTERFACE
+        "${CMAKE_CURRENT_SOURCE_DIR}/OpenUSD"
+        "${CMAKE_CURRENT_BINARY_DIR}/OpenUSD/include"
+    )
+
+    function(metallic_copy_openusd_runtime target_name)
+        if(NOT TARGET ${target_name} OR NOT TARGET usd_m OR NOT TARGET tbb)
+            return()
+        endif()
+
+        set(openusd_binary_root "${CMAKE_BINARY_DIR}/External/OpenUSD")
+        set(openusd_source_root "${CMAKE_SOURCE_DIR}/External/OpenUSD")
+        set(runtime_root "$<TARGET_FILE_DIR:${target_name}>")
+        set(core_resource_root "${runtime_root}/usd")
+        set(plugin_resource_root "${runtime_root}/../plugin/usd")
+
+        set(runtime_commands
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${runtime_root}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:usd_m>"
+                "${runtime_root}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:tbb>"
+                "${runtime_root}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${core_resource_root}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${openusd_binary_root}/plugins_plugInfo.json"
+                "${core_resource_root}/plugInfo.json"
+        )
+
+        file(GLOB openusd_core_plug_infos
+            RELATIVE "${openusd_binary_root}/pxr/usd"
+            "${openusd_binary_root}/pxr/usd/*/plugInfo.json"
+        )
+        foreach(relative_plug_info IN LISTS openusd_core_plug_infos)
+            get_filename_component(module_name "${relative_plug_info}" DIRECTORY)
+            set(module_resource_root "${core_resource_root}/${module_name}/resources")
+            list(APPEND runtime_commands
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${module_resource_root}"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${openusd_binary_root}/pxr/usd/${relative_plug_info}"
+                    "${module_resource_root}/plugInfo.json"
+            )
+
+            set(module_source_root "${openusd_source_root}/pxr/usd/${module_name}")
+            if(EXISTS "${module_source_root}/generatedSchema.usda")
+                list(APPEND runtime_commands
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${module_source_root}/generatedSchema.usda"
+                        "${module_resource_root}/generatedSchema.usda"
+                )
+            endif()
+            if(EXISTS "${module_source_root}/schema.usda")
+                list(APPEND runtime_commands
+                    COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "${module_resource_root}/${module_name}"
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${module_source_root}/schema.usda"
+                        "${module_resource_root}/${module_name}/schema.usda"
+                )
+            endif()
+        endforeach()
+
+        set(usd_shaders_binary_root
+            "${openusd_binary_root}/pxr/usd/plugin/usdShaders")
+        set(usd_shaders_source_root
+            "${openusd_source_root}/pxr/usd/plugin/usdShaders")
+        if(EXISTS "${usd_shaders_binary_root}/plugInfo.json")
+            list(APPEND runtime_commands
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${plugin_resource_root}"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${openusd_binary_root}/usd_plugInfo.json"
+                    "${plugin_resource_root}/plugInfo.json"
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${plugin_resource_root}/usdShaders/resources"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${usd_shaders_binary_root}/plugInfo.json"
+                    "${plugin_resource_root}/usdShaders/resources/plugInfo.json"
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${usd_shaders_source_root}/shaders"
+                    "${plugin_resource_root}/usdShaders/resources/shaders"
+            )
+        endif()
+
+        add_custom_target(${target_name}OpenUsdRuntime
+            ${runtime_commands}
+            DEPENDS usd_m tbb
+            COMMENT "Deploying OpenUSD runtime for ${target_name}"
+            VERBATIM
+        )
+        add_dependencies(${target_name} ${target_name}OpenUsdRuntime)
+    endfunction()
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/imnodes/CMakeLists.txt")
     add_library(imnodes STATIC
         imnodes/imnodes.cpp

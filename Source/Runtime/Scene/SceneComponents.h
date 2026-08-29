@@ -60,7 +60,7 @@ struct SourceNodeComponent {
     int32_t sourceNodeIndex = -1;
 };
 
-// Identifies the runtime mount object that owns one composed glTF source.
+// Identifies the runtime mount object that owns one composed scene source.
 struct SceneSourceComponent {
     std::string sourceId;
 };

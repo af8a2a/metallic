@@ -759,11 +759,11 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
             declaredSource = path.parent_path() / declaredSource;
         }
         if (normalizedPath(declaredSource) != normalizedPath(sourcePath_)) {
-            documentWarning_ = "Scene document source does not match the loaded glTF.";
+            documentWarning_ = "Scene document source does not match the loaded asset.";
             return false;
         }
         if (document.value("sceneIndex", kInvalidSceneIndex) != sceneIndex()) {
-            documentWarning_ = "Scene document sceneIndex does not match the loaded glTF scene.";
+            documentWarning_ = "Scene document sceneIndex does not match the loaded scene.";
             return false;
         }
     }

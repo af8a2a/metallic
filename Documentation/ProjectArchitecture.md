@@ -1,6 +1,6 @@
 # Metallic 项目架构
 
-> 本文基于 2026-07-18 的仓库实现整理，描述当前代码已经形成的组件边界、依赖关系和运行流程。它是“现状架构”文档；若文档与代码不一致，以代码和 CMake 目标为准。
+> 本文基于 2026-08-29 的仓库实现整理，描述当前代码已经形成的组件边界、依赖关系和运行流程。它是“现状架构”文档；若文档与代码不一致，以代码和 CMake 目标为准。
 
 ## 1. 项目定位
 
@@ -9,7 +9,7 @@ Metallic 是一个以 C++23、Slang 和 Vulkan 为核心的实验性实时渲染
 - 基于 SDL3、Dear ImGui 和 ImNodes 的编辑器外壳；
 - 可序列化、可视化编辑的 RenderGraph；
 - 面向纹理、缓冲、Bindless、动态渲染、Mesh Shader、Ray Query 的 RHI；
-- glTF 场景导入、材质/相机/灯光提取和 meshlet/LOD 数据生成；
+- glTF 与 OpenUSD 场景导入、材质/相机/灯光提取和 meshlet/LOD 数据生成；
 - 路径追踪、材质可视化、RTXDI、NRD、DLSS-RR 和 GPU-driven 等内置 Pass；
 - 面向大场景的 meshlet StreamAsset 离线构建、异步分页和 GPU 驱动驻留；
 - TaskGraph、性能分析、GPU 监控和分层测试设施。
@@ -28,7 +28,7 @@ flowchart TB
     Pass["Builtin Render Passes<br/>Raster / Compute / Unsafe"]
     History["HistoryResourceManager<br/>跨帧双缓冲资源"]
     Streaming["Streaming 子系统<br/>Streamer + Meshlet Stream Runtime"]
-    Scene["Scene Runtime<br/>glTF、材质、meshlet、LOD"]
+    Scene["Scene Runtime<br/>glTF / OpenUSD、材质、meshlet、LOD"]
     Shader["SlangCompiler<br/>Slang -> SPIR-V"]
     RHI["RHI API<br/>Device / Queue / Resource / Command"]
     Vulkan["Vulkan Backend<br/>Volk + VMA + 原生扩展"]
@@ -72,7 +72,7 @@ flowchart TB
 | `Source/Samples/` | 各领域样例可执行入口，复用同一个 `EditorApplication` |
 | `Source/Editor/` | 编辑器生命周期、面板、节点编辑、视口、性能分析和 NVML 监控 |
 | `Source/Runtime/Task/` | 进程级 TaskSystem、依赖图执行、取消、快照和观察者事件 |
-| `Source/Runtime/Scene/` | glTF 导入、场景扁平化、meshlet/LOD 构建与 StreamAsset 文件格式 |
+| `Source/Runtime/Scene/` | glTF/OpenUSD 导入、场景扁平化、meshlet/LOD 构建与 StreamAsset 文件格式 |
 | `Source/Runtime/Render/RenderGraph/` | 图模型、Pass 接口、序列化、编译器、执行器和流送帧作用域 |
 | `Source/Runtime/Render/RenderPass/` | 内置 Pass 注册和实现 |
 | `Source/Runtime/Render/GAPI/` | RHI 公共接口、Streamer、场景光追接口 |
@@ -80,7 +80,7 @@ flowchart TB
 | `Source/Runtime/Render/Profiling/` | Nsight/NVTX 标记与 Aftermath GPU 崩溃转储 |
 | `Shaders/` | Slang shader 模块和 NRD 配置头 |
 | `Pipelines/` | `.metallic_graph.json` RenderGraph 资产及样例图 |
-| `Asset/` | glTF/GLB、纹理、HDR 环境和预生成 meshlet 数据 |
+| `Asset/` | glTF/GLB、USD、纹理、HDR 环境和预生成 meshlet 数据 |
 | `tests/task/` | TaskGraph 生命周期、依赖、并发、取消和观察者测试 |
 | `tests/scene/` | 场景导入、材质、相机、meshlet、LOD、缓存和 StreamAsset 测试 |
 | `tests/rhi/` | RHI、RenderGraph、光追、流送和渲染输出测试 |
@@ -116,7 +116,7 @@ flowchart LR
 | CMake 目标 | 类型 | 说明 |
 | --- | --- | --- |
 | `MetallicRuntimeTask` | 静态库 | TaskGraph/TaskSystem，依赖 `stdexec` |
-| `MetallicRuntimeScene` | 静态库 | Scene 和 StreamAsset，依赖 TinyGLTF、meshoptimizer、MathLib |
+| `MetallicRuntimeScene` | 静态库 | Scene 和 StreamAsset，依赖 TinyGLTF、OpenUSD、meshoptimizer、MathLib |
 | `MetallicRuntimeRender` | 静态库 | RHI、Vulkan、RenderGraph、Pass、流送、Slang，公开依赖 Task 与 Scene |
 | `Metallic` | 可执行文件 | 通用编辑器与工具入口 |
 | `MetallicMaterialVisualizationSample` | 可执行文件 | 材质诊断样例 |
@@ -271,12 +271,14 @@ Pass 的可用性受 `DeviceCapabilities` 和编译期 SDK 检测约束。可选
 
 ### 8.1 Scene 数据
 
-[`Scene`](../Source/Runtime/Scene/Scene.h) 使用 TinyGLTF 读取 glTF/GLB，并生成两类数据：
+[`Scene`](../Source/Runtime/Scene/Scene.h) 使用 TinyGLTF 读取 glTF/GLB，并使用 OpenUSD 读取 USD、USDA、USDC 和 USDZ。两条导入路径都会生成两类数据：
 
 - 保留层级关系的 `SceneNode`、Mesh、Camera、Light 和资产元数据；
 - 面向渲染的扁平 `RenderNode`、`RenderPrimitive`、`RenderMaterial`、Image 和 Texture。
 
 `RenderPrimitive` 保存 position/normal/tangent/UV/index，并可生成 meshlet cluster、多级 LOD group/cluster 及其 bounds、cone 和误差。材质覆盖 metallic-roughness 基础字段及 transmission、IOR、thickness、attenuation、diffuse transmission 等扩展数据。
+
+OpenUSD 路径支持 stage 组合、实例代理遍历、Y-up/Z-up 与 `metersPerUnit` 转换、`UsdGeomMesh`/Camera、`GeomSubset` 材质绑定及 `UsdPreviewSurface`。USDZ 包内纹理通过 OpenUSD resolver 读取为内存数据；分离的 metallic、roughness 与 opacity 通道在 CPU 解码阶段合成为 Metallic 使用的运行时纹理。
 
 场景加载会生成/读取 meshlet 缓存，`LoadResult` 记录缓存是否命中或保存。编辑器侧加载场景后会：同步相关 Pass 的 `path` 属性、应用场景相机、失效历史，并构建普通三角形 BLAS/TLAS 供编辑器统计和调试。
 
@@ -392,7 +394,7 @@ Shaders/*.slang          <- Pass compile() 中选择的 shader 模块
 | 编辑器 UI | Dear ImGui docking、ImNodes | 构建为本地静态库 |
 | Vulkan 加载/内存 | Volk、VMA | Vulkan RHI 基础依赖 |
 | Shader | Slang | 必需；默认 `External/slang`，可用 `SLANG_ROOT` 覆盖 |
-| 场景 | TinyGLTF、meshoptimizer、MathLib | Scene 基础依赖 |
+| 场景 | TinyGLTF、OpenUSD、oneTBB、meshoptimizer、MathLib | Scene 基础依赖；OpenUSD 运行时 DLL、插件描述和 schema 资源随可执行文件部署 |
 | JSON/日志 | nlohmann/json、spdlog | RenderGraph/配置与日志 |
 | 并行任务 | stdexec | TaskSystem 基础依赖 |
 | 去噪 | NRD | 找到 `NRD` 目标时定义 `METALLIC_HAS_NRD=1`，否则 Pass 返回不支持 |

@@ -201,6 +201,18 @@ ensure_git_submodule(
     "${CMAKE_SOURCE_DIR}/External/Rtxtf/STFSamplerState.hlsli"
     "RTXTF-Library"
 )
+
+ensure_git_submodule(
+    "External/oneTBB"
+    "${CMAKE_SOURCE_DIR}/External/oneTBB/include/oneapi/tbb.h"
+    "oneTBB"
+)
+
+ensure_git_submodule(
+    "External/OpenUSD"
+    "${CMAKE_SOURCE_DIR}/External/OpenUSD/pxr/usd/usd/stage.h"
+    "OpenUSD"
+)
 add_subdirectory(External)
 add_subdirectory(Source)
 

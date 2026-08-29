@@ -187,6 +187,7 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/SceneLoader.cpp
     Runtime/Scene/ScenePicker.cpp
     Runtime/Scene/TinyGltfImpl.cpp
+    Runtime/Scene/UsdSceneImporter.cpp
 )
 
 target_include_directories(MetallicRuntimeScene PUBLIC
@@ -224,6 +225,7 @@ target_link_libraries(MetallicRuntimeScene PUBLIC
     nlohmann_json
     spdlog::spdlog
     tinygltf
+    metallic::openusd
 )
 
 if(WIN32)
@@ -298,6 +300,7 @@ if(WIN32)
     metallic_copy_aftermath_runtime(Metallic)
     metallic_copy_nrc_runtime(Metallic)
 endif()
+metallic_copy_openusd_runtime(Metallic)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -351,6 +354,7 @@ function(configure_metallic_editor_sample target_name)
         metallic_copy_aftermath_runtime(${target_name})
         metallic_copy_nrc_runtime(${target_name})
     endif()
+    metallic_copy_openusd_runtime(${target_name})
 endfunction()
 
 add_executable(MetallicMaterialVisualizationSample

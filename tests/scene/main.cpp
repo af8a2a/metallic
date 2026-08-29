@@ -15,6 +15,7 @@
 #include <cmath>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -188,6 +189,15 @@ void writeTextFile(const std::filesystem::path& path, const std::string& text)
 {
     std::ofstream file(path, std::ios::binary);
     file << text;
+}
+
+void writeRgbTestImage(
+    const std::filesystem::path& path,
+    const std::array<uint8_t, 3>& color)
+{
+    std::ofstream file(path, std::ios::binary);
+    file << "P6\n1 1\n255\n";
+    file.write(reinterpret_cast<const char*>(color.data()), color.size());
 }
 
 void writeSceneBinary(const std::filesystem::path& path)
@@ -1112,6 +1122,222 @@ std::filesystem::path writeMaterialFeatureScene(const std::filesystem::path& dir
 }
 )json");
     return gltfPath;
+}
+
+std::filesystem::path writeUsdFeatureScene(const std::filesystem::path& directory)
+{
+    const std::filesystem::path usdPath = directory / "features.usda";
+    writeRgbTestImage(directory / "metallic.png", {32, 0, 0});
+    writeRgbTestImage(directory / "roughness.png", {192, 0, 0});
+    writeTextFile(usdPath, R"usda(#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 0.01
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    double3 xformOp:translate = (100, 200, 300)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Mesh "Panel" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [3, 3]
+        int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        point3f[] points = [(0, 0, 0), (100, 0, 0), (100, 100, 0), (0, 100, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Looks/Red>
+
+        def GeomSubset "BlueFace" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform token elementType = "face"
+            uniform token familyName = "materialBind"
+            int[] indices = [1]
+            rel material:binding = </World/Looks/Blue>
+        }
+    }
+
+    def Camera "Camera"
+    {
+        float2 clippingRange = (1, 10000)
+        float focalLength = 50
+        float horizontalAperture = 20
+        token projection = "perspective"
+        float verticalAperture = 10
+        double3 xformOp:translate = (0, -500, 200)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Red"
+        {
+            token outputs:surface.connect = </World/Looks/Red/Preview.outputs:surface>
+
+            def Shader "Preview"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.8, 0.1, 0.05)
+                float inputs:metallic.connect = </World/Looks/Red/MetallicGraph.outputs:rgb>
+                float inputs:opacity = 0.75
+                float inputs:roughness.connect = </World/Looks/Red/RoughnessGraph.outputs:rgb>
+                token outputs:surface
+            }
+
+            def NodeGraph "MetallicGraph" (
+                prepend references = </World/Looks/Red/MetallicGraphSource>
+            )
+            {
+            }
+
+            def NodeGraph "MetallicGraphSource"
+            {
+                float3 outputs:rgb.connect = </World/Looks/Red/Metallic.outputs:rgb>
+            }
+
+            def NodeGraph "RoughnessGraph" (
+                prepend references = </World/Looks/Red/RoughnessGraphSource>
+            )
+            {
+            }
+
+            def NodeGraph "RoughnessGraphSource"
+            {
+                float3 outputs:rgb.connect = </World/Looks/Red/Roughness.outputs:rgb>
+            }
+
+            def Shader "Metallic"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @metallic.png@
+                token inputs:sourceColorSpace = "raw"
+                float2 inputs:st.connect = </World/Looks/Red/PrimvarReader_st.outputs:result>
+                float3 outputs:rgb
+            }
+
+            def Shader "Roughness"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @roughness.png@
+                token inputs:sourceColorSpace = "raw"
+                float2 inputs:st.connect = </World/Looks/Red/PrimvarReader_st.outputs:result>
+                float3 outputs:rgb
+            }
+
+            def Shader "PrimvarReader_st"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                token inputs:varname = "st"
+                float2 outputs:result
+            }
+        }
+
+        def Material "Blue"
+        {
+            token outputs:surface.connect = </World/Looks/Blue/Preview.outputs:surface>
+
+            def Shader "Preview"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.05, 0.1, 0.8)
+                float inputs:metallic = 0
+                float inputs:roughness = 0.6
+                token outputs:surface
+            }
+        }
+    }
+}
+)usda");
+    return usdPath;
+}
+
+void testUsdFeatureScene(const std::filesystem::path& directory)
+{
+    metallic::scene::Scene scene;
+    const std::filesystem::path usdPath = writeUsdFeatureScene(directory);
+    ASSERT_TRUE(scene.load(usdPath))
+        << scene.lastLoadResult().error << "\n" << scene.lastLoadResult().warning;
+
+    EXPECT_TRUE(scene.valid());
+    EXPECT_EQ(scene.sceneIndex(), 0);
+    EXPECT_EQ(scene.assetInfo().version, "USD 1.0");
+    EXPECT_EQ(scene.assetInfo().generator, "OpenUSD 26.08");
+    ASSERT_EQ(scene.sources().size(), 1u);
+    EXPECT_EQ(scene.sources().front().path, usdPath);
+    ASSERT_EQ(scene.rootNodeIndices().size(), 1u);
+
+    const metallic::scene::SceneStats& stats = scene.stats();
+    EXPECT_EQ(stats.meshCount, 1u);
+    EXPECT_EQ(stats.materialCount, 2u);
+    EXPECT_EQ(stats.primitiveCount, 2u);
+    EXPECT_EQ(stats.renderNodeCount, 2u);
+    EXPECT_EQ(stats.triangleCount, 2u);
+
+    ASSERT_EQ(scene.renderPrimitives().size(), 2u);
+    std::vector<int32_t> materialIndices;
+    for (const metallic::scene::RenderPrimitive& primitive : scene.renderPrimitives()) {
+        EXPECT_EQ(primitive.mode, 4);
+        EXPECT_EQ(primitive.triangleCount, 1u);
+        EXPECT_EQ(primitive.indexCount, 3u);
+        EXPECT_TRUE(primitive.hasAuthoredNormals);
+        EXPECT_EQ(primitive.normals.size(), primitive.positions.size());
+        EXPECT_EQ(primitive.texcoords0.size(), primitive.positions.size());
+        EXPECT_EQ(primitive.tangents.size(), primitive.positions.size());
+        materialIndices.push_back(primitive.materialIndex);
+    }
+    std::sort(materialIndices.begin(), materialIndices.end());
+    EXPECT_EQ(materialIndices, (std::vector<int32_t>{0, 1}));
+
+    ASSERT_TRUE(scene.bounds().valid);
+    expectVec3(scene.bounds().min, float3(1.0f, 3.0f, -3.0f), "USD stage bounds min");
+    expectVec3(scene.bounds().max, float3(2.0f, 3.0f, -2.0f), "USD stage bounds max");
+
+    ASSERT_EQ(scene.cameras().size(), 1u);
+    const metallic::scene::RenderCamera& camera = scene.cameras().front();
+    EXPECT_FALSE(camera.fallback);
+    EXPECT_EQ(camera.type, metallic::scene::CameraType::Perspective);
+    EXPECT_NEAR(camera.aspectRatio, 2.0, 0.000001);
+    EXPECT_NEAR(camera.znear, 0.01, 0.000001);
+    EXPECT_NEAR(camera.zfar, 100.0, 0.000001);
+    expectVec3(camera.eye, float3(1.0f, 5.0f, 3.0f), "USD camera eye");
+
+    ASSERT_EQ(scene.materials().size(), 2u);
+    const auto red = std::find_if(
+        scene.materials().begin(),
+        scene.materials().end(),
+        [](const metallic::scene::RenderMaterial& material) { return material.name == "Red"; });
+    ASSERT_NE(red, scene.materials().end());
+    expectVec4(red->baseColorFactor, float4(0.8f, 0.1f, 0.05f, 0.75f), "USD red material");
+    EXPECT_EQ(red->alphaMode, "BLEND");
+    ASSERT_GE(red->metallicRoughnessTexture.textureIndex, 0);
+    ASSERT_LT(
+        static_cast<size_t>(red->metallicRoughnessTexture.textureIndex),
+        scene.textures().size());
+    const int32_t imageIndex = scene.textures()[
+        static_cast<size_t>(red->metallicRoughnessTexture.textureIndex)].imageIndex;
+    ASSERT_GE(imageIndex, 0);
+    ASSERT_LT(static_cast<size_t>(imageIndex), scene.images().size());
+    const metallic::scene::RenderImage& packedImage = scene.images()[static_cast<size_t>(imageIndex)];
+    ASSERT_TRUE(packedImage.channelComposition.has_value());
+    EXPECT_EQ(packedImage.channelComposition->sources.size(), 2u);
+    EXPECT_GE(packedImage.channelComposition->sourceIndices[1], 0);
+    EXPECT_GE(packedImage.channelComposition->sourceIndices[2], 0);
+    EXPECT_EQ(packedImage.channelComposition->sourceChannels[1], 0u);
+    EXPECT_EQ(packedImage.channelComposition->sourceChannels[2], 0u);
+    for (const metallic::scene::RenderImage::ChannelSource& source :
+         packedImage.channelComposition->sources) {
+        EXPECT_TRUE(std::filesystem::path(source.uri).is_absolute());
+    }
 }
 
 void testFullSceneImport(const std::filesystem::path& directory)
@@ -4190,6 +4416,27 @@ void testAsyncSceneLoad(const std::filesystem::path& directory)
         EXPECT_TRUE(image.decodeAttempted);
     }
 
+    const std::filesystem::path usdPath = writeUsdFeatureScene(directory);
+    metallic::scene::SceneLoadHandle usdImages = loader.request(
+        usdPath,
+        metallic::scene::SceneLoadOptions{
+            .decodeConcurrency = 2,
+            .maxDecodedBytesInFlight = 1,
+        });
+    waitForSceneLoad(usdImages);
+    std::unique_ptr<metallic::scene::SceneDocument> usdImageScene =
+        usdImages.takeResult();
+    ASSERT_NE(usdImageScene, nullptr);
+    ASSERT_EQ(usdImageScene->images().size(), 1u);
+    const metallic::scene::RenderImage& usdImage = usdImageScene->images().front();
+    EXPECT_TRUE(usdImage.decodeAttempted);
+    ASSERT_EQ(usdImage.decodedMips.size(), 1u);
+    ASSERT_EQ(usdImage.decodedMips.front().pixels.size(), 4u);
+    EXPECT_EQ(usdImage.decodedMips.front().pixels[0], 255u);
+    EXPECT_EQ(usdImage.decodedMips.front().pixels[1], 192u);
+    EXPECT_EQ(usdImage.decodedMips.front().pixels[2], 32u);
+    EXPECT_EQ(usdImage.decodedMips.front().pixels[3], 255u);
+
     metallic::scene::SceneLoadHandle cancelled = loader.request(path);
     ASSERT_TRUE(cancelled.cancel());
     waitForSceneLoad(cancelled);
@@ -4238,6 +4485,99 @@ TEST(SceneImport, RtxcrClairePonytailDots)
 TEST(SceneImport, FullScene)
 {
     testFullSceneImport(prepareOutputDirectory());
+}
+
+TEST(SceneImport, UsdFeatures)
+{
+    testUsdFeatureScene(prepareOutputDirectory());
+}
+
+TEST(SceneImport, UsdcBinary)
+{
+    const std::filesystem::path path =
+        std::filesystem::path(PROJECT_SOURCE_DIR) /
+        "External/OpenUSD/extras/usd/examples/wasmFetchResolver/stages/teapots/meshes/teapot.usdc";
+    if (!std::filesystem::exists(path)) {
+        GTEST_SKIP() << "OpenUSD model fixtures are not available";
+    }
+
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.loadDeferredMeshlets(path, {}))
+        << scene.lastLoadResult().error << "\n" << scene.lastLoadResult().warning;
+    EXPECT_GT(scene.stats().meshCount, 0u);
+    EXPECT_GT(scene.stats().triangleCount, 0u);
+}
+
+TEST(SceneImport, UsdzEmbeddedTexture)
+{
+    const std::filesystem::path path =
+        std::filesystem::path(PROJECT_SOURCE_DIR) /
+        "External/OpenUSD/pxr/usd/usdUtils/testenv/"
+        "testUsdUtilsCreateNewUsdzPackage/nestedUsdz/combined.usdz";
+    if (!std::filesystem::exists(path)) {
+        GTEST_SKIP() << "OpenUSD model fixtures are not available";
+    }
+
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.loadDeferredMeshlets(path, {}))
+        << scene.lastLoadResult().error << "\n" << scene.lastLoadResult().warning;
+    EXPECT_GT(scene.stats().meshCount, 0u);
+    EXPECT_GT(scene.stats().triangleCount, 0u);
+    ASSERT_FALSE(scene.images().empty());
+    EXPECT_TRUE(std::any_of(
+        scene.images().begin(),
+        scene.images().end(),
+        [](const metallic::scene::RenderImage& image) {
+            return !image.encodedData.empty();
+        }));
+}
+
+TEST(SceneImport, SuperSponzaUsdSmoke)
+{
+    if (std::getenv("METALLIC_TEST_SUPER_SPONZA_USD") == nullptr) {
+        GTEST_SKIP() << "Set METALLIC_TEST_SUPER_SPONZA_USD=1 to run the 436 MB fixture";
+    }
+    const std::filesystem::path path =
+        std::filesystem::path(PROJECT_SOURCE_DIR) /
+        "Asset/SuperSponza/NewSponza_Main_USD_Yup_003.usda";
+    if (!std::filesystem::exists(path)) {
+        GTEST_SKIP() << "Super Sponza USD fixture is not available";
+    }
+
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.loadDeferredMeshlets(path, {}))
+        << scene.lastLoadResult().error << "\n" << scene.lastLoadResult().warning;
+    EXPECT_EQ(scene.stats().meshCount, 115u);
+    EXPECT_EQ(scene.stats().materialCount, 28u);
+    EXPECT_EQ(scene.stats().primitiveCount, 405u);
+    // Sum(faceVertexCount - 2) over the 115 authored meshes. OpenUSD exposes
+    // all authored faces, including 16,209 triangles omitted by the previous backend.
+    EXPECT_EQ(scene.stats().triangleCount, 3747022u);
+    // The source has 25 base-color, 24 metallic, 24 roughness, 24 normal, and
+    // one opacity connection. Metallic packs scalar channels into runtime images.
+    EXPECT_EQ(scene.stats().textureCount, 73u);
+    EXPECT_EQ(scene.stats().imageCount, 73u);
+    size_t sourceTextureCount = 0;
+    const auto expectTextureSource = [&](const std::string& uri) {
+        ++sourceTextureCount;
+        EXPECT_FALSE(uri.empty());
+        EXPECT_TRUE(std::filesystem::exists(path.parent_path() / uri)) << uri;
+    };
+    for (const metallic::scene::RenderImage& image : scene.images()) {
+        if (image.channelComposition.has_value()) {
+            for (const metallic::scene::RenderImage::ChannelSource& source :
+                 image.channelComposition->sources) {
+                expectTextureSource(source.uri);
+            }
+        } else {
+            expectTextureSource(image.uri);
+        }
+    }
+    EXPECT_EQ(sourceTextureCount, 98u);
+    EXPECT_EQ(
+        scene.lastLoadResult().warning.find("unsupported USD NodeGraph"),
+        std::string::npos);
+    EXPECT_TRUE(scene.hasDeferredMeshlets());
 }
 
 TEST(SceneComposition, LoadsMultipleSourcesAndMaintainsGpuSnapshot)

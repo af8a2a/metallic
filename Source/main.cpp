@@ -46,7 +46,7 @@ void printUsage()
     std::puts(
         "Metallic options:\n"
         "  --smoke-test                                  Render one frame and exit\n"
-        "  --scene <path>                                Override the sample glTF scene\n"
+        "  --scene <path>                                Override the sample scene (glTF or USD)\n"
         "  --wait-for-graphics-debugger                  Wait before Vulkan initialization\n"
         "  --nsight-capture                              Enable Profiler Graphics Capture export\n"
         "  --nsight-shader-debug                         Emit unoptimized shader debug information\n"
@@ -201,7 +201,7 @@ int main(int argc, char** argv)
             nsightShaderDebug = true;
         } else if (argument == "--scene") {
             if (index + 1 >= argc) {
-                std::fputs("--scene requires a glTF scene path\n", stderr);
+                std::fputs("--scene requires a scene path\n", stderr);
                 return 1;
             }
             scenePath = argv[++index];
