@@ -2665,6 +2665,7 @@ struct QueueImpl {
     DeviceImpl* device = nullptr;
     VkQueue queue = VK_NULL_HANDLE;
     uint32_t familyIndex = 0;
+    VkQueueFlags queueFlags = 0;
     uint32_t timestampValidBits = 0;
     QueueType type = QueueType::Graphics;
 };
@@ -2681,6 +2682,12 @@ struct TimestampQueryPoolImpl {
     uint32_t queueFamilyIndex = 0;
     uint32_t timestampValidBits = 0;
     double timestampPeriodNanoseconds = 0.0;
+};
+
+struct RayTracingAccelerationStructureCompactionQueryPoolImpl {
+    DeviceImpl* device = nullptr;
+    RayTracingAccelerationStructureCompactionQueryPoolDesc desc;
+    VkQueryPool queryPool = VK_NULL_HANDLE;
 };
 
 struct SemaphoreImpl {
@@ -2804,6 +2811,7 @@ struct CommandPoolImpl {
     DeviceImpl* device = nullptr;
     VkCommandPool pool = VK_NULL_HANDLE;
     uint32_t queueFamilyIndex = 0;
+    VkQueueFlags queueFlags = 0;
 };
 
 struct CommandBufferImpl {
@@ -2811,6 +2819,7 @@ struct CommandBufferImpl {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     uint32_t queueFamilyIndex = 0;
+    VkQueueFlags queueFlags = 0;
     VkPipelineLayout currentGraphicsPipelineLayout = VK_NULL_HANDLE;
     VkPipelineLayout currentComputePipelineLayout = VK_NULL_HANDLE;
     VkShaderStageFlags currentGraphicsPipelineBindlessPushStages =
@@ -2902,6 +2911,7 @@ struct DeviceImpl {
     void addQueue(
         VkQueue queue,
         uint32_t familyIndex,
+        VkQueueFlags queueFlags,
         uint32_t timestampValidBits,
         QueueType type);
 };
@@ -3161,6 +3171,7 @@ bool PipelineCacheImpl::recordPsoLocked(uint64_t psoHash)
 void DeviceImpl::addQueue(
     VkQueue queue,
     uint32_t familyIndex,
+    VkQueueFlags queueFlags,
     uint32_t timestampValidBits,
     QueueType type)
 {
@@ -3168,6 +3179,7 @@ void DeviceImpl::addQueue(
     impl->device = this;
     impl->queue = queue;
     impl->familyIndex = familyIndex;
+    impl->queueFlags = queueFlags;
     impl->timestampValidBits = timestampValidBits;
     impl->type = type;
     queues.emplace_back(new Queue(std::move(impl)));
@@ -3794,6 +3806,62 @@ double TimestampQueryPool::durationMilliseconds(
         : (uint64_t{1} << impl_->timestampValidBits) - 1u;
     const uint64_t delta = (endTimestamp - beginTimestamp) & mask;
     return static_cast<double>(delta) * impl_->timestampPeriodNanoseconds / 1'000'000.0;
+}
+
+RayTracingAccelerationStructureCompactionQueryPool::
+    RayTracingAccelerationStructureCompactionQueryPool(
+        std::unique_ptr<detail::RayTracingAccelerationStructureCompactionQueryPoolImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+RayTracingAccelerationStructureCompactionQueryPool::
+    ~RayTracingAccelerationStructureCompactionQueryPool()
+{
+    if (impl_ != nullptr && impl_->queryPool != VK_NULL_HANDLE) {
+        activateVolkDevice(impl_->device->device);
+        vkDestroyQueryPool(impl_->device->device, impl_->queryPool, nullptr);
+        impl_->queryPool = VK_NULL_HANDLE;
+    }
+}
+
+RayTracingAccelerationStructureCompactionQueryPool::
+    RayTracingAccelerationStructureCompactionQueryPool(
+        RayTracingAccelerationStructureCompactionQueryPool&&) noexcept = default;
+RayTracingAccelerationStructureCompactionQueryPool&
+RayTracingAccelerationStructureCompactionQueryPool::operator=(
+    RayTracingAccelerationStructureCompactionQueryPool&&) noexcept = default;
+
+const RayTracingAccelerationStructureCompactionQueryPoolDesc&
+RayTracingAccelerationStructureCompactionQueryPool::desc() const
+{
+    static const RayTracingAccelerationStructureCompactionQueryPoolDesc kEmptyDesc;
+    return impl_ != nullptr ? impl_->desc : kEmptyDesc;
+}
+
+Result RayTracingAccelerationStructureCompactionQueryPool::readResults(
+    uint32_t firstQuery,
+    uint32_t queryCount,
+    uint64_t* outCompactedSizes) const
+{
+    if (impl_ == nullptr ||
+        outCompactedSizes == nullptr ||
+        queryCount == 0 ||
+        firstQuery >= impl_->desc.queryCount ||
+        queryCount > impl_->desc.queryCount - firstQuery) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    activateVolkDevice(impl_->device->device);
+    return resultFromVk(vkGetQueryPoolResults(
+        impl_->device->device,
+        impl_->queryPool,
+        firstQuery,
+        queryCount,
+        static_cast<size_t>(queryCount) * sizeof(uint64_t),
+        outCompactedSizes,
+        sizeof(uint64_t),
+        VK_QUERY_RESULT_64_BIT));
 }
 
 Semaphore::Semaphore(std::unique_ptr<detail::SemaphoreImpl> impl)
@@ -4691,6 +4759,82 @@ Result CommandBuffer::writeTimestamp(
     return {};
 }
 
+Result CommandBuffer::resetRayTracingAccelerationStructureCompactionQueries(
+    RayTracingAccelerationStructureCompactionQueryPool& queryPool,
+    uint32_t firstQuery,
+    uint32_t queryCount)
+{
+    if (impl_ == nullptr ||
+        (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+        queryPool.impl_ == nullptr ||
+        impl_->device != queryPool.impl_->device ||
+        queryCount == 0 ||
+        firstQuery >= queryPool.impl_->desc.queryCount ||
+        queryCount > queryPool.impl_->desc.queryCount - firstQuery) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->device->rayTracingAccelerationStructureEnabled ||
+        !impl_->device->capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+
+    vkCmdResetQueryPool(
+        impl_->commandBuffer,
+        queryPool.impl_->queryPool,
+        firstQuery,
+        queryCount);
+    return {};
+}
+
+Result CommandBuffer::writeRayTracingAccelerationStructureCompactedSize(
+    RayTracingAccelerationStructureCompactionQueryPool& queryPool,
+    uint32_t queryIndex,
+    RayTracingAccelerationStructure& accelerationStructure)
+{
+    if (impl_ == nullptr ||
+        (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+        queryPool.impl_ == nullptr ||
+        impl_->device != queryPool.impl_->device ||
+        queryIndex >= queryPool.impl_->desc.queryCount ||
+        accelerationStructure.impl_ == nullptr ||
+        accelerationStructure.impl_->device != impl_->device ||
+        !accelerationStructure.valid() ||
+        !hasFlag(
+            accelerationStructure.impl_->desc.buildFlags,
+            RayTracingAccelerationStructureBuildFlags::AllowCompaction)) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->device->rayTracingAccelerationStructureEnabled ||
+        !impl_->device->capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+
+    const VkMemoryBarrier2 barrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+
+    const VkAccelerationStructureKHR nativeAccelerationStructure =
+        accelerationStructure.impl_->accelerationStructure;
+    vkCmdWriteAccelerationStructuresPropertiesKHR(
+        impl_->commandBuffer,
+        1,
+        &nativeAccelerationStructure,
+        VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+        queryPool.impl_->queryPool,
+        queryIndex);
+    return {};
+}
+
 void CommandBuffer::barrier(const BarrierDesc& desc)
 {
     if (impl_ == nullptr) {
@@ -5531,7 +5675,9 @@ void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_
 Result CommandBuffer::buildRayTracingAccelerationStructure(
     const RayTracingAccelerationStructureBuildDesc& desc)
 {
-    if (impl_ == nullptr || desc.destination == nullptr ||
+    if (impl_ == nullptr ||
+        (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+        desc.destination == nullptr ||
         desc.destination->impl_ == nullptr || !desc.destination->valid() ||
         desc.destination->impl_->device != impl_->device ||
         desc.scratchBuffer == nullptr || desc.scratchBuffer->impl_ == nullptr ||
@@ -5738,6 +5884,68 @@ Result CommandBuffer::buildRayTracingAccelerationStructure(
         .pMemoryBarriers = &barrier,
     };
     vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+    return {};
+}
+
+Result CommandBuffer::compactRayTracingAccelerationStructure(
+    RayTracingAccelerationStructure& source,
+    RayTracingAccelerationStructure& destination)
+{
+    if (impl_ == nullptr ||
+        (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+        source.impl_ == nullptr || destination.impl_ == nullptr ||
+        source.impl_.get() == destination.impl_.get() ||
+        source.impl_->device != impl_->device || destination.impl_->device != impl_->device ||
+        !source.valid() || !destination.valid() ||
+        source.impl_->desc.type != destination.impl_->desc.type ||
+        source.impl_->desc.buildFlags != destination.impl_->desc.buildFlags ||
+        !hasFlag(
+            source.impl_->desc.buildFlags,
+            RayTracingAccelerationStructureBuildFlags::AllowCompaction)) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->device->rayTracingAccelerationStructureEnabled ||
+        !impl_->device->capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+
+    const VkMemoryBarrier2 beforeCopyBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+    };
+    const VkDependencyInfo beforeCopyDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &beforeCopyBarrier,
+    };
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &beforeCopyDependency);
+
+    const VkCopyAccelerationStructureInfoKHR copyInfo{
+        .sType = VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR,
+        .src = source.impl_->accelerationStructure,
+        .dst = destination.impl_->accelerationStructure,
+        .mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR,
+    };
+    vkCmdCopyAccelerationStructureKHR(impl_->commandBuffer, &copyInfo);
+
+    const VkMemoryBarrier2 afterCopyBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_SHADER_READ_BIT,
+    };
+    const VkDependencyInfo afterCopyDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &afterCopyBarrier,
+    };
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &afterCopyDependency);
     return {};
 }
 
@@ -6404,6 +6612,7 @@ Result CommandPool::createCommandBuffer(std::unique_ptr<CommandBuffer>& outComma
     commandBufferImpl->pool = impl_->pool;
     commandBufferImpl->commandBuffer = commandBuffer;
     commandBufferImpl->queueFamilyIndex = impl_->queueFamilyIndex;
+    commandBufferImpl->queueFlags = impl_->queueFlags;
     outCommandBuffer.reset(new CommandBuffer(std::move(commandBufferImpl)));
     return {};
 }
@@ -7198,7 +7407,9 @@ Result Device::createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapch
 Result Device::createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& outCommandPool)
 {
     outCommandPool.reset();
-    if (impl_ == nullptr || queue.impl_ == nullptr) {
+    if (impl_ == nullptr ||
+        queue.impl_ == nullptr ||
+        queue.impl_->device != impl_.get()) {
         return makeError(Error::InvalidArgument);
     }
     activateVolkDevice(impl_->device);
@@ -7219,6 +7430,7 @@ Result Device::createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& out
     poolImpl->device = impl_.get();
     poolImpl->pool = pool;
     poolImpl->queueFamilyIndex = queue.impl_->familyIndex;
+    poolImpl->queueFlags = queue.impl_->queueFlags;
     outCommandPool.reset(new CommandPool(std::move(poolImpl)));
     return {};
 }
@@ -7286,6 +7498,41 @@ Result Device::createTimestampQueryPool(
     queryPoolImpl->timestampValidBits = queue.impl_->timestampValidBits;
     queryPoolImpl->timestampPeriodNanoseconds = impl_->capabilities.timestampPeriodNanoseconds;
     outQueryPool.reset(new TimestampQueryPool(std::move(queryPoolImpl)));
+    return {};
+}
+
+Result Device::createRayTracingAccelerationStructureCompactionQueryPool(
+    const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc,
+    std::unique_ptr<RayTracingAccelerationStructureCompactionQueryPool>& outQueryPool)
+{
+    outQueryPool.reset();
+    if (impl_ == nullptr || desc.queryCount == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->rayTracingAccelerationStructureEnabled ||
+        !impl_->capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+
+    activateVolkDevice(impl_->device);
+    VkQueryPoolCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        .queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+        .queryCount = desc.queryCount,
+    };
+    VkQueryPool queryPool = VK_NULL_HANDLE;
+    const VkResult result = vkCreateQueryPool(impl_->device, &createInfo, nullptr, &queryPool);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+
+    auto queryPoolImpl =
+        std::make_unique<detail::RayTracingAccelerationStructureCompactionQueryPoolImpl>();
+    queryPoolImpl->device = impl_.get();
+    queryPoolImpl->desc = desc;
+    queryPoolImpl->queryPool = queryPool;
+    outQueryPool.reset(
+        new RayTracingAccelerationStructureCompactionQueryPool(std::move(queryPoolImpl)));
     return {};
 }
 
@@ -8820,6 +9067,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->addQueue(
         graphicsQueue,
         deviceImpl->graphicsFamily,
+        selectedQueueFamilies[deviceImpl->graphicsFamily].queueFlags,
         selectedQueueFamilies[deviceImpl->graphicsFamily].timestampValidBits,
         QueueType::Graphics);
 
@@ -8828,6 +9076,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->addQueue(
         computeQueue,
         deviceImpl->computeFamily,
+        selectedQueueFamilies[deviceImpl->computeFamily].queueFlags,
         selectedQueueFamilies[deviceImpl->computeFamily].timestampValidBits,
         QueueType::Compute);
 
@@ -8842,6 +9091,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             deviceImpl->addQueue(
                 copyQueue,
                 deviceImpl->copyFamily,
+                selectedQueueFamilies[deviceImpl->copyFamily].queueFlags,
                 selectedQueueFamilies[deviceImpl->copyFamily].timestampValidBits,
                 QueueType::Copy);
             deviceImpl->capabilities.independentCopyQueue = true;

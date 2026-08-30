@@ -2201,19 +2201,22 @@ bool EditorApplication::initializeRhi()
 {
     StartupLogScope initializeScope("RHI initialization");
 
-    bool enableStreamline = !smokeTest_;
-    if (enableStreamline && !startupSampleId_.empty()) {
-        bool sampleRequiresStreamline = false;
-        if (render::queryBuiltInRenderSampleStreamlineRequirement(
-                startupSampleId_,
-                sampleRequiresStreamline)) {
-            enableStreamline = sampleRequiresStreamline;
-        }
+    bool startupSampleRequiresStreamline = false;
+    if (!startupSampleId_.empty()) {
+        (void)render::queryBuiltInRenderSampleStreamlineRequirement(
+            startupSampleId_,
+            startupSampleRequiresStreamline);
     }
+    // Streamline has to hook Vulkan before the device is created. Interactive
+    // editor sessions can switch to any built-in sample at runtime, including
+    // DLSS-RR, while an explicit DLSS-RR smoke test also needs the integration.
+    const bool enableStreamline = !smokeTest_ || startupSampleRequiresStreamline;
     spdlog::info(
-        "[Startup] Streamline device integration {} for startup sample '{}'",
+        "[Startup] Streamline device integration {} for editor session "
+        "(startup sample '{}', sample requires Streamline={})",
         enableStreamline ? "enabled" : "disabled",
-        startupSampleId_.empty() ? "<generic-editor>" : startupSampleId_);
+        startupSampleId_.empty() ? "<generic-editor>" : startupSampleId_,
+        startupSampleRequiresStreamline);
 
     render::Result result;
     {
@@ -6839,8 +6842,13 @@ void EditorApplication::buildSceneAccelerationStructure()
     }
 
     std::string log;
+    render::Queue* accelerationStructureQueue =
+        device_->getQueue(render::QueueType::Compute);
+    if (accelerationStructureQueue == nullptr) {
+        accelerationStructureQueue = graphicsQueue_;
+    }
     const render::Result result =
-        sceneAccelerationStructure_->build(*device_, *graphicsQueue_, scene_, log);
+        sceneAccelerationStructure_->build(*device_, *accelerationStructureQueue, scene_, log);
     sceneAccelerationStructureStatus_ = log.empty()
         ? std::string("RTAS build returned ") + render::resultToString(result)
         : log;

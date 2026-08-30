@@ -293,6 +293,10 @@ struct TimestampQueryResult {
     bool available = false;
 };
 
+struct RayTracingAccelerationStructureCompactionQueryPoolDesc {
+    uint32_t queryCount = 0;
+};
+
 struct DeviceDesc {
     const char* applicationName = "Metallic";
     bool enableValidation = false;
@@ -1136,6 +1140,7 @@ struct CommandPoolImpl;
 struct CommandBufferImpl;
 struct FenceImpl;
 struct TimestampQueryPoolImpl;
+struct RayTracingAccelerationStructureCompactionQueryPoolImpl;
 struct SemaphoreImpl;
 struct SwapchainSemaphoreImpl;
 struct BufferImpl;
@@ -1328,6 +1333,36 @@ private:
     explicit TimestampQueryPool(std::unique_ptr<detail::TimestampQueryPoolImpl> impl);
 
     std::unique_ptr<detail::TimestampQueryPoolImpl> impl_;
+
+    friend class Device;
+    friend class CommandBuffer;
+};
+
+class RayTracingAccelerationStructureCompactionQueryPool {
+public:
+    RayTracingAccelerationStructureCompactionQueryPool() = default;
+    ~RayTracingAccelerationStructureCompactionQueryPool();
+    RayTracingAccelerationStructureCompactionQueryPool(
+        RayTracingAccelerationStructureCompactionQueryPool&&) noexcept;
+    RayTracingAccelerationStructureCompactionQueryPool& operator=(
+        RayTracingAccelerationStructureCompactionQueryPool&&) noexcept;
+
+    RayTracingAccelerationStructureCompactionQueryPool(
+        const RayTracingAccelerationStructureCompactionQueryPool&) = delete;
+    RayTracingAccelerationStructureCompactionQueryPool& operator=(
+        const RayTracingAccelerationStructureCompactionQueryPool&) = delete;
+
+    const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc() const;
+    Result readResults(
+        uint32_t firstQuery,
+        uint32_t queryCount,
+        uint64_t* outCompactedSizes) const;
+
+private:
+    explicit RayTracingAccelerationStructureCompactionQueryPool(
+        std::unique_ptr<detail::RayTracingAccelerationStructureCompactionQueryPoolImpl> impl);
+
+    std::unique_ptr<detail::RayTracingAccelerationStructureCompactionQueryPoolImpl> impl_;
 
     friend class Device;
     friend class CommandBuffer;
@@ -1644,6 +1679,14 @@ public:
         TimestampQueryPool& queryPool,
         uint32_t queryIndex,
         PipelineStageBits stage);
+    Result resetRayTracingAccelerationStructureCompactionQueries(
+        RayTracingAccelerationStructureCompactionQueryPool& queryPool,
+        uint32_t firstQuery,
+        uint32_t queryCount);
+    Result writeRayTracingAccelerationStructureCompactedSize(
+        RayTracingAccelerationStructureCompactionQueryPool& queryPool,
+        uint32_t queryIndex,
+        RayTracingAccelerationStructure& accelerationStructure);
     void barrier(const BarrierDesc& desc);
     void hostWriteBarrier();
     void copyBuffer(const BufferCopyDesc& desc);
@@ -1677,6 +1720,9 @@ public:
         const PartitionedAccelerationStructureBuildDesc& desc);
     Result buildRayTracingAccelerationStructure(
         const RayTracingAccelerationStructureBuildDesc& desc);
+    Result compactRayTracingAccelerationStructure(
+        RayTracingAccelerationStructure& source,
+        RayTracingAccelerationStructure& destination);
 
 private:
     explicit CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl);
@@ -1760,6 +1806,9 @@ public:
         Queue& queue,
         const TimestampQueryPoolDesc& desc,
         std::unique_ptr<TimestampQueryPool>& outQueryPool);
+    Result createRayTracingAccelerationStructureCompactionQueryPool(
+        const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc,
+        std::unique_ptr<RayTracingAccelerationStructureCompactionQueryPool>& outQueryPool);
     Result createSemaphore(const SemaphoreDesc& desc, std::unique_ptr<Semaphore>& outSemaphore);
     Result createSemaphore(std::unique_ptr<Semaphore>& outSemaphore);
     Result createSwapchainSemaphore(std::unique_ptr<SwapchainSemaphore>& outSemaphore);

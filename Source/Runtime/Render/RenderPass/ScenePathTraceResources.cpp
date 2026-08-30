@@ -2407,8 +2407,25 @@ Result ScenePathTraceResources::pumpPrepareAsync(
         case Impl::AsyncPrepareStage::WaitForGpu:
             progress.phase = scene::SceneLoadPhase::AccelerationStructures;
             progress.fraction = 0.97f;
-            if (!impl_->textureUploadsReady() || !impl_->rtxBuilder.pollBuild()) {
-                return {};
+            {
+                bool accelerationStructuresComplete = false;
+                std::string rtxLog;
+                result = impl_->rtxBuilder.pollBuild(
+                    accelerationStructuresComplete,
+                    rtxLog);
+                appendLogBlock(log, rtxLog);
+                if (!result) {
+                    impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+                    progress.status = scene::SceneLoadStatus::Failed;
+                    progress.phase = scene::SceneLoadPhase::Failed;
+                    progress.error = rtxLog.empty()
+                        ? "Scene acceleration-structure build failed."
+                        : rtxLog;
+                    return result;
+                }
+                if (!impl_->textureUploadsReady() || !accelerationStructuresComplete) {
+                    return {};
+                }
             }
             impl_->retireCompletedTextureUploads();
             impl_->drawBounds = impl_->asyncScene->bounds();
@@ -2481,7 +2498,7 @@ Result ScenePathTraceResources::syncRuntimeScene(
         if (accelerationQueue == nullptr) {
             accelerationQueue = &graphicsQueue;
         }
-        if (impl_->rtxBuilder.buildState() ==
+        while (impl_->rtxBuilder.buildState() ==
             SceneAccelerationStructureBuildState::Building) {
             result = accelerationQueue->waitIdle();
             if (!result) {
@@ -2493,8 +2510,18 @@ Result ScenePathTraceResources::syncRuntimeScene(
                 impl_->clear();
                 return result;
             }
+            bool accelerationStructuresComplete = false;
+            std::string rtxLog;
+            result = impl_->rtxBuilder.pollBuild(
+                accelerationStructuresComplete,
+                rtxLog);
+            appendLogBlock(log, rtxLog);
+            if (!result) {
+                impl_->clear();
+                return result;
+            }
         }
-        if (!impl_->rtxBuilder.pollBuild() || !impl_->valid()) {
+        if (!impl_->valid()) {
             appendLogBlock(
                 log,
                 "Runtime scene topology rebuild did not produce valid scene resources.");
@@ -2517,9 +2544,13 @@ Result ScenePathTraceResources::syncRuntimeScene(
         return makeError(Error::Failure);
     }
     std::string rtxLog;
+    Queue* accelerationQueue = impl_->device->getQueue(QueueType::Compute);
+    if (accelerationQueue == nullptr) {
+        accelerationQueue = impl_->graphicsQueue;
+    }
     Result result = impl_->rtxBuilder.updateInstanceTransforms(
         *impl_->device,
-        *impl_->graphicsQueue,
+        *accelerationQueue,
         *boundScene,
         rtxLog);
     appendLogBlock(log, rtxLog);
@@ -2628,10 +2659,17 @@ bool ScenePathTraceResources::textureUploadsReady() const
 
 bool ScenePathTraceResources::gpuWorkComplete()
 {
-    const bool accelerationStructureComplete =
-        impl_->rtxBuilder.buildState() != SceneAccelerationStructureBuildState::Building ||
-        impl_->rtxBuilder.pollBuild();
-    return impl_->textureUploadsReady() && accelerationStructureComplete;
+    bool accelerationStructureComplete =
+        impl_->rtxBuilder.buildState() != SceneAccelerationStructureBuildState::Building;
+    Result result;
+    if (!accelerationStructureComplete) {
+        std::string log;
+        result = impl_->rtxBuilder.pollBuild(accelerationStructureComplete, log);
+        if (!result && !log.empty()) {
+            spdlog::error("[SceneResources] {}", log);
+        }
+    }
+    return impl_->textureUploadsReady() && (accelerationStructureComplete || !result);
 }
 
 } // namespace metallic::render

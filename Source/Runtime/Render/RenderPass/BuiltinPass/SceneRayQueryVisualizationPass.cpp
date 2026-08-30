@@ -115,9 +115,13 @@ public:
         sceneResources_ = *snapshot->pathTraceResources;
         const std::string rtxBuildLog = log;
         if (clusterIdSupported) {
+            Queue* accelerationQueue = context.device->getQueue(QueueType::Compute);
+            if (accelerationQueue == nullptr) {
+                accelerationQueue = context.graphicsQueue;
+            }
             result = clusterAccelerationStructureBuilder_.build(
                 *context.device,
-                *context.graphicsQueue,
+                *accelerationQueue,
                 loadedScene,
                 log);
             if (!result) {
@@ -298,9 +302,13 @@ private:
 
         if (clusterIdShaderEnabled_ &&
             (sceneResourcesChanged || clusterAccelerationStructureBuilder_.valid())) {
+            Queue* accelerationQueue = device_->getQueue(QueueType::Compute);
+            if (accelerationQueue == nullptr) {
+                accelerationQueue = graphicsQueue_;
+            }
             Result result = clusterAccelerationStructureBuilder_.build(
                 *device_,
-                *graphicsQueue_,
+                *accelerationQueue,
                 *runtimeScene,
                 log);
             if (!result) {

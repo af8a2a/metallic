@@ -16,8 +16,17 @@ struct SceneAccelerationStructureStats {
     uint64_t vertexCount = 0;
     uint64_t indexCount = 0;
     uint64_t geometryBytes = 0;
+    // Final resident BLAS plus TLAS bytes once the build is Ready.
     uint64_t accelerationStructureBytes = 0;
     uint64_t scratchBytes = 0;
+    // BLAS-only compaction accounting. During Phase A, compactedBlasBytes is
+    // zero; it becomes the final mixed compact/original resident size when
+    // Phase B is submitted.
+    uint64_t originalBlasBytes = 0;
+    uint64_t compactedBlasBytes = 0;
+    uint64_t compactionSavedBytes = 0;
+    // Peak simultaneous AS bytes, excluding geometry, instances, and scratch.
+    uint64_t peakAccelerationStructureBytes = 0;
 };
 
 enum class SceneAccelerationStructureBuildState : uint8_t {
@@ -40,6 +49,7 @@ public:
 
     Result build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
     Result beginBuild(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
+    Result pollBuild(bool& complete, std::string& log);
     bool pollBuild();
     SceneAccelerationStructureBuildState buildState() const;
     Result updateInstanceTransforms(
