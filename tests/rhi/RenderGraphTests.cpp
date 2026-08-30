@@ -415,6 +415,156 @@ public:
     }
 };
 
+struct TestTextureExtentExecutionState {
+    uint32_t producerContextWidth = 0;
+    uint32_t producerContextHeight = 0;
+    uint32_t producerOutputWidth = 0;
+    uint32_t producerOutputHeight = 0;
+    uint32_t relayContextWidth = 0;
+    uint32_t relayContextHeight = 0;
+    uint32_t relayInputWidth = 0;
+    uint32_t relayInputHeight = 0;
+    uint32_t relayOutputWidth = 0;
+    uint32_t relayOutputHeight = 0;
+    uint32_t consumerContextWidth = 0;
+    uint32_t consumerContextHeight = 0;
+    uint32_t consumerInputWidth = 0;
+    uint32_t consumerInputHeight = 0;
+    uint32_t consumerOutputWidth = 0;
+    uint32_t consumerOutputHeight = 0;
+};
+
+TestTextureExtentExecutionState& testTextureExtentExecutionState()
+{
+    static TestTextureExtentExecutionState state;
+    return state;
+}
+
+class TestTextureExtentProducerPass final : public render::RasterPass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        const render::RenderGraphProperties& passProperties = properties();
+        const uint32_t outputWidth = passProperties.is_object()
+            ? passProperties.value("outputWidth", 0u)
+            : 0u;
+        const uint32_t outputHeight = passProperties.is_object()
+            ? passProperties.value("outputHeight", 0u)
+            : 0u;
+        const bool outputRgba16 = passProperties.is_object()
+            ? passProperties.value("outputRgba16", false)
+            : false;
+
+        render::RenderPassReflection reflection;
+        reflection.addTextureOutput("color", "Texture extent producer")
+            .texture2D(outputWidth, outputHeight)
+            .storageReadWrite()
+            .format = outputRgba16
+                ? render::Format::Rgba16Sfloat
+                : render::Format::Rgba8Unorm;
+        return reflection;
+    }
+
+    render::Result execute(render::RenderGraphExecutionContext& context) override
+    {
+        const render::TextureHandle color = context.outputTexture("color");
+        if (!color.valid()) {
+            return render::makeError(render::Error::InvalidArgument);
+        }
+
+        TestTextureExtentExecutionState& state = testTextureExtentExecutionState();
+        state.producerContextWidth = context.width();
+        state.producerContextHeight = context.height();
+        state.producerOutputWidth = color.desc().width;
+        state.producerOutputHeight = color.desc().height;
+        return {};
+    }
+};
+
+class TestTextureExtentRelayPass final : public render::RasterPass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        const render::RenderGraphProperties& passProperties = properties();
+        const uint32_t outputWidth = passProperties.is_object()
+            ? passProperties.value("outputWidth", 0u)
+            : 0u;
+        const uint32_t outputHeight = passProperties.is_object()
+            ? passProperties.value("outputHeight", 0u)
+            : 0u;
+
+        render::RenderPassReflection reflection;
+        reflection.addTextureInput("input", "Implicit-sized texture extent relay input")
+            .storageReadWrite()
+            .format = render::Format::Rgba8Unorm;
+        reflection.addTextureOutput("color", "Texture extent relay output")
+            .texture2D(outputWidth, outputHeight)
+            .storageReadWrite()
+            .format = render::Format::Rgba8Unorm;
+        return reflection;
+    }
+
+    render::Result execute(render::RenderGraphExecutionContext& context) override
+    {
+        const render::TextureHandle input = context.inputTexture("input");
+        const render::TextureHandle color = context.outputTexture("color");
+        if (!input.valid() || !color.valid()) {
+            return render::makeError(render::Error::InvalidArgument);
+        }
+
+        TestTextureExtentExecutionState& state = testTextureExtentExecutionState();
+        state.relayContextWidth = context.width();
+        state.relayContextHeight = context.height();
+        state.relayInputWidth = input.desc().width;
+        state.relayInputHeight = input.desc().height;
+        state.relayOutputWidth = color.desc().width;
+        state.relayOutputHeight = color.desc().height;
+        return {};
+    }
+};
+
+class TestTextureExtentConsumerPass final : public render::RasterPass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        const render::RenderGraphProperties& passProperties = properties();
+        const uint32_t inputWidth = passProperties.is_object()
+            ? passProperties.value("inputWidth", 0u)
+            : 0u;
+        const uint32_t inputHeight = passProperties.is_object()
+            ? passProperties.value("inputHeight", 0u)
+            : 0u;
+
+        render::RenderPassReflection reflection;
+        reflection.addTextureInput("input", "Explicit-sized texture extent consumer input")
+            .texture2D(inputWidth, inputHeight)
+            .storageReadWrite()
+            .format = render::Format::Rgba8Unorm;
+        reflection.addTextureOutput("color", "Default-sized texture extent consumer output")
+            .storageReadWrite()
+            .format = render::Format::Rgba8Unorm;
+        return reflection;
+    }
+
+    render::Result execute(render::RenderGraphExecutionContext& context) override
+    {
+        const render::TextureHandle input = context.inputTexture("input");
+        const render::TextureHandle color = context.outputTexture("color");
+        if (!input.valid() || !color.valid()) {
+            return render::makeError(render::Error::InvalidArgument);
+        }
+
+        TestTextureExtentExecutionState& state = testTextureExtentExecutionState();
+        state.consumerContextWidth = context.width();
+        state.consumerContextHeight = context.height();
+        state.consumerInputWidth = input.desc().width;
+        state.consumerInputHeight = input.desc().height;
+        state.consumerOutputWidth = color.desc().width;
+        state.consumerOutputHeight = color.desc().height;
+        return {};
+    }
+};
+
 struct TestShaderReloadState {
     bool failCompile = false;
     bool changeReflection = false;
@@ -550,6 +700,18 @@ void registerTestPass()
         "TestResizeCompilePass",
         "Test-only pass that counts RenderGraph compile calls",
         []() { return std::make_unique<TestResizeCompilePass>(); });
+    render::registerRenderGraphPassType(
+        "TestTextureExtentProducerPass",
+        "Test-only pass with a configurable texture output extent",
+        []() { return std::make_unique<TestTextureExtentProducerPass>(); });
+    render::registerRenderGraphPassType(
+        "TestTextureExtentRelayPass",
+        "Test-only pass with an implicit input and configurable output extent",
+        []() { return std::make_unique<TestTextureExtentRelayPass>(); });
+    render::registerRenderGraphPassType(
+        "TestTextureExtentConsumerPass",
+        "Test-only pass with an explicit-sized texture input and default-sized output",
+        []() { return std::make_unique<TestTextureExtentConsumerPass>(); });
     render::registerRenderGraphPassType(
         "TestShaderReloadPass",
         "Test-only pass that validates transactional shader reload",
@@ -1186,13 +1348,15 @@ bool hasRuntimeSetting(
     const render::RenderGraphPass& pass,
     const std::string& key,
     render::RenderGraphRuntimeSettingType type,
-    bool requireHistoryInvalidation = false)
+    bool requireHistoryInvalidation = false,
+    bool requireGraphRebuild = false)
 {
     const std::vector<render::RenderGraphRuntimeSetting> settings = pass.runtimeSettings();
     for (const render::RenderGraphRuntimeSetting& setting : settings) {
         if (setting.key == key &&
             setting.type == type &&
-            (!requireHistoryInvalidation || setting.invalidateHistory)) {
+            (!requireHistoryInvalidation || setting.invalidateHistory) &&
+            (!requireGraphRebuild || setting.rebuildGraph)) {
             return true;
         }
     }
@@ -1233,12 +1397,15 @@ public:
             render::createRenderGraphPass("GPUDrivenPreviewPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenStreamAsset =
             render::createRenderGraphPass("GPUDrivenStreamAssetPass");
+        const std::unique_ptr<render::RenderGraphPass> streamlineDlssRr =
+            render::createRenderGraphPass("StreamlineDlssRrPass");
         if (pathTrace == nullptr ||
             rtxdi == nullptr ||
             nrdDenoise == nullptr ||
             materialVisualization == nullptr ||
             gpuDrivenPreview == nullptr ||
-            gpuDrivenStreamAsset == nullptr) {
+            gpuDrivenStreamAsset == nullptr ||
+            streamlineDlssRr == nullptr) {
             return RhiTestResult::fail("failed to create passes for runtime settings declaration test");
         }
         if (!hasBoolRuntimeSetting(*pathTrace, "flipBitangent")) {
@@ -1291,9 +1458,109 @@ public:
         if (!hasBoolRuntimeSetting(*gpuDrivenStreamAsset, "enableGpuLodSelection")) {
             return RhiTestResult::fail("GPUDrivenStreamAssetPass missing Bool runtime setting enableGpuLodSelection");
         }
+        if (!hasRuntimeSetting(
+                *streamlineDlssRr,
+                "mode",
+                render::RenderGraphRuntimeSettingType::Enum,
+                true,
+                true)) {
+            return RhiTestResult::fail(
+                "StreamlineDlssRrPass mode must invalidate history and rebuild the graph");
+        }
         return RhiTestResult::pass();
     }
 };
+
+class RenderGraphRuntimeRebuildDirtyTest : public RhiTest {
+public:
+    RenderGraphRuntimeRebuildDirtyTest()
+    {
+        type = RhiTestType::Resource;
+        name = "render_graph_runtime_rebuild_dirty";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::RenderGraphProperties staticProperties = render::RenderGraphProperties::object();
+        staticProperties["mode"] = "Balanced";
+
+        render::RenderGraph graph;
+        render::RenderGraphNode* node = graph.addNode(
+            "StreamlineDlssRrPass",
+            "DlssRr",
+            std::move(staticProperties));
+        if (node == nullptr) {
+            return RhiTestResult::fail("failed to create Streamline DLSS-RR runtime dirty test node");
+        }
+
+        graph.clearDirty();
+        if (!graph.setNodeRuntimeProperty(node->id, "camera.fovDegrees", 55.0f)) {
+            return RhiTestResult::fail("failed to set ordinary DLSS-RR runtime property");
+        }
+        if (graph.dirty()) {
+            return RhiTestResult::fail("ordinary DLSS-RR runtime property unexpectedly dirtied graph");
+        }
+
+        if (!graph.setNodeRuntimeProperty(node->id, "mode", "Balanced")) {
+            return RhiTestResult::fail("failed to set same-effective DLSS-RR runtime mode");
+        }
+        if (graph.dirty()) {
+            return RhiTestResult::fail("same-effective DLSS-RR runtime mode unexpectedly dirtied graph");
+        }
+
+        if (!graph.setNodeRuntimeProperty(node->id, "mode", "Quality")) {
+            return RhiTestResult::fail("failed to set DLSS-RR runtime mode through single-property API");
+        }
+        if (!graph.dirty()) {
+            return RhiTestResult::fail("single-property DLSS-RR mode change did not dirty graph");
+        }
+
+        graph.clearDirty();
+        if (!graph.setNodeRuntimeProperty(node->id, "mode", "Quality")) {
+            return RhiTestResult::fail("failed to repeat DLSS-RR runtime mode through single-property API");
+        }
+        if (graph.dirty()) {
+            return RhiTestResult::fail("repeating the same DLSS-RR runtime mode dirtied graph");
+        }
+
+        render::RenderGraphProperties runtimeProperties = node->runtimeProperties;
+        runtimeProperties["mode"] = "Performance";
+        if (!graph.setNodeRuntimeProperties(node->id, runtimeProperties)) {
+            return RhiTestResult::fail("failed to set DLSS-RR runtime mode through bulk API");
+        }
+        if (!graph.dirty()) {
+            return RhiTestResult::fail("bulk DLSS-RR mode change did not dirty graph");
+        }
+
+        graph.clearDirty();
+        if (!graph.setNodeRuntimeProperties(node->id, runtimeProperties)) {
+            return RhiTestResult::fail("failed to repeat DLSS-RR runtime properties through bulk API");
+        }
+        if (graph.dirty()) {
+            return RhiTestResult::fail("repeating same-effective bulk runtime properties dirtied graph");
+        }
+
+        runtimeProperties.erase("mode");
+        if (!graph.setNodeRuntimeProperties(node->id, std::move(runtimeProperties))) {
+            return RhiTestResult::fail("failed to remove DLSS-RR runtime mode overlay");
+        }
+        if (!graph.dirty()) {
+            return RhiTestResult::fail("removing DLSS-RR mode overlay did not dirty graph");
+        }
+
+        graph.clearDirty();
+        render::RenderGraphProperties overlayWithoutMode = node->runtimeProperties;
+        if (!graph.setNodeRuntimeProperties(node->id, std::move(overlayWithoutMode))) {
+            return RhiTestResult::fail("failed to repeat DLSS-RR runtime properties without mode overlay");
+        }
+        if (graph.dirty()) {
+            return RhiTestResult::fail("same-effective removed DLSS-RR mode overlay dirtied graph");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 class RenderGraphSerializationTest : public RhiTest {
 public:
     RenderGraphSerializationTest()
@@ -5394,6 +5661,471 @@ public:
     }
 };
 
+class RenderGraphPreviewActualOutputExtentTest : public RhiTest {
+public:
+    RenderGraphPreviewActualOutputExtentTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_preview_actual_output_extent";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        registerTestPass();
+
+        constexpr uint32_t kRequestedWidth = 320;
+        constexpr uint32_t kRequestedHeight = 180;
+        constexpr uint32_t kOutputWidth = 80;
+        constexpr uint32_t kOutputHeight = 45;
+
+        render::RenderGraphProperties properties = render::RenderGraphProperties::object();
+        properties["outputWidth"] = kOutputWidth;
+        properties["outputHeight"] = kOutputHeight;
+
+        render::RenderGraph graph;
+        graph.setName("PreviewActualOutputExtent");
+        render::RenderGraphNode* producer = graph.addNode(
+            "TestTextureExtentProducerPass",
+            "Producer",
+            properties);
+        if (producer == nullptr ||
+            !graph.markOutput("Producer.color")) {
+            return RhiTestResult::fail("failed to construct actual-output-extent preview graph");
+        }
+
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false);
+        if (!result) {
+            return RhiTestResult::skip(
+                std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        result = preview.render(
+            graph,
+            kRequestedWidth,
+            kRequestedHeight,
+            "Producer.color");
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("actual-output-extent preview render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        if (preview.width() != kOutputWidth || preview.height() != kOutputHeight) {
+            return RhiTestResult::fail(
+                std::string("preview reported ") +
+                std::to_string(preview.width()) +
+                "x" +
+                std::to_string(preview.height()) +
+                " instead of the actual 80x45 output extent");
+        }
+
+        constexpr size_t kExpectedPixelCount =
+            static_cast<size_t>(kOutputWidth) * static_cast<size_t>(kOutputHeight);
+        if (preview.pixels().size() != kExpectedPixelCount) {
+            return RhiTestResult::fail(
+                std::string("preview pixel count was ") +
+                std::to_string(preview.pixels().size()) +
+                " instead of " +
+                std::to_string(kExpectedPixelCount));
+        }
+
+        properties["outputRgba16"] = true;
+        if (!graph.setNodeProperties(producer->id, std::move(properties))) {
+            return RhiTestResult::fail("failed to switch preview output to RGBA16F");
+        }
+        result = preview.render(
+            graph,
+            kRequestedWidth,
+            kRequestedHeight,
+            "Producer.color");
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RGBA16F actual-output-extent preview returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        if (preview.width() != kOutputWidth ||
+            preview.height() != kOutputHeight ||
+            preview.pixels().size() != kExpectedPixelCount) {
+            return RhiTestResult::fail("RGBA16F preview did not preserve the actual output extent");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
+class RenderGraphTextureExtentConstraintPropagationTest : public RhiTest {
+public:
+    RenderGraphTextureExtentConstraintPropagationTest()
+    {
+        type = RhiTestType::Resource;
+        name = "render_graph_texture_extent_constraint_propagation";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        registerTestPass();
+
+        constexpr uint32_t kGraphWidth = 320;
+        constexpr uint32_t kGraphHeight = 180;
+        constexpr uint32_t kProducerWidth = 80;
+        constexpr uint32_t kProducerHeight = 45;
+        constexpr uint32_t kUpdatedProducerWidth = 64;
+        constexpr uint32_t kUpdatedProducerHeight = 36;
+
+        render::RenderGraphProperties consumerProperties = render::RenderGraphProperties::object();
+        consumerProperties["inputWidth"] = kProducerWidth;
+        consumerProperties["inputHeight"] = kProducerHeight;
+
+        render::RenderGraph graph;
+        graph.setName("TextureExtentConstraintPropagation");
+        render::RenderGraphNode* producer = graph.addNode("TestTextureExtentProducerPass", "Producer");
+        render::RenderGraphNode* consumer = graph.addNode("TestTextureExtentConsumerPass", "Consumer");
+        if (producer == nullptr ||
+            consumer == nullptr ||
+            !graph.addEdge("Producer.color", "Consumer.input") ||
+            !graph.markOutput("Consumer.color")) {
+            return RhiTestResult::fail("failed to construct texture extent propagation graph");
+        }
+        if (!graph.setNodeRuntimeProperties(consumer->id, consumerProperties)) {
+            return RhiTestResult::fail("failed to set runtime texture extent constraints");
+        }
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        render::Result result = executor.compile(
+            context.device,
+            graph,
+            kGraphWidth,
+            kGraphHeight,
+            log);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RenderGraphExecutor::compile returned ") +
+                toString(result) + ": " + log);
+        }
+
+        const render::RenderGraphResource* producerOutput = executor.outputResource("Producer.color");
+        const render::RenderGraphResource* consumerOutput = executor.outputResource("Consumer.color");
+        if (producerOutput == nullptr ||
+            producerOutput->desc.width != kProducerWidth ||
+            producerOutput->desc.height != kProducerHeight) {
+            return RhiTestResult::fail(
+                "explicit consumer input extent did not propagate to the producer resource");
+        }
+        if (consumerOutput == nullptr ||
+            consumerOutput->desc.width != kGraphWidth ||
+            consumerOutput->desc.height != kGraphHeight) {
+            return RhiTestResult::fail(
+                "default consumer output did not preserve the global graph extent");
+        }
+
+        testTextureExtentExecutionState() = {};
+        result = executor.execute(render::RenderGraphSubmitDesc{
+            .graphicsQueue = &context.graphicsQueue,
+        });
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RenderGraphExecutor::execute returned ") + toString(result));
+        }
+        result = executor.waitForSubmittedWork(5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RenderGraphExecutor::waitForSubmittedWork returned ") +
+                toString(result));
+        }
+
+        const TestTextureExtentExecutionState& state = testTextureExtentExecutionState();
+        if (state.producerContextWidth != kProducerWidth ||
+            state.producerContextHeight != kProducerHeight ||
+            state.producerOutputWidth != kProducerWidth ||
+            state.producerOutputHeight != kProducerHeight) {
+            return RhiTestResult::fail(
+                "producer execution context did not use the propagated texture extent");
+        }
+        if (state.consumerContextWidth != kGraphWidth ||
+            state.consumerContextHeight != kGraphHeight ||
+            state.consumerInputWidth != kProducerWidth ||
+            state.consumerInputHeight != kProducerHeight ||
+            state.consumerOutputWidth != kGraphWidth ||
+            state.consumerOutputHeight != kGraphHeight) {
+            return RhiTestResult::fail(
+                "consumer execution context or resources did not preserve split input/output extents");
+        }
+
+        consumerProperties["inputWidth"] = kUpdatedProducerWidth;
+        consumerProperties["inputHeight"] = kUpdatedProducerHeight;
+        if (!graph.setNodeRuntimeProperties(consumer->id, std::move(consumerProperties))) {
+            return RhiTestResult::fail("failed to update runtime texture extent constraints");
+        }
+        result = executor.compile(context.device, graph, kGraphWidth, kGraphHeight, log);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("runtime extent RenderGraphExecutor::compile returned ") +
+                toString(result) + ": " + log);
+        }
+        producerOutput = executor.outputResource("Producer.color");
+        if (producerOutput == nullptr ||
+            producerOutput->desc.width != kUpdatedProducerWidth ||
+            producerOutput->desc.height != kUpdatedProducerHeight) {
+            return RhiTestResult::fail(
+                "updated runtime input extent did not rebuild the producer resource");
+        }
+
+        testTextureExtentExecutionState() = {};
+        result = executor.execute(render::RenderGraphSubmitDesc{
+            .graphicsQueue = &context.graphicsQueue,
+        });
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("updated extent RenderGraphExecutor::execute returned ") + toString(result));
+        }
+        result = executor.waitForSubmittedWork(5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("updated extent waitForSubmittedWork returned ") + toString(result));
+        }
+        const TestTextureExtentExecutionState& updatedState = testTextureExtentExecutionState();
+        if (updatedState.producerContextWidth != kUpdatedProducerWidth ||
+            updatedState.producerContextHeight != kUpdatedProducerHeight ||
+            updatedState.consumerContextWidth != kGraphWidth ||
+            updatedState.consumerContextHeight != kGraphHeight ||
+            updatedState.consumerInputWidth != kUpdatedProducerWidth ||
+            updatedState.consumerInputHeight != kUpdatedProducerHeight) {
+            return RhiTestResult::fail(
+                "runtime extent rebuild did not update producer/consumer execution dimensions");
+        }
+
+        return RhiTestResult::pass(
+            "propagated and rebuilt runtime input extents while preserving 320x180 output");
+    }
+};
+
+class RenderGraphTextureExtentConstraintConflictTest : public RhiTest {
+public:
+    RenderGraphTextureExtentConstraintConflictTest()
+    {
+        type = RhiTestType::Resource;
+        name = "render_graph_texture_extent_constraint_conflict";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        registerTestPass();
+
+        render::RenderGraphProperties firstConsumerProperties =
+            render::RenderGraphProperties::object();
+        firstConsumerProperties["inputWidth"] = 80u;
+        firstConsumerProperties["inputHeight"] = 45u;
+        render::RenderGraphProperties secondConsumerProperties =
+            render::RenderGraphProperties::object();
+        secondConsumerProperties["inputWidth"] = 64u;
+        secondConsumerProperties["inputHeight"] = 36u;
+
+        render::RenderGraph graph;
+        graph.setName("TextureExtentConstraintConflict");
+        if (graph.addNode("TestTextureExtentProducerPass", "Producer") == nullptr ||
+            graph.addNode(
+                "TestTextureExtentConsumerPass",
+                "FirstConsumer",
+                firstConsumerProperties) == nullptr ||
+            graph.addNode(
+                "TestTextureExtentConsumerPass",
+                "SecondConsumer",
+                secondConsumerProperties) == nullptr ||
+            !graph.addEdge("Producer.color", "FirstConsumer.input") ||
+            !graph.addEdge("Producer.color", "SecondConsumer.input") ||
+            !graph.markOutput("FirstConsumer.color") ||
+            !graph.markOutput("SecondConsumer.color")) {
+            return RhiTestResult::fail("failed to construct conflicting texture extent graph");
+        }
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        const render::Result result = executor.compile(context.device, graph, 320, 180, log);
+        if (result ||
+            !render::hasError(result, render::Error::InvalidArgument) ||
+            executor.compiled()) {
+            return RhiTestResult::fail(
+                "RenderGraph compile accepted conflicting explicit consumer input extents: " + log);
+        }
+
+        return RhiTestResult::pass(
+            "rejected conflicting 80x45 and 64x36 constraints on one producer output");
+    }
+};
+
+class RenderGraphTextureExtentConstraintMultihopPropagationTest : public RhiTest {
+public:
+    RenderGraphTextureExtentConstraintMultihopPropagationTest()
+    {
+        type = RhiTestType::Resource;
+        name = "render_graph_texture_extent_constraint_multihop_propagation";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        registerTestPass();
+
+        constexpr uint32_t kGraphWidth = 320;
+        constexpr uint32_t kGraphHeight = 180;
+        constexpr uint32_t kConstrainedWidth = 80;
+        constexpr uint32_t kConstrainedHeight = 45;
+
+        render::RenderGraphProperties consumerProperties =
+            render::RenderGraphProperties::object();
+        consumerProperties["inputWidth"] = kConstrainedWidth;
+        consumerProperties["inputHeight"] = kConstrainedHeight;
+
+        render::RenderGraph graph;
+        graph.setName("TextureExtentConstraintMultihopPropagation");
+        if (graph.addNode("TestTextureExtentProducerPass", "Producer") == nullptr ||
+            graph.addNode("TestTextureExtentRelayPass", "Relay") == nullptr ||
+            graph.addNode(
+                "TestTextureExtentConsumerPass",
+                "Consumer",
+                consumerProperties) == nullptr ||
+            !graph.addEdge("Producer.color", "Relay.input") ||
+            !graph.addEdge("Relay.color", "Consumer.input") ||
+            !graph.markOutput("Consumer.color")) {
+            return RhiTestResult::fail("failed to construct multihop texture extent graph");
+        }
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        render::Result result = executor.compile(
+            context.device,
+            graph,
+            kGraphWidth,
+            kGraphHeight,
+            log);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RenderGraphExecutor::compile returned ") +
+                toString(result) + ": " + log);
+        }
+
+        const render::RenderGraphResource* producerOutput =
+            executor.outputResource("Producer.color");
+        const render::RenderGraphResource* relayOutput = executor.outputResource("Relay.color");
+        const render::RenderGraphResource* consumerOutput =
+            executor.outputResource("Consumer.color");
+        if (producerOutput == nullptr ||
+            producerOutput->desc.width != kConstrainedWidth ||
+            producerOutput->desc.height != kConstrainedHeight ||
+            relayOutput == nullptr ||
+            relayOutput->desc.width != kConstrainedWidth ||
+            relayOutput->desc.height != kConstrainedHeight) {
+            return RhiTestResult::fail(
+                "explicit downstream input extent did not propagate through the relay resources");
+        }
+        if (consumerOutput == nullptr ||
+            consumerOutput->desc.width != kGraphWidth ||
+            consumerOutput->desc.height != kGraphHeight) {
+            return RhiTestResult::fail(
+                "multihop consumer output did not preserve the global graph extent");
+        }
+
+        testTextureExtentExecutionState() = {};
+        result = executor.execute(render::RenderGraphSubmitDesc{
+            .graphicsQueue = &context.graphicsQueue,
+        });
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RenderGraphExecutor::execute returned ") + toString(result));
+        }
+        result = executor.waitForSubmittedWork(5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RenderGraphExecutor::waitForSubmittedWork returned ") +
+                toString(result));
+        }
+
+        const TestTextureExtentExecutionState& state = testTextureExtentExecutionState();
+        if (state.producerContextWidth != kConstrainedWidth ||
+            state.producerContextHeight != kConstrainedHeight ||
+            state.producerOutputWidth != kConstrainedWidth ||
+            state.producerOutputHeight != kConstrainedHeight) {
+            return RhiTestResult::fail(
+                "multihop producer resource or execution context has the wrong extent");
+        }
+        if (state.relayContextWidth != kConstrainedWidth ||
+            state.relayContextHeight != kConstrainedHeight ||
+            state.relayInputWidth != kConstrainedWidth ||
+            state.relayInputHeight != kConstrainedHeight ||
+            state.relayOutputWidth != kConstrainedWidth ||
+            state.relayOutputHeight != kConstrainedHeight) {
+            return RhiTestResult::fail(
+                "relay input, output, or execution context did not inherit the multihop constraint");
+        }
+        if (state.consumerContextWidth != kGraphWidth ||
+            state.consumerContextHeight != kGraphHeight ||
+            state.consumerInputWidth != kConstrainedWidth ||
+            state.consumerInputHeight != kConstrainedHeight ||
+            state.consumerOutputWidth != kGraphWidth ||
+            state.consumerOutputHeight != kGraphHeight) {
+            return RhiTestResult::fail(
+                "multihop consumer did not preserve split input/output execution extents");
+        }
+
+        return RhiTestResult::pass(
+            "propagated 80x45 through an implicit relay while preserving 320x180 output");
+    }
+};
+
+class RenderGraphTextureExtentConstraintRelayConflictTest : public RhiTest {
+public:
+    RenderGraphTextureExtentConstraintRelayConflictTest()
+    {
+        type = RhiTestType::Resource;
+        name = "render_graph_texture_extent_constraint_relay_conflict";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        registerTestPass();
+
+        render::RenderGraphProperties producerProperties =
+            render::RenderGraphProperties::object();
+        producerProperties["outputWidth"] = 80u;
+        producerProperties["outputHeight"] = 45u;
+        render::RenderGraphProperties relayProperties =
+            render::RenderGraphProperties::object();
+        relayProperties["outputWidth"] = 320u;
+        relayProperties["outputHeight"] = 180u;
+
+        render::RenderGraph graph;
+        graph.setName("TextureExtentConstraintRelayConflict");
+        if (graph.addNode(
+                "TestTextureExtentProducerPass",
+                "Producer",
+                producerProperties) == nullptr ||
+            graph.addNode("TestTextureExtentRelayPass", "Relay", relayProperties) == nullptr ||
+            !graph.addEdge("Producer.color", "Relay.input") ||
+            !graph.markOutput("Relay.color")) {
+            return RhiTestResult::fail("failed to construct conflicting relay extent graph");
+        }
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        const render::Result result = executor.compile(context.device, graph, 320, 180, log);
+        if (result ||
+            !render::hasError(result, render::Error::InvalidArgument) ||
+            executor.compiled()) {
+            return RhiTestResult::fail(
+                "RenderGraph compile accepted an implicit relay input that conflicts with its output: " +
+                log);
+        }
+
+        return RhiTestResult::pass(
+            "rejected explicit 80x45 producer feeding implicit input of a 320x180 relay");
+    }
+};
+
 class RenderGraphShaderReloadTransactionTest : public RhiTest {
 public:
     RenderGraphShaderReloadTransactionTest()
@@ -8410,6 +9142,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRuntimeSettingsDeclarationTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphRuntimeRebuildDirtyTest);
 METALLIC_REGISTER_RHI_TEST(RenderSampleLoadTest);
 METALLIC_REGISTER_RHI_TEST(RenderSampleFallbackAndValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphValidationTest);
@@ -8443,6 +9176,11 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest)
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceTransmissionTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceAlphaMaskPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphResizeReusesCompiledPassesTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewActualOutputExtentTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphTextureExtentConstraintPropagationTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphTextureExtentConstraintConflictTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphTextureExtentConstraintMultihopPropagationTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphTextureExtentConstraintRelayConflictTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphShaderReloadTransactionTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);

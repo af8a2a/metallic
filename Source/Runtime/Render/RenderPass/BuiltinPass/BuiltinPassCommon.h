@@ -304,7 +304,8 @@ inline RenderGraphRuntimeSetting runtimeEnumSetting(
     std::string label,
     std::string defaultValue,
     std::initializer_list<std::pair<std::string_view, std::string_view>> options,
-    bool invalidateHistory = false)
+    bool invalidateHistory = false,
+    bool rebuildGraph = false)
 {
     RenderGraphRuntimeSetting setting{
         .key = std::move(key),
@@ -312,6 +313,7 @@ inline RenderGraphRuntimeSetting runtimeEnumSetting(
         .type = RenderGraphRuntimeSettingType::Enum,
         .defaultValue = std::move(defaultValue),
         .invalidateHistory = invalidateHistory,
+        .rebuildGraph = rebuildGraph,
     };
     setting.options.reserve(options.size());
     for (const auto& [optionLabel, optionValue] : options) {

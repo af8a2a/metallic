@@ -86,6 +86,7 @@ struct RenderGraphRuntimeSetting {
     RenderGraphProperties maxValue;
     std::vector<RenderGraphRuntimeSettingOption> options;
     bool invalidateHistory = false;
+    bool rebuildGraph = false;
 };
 
 struct RenderGraphField {
@@ -297,6 +298,7 @@ public:
     virtual QueueType queueType() const;
     virtual std::span<const RenderSubsystemId> requiredSubsystems() const;
     virtual std::vector<RenderGraphRuntimeSetting> runtimeSettings() const;
+    virtual Result prepare(const RenderGraphCompileContext& context, std::string& log);
     virtual Result compile(const RenderGraphCompileContext& context, std::string& log);
     virtual Result execute(RenderGraphExecutionContext& context) = 0;
 

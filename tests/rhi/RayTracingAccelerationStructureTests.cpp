@@ -105,6 +105,20 @@ public:
                 "SceneAccelerationStructureBuilder did not expose an in-flight compaction phase");
         }
 
+        const render::SceneAccelerationStructureStats inFlightStats = builder.stats();
+        if (inFlightStats.originalBlasBytes == 0 ||
+            inFlightStats.compactedBlasBytes == 0 ||
+            inFlightStats.compactedBlasBytes > inFlightStats.originalBlasBytes ||
+            inFlightStats.compactionSavedBytes !=
+                inFlightStats.originalBlasBytes - inFlightStats.compactedBlasBytes ||
+            inFlightStats.accelerationStructureBytes <= inFlightStats.compactedBlasBytes ||
+            inFlightStats.peakAccelerationStructureBytes <
+                inFlightStats.accelerationStructureBytes +
+                    inFlightStats.compactionSavedBytes) {
+            return RhiTestResult::fail(
+                "SceneAccelerationStructureBuilder exposed inconsistent in-flight compaction statistics");
+        }
+
         builder.clear();
         if (builder.buildState() != render::SceneAccelerationStructureBuildState::Idle ||
             builder.valid() || builder.accelerationStructure() != nullptr ||
@@ -162,7 +176,8 @@ public:
             stats.compactionSavedBytes !=
                 stats.originalBlasBytes - stats.compactedBlasBytes ||
             stats.accelerationStructureBytes <= stats.compactedBlasBytes ||
-            stats.peakAccelerationStructureBytes < stats.accelerationStructureBytes) {
+            stats.peakAccelerationStructureBytes <
+                stats.accelerationStructureBytes + stats.compactionSavedBytes) {
             return RhiTestResult::fail(
                 "SceneAccelerationStructureBuilder produced inconsistent compaction statistics");
         }

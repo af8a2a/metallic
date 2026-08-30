@@ -2,6 +2,8 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 
+#include <spdlog/spdlog.h>
+
 namespace metallic::render::builtin_pass {
 namespace {
 
@@ -21,34 +23,46 @@ class StreamlineDlssRrPass final : public UnsafePass {
 public:
     ~StreamlineDlssRrPass() override = default;
 
-    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    RenderPassReflection reflect(const RenderGraphCompileContext& context) const override
     {
+        const vulkan::StreamlineDlssRrMode mode = modeFromProperties(properties());
+        const bool hasPreparedExtent = preparedFor(mode, context.width, context.height);
+        const uint32_t renderWidth = hasPreparedExtent ? preparedSettings_.renderWidth : 0;
+        const uint32_t renderHeight = hasPreparedExtent ? preparedSettings_.renderHeight : 0;
         RenderPassReflection reflection;
         RenderGraphField& inputColor = reflection.addTextureInput("inputColor", "DLSS-RR noisy HDR input color")
+            .texture2D(renderWidth, renderHeight)
             .storageReadWrite();
         inputColor.format = Format::Rgba16Sfloat;
         inputColor.usage = inputColor.usage | TextureUsageBits::TransferSource;
 
         reflection.addTextureInput("albedo", "DLSS-RR diffuse albedo guide")
+            .texture2D(renderWidth, renderHeight)
             .storageReadWrite()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureInput("specularAlbedo", "DLSS-RR specular albedo guide")
+            .texture2D(renderWidth, renderHeight)
             .storageReadWrite()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureInput("normalRoughness", "DLSS-RR packed normal and roughness guide")
+            .texture2D(renderWidth, renderHeight)
             .storageReadWrite()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureInput("motionVectors", "DLSS-RR motion vector guide")
+            .texture2D(renderWidth, renderHeight)
             .storageReadWrite()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureInput("linearDepth", "DLSS-RR linear depth guide")
+            .texture2D(renderWidth, renderHeight)
             .storageReadWrite()
             .format = Format::R32Sfloat;
         reflection.addTextureInput("specularHitDistance", "DLSS-RR specular hit distance guide")
+            .texture2D(renderWidth, renderHeight)
             .storageReadWrite()
             .format = Format::R32Sfloat;
 
         RenderGraphField& outputColor = reflection.addTextureOutput("color", "DLSS-RR denoised HDR output color")
+            .texture2D(context.width, context.height)
             .storageReadWrite();
         outputColor.format = Format::Rgba16Sfloat;
         outputColor.usage = outputColor.usage | TextureUsageBits::TransferDestination;
@@ -71,6 +85,7 @@ public:
                     {"DLAA", "DLAA"},
                     {"Off", "Off"},
                 },
+                true,
                 true),
             runtimeActionCounterSetting("resetSerial", "Reset", true),
         };
@@ -81,6 +96,42 @@ public:
             50.0f,
             true);
         return settings;
+    }
+
+    Result prepare(const RenderGraphCompileContext& context, std::string& log) override
+    {
+        forceReset_ = true;
+        preparedValid_ = false;
+        preparedSettings_ = {};
+        preparedMode_ = modeFromProperties(properties());
+        preparedOutputWidth_ = context.width;
+        preparedOutputHeight_ = context.height;
+        if (context.device == nullptr) {
+            return {};
+        }
+        if (context.width == 0 || context.height == 0) {
+            log = "StreamlineDlssRrPass requires non-zero output dimensions";
+            return makeError(Error::InvalidArgument);
+        }
+        if (preparedMode_ == vulkan::StreamlineDlssRrMode::Off) {
+            preparedSettings_.renderWidth = context.width;
+            preparedSettings_.renderHeight = context.height;
+            preparedSettings_.renderWidthMin = context.width;
+            preparedSettings_.renderHeightMin = context.height;
+            preparedSettings_.renderWidthMax = context.width;
+            preparedSettings_.renderHeightMax = context.height;
+            preparedValid_ = true;
+            return {};
+        }
+
+        Result result = vulkan::getStreamlineDlssRrOptimalSettings(
+            preparedMode_,
+            context.width,
+            context.height,
+            preparedSettings_,
+            log);
+        preparedValid_ = result.has_value();
+        return result;
     }
 
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
@@ -97,6 +148,10 @@ public:
             !context.device->capabilities().streamlineDlssRr) {
             log = "StreamlineDlssRrPass requires DeviceCapabilities::streamlineDlssRr";
             return makeError(Error::Unsupported);
+        }
+        if (!preparedFor(modeFromProperties(properties()), context.width, context.height)) {
+            log = "StreamlineDlssRrPass was not prepared with optimal input dimensions";
+            return makeError(Error::InvalidArgument);
         }
         return {};
 #endif
@@ -124,8 +179,39 @@ public:
         }
 
         const vulkan::StreamlineDlssRrMode mode = modeFromProperties(context.properties());
+        const uint32_t renderWidth = inputColor.desc().width;
+        const uint32_t renderHeight = inputColor.desc().height;
+        const uint32_t outputWidth = outputColor.desc().width;
+        const uint32_t outputHeight = outputColor.desc().height;
+        if (!preparedFor(mode, outputWidth, outputHeight) ||
+            preparedSettings_.renderWidth != renderWidth ||
+            preparedSettings_.renderHeight != renderHeight) {
+            spdlog::error(
+                "[Streamline] DLSS-RR pass extent mismatch: mode={} input={}x{} output={}x{} "
+                "preparedInput={}x{} preparedOutput={}x{}",
+                static_cast<uint32_t>(mode),
+                renderWidth,
+                renderHeight,
+                outputWidth,
+                outputHeight,
+                preparedSettings_.renderWidth,
+                preparedSettings_.renderHeight,
+                preparedOutputWidth_,
+                preparedOutputHeight_);
+            return makeError(Error::InvalidArgument);
+        }
         if (mode == vulkan::StreamlineDlssRrMode::Off) {
+            if (renderWidth != outputWidth || renderHeight != outputHeight) {
+                return makeError(Error::InvalidArgument);
+            }
             copyInputToOutput(context.commandBuffer(), inputColor, outputColor);
+            lastMode_ = vulkan::StreamlineDlssRrMode::Off;
+            lastRenderWidth_ = renderWidth;
+            lastRenderHeight_ = renderHeight;
+            lastOutputWidth_ = outputWidth;
+            lastOutputHeight_ = outputHeight;
+            hasPreviousCamera_ = false;
+            forceReset_ = false;
             return {};
         }
 
@@ -136,20 +222,23 @@ public:
             0,
             std::numeric_limits<uint32_t>::max());
         const bool reset =
+            forceReset_ ||
             lastMode_ != mode ||
             lastResetSerial_ != resetSerial ||
-            lastWidth_ != context.width() ||
-            lastHeight_ != context.height();
+            lastRenderWidth_ != renderWidth ||
+            lastRenderHeight_ != renderHeight ||
+            lastOutputWidth_ != outputWidth ||
+            lastOutputHeight_ != outputHeight;
         vulkan::StreamlineDlssRrCamera camera = cameraFromProperties(
-            context.width(),
-            context.height(),
+            renderWidth,
+            renderHeight,
             context.properties());
         const DlssRrCameraSnapshot currentCamera = cameraSnapshotFrom(camera);
         const bool previousCameraValid =
             !reset &&
             hasPreviousCamera_ &&
-            previousCameraWidth_ == context.width() &&
-            previousCameraHeight_ == context.height();
+            previousCameraWidth_ == outputWidth &&
+            previousCameraHeight_ == outputHeight;
         applyPreviousCamera(previousCameraValid ? previousCamera_ : currentCamera, camera);
         camera.previousValid = previousCameraValid;
 
@@ -165,27 +254,46 @@ public:
                 .motionVectors = textureRef(motionVectors),
                 .linearDepth = textureRef(linearDepth),
                 .specularHitDistance = textureRef(specularHitDistance),
-                .width = context.width(),
-                .height = context.height(),
+                .renderWidth = renderWidth,
+                .renderHeight = renderHeight,
+                .outputWidth = outputWidth,
+                .outputHeight = outputHeight,
                 .camera = camera,
                 .mode = mode,
                 .reset = reset || !previousCameraValid,
             },
             log);
+        if (!result && !log.empty()) {
+            spdlog::error("[Streamline] DLSS-RR evaluate failed: {}", log);
+        }
         if (result) {
             lastMode_ = mode;
             lastResetSerial_ = resetSerial;
-            lastWidth_ = context.width();
-            lastHeight_ = context.height();
+            lastRenderWidth_ = renderWidth;
+            lastRenderHeight_ = renderHeight;
+            lastOutputWidth_ = outputWidth;
+            lastOutputHeight_ = outputHeight;
             previousCamera_ = currentCamera;
-            previousCameraWidth_ = context.width();
-            previousCameraHeight_ = context.height();
+            previousCameraWidth_ = outputWidth;
+            previousCameraHeight_ = outputHeight;
             hasPreviousCamera_ = true;
+            forceReset_ = false;
         }
         return result;
     }
 
 private:
+    bool preparedFor(
+        vulkan::StreamlineDlssRrMode mode,
+        uint32_t outputWidth,
+        uint32_t outputHeight) const
+    {
+        return preparedValid_ &&
+            preparedMode_ == mode &&
+            preparedOutputWidth_ == outputWidth &&
+            preparedOutputHeight_ == outputHeight;
+    }
+
     static bool validTexture(TextureHandle texture)
     {
         return texture.valid() && texture.texture() != nullptr && texture.view() != nullptr;
@@ -437,8 +545,8 @@ private:
         commandBuffer.copyTexture(TextureCopyDesc{
             .source = inputColor.texture(),
             .destination = outputColor.texture(),
-            .width = std::min(inputColor.desc().width, outputColor.desc().width),
-            .height = std::min(inputColor.desc().height, outputColor.desc().height),
+            .width = outputColor.desc().width,
+            .height = outputColor.desc().height,
             .depth = 1,
             .sourceMipLevel = 0,
             .sourceBaseLayer = 0,
@@ -473,12 +581,20 @@ private:
 
     vulkan::StreamlineDlssRrMode lastMode_ = vulkan::StreamlineDlssRrMode::Off;
     uint32_t lastResetSerial_ = 0;
-    uint32_t lastWidth_ = 0;
-    uint32_t lastHeight_ = 0;
+    uint32_t lastRenderWidth_ = 0;
+    uint32_t lastRenderHeight_ = 0;
+    uint32_t lastOutputWidth_ = 0;
+    uint32_t lastOutputHeight_ = 0;
     DlssRrCameraSnapshot previousCamera_;
     uint32_t previousCameraWidth_ = 0;
     uint32_t previousCameraHeight_ = 0;
     bool hasPreviousCamera_ = false;
+    vulkan::StreamlineDlssRrOptimalSettings preparedSettings_;
+    vulkan::StreamlineDlssRrMode preparedMode_ = vulkan::StreamlineDlssRrMode::Off;
+    uint32_t preparedOutputWidth_ = 0;
+    uint32_t preparedOutputHeight_ = 0;
+    bool preparedValid_ = false;
+    bool forceReset_ = true;
 };
 
 } // namespace

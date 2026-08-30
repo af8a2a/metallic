@@ -23,6 +23,15 @@ enum class StreamlineDlssRrMode : uint32_t {
     UltraQuality,
 };
 
+struct StreamlineDlssRrOptimalSettings {
+    uint32_t renderWidth = 0;
+    uint32_t renderHeight = 0;
+    uint32_t renderWidthMin = 0;
+    uint32_t renderHeightMin = 0;
+    uint32_t renderWidthMax = 0;
+    uint32_t renderHeightMax = 0;
+};
+
 struct StreamlineDlssRrCamera {
     float eye[3] = {0.0f, 0.0f, 0.0f};
     float center[3] = {0.0f, 0.0f, -1.0f};
@@ -54,8 +63,10 @@ struct StreamlineDlssRrDesc {
     StreamlineDlssRrTextureRef motionVectors;
     StreamlineDlssRrTextureRef linearDepth;
     StreamlineDlssRrTextureRef specularHitDistance;
-    uint32_t width = 0;
-    uint32_t height = 0;
+    uint32_t renderWidth = 0;
+    uint32_t renderHeight = 0;
+    uint32_t outputWidth = 0;
+    uint32_t outputHeight = 0;
     StreamlineDlssRrCamera camera;
     StreamlineDlssRrMode mode = StreamlineDlssRrMode::Balanced;
     bool reset = false;
@@ -65,6 +76,12 @@ const char* streamlineVulkanLibraryName();
 bool streamlineSdkAvailable();
 bool streamlineInitialized();
 bool streamlineDlssRrSupported();
+Result getStreamlineDlssRrOptimalSettings(
+    StreamlineDlssRrMode mode,
+    uint32_t outputWidth,
+    uint32_t outputHeight,
+    StreamlineDlssRrOptimalSettings& settings,
+    std::string& log);
 Result initializeStreamlinePreDevice(std::string& log);
 Result setStreamlineVulkanDevice(
     const NativeDevice& device,

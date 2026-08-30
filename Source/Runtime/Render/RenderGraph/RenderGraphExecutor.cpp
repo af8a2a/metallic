@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstring>
 #include <functional>
@@ -68,6 +69,124 @@ private:
     RenderSubsystemHost* host_ = nullptr;
 };
 
+uint32_t previewReadbackTexelByteSize(Format format)
+{
+    switch (format) {
+    case Format::R8Unorm:
+    case Format::R8Snorm:
+    case Format::R8Uint:
+    case Format::R8Sint:
+        return 1;
+    case Format::Rg8Unorm:
+    case Format::Rg8Snorm:
+    case Format::Rg8Uint:
+    case Format::Rg8Sint:
+    case Format::Bgra4Unorm:
+    case Format::R16Unorm:
+    case Format::R16Snorm:
+    case Format::R16Uint:
+    case Format::R16Sint:
+    case Format::R16Sfloat:
+        return 2;
+    case Format::Bgra8Unorm:
+    case Format::Bgra8Srgb:
+    case Format::Rgba8Unorm:
+    case Format::Rgba8Snorm:
+    case Format::Rgba8Srgb:
+    case Format::Rgba8Uint:
+    case Format::Rgba8Sint:
+    case Format::Rg16Unorm:
+    case Format::Rg16Snorm:
+    case Format::Rg16Uint:
+    case Format::Rg16Sint:
+    case Format::Rg16Sfloat:
+    case Format::R32Uint:
+    case Format::R32Sint:
+    case Format::R32Sfloat:
+    case Format::A2B10G10R10UnormPack32:
+    case Format::A2R10G10B10UintPack32:
+    case Format::B10G11R11UfloatPack32:
+    case Format::E5B9G9R9UfloatPack32:
+    case Format::D32Sfloat:
+        return 4;
+    case Format::Rgba16Sfloat:
+        return 8;
+    default:
+        return 0;
+    }
+}
+
+float halfToFloat(uint16_t value)
+{
+    const uint32_t sign = static_cast<uint32_t>(value & 0x8000u) << 16u;
+    uint32_t exponent = (value >> 10u) & 0x1fu;
+    uint32_t mantissa = value & 0x03ffu;
+    uint32_t bits = 0;
+    if (exponent == 0) {
+        if (mantissa == 0) {
+            bits = sign;
+        } else {
+            exponent = 113u;
+            while ((mantissa & 0x0400u) == 0) {
+                mantissa <<= 1u;
+                --exponent;
+            }
+            mantissa &= 0x03ffu;
+            bits = sign | (exponent << 23u) | (mantissa << 13u);
+        }
+    } else if (exponent == 0x1fu) {
+        bits = sign | 0x7f800000u | (mantissa << 13u);
+    } else {
+        bits = sign | ((exponent + 112u) << 23u) | (mantissa << 13u);
+    }
+    return std::bit_cast<float>(bits);
+}
+
+uint8_t floatToUnorm8(float value)
+{
+    if (!(value > 0.0f)) {
+        return 0;
+    }
+    if (value >= 1.0f) {
+        return 255;
+    }
+    return static_cast<uint8_t>(value * 255.0f + 0.5f);
+}
+
+bool convertPreviewReadback(
+    Format format,
+    const void* source,
+    size_t pixelCount,
+    std::vector<uint32_t>& destination)
+{
+    if (source == nullptr || destination.size() != pixelCount) {
+        return false;
+    }
+    const uint32_t texelByteSize = previewReadbackTexelByteSize(format);
+    if (texelByteSize > 0 && texelByteSize <= 4) {
+        std::fill(destination.begin(), destination.end(), 0u);
+        std::memcpy(destination.data(), source, pixelCount * texelByteSize);
+        return true;
+    }
+    if (format != Format::Rgba16Sfloat) {
+        return false;
+    }
+
+    const auto* sourceBytes = static_cast<const uint8_t*>(source);
+    auto* destinationBytes = reinterpret_cast<uint8_t*>(destination.data());
+    for (size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+        for (size_t component = 0; component < 4; ++component) {
+            uint16_t half = 0;
+            std::memcpy(
+                &half,
+                sourceBytes + (pixelIndex * 4u + component) * sizeof(uint16_t),
+                sizeof(half));
+            destinationBytes[pixelIndex * 4u + component] = floatToUnorm8(halfToFloat(half));
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 RenderGraphProperties mergeRenderGraphProperties(
@@ -117,6 +236,8 @@ struct RenderGraphExecutor::Impl {
         RenderGraphProperties effectiveProperties = RenderGraphProperties::object();
         std::unique_ptr<RenderGraphPass> pass;
         RenderPassReflection reflection;
+        uint32_t executionWidth = 0;
+        uint32_t executionHeight = 0;
     };
 
     struct QueueCommandContext {
@@ -137,6 +258,15 @@ struct RenderGraphExecutor::Impl {
         std::unordered_set<std::string> sampledImageResourceSet;
         std::unordered_set<std::string> bufferResourceSet;
     };
+
+    struct ResolvedTextureExtent {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        std::string widthSource;
+        std::string heightSource;
+    };
+
+    using ResolvedTextureExtentMap = std::unordered_map<std::string, ResolvedTextureExtent>;
 
     struct GpuTimingSlot {
         uint32_t firstQuery = 0;
@@ -322,11 +452,20 @@ struct RenderGraphExecutor::Impl {
                 compiledNode.staticProperties,
                 compiledNode.runtimeProperties);
 
-            compiledNode.pass->setProperties(compiledNode.staticProperties);
+            compiledNode.pass->setProperties(compiledNode.effectiveProperties);
+            std::string prepareLog;
+            Result prepareResult = compiledNode.pass->prepare(compileContext, prepareLog);
+            if (!prepareResult) {
+                log = "RenderGraph prepare failed for pass '" + compiledNode.name + "' (" +
+                    compiledNode.type + ")";
+                if (!prepareLog.empty()) {
+                    log += ": " + prepareLog;
+                }
+                return prepareResult;
+            }
             compiledNode.kind = compiledNode.pass->kind();
             compiledNode.queueType = compiledNode.pass->queueType();
             compiledNode.reflection = compiledNode.pass->reflect(compileContext);
-            compiledNode.pass->setProperties(compiledNode.effectiveProperties);
         }
 
         return {};
@@ -365,6 +504,283 @@ struct RenderGraphExecutor::Impl {
         return plan;
     }
 
+    Result resolveTextureOutputExtents(
+        const RenderGraph& graph,
+        const ActiveGraph& activeGraph,
+        ResolvedTextureExtentMap& resolvedExtents,
+        std::string& log) const
+    {
+        resolvedExtents.clear();
+        std::unordered_map<std::string, std::vector<std::string>> nodeTextureOutputs;
+        for (const CompiledNode& node : executionList) {
+            std::vector<std::string>& outputs = nodeTextureOutputs[node.name];
+            for (const RenderGraphField& field : node.reflection.fields()) {
+                if (field.visibility != RenderGraphFieldVisibility::Output ||
+                    field.resourceType != RenderGraphResourceType::Texture2D) {
+                    continue;
+                }
+                const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
+                outputs.push_back(fullName);
+                resolvedExtents.emplace(
+                    fullName,
+                    ResolvedTextureExtent{
+                        .width = field.width,
+                        .height = field.height,
+                        .widthSource = field.width != 0 ? std::string("output '") + fullName + "'" : std::string{},
+                        .heightSource = field.height != 0 ? std::string("output '") + fullName + "'" : std::string{},
+                    });
+            }
+        }
+
+        const auto constrainDimension = [&log](
+                                            uint32_t& value,
+                                            std::string& source,
+                                            uint32_t constraint,
+                                            const std::string& constraintSource,
+                                            const char* dimension,
+                                            bool& changed) {
+            if (constraint == 0) {
+                return true;
+            }
+            if (value == 0) {
+                value = constraint;
+                source = constraintSource;
+                changed = true;
+                return true;
+            }
+            if (value == constraint) {
+                return true;
+            }
+            log = validationPrefix(
+                std::string("texture ") + dimension + " extent conflict: " +
+                source + " requests " + std::to_string(value) + ", " +
+                constraintSource + " requests " + std::to_string(constraint));
+            return false;
+        };
+        const auto linkDimension = [&constrainDimension](
+                                       uint32_t& left,
+                                       std::string& leftSource,
+                                       uint32_t& right,
+                                       std::string& rightSource,
+                                       const std::string& relation,
+                                       const char* dimension,
+                                       bool& changed) {
+            if (left != 0) {
+                const std::string source = leftSource.empty() ? relation : leftSource;
+                return constrainDimension(
+                    right,
+                    rightSource,
+                    left,
+                    source,
+                    dimension,
+                    changed);
+            }
+            if (right != 0) {
+                const std::string source = rightSource.empty() ? relation : rightSource;
+                return constrainDimension(
+                    left,
+                    leftSource,
+                    right,
+                    source,
+                    dimension,
+                    changed);
+            }
+            return true;
+        };
+
+        const size_t maximumIterations = resolvedExtents.size() * 2u + 2u;
+        for (size_t iteration = 0; iteration < maximumIterations; ++iteration) {
+            bool changed = false;
+
+            for (const auto& [nodeName, outputNames] : nodeTextureOutputs) {
+                if (outputNames.size() < 2) {
+                    continue;
+                }
+                ResolvedTextureExtent& anchor = resolvedExtents.at(outputNames.front());
+                for (size_t index = 1; index < outputNames.size(); ++index) {
+                    ResolvedTextureExtent& output = resolvedExtents.at(outputNames[index]);
+                    const std::string relation = std::string("pass '") + nodeName + "' output extent";
+                    if (!linkDimension(
+                            anchor.width,
+                            anchor.widthSource,
+                            output.width,
+                            output.widthSource,
+                            relation,
+                            "width",
+                            changed) ||
+                        !linkDimension(
+                            anchor.height,
+                            anchor.heightSource,
+                            output.height,
+                            output.heightSource,
+                            relation,
+                            "height",
+                            changed)) {
+                        return makeError(Error::InvalidArgument);
+                    }
+                }
+            }
+
+            for (const RenderGraphEdge& edge : graph.edges()) {
+                if (!activeGraph.activePasses.contains(edge.srcPass) ||
+                    !activeGraph.activePasses.contains(edge.dstPass)) {
+                    continue;
+                }
+                const std::string sourceName = makeRenderGraphFieldName(edge.srcPass, edge.srcField);
+                auto sourceIter = resolvedExtents.find(sourceName);
+                if (sourceIter == resolvedExtents.end()) {
+                    continue;
+                }
+                const RenderGraphField* destinationField = reflectedField(
+                    edge.dstPass,
+                    edge.dstField,
+                    RenderGraphFieldVisibility::Input);
+                if (destinationField == nullptr ||
+                    destinationField->resourceType != RenderGraphResourceType::Texture2D) {
+                    continue;
+                }
+
+                ResolvedTextureExtent& source = sourceIter->second;
+                const std::string destinationName = makeRenderGraphFieldName(
+                    edge.dstPass,
+                    edge.dstField);
+                const auto destinationOutputs = nodeTextureOutputs.find(edge.dstPass);
+                const bool destinationHasTextureOutputs =
+                    destinationOutputs != nodeTextureOutputs.end() &&
+                    !destinationOutputs->second.empty();
+
+                if (destinationField->width != 0) {
+                    if (!constrainDimension(
+                            source.width,
+                            source.widthSource,
+                            destinationField->width,
+                            std::string("input '") + destinationName + "'",
+                            "width",
+                            changed)) {
+                        return makeError(Error::InvalidArgument);
+                    }
+                } else if (!destinationHasTextureOutputs) {
+                    if (!constrainDimension(
+                            source.width,
+                            source.widthSource,
+                            width,
+                            std::string("graph width for input '") + destinationName + "'",
+                            "width",
+                            changed)) {
+                        return makeError(Error::InvalidArgument);
+                    }
+                } else {
+                    for (const std::string& outputName : destinationOutputs->second) {
+                        ResolvedTextureExtent& destination = resolvedExtents.at(outputName);
+                        if (!linkDimension(
+                                source.width,
+                                source.widthSource,
+                                destination.width,
+                                destination.widthSource,
+                                std::string("implicit input '") + destinationName + "'",
+                                "width",
+                                changed)) {
+                            return makeError(Error::InvalidArgument);
+                        }
+                    }
+                }
+
+                if (destinationField->height != 0) {
+                    if (!constrainDimension(
+                            source.height,
+                            source.heightSource,
+                            destinationField->height,
+                            std::string("input '") + destinationName + "'",
+                            "height",
+                            changed)) {
+                        return makeError(Error::InvalidArgument);
+                    }
+                } else if (!destinationHasTextureOutputs) {
+                    if (!constrainDimension(
+                            source.height,
+                            source.heightSource,
+                            height,
+                            std::string("graph height for input '") + destinationName + "'",
+                            "height",
+                            changed)) {
+                        return makeError(Error::InvalidArgument);
+                    }
+                } else {
+                    for (const std::string& outputName : destinationOutputs->second) {
+                        ResolvedTextureExtent& destination = resolvedExtents.at(outputName);
+                        if (!linkDimension(
+                                source.height,
+                                source.heightSource,
+                                destination.height,
+                                destination.heightSource,
+                                std::string("implicit input '") + destinationName + "'",
+                                "height",
+                                changed)) {
+                            return makeError(Error::InvalidArgument);
+                        }
+                    }
+                }
+            }
+
+            if (!changed) {
+                break;
+            }
+            if (iteration + 1 == maximumIterations) {
+                log = validationPrefix("texture extent constraint resolution did not converge");
+                return makeError(Error::Failure);
+            }
+        }
+
+        for (auto& [fullName, extent] : resolvedExtents) {
+            (void)fullName;
+            if (extent.width == 0) {
+                extent.width = width;
+                extent.widthSource = "graph default width";
+            }
+            if (extent.height == 0) {
+                extent.height = height;
+                extent.heightSource = "graph default height";
+            }
+        }
+        return {};
+    }
+
+    Result resolveNodeExecutionExtents(std::string& log)
+    {
+        for (CompiledNode& node : executionList) {
+            node.executionWidth = width;
+            node.executionHeight = height;
+            bool foundTextureOutput = false;
+            for (const RenderGraphField& field : node.reflection.fields()) {
+                if (field.visibility != RenderGraphFieldVisibility::Output ||
+                    field.resourceType != RenderGraphResourceType::Texture2D) {
+                    continue;
+                }
+
+                const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
+                const RenderGraphResource* output = resource(fullName);
+                if (output == nullptr || output->texture == nullptr) {
+                    log = validationPrefix(std::string("texture output resource is missing '") + fullName + "'");
+                    return makeError(Error::InvalidArgument);
+                }
+                if (!foundTextureOutput) {
+                    node.executionWidth = output->desc.width;
+                    node.executionHeight = output->desc.height;
+                    foundTextureOutput = true;
+                    continue;
+                }
+                if (node.executionWidth != output->desc.width ||
+                    node.executionHeight != output->desc.height) {
+                    log = validationPrefix(
+                        std::string("pass '") + node.name +
+                        "' has texture outputs with different extents; split the pass or use matching output extents");
+                    return makeError(Error::InvalidArgument);
+                }
+            }
+        }
+        return {};
+    }
+
     Result allocateGraphResources(
         Device& graphDevice,
         const RenderGraph& graph,
@@ -376,6 +792,16 @@ struct RenderGraphExecutor::Impl {
         resources.clear();
         bindlessHeap.reset();
 
+        ResolvedTextureExtentMap resolvedTextureExtents;
+        Result extentConstraintResult = resolveTextureOutputExtents(
+            graph,
+            activeGraph,
+            resolvedTextureExtents,
+            log);
+        if (!extentConstraintResult) {
+            return extentConstraintResult;
+        }
+
         for (const CompiledNode& node : executionList) {
             for (const RenderGraphField& field : node.reflection.fields()) {
                 if (field.visibility != RenderGraphFieldVisibility::Output) {
@@ -386,6 +812,13 @@ struct RenderGraphExecutor::Impl {
                 ResourceSlot slot;
 
                 if (field.resourceType == RenderGraphResourceType::Texture2D) {
+                    const auto resolvedExtent = resolvedTextureExtents.find(fullName);
+                    if (resolvedExtent == resolvedTextureExtents.end()) {
+                        log = validationPrefix(
+                            std::string("resolved texture extent is missing '") + fullName + "'");
+                        return makeError(Error::InvalidArgument);
+                    }
+
                     TextureUsageBits usage = textureUsageForField(field);
                     if (usage == TextureUsageBits::None) {
                         usage = TextureUsageBits::ColorAttachment;
@@ -414,8 +847,8 @@ struct RenderGraphExecutor::Impl {
                         .type = TextureType::Texture2D,
                         .usage = usage,
                         .format = resolveFormat(field.format, defaultFormat),
-                        .width = field.width == 0 ? width : field.width,
-                        .height = field.height == 0 ? height : field.height,
+                        .width = resolvedExtent->second.width,
+                        .height = resolvedExtent->second.height,
                         .depth = 1,
                         .mipCount = 1,
                         .layerCount = 1,
@@ -524,6 +957,11 @@ struct RenderGraphExecutor::Impl {
 
                 resources.emplace(fullName, std::move(slot));
             }
+        }
+
+        Result extentResult = resolveNodeExecutionExtents(log);
+        if (!extentResult) {
+            return extentResult;
         }
 
         if (!bindlessPlan.sampledImageResources.empty() || !bindlessPlan.bufferResources.empty()) {
@@ -980,8 +1418,8 @@ struct RenderGraphExecutor::Impl {
         RenderUploadSubsystem* upload = uploadSubsystem();
         RenderGraphExecutionContext context(
             commandBuffer,
-            width,
-            height,
+            node.executionWidth,
+            node.executionHeight,
             node.name,
             node.effectiveProperties,
             std::move(bindings),
@@ -1255,9 +1693,18 @@ Result RenderGraphExecutor::compile(
             log = validationPrefix(std::string("unknown pass type '") + node->type + "'");
             return makeError(Error::InvalidArgument);
         }
-        pass->setProperties(node->properties);
         const RenderGraphProperties effectiveProperties =
             mergeRenderGraphProperties(node->properties, node->runtimeProperties);
+        pass->setProperties(effectiveProperties);
+        std::string prepareLog;
+        Result prepareResult = pass->prepare(compileContext, prepareLog);
+        if (!prepareResult) {
+            log = "RenderGraph prepare failed for pass '" + node->name + "' (" + node->type + ")";
+            if (!prepareLog.empty()) {
+                log += ": " + prepareLog;
+            }
+            return prepareResult;
+        }
         const RenderGraphPassKind kind = pass->kind();
         const QueueType queueType = pass->queueType();
         RenderPassReflection reflection = pass->reflect(compileContext);
@@ -1368,7 +1815,17 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
                 "' of type '" + compiledNode.type + "'";
             return makeError(Error::InvalidArgument);
         }
-        pass->setProperties(compiledNode.staticProperties);
+        pass->setProperties(compiledNode.effectiveProperties);
+        std::string prepareLog;
+        result = pass->prepare(compileContext, prepareLog);
+        if (!result) {
+            log = "Shader reload could not prepare pass '" + compiledNode.name + "' (" +
+                compiledNode.type + ")";
+            if (!prepareLog.empty()) {
+                log += ": " + prepareLog;
+            }
+            return result;
+        }
         const RenderGraphPassKind kind = pass->kind();
         const QueueType queueType = pass->queueType();
         RenderPassReflection reflection = pass->reflect(compileContext);
@@ -1420,6 +1877,8 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
             .effectiveProperties = compiledNode.effectiveProperties,
             .pass = std::move(pass),
             .reflection = std::move(reflection),
+            .executionWidth = compiledNode.executionWidth,
+            .executionHeight = compiledNode.executionHeight,
         });
     }
 
@@ -1973,19 +2432,27 @@ struct RenderGraphPreviewRenderer::Impl {
     uint32_t height = 0;
     uint32_t readbackWidth = 0;
     uint32_t readbackHeight = 0;
+    uint32_t readbackTexelByteSize = 0;
     uint64_t historyFrameIndex = 0;
     std::string lastLog;
 
-    Result ensureReadback(uint32_t newWidth, uint32_t newHeight)
+    Result ensureReadback(uint32_t newWidth, uint32_t newHeight, uint32_t texelByteSize)
     {
-        if (device == nullptr || newWidth == 0 || newHeight == 0) {
+        if (device == nullptr || newWidth == 0 || newHeight == 0 || texelByteSize == 0) {
             return makeError(Error::InvalidArgument);
         }
-        if (readbackBuffer != nullptr && readbackWidth == newWidth && readbackHeight == newHeight) {
+        const uint32_t allocationTexelByteSize = std::max(texelByteSize, 4u);
+        if (readbackBuffer != nullptr &&
+            readbackWidth == newWidth &&
+            readbackHeight == newHeight &&
+            readbackTexelByteSize == allocationTexelByteSize) {
             return {};
         }
         readbackBuffer.reset();
-        const uint64_t byteSize = static_cast<uint64_t>(newWidth) * static_cast<uint64_t>(newHeight) * 4ull;
+        const uint64_t byteSize =
+            static_cast<uint64_t>(newWidth) *
+            static_cast<uint64_t>(newHeight) *
+            allocationTexelByteSize;
         Result result = device->createBuffer(
             BufferDesc{
                 .size = byteSize,
@@ -1998,6 +2465,7 @@ struct RenderGraphPreviewRenderer::Impl {
         }
         readbackWidth = newWidth;
         readbackHeight = newHeight;
+        readbackTexelByteSize = allocationTexelByteSize;
         pixels.resize(static_cast<size_t>(newWidth) * static_cast<size_t>(newHeight));
         return {};
     }
@@ -2140,7 +2608,26 @@ Result RenderGraphPreviewRenderer::render(
         impl_->executor.syncRuntimeProperties(graph);
     }
 
-    result = impl_->ensureReadback(newWidth, newHeight);
+    RenderGraphResource* output = impl_->executor.outputResource(resolvedOutputName);
+    if (output == nullptr) {
+        impl_->lastLog = std::string("RenderGraph preview output resource is missing '") + resolvedOutputName + "'";
+        return makeError(Error::InvalidArgument);
+    }
+    if (output->type != RenderGraphResourceType::Texture2D || output->texture == nullptr) {
+        impl_->lastLog = std::string("RenderGraph preview output is not a Texture2D '") + resolvedOutputName + "'";
+        return makeError(Error::InvalidArgument);
+    }
+    const uint32_t outputWidth = output->desc.width;
+    const uint32_t outputHeight = output->desc.height;
+    const uint32_t outputTexelByteSize = previewReadbackTexelByteSize(output->desc.format);
+    if (outputWidth == 0 || outputHeight == 0 || outputTexelByteSize == 0) {
+        impl_->lastLog =
+            std::string("RenderGraph preview output has an unsupported readback format '") +
+            resolvedOutputName + "'";
+        return makeError(Error::Unsupported);
+    }
+
+    result = impl_->ensureReadback(outputWidth, outputHeight, outputTexelByteSize);
     if (!result) {
         return result;
     }
@@ -2164,13 +2651,8 @@ Result RenderGraphPreviewRenderer::render(
         return result;
     }
 
-    RenderGraphResource* output = impl_->executor.outputResource(resolvedOutputName);
-    if (output == nullptr || impl_->readbackBuffer == nullptr) {
+    if (impl_->readbackBuffer == nullptr) {
         impl_->lastLog = std::string("RenderGraph preview output resource is missing '") + resolvedOutputName + "'";
-        return makeError(Error::InvalidArgument);
-    }
-    if (output->type != RenderGraphResourceType::Texture2D || output->texture == nullptr) {
-        impl_->lastLog = std::string("RenderGraph preview output is not a Texture2D '") + resolvedOutputName + "'";
         return makeError(Error::InvalidArgument);
     }
     result = impl_->executor.transitionOutput(
@@ -2183,8 +2665,8 @@ Result RenderGraphPreviewRenderer::render(
     impl_->commandBuffer->copyTextureToBuffer(TextureBufferCopyDesc{
         .texture = output->texture,
         .buffer = impl_->readbackBuffer.get(),
-        .width = newWidth,
-        .height = newHeight,
+        .width = outputWidth,
+        .height = outputHeight,
         .depth = 1,
         .mipLevel = 0,
         .baseLayer = 0,
@@ -2214,12 +2696,18 @@ Result RenderGraphPreviewRenderer::render(
     if (mapped == nullptr) {
         return makeError(Error::Failure);
     }
-    const uint64_t byteSize = static_cast<uint64_t>(newWidth) * static_cast<uint64_t>(newHeight) * 4ull;
-    std::memcpy(impl_->pixels.data(), mapped, static_cast<size_t>(byteSize));
+    const size_t pixelCount = static_cast<size_t>(outputWidth) * static_cast<size_t>(outputHeight);
+    if (!convertPreviewReadback(output->desc.format, mapped, pixelCount, impl_->pixels)) {
+        impl_->readbackBuffer->unmap();
+        impl_->lastLog =
+            std::string("RenderGraph preview could not convert output readback '") +
+            resolvedOutputName + "'";
+        return makeError(Error::Unsupported);
+    }
     impl_->readbackBuffer->unmap();
 
-    impl_->width = newWidth;
-    impl_->height = newHeight;
+    impl_->width = outputWidth;
+    impl_->height = outputHeight;
     return {};
 }
 const std::vector<uint32_t>& RenderGraphPreviewRenderer::pixels() const

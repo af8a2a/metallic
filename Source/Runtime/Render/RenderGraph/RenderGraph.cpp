@@ -23,6 +23,111 @@ std::unordered_map<std::string, RenderGraphPassRegistryEntry>& passRegistry()
     return registry;
 }
 
+const RenderGraphProperties* findNestedProperty(
+    const RenderGraphProperties& properties,
+    std::string_view key)
+{
+    if (!properties.is_object() || key.empty()) {
+        return nullptr;
+    }
+
+    const RenderGraphProperties* current = &properties;
+    size_t begin = 0;
+    while (begin < key.size()) {
+        const size_t dot = key.find('.', begin);
+        const std::string part(key.substr(
+            begin,
+            dot == std::string_view::npos ? std::string_view::npos : dot - begin));
+        if (part.empty() || !current->is_object()) {
+            return nullptr;
+        }
+        const auto iter = current->find(part);
+        if (iter == current->end()) {
+            return nullptr;
+        }
+        current = &(*iter);
+        if (dot == std::string_view::npos) {
+            return current;
+        }
+        begin = dot + 1;
+    }
+    return nullptr;
+}
+
+const RenderGraphProperties& effectiveRuntimeSettingValue(
+    const RenderGraphNode& node,
+    const RenderGraphProperties& runtimeProperties,
+    const RenderGraphRuntimeSetting& setting)
+{
+    if (const RenderGraphProperties* value = findNestedProperty(runtimeProperties, setting.key)) {
+        return *value;
+    }
+    if (const RenderGraphProperties* value = findNestedProperty(node.properties, setting.key)) {
+        return *value;
+    }
+    return setting.defaultValue;
+}
+
+bool runtimePropertiesRequireGraphRebuild(
+    const RenderGraphNode& node,
+    const RenderGraphProperties& newRuntimeProperties)
+{
+    std::unique_ptr<RenderGraphPass> pass = createRenderGraphPass(node.type);
+    if (pass == nullptr) {
+        return false;
+    }
+    pass->setProperties(node.properties);
+    for (const RenderGraphRuntimeSetting& setting : pass->runtimeSettings()) {
+        if (!setting.rebuildGraph) {
+            continue;
+        }
+        const RenderGraphProperties& oldValue =
+            effectiveRuntimeSettingValue(node, node.runtimeProperties, setting);
+        const RenderGraphProperties& newValue =
+            effectiveRuntimeSettingValue(node, newRuntimeProperties, setting);
+        if (oldValue != newValue) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool setNestedProperty(
+    RenderGraphProperties& properties,
+    std::string_view key,
+    RenderGraphProperties value)
+{
+    if (key.empty()) {
+        return false;
+    }
+    if (!properties.is_object()) {
+        properties = RenderGraphProperties::object();
+    }
+
+    RenderGraphProperties* object = &properties;
+    size_t begin = 0;
+    while (begin < key.size()) {
+        const size_t dot = key.find('.', begin);
+        const std::string part(key.substr(
+            begin,
+            dot == std::string_view::npos ? std::string_view::npos : dot - begin));
+        if (part.empty()) {
+            return false;
+        }
+        if (dot == std::string_view::npos) {
+            (*object)[part] = std::move(value);
+            return true;
+        }
+
+        RenderGraphProperties& child = (*object)[part];
+        if (!child.is_object()) {
+            child = RenderGraphProperties::object();
+        }
+        object = &child;
+        begin = dot + 1;
+    }
+    return false;
+}
 
 } // namespace
 
@@ -297,6 +402,11 @@ std::span<const RenderSubsystemId> RenderGraphPass::requiredSubsystems() const
 }
 
 std::vector<RenderGraphRuntimeSetting> RenderGraphPass::runtimeSettings() const
+{
+    return {};
+}
+
+Result RenderGraphPass::prepare(const RenderGraphCompileContext&, std::string&)
 {
     return {};
 }
@@ -754,7 +864,11 @@ bool RenderGraph::setNodeRuntimeProperties(uint32_t id, RenderGraphProperties pr
     if (node == nullptr) {
         return false;
     }
+    const bool rebuildGraph = runtimePropertiesRequireGraphRebuild(*node, properties);
     node->runtimeProperties = std::move(properties);
+    if (rebuildGraph) {
+        markDirty();
+    }
     return true;
 }
 
@@ -764,31 +878,11 @@ bool RenderGraph::setNodeRuntimeProperty(uint32_t id, std::string key, RenderGra
     if (node == nullptr || key.empty()) {
         return false;
     }
-    if (!node->runtimeProperties.is_object()) {
-        node->runtimeProperties = RenderGraphProperties::object();
+    RenderGraphProperties updatedProperties = node->runtimeProperties;
+    if (!setNestedProperty(updatedProperties, key, std::move(value))) {
+        return false;
     }
-
-    RenderGraphProperties* object = &node->runtimeProperties;
-    size_t begin = 0;
-    while (begin < key.size()) {
-        const size_t dot = key.find('.', begin);
-        const std::string part = key.substr(begin, dot == std::string::npos ? std::string::npos : dot - begin);
-        if (part.empty()) {
-            return false;
-        }
-        if (dot == std::string::npos) {
-            (*object)[part] = std::move(value);
-            return true;
-        }
-
-        RenderGraphProperties& child = (*object)[part];
-        if (!child.is_object()) {
-            child = RenderGraphProperties::object();
-        }
-        object = &child;
-        begin = dot + 1;
-    }
-    return false;
+    return setNodeRuntimeProperties(id, std::move(updatedProperties));
 }
 
 bool RenderGraph::setNodePosition(uint32_t id, float uiX, float uiY)

@@ -29,12 +29,20 @@ namespace {
 
 #if METALLIC_HAS_STREAMLINE
 
+struct DlssRrOptimalSettingsCacheEntry {
+    StreamlineDlssRrMode mode = StreamlineDlssRrMode::Off;
+    uint32_t outputWidth = 0;
+    uint32_t outputHeight = 0;
+    StreamlineDlssRrOptimalSettings settings;
+};
+
 struct StreamlineState {
     bool initialized = false;
     bool vulkanDeviceSet = false;
     bool dlssRrSupported = false;
     uint32_t frameIndex = 0;
     sl::ViewportHandle viewport{0};
+    std::vector<DlssRrOptimalSettingsCacheEntry> optimalSettingsCache;
 };
 
 std::mutex& streamlineMutex()
@@ -425,15 +433,27 @@ sl::Constants makeConstants(const StreamlineDlssRrDesc& desc)
     return constants;
 }
 
-sl::DLSSDOptions makeDlssRrOptions(const StreamlineDlssRrDesc& desc)
+sl::DLSSDOptions makeDlssRrBaseOptions(
+    StreamlineDlssRrMode mode,
+    uint32_t outputWidth,
+    uint32_t outputHeight)
 {
     sl::DLSSDOptions options;
-    options.mode = slMode(desc.mode);
-    options.outputWidth = desc.width;
-    options.outputHeight = desc.height;
+    options.mode = slMode(mode);
+    options.outputWidth = outputWidth;
+    options.outputHeight = outputHeight;
     options.colorBuffersHDR = sl::Boolean::eTrue;
     options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
     options.alphaUpscalingEnabled = sl::Boolean::eFalse;
+    return options;
+}
+
+sl::DLSSDOptions makeDlssRrOptions(const StreamlineDlssRrDesc& desc)
+{
+    sl::DLSSDOptions options = makeDlssRrBaseOptions(
+        desc.mode,
+        desc.outputWidth,
+        desc.outputHeight);
     const SlCameraMatrices currentCamera = makeCameraMatrices(desc.camera, false);
     options.worldToCameraView = currentCamera.worldToCameraView;
     options.cameraViewToWorld = currentCamera.cameraViewToWorld;
@@ -443,6 +463,16 @@ sl::DLSSDOptions makeDlssRrOptions(const StreamlineDlssRrDesc& desc)
 bool validTextureRef(const StreamlineDlssRrTextureRef& ref)
 {
     return ref.texture != nullptr && ref.view != nullptr;
+}
+
+bool textureRefMatchesExtent(
+    const StreamlineDlssRrTextureRef& ref,
+    uint32_t width,
+    uint32_t height)
+{
+    return validTextureRef(ref) &&
+        ref.texture->desc().width == width &&
+        ref.texture->desc().height == height;
 }
 
 bool appendResourceTag(
@@ -527,6 +557,102 @@ bool streamlineDlssRrSupported()
 #endif
 }
 
+Result getStreamlineDlssRrOptimalSettings(
+    StreamlineDlssRrMode mode,
+    uint32_t outputWidth,
+    uint32_t outputHeight,
+    StreamlineDlssRrOptimalSettings& settings,
+    std::string& log)
+{
+    settings = {};
+#if !METALLIC_HAS_STREAMLINE
+    (void)mode;
+    (void)outputWidth;
+    (void)outputHeight;
+    log = "NVIDIA Streamline SDK is not available";
+    return makeError(Error::Unsupported);
+#else
+    std::lock_guard lock(streamlineMutex());
+    StreamlineState& state = streamlineState();
+    if (!state.initialized || !state.vulkanDeviceSet || !state.dlssRrSupported) {
+        log = "DLSS-RR optimal settings are not available on the current Vulkan device";
+        return makeError(Error::Unsupported);
+    }
+    if (mode == StreamlineDlssRrMode::Off || outputWidth == 0 || outputHeight == 0) {
+        log = "DLSS-RR optimal settings require an enabled mode and non-zero output dimensions";
+        return makeError(Error::InvalidArgument);
+    }
+
+    const auto cached = std::find_if(
+        state.optimalSettingsCache.begin(),
+        state.optimalSettingsCache.end(),
+        [mode, outputWidth, outputHeight](const DlssRrOptimalSettingsCacheEntry& entry) {
+            return entry.mode == mode &&
+                entry.outputWidth == outputWidth &&
+                entry.outputHeight == outputHeight;
+        });
+    if (cached != state.optimalSettingsCache.end()) {
+        settings = cached->settings;
+        return {};
+    }
+
+    sl::DLSSDOptions options = makeDlssRrBaseOptions(mode, outputWidth, outputHeight);
+    sl::DLSSDOptimalSettings nativeSettings;
+    Result result = resultFromSl(
+        slDLSSDGetOptimalSettings(options, nativeSettings),
+        "slDLSSDGetOptimalSettings",
+        log);
+    if (!result) {
+        return result;
+    }
+
+    settings = StreamlineDlssRrOptimalSettings{
+        .renderWidth = nativeSettings.optimalRenderWidth,
+        .renderHeight = nativeSettings.optimalRenderHeight,
+        .renderWidthMin = nativeSettings.renderWidthMin,
+        .renderHeightMin = nativeSettings.renderHeightMin,
+        .renderWidthMax = nativeSettings.renderWidthMax,
+        .renderHeightMax = nativeSettings.renderHeightMax,
+    };
+    const bool invalidRanges =
+        (settings.renderWidthMin != 0 && settings.renderWidthMax != 0 &&
+            settings.renderWidthMin > settings.renderWidthMax) ||
+        (settings.renderHeightMin != 0 && settings.renderHeightMax != 0 &&
+            settings.renderHeightMin > settings.renderHeightMax);
+    const bool outsideReportedRange =
+        (settings.renderWidthMin != 0 && settings.renderWidth < settings.renderWidthMin) ||
+        (settings.renderHeightMin != 0 && settings.renderHeight < settings.renderHeightMin) ||
+        (settings.renderWidthMax != 0 && settings.renderWidth > settings.renderWidthMax) ||
+        (settings.renderHeightMax != 0 && settings.renderHeight > settings.renderHeightMax);
+    if (settings.renderWidth == 0 ||
+        settings.renderHeight == 0 ||
+        settings.renderWidth > outputWidth ||
+        settings.renderHeight > outputHeight ||
+        invalidRanges ||
+        outsideReportedRange) {
+        log = "slDLSSDGetOptimalSettings returned invalid render dimensions " +
+            std::to_string(settings.renderWidth) + "x" + std::to_string(settings.renderHeight) +
+            " for output " + std::to_string(outputWidth) + "x" + std::to_string(outputHeight);
+        settings = {};
+        return makeError(Error::InvalidArgument);
+    }
+
+    state.optimalSettingsCache.push_back(DlssRrOptimalSettingsCacheEntry{
+        .mode = mode,
+        .outputWidth = outputWidth,
+        .outputHeight = outputHeight,
+        .settings = settings,
+    });
+    spdlog::info(
+        "[Streamline] DLSS-RR optimal render extent {}x{} for output {}x{}",
+        settings.renderWidth,
+        settings.renderHeight,
+        outputWidth,
+        outputHeight);
+    return {};
+#endif
+}
+
 Result initializeStreamlinePreDevice(std::string& log)
 {
 #if !METALLIC_HAS_STREAMLINE
@@ -604,6 +730,7 @@ Result setStreamlineVulkanDevice(
     }
 
     state.vulkanDeviceSet = true;
+    state.optimalSettingsCache.clear();
 
     sl::AdapterInfo adapterInfo;
     adapterInfo.vkPhysicalDevice = nativeHandleToVoid(device.physicalDevice);
@@ -651,7 +778,50 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
         log = "DLSS-RR is not available on the current Vulkan device";
         return makeError(Error::Unsupported);
     }
-    if (desc.width == 0 || desc.height == 0 || desc.mode == StreamlineDlssRrMode::Off) {
+    if (desc.renderWidth == 0 ||
+        desc.renderHeight == 0 ||
+        desc.outputWidth == 0 ||
+        desc.outputHeight == 0 ||
+        desc.mode == StreamlineDlssRrMode::Off) {
+        log = "DLSS-RR evaluate requires non-zero render/output dimensions and an enabled mode";
+        return makeError(Error::InvalidArgument);
+    }
+
+    const auto optimalSettings = std::find_if(
+        state.optimalSettingsCache.begin(),
+        state.optimalSettingsCache.end(),
+        [&desc](const DlssRrOptimalSettingsCacheEntry& entry) {
+            return entry.mode == desc.mode &&
+                entry.outputWidth == desc.outputWidth &&
+                entry.outputHeight == desc.outputHeight;
+        });
+    if (optimalSettings == state.optimalSettingsCache.end() ||
+        optimalSettings->settings.renderWidth != desc.renderWidth ||
+        optimalSettings->settings.renderHeight != desc.renderHeight) {
+        log = "DLSS-RR evaluate render dimensions do not match cached optimal settings";
+        return makeError(Error::InvalidArgument);
+    }
+
+    const auto validateTexture = [&log](
+                                     const StreamlineDlssRrTextureRef& ref,
+                                     const char* name,
+                                     uint32_t width,
+                                     uint32_t height) {
+        if (textureRefMatchesExtent(ref, width, height)) {
+            return true;
+        }
+        log = std::string("DLSS-RR ") + name + " must be " +
+            std::to_string(width) + "x" + std::to_string(height);
+        return false;
+    };
+    if (!validateTexture(desc.inputColor, "inputColor", desc.renderWidth, desc.renderHeight) ||
+        !validateTexture(desc.albedo, "albedo", desc.renderWidth, desc.renderHeight) ||
+        !validateTexture(desc.specularAlbedo, "specularAlbedo", desc.renderWidth, desc.renderHeight) ||
+        !validateTexture(desc.normalRoughness, "normalRoughness", desc.renderWidth, desc.renderHeight) ||
+        !validateTexture(desc.motionVectors, "motionVectors", desc.renderWidth, desc.renderHeight) ||
+        !validateTexture(desc.linearDepth, "linearDepth", desc.renderWidth, desc.renderHeight) ||
+        !validateTexture(desc.specularHitDistance, "specularHitDistance", desc.renderWidth, desc.renderHeight) ||
+        !validateTexture(desc.outputColor, "outputColor", desc.outputWidth, desc.outputHeight)) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -684,25 +854,31 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
         return result;
     }
 
-    sl::Extent extent{
+    sl::Extent renderExtent{
         .top = 0,
         .left = 0,
-        .width = desc.width,
-        .height = desc.height,
+        .width = desc.renderWidth,
+        .height = desc.renderHeight,
+    };
+    sl::Extent outputExtent{
+        .top = 0,
+        .left = 0,
+        .width = desc.outputWidth,
+        .height = desc.outputHeight,
     };
     std::vector<sl::Resource> resources;
     std::vector<sl::ResourceTag> tags;
     resources.reserve(8);
     tags.reserve(8);
     const bool validResources =
-        appendResourceTag(desc.inputColor, sl::kBufferTypeScalingInputColor, extent, resources, tags) &&
-        appendResourceTag(desc.outputColor, sl::kBufferTypeScalingOutputColor, extent, resources, tags) &&
-        appendResourceTag(desc.albedo, sl::kBufferTypeAlbedo, extent, resources, tags) &&
-        appendResourceTag(desc.specularAlbedo, sl::kBufferTypeSpecularAlbedo, extent, resources, tags) &&
-        appendResourceTag(desc.normalRoughness, sl::kBufferTypeNormalRoughness, extent, resources, tags) &&
-        appendResourceTag(desc.motionVectors, sl::kBufferTypeMotionVectors, extent, resources, tags) &&
-        appendResourceTag(desc.linearDepth, sl::kBufferTypeLinearDepth, extent, resources, tags) &&
-        appendResourceTag(desc.specularHitDistance, sl::kBufferTypeSpecularHitDistance, extent, resources, tags);
+        appendResourceTag(desc.inputColor, sl::kBufferTypeScalingInputColor, renderExtent, resources, tags) &&
+        appendResourceTag(desc.outputColor, sl::kBufferTypeScalingOutputColor, outputExtent, resources, tags) &&
+        appendResourceTag(desc.albedo, sl::kBufferTypeAlbedo, renderExtent, resources, tags) &&
+        appendResourceTag(desc.specularAlbedo, sl::kBufferTypeSpecularAlbedo, renderExtent, resources, tags) &&
+        appendResourceTag(desc.normalRoughness, sl::kBufferTypeNormalRoughness, renderExtent, resources, tags) &&
+        appendResourceTag(desc.motionVectors, sl::kBufferTypeMotionVectors, renderExtent, resources, tags) &&
+        appendResourceTag(desc.linearDepth, sl::kBufferTypeLinearDepth, renderExtent, resources, tags) &&
+        appendResourceTag(desc.specularHitDistance, sl::kBufferTypeSpecularHitDistance, renderExtent, resources, tags);
     if (!validResources) {
         log = "DLSS-RR evaluate received invalid texture resources";
         return makeError(Error::InvalidArgument);

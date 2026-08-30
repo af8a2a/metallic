@@ -179,6 +179,57 @@ double elapsedMilliseconds(StartupClock::time_point begin)
     return std::chrono::duration<double, std::milli>(StartupClock::now() - begin).count();
 }
 
+bool snapshotReadyAccelerationStructureStats(
+    const render::SceneAccelerationStructureBuilder* builder,
+    render::SceneAccelerationStructureStats& outStats)
+{
+    if (builder == nullptr ||
+        builder->buildState() != render::SceneAccelerationStructureBuildState::Ready ||
+        !builder->valid()) {
+        return false;
+    }
+
+    outStats = builder->stats();
+    return true;
+}
+
+double accelerationStructureSavingsPercent(
+    const render::SceneAccelerationStructureStats& stats)
+{
+    return stats.originalBlasBytes == 0
+        ? 0.0
+        : 100.0 * static_cast<double>(stats.compactionSavedBytes) /
+            static_cast<double>(stats.originalBlasBytes);
+}
+
+void drawAccelerationStructureStats(
+    const render::SceneAccelerationStructureStats& stats)
+{
+    ImGui::Text(
+        "RTAS: %u BLAS, %u instances, %llu triangles",
+        stats.blasCount,
+        stats.instanceCount,
+        static_cast<unsigned long long>(stats.triangleCount));
+    ImGui::Text(
+        "RTAS memory: geometry %llu bytes, AS %llu bytes, scratch %llu bytes",
+        static_cast<unsigned long long>(stats.geometryBytes),
+        static_cast<unsigned long long>(stats.accelerationStructureBytes),
+        static_cast<unsigned long long>(stats.scratchBytes));
+    ImGui::Text(
+        "Original BLAS: %llu bytes",
+        static_cast<unsigned long long>(stats.originalBlasBytes));
+    ImGui::Text(
+        "Compacted BLAS: %llu bytes",
+        static_cast<unsigned long long>(stats.compactedBlasBytes));
+    ImGui::Text(
+        "BLAS savings: %llu bytes (%.2f%%)",
+        static_cast<unsigned long long>(stats.compactionSavedBytes),
+        accelerationStructureSavingsPercent(stats));
+    ImGui::Text(
+        "Peak RTAS memory: %llu bytes",
+        static_cast<unsigned long long>(stats.peakAccelerationStructureBytes));
+}
+
 class StartupLogScope {
 public:
     explicit StartupLogScope(std::string label)
@@ -3018,19 +3069,11 @@ void EditorApplication::drawScenePanel()
     if (!sceneAccelerationStructureStatus_.empty()) {
         ImGui::TextWrapped("%s", sceneAccelerationStructureStatus_.c_str());
     }
-    if (sceneAccelerationStructure_ != nullptr && sceneAccelerationStructure_->valid()) {
-        const render::SceneAccelerationStructureStats& accelerationStructureStats =
-            sceneAccelerationStructure_->stats();
-        ImGui::Text(
-            "RTAS: %u BLAS, %u instances, %llu triangles",
-            accelerationStructureStats.blasCount,
-            accelerationStructureStats.instanceCount,
-            static_cast<unsigned long long>(accelerationStructureStats.triangleCount));
-        ImGui::Text(
-            "RTAS memory: geometry %llu bytes, AS %llu bytes, scratch %llu bytes",
-            static_cast<unsigned long long>(accelerationStructureStats.geometryBytes),
-            static_cast<unsigned long long>(accelerationStructureStats.accelerationStructureBytes),
-            static_cast<unsigned long long>(accelerationStructureStats.scratchBytes));
+    render::SceneAccelerationStructureStats accelerationStructureStats;
+    if (snapshotReadyAccelerationStructureStats(
+            sceneAccelerationStructure_.get(),
+            accelerationStructureStats)) {
+        drawAccelerationStructureStats(accelerationStructureStats);
     }
     const scene::LoadResult& loadResult = scene_.lastLoadResult();
     if (!loadResult.warning.empty()) {
@@ -3631,20 +3674,13 @@ void EditorApplication::drawStatisticsPanel()
         ImGui::TextDisabled("Bounds: unavailable");
     }
 
-    if (sceneAccelerationStructure_ != nullptr && sceneAccelerationStructure_->valid()) {
-        const render::SceneAccelerationStructureStats& accelerationStructureStats =
-            sceneAccelerationStructure_->stats();
+    render::SceneAccelerationStructureStats accelerationStructureStats;
+    const bool hasAccelerationStructureStats = snapshotReadyAccelerationStructureStats(
+        sceneAccelerationStructure_.get(),
+        accelerationStructureStats);
+    if (hasAccelerationStructureStats) {
         ImGui::Separator();
-        ImGui::Text(
-            "RTAS: %u BLAS, %u instances, %llu triangles",
-            accelerationStructureStats.blasCount,
-            accelerationStructureStats.instanceCount,
-            static_cast<unsigned long long>(accelerationStructureStats.triangleCount));
-        ImGui::Text(
-            "RTAS memory: geometry %llu bytes, AS %llu bytes, scratch %llu bytes",
-            static_cast<unsigned long long>(accelerationStructureStats.geometryBytes),
-            static_cast<unsigned long long>(accelerationStructureStats.accelerationStructureBytes),
-            static_cast<unsigned long long>(accelerationStructureStats.scratchBytes));
+        drawAccelerationStructureStats(accelerationStructureStats);
     }
 
     if (ImGui::Button("Copy to Clipboard")) {
@@ -3675,6 +3711,22 @@ void EditorApplication::drawStatisticsPanel()
         ImGui::LogText("Lights: %zu\n", scene_.lights().size());
         ImGui::LogText("Textures: %llu\n", static_cast<unsigned long long>(stats.textureCount));
         ImGui::LogText("Images: %llu\n", static_cast<unsigned long long>(stats.imageCount));
+        if (hasAccelerationStructureStats) {
+            ImGui::LogText(
+                "Original BLAS: %llu bytes\n",
+                static_cast<unsigned long long>(accelerationStructureStats.originalBlasBytes));
+            ImGui::LogText(
+                "Compacted BLAS: %llu bytes\n",
+                static_cast<unsigned long long>(accelerationStructureStats.compactedBlasBytes));
+            ImGui::LogText(
+                "BLAS savings: %llu bytes (%.2f%%)\n",
+                static_cast<unsigned long long>(accelerationStructureStats.compactionSavedBytes),
+                accelerationStructureSavingsPercent(accelerationStructureStats));
+            ImGui::LogText(
+                "Peak RTAS memory: %llu bytes\n",
+                static_cast<unsigned long long>(
+                    accelerationStructureStats.peakAccelerationStructureBytes));
+        }
         ImGui::LogFinish();
     }
 
@@ -3728,6 +3780,7 @@ bool EditorApplication::drawRuntimeSettingsForNode(
         : render::RenderGraphProperties::object();
     bool changed = false;
     bool invalidateHistory = false;
+    bool rebuildGraph = false;
     ImGui::PushID(static_cast<int>(node.id));
     for (const render::RenderGraphRuntimeSetting& setting : settings) {
         if (hideCameraSettings && isCameraRuntimeSetting(setting)) {
@@ -3740,6 +3793,7 @@ bool EditorApplication::drawRuntimeSettingsForNode(
             setNestedProperty(runtimeProperties, setting.key, std::move(newValue));
             changed = true;
             invalidateHistory = invalidateHistory || setting.invalidateHistory;
+            rebuildGraph = rebuildGraph || setting.rebuildGraph;
         }
         ImGui::PopID();
     }
@@ -3749,6 +3803,10 @@ bool EditorApplication::drawRuntimeSettingsForNode(
         renderGraph_.setNodeRuntimeProperties(node.id, std::move(runtimeProperties));
         if (invalidateHistory) {
             historyResources_.invalidateAll();
+        }
+        if (rebuildGraph) {
+            renderGraph_.markDirty();
+            viewportPreviewValid_ = false;
         }
         if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
             graphExecutor_->syncRuntimeProperties(renderGraph_);
