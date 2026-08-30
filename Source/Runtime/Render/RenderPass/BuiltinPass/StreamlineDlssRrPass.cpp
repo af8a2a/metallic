@@ -51,7 +51,7 @@ public:
         reflection.addTextureInput("motionVectors", "DLSS-RR motion vector guide")
             .texture2D(renderWidth, renderHeight)
             .storageReadWrite()
-            .format = Format::Rgba16Sfloat;
+            .format = Format::Rg16Sfloat;
         reflection.addTextureInput("linearDepth", "DLSS-RR linear depth guide")
             .texture2D(renderWidth, renderHeight)
             .storageReadWrite()

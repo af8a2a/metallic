@@ -824,6 +824,10 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
         !validateTexture(desc.outputColor, "outputColor", desc.outputWidth, desc.outputHeight)) {
         return makeError(Error::InvalidArgument);
     }
+    if (desc.motionVectors.texture->desc().format != Format::Rg16Sfloat) {
+        log = "DLSS-RR motionVectors must use RG16_SFLOAT";
+        return makeError(Error::InvalidArgument);
+    }
 
     sl::CommandBuffer* nativeCommandBuffer = slCommandBuffer(commandBuffer);
     if (nativeCommandBuffer == nullptr) {

@@ -584,7 +584,7 @@ public:
                 .format = Format::Rgba16Sfloat;
             reflection.addTextureOutput("motionVectors", "DLSS-RR motion vector guide")
                 .storageReadWrite()
-                .format = Format::Rgba16Sfloat;
+                .format = Format::Rg16Sfloat;
             reflection.addTextureOutput("linearDepth", "DLSS-RR linear depth guide")
                 .storageReadWrite()
                 .format = Format::R32Sfloat;

@@ -1343,6 +1343,52 @@ public:
     }
 };
 
+class RenderGraphDlssRrMotionVectorContractTest : public RhiTest {
+public:
+    RenderGraphDlssRrMotionVectorContractTest()
+    {
+        type = RhiTestType::Resource;
+        name = "render_graph_dlss_rr_motion_vector_contract";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        std::unique_ptr<render::RenderGraphPass> pathTrace =
+            render::createRenderGraphPass("ScenePathTracePass");
+        std::unique_ptr<render::RenderGraphPass> streamlineDlssRr =
+            render::createRenderGraphPass("StreamlineDlssRrPass");
+        if (pathTrace == nullptr || streamlineDlssRr == nullptr) {
+            return RhiTestResult::fail("failed to create DLSS-RR motion-vector passes");
+        }
+
+        render::RenderGraphProperties pathTraceProperties = render::RenderGraphProperties::object();
+        pathTraceProperties["exportDenoiserGuides"] = true;
+        pathTrace->setProperties(std::move(pathTraceProperties));
+
+        const render::RenderGraphCompileContext reflectContext{};
+        const render::RenderPassReflection pathTraceReflection = pathTrace->reflect(reflectContext);
+        const render::RenderPassReflection streamlineReflection = streamlineDlssRr->reflect(reflectContext);
+        const render::RenderGraphField* pathTraceMotionVectors = pathTraceReflection.findField(
+            "motionVectors",
+            render::RenderGraphFieldVisibility::Output);
+        const render::RenderGraphField* streamlineMotionVectors = streamlineReflection.findField(
+            "motionVectors",
+            render::RenderGraphFieldVisibility::Input);
+        if (pathTraceMotionVectors == nullptr ||
+            pathTraceMotionVectors->format != render::Format::Rg16Sfloat) {
+            return RhiTestResult::fail(
+                "ScenePathTracePass motionVectors output must use Rg16Sfloat");
+        }
+        if (streamlineMotionVectors == nullptr ||
+            streamlineMotionVectors->format != render::Format::Rg16Sfloat) {
+            return RhiTestResult::fail(
+                "StreamlineDlssRrPass motionVectors input must use Rg16Sfloat");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 
 bool hasRuntimeSetting(
     const render::RenderGraphPass& pass,
@@ -9141,6 +9187,7 @@ public:
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphDlssRrMotionVectorContractTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRuntimeSettingsDeclarationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRuntimeRebuildDirtyTest);
 METALLIC_REGISTER_RHI_TEST(RenderSampleLoadTest);

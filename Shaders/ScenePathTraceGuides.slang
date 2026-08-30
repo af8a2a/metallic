@@ -10,7 +10,7 @@ RWTexture2D<float4> gDlssRrSpecularAlbedo;
 RWTexture2D<float4> gDlssRrNormalRoughness;
 
 [[vk::binding(17, 0)]]
-RWTexture2D<float4> gDlssRrMotionVectors;
+RWTexture2D<float2> gDlssRrMotionVectors;
 
 [[vk::binding(18, 0)]]
 RWTexture2D<float> gDlssRrLinearDepth;
@@ -47,7 +47,7 @@ void writeDlssRrGuides(uint2 pixel, DlssRrGuideData data)
     gDlssRrAlbedo[pixel] = float4(saturate(data.albedo), 1.0);
     gDlssRrSpecularAlbedo[pixel] = float4(saturate(data.specularAlbedo), 1.0);
     gDlssRrNormalRoughness[pixel] = float4(safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
-    gDlssRrMotionVectors[pixel] = float4(data.motionVector, 0.0, 0.0);
+    gDlssRrMotionVectors[pixel] = data.motionVector;
     gDlssRrLinearDepth[pixel] = max(data.linearDepth, 0.0);
     gDlssRrSpecularHitDistance[pixel] = max(data.specularHitDistance, 0.0);
 }
