@@ -1359,7 +1359,7 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    Result executeNode(CommandBuffer& commandBuffer, CompiledNode& node)
+    Result executeNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex)
     {
         std::vector<RenderGraphExecutionContext::Binding> bindings;
 
@@ -1418,6 +1418,7 @@ struct RenderGraphExecutor::Impl {
         RenderUploadSubsystem* upload = uploadSubsystem();
         RenderGraphExecutionContext context(
             commandBuffer,
+            frameIndex,
             node.executionWidth,
             node.executionHeight,
             node.name,
@@ -1955,7 +1956,7 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
     impl_->beginGpuTiming(commandBuffer);
     const auto cpuBegin = std::chrono::steady_clock::now();
     for (Impl::CompiledNode& node : impl_->executionList) {
-        result = impl_->executeNode(commandBuffer, node);
+        result = impl_->executeNode(commandBuffer, node, frameIndex);
         if (!result) {
             break;
         }
@@ -2213,7 +2214,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             preGraphRecorded = true;
         }
 
-        result = impl_->executeNode(*currentCommandBuffer, node);
+        result = impl_->executeNode(*currentCommandBuffer, node, frameIndex);
         if (!result) {
             std::string cleanupLog;
             (void)impl_->subsystemHost->recordPostGraph(

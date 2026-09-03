@@ -515,7 +515,12 @@ float3 openPbrPrimaryDebugColor(
     return float3(1.0, 0.0, 1.0);
 }
 
-float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint seed)
+float3 pathTraceOpenPBR(
+    Ray ray,
+    RayCone rayCone,
+    ScenePathTracePush push,
+    inout uint seed,
+    out float specularHitDistance)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
@@ -523,15 +528,25 @@ float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push, inout
     bool previousScatterDelta = true;
     uint maxDepth = clamp(push.maxDepth, 1u, 32u);
     OpenPBRInteriorStack interiorStack = makeOpenPBRInteriorStack();
+    specularHitDistance = 0.0;
+    bool captureSpecularHitDistance = false;
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
         if (!traceClosest(ray, push, hit)) {
+            if (captureSpecularHitDistance) {
+                specularHitDistance = 65504.0;
+                captureSpecularHitDistance = false;
+            }
             float misWeight = depth == 0u
                 ? 1.0
                 : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
             radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u) * misWeight;
             break;
+        }
+        if (captureSpecularHitDistance) {
+            specularHitDistance = hit.t;
+            captureSpecularHitDistance = false;
         }
 
         rayCone = propagateRayCone(rayCone, hit.t);
@@ -682,6 +697,12 @@ float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push, inout
             break;
         }
 
+        if (depth == 0u) {
+            captureSpecularHitDistance =
+                bool(sampledType & OpenPBR_BsdfLobeTypeReflection) &&
+                bool(sampledType & (OpenPBR_BsdfLobeTypeGlossy | OpenPBR_BsdfLobeTypeSpecular));
+        }
+
         sampledDirection = safeNormalize(sampledDirection, hit.normal);
         throughput *= max(openpbr_get_sum_of_diffuse_specular(sampledWeight), float3(0.0, 0.0, 0.0));
         previousBsdfPdf = sampledPdf;
@@ -722,17 +743,20 @@ void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     uint seed = hash(
         pixel.x +
         pixel.y * max(push.width, 1u) +
-        (push.accumulationFrame + 1u) * 0x9e3779b9u);
+        (push.sampleFrame + 1u) * 0x9e3779b9u);
     float3 color = float3(0.0, 0.0, 0.0);
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
-        float2 jitter = samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed));
+        float2 jitter = push.temporalJitter != 0u
+            ? float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY)
+            : (samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed)));
         float2 samplePixel = float2(pixel) + jitter;
 
         Ray ray;
         ray.origin = rayOriginFromPixel(samplePixel, push);
         ray.direction = rayDirectionFromPixel(samplePixel, push);
         RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
-        color += pathTraceOpenPBR(ray, rayCone, push, seed);
+        float ignoredSpecularHitDistance;
+        color += pathTraceOpenPBR(ray, rayCone, push, seed, ignoredSpecularHitDistance);
     }
     color /= float(samples);
 

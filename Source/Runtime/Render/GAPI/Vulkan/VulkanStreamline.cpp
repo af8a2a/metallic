@@ -530,7 +530,7 @@ sl::Constants makeConstants(const StreamlineDlssRrCamera& camera, bool reset)
     sl::matrixMul(clipToPrevCameraView, currentCamera.clipToCameraView, cameraViewToPrevCameraView);
     sl::matrixMul(constants.clipToPrevClip, clipToPrevCameraView, previousCamera.cameraViewToClip);
     sl::matrixFullInvert(constants.prevClipToClip, constants.clipToPrevClip);
-    constants.jitterOffset = sl::float2(0.0f, 0.0f);
+    constants.jitterOffset = sl::float2(camera.jitterOffset[0], camera.jitterOffset[1]);
     constants.mvecScale = sl::float2(1.0f, 1.0f);
     constants.cameraPinholeOffset = sl::float2(0.0f, 0.0f);
     constants.cameraPos = currentCamera.position;
@@ -576,9 +576,20 @@ sl::DLSSDOptions makeDlssRrBaseOptions(
     options.mode = slMode(mode);
     options.outputWidth = outputWidth;
     options.outputHeight = outputHeight;
+    options.sharpness = 0.0f;
+    options.preExposure = 1.0f;
+    options.exposureScale = 1.0f;
     options.colorBuffersHDR = sl::Boolean::eTrue;
+    options.indicatorInvertAxisX = sl::Boolean::eFalse;
+    options.indicatorInvertAxisY = sl::Boolean::eFalse;
     options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
     options.alphaUpscalingEnabled = sl::Boolean::eFalse;
+    options.dlaaPreset = sl::DLSSDPreset::ePresetD;
+    options.qualityPreset = sl::DLSSDPreset::ePresetD;
+    options.balancedPreset = sl::DLSSDPreset::ePresetD;
+    options.performancePreset = sl::DLSSDPreset::ePresetD;
+    options.ultraPerformancePreset = sl::DLSSDPreset::ePresetD;
+    options.ultraQualityPreset = sl::DLSSDPreset::ePresetD;
     return options;
 }
 

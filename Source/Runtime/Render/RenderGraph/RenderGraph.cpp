@@ -523,6 +523,7 @@ const BindlessHandle& BufferHandle::bindlessHandle() const
 
 RenderGraphExecutionContext::RenderGraphExecutionContext(
     CommandBuffer& commandBuffer,
+    uint64_t frameIndex,
     uint32_t width,
     uint32_t height,
     std::string passName,
@@ -534,6 +535,7 @@ RenderGraphExecutionContext::RenderGraphExecutionContext(
     RenderWorld* world,
     RenderSubsystemHost* subsystems)
     : commandBuffer_(commandBuffer)
+    , frameIndex_(frameIndex)
     , width_(width)
     , height_(height)
     , passName_(std::move(passName))

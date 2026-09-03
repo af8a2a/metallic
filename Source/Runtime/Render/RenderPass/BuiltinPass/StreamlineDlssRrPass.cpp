@@ -303,6 +303,11 @@ public:
             renderWidth,
             renderHeight,
             context.properties());
+        const std::array<float, 2> jitter = dlssTemporalJitter(context.frameIndex());
+        // The primary rays are shifted by +jitter; NGX expects the inverse
+        // correction in pixel space.
+        camera.jitterOffset[0] = -jitter[0];
+        camera.jitterOffset[1] = -jitter[1];
         const DlssRrCameraSnapshot currentCamera = cameraSnapshotFrom(camera);
         const bool previousCameraValid =
             !reset &&

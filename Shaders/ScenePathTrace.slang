@@ -245,6 +245,10 @@ struct ScenePathTracePush
     uint ntcTextureSetCount;
     uint debugView;
     uint debugFlags;
+    float jitterOffsetX;
+    float jitterOffsetY;
+    uint sampleFrame;
+    uint temporalJitter;
 };
 
 struct Ray
@@ -526,7 +530,7 @@ float cameraHardwareDepth(float linearDepth, ScenePathTracePush push)
         (zNear * zFar) / ((zFar - zNear) * viewDepth));
 }
 
-float2 motionVectorToPrevious(float3 worldPosition, float2 currentSamplePixel, ScenePathTracePush push)
+float2 motionVectorToPrevious(float3 worldPosition, float2 currentPixelCenter, ScenePathTracePush push)
 {
     if (push.previousCameraValid == 0u) {
         return float2(0.0, 0.0);
@@ -543,7 +547,7 @@ float2 motionVectorToPrevious(float3 worldPosition, float2 currentSamplePixel, S
         previousUv)) {
         return float2(0.0, 0.0);
     }
-    float2 currentUv = currentSamplePixel / float2(max(push.width, 1u), max(push.height, 1u));
+    float2 currentUv = currentPixelCenter / float2(max(push.width, 1u), max(push.height, 1u));
     return previousUv - currentUv;
 }
 
@@ -1395,7 +1399,13 @@ struct PathTraceCacheContext
     float materialRoughnessPrev;
 };
 
-float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout PathTraceCacheContext cache, inout uint seed)
+float3 pathTrace(
+    Ray ray,
+    RayCone rayCone,
+    ScenePathTracePush push,
+    inout PathTraceCacheContext cache,
+    inout uint seed,
+    out float specularHitDistance)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
@@ -1403,6 +1413,8 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout PathTr
     bool previousScatterDelta = true;
     uint maxDepth = clamp(push.maxDepth, 1u, 32u);
     cache.materialRoughnessPrev = 1.0;
+    specularHitDistance = 0.0;
+    bool captureSpecularHitDistance = false;
 
 #if METALLIC_PT_NRC
     NrcSetSampleIndex(cache.nrc, 0u);
@@ -1411,6 +1423,10 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout PathTr
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
         if (!traceClosest(ray, push, hit)) {
+            if (captureSpecularHitDistance) {
+                specularHitDistance = 65504.0;
+                captureSpecularHitDistance = false;
+            }
             float misWeight = depth == 0u
                 ? 1.0
                 : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
@@ -1423,6 +1439,10 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout PathTr
             NrcUpdateOnMiss(cache.nrcPathState);
 #endif
             break;
+        }
+        if (captureSpecularHitDistance) {
+            specularHitDistance = hit.t;
+            captureSpecularHitDistance = false;
         }
 
 #if METALLIC_PT_SHARC && SHARC_UPDATE
@@ -1639,6 +1659,9 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout PathTr
                 : 1.0;
             if (!canRefract || rand(seed) < reflectProbability) {
                 ray.direction = safeNormalize(reflect(ray.direction, hit.normal), hit.normal);
+                if (depth == 0u) {
+                    captureSpecularHitDistance = true;
+                }
             } else {
                 ray.direction = safeNormalize(refractedDirection, ray.direction);
                 throughput *= volumeTransmittance(
@@ -1792,6 +1815,9 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout PathTr
             ray.direction = diffuseDirection;
             throughput *= baseColor * occlusion * (1.0 - metallic) * (1.0 - diffuseTransmission);
         }
+        if (depth == 0u) {
+            captureSpecularHitDistance = sampledSpecularLobe;
+        }
         previousBsdfPdf = max(
             fallbackBsdfPdf(incidentDirection, hit.normal, ray.direction, metallic, roughness, diffuseTransmission),
             0.000001);
@@ -1926,7 +1952,7 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     seed = hash(
         pixel.x +
         pixel.y * max(push.width, 1u) +
-        (push.accumulationFrame + 1u) * 0x9e3779b9u);
+        (push.sampleFrame + 1u) * 0x9e3779b9u);
     float2 samplePixel = float2(pixel);
 #endif
 
@@ -1937,7 +1963,9 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
 #if SHARC_UPDATE || NRC_UPDATE || NRC_QUERY
         float2 jitter = float2(0.0, 0.0);
 #else
-        float2 jitter = samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed));
+        float2 jitter = push.temporalJitter != 0u
+            ? float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY)
+            : (samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed)));
 #endif
 #if !(SHARC_UPDATE || NRC_UPDATE || NRC_QUERY)
         samplePixel = float2(outputPixel) + jitter;
@@ -1952,7 +1980,8 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         NrcSetSampleIndex(cache.nrc, sampleIndex);
         cache.nrcPathState = NrcCreatePathState(cache.nrc.constants, rand(seed));
 #endif
-        color += pathTrace(ray, rayCone, push, cache, seed);
+        float ignoredSpecularHitDistance;
+        color += pathTrace(ray, rayCone, push, cache, seed, ignoredSpecularHitDistance);
     }
 #if SHARC_UPDATE || NRC_UPDATE
     // Cache update passes produce no image output.

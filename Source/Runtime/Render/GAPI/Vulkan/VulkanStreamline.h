@@ -49,6 +49,7 @@ struct StreamlineDlssRrCamera {
     float previousZFar = 10000.0f;
     float orthoHeight = 1.0f;
     float previousOrthoHeight = 1.0f;
+    float jitterOffset[2] = {0.0f, 0.0f};
     bool orthographic = false;
     bool previousOrthographic = false;
     bool previousValid = false;

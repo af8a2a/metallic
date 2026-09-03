@@ -1461,6 +1461,13 @@ public:
         push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
         push.cacheMode = cacheMode;
         push.outputLinear = cacheMode == kScenePathTraceCacheModeNrc ? 1u : 0u;
+        push.sampleFrame = static_cast<uint32_t>(context.frameIndex());
+        push.temporalJitter = exportGuides ? 1u : 0u;
+        if (exportGuides) {
+            const std::array<float, 2> jitter = dlssTemporalJitter(context.frameIndex());
+            push.jitterOffsetX = jitter[0];
+            push.jitterOffsetY = jitter[1];
+        }
         const ScenePathTraceCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
         const bool previousCameraValid =
             hasPreviousCamera_ &&

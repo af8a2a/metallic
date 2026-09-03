@@ -36,6 +36,27 @@
 
 namespace metallic::render::builtin_pass {
 
+inline float radicalInverse(uint64_t index, uint32_t base)
+{
+    float result = 0.0f;
+    float factor = 1.0f / static_cast<float>(base);
+    while (index != 0) {
+        result += static_cast<float>(index % base) * factor;
+        index /= base;
+        factor /= static_cast<float>(base);
+    }
+    return result;
+}
+
+inline std::array<float, 2> dlssTemporalJitter(uint64_t frameIndex)
+{
+    const uint64_t sequenceIndex = frameIndex % 1024u + 1u;
+    return {
+        radicalInverse(sequenceIndex, 2u) - 0.5f,
+        radicalInverse(sequenceIndex, 3u) - 0.5f,
+    };
+}
+
 inline constexpr const char* kTriangleShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
 inline constexpr const char* kTriangleShaderModuleName = "Triangle";
 inline constexpr const char* kTriangleVertexEntryPoint = "triangleVertexMain";
@@ -769,6 +790,10 @@ struct ScenePathTracePush {
     uint32_t ntcTextureSetCount = 0;
     uint32_t debugView = kScenePathTraceDebugViewFinal;
     uint32_t debugFlags = 0;
+    float jitterOffsetX = 0.0f;
+    float jitterOffsetY = 0.0f;
+    uint32_t sampleFrame = 0;
+    uint32_t temporalJitter = 0;
 };
 
 // Per-frame parameters for the radiance-cache permutations of
@@ -812,7 +837,7 @@ struct ScenePathTraceCacheParams {
 
 static_assert(sizeof(ScenePathTraceCacheParams) == 172);
 static_assert(offsetof(ScenePathTraceCacheParams, nrcFrameDimensions) == 76);
-static_assert(sizeof(ScenePathTracePush) == 236);
+static_assert(sizeof(ScenePathTracePush) == 252);
 
 struct SceneRtxdiPush {
     float eye[4] = {};

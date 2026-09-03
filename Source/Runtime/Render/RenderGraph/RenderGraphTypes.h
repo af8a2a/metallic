@@ -223,6 +223,7 @@ private:
 class RenderGraphExecutionContext {
 public:
     CommandBuffer& commandBuffer() const { return commandBuffer_; }
+    uint64_t frameIndex() const { return frameIndex_; }
     uint32_t width() const { return width_; }
     uint32_t height() const { return height_; }
     const std::string& passName() const { return passName_; }
@@ -263,6 +264,7 @@ private:
 
     RenderGraphExecutionContext(
         CommandBuffer& commandBuffer,
+        uint64_t frameIndex,
         uint32_t width,
         uint32_t height,
         std::string passName,
@@ -275,6 +277,7 @@ private:
         RenderSubsystemHost* subsystems);
 
     CommandBuffer& commandBuffer_;
+    uint64_t frameIndex_ = 0;
     uint32_t width_ = 1;
     uint32_t height_ = 1;
     std::string passName_;

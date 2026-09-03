@@ -113,7 +113,6 @@ DlssRrGuideData evaluateOpenPbrDlssRrGuides(
     data.roughness = roughness;
     data.motionVector = motionVectorToPrevious(hit.position, samplePixel, push);
     data.linearDepth = cameraLinearDepth(hit.position, push);
-    data.specularHitDistance = hit.t;
     return data;
 }
 
@@ -131,21 +130,30 @@ void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThre
     uint seed = hash(
         pixel.x +
         pixel.y * max(push.width, 1u) +
-        (push.accumulationFrame + 1u) * 0x9e3779b9u);
+        (push.sampleFrame + 1u) * 0x9e3779b9u);
     float3 color = float3(0.0, 0.0, 0.0);
     DlssRrGuideData guides = makeDefaultDlssRrGuideData(push);
+    float firstSampleSpecularHitDistance = 0.0;
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
-        float2 jitter = samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed));
+        float2 jitter = float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY);
         float2 samplePixel = float2(pixel) + jitter;
 
         Ray ray;
         ray.origin = rayOriginFromPixel(samplePixel, push);
         ray.direction = rayDirectionFromPixel(samplePixel, push);
         RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
-        color += pathTraceOpenPBR(ray, rayCone, push, seed);
+        float sampleSpecularHitDistance;
+        color += pathTraceOpenPBR(ray, rayCone, push, seed, sampleSpecularHitDistance);
 
         if (sampleIndex == 0u) {
-            guides = evaluateOpenPbrDlssRrGuides(ray, rayCone, samplePixel, push, seed);
+            firstSampleSpecularHitDistance = sampleSpecularHitDistance;
+            guides = evaluateOpenPbrDlssRrGuides(
+                ray,
+                rayCone,
+                float2(pixel) + float2(0.5, 0.5),
+                push,
+                seed);
+            guides.specularHitDistance = firstSampleSpecularHitDistance;
         }
     }
     color /= float(samples);
