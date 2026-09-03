@@ -340,6 +340,7 @@ struct DeviceCapabilities {
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
     bool streamline = false;
+    bool streamlineDlssSr = false;
     bool streamlineDlssRr = false;
     bool aftermath = false;
     bool shaderIntegerDotProduct = false;

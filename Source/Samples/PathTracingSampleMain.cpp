@@ -8,12 +8,14 @@
 namespace {
 
 constexpr const char* kPathTracingSampleId = "pathtracing-sample";
+constexpr const char* kPathTracingDlssSrSampleId = "pathtracing-sample-dlss-sr";
 constexpr const char* kPathTracingDlssRrSampleId = "pathtracing-sample-dlss-rr";
 
 void printUsage()
 {
     spdlog::info(
         "MetallicPathTracingSample options:\n"
+        "  --dlss-sr                   Use the NVIDIA DLSS-SR upscaling graph\n"
         "  --dlss-rr                   Use the NVIDIA DLSS-RR denoiser graph\n"
         "  --smoke-test                 Render one frame and exit\n"
         "  --scene <path>               Override the sample glTF scene\n"
@@ -40,6 +42,10 @@ int main(int argc, char** argv)
         }
         if (argument == "--dlss-rr") {
             sampleId = kPathTracingDlssRrSampleId;
+            continue;
+        }
+        if (argument == "--dlss-sr") {
+            sampleId = kPathTracingDlssSrSampleId;
             continue;
         }
         if (argument == "--wait-for-graphics-debugger") {

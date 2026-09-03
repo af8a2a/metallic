@@ -7904,8 +7904,7 @@ Result Device::createGraphicsPipeline(
         usesMeshShader == usesVertexShader ||
         (usesTaskShader && !usesMeshShader) ||
         desc.fragmentShader == nullptr ||
-        desc.fragmentShader->impl_ == nullptr ||
-        desc.colorFormat == Format::Unknown) {
+        desc.fragmentShader->impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
     if (usesVertexShader && desc.vertexShader->impl_ == nullptr) {
@@ -7955,7 +7954,11 @@ Result Device::createGraphicsPipeline(
     if (desc.usesBindlessHeap && !impl_->capabilities.bindlessDescriptorHeap) {
         return makeError(Error::Unsupported);
     }
+    const bool hasColorFormat = desc.colorFormat != Format::Unknown;
     const bool hasDepthStencilFormat = desc.depthStencilFormat != Format::Unknown;
+    if (!hasColorFormat && !hasDepthStencilFormat) {
+        return makeError(Error::InvalidArgument);
+    }
     if ((desc.depthStencil.depthTestEnable || desc.depthStencil.depthWriteEnable) && !hasDepthStencilFormat) {
         return makeError(Error::InvalidArgument);
     }
@@ -8121,8 +8124,8 @@ Result Device::createGraphicsPipeline(
     };
     VkPipelineColorBlendStateCreateInfo colorBlendState{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &colorBlendAttachment,
+        .attachmentCount = hasColorFormat ? 1u : 0u,
+        .pAttachments = hasColorFormat ? &colorBlendAttachment : nullptr,
     };
     std::array<VkDynamicState, 2> dynamicStates = {
         VK_DYNAMIC_STATE_VIEWPORT,
@@ -8157,8 +8160,8 @@ Result Device::createGraphicsPipeline(
     const VkFormat depthStencilFormat = toVkFormat(desc.depthStencilFormat);
     VkPipelineRenderingCreateInfo renderingInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-        .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &colorFormat,
+        .colorAttachmentCount = hasColorFormat ? 1u : 0u,
+        .pColorAttachmentFormats = hasColorFormat ? &colorFormat : nullptr,
         .depthAttachmentFormat = depthStencilFormat,
     };
     VkPipelineCreateFlags2CreateInfo bindlessPipelineFlags{
@@ -9108,6 +9111,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
                 .physicalDevice = deviceImpl->physicalDevice,
                 .device = deviceImpl->device,
                 .apiVersion = kVulkanApiVersion,
+                .descriptorHeapEnabled = deviceImpl->bindlessDescriptorHeapEnabled,
             },
             vulkan::NativeQueue{
                 .queue = graphicsQueue,
@@ -9120,7 +9124,11 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             streamlineLog);
         if (streamlineResult) {
             deviceImpl->capabilities.streamline = true;
+            deviceImpl->capabilities.streamlineDlssSr = vulkan::streamlineDlssSrSupported();
             deviceImpl->capabilities.streamlineDlssRr = vulkan::streamlineDlssRrSupported();
+            if (!deviceImpl->capabilities.streamlineDlssSr && !streamlineLog.empty()) {
+                spdlog::warn("NVIDIA Streamline DLSS-SR unsupported: {}", streamlineLog);
+            }
             if (!deviceImpl->capabilities.streamlineDlssRr && !streamlineLog.empty()) {
                 spdlog::warn("NVIDIA Streamline DLSS-RR unsupported: {}", streamlineLog);
             }
@@ -9159,6 +9167,7 @@ struct VulkanNativeAccess {
             .physicalDevice = device.impl_->physicalDevice,
             .device = device.impl_->device,
             .apiVersion = kVulkanApiVersion,
+            .descriptorHeapEnabled = device.impl_->bindlessDescriptorHeapEnabled,
         };
     }
 
@@ -9232,6 +9241,13 @@ struct VulkanNativeAccess {
         return commandBuffer.impl_ != nullptr ? commandBuffer.impl_->commandBuffer : VK_NULL_HANDLE;
     }
 
+    static void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer)
+    {
+        if (commandBuffer.impl_ != nullptr) {
+            commandBuffer.impl_->currentBindlessHeap = nullptr;
+        }
+    }
+
     static VkFormat nativeSwapchainFormat(Swapchain& swapchain)
     {
         return swapchain.impl_ != nullptr ? swapchain.impl_->vkFormat : VK_FORMAT_UNDEFINED;
@@ -9271,6 +9287,11 @@ NativeTexture nativeTexture(Texture& texture)
 VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)
 {
     return detail::VulkanNativeAccess::nativeCommandBuffer(commandBuffer);
+}
+
+void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer)
+{
+    detail::VulkanNativeAccess::notifyExternalDescriptorSetBinding(commandBuffer);
 }
 
 VkFormat nativeSwapchainFormat(Swapchain& swapchain)

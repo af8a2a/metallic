@@ -1207,6 +1207,8 @@ public:
             render::createRenderGraphPass("GPUDrivenStreamAssetPass");
         const std::unique_ptr<render::RenderGraphPass> nrdDenoise =
             render::createRenderGraphPass("NrdDenoisePass");
+        const std::unique_ptr<render::RenderGraphPass> streamlineDlssSr =
+            render::createRenderGraphPass("StreamlineDlssSrPass");
         const std::unique_ptr<render::RenderGraphPass> streamlineDlssRr =
             render::createRenderGraphPass("StreamlineDlssRrPass");
 
@@ -1221,6 +1223,7 @@ public:
             gpuDrivenPreview == nullptr ||
             gpuDrivenStreamAsset == nullptr ||
             nrdDenoise == nullptr ||
+            streamlineDlssSr == nullptr ||
             streamlineDlssRr == nullptr) {
             return RhiTestResult::fail("failed to create built-in render graph passes");
         }
@@ -1272,6 +1275,10 @@ public:
             streamlineDlssRr->queueType() != render::QueueType::Graphics) {
             return RhiTestResult::fail("StreamlineDlssRrPass is not classified as Unsafe/Graphics");
         }
+        if (streamlineDlssSr->kind() != render::RenderGraphPassKind::Unsafe ||
+            streamlineDlssSr->queueType() != render::QueueType::Graphics) {
+            return RhiTestResult::fail("StreamlineDlssSrPass is not classified as Unsafe/Graphics");
+        }
 
         bool foundTriangle = false;
         bool foundCopy = false;
@@ -1284,6 +1291,7 @@ public:
         bool foundGPUDrivenPreview = false;
         bool foundGPUDrivenStreamAsset = false;
         bool foundNrdDenoise = false;
+        bool foundStreamlineDlssSr = false;
         bool foundStreamlineDlssRr = false;
         for (const render::RenderGraphPassInfo& passInfo : render::listRenderGraphPassTypes()) {
             if (passInfo.type == "TriangleRasterPass") {
@@ -1322,6 +1330,9 @@ public:
             } else if (passInfo.type == "StreamlineDlssRrPass") {
                 foundStreamlineDlssRr = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
                     passInfo.queueType == render::QueueType::Graphics;
+            } else if (passInfo.type == "StreamlineDlssSrPass") {
+                foundStreamlineDlssSr = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
+                    passInfo.queueType == render::QueueType::Graphics;
             }
         }
         if (!foundTriangle ||
@@ -1335,6 +1346,7 @@ public:
             !foundGPUDrivenPreview ||
             !foundGPUDrivenStreamAsset ||
             !foundNrdDenoise ||
+            !foundStreamlineDlssSr ||
             !foundStreamlineDlssRr) {
             return RhiTestResult::fail("RenderGraphPassInfo did not preserve pass kind metadata");
         }
@@ -1355,10 +1367,12 @@ public:
     {
         std::unique_ptr<render::RenderGraphPass> pathTrace =
             render::createRenderGraphPass("ScenePathTracePass");
+        std::unique_ptr<render::RenderGraphPass> streamlineDlssSr =
+            render::createRenderGraphPass("StreamlineDlssSrPass");
         std::unique_ptr<render::RenderGraphPass> streamlineDlssRr =
             render::createRenderGraphPass("StreamlineDlssRrPass");
-        if (pathTrace == nullptr || streamlineDlssRr == nullptr) {
-            return RhiTestResult::fail("failed to create DLSS-RR motion-vector passes");
+        if (pathTrace == nullptr || streamlineDlssSr == nullptr || streamlineDlssRr == nullptr) {
+            return RhiTestResult::fail("failed to create Streamline DLSS motion-vector passes");
         }
 
         render::RenderGraphProperties pathTraceProperties = render::RenderGraphProperties::object();
@@ -1367,12 +1381,22 @@ public:
 
         const render::RenderGraphCompileContext reflectContext{};
         const render::RenderPassReflection pathTraceReflection = pathTrace->reflect(reflectContext);
+        const render::RenderPassReflection streamlineSrReflection = streamlineDlssSr->reflect(reflectContext);
         const render::RenderPassReflection streamlineReflection = streamlineDlssRr->reflect(reflectContext);
         const render::RenderGraphField* pathTraceMotionVectors = pathTraceReflection.findField(
             "motionVectors",
             render::RenderGraphFieldVisibility::Output);
         const render::RenderGraphField* streamlineMotionVectors = streamlineReflection.findField(
             "motionVectors",
+            render::RenderGraphFieldVisibility::Input);
+        const render::RenderGraphField* streamlineSrMotionVectors = streamlineSrReflection.findField(
+            "motionVectors",
+            render::RenderGraphFieldVisibility::Input);
+        const render::RenderGraphField* pathTraceDepth = pathTraceReflection.findField(
+            "depth",
+            render::RenderGraphFieldVisibility::Output);
+        const render::RenderGraphField* streamlineSrDepth = streamlineSrReflection.findField(
+            "depth",
             render::RenderGraphFieldVisibility::Input);
         if (pathTraceMotionVectors == nullptr ||
             pathTraceMotionVectors->format != render::Format::Rg16Sfloat) {
@@ -1383,6 +1407,19 @@ public:
             streamlineMotionVectors->format != render::Format::Rg16Sfloat) {
             return RhiTestResult::fail(
                 "StreamlineDlssRrPass motionVectors input must use Rg16Sfloat");
+        }
+        if (streamlineSrMotionVectors == nullptr ||
+            streamlineSrMotionVectors->format != render::Format::Rg16Sfloat) {
+            return RhiTestResult::fail(
+                "StreamlineDlssSrPass motionVectors input must use Rg16Sfloat");
+        }
+        if (pathTraceDepth == nullptr ||
+            pathTraceDepth->format != render::Format::R32Sfloat ||
+            streamlineSrDepth == nullptr ||
+            streamlineSrDepth->format != render::Format::R32Sfloat ||
+            !render::hasFlag(streamlineSrDepth->usage, render::TextureUsageBits::Sampled)) {
+            return RhiTestResult::fail(
+                "ScenePathTracePass and StreamlineDlssSrPass must share sampled R32Sfloat depth staging data");
         }
 
         return RhiTestResult::pass();
@@ -1443,6 +1480,8 @@ public:
             render::createRenderGraphPass("GPUDrivenPreviewPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenStreamAsset =
             render::createRenderGraphPass("GPUDrivenStreamAssetPass");
+        const std::unique_ptr<render::RenderGraphPass> streamlineDlssSr =
+            render::createRenderGraphPass("StreamlineDlssSrPass");
         const std::unique_ptr<render::RenderGraphPass> streamlineDlssRr =
             render::createRenderGraphPass("StreamlineDlssRrPass");
         if (pathTrace == nullptr ||
@@ -1451,6 +1490,7 @@ public:
             materialVisualization == nullptr ||
             gpuDrivenPreview == nullptr ||
             gpuDrivenStreamAsset == nullptr ||
+            streamlineDlssSr == nullptr ||
             streamlineDlssRr == nullptr) {
             return RhiTestResult::fail("failed to create passes for runtime settings declaration test");
         }
@@ -1503,6 +1543,15 @@ public:
         }
         if (!hasBoolRuntimeSetting(*gpuDrivenStreamAsset, "enableGpuLodSelection")) {
             return RhiTestResult::fail("GPUDrivenStreamAssetPass missing Bool runtime setting enableGpuLodSelection");
+        }
+        if (!hasRuntimeSetting(
+                *streamlineDlssSr,
+                "mode",
+                render::RenderGraphRuntimeSettingType::Enum,
+                true,
+                true)) {
+            return RhiTestResult::fail(
+                "StreamlineDlssSrPass mode must invalidate history and rebuild the graph");
         }
         if (!hasRuntimeSetting(
                 *streamlineDlssRr,
@@ -1896,6 +1945,36 @@ public:
             return RhiTestResult::fail("RTXCR Sample graph first output changed");
         }
 
+        render::RenderSampleLoadResult dlssSrSample;
+        if (!render::loadBuiltInRenderSample("pathtracing-sample-dlss-sr", dlssSrSample, message)) {
+            return RhiTestResult::fail(message);
+        }
+        if (dlssSrSample.desc.id != "pathtracing-sample-dlss-sr" ||
+            dlssSrSample.desc.name != "PathTracingSample / DLSS-SR" ||
+            dlssSrSample.desc.category != "PathTracing" ||
+            dlssSrSample.desc.scenePath != "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf" ||
+            dlssSrSample.desc.graphPath != "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_sr.metallic_graph.json" ||
+            dlssSrSample.desc.previewOutput != "DlssSr.color" ||
+            !dlssSrSample.desc.requiresStreamline) {
+            return RhiTestResult::fail("DLSS-SR PathTracingSample metadata did not load as expected");
+        }
+        const render::RenderGraphNode* dlssSrPathTrace = dlssSrSample.graph.findNode("PathTrace");
+        const render::RenderGraphNode* dlssSrPass = dlssSrSample.graph.findNode("DlssSr");
+        if (dlssSrPathTrace == nullptr ||
+            dlssSrPass == nullptr ||
+            !dlssSrPathTrace->properties.is_object() ||
+            dlssSrPathTrace->properties.value("path", "") != dlssSrSample.desc.scenePath ||
+            !dlssSrPathTrace->properties.value("exportDenoiserGuides", false) ||
+            dlssSrPass->type != "StreamlineDlssSrPass") {
+            return RhiTestResult::fail("DLSS-SR PathTracingSample did not apply expected graph defaults");
+        }
+        if (!dlssSrSample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (dlssSrSample.graph.firstOutputName() != "DlssSr.color") {
+            return RhiTestResult::fail("DLSS-SR PathTracingSample graph first output changed");
+        }
+
         render::RenderSampleLoadResult dlssRrSample;
         if (!render::loadBuiltInRenderSample("pathtracing-sample-dlss-rr", dlssRrSample, message)) {
             return RhiTestResult::fail(message);
@@ -1989,6 +2068,10 @@ public:
                 "gpu-driven-sample",
                 requiresStreamline) ||
             requiresStreamline ||
+            !render::queryBuiltInRenderSampleStreamlineRequirement(
+                "pathtracing-sample-dlss-sr",
+                requiresStreamline) ||
+            !requiresStreamline ||
             !render::queryBuiltInRenderSampleStreamlineRequirement(
                 "pathtracing-sample-dlss-rr",
                 requiresStreamline) ||
@@ -2159,6 +2242,7 @@ public:
 
         bool listedPathTrace = false;
         bool listedOpenPBRPathTrace = false;
+        bool listedDlssSrPathTrace = false;
         bool listedDlssRrPathTrace = false;
         bool listedMaterialVisualization = false;
         bool listedGPUDriven = false;
@@ -2170,6 +2254,7 @@ public:
         for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
             listedPathTrace = listedPathTrace || desc.id == "pathtracing-meet-mat";
             listedOpenPBRPathTrace = listedOpenPBRPathTrace || desc.id == "pathtracing-sample";
+            listedDlssSrPathTrace = listedDlssSrPathTrace || desc.id == "pathtracing-sample-dlss-sr";
             listedDlssRrPathTrace = listedDlssRrPathTrace || desc.id == "pathtracing-sample-dlss-rr";
             listedMaterialVisualization = listedMaterialVisualization ||
                 desc.id == "material-visualization-abeautiful-game";
@@ -2184,6 +2269,7 @@ public:
         }
         if (!listedPathTrace ||
             !listedOpenPBRPathTrace ||
+            !listedDlssSrPathTrace ||
             !listedDlssRrPathTrace ||
             !listedMaterialVisualization ||
             !listedGPUDriven ||
@@ -4915,6 +5001,49 @@ public:
         }
 
         return RhiTestResult::pass("compiled path tracing guide shaders");
+    }
+};
+
+class RenderGraphStreamlineDlssSupportShaderCompileTest : public RhiTest {
+public:
+    RenderGraphStreamlineDlssSupportShaderCompileTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_streamline_dlss_support_shader_compile";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const char* entryPoints[] = {
+            "streamlineDlssDepthVertexMain",
+            "streamlineDlssDepthFragmentMain",
+            "streamlineDlssAlphaMain",
+        };
+        for (const char* entryPoint : entryPoints) {
+            render::ShaderCompileResult compileResult;
+            render::Result result = render::compileSlangShaderToSpirv(
+                render::SlangShaderDesc{
+                    .moduleName = "StreamlineDlssSupport",
+                    .entryPointName = entryPoint,
+                    .searchPath = kShaderSearchPath,
+                },
+                compileResult);
+            if (!result) {
+                return RhiTestResult::fail(
+                    std::string("Streamline DLSS support shader compile returned ") +
+                    toString(result) +
+                    " for " +
+                    entryPoint +
+                    ": " +
+                    compileResult.diagnostics);
+            }
+            if (compileResult.spirv.empty()) {
+                return RhiTestResult::fail(
+                    std::string("Streamline DLSS support shader produced empty SPIR-V for ") +
+                    entryPoint);
+            }
+        }
+        return RhiTestResult::pass("compiled DLSS depth export and alpha resolve shaders");
     }
 };
 
@@ -9215,6 +9344,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetTraversalDemandTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRtxdiPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRtxdiShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPathTracingGuidesShaderCompileTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphStreamlineDlssSupportShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryClusterShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingSamplePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingDebugViewsTest);

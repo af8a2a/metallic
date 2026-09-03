@@ -11,6 +11,7 @@ struct NativeDevice {
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     uint32_t apiVersion = 0;
+    bool descriptorHeapEnabled = false;
 };
 
 struct NativeQueue {
@@ -42,6 +43,7 @@ NativeQueue nativeQueue(Queue& queue);
 NativeBuffer nativeBuffer(Buffer& buffer);
 NativeTexture nativeTexture(Texture& texture);
 VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer);
+void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer);
 VkFormat nativeSwapchainFormat(Swapchain& swapchain);
 VkImageView nativeImageView(TextureView& view);
 } // namespace metallic::render::vulkan

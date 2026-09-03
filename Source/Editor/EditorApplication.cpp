@@ -4040,7 +4040,9 @@ void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties
     }
     bool companionUpdated = false;
     for (const render::RenderGraphNode& candidate : renderGraph_.nodes()) {
-        if (candidate.type != "NrdDenoisePass" && candidate.type != "StreamlineDlssRrPass") {
+        if (candidate.type != "NrdDenoisePass" &&
+            candidate.type != "StreamlineDlssSrPass" &&
+            candidate.type != "StreamlineDlssRrPass") {
             continue;
         }
         render::RenderGraphProperties runtimeProperties = candidate.runtimeProperties.is_object()

@@ -513,6 +513,19 @@ float cameraLinearDepth(float3 worldPosition, ScenePathTracePush push)
     return max(dot(worldPosition - push.eye.xyz, forward), 0.0);
 }
 
+float cameraHardwareDepth(float linearDepth, ScenePathTracePush push)
+{
+    float zNear = max(push.clipOrtho.x, 0.0001);
+    float zFar = max(push.clipOrtho.y, zNear + 0.0001);
+    float viewDepth = clamp(linearDepth, zNear, zFar);
+    if (push.upProjection.w > 0.5) {
+        return saturate((viewDepth - zNear) / (zFar - zNear));
+    }
+    return saturate(
+        zFar / (zFar - zNear) -
+        (zNear * zFar) / ((zFar - zNear) * viewDepth));
+}
+
 float2 motionVectorToPrevious(float3 worldPosition, float2 currentSamplePixel, ScenePathTracePush push)
 {
     if (push.previousCameraValid == 0u) {

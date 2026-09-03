@@ -76,6 +76,10 @@ void registerBuiltInRenderGraphPasses()
         "Denoise connected NRD radiance resources",
         []() { return builtin_pass::createNrdDenoisePass(); });
     registerRenderGraphPassType(
+        "StreamlineDlssSrPass",
+        "Upscale an HDR color target with NVIDIA DLSS Super Resolution",
+        []() { return builtin_pass::createStreamlineDlssSrPass(); });
+    registerRenderGraphPassType(
         "StreamlineDlssRrPass",
         "Denoise a path traced HDR color target with NVIDIA DLSS Ray Reconstruction",
         []() { return builtin_pass::createStreamlineDlssRrPass(); });

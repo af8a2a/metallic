@@ -152,6 +152,7 @@ constexpr uint32_t kDlssRrNormalRoughnessBinding = 16;
 constexpr uint32_t kDlssRrMotionVectorsBinding = 17;
 constexpr uint32_t kDlssRrLinearDepthBinding = 18;
 constexpr uint32_t kDlssRrSpecularHitDistanceBinding = 19;
+constexpr uint32_t kDlssDepthBinding = 20;
 constexpr uint32_t kOpenPBRLut2DCount = 6;
 constexpr uint32_t kOpenPBRLut3DCount = 2;
 constexpr uint32_t kOpenPBRLutSize = OpenPBR_EnergyTableSize;
@@ -591,6 +592,9 @@ public:
             reflection.addTextureOutput("specularHitDistance", "DLSS-RR specular hit distance guide")
                 .storageReadWrite()
                 .format = Format::R32Sfloat;
+            reflection.addTextureOutput("depth", "DLSS normalized hardware depth")
+                .storageReadWrite()
+                .format = Format::R32Sfloat;
         }
         return reflection;
     }
@@ -934,6 +938,10 @@ public:
             });
             baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kDlssRrSpecularHitDistanceBinding,
+                .kind = ComputeResourceBindingKind::StorageImage,
+            });
+            baseBindings.push_back(ComputeProgramBindingDesc{
+                .binding = kDlssDepthBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
         }
@@ -1391,6 +1399,7 @@ public:
         TextureHandle motionVectors = exportGuides ? context.outputTexture("motionVectors") : TextureHandle{};
         TextureHandle linearDepth = exportGuides ? context.outputTexture("linearDepth") : TextureHandle{};
         TextureHandle specularHitDistance = exportGuides ? context.outputTexture("specularHitDistance") : TextureHandle{};
+        TextureHandle depth = exportGuides ? context.outputTexture("depth") : TextureHandle{};
 
         uint32_t cacheMode = cacheMode_;
         ComputeProgram* renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
@@ -1434,7 +1443,8 @@ public:
                     !validTexture(normalRoughness) ||
                     !validTexture(motionVectors) ||
                     !validTexture(linearDepth) ||
-                    !validTexture(specularHitDistance)))) {
+                    !validTexture(specularHitDistance) ||
+                    !validTexture(depth)))) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -1577,6 +1587,10 @@ public:
             bindings.push_back(ComputeDispatchBinding{
                 .binding = kDlssRrSpecularHitDistanceBinding,
                 .textureView = specularHitDistance.view(),
+            });
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = kDlssDepthBinding,
+                .textureView = depth.view(),
             });
         }
         const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();

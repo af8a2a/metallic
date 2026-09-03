@@ -19,6 +19,7 @@
 
 #if METALLIC_HAS_STREAMLINE
 #include <sl.h>
+#include <sl_dlss.h>
 #include <sl_dlss_d.h>
 #include <sl_helpers_vk.h>
 #include <sl_matrix_helpers.h>
@@ -39,10 +40,18 @@ struct DlssRrOptimalSettingsCacheEntry {
 struct StreamlineState {
     bool initialized = false;
     bool vulkanDeviceSet = false;
+    bool dlssSrSupported = false;
     bool dlssRrSupported = false;
+    bool descriptorHeapWorkaroundEnabled = false;
     uint32_t frameIndex = 0;
     sl::ViewportHandle viewport{0};
-    std::vector<DlssRrOptimalSettingsCacheEntry> optimalSettingsCache;
+    VkDevice vulkanDevice = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    std::vector<DlssRrOptimalSettingsCacheEntry> dlssSrOptimalSettingsCache;
+    std::vector<DlssRrOptimalSettingsCacheEntry> dlssRrOptimalSettingsCache;
 };
 
 std::mutex& streamlineMutex()
@@ -197,6 +206,116 @@ bool isUnsupportedStateTrackingHookWarning(const char* message)
     return std::strstr(message, "Hook sl.common:Vulkan:CmdBindPipeline is NOT supported") != nullptr ||
         std::strstr(message, "Hook sl.common:Vulkan:CmdBindDescriptorSets is NOT supported") != nullptr ||
         std::strstr(message, "Hook sl.common:Vulkan:BeginCommandBuffer is NOT supported") != nullptr;
+}
+
+// VK_EXT_descriptor_heap heap commands and legacy descriptor-set commands invalidate
+// each other's state. Streamline 2.11.1 still records descriptor-set based DLSS work,
+// and NVIDIA-RTX/Streamline#109 reports black output when a heap remains active.
+// Bind an empty legacy set immediately before evaluate, then tell the RHI to rebind
+// its heap before the next engine dispatch.
+void destroyDescriptorHeapWorkaround(StreamlineState& state)
+{
+    if (state.vulkanDevice == VK_NULL_HANDLE) {
+        return;
+    }
+    if (state.descriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(state.vulkanDevice, state.descriptorPool, nullptr);
+        state.descriptorPool = VK_NULL_HANDLE;
+        state.descriptorSet = VK_NULL_HANDLE;
+    }
+    if (state.pipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(state.vulkanDevice, state.pipelineLayout, nullptr);
+        state.pipelineLayout = VK_NULL_HANDLE;
+    }
+    if (state.descriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(state.vulkanDevice, state.descriptorSetLayout, nullptr);
+        state.descriptorSetLayout = VK_NULL_HANDLE;
+    }
+    state.descriptorHeapWorkaroundEnabled = false;
+}
+
+Result initializeDescriptorHeapWorkaround(
+    StreamlineState& state,
+    const NativeDevice& device,
+    std::string& log)
+{
+    state.vulkanDevice = device.device;
+    if (!device.descriptorHeapEnabled) {
+        return {};
+    }
+
+    const VkDescriptorSetLayoutCreateInfo setLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+    };
+    VkResult vkResult = vkCreateDescriptorSetLayout(
+        device.device,
+        &setLayoutInfo,
+        nullptr,
+        &state.descriptorSetLayout);
+    if (vkResult == VK_SUCCESS) {
+        const VkPipelineLayoutCreateInfo pipelineLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &state.descriptorSetLayout,
+        };
+        vkResult = vkCreatePipelineLayout(
+            device.device,
+            &pipelineLayoutInfo,
+            nullptr,
+            &state.pipelineLayout);
+    }
+    if (vkResult == VK_SUCCESS) {
+        const VkDescriptorPoolCreateInfo poolInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = 1,
+        };
+        vkResult = vkCreateDescriptorPool(
+            device.device,
+            &poolInfo,
+            nullptr,
+            &state.descriptorPool);
+    }
+    if (vkResult == VK_SUCCESS) {
+        const VkDescriptorSetAllocateInfo allocateInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = state.descriptorPool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &state.descriptorSetLayout,
+        };
+        vkResult = vkAllocateDescriptorSets(device.device, &allocateInfo, &state.descriptorSet);
+    }
+    if (vkResult != VK_SUCCESS) {
+        log = "Failed to initialize the Streamline VK_EXT_descriptor_heap workaround (VkResult " +
+            std::to_string(static_cast<int32_t>(vkResult)) + ")";
+        destroyDescriptorHeapWorkaround(state);
+        return makeError(Error::Failure);
+    }
+
+    state.descriptorHeapWorkaroundEnabled = true;
+    spdlog::info(
+        "[Streamline] Enabled VK_EXT_descriptor_heap compatibility workaround before feature evaluation");
+    return {};
+}
+
+void prepareDescriptorStateForStreamline(
+    StreamlineState& state,
+    CommandBuffer& commandBuffer)
+{
+    if (!state.descriptorHeapWorkaroundEnabled) {
+        return;
+    }
+
+    const VkCommandBuffer commandBufferHandle = nativeCommandBuffer(commandBuffer);
+    vkCmdBindDescriptorSets(
+        commandBufferHandle,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        state.pipelineLayout,
+        0,
+        1,
+        &state.descriptorSet,
+        0,
+        nullptr);
+    notifyExternalDescriptorSetBinding(commandBuffer);
 }
 
 void streamlineLogCallback(sl::LogType type, const char* message)
@@ -391,11 +510,11 @@ SlCameraMatrices makeCameraMatrices(const StreamlineDlssRrCamera& camera, bool p
     return matrices;
 }
 
-sl::Constants makeConstants(const StreamlineDlssRrDesc& desc)
+sl::Constants makeConstants(const StreamlineDlssRrCamera& camera, bool reset)
 {
-    const SlCameraMatrices currentCamera = makeCameraMatrices(desc.camera, false);
-    const SlCameraMatrices previousCamera = desc.camera.previousValid
-        ? makeCameraMatrices(desc.camera, true)
+    const SlCameraMatrices currentCamera = makeCameraMatrices(camera, false);
+    const SlCameraMatrices previousCamera = camera.previousValid
+        ? makeCameraMatrices(camera, true)
         : currentCamera;
 
     sl::Constants constants;
@@ -426,11 +545,26 @@ sl::Constants makeConstants(const StreamlineDlssRrDesc& desc)
     constants.depthInverted = sl::Boolean::eFalse;
     constants.cameraMotionIncluded = sl::Boolean::eTrue;
     constants.motionVectors3D = sl::Boolean::eFalse;
-    constants.reset = (desc.reset || !desc.camera.previousValid) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    constants.reset = (reset || !camera.previousValid) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     constants.orthographicProjection = currentCamera.orthographic ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     constants.motionVectorsDilated = sl::Boolean::eFalse;
     constants.motionVectorsJittered = sl::Boolean::eFalse;
     return constants;
+}
+
+sl::DLSSOptions makeDlssSrBaseOptions(
+    StreamlineDlssSrMode mode,
+    uint32_t outputWidth,
+    uint32_t outputHeight)
+{
+    sl::DLSSOptions options;
+    options.mode = slMode(mode);
+    options.outputWidth = outputWidth;
+    options.outputHeight = outputHeight;
+    options.colorBuffersHDR = sl::Boolean::eTrue;
+    options.useAutoExposure = sl::Boolean::eTrue;
+    options.alphaUpscalingEnabled = sl::Boolean::eFalse;
+    return options;
 }
 
 sl::DLSSDOptions makeDlssRrBaseOptions(
@@ -480,6 +614,7 @@ bool appendResourceTag(
     sl::BufferType type,
     const sl::Extent& extent,
     std::vector<sl::Resource>& resources,
+    std::vector<sl::SubresourceRange>& subresourceRanges,
     std::vector<sl::ResourceTag>& tags)
 {
     if (!validTextureRef(ref)) {
@@ -495,7 +630,7 @@ bool appendResourceTag(
     resources.push_back(sl::Resource(
         sl::ResourceType::eTex2d,
         nativeHandleToVoid(texture.image),
-        nativeHandleToVoid(texture.memory),
+        nullptr,
         nativeHandleToVoid(imageView),
         static_cast<uint32_t>(VK_IMAGE_LAYOUT_GENERAL)));
     sl::Resource& resource = resources.back();
@@ -506,6 +641,18 @@ bool appendResourceTag(
     resource.arrayLayers = texture.layerCount;
     resource.flags = static_cast<uint32_t>(texture.flags);
     resource.usage = static_cast<uint32_t>(texture.usage);
+
+    subresourceRanges.emplace_back();
+    sl::SubresourceRange& subresourceRange = subresourceRanges.back();
+    subresourceRange.aspectMask = type == sl::kBufferTypeDepth
+        ? static_cast<uint32_t>(VK_IMAGE_ASPECT_DEPTH_BIT)
+        : static_cast<uint32_t>(VK_IMAGE_ASPECT_COLOR_BIT);
+    subresourceRange.baseMipLevel = 0;
+    subresourceRange.levelCount = texture.mipCount;
+    subresourceRange.baseArrayLayer = 0;
+    subresourceRange.layerCount = texture.layerCount;
+    resource.next = &subresourceRange;
+
     tags.push_back(sl::ResourceTag(&resource, type, sl::eValidUntilEvaluate, &extent));
     return true;
 }
@@ -547,6 +694,16 @@ bool streamlineInitialized()
 #endif
 }
 
+bool streamlineDlssSrSupported()
+{
+#if METALLIC_HAS_STREAMLINE
+    std::lock_guard lock(streamlineMutex());
+    return streamlineState().dlssSrSupported;
+#else
+    return false;
+#endif
+}
+
 bool streamlineDlssRrSupported()
 {
 #if METALLIC_HAS_STREAMLINE
@@ -554,6 +711,102 @@ bool streamlineDlssRrSupported()
     return streamlineState().dlssRrSupported;
 #else
     return false;
+#endif
+}
+
+Result getStreamlineDlssSrOptimalSettings(
+    StreamlineDlssSrMode mode,
+    uint32_t outputWidth,
+    uint32_t outputHeight,
+    StreamlineDlssSrOptimalSettings& settings,
+    std::string& log)
+{
+    settings = {};
+#if !METALLIC_HAS_STREAMLINE
+    (void)mode;
+    (void)outputWidth;
+    (void)outputHeight;
+    log = "NVIDIA Streamline SDK is not available";
+    return makeError(Error::Unsupported);
+#else
+    std::lock_guard lock(streamlineMutex());
+    StreamlineState& state = streamlineState();
+    if (!state.initialized || !state.vulkanDeviceSet || !state.dlssSrSupported) {
+        log = "DLSS-SR optimal settings are not available on the current Vulkan device";
+        return makeError(Error::Unsupported);
+    }
+    if (mode == StreamlineDlssSrMode::Off || outputWidth == 0 || outputHeight == 0) {
+        log = "DLSS-SR optimal settings require an enabled mode and non-zero output dimensions";
+        return makeError(Error::InvalidArgument);
+    }
+
+    const auto cached = std::find_if(
+        state.dlssSrOptimalSettingsCache.begin(),
+        state.dlssSrOptimalSettingsCache.end(),
+        [mode, outputWidth, outputHeight](const DlssRrOptimalSettingsCacheEntry& entry) {
+            return entry.mode == mode &&
+                entry.outputWidth == outputWidth &&
+                entry.outputHeight == outputHeight;
+        });
+    if (cached != state.dlssSrOptimalSettingsCache.end()) {
+        settings = cached->settings;
+        return {};
+    }
+
+    sl::DLSSOptions options = makeDlssSrBaseOptions(mode, outputWidth, outputHeight);
+    sl::DLSSOptimalSettings nativeSettings;
+    Result result = resultFromSl(
+        slDLSSGetOptimalSettings(options, nativeSettings),
+        "slDLSSGetOptimalSettings",
+        log);
+    if (!result) {
+        return result;
+    }
+
+    settings = StreamlineDlssSrOptimalSettings{
+        .renderWidth = nativeSettings.optimalRenderWidth,
+        .renderHeight = nativeSettings.optimalRenderHeight,
+        .renderWidthMin = nativeSettings.renderWidthMin,
+        .renderHeightMin = nativeSettings.renderHeightMin,
+        .renderWidthMax = nativeSettings.renderWidthMax,
+        .renderHeightMax = nativeSettings.renderHeightMax,
+    };
+    const bool invalidRanges =
+        (settings.renderWidthMin != 0 && settings.renderWidthMax != 0 &&
+            settings.renderWidthMin > settings.renderWidthMax) ||
+        (settings.renderHeightMin != 0 && settings.renderHeightMax != 0 &&
+            settings.renderHeightMin > settings.renderHeightMax);
+    const bool outsideReportedRange =
+        (settings.renderWidthMin != 0 && settings.renderWidth < settings.renderWidthMin) ||
+        (settings.renderHeightMin != 0 && settings.renderHeight < settings.renderHeightMin) ||
+        (settings.renderWidthMax != 0 && settings.renderWidth > settings.renderWidthMax) ||
+        (settings.renderHeightMax != 0 && settings.renderHeight > settings.renderHeightMax);
+    if (settings.renderWidth == 0 ||
+        settings.renderHeight == 0 ||
+        settings.renderWidth > outputWidth ||
+        settings.renderHeight > outputHeight ||
+        invalidRanges ||
+        outsideReportedRange) {
+        log = "slDLSSGetOptimalSettings returned invalid render dimensions " +
+            std::to_string(settings.renderWidth) + "x" + std::to_string(settings.renderHeight) +
+            " for output " + std::to_string(outputWidth) + "x" + std::to_string(outputHeight);
+        settings = {};
+        return makeError(Error::InvalidArgument);
+    }
+
+    state.dlssSrOptimalSettingsCache.push_back(DlssRrOptimalSettingsCacheEntry{
+        .mode = mode,
+        .outputWidth = outputWidth,
+        .outputHeight = outputHeight,
+        .settings = settings,
+    });
+    spdlog::info(
+        "[Streamline] DLSS-SR optimal render extent {}x{} for output {}x{}",
+        settings.renderWidth,
+        settings.renderHeight,
+        outputWidth,
+        outputHeight);
+    return {};
 #endif
 }
 
@@ -584,14 +837,14 @@ Result getStreamlineDlssRrOptimalSettings(
     }
 
     const auto cached = std::find_if(
-        state.optimalSettingsCache.begin(),
-        state.optimalSettingsCache.end(),
+        state.dlssRrOptimalSettingsCache.begin(),
+        state.dlssRrOptimalSettingsCache.end(),
         [mode, outputWidth, outputHeight](const DlssRrOptimalSettingsCacheEntry& entry) {
             return entry.mode == mode &&
                 entry.outputWidth == outputWidth &&
                 entry.outputHeight == outputHeight;
         });
-    if (cached != state.optimalSettingsCache.end()) {
+    if (cached != state.dlssRrOptimalSettingsCache.end()) {
         settings = cached->settings;
         return {};
     }
@@ -637,7 +890,7 @@ Result getStreamlineDlssRrOptimalSettings(
         return makeError(Error::InvalidArgument);
     }
 
-    state.optimalSettingsCache.push_back(DlssRrOptimalSettingsCacheEntry{
+    state.dlssRrOptimalSettingsCache.push_back(DlssRrOptimalSettingsCacheEntry{
         .mode = mode,
         .outputWidth = outputWidth,
         .outputHeight = outputHeight,
@@ -730,18 +983,32 @@ Result setStreamlineVulkanDevice(
     }
 
     state.vulkanDeviceSet = true;
-    state.optimalSettingsCache.clear();
+    state.dlssSrOptimalSettingsCache.clear();
+    state.dlssRrOptimalSettingsCache.clear();
+
+    Result workaroundResult = initializeDescriptorHeapWorkaround(state, device, log);
+    if (!workaroundResult) {
+        state.vulkanDeviceSet = false;
+        return workaroundResult;
+    }
 
     sl::AdapterInfo adapterInfo;
     adapterInfo.vkPhysicalDevice = nativeHandleToVoid(device.physicalDevice);
-    const sl::Result supportResult = slIsFeatureSupported(sl::kFeatureDLSS_RR, adapterInfo);
-    state.dlssRrSupported = supportResult == sl::Result::eOk;
+    const sl::Result dlssSrSupportResult = slIsFeatureSupported(sl::kFeatureDLSS, adapterInfo);
+    state.dlssSrSupported = dlssSrSupportResult == sl::Result::eOk;
+    if (!state.dlssSrSupported) {
+        log += "slIsFeatureSupported(kFeatureDLSS) returned ";
+        log += slResultName(dlssSrSupportResult);
+    }
+
+    const sl::Result dlssRrSupportResult = slIsFeatureSupported(sl::kFeatureDLSS_RR, adapterInfo);
+    state.dlssRrSupported = dlssRrSupportResult == sl::Result::eOk;
     if (!state.dlssRrSupported) {
         if (!log.empty() && log.back() != '\n') {
             log += '\n';
         }
         log += "slIsFeatureSupported(kFeatureDLSS_RR) returned ";
-        log += slResultName(supportResult);
+        log += slResultName(dlssRrSupportResult);
     }
     return {};
 #endif
@@ -756,11 +1023,166 @@ void shutdownStreamline()
         return;
     }
 
-    if (state.vulkanDeviceSet && state.dlssRrSupported) {
-        (void)slFreeResources(sl::kFeatureDLSS_RR, state.viewport);
+    if (state.vulkanDeviceSet) {
+        if (state.dlssSrSupported) {
+            (void)slFreeResources(sl::kFeatureDLSS, state.viewport);
+        }
+        if (state.dlssRrSupported) {
+            (void)slFreeResources(sl::kFeatureDLSS_RR, state.viewport);
+        }
     }
     (void)slShutdown();
+    destroyDescriptorHeapWorkaround(state);
     state = StreamlineState{};
+#endif
+}
+
+Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDlssSrDesc& desc, std::string& log)
+{
+#if !METALLIC_HAS_STREAMLINE
+    (void)commandBuffer;
+    (void)desc;
+    log = "NVIDIA Streamline SDK is not available";
+    return makeError(Error::Unsupported);
+#else
+    std::lock_guard lock(streamlineMutex());
+    StreamlineState& state = streamlineState();
+    if (!state.initialized || !state.vulkanDeviceSet || !state.dlssSrSupported) {
+        log = "DLSS-SR is not available on the current Vulkan device";
+        return makeError(Error::Unsupported);
+    }
+    if (desc.renderWidth == 0 ||
+        desc.renderHeight == 0 ||
+        desc.outputWidth == 0 ||
+        desc.outputHeight == 0 ||
+        desc.mode == StreamlineDlssSrMode::Off) {
+        log = "DLSS-SR evaluate requires non-zero render/output dimensions and an enabled mode";
+        return makeError(Error::InvalidArgument);
+    }
+
+    const auto optimalSettings = std::find_if(
+        state.dlssSrOptimalSettingsCache.begin(),
+        state.dlssSrOptimalSettingsCache.end(),
+        [&desc](const DlssRrOptimalSettingsCacheEntry& entry) {
+            return entry.mode == desc.mode &&
+                entry.outputWidth == desc.outputWidth &&
+                entry.outputHeight == desc.outputHeight;
+        });
+    if (optimalSettings == state.dlssSrOptimalSettingsCache.end() ||
+        optimalSettings->settings.renderWidth != desc.renderWidth ||
+        optimalSettings->settings.renderHeight != desc.renderHeight) {
+        log = "DLSS-SR evaluate render dimensions do not match cached optimal settings";
+        return makeError(Error::InvalidArgument);
+    }
+
+    const auto validateTexture = [&log](
+                                     const StreamlineDlssSrTextureRef& ref,
+                                     const char* name,
+                                     uint32_t width,
+                                     uint32_t height) {
+        if (textureRefMatchesExtent(ref, width, height)) {
+            return true;
+        }
+        log = std::string("DLSS-SR ") + name + " must be " +
+            std::to_string(width) + "x" + std::to_string(height);
+        return false;
+    };
+    if (!validateTexture(desc.inputColor, "inputColor", desc.renderWidth, desc.renderHeight) ||
+        !validateTexture(desc.motionVectors, "motionVectors", desc.renderWidth, desc.renderHeight) ||
+        !validateTexture(desc.depth, "depth", desc.renderWidth, desc.renderHeight) ||
+        !validateTexture(desc.outputColor, "outputColor", desc.outputWidth, desc.outputHeight)) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.motionVectors.texture->desc().format != Format::Rg16Sfloat) {
+        log = "DLSS-SR motionVectors must use RG16_SFLOAT";
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.depth.texture->desc().format != Format::D32Sfloat) {
+        log = "DLSS-SR depth must use D32_SFLOAT";
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.inputColor.texture->desc().format != Format::Rgba16Sfloat ||
+        desc.outputColor.texture->desc().format != Format::Rgba16Sfloat) {
+        log = "DLSS-SR inputColor and outputColor must use RGBA16_SFLOAT";
+        return makeError(Error::InvalidArgument);
+    }
+
+    sl::CommandBuffer* nativeCommandBuffer = slCommandBuffer(commandBuffer);
+    if (nativeCommandBuffer == nullptr) {
+        log = "DLSS-SR evaluate received an invalid command buffer";
+        return makeError(Error::InvalidArgument);
+    }
+
+    sl::FrameToken* frameToken = nullptr;
+    const uint32_t frameIndex = state.frameIndex++;
+    Result result = resultFromSl(slGetNewFrameToken(frameToken, &frameIndex), "slGetNewFrameToken", log);
+    if (!result) {
+        return result;
+    }
+    if (frameToken == nullptr) {
+        log = "slGetNewFrameToken returned a null token";
+        return makeError(Error::Failure);
+    }
+
+    sl::DLSSOptions options = makeDlssSrBaseOptions(desc.mode, desc.outputWidth, desc.outputHeight);
+    result = resultFromSl(slDLSSSetOptions(state.viewport, options), "slDLSSSetOptions", log);
+    if (!result) {
+        return result;
+    }
+
+    sl::Constants constants = makeConstants(desc.camera, desc.reset);
+    result = resultFromSl(slSetConstants(constants, *frameToken, state.viewport), "slSetConstants", log);
+    if (!result) {
+        return result;
+    }
+
+    sl::Extent renderExtent{
+        .top = 0,
+        .left = 0,
+        .width = desc.renderWidth,
+        .height = desc.renderHeight,
+    };
+    sl::Extent outputExtent{
+        .top = 0,
+        .left = 0,
+        .width = desc.outputWidth,
+        .height = desc.outputHeight,
+    };
+    std::vector<sl::Resource> resources;
+    std::vector<sl::SubresourceRange> subresourceRanges;
+    std::vector<sl::ResourceTag> tags;
+    resources.reserve(4);
+    subresourceRanges.reserve(4);
+    tags.reserve(4);
+    const bool validResources =
+        appendResourceTag(desc.inputColor, sl::kBufferTypeScalingInputColor, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(desc.outputColor, sl::kBufferTypeScalingOutputColor, outputExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(desc.motionVectors, sl::kBufferTypeMotionVectors, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(desc.depth, sl::kBufferTypeDepth, renderExtent, resources, subresourceRanges, tags);
+    if (!validResources) {
+        log = "DLSS-SR evaluate received invalid texture resources";
+        return makeError(Error::InvalidArgument);
+    }
+
+    result = resultFromSl(
+        slSetTagForFrame(*frameToken, state.viewport, tags.data(), static_cast<uint32_t>(tags.size()), nativeCommandBuffer),
+        "slSetTagForFrame",
+        log);
+    if (!result) {
+        return result;
+    }
+
+    prepareDescriptorStateForStreamline(state, commandBuffer);
+    const sl::BaseStructure* inputs[] = {&state.viewport};
+    return resultFromSl(
+        slEvaluateFeature(
+            sl::kFeatureDLSS,
+            *frameToken,
+            inputs,
+            static_cast<uint32_t>(std::size(inputs)),
+            nativeCommandBuffer),
+        "slEvaluateFeature(kFeatureDLSS)",
+        log);
 #endif
 }
 
@@ -788,14 +1210,14 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
     }
 
     const auto optimalSettings = std::find_if(
-        state.optimalSettingsCache.begin(),
-        state.optimalSettingsCache.end(),
+        state.dlssRrOptimalSettingsCache.begin(),
+        state.dlssRrOptimalSettingsCache.end(),
         [&desc](const DlssRrOptimalSettingsCacheEntry& entry) {
             return entry.mode == desc.mode &&
                 entry.outputWidth == desc.outputWidth &&
                 entry.outputHeight == desc.outputHeight;
         });
-    if (optimalSettings == state.optimalSettingsCache.end() ||
+    if (optimalSettings == state.dlssRrOptimalSettingsCache.end() ||
         optimalSettings->settings.renderWidth != desc.renderWidth ||
         optimalSettings->settings.renderHeight != desc.renderHeight) {
         log = "DLSS-RR evaluate render dimensions do not match cached optimal settings";
@@ -852,7 +1274,7 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
         return result;
     }
 
-    sl::Constants constants = makeConstants(desc);
+    sl::Constants constants = makeConstants(desc.camera, desc.reset);
     result = resultFromSl(slSetConstants(constants, *frameToken, state.viewport), "slSetConstants", log);
     if (!result) {
         return result;
@@ -871,18 +1293,20 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
         .height = desc.outputHeight,
     };
     std::vector<sl::Resource> resources;
+    std::vector<sl::SubresourceRange> subresourceRanges;
     std::vector<sl::ResourceTag> tags;
     resources.reserve(8);
+    subresourceRanges.reserve(8);
     tags.reserve(8);
     const bool validResources =
-        appendResourceTag(desc.inputColor, sl::kBufferTypeScalingInputColor, renderExtent, resources, tags) &&
-        appendResourceTag(desc.outputColor, sl::kBufferTypeScalingOutputColor, outputExtent, resources, tags) &&
-        appendResourceTag(desc.albedo, sl::kBufferTypeAlbedo, renderExtent, resources, tags) &&
-        appendResourceTag(desc.specularAlbedo, sl::kBufferTypeSpecularAlbedo, renderExtent, resources, tags) &&
-        appendResourceTag(desc.normalRoughness, sl::kBufferTypeNormalRoughness, renderExtent, resources, tags) &&
-        appendResourceTag(desc.motionVectors, sl::kBufferTypeMotionVectors, renderExtent, resources, tags) &&
-        appendResourceTag(desc.linearDepth, sl::kBufferTypeLinearDepth, renderExtent, resources, tags) &&
-        appendResourceTag(desc.specularHitDistance, sl::kBufferTypeSpecularHitDistance, renderExtent, resources, tags);
+        appendResourceTag(desc.inputColor, sl::kBufferTypeScalingInputColor, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(desc.outputColor, sl::kBufferTypeScalingOutputColor, outputExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(desc.albedo, sl::kBufferTypeAlbedo, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(desc.specularAlbedo, sl::kBufferTypeSpecularAlbedo, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(desc.normalRoughness, sl::kBufferTypeNormalRoughness, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(desc.motionVectors, sl::kBufferTypeMotionVectors, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(desc.linearDepth, sl::kBufferTypeLinearDepth, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(desc.specularHitDistance, sl::kBufferTypeSpecularHitDistance, renderExtent, resources, subresourceRanges, tags);
     if (!validResources) {
         log = "DLSS-RR evaluate received invalid texture resources";
         return makeError(Error::InvalidArgument);
@@ -896,6 +1320,7 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
         return result;
     }
 
+    prepareDescriptorStateForStreamline(state, commandBuffer);
     const sl::BaseStructure* inputs[] = {&state.viewport};
     return resultFromSl(
         slEvaluateFeature(

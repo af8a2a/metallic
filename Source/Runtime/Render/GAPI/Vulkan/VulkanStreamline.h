@@ -72,10 +72,36 @@ struct StreamlineDlssRrDesc {
     bool reset = false;
 };
 
+using StreamlineDlssSrTextureRef = StreamlineDlssRrTextureRef;
+using StreamlineDlssSrMode = StreamlineDlssRrMode;
+using StreamlineDlssSrOptimalSettings = StreamlineDlssRrOptimalSettings;
+using StreamlineDlssSrCamera = StreamlineDlssRrCamera;
+
+struct StreamlineDlssSrDesc {
+    StreamlineDlssSrTextureRef inputColor;
+    StreamlineDlssSrTextureRef outputColor;
+    StreamlineDlssSrTextureRef motionVectors;
+    StreamlineDlssSrTextureRef depth;
+    uint32_t renderWidth = 0;
+    uint32_t renderHeight = 0;
+    uint32_t outputWidth = 0;
+    uint32_t outputHeight = 0;
+    StreamlineDlssSrCamera camera;
+    StreamlineDlssSrMode mode = StreamlineDlssSrMode::Balanced;
+    bool reset = false;
+};
+
 const char* streamlineVulkanLibraryName();
 bool streamlineSdkAvailable();
 bool streamlineInitialized();
+bool streamlineDlssSrSupported();
 bool streamlineDlssRrSupported();
+Result getStreamlineDlssSrOptimalSettings(
+    StreamlineDlssSrMode mode,
+    uint32_t outputWidth,
+    uint32_t outputHeight,
+    StreamlineDlssSrOptimalSettings& settings,
+    std::string& log);
 Result getStreamlineDlssRrOptimalSettings(
     StreamlineDlssRrMode mode,
     uint32_t outputWidth,
@@ -89,6 +115,7 @@ Result setStreamlineVulkanDevice(
     const NativeQueue& computeQueue,
     std::string& log);
 void shutdownStreamline();
+Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDlssSrDesc& desc, std::string& log);
 Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDlssRrDesc& desc, std::string& log);
 
 } // namespace metallic::render::vulkan

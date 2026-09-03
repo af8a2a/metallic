@@ -18,6 +18,9 @@ RWTexture2D<float> gDlssRrLinearDepth;
 [[vk::binding(19, 0)]]
 RWTexture2D<float> gDlssRrSpecularHitDistance;
 
+[[vk::binding(20, 0)]]
+RWTexture2D<float> gDlssDepth;
+
 struct DlssRrGuideData
 {
     float3 albedo;
@@ -42,7 +45,7 @@ DlssRrGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
     return data;
 }
 
-void writeDlssRrGuides(uint2 pixel, DlssRrGuideData data)
+void writeDlssRrGuides(uint2 pixel, DlssRrGuideData data, ScenePathTracePush push)
 {
     gDlssRrAlbedo[pixel] = float4(saturate(data.albedo), 1.0);
     gDlssRrSpecularAlbedo[pixel] = float4(saturate(data.specularAlbedo), 1.0);
@@ -50,6 +53,7 @@ void writeDlssRrGuides(uint2 pixel, DlssRrGuideData data)
     gDlssRrMotionVectors[pixel] = data.motionVector;
     gDlssRrLinearDepth[pixel] = max(data.linearDepth, 0.0);
     gDlssRrSpecularHitDistance[pixel] = max(data.specularHitDistance, 0.0);
+    gDlssDepth[pixel] = cameraHardwareDepth(data.linearDepth, push);
 }
 
 DlssRrGuideData evaluateOpenPbrDlssRrGuides(
@@ -157,5 +161,5 @@ void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThre
     }
 
     gOutput[pixel] = float4(color, 1.0);
-    writeDlssRrGuides(pixel, guides);
+    writeDlssRrGuides(pixel, guides, push);
 }
