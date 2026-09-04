@@ -12,6 +12,7 @@
 #include <span>
 #include <string>
 #include <vector>
+#include <json.hpp>
 
 #ifndef PROJECT_SOURCE_DIR
 #define PROJECT_SOURCE_DIR "."
@@ -20,6 +21,7 @@
 namespace metallic::render {
 
 class MeshletStreamClasPool;
+struct DebugResourceBinding;
 
 inline constexpr const char* kMeshletStreamShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
 inline constexpr const char* kMeshletStreamShaderModuleName = "GPUDrivenStreamAsset";
@@ -449,6 +451,9 @@ public:
     const scene::Bounds& bounds() const { return drawBounds_; }
     const scene::MeshletStreamAsset& asset() const { return asset_; }
     const MeshletStreamResidencyManager& residency() const { return residency_; }
+    void setDebugReadbackEnabled(bool enabled) { debugReadbackEnabled_ = enabled; }
+    void appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& prefix) const;
+    nlohmann::json debugSnapshot() const;
     MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }
 
 private:
@@ -583,6 +588,10 @@ private:
     bool pageTableInitialized_ = false;
     bool requestReadbackValid_ = false;
     uint32_t frameIndex_ = 0;
+    bool debugReadbackEnabled_ = false;
+    uint64_t debugGeneration_ = 0;
+    uint32_t debugRequestSourceFrame_ = 0;
+    bool debugRequestSourceKnown_ = false;
     uint32_t maxResidentPages_ = 0;
     uint32_t maxPageUploadsPerFrame_ = 0;
     uint32_t maxGpuPageRequests_ = 0;

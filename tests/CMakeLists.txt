@@ -1,5 +1,13 @@
 include(GoogleTest)
 
+add_executable(MetallicDebugTests debug/DebugCoreTests.cpp)
+target_link_libraries(MetallicDebugTests PRIVATE MetallicDebugCore GTest::gtest_main)
+if(WIN32)
+    target_compile_definitions(MetallicDebugTests PRIVATE NOMINMAX)
+endif()
+add_test(NAME MetallicDebugTests COMMAND MetallicDebugTests --gtest_color=no)
+set_tests_properties(MetallicDebugTests PROPERTIES LABELS "debug")
+
 add_executable(MetallicTaskTests
     task/TaskGraphTests.cpp
 )
@@ -59,6 +67,7 @@ set_tests_properties(MetallicSceneTests PROPERTIES
 )
 
 add_executable(MetallicRhiTests
+    rhi/DebugControlTests.cpp
     rhi/Main.cpp
     rhi/RhiTest.h
     rhi/BindlessBufferTests.cpp

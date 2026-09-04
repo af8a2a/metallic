@@ -19,6 +19,7 @@ void printUsage()
     spdlog::info(
         "MetallicGPUDrivenSample options:\n"
         "  --smoke-test                 Render one frame and exit\n"
+        "  --debug-control              Enable local Agent debug control\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization\n"
         "  --visibility-buffer          Load the visibility-buffer variant (default)\n"
         "  --usd                        Load Super Sponza through OpenUSD\n"
@@ -37,6 +38,7 @@ int main(int argc, char** argv)
 {
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
+    bool debugControl = false;
     const char* sampleId = kGPUDrivenSampleId;
     std::string scenePath;
     std::string streamAssetPath;
@@ -56,6 +58,10 @@ int main(int argc, char** argv)
         }
         if (argument == "--streamasset") {
             sampleId = kGPUDrivenStreamAssetSampleId;
+            continue;
+        }
+        if (argument == "--debug-control") {
+            debugControl = true;
             continue;
         }
         if (argument == "--usd") {
@@ -104,5 +110,6 @@ int main(int argc, char** argv)
         waitForGraphicsDebugger,
         sampleId,
         scenePath.empty() ? nullptr : scenePath.c_str(),
-        streamAssetPath.empty() ? nullptr : streamAssetPath.c_str());
+        streamAssetPath.empty() ? nullptr : streamAssetPath.c_str(),
+        false, false, debugControl);
 }

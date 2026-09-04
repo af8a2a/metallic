@@ -20,6 +20,9 @@ class Scene;
 
 namespace metallic::render {
 
+class IRenderDebugObserver;
+struct DebugResourceBinding;
+
 class HistoryResourceManager;
 class SceneResourceManager;
 
@@ -157,6 +160,7 @@ struct RenderGraphCompileContext {
     uint32_t width = 1;
     uint32_t height = 1;
     Format defaultFormat = Format::Rgba8Unorm;
+    bool debugReadback = false;
 
     RenderWorld* world() const { return renderWorld; }
     RenderSubsystemHost* subsystems() const { return subsystemHost; }
@@ -251,6 +255,9 @@ public:
     BufferHandle outputBuffer(std::string_view fieldName) const;
     const BindlessHandle* bindlessResource(std::string_view fieldName) const;
     const BindlessHandle* bindlessInput(std::string_view fieldName) const;
+    bool debugEnabled() const { return debugObserver_ != nullptr; }
+    void debugCheckpoint(std::string_view name, std::span<const DebugResourceBinding> resources = {},
+        const RenderGraphProperties& values = RenderGraphProperties::object());
 
 private:
     struct Binding {
@@ -288,6 +295,9 @@ private:
     const scene::Scene* runtimeScene_ = nullptr;
     RenderWorld* world_ = nullptr;
     RenderSubsystemHost* subsystems_ = nullptr;
+    IRenderDebugObserver* debugObserver_ = nullptr;
+    uint32_t debugPassId_ = 0;
+    bool debugAfterPassPublished_ = false;
 
     friend class RenderGraphExecutor;
 };
@@ -301,6 +311,7 @@ public:
     virtual QueueType queueType() const;
     virtual std::span<const RenderSubsystemId> requiredSubsystems() const;
     virtual std::vector<RenderGraphRuntimeSetting> runtimeSettings() const;
+    virtual std::vector<std::string> debugCheckpoints() const { return {"AfterPass"}; }
     // Opt in only when execute() preserves resources/descriptors used by earlier
     // submissions. Legacy passes with singleton host uploads/readbacks wait.
     virtual bool supportsFrameOverlap() const { return false; }

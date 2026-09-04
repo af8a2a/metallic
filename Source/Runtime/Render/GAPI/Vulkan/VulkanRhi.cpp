@@ -963,18 +963,28 @@ VmaAllocationCreateInfo allocationInfoForMemory(MemoryLocation location)
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-    VkDebugUtilsMessageTypeFlagsEXT,
+    VkDebugUtilsMessageTypeFlagsEXT type,
     const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
-    void*)
+    void* userData)
 {
     if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0 ||
         (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
         spdlog::warn("Vulkan validation: {}", callbackData->pMessage);
     }
+    const auto* sink = static_cast<const ValidationSink*>(userData);
+    if (sink && sink->callback) {
+        std::array<ValidationObject, 16> objects{};
+        const uint32_t count = std::min(callbackData->objectCount, uint32_t(objects.size()));
+        for (uint32_t i = 0; i < count; ++i) {
+            objects[i] = {callbackData->pObjects[i].objectHandle, static_cast<uint32_t>(callbackData->pObjects[i].objectType), callbackData->pObjects[i].pObjectName};
+        }
+        sink->callback(sink->context, {static_cast<uint32_t>(severity), type, callbackData->messageIdNumber,
+            callbackData->pMessageIdName, callbackData->pMessage, std::span(objects).first(count)});
+    }
     return VK_FALSE;
 }
 
-VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance)
+VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance, ValidationSink* sink)
 {
     auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
         vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
@@ -990,6 +1000,7 @@ VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance)
             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
         .pfnUserCallback = debugCallback,
+        .pUserData = sink,
     };
 
     VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
@@ -2880,6 +2891,7 @@ struct BindlessHeapImpl {
 };
 
 struct DeviceImpl {
+    ValidationSink validationSink;
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -4671,6 +4683,16 @@ CommandBuffer::~CommandBuffer()
 
 CommandBuffer::CommandBuffer(CommandBuffer&&) noexcept = default;
 CommandBuffer& CommandBuffer::operator=(CommandBuffer&&) noexcept = default;
+
+QueueAccessBits CommandBuffer::queueCapabilities() const
+{
+    if (!impl_) { return QueueAccessBits::None; }
+    QueueAccessBits result = QueueAccessBits::None;
+    if (impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT) { result = result | QueueAccessBits::Graphics; }
+    if (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) { result = result | QueueAccessBits::Compute; }
+    if (impl_->queueFlags & VK_QUEUE_TRANSFER_BIT) { result = result | QueueAccessBits::Copy; }
+    return result;
+}
 
 Result CommandBuffer::begin(RenderFrameContext* frameContext)
 {
@@ -8766,7 +8788,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     volkLoadInstance(deviceImpl->instance);
 
     if (deviceImpl->validationEnabled && debugUtilsAvailable) {
-        deviceImpl->debugMessenger = createDebugMessenger(deviceImpl->instance);
+        deviceImpl->validationSink = desc.validationSink;
+        deviceImpl->debugMessenger = createDebugMessenger(deviceImpl->instance, &deviceImpl->validationSink);
     }
 
     uint32_t physicalDeviceCount = 0;

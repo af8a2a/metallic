@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Editor/EditorProfiler.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Editor/NvmlMonitor.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -36,7 +37,8 @@ public:
         const char* startupScenePath = nullptr,
         const char* startupStreamAssetPath = nullptr,
         bool enableNsightGraphicsCapture = false,
-        bool enableNsightShaderDebug = false);
+        bool enableNsightShaderDebug = false,
+        bool enableDebugControl = false);
 
 private:
     enum class PendingSceneAction : int32_t;
@@ -231,6 +233,7 @@ private:
     render::RenderSubsystemHost subsystemHost_;
     render::RenderWorld renderWorld_;
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
+    std::unique_ptr<render::RenderDebugRuntime> debugRuntime_;
     render::HistoryResourceManager historyResources_;
     std::unique_ptr<render::SceneAccelerationStructureBuilder> sceneAccelerationStructure_;
     EditorProfiler profiler_;

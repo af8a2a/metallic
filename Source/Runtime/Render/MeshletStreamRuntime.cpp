@@ -1,4 +1,5 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 
 #include "Runtime/Render/MeshletStreamClas.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -1045,7 +1046,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         BufferDesc{
             .size = static_cast<uint64_t>(maxActiveGroups_) * sizeof(MeshletStreamGpuActiveGroup),
             .structureStride = sizeof(MeshletStreamGpuActiveGroup),
-            .usage = BufferUsageBits::Storage,
+            .usage = debugReadbackEnabled_ ? BufferUsageBits::Storage | BufferUsageBits::TransferSource : BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
         },
         activeGroupBuffer_,
@@ -1060,7 +1061,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         BufferDesc{
             .size = sizeof(MeshletStreamGpuActiveHeader),
             .structureStride = sizeof(MeshletStreamGpuActiveHeader),
-            .usage = BufferUsageBits::Storage,
+            .usage = debugReadbackEnabled_ ? BufferUsageBits::Storage | BufferUsageBits::TransferSource : BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
         },
         activeHeaderBuffer_,
@@ -1701,7 +1702,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         BufferDesc{
             .size = pageTableByteSize,
             .structureStride = sizeof(StreamPageTableEntry),
-            .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
+            .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination |
+                (debugReadbackEnabled_ ? BufferUsageBits::TransferSource : BufferUsageBits::None),
             .memoryLocation = MemoryLocation::Device,
         },
         pageTableBuffer_,
@@ -1775,7 +1777,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             .size = static_cast<uint64_t>(visibleClusterCapacity()) *
                 sizeof(VisibleClusterRecord),
             .structureStride = sizeof(VisibleClusterRecord),
-            .usage = BufferUsageBits::Storage,
+            .usage = debugReadbackEnabled_ ? BufferUsageBits::Storage | BufferUsageBits::TransferSource : BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
         },
         visibleClusterBuffer_,
@@ -2044,6 +2046,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
 
 void MeshletStreamRuntime::reset()
 {
+    ++debugGeneration_;
+    debugRequestSourceKnown_ = false;
     tlasBuilt_ = false;
     residency_.reset();
     asset_.close();
@@ -3346,6 +3350,10 @@ void MeshletStreamRuntime::consumeGpuRequestReadback()
     }
 
     const auto* header = static_cast<const StreamRequestBufferHeader*>(mapped);
+    if (debugReadbackEnabled_) {
+        debugRequestSourceFrame_ = header->frameIndex;
+        debugRequestSourceKnown_ = true;
+    }
     const uint32_t loadCapacity = std::min(header->maxLoadRequests, maxGpuPageRequests_);
     const uint32_t unloadCapacity = std::min(header->maxUnloadRequests, maxGpuPageUnloadRequests_);
     const uint32_t loadCount = std::min(header->loadCounter, loadCapacity);
@@ -3371,6 +3379,47 @@ void MeshletStreamRuntime::consumeGpuRequestReadback()
 
     requestReadbackBuffer_->unmap();
     requestReadbackValid_ = false;
+}
+
+void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& prefix) const
+{
+    if (!debugReadbackEnabled_ || !ready()) { return; }
+    const auto add = [&](std::string name, Buffer* buffer, ResourceState state, std::string layout,
+                         uint64_t offset = 0, uint64_t size = 0) {
+        if (!buffer) { return; }
+        bindings.push_back({.id = prefix + name, .buffer = buffer, .state = state, .offset = offset, .size = size,
+            .layout = std::move(layout), .allocation = debugGeneration_,
+            .metadata = {{"streamFrame", frameIndex_}, {"streamGeneration", debugGeneration_},
+                {"validity", "Only header-defined live ranges contain records"}}});
+    };
+    add("requestHeader", requestBuffer_.get(), requestBufferState_, "StreamRequestBufferHeader", 0, sizeof(StreamRequestBufferHeader));
+    add("loadRequests", requestBuffer_.get(), requestBufferState_, "u32", sizeof(StreamRequestBufferHeader), uint64_t(maxGpuPageRequests_) * 4);
+    add("unloadRequests", requestBuffer_.get(), requestBufferState_, "u32", sizeof(StreamRequestBufferHeader) + uint64_t(maxGpuPageRequests_) * 4, uint64_t(maxGpuPageUnloadRequests_) * 4);
+    add("pageTable", pageTableBuffer_.get(), pageTableState_, "StreamPageTableEntry");
+    add("activeHeader", activeHeaderBuffer_.get(), activeHeaderBufferState_, "MeshletStreamGpuActiveHeader");
+    add("activeGroups", activeGroupBuffer_.get(), activeGroupBufferState_, "MeshletStreamGpuActiveGroup");
+    add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "VisibleClusterRecord");
+}
+
+nlohmann::json MeshletStreamRuntime::debugSnapshot() const
+{
+    using debug::DebugValue;
+    const auto stats = residency_.stats();
+    DebugValue pages = DebugValue::array();
+    const uint32_t count = std::min(residency_.trackedPageCount(), 4096u);
+    for (uint32_t i = 0; i < count; ++i) {
+        pages.push_back({{"index", i}, {"state", static_cast<uint32_t>(residency_.pageState(i))},
+            {"deviceOffset", residency_.deviceOffsetForPage(i)}, {"deviceSize", residency_.deviceSizeForPage(i)}, {"age", residency_.pageAge(i)}});
+    }
+    return {{"generation", debugGeneration_}, {"frame", frameIndex_},
+        {"requestSourceFrame", debugRequestSourceKnown_ ? DebugValue(debugRequestSourceFrame_) : DebugValue(nullptr)},
+        {"pageCount", residency_.trackedPageCount()}, {"pages", std::move(pages)}, {"pagesTruncated", count < residency_.trackedPageCount()},
+        {"stats", {{"residentPageCount", stats.residentPageCount}, {"pendingPageCount", stats.pendingPageCount},
+            {"queuedUploadCount", stats.queuedUploadCount}, {"usedResidentBytes", stats.usedResidentBytes}, {"freeResidentBytes", stats.freeResidentBytes},
+            {"pendingPageLoadCount", stats.pendingPageLoadCount}, {"activePageLoadCount", stats.activePageLoadCount},
+            {"pendingPatchCount", stats.pendingPatchCount}, {"frameGpuRequestCount", stats.frameGpuRequestCount},
+            {"frameGpuRequestOverflowCount", stats.frameGpuRequestOverflowCount}, {"frameGpuInvalidRequestCount", stats.frameGpuInvalidRequestCount},
+            {"frameEvictedPageCount", stats.frameEvictedPageCount}, {"frameAllocationFailureCount", stats.frameAllocationFailureCount}}}};
 }
 
 } // namespace metallic::render

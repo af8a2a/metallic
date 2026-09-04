@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
 
 #include <algorithm>
@@ -444,6 +445,25 @@ RenderGraphPassKind UnsafePass::kind() const
 QueueType UnsafePass::queueType() const
 {
     return QueueType::Graphics;
+}
+
+void RenderGraphExecutionContext::debugCheckpoint(std::string_view name,
+    std::span<const DebugResourceBinding> privateResources, const RenderGraphProperties& values)
+{
+    if (!debugObserver_) { return; }
+    std::vector<DebugResourceBinding> resources(privateResources.begin(), privateResources.end());
+    if (name == "AfterPass") {
+        debugAfterPassPublished_ = true;
+        for (const auto& binding : bindings_) {
+            auto* resource = binding.resource;
+            if (!resource) { continue; }
+            resources.push_back({.id = passName_ + "." + binding.fieldName, .buffer = resource->buffer,
+                .texture = resource->texture, .state = resource->state,
+                .layout = "raw", // A stride does not identify scalar/field types.
+                .metadata = {{"visibility", binding.visibility == RenderGraphFieldVisibility::Input ? "input" : "output"}}});
+        }
+    }
+    debugObserver_->boundary(commandBuffer_, name, debugPassId_, passName_, resources, values);
 }
 
 TextureHandle::TextureHandle(RenderGraphResource* resource)

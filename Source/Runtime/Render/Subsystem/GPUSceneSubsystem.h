@@ -104,6 +104,8 @@ public:
     std::span<const GPUSceneMaterialRecord> materials() const { return scene_.materials(); }
     std::span<const GPUSceneInstanceRecord> instances() const { return scene_.instances(); }
     const GPUSceneStats& stats() const { return scene_.stats(); }
+    // Set before allocating Views. Toggled only when starting a debug-enabled graph.
+    void setDebugReadbackEnabled(bool enabled) { debugReadbackEnabled_ = enabled; }
 
     const GPUSceneGeometryRecord* geometry(GPUSceneGeometryId id) const
     {
@@ -297,6 +299,7 @@ private:
     GPUSceneRasterDrawLayout rasterDrawLayout_;
     PendingUpload pendingUpload_ = PendingUpload::Full;
     bool sourceDirty_ = true;
+    bool debugReadbackEnabled_ = false;
 };
 
 } // namespace metallic::render

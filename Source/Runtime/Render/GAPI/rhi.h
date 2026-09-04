@@ -4,6 +4,7 @@
 #include <expected>
 #include <memory>
 #include <vector>
+#include <span>
 
 namespace metallic::render {
 
@@ -297,6 +298,27 @@ struct RayTracingAccelerationStructureCompactionQueryPoolDesc {
     uint32_t queryCount = 0;
 };
 
+struct ValidationObject {
+    uint64_t handle = 0;
+    uint32_t type = 0;
+    const char* name = nullptr;
+};
+
+struct ValidationMessage {
+    uint32_t severity = 0;
+    uint32_t type = 0;
+    int32_t messageId = 0;
+    const char* messageIdName = nullptr;
+    const char* message = nullptr;
+    std::span<const ValidationObject> objects;
+};
+
+struct ValidationSink {
+    // Called from arbitrary validation threads. Data is borrowed for the call.
+    void (*callback)(void*, const ValidationMessage&) noexcept = nullptr;
+    void* context = nullptr;
+};
+
 struct DeviceDesc {
     const char* applicationName = "Metallic";
     bool enableValidation = false;
@@ -317,6 +339,7 @@ struct DeviceDesc {
     bool enablePartitionedAccelerationStructure = false;
     bool enableStreamline = false;
     bool enableAftermath = false;
+    ValidationSink validationSink;
 };
 
 struct DeviceCapabilities {
@@ -1681,6 +1704,7 @@ public:
 
     Result begin(RenderFrameContext* frameContext = nullptr);
     RenderFrameContext* frameContext() const { return frameContext_; }
+    QueueAccessBits queueCapabilities() const;
     // Queue::submit merges these waits and the command buffer retains their
     // timeline lifetimes until its next recording. Call while recording.
     Result addDependency(const GpuCompletionPoint& completion);

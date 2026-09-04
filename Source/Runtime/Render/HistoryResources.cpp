@@ -356,6 +356,11 @@ void HistoryResourceManager::invalidateAll()
     impl_->advanceInvalidationRevision();
 }
 
+uint64_t HistoryResourceManager::frameIndex() const
+{
+    return impl_->frameIndex;
+}
+
 uint64_t HistoryResourceManager::invalidationRevision() const
 {
     return impl_->invalidationRevision;

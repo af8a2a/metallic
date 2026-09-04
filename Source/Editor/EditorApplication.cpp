@@ -1946,7 +1946,8 @@ int EditorApplication::run(
     const char* startupScenePath,
     const char* startupStreamAssetPath,
     bool enableNsightGraphicsCapture,
-    bool enableNsightShaderDebug)
+    bool enableNsightShaderDebug,
+    bool enableDebugControl)
 {
     const auto taskInitialization = task::initializeTaskSystem();
     if (!taskInitialization) {
@@ -2004,6 +2005,33 @@ int EditorApplication::run(
         startupStreamAssetPath_);
 
     initializeNsightGraphicsCapture();
+
+    if (enableDebugControl || environmentFlagEnabled("METALLIC_DEBUG_CONTROL")) {
+        try {
+            debug::DebugLimits limits;
+            if (const char* config = std::getenv("METALLIC_DEBUG_LIMITS")) {
+                const auto values = render::RenderGraphProperties::parse(config);
+                limits.snapshotCount = values.value("snapshotCount", limits.snapshotCount);
+                limits.snapshotBytes = values.value("snapshotBytes", limits.snapshotBytes);
+                limits.capturePoolBytes = values.value("capturePoolBytes", limits.capturePoolBytes);
+                limits.jobBytes = values.value("jobBytes", limits.jobBytes);
+                limits.frameBytes = values.value("frameBytes", limits.frameBytes);
+                limits.queueCount = values.value("queueCount", limits.queueCount);
+                limits.commandsPerFrame = values.value("commandsPerFrame", limits.commandsPerFrame);
+            }
+            debugRuntime_ = std::make_unique<render::RenderDebugRuntime>(limits);
+            const auto started = debugRuntime_->start();
+            if (!started) {
+                spdlog::error("Debug control startup failed: {}", started.error().message);
+                debugRuntime_.reset();
+                return 1;
+            }
+            spdlog::info("Debug control started (session {})", debugRuntime_->core().session());
+        } catch (const std::exception& error) {
+            spdlog::error("Debug control configuration failed: {}", error.what());
+            return 1;
+        }
+    }
 
     if (!initialize()) {
         shutdown();
@@ -2066,6 +2094,11 @@ int EditorApplication::run(
             pollEvents();
         }
 
+        if (debugRuntime_) {
+            debugRuntime_->poll();
+            debugRuntime_->core().setEngineState({{"state", (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) ? "Minimized" : "Running"},
+                {"editorSubmittedFrame", submittedFrameIndex_}, {"historyFrame", historyFrameIndex_}});
+        }
         if ((SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) != 0) {
             auto profileScope = profiler_.scope("Minimized Wait");
             SDL_Delay(10);
@@ -2244,6 +2277,7 @@ bool EditorApplication::initialize()
         StartupLogScope scope("Startup render graph and scene setup");
         renderWorld_.setScene(&scene_);
         graphExecutor_ = std::make_unique<render::RenderGraphExecutor>(subsystemHost_, renderWorld_);
+        graphExecutor_->setDebugObserver(debugRuntime_.get());
         graphExecutor_->bindRuntimeScene(&scene_);
         sceneAccelerationStructure_ =
             std::make_unique<render::SceneAccelerationStructureBuilder>();
@@ -2284,7 +2318,7 @@ bool EditorApplication::initializeRhi()
         result = render::createDevice(
             render::DeviceDesc{
                 .applicationName = "Metallic Engine Editor",
-                .enableValidation = false,
+                .enableValidation = debugRuntime_ && environmentFlagEnabled("METALLIC_DEBUG_VALIDATION"),
                 .enableBindlessDescriptorHeap = true,
                 .enableShaderObject = true,
                 .enableMeshShader = true,
@@ -2300,6 +2334,7 @@ bool EditorApplication::initializeRhi()
                 .enableClusterAccelerationStructure = true,
                 .enableStreamline = enableStreamline,
                 .enableAftermath = !smokeTest_,
+                .validationSink = debugRuntime_ ? debugRuntime_->validationSink() : render::ValidationSink{},
             },
             device_);
     }
@@ -2547,6 +2582,7 @@ bool EditorApplication::createViewportSampler()
 
 void EditorApplication::shutdown()
 {
+    if (debugRuntime_) { debugRuntime_->stop(); }
     cancelSceneLoad();
     if (device_ != nullptr) {
         (void)device_->waitIdle();
@@ -2558,6 +2594,7 @@ void EditorApplication::shutdown()
         (void)frame.context.reset();
     }
     (void)frameSubmissions_.reset();
+    if (debugRuntime_) { debugRuntime_->drain(); }
 
     destroyViewportTexture();
     historyResources_.reset();
@@ -2603,6 +2640,7 @@ void EditorApplication::shutdown()
     destroySwapchainResources();
     graphicsQueue_ = nullptr;
     device_.reset();
+    debugRuntime_.reset();
 
     if (window_ != nullptr) {
         SDL_DestroyWindow(window_);

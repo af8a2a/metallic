@@ -1,0 +1,20 @@
+{
+  "batches": [
+    {
+      "pass": "GPUDriven",
+      "checkpoint": "AfterEarlyCull",
+      "resources": [
+        { "id": "gpuScene.GPUDriven.visibleInstanceCounter", "count": 1 },
+        { "id": "gpuScene.GPUDriven.visibleInstanceIds", "count": 1 }
+      ]
+    },
+    {
+      "pass": "GPUDriven",
+      "checkpoint": "AfterLateCull",
+      "resources": [
+        { "id": "gpuScene.GPUDriven.visibleInstanceCounter", "count": 1 },
+        { "id": "gpuScene.GPUDriven.visibleInstanceIds", "count": 1 }
+      ]
+    }
+  ]
+}

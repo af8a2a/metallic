@@ -45,6 +45,7 @@ void printUsage()
 {
     std::puts(
         "Metallic options:\n"
+        "  --debug-control                               Enable local Agent debug control\n"
         "  --smoke-test                                  Render one frame and exit\n"
         "  --scene <path>                                Override the sample scene (glTF or USD)\n"
         "  --wait-for-graphics-debugger                  Wait before Vulkan initialization\n"
@@ -171,6 +172,7 @@ int main(int argc, char** argv)
     bool waitForGraphicsDebugger = waitForGraphicsDebuggerFromEnv();
     bool nsightGraphicsCapture = false;
     bool nsightShaderDebug = false;
+    bool debugControl = false;
     std::filesystem::path buildMeshstreamSourcePath;
     std::filesystem::path buildMeshstreamOutputPath;
     std::filesystem::path scenePath;
@@ -199,6 +201,8 @@ int main(int argc, char** argv)
             nsightGraphicsCapture = true;
         } else if (argument == "--nsight-shader-debug") {
             nsightShaderDebug = true;
+        } else if (argument == "--debug-control") {
+            debugControl = true;
         } else if (argument == "--scene") {
             if (index + 1 >= argc) {
                 std::fputs("--scene requires a scene path\n", stderr);
@@ -281,5 +285,6 @@ int main(int argc, char** argv)
         scenePathString.empty() ? nullptr : scenePathString.c_str(),
         nullptr,
         nsightGraphicsCapture,
-        nsightShaderDebug);
+        nsightShaderDebug,
+        debugControl);
 }

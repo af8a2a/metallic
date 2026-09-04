@@ -1,4 +1,6 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
 #include "Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.h"
 #include "Runtime/Render/HistoryResources.h"
@@ -9,6 +11,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -23,6 +26,15 @@
 namespace metallic::render {
 
 using namespace detail;
+
+namespace {
+std::atomic<uint64_t> nextDebugGraphId{1};
+struct DebugExecutionScope {
+    IRenderDebugObserver* observer = nullptr;
+    bool success = false;
+    ~DebugExecutionScope() { if (observer) { observer->endExecution(success); } }
+};
+}
 
 namespace {
 
@@ -319,6 +331,66 @@ struct RenderGraphExecutor::Impl {
     std::array<uint64_t, 5> recordedSceneStamp{};
     bool hasSubmittedWork = false;
     bool isCompiled = false;
+    IRenderDebugObserver* debugObserver = nullptr;
+    uint64_t debugGraphId = nextDebugGraphId++;
+    uint64_t debugGeneration = 0;
+    uint64_t debugExecutionIndex = 0;
+    debug::DebugValue debugGraph;
+    std::array<uint64_t, 2> debugSceneIdentity{};
+
+    void publishDebugGraph(const RenderGraph& graph)
+    {
+        if (!debugObserver) { return; }
+        ++debugGeneration;
+        debugGraph = {{"id", std::to_string(debugGraphId)}, {"generation", debugGeneration}, {"name", graph.name()}, {"state", "Ready"},
+            {"passes", debug::DebugValue::array()}, {"edges", debug::DebugValue::array()},
+            {"executionOrder", debug::DebugValue::array()}, {"resources", debug::DebugValue::array()}};
+        for (const auto& node : graph.nodes()) {
+            const auto found = std::find_if(executionList.begin(), executionList.end(), [&](const auto& item) { return item.id == node.id; });
+            debug::DebugValue value{{"id", node.id}, {"name", node.name}, {"type", node.type}, {"active", found != executionList.end()},
+                {"properties", node.properties}, {"runtimeProperties", node.runtimeProperties}};
+            if (found != executionList.end()) {
+                value["checkpoints"] = found->pass->debugCheckpoints();
+                value["declaredQueue"] = static_cast<uint32_t>(found->queueType);
+                value["runtimeSettings"] = debug::DebugValue::array();
+                for (const auto& setting : found->pass->runtimeSettings()) {
+                    value["runtimeSettings"].push_back({{"key", setting.key}, {"type", static_cast<uint32_t>(setting.type)},
+                        {"default", setting.defaultValue}, {"min", setting.minValue}, {"max", setting.maxValue},
+                        {"invalidateHistory", setting.invalidateHistory}, {"rebuildGraph", setting.rebuildGraph}});
+                }
+            }
+            debugGraph["passes"].push_back(std::move(value));
+        }
+        for (const auto& node : executionList) { debugGraph["executionOrder"].push_back(node.name); }
+        for (const auto& edge : graph.edges()) {
+            debugGraph["edges"].push_back({{"srcPass", edge.srcPass}, {"srcField", edge.srcField}, {"dstPass", edge.dstPass}, {"dstField", edge.dstField}});
+        }
+        for (const auto& [name, slot] : resources) {
+            const auto& resource = slot.resource;
+            debugGraph["resources"].push_back({{"id", name}, {"allocation", debugGeneration},
+                {"kind", resource.buffer ? "buffer" : "texture"}, {"size", resource.bufferDesc.size}, {"stride", resource.bufferDesc.structureStride},
+                {"width", resource.desc.width}, {"height", resource.desc.height}, {"format", static_cast<uint32_t>(resource.desc.format)}});
+        }
+        debugSceneIdentity = runtimeScene ? std::array<uint64_t, 2>{runtimeScene->resourceIdentity(), runtimeScene->contentRevision()} : std::array<uint64_t, 2>{};
+        debugObserver->compiled(debugGraph);
+    }
+
+    void beginDebugExecution(uint64_t frameIndex, uint32_t slotIndex)
+    {
+        if (!debugObserver) { return; }
+        const auto identity = runtimeScene ? std::array<uint64_t, 2>{runtimeScene->resourceIdentity(), runtimeScene->contentRevision()} : std::array<uint64_t, 2>{};
+        if (identity != debugSceneIdentity) {
+            debugSceneIdentity = identity;
+            debugGraph["generation"] = ++debugGeneration;
+            for (auto& resource : debugGraph["resources"]) { resource["allocation"] = debugGeneration; }
+            debugObserver->compiled(debugGraph);
+        }
+        debugObserver->beginExecution(*device, {.graph = std::to_string(debugGraphId), .generation = debugGeneration,
+            .execution = debugExecutionIndex++, .frameSlot = slotIndex,
+            .provenance = {{"sceneIdentity", identity[0]}, {"sceneContentRevision", identity[1]}, {"renderFrame", frameIndex},
+                {"runtimeRevision", debugGraph.value("runtimeRevision", uint64_t(0))},
+                {"historyFrame", historyResources ? debug::DebugValue(historyResources->frameIndex()) : debug::DebugValue(nullptr)}}}, subsystemHost);
+    }
 
     ~Impl() { (void)waitForSubmittedWork(UINT64_MAX); }
 
@@ -841,6 +913,7 @@ struct RenderGraphExecutor::Impl {
                         usage = addTextureUsage(usage, TextureUsageBits::TransferSource);
                         usage = addTextureUsage(usage, TextureUsageBits::Sampled);
                     }
+                    if (debugObserver) { usage = addTextureUsage(usage, TextureUsageBits::TransferSource); }
                     for (const RenderGraphEdge& edge : graph.edges()) {
                         if (edge.srcPass != node.name ||
                             edge.srcField != field.name ||
@@ -927,6 +1000,7 @@ struct RenderGraphExecutor::Impl {
                     }
 
                     const bool markedBufferOutput = isOutputMarked(graph, fullName);
+                    if (debugObserver) { usage = addBufferUsage(usage, BufferUsageBits::TransferSource); }
                     if (markedBufferOutput || options.enablePreviewOutputAccess) {
                         usage = addBufferUsage(usage, BufferUsageBits::TransferSource);
                     }
@@ -1411,6 +1485,8 @@ struct RenderGraphExecutor::Impl {
             runtimeScene,
             world,
             subsystemHost);
+        context.debugObserver_ = debugObserver;
+        context.debugPassId_ = node.id;
         const std::string markerName = passProfileMarkerName(node.name, node.type);
         const uint32_t markerColor = profiling::nsightColorFromName(node.type);
         const profiling::NsightProfileRange passMarker(
@@ -1456,6 +1532,7 @@ struct RenderGraphExecutor::Impl {
             .type = node.type,
             .cpuMilliseconds = std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count(),
         });
+        if (result && debugObserver && !context.debugAfterPassPublished_) { context.debugCheckpoint("AfterPass"); }
         return result;
     }
 };
@@ -1502,6 +1579,12 @@ Result RenderGraphExecutor::compile(
         graph.edges().size(),
         graph.outputs().size(),
         options.extraOutputs.size());
+
+    if (impl_->debugObserver) {
+        impl_->debugGraph = {{"id", std::to_string(impl_->debugGraphId)}, {"generation", ++impl_->debugGeneration},
+            {"state", "Unavailable"}, {"reason", "Graph recompilation invalidates pending handles until success"}};
+        impl_->debugObserver->compiled(impl_->debugGraph);
+    }
 
     if (width == 0 || height == 0) {
         log = validationPrefix("invalid default dimensions");
@@ -1630,7 +1713,12 @@ Result RenderGraphExecutor::compile(
         .width = width,
         .height = height,
         .defaultFormat = impl_->defaultFormat,
+        .debugReadback = impl_->debugObserver != nullptr,
     };
+
+    if (auto* gpuScene = impl_->subsystemHost->get<GPUSceneSubsystem>()) {
+        gpuScene->setDebugReadbackEnabled(impl_->debugObserver != nullptr);
+    }
 
     if (canReuseCompiledPasses) {
         impl_->isCompiled = false;
@@ -1654,6 +1742,7 @@ Result RenderGraphExecutor::compile(
 
         impl_->isCompiled = true;
         log = dimensionsChanged ? "RenderGraph resized" : "RenderGraph resources rebuilt";
+        impl_->publishDebugGraph(graph);
         return {};
     }
 
@@ -1747,6 +1836,7 @@ Result RenderGraphExecutor::compile(
     impl_->initializeGpuTiming(device);
     impl_->isCompiled = true;
     log = "RenderGraph compiled";
+    impl_->publishDebugGraph(graph);
     return {};
 }
 
@@ -1785,6 +1875,7 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
         .width = impl_->width,
         .height = impl_->height,
         .defaultFormat = impl_->defaultFormat,
+        .debugReadback = impl_->debugObserver != nullptr,
     };
 
     std::vector<Impl::CompiledNode> replacements;
@@ -1874,6 +1965,11 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
     }
 
     impl_->executionList = std::move(replacements);
+    if (impl_->debugObserver) {
+        impl_->debugGraph["generation"] = ++impl_->debugGeneration;
+        for (auto& resource : impl_->debugGraph["resources"]) { resource["allocation"] = impl_->debugGeneration; }
+        impl_->debugObserver->compiled(impl_->debugGraph);
+    }
     log = "Reloaded shaders for " + std::to_string(impl_->executionList.size()) +
         " render pass(es)";
     if (!subsystemLog.empty()) {
@@ -1889,6 +1985,7 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
 
 Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources)
 {
+    DebugExecutionScope debugScope;
     if (!impl_->isCompiled) {
         return makeError(Error::InvalidArgument);
     }
@@ -1947,6 +2044,8 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
     }
     RenderUploadSubsystem* upload = impl_->uploadSubsystem();
     const std::vector<RenderSubsystemId> requiredSubsystems = impl_->requiredSubsystemViews();
+    impl_->beginDebugExecution(frameIndex, frameResources ? frameResources->slotIndex() : 0);
+    debugScope.observer = impl_->debugObserver;
     result = impl_->subsystemHost->recordPreGraph(
         commandBuffer,
         upload != nullptr ? upload->streamer() : nullptr,
@@ -1992,6 +2091,7 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
     }
 
     impl_->finishGpuTiming(graphResult.has_value() && postResult.has_value());
+    debugScope.success = graphResult.has_value() && postResult.has_value();
     impl_->historyResources = nullptr;
     return graphResult ? postResult : graphResult;
 }
@@ -2102,6 +2202,7 @@ void RenderGraphExecutor::acceptSceneResourcePreparation()
 
 Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 {
+    DebugExecutionScope debugScope;
     if (!impl_->isCompiled || impl_->device == nullptr || impl_->executionList.empty()) {
         return makeError(Error::InvalidArgument);
     }
@@ -2215,6 +2316,8 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         desc.historyResources, log, &slot.frame);
     if (!result) { return abort(result); }
     RenderSubsystemFrameEndScope subsystemFrameScope(*impl_->subsystemHost);
+    impl_->beginDebugExecution(frameIndex, slot.frame.slotIndex());
+    debugScope.observer = impl_->debugObserver;
     RenderUploadSubsystem* upload = impl_->uploadSubsystem();
     const auto requiredSubsystems = impl_->requiredSubsystemViews();
     std::vector<Impl::SubmissionSegment> segments;
@@ -2343,12 +2446,18 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     impl_->hasSubmittedWork = true;
     ++impl_->executionFrameIndex;
     updateCpuTime();
+    debugScope.success = true;
     return {};
 }
 
 GpuCompletionPoint RenderGraphExecutor::lastSubmittedCompletion() const
 {
     return impl_->lastSubmittedCompletion;
+}
+
+void RenderGraphExecutor::setDebugObserver(IRenderDebugObserver* observer)
+{
+    impl_->debugObserver = observer;
 }
 
 Result RenderGraphExecutor::waitForSubmittedWork(uint64_t timeoutNanoseconds)
@@ -2385,6 +2494,15 @@ bool RenderGraphExecutor::syncRuntimeProperties(const RenderGraph& graph)
             compiledNode.pass->setProperties(compiledNode.effectiveProperties);
             synced = true;
         }
+    }
+    if (synced && impl_->debugObserver) {
+        for (auto& description : impl_->debugGraph["passes"]) {
+            const auto node = std::find_if(impl_->executionList.begin(), impl_->executionList.end(),
+                [&](const auto& value) { return description.at("id") == value.id; });
+            if (node != impl_->executionList.end()) { description["runtimeProperties"] = node->runtimeProperties; }
+        }
+        impl_->debugGraph["runtimeRevision"] = impl_->debugGraph.value("runtimeRevision", uint64_t(0)) + 1;
+        impl_->debugObserver->compiled(impl_->debugGraph);
     }
     return synced;
 }

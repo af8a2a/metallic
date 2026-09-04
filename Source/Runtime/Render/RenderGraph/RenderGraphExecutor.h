@@ -89,6 +89,8 @@ public:
     void acceptSceneResourcePreparation();
     bool syncProperties(const RenderGraph& graph);
     bool syncRuntimeProperties(const RenderGraph& graph);
+    // Attach before compilation; observer and device outlive submitted work.
+    void setDebugObserver(IRenderDebugObserver* observer);
     Result transitionOutput(
         CommandBuffer& commandBuffer,
         std::string_view fullName,

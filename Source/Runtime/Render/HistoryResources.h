@@ -43,6 +43,7 @@ public:
     void reset();
 
     void beginFrame(uint64_t frameIndex);
+    uint64_t frameIndex() const;
     void invalidate(std::string_view name);
     void invalidateAll();
     uint64_t invalidationRevision() const;

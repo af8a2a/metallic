@@ -7,6 +7,7 @@
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -7882,6 +7883,8 @@ public:
 
         render::RenderGraph graph;
         graph.setName("GPUDrivenMixedProducer");
+        render::RenderDebugRuntime debugRuntime;
+        debug::DebugValue debugJobs = debug::DebugValue::array();
         graph.addNode(
             "GPUDrivenPreviewPass",
             "GPUDriven",
@@ -7916,6 +7919,7 @@ public:
 
         render::RenderGraphExecutor executor;
         executor.bindRuntimeScene(&runtimeScene);
+        executor.setDebugObserver(&debugRuntime);
         std::string log;
         result = executor.compile(*device, graph, kWidth, kHeight, log);
         const bool hasRequiredCapabilities =
@@ -7939,6 +7943,21 @@ public:
         }
 
         for (uint32_t frame = 0; frame < kWarmupFrameCount; ++frame) {
+            if (frame + 1 == kWarmupFrameCount) {
+                debug::DebugValue batches = debug::DebugValue::array();
+                for (const char* point : {"AfterTraversal", "AfterEarlyCull", "AfterLateCull", "AfterPass"}) {
+                    debug::DebugValue resources = debug::DebugValue::array({{{"id", "streaming.GPUDriven.activeHeader"}, {"count", 1}}});
+                    if (std::string_view(point) == "AfterPass") {
+                        for (const char* id : {"gpuScene.GPUDriven.meshletDraws", "gpuScene.GPUDriven.geometries", "streaming.GPUDriven.visibleClusters"}) {
+                            resources.push_back({{"id", id}, {"count", 1}});
+                        }
+                    }
+                    batches.push_back({{"pass", "GPUDriven"}, {"checkpoint", point}, {"resources", std::move(resources)}});
+                }
+                const auto queued = debugRuntime.core().dispatch({{"method", "capture.batch"}, {"params", {{"batches", batches}}}});
+                if (queued["status"] != "ok") { return RhiTestResult::fail("Mixed debug capture enqueue: " + queued.dump()); }
+                debugJobs = queued["result"]["jobs"];
+            }
             result = executor.execute(render::RenderGraphSubmitDesc{
                 .graphicsQueue = graphicsQueue,
             });
@@ -7950,6 +7969,23 @@ public:
                     "mixed-producer warmup frame " +
                     std::to_string(frame) + " returned " + toString(result));
             }
+            debugRuntime.poll();
+        }
+
+        uint64_t debugExecution = UINT64_MAX;
+        for (const auto& job : debugJobs) {
+            const auto completed = debugRuntime.core().dispatch({{"method", "jobs.get"}, {"params", {{"job", job.at("job")}}}});
+            if (completed["status"] != "ok" || completed["result"]["state"] != "Ready") {
+                return RhiTestResult::fail("Mixed checkpoint capture: " + completed.dump());
+            }
+            const auto execution = completed["result"]["evidence"]["execution"].get<uint64_t>();
+            if (debugExecution != UINT64_MAX && execution != debugExecution) { return RhiTestResult::fail("Mixed checkpoints span executions"); }
+            debugExecution = execution;
+        }
+        const auto residentRecord = debugRuntime.core().dispatch({{"method", "eval"}, {"params", {
+            {"job", debugJobs.back().at("job")}, {"expression", "buffers[\"gpuScene.GPUDriven.meshletDraws\"][0].source.name"}}}});
+        if (residentRecord["status"] != "ok" || residentRecord["result"]["value"] != "Resident") {
+            return RhiTestResult::fail("Resident record lost typed source: " + residentRecord.dump());
         }
 
         render::RenderSubsystemHost* subsystemHost = executor.subsystemHost();
@@ -7974,6 +8010,9 @@ public:
         const uint32_t streamRecordBase = static_cast<uint32_t>(
             globalViews.meshletDraws.size /
             sizeof(render::VisibleClusterRecord));
+        if (residentRecord["result"]["coverage"]["streaming.GPUDriven.visibleClusters"]["visibleRecordBase"] != streamRecordBase) {
+            return RhiTestResult::fail("Stream capture lost the mixed visibility namespace offset");
+        }
         if (!render::visibilityRecordCapacityFitsId(
                 static_cast<uint64_t>(streamRecordBase) +
                 requestedStreamRecordCapacity)) {

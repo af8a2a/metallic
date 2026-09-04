@@ -1,4 +1,5 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -337,6 +338,12 @@ public:
         return required;
     }
 
+    std::vector<std::string> debugCheckpoints() const override
+    {
+        return rtasVisualization_ ? std::vector<std::string>{"AfterTraversal", "AfterPass"}
+            : std::vector<std::string>{"AfterTraversal", "AfterEarlyCull", "AfterLateCull", "AfterPass"};
+    }
+
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
@@ -449,6 +456,7 @@ public:
             }
         }
 
+        streamRuntime_.setDebugReadbackEnabled(context.debugReadback);
         Result result = streamRuntime_.initialize(
             *context.device,
             runtimeDescFromProperties(properties()),
@@ -880,6 +888,7 @@ public:
             if (!result) {
                 return result;
             }
+            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, UINT32_MAX);
             result = drawRayQuery(context, color, frame);
         } else {
             bool cameraCut = false;
@@ -916,12 +925,14 @@ public:
             if (!result) {
                 return result;
             }
+            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, UINT32_MAX);
             result = dispatchInstanceCull(
                 context.commandBuffer(),
                 GPUSceneCullPhase::Early);
             if (!result) {
                 return result;
             }
+            gpuDrivenDebugCheckpoint(context, "AfterEarlyCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, 0);
             result = streamRuntime_.cmdPrepareVisibility(context.commandBuffer());
             if (result) {
                 result = draw(
@@ -950,6 +961,7 @@ public:
                     GPUSceneCullPhase::Late);
             }
             if (result) {
+                gpuDrivenDebugCheckpoint(context, "AfterLateCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, 1);
                 result = streamRuntime_.cmdPrepareVisibility(context.commandBuffer());
             }
             if (result) {
@@ -996,7 +1008,9 @@ public:
         if (!result) {
             return result;
         }
-        return streamRuntime_.cmdEndFrame(context.commandBuffer());
+        result = streamRuntime_.cmdEndFrame(context.commandBuffer());
+        if (result) { gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, rtasVisualization_ ? UINT32_MAX : 1); }
+        return result;
     }
 
 private:

@@ -4,6 +4,23 @@ if(DEFINED SLANG_ROOT)
 endif()
 find_package(slang CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PATH)
 
+add_library(MetallicDebugCore STATIC
+    Runtime/Debug/DebugTypes.cpp
+    Runtime/Debug/DebugEval.cpp
+    Runtime/Debug/DebugCore.cpp
+    Runtime/Debug/DebugAnalysis.cpp
+    Runtime/Debug/DebugTransport.cpp
+)
+target_include_directories(MetallicDebugCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(MetallicDebugCore PUBLIC nlohmann_json)
+add_executable(MetallicCtl Tools/MetallicCtl.cpp)
+target_link_libraries(MetallicCtl PRIVATE MetallicDebugCore)
+set_target_properties(MetallicCtl PROPERTIES OUTPUT_NAME metallicctl)
+if(WIN32)
+    target_compile_definitions(MetallicDebugCore PRIVATE NOMINMAX)
+    target_link_libraries(MetallicDebugCore PRIVATE advapi32)
+endif()
+
 add_library(MetallicRuntimeTask STATIC
     Runtime/Task/TaskSystem.cpp
 )
@@ -22,6 +39,8 @@ if(WIN32)
 endif()
 
 add_library(MetallicRuntimeRender STATIC
+    Runtime/Render/Debug/RenderDebug.cpp
+    Runtime/Render/Debug/RenderDebugProviders.cpp
     Runtime/Render/ComputeProgram.cpp
     Runtime/Render/RenderFrameContext.cpp
     Runtime/Render/HistoryResources.cpp
@@ -95,6 +114,7 @@ target_include_directories(MetallicRuntimeRender SYSTEM PRIVATE
 )
 
 target_link_libraries(MetallicRuntimeRender PUBLIC
+    MetallicDebugCore
     MetallicRuntimeTask
     metallic::volk
     metallic::sdl3

@@ -874,7 +874,7 @@ Result GPUSceneSubsystem::ensureViewGpuResources(
             BufferDesc{
                 .size = byteSize,
                 .structureStride = structureStride,
-                .usage = usage,
+                .usage = debugReadbackEnabled_ ? usage | BufferUsageBits::TransferSource : usage,
                 .memoryLocation = MemoryLocation::Device,
                 .queueAccess = QueueAccessBits::Graphics |
                     QueueAccessBits::Compute,

@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/SceneResourceManager.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -889,6 +890,13 @@ public:
         return required;
     }
 
+    std::vector<std::string> debugCheckpoints() const override
+    {
+        std::vector<std::string> points{"AfterEarlyCull", "AfterLateCull", "AfterPass"};
+        if (streamEnabled_) { points.insert(points.begin(), "AfterTraversal"); }
+        return points;
+    }
+
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
@@ -1112,6 +1120,7 @@ public:
         }
         if (requestedStreamEnabled) {
             resetStreamIntegration();
+            streamRuntime_.setDebugReadbackEnabled(context.debugReadback);
             Result streamResult = streamRuntime_.initialize(
                 *context.device,
                 previewStreamRuntimeDesc(
@@ -1506,6 +1515,9 @@ public:
         }
 
         CommandBuffer& commandBuffer = context.commandBuffer();
+        if (streamEnabled_) {
+            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, UINT32_MAX, residentRecordCapacity_);
+        }
         result = uploadShadingTextures(commandBuffer);
         if (!result) {
             return result;
@@ -1528,6 +1540,7 @@ public:
                 return result;
             }
         }
+        gpuDrivenDebugCheckpoint(context, "AfterEarlyCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? &streamRuntime_ : nullptr, 0, residentRecordCapacity_);
         if (freezeCullingCamera_) {
             drawVisibility(
                 commandBuffer,
@@ -1595,6 +1608,7 @@ public:
                 return result;
             }
         }
+        gpuDrivenDebugCheckpoint(context, "AfterLateCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? &streamRuntime_ : nullptr, 1, residentRecordCapacity_);
         if (freezeCullingCamera_) {
             drawVisibility(
                 commandBuffer,
@@ -1683,6 +1697,7 @@ public:
             }
         }
         ++frameIndex_;
+        gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? &streamRuntime_ : nullptr, 1, residentRecordCapacity_);
         return {};
     }
 

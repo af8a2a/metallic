@@ -1,0 +1,14 @@
+{
+  "pass": "GPUDriven",
+  "checkpoint": "AfterPass",
+  "resources": [
+    { "id": "gpuScene.GPUDriven.visibleInstanceCounter", "count": 1 },
+    { "id": "gpuScene.GPUDriven.visibleInstanceIds", "count": 1 },
+    { "id": "streaming.GPUDriven.requestHeader", "count": 1 },
+    { "id": "streaming.GPUDriven.activeHeader", "count": 1 },
+    { "id": "streaming.GPUDriven.activeGroups", "count": 1 },
+    { "id": "streaming.GPUDriven.pageTable", "count": 1 },
+    { "id": "streaming.GPUDriven.visibleClusters", "count": 1 },
+    { "id": "GPUDriven.visibility", "roi": { "x": 0, "y": 0, "width": 32, "height": 32 } }
+  ]
+}
