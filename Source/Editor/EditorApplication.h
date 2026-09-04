@@ -6,11 +6,13 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/HistoryResources.h"
+#include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Scene/SceneLoader.h"
 #include "Runtime/Scene/ScenePicker.h"
 
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -213,10 +215,18 @@ private:
     std::unique_ptr<render::Swapchain> swapchain_;
     std::vector<std::unique_ptr<render::TextureView>> swapchainImageViews_;
     std::vector<render::ResourceState> swapchainImageStates_;
-    std::unique_ptr<render::CommandPool> commandPool_;
-    std::unique_ptr<render::CommandBuffer> commandBuffer_;
-    std::unique_ptr<render::Fence> frameFence_;
-    std::unique_ptr<render::SwapchainSemaphore> imageAvailableSemaphore_;
+    static constexpr uint32_t kFrameSlotCount = 2;
+    struct FrameSlot {
+        explicit FrameSlot(uint32_t index) : context(index) {}
+        render::RenderFrameContext context;
+        std::unique_ptr<render::CommandPool> commandPool;
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        std::unique_ptr<render::SwapchainSemaphore> imageAvailable;
+    };
+    std::array<FrameSlot, kFrameSlotCount> frameSlots_{FrameSlot{0}, FrameSlot{1}};
+    uint32_t currentFrameSlot_ = 0;
+    render::QueueSubmissionTracker frameSubmissions_;
+    uint64_t submittedFrameIndex_ = 0;
     std::vector<std::unique_ptr<render::SwapchainSemaphore>> renderFinishedSemaphores_;
     render::RenderSubsystemHost subsystemHost_;
     render::RenderWorld renderWorld_;

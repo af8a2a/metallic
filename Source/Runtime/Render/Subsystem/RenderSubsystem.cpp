@@ -155,13 +155,29 @@ Result RenderSubsystemHost::beginFrame(
     uint64_t frameIndex,
     uint32_t frameSlot,
     HistoryResourceManager* historyResources,
-    std::string& log)
+    std::string& log,
+    RenderFrameContext* frameResources)
 {
     if (device_ == nullptr || frameActive_ || frameSlot >= frameSlotCount_) {
         log = "RenderSubsystemHost beginFrame received invalid frame state";
         return makeError(Error::InvalidArgument);
     }
+    if (frameResources != nullptr &&
+        (!frameResources->recording() || frameResources->slotIndex() != frameSlot)) {
+        log = "RenderSubsystemHost requires a recording frame with the same slot";
+        return makeError(Error::InvalidArgument);
+    }
+    deferredReleases_.collect();
+    std::erase_if(pendingCompletions_, [](const auto& point) { return point.isComplete(); });
     retiredByFrameSlot_[frameSlot].clear();
+    frameResources_ = frameResources;
+    if (frameResources_ != nullptr) {
+        const auto& completion = frameResources_->completion();
+        if (std::none_of(pendingCompletions_.begin(), pendingCompletions_.end(),
+                [&](const auto& point) { return point.sameSubmission(completion); })) {
+            pendingCompletions_.push_back(completion);
+        }
+    }
     frameIndex_ = frameIndex;
     frameSlot_ = frameSlot;
     historyResources_ = historyResources;
@@ -340,11 +356,17 @@ void RenderSubsystemHost::endFrame()
     begunSubsystemCount_ = 0;
     historyResources_ = nullptr;
     frameActive_ = false;
+    frameResources_ = nullptr;
 }
 
 void RenderSubsystemHost::shutdown()
 {
     endFrame();
+    for (const auto& completion : pendingCompletions_) {
+        (void)completion.wait();
+    }
+    (void)deferredReleases_.drain();
+    pendingCompletions_.clear();
     for (auto iter = activeOrder_.rbegin(); iter != activeOrder_.rend(); ++iter) {
         Record& record = *records_.at(*iter);
         record.instance->shutdown();
@@ -386,6 +408,12 @@ void RenderSubsystemHost::retire(std::shared_ptr<void> resource)
     if (resource == nullptr) {
         return;
     }
+    // A replacement recorded in slot 1 may be cancelled while slot 0 still uses
+    // the old generation. Keep a reference for every outstanding recording.
+    for (const auto& completion : pendingCompletions_) {
+        deferredReleases_.retire(completion, resource);
+    }
+    if (frameResources_ != nullptr) { return; }
     if (!frameActive_ || frameSlot_ >= retiredByFrameSlot_.size()) {
         return;
     }
@@ -405,6 +433,7 @@ RenderSubsystemFrameContext RenderSubsystemHost::frameContext(
         .commandBuffer = commandBuffer,
         .frameIndex = frameIndex_,
         .frameSlot = frameSlot_,
+        .frameResources = frameResources_,
     };
 }
 

@@ -2026,22 +2026,31 @@ int EditorApplication::run(
             (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "maxDepth", 1);
             (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "accumulate", false);
         }
-        auto profileFrame = profiler_.beginFrame();
-        const render::profiling::NsightProfileRange frameMarker(
-            render::profiling::NsightDomain::Editor,
-            "Frame",
-            render::profiling::NsightCategory::Frame,
-            0);
-        {
-            auto profileScope = profiler_.scope("Poll Events");
-            pollEvents();
+        uint32_t smokeFrameCount = 1;
+        if (const char* count = std::getenv("METALLIC_SMOKE_TEST_FRAMES")) {
+            smokeFrameCount = static_cast<uint32_t>(std::clamp(std::strtoul(count, nullptr, 10), 1ul, 64ul));
         }
-        {
-            auto profileScope = profiler_.scope("Render Frame");
-            const bool rendered = renderFrame();
-            shutdown();
-            return rendered ? 0 : 1;
+        for (uint32_t index = 0; index < smokeFrameCount; ++index) {
+            auto profileFrame = profiler_.beginFrame();
+            const render::profiling::NsightProfileRange frameMarker(
+                render::profiling::NsightDomain::Editor,
+                "Frame",
+                render::profiling::NsightCategory::Frame,
+                index);
+            {
+                auto profileScope = profiler_.scope("Poll Events");
+                pollEvents();
+            }
+            {
+                auto profileScope = profiler_.scope("Render Frame");
+                if (!renderFrame()) {
+                    shutdown();
+                    return 1;
+                }
+            }
         }
+        shutdown();
+        return 0;
     }
 
     uint64_t nsightFrameIndex = 0;
@@ -2316,27 +2325,30 @@ bool EditorApplication::initializeRhi()
 
     {
         StartupLogScope scope("Frame synchronization resource creation");
-        result = device_->createCommandPool(*graphicsQueue_, commandPool_);
+        std::string subsystemLog;
+        result = subsystemHost_.initialize(*device_, kFrameSlotCount, subsystemLog);
         if (!result) {
-            spdlog::error("createCommandPool failed with Result {}", render::resultToString(result));
+            spdlog::error("Render subsystem frame slot initialization failed: {}", subsystemLog);
             return false;
         }
-        result = commandPool_->createCommandBuffer(commandBuffer_);
+        result = frameSubmissions_.initialize(*device_, *graphicsQueue_);
         if (!result) {
-            spdlog::error("createCommandBuffer failed with Result {}", render::resultToString(result));
+            spdlog::error("frame submission tracker initialization failed with Result {}", render::resultToString(result));
             return false;
         }
-        result = device_->createFence(true, frameFence_);
-        if (!result) {
-            spdlog::error("createFence failed with Result {}", render::resultToString(result));
-            return false;
-        }
-        result = device_->createSwapchainSemaphore(imageAvailableSemaphore_);
-        if (!result) {
-            spdlog::error(
-                "createSwapchainSemaphore(imageAvailable) failed with Result {}",
-                render::resultToString(result));
-            return false;
+        for (FrameSlot& frame : frameSlots_) {
+            result = device_->createCommandPool(*graphicsQueue_, frame.commandPool);
+            if (result) {
+                result = frame.commandPool->createCommandBuffer(frame.commandBuffer);
+            }
+            if (result) {
+                result = device_->createSwapchainSemaphore(frame.imageAvailable);
+            }
+            if (!result) {
+                spdlog::error("Frame slot {} initialization failed: {}",
+                    frame.context.slotIndex(), render::resultToString(result));
+                return false;
+            }
         }
     }
 
@@ -2384,7 +2396,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             .width = width,
             .height = height,
             .imageCount = kSwapchainImageCount,
-            .framesInFlight = 2,
+            .framesInFlight = kFrameSlotCount,
             .format = render::Format::Bgra8Unorm,
             .vsync = true,
         },
@@ -2539,6 +2551,13 @@ void EditorApplication::shutdown()
     if (device_ != nullptr) {
         (void)device_->waitIdle();
     }
+    for (FrameSlot& frame : frameSlots_) {
+        if (frame.commandPool != nullptr) {
+            (void)frame.commandPool->reset();
+        }
+        (void)frame.context.reset();
+    }
+    (void)frameSubmissions_.reset();
 
     destroyViewportTexture();
     historyResources_.reset();
@@ -2576,10 +2595,11 @@ void EditorApplication::shutdown()
         viewportSampler_ = VK_NULL_HANDLE;
     }
 
-    commandBuffer_.reset();
-    commandPool_.reset();
-    frameFence_.reset();
-    imageAvailableSemaphore_.reset();
+    for (FrameSlot& frame : frameSlots_) {
+        frame.commandBuffer.reset();
+        frame.commandPool.reset();
+        frame.imageAvailable.reset();
+    }
     destroySwapchainResources();
     graphicsQueue_ = nullptr;
     device_.reset();
@@ -2674,6 +2694,8 @@ void EditorApplication::pollShaderHotReload()
 
 bool EditorApplication::renderFrame()
 {
+    currentFrameSlot_ = static_cast<uint32_t>(submittedFrameIndex_ % kFrameSlotCount);
+    FrameSlot& frame = frameSlots_[currentFrameSlot_];
     int framebufferWidth = 0;
     int framebufferHeight = 0;
     if (!SDL_GetWindowSizeInPixels(window_, &framebufferWidth, &framebufferHeight)) {
@@ -2690,15 +2712,15 @@ bool EditorApplication::renderFrame()
         pollNsightGraphicsCapture();
     }
 
-    if (frameFence_ != nullptr) {
-        auto frameFenceScope = profiler_.scope("Wait Frame Fence");
+    {
+        auto frameFenceScope = profiler_.scope("Wait Frame Slot");
         render::Result result;
         {
-            auto profileScope = profiler_.scope("Wait Fence Signal");
-            result = frameFence_->wait();
+            auto profileScope = profiler_.scope("Wait Slot Completion");
+            result = frame.context.begin(submittedFrameIndex_);
         }
         if (!result) {
-            spdlog::error("frameFence wait before UI failed with Result {}", render::resultToString(result));
+            spdlog::error("frame context begin failed with Result {}", render::resultToString(result));
             running_ = false;
             return false;
         }
@@ -2769,6 +2791,10 @@ bool EditorApplication::renderFrame()
     if (!renderVulkanFrame()) {
         running_ = false;
         return false;
+    }
+    if (frame.context.recording()) {
+        (void)frame.commandPool->reset();
+        frame.context.cancel();
     }
     return true;
 }
@@ -5962,6 +5988,12 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
 void EditorApplication::destroyViewportDescriptor()
 {
     if (viewportDescriptor_ != VK_NULL_HANDLE && imguiRendererInitialized_) {
+        const render::Result result = frameSubmissions_.wait();
+        if (!result) {
+            spdlog::error("Viewport descriptor retirement failed: {}", render::resultToString(result));
+            running_ = false;
+            return;
+        }
         ImGui_ImplVulkan_RemoveTexture(viewportDescriptor_);
     }
     viewportDescriptor_ = VK_NULL_HANDLE;
@@ -5982,10 +6014,11 @@ void EditorApplication::destroyViewportTexture()
 
 bool EditorApplication::renderGraphPreview()
 {
+    FrameSlot& frame = frameSlots_[currentFrameSlot_];
     if (!viewportPreviewValid_ || !viewportPreviewNeedsRender_) {
         return true;
     }
-    if (graphExecutor_ == nullptr || commandBuffer_ == nullptr) {
+    if (graphExecutor_ == nullptr || frame.commandBuffer == nullptr) {
         return false;
     }
 
@@ -5994,13 +6027,13 @@ bool EditorApplication::renderGraphPreview()
         graphExecutor_->syncRuntimeProperties(renderGraph_);
     }
 
-    commandBuffer_->beginDebugLabel(render::DebugLabelDesc{
+    frame.commandBuffer->beginDebugLabel(render::DebugLabelDesc{
         .name = "RenderGraph Preview",
         .color = render::ColorValue{0.78f, 0.36f, 0.92f, 1.0f},
     });
-    render::Result result = graphExecutor_->execute(*commandBuffer_, &historyResources_);
+    render::Result result = graphExecutor_->execute(*frame.commandBuffer, &historyResources_);
     profiler_.addRenderGraphStats(graphExecutor_->executionStats());
-    commandBuffer_->endDebugLabel();
+    frame.commandBuffer->endDebugLabel();
     if (!result) {
         renderGraphStatus_ = std::string("RenderGraph execute failed: ") + render::resultToString(result);
         spdlog::error("{}", renderGraphStatus_);
@@ -6010,7 +6043,7 @@ bool EditorApplication::renderGraphPreview()
     }
 
     result = graphExecutor_->transitionOutput(
-        *commandBuffer_,
+        *frame.commandBuffer,
         activePreviewOutput_.empty() ? renderGraph_.firstOutputName() : activePreviewOutput_,
         render::ResourceState::ShaderRead);
     if (!result) {
@@ -6028,11 +6061,11 @@ bool EditorApplication::renderGraphPreview()
 
 bool EditorApplication::renderVulkanFrame()
 {
+    FrameSlot& frame = frameSlots_[currentFrameSlot_];
     if (swapchain_ == nullptr ||
-        commandPool_ == nullptr ||
-        commandBuffer_ == nullptr ||
-        frameFence_ == nullptr ||
-        imageAvailableSemaphore_ == nullptr ||
+        frame.commandPool == nullptr ||
+        frame.commandBuffer == nullptr ||
+        frame.imageAvailable == nullptr ||
         graphicsQueue_ == nullptr) {
         return false;
     }
@@ -6040,16 +6073,12 @@ bool EditorApplication::renderVulkanFrame()
     if (smokeTest_) {
         spdlog::info("[Smoke] Begin editor Vulkan frame");
     }
-    render::Result result = frameFence_->wait();
-    if (!result) {
-        spdlog::error("frameFence wait failed with Result {}", render::resultToString(result));
-        return false;
-    }
+    render::Result result;
 
     uint32_t imageIndex = 0;
     {
         auto profileScope = profiler_.scope("Acquire Swapchain Image");
-        result = swapchain_->acquireNextImage(*imageAvailableSemaphore_, imageIndex);
+        result = swapchain_->acquireNextImage(*frame.imageAvailable, imageIndex);
     }
     if (smokeTest_) {
         spdlog::info("[Smoke] Acquired swapchain image {}", imageIndex);
@@ -6072,17 +6101,12 @@ bool EditorApplication::renderVulkanFrame()
 
     {
         auto profileScope = profiler_.scope("Begin Command Buffer");
-        result = frameFence_->reset();
-        if (!result) {
-            spdlog::error("frameFence reset failed with Result {}", render::resultToString(result));
-            return false;
-        }
-        result = commandPool_->reset();
+        result = frame.commandPool->reset();
         if (!result) {
             spdlog::error("commandPool reset failed with Result {}", render::resultToString(result));
             return false;
         }
-        result = commandBuffer_->begin();
+        result = frame.commandBuffer->begin(&frame.context);
         if (!result) {
             spdlog::error("commandBuffer begin failed with Result {}", render::resultToString(result));
             return false;
@@ -6091,13 +6115,13 @@ bool EditorApplication::renderVulkanFrame()
     }
 
     bool frameLabelOpen = true;
-    commandBuffer_->beginDebugLabel(render::DebugLabelDesc{
+    frame.commandBuffer->beginDebugLabel(render::DebugLabelDesc{
         .name = "Metallic Editor Frame",
         .color = render::ColorValue{0.24f, 0.40f, 0.95f, 1.0f},
     });
     auto endFrameLabel = [&]() {
         if (frameLabelOpen) {
-            commandBuffer_->endDebugLabel();
+            frame.commandBuffer->endDebugLabel();
             frameLabelOpen = false;
         }
     };
@@ -6128,7 +6152,7 @@ bool EditorApplication::renderVulkanFrame()
         .baseLayer = 0,
         .layerCount = 1,
     };
-    commandBuffer_->barrier(render::BarrierDesc{
+    frame.commandBuffer->barrier(render::BarrierDesc{
         .textures = &toColor,
         .textureCount = 1,
     });
@@ -6152,11 +6176,11 @@ bool EditorApplication::renderVulkanFrame()
             clearColor_[3],
         },
     };
-    commandBuffer_->beginDebugLabel(render::DebugLabelDesc{
+    frame.commandBuffer->beginDebugLabel(render::DebugLabelDesc{
         .name = "Editor ImGui",
         .color = render::ColorValue{0.22f, 0.70f, 0.45f, 1.0f},
     });
-    commandBuffer_->beginRendering(render::RenderingDesc{
+    frame.commandBuffer->beginRendering(render::RenderingDesc{
         .renderArea = renderArea,
         .colorAttachments = &colorAttachment,
         .colorAttachmentCount = 1,
@@ -6166,11 +6190,11 @@ bool EditorApplication::renderVulkanFrame()
         auto profileScope = profiler_.scope("Record ImGui Draw");
         ImGui_ImplVulkan_RenderDrawData(
             ImGui::GetDrawData(),
-            render::vulkan::nativeCommandBuffer(*commandBuffer_));
+            render::vulkan::nativeCommandBuffer(*frame.commandBuffer));
     }
 
-    commandBuffer_->endRendering();
-    commandBuffer_->endDebugLabel();
+    frame.commandBuffer->endRendering();
+    frame.commandBuffer->endDebugLabel();
 
     render::TextureBarrierDesc toPresent{
         .texture = swapchainTexture,
@@ -6181,7 +6205,7 @@ bool EditorApplication::renderVulkanFrame()
         .baseLayer = 0,
         .layerCount = 1,
     };
-    commandBuffer_->barrier(render::BarrierDesc{
+    frame.commandBuffer->barrier(render::BarrierDesc{
         .textures = &toPresent,
         .textureCount = 1,
     });
@@ -6190,16 +6214,16 @@ bool EditorApplication::renderVulkanFrame()
     endFrameLabel();
     {
         auto profileScope = profiler_.scope("End Command Buffer");
-        result = commandBuffer_->end();
+        result = frame.commandBuffer->end();
         if (!result) {
             spdlog::error("commandBuffer end failed with Result {}", render::resultToString(result));
             return false;
         }
     }
 
-    render::CommandBuffer* commandBuffers[] = {commandBuffer_.get()};
+    render::CommandBuffer* commandBuffers[] = {frame.commandBuffer.get()};
     render::SwapchainSemaphoreSubmitDesc waitSemaphore{
-        .semaphore = imageAvailableSemaphore_.get(),
+        .semaphore = frame.imageAvailable.get(),
         .stages = render::PipelineStageBits::ColorAttachment,
     };
     render::SwapchainSemaphoreSubmitDesc signalSemaphore{
@@ -6208,23 +6232,24 @@ bool EditorApplication::renderVulkanFrame()
     };
     {
         auto profileScope = profiler_.scope("Submit Frame");
-        result = graphicsQueue_->submit(render::QueueSubmitDesc{
+        result = frameSubmissions_.submit(render::QueueSubmitDesc{
             .waitSwapchainSemaphores = &waitSemaphore,
             .waitSwapchainSemaphoreCount = 1,
             .commandBuffers = commandBuffers,
             .commandBufferCount = 1,
             .signalSwapchainSemaphores = &signalSemaphore,
             .signalSwapchainSemaphoreCount = 1,
-            .signalFence = frameFence_.get(),
-        });
+        }, frame.context);
     }
     if (!result) {
         spdlog::error("graphicsQueue submit failed with Result {}", render::resultToString(result));
         return false;
     }
     if (smokeTest_) {
-        spdlog::info("[Smoke] Submitted editor frame");
+        spdlog::info("[Smoke] Submitted editor frame {} slot {} completion {}",
+            submittedFrameIndex_, currentFrameSlot_, frame.context.completion().value());
     }
+    ++submittedFrameIndex_;
     {
         auto profileScope = profiler_.scope("Present");
         result = swapchain_->present(*graphicsQueue_, imageIndex, *renderFinishedSemaphores_[imageIndex]);

@@ -23,6 +23,7 @@ endif()
 
 add_library(MetallicRuntimeRender STATIC
     Runtime/Render/ComputeProgram.cpp
+    Runtime/Render/RenderFrameContext.cpp
     Runtime/Render/HistoryResources.cpp
     Runtime/Render/ImportanceSampling.cpp
     Runtime/Render/ReGIR.cpp

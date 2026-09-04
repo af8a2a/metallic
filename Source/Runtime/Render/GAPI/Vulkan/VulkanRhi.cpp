@@ -6,6 +6,7 @@
 #include "Runtime/Render/Profiling/NsightAftermath.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/RenderFrameContext.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_loadso.h>
@@ -4646,9 +4647,9 @@ CommandBuffer::~CommandBuffer()
 CommandBuffer::CommandBuffer(CommandBuffer&&) noexcept = default;
 CommandBuffer& CommandBuffer::operator=(CommandBuffer&&) noexcept = default;
 
-Result CommandBuffer::begin()
+Result CommandBuffer::begin(RenderFrameContext* frameContext)
 {
-    if (impl_ == nullptr) {
+    if (impl_ == nullptr || (frameContext != nullptr && !frameContext->recording())) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -4670,7 +4671,10 @@ Result CommandBuffer::begin()
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    return resultFromVk(vkBeginCommandBuffer(impl_->commandBuffer, &beginInfo));
+    Result result = resultFromVk(vkBeginCommandBuffer(impl_->commandBuffer, &beginInfo));
+    frameContext_ = result ? frameContext : nullptr;
+    frameRecording_ = frameContext_ != nullptr ? frameContext_->completion().state_ : nullptr;
+    return result;
 }
 
 Result CommandBuffer::end()
@@ -6667,7 +6671,12 @@ Result Swapchain::acquireNextImage(SwapchainSemaphore& semaphore, uint32_t& imag
         semaphore.impl_->semaphore,
         VK_NULL_HANDLE,
         &imageIndex);
-    if (result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_OUT_OF_DATE_KHR) {
+    // SUBOPTIMAL still acquires an image and schedules a semaphore signal. The
+    // caller must submit/present it, rather than reusing an unconsumed semaphore.
+    if (result == VK_SUBOPTIMAL_KHR) {
+        return {};
+    }
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         return makeError(Error::OutOfDate);
     }
     return resultFromVk(result);

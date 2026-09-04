@@ -15,6 +15,8 @@ namespace {
 
 class SceneMaterialVisualizationPass final : public ComputePass {
 public:
+    bool supportsFrameOverlap() const override { return true; }
+
     ~SceneMaterialVisualizationPass() override = default;
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override

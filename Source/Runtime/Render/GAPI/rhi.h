@@ -1630,6 +1630,8 @@ private:
     friend struct detail::DeviceImpl;
 };
 
+class RenderFrameContext;
+
 class Streamer {
 public:
     Streamer() = default;
@@ -1646,6 +1648,7 @@ public:
     BufferOffset streamBufferData(const StreamBufferDataDesc& desc);
     BufferOffset streamTextureData(const StreamTextureDataDesc& desc);
     uint64_t streamConstantData(const void* data, uint64_t byteSize);
+    Result beginFrame(RenderFrameContext& frame);
     void copyStreamedData(CommandBuffer& commandBuffer);
     void endFrame();
 
@@ -1668,7 +1671,8 @@ public:
     CommandBuffer(const CommandBuffer&) = delete;
     CommandBuffer& operator=(const CommandBuffer&) = delete;
 
-    Result begin();
+    Result begin(RenderFrameContext* frameContext = nullptr);
+    RenderFrameContext* frameContext() const { return frameContext_; }
     Result end();
     void beginDebugLabel(const DebugLabelDesc& desc);
     void endDebugLabel();
@@ -1729,7 +1733,10 @@ private:
     explicit CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl);
 
     std::unique_ptr<detail::CommandBufferImpl> impl_;
+    RenderFrameContext* frameContext_ = nullptr;
+    std::shared_ptr<const void> frameRecording_;
 
+    friend class QueueSubmissionTracker;
     friend class CommandPool;
     friend class Queue;
     friend struct detail::CommandPoolImpl;

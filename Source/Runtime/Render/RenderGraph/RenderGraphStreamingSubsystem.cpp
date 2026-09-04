@@ -22,14 +22,16 @@ RenderGraphStreamingSubsystem::~RenderGraphStreamingSubsystem()
     endFrame();
 }
 
-Result RenderGraphStreamingSubsystem::initialize(Device& device, std::string& log)
+Result RenderGraphStreamingSubsystem::initialize(Device& device, std::string& log, uint32_t frameSlotCount)
 {
     log.clear();
     if (streamer_ != nullptr) {
-        return {};
+        return streamer_->desc().queuedFrameCount == frameSlotCount ? Result{} : makeError(Error::InvalidArgument);
     }
 
-    Result result = device.createStreamer(defaultRenderGraphStreamerDesc(), streamer_);
+    StreamerDesc desc = defaultRenderGraphStreamerDesc();
+    desc.queuedFrameCount = frameSlotCount;
+    Result result = device.createStreamer(desc, streamer_);
     if (!result || streamer_ == nullptr) {
         log = "createStreamer(RenderGraphStreamingSubsystem) returned ";
         log += resultToString(result);
@@ -58,6 +60,18 @@ void RenderGraphStreamingSubsystem::beginFrame()
     stats_.bufferTransferBytes = 0;
     stats_.textureTransferBytes = 0;
     stats_.streamer = streamer_ != nullptr ? streamer_->stats() : StreamerStats{};
+}
+
+Result RenderGraphStreamingSubsystem::beginFrame(RenderFrameContext& frame)
+{
+    if (streamer_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    Result result = streamer_->beginFrame(frame);
+    if (result) {
+        beginFrame();
+    }
+    return result;
 }
 
 void RenderGraphStreamingSubsystem::flush(CommandBuffer& commandBuffer)

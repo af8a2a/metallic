@@ -301,6 +301,9 @@ public:
     virtual QueueType queueType() const;
     virtual std::span<const RenderSubsystemId> requiredSubsystems() const;
     virtual std::vector<RenderGraphRuntimeSetting> runtimeSettings() const;
+    // Opt in only when execute() preserves resources/descriptors used by earlier
+    // submissions. Legacy passes with singleton host uploads/readbacks wait.
+    virtual bool supportsFrameOverlap() const { return false; }
     virtual Result prepare(const RenderGraphCompileContext& context, std::string& log);
     virtual Result compile(const RenderGraphCompileContext& context, std::string& log);
     virtual Result execute(RenderGraphExecutionContext& context) = 0;

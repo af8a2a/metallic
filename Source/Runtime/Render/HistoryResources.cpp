@@ -1,4 +1,5 @@
 #include "Runtime/Render/HistoryResources.h"
+#include "Runtime/Render/RenderFrameContext.h"
 
 #include <array>
 #include <optional>
@@ -133,7 +134,7 @@ struct HistoryResourceManager::Impl {
     uint32_t previousSlot = 1;
     uint64_t frameIndex = 0;
     uint64_t invalidationRevision = 1;
-    std::unordered_map<std::string, Record> records;
+    std::unordered_map<std::string, std::shared_ptr<Record>> records;
 
     void advanceInvalidationRevision()
     {
@@ -185,13 +186,13 @@ struct HistoryResourceManager::Impl {
     Record* findRecord(std::string_view name)
     {
         const auto iter = records.find(std::string(name));
-        return iter == records.end() ? nullptr : &iter->second;
+        return iter == records.end() ? nullptr : iter->second.get();
     }
 
     const Record* findRecord(std::string_view name) const
     {
         const auto iter = records.find(std::string(name));
-        return iter == records.end() ? nullptr : &iter->second;
+        return iter == records.end() ? nullptr : iter->second.get();
     }
 
     static void invalidateRecord(Record& record)
@@ -329,10 +330,10 @@ void HistoryResourceManager::beginFrame(uint64_t frameIndex)
 
     for (auto& [name, record] : impl_->records) {
         (void)name;
-        if (record.kind == Impl::ResourceKind::Texture) {
-            record.textureSlots[impl_->currentSlot].valid = false;
-        } else if (record.kind == Impl::ResourceKind::Buffer) {
-            record.bufferSlots[impl_->currentSlot].valid = false;
+        if (record->kind == Impl::ResourceKind::Texture) {
+            record->textureSlots[impl_->currentSlot].valid = false;
+        } else if (record->kind == Impl::ResourceKind::Buffer) {
+            record->bufferSlots[impl_->currentSlot].valid = false;
         }
     }
 }
@@ -350,7 +351,7 @@ void HistoryResourceManager::invalidateAll()
 {
     for (auto& [name, record] : impl_->records) {
         (void)name;
-        Impl::invalidateRecord(record);
+        Impl::invalidateRecord(*record);
     }
     impl_->advanceInvalidationRevision();
 }
@@ -385,7 +386,7 @@ Result HistoryResourceManager::ensureTexture(
         return result;
     }
 
-    impl_->records[std::string(name)] = std::move(newRecord);
+    impl_->records[std::string(name)] = std::make_shared<Impl::Record>(std::move(newRecord));
     return {};
 }
 
@@ -417,7 +418,7 @@ Result HistoryResourceManager::ensureBuffer(
         return result;
     }
 
-    impl_->records[std::string(name)] = std::move(newRecord);
+    impl_->records[std::string(name)] = std::make_shared<Impl::Record>(std::move(newRecord));
     return {};
 }
 
@@ -504,7 +505,12 @@ Result HistoryResourceManager::transitionTexture(
     if (textureSlot.texture == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (textureSlot.state == after && !forceBarrier) {
+    if (commandBuffer.frameContext() != nullptr) {
+        commandBuffer.frameContext()->retain(impl_->records.at(std::string(name)));
+    }
+    // General history contains cross-frame read/write dependencies even without
+    // a layout change. Do not rely on a host wait to order these GPU accesses.
+    if (textureSlot.state == after && after != ResourceState::General && !forceBarrier) {
         return {};
     }
 
@@ -541,7 +547,10 @@ Result HistoryResourceManager::transitionBuffer(
     if (bufferSlot.buffer == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (bufferSlot.state == after && !forceBarrier) {
+    if (commandBuffer.frameContext() != nullptr) {
+        commandBuffer.frameContext()->retain(impl_->records.at(std::string(name)));
+    }
+    if (bufferSlot.state == after && after != ResourceState::General && !forceBarrier) {
         return {};
     }
 

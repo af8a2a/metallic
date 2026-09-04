@@ -9,6 +9,8 @@ namespace {
 
 class ImageSamplePass final : public UnsafePass {
 public:
+    bool supportsFrameOverlap() const override { return true; }
+
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;

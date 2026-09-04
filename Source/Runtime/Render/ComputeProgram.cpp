@@ -1,4 +1,5 @@
 #include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/RenderFrameContext.h"
 
 #include <spdlog/spdlog.h>
 
@@ -79,16 +80,26 @@ ShaderBindingType shaderBindingType(ComputeResourceBindingKind kind)
 
 } // namespace
 
-struct ComputeProgram::Impl {
+struct ComputeDescriptorTables {
     struct BindingState {
         ComputeProgramBindingDesc desc;
         uint32_t heapIndexOffset = 0;
         std::vector<BindlessHandle> handles;
     };
 
+    std::unique_ptr<BindlessHeap> heap;
+    std::vector<BindingState> bindings;
+    std::vector<uint32_t> samplerBaseShaderIndices;
+    std::vector<uint32_t> imageBaseShaderIndices;
+    std::vector<uint32_t> bufferBaseShaderIndices;
+    GpuCompletionPoint completion;
+    std::vector<bool> usedTables;
+};
+
+struct ComputeProgram::Impl : ComputeDescriptorTables {
+    Device* device = nullptr;
     std::unique_ptr<ShaderModule> shader;
     std::unique_ptr<ComputePipeline> pipeline;
-    std::unique_ptr<BindlessHeap> heap;
     uint32_t pushConstantSize = 0;
     uint32_t descriptorSetCount = 0;
     uint32_t bindlessPushDataSize = 0;
@@ -96,10 +107,74 @@ struct ComputeProgram::Impl {
     uint32_t imageBasePushDataOffset = UINT32_MAX;
     uint32_t bufferBasePushDataOffset = UINT32_MAX;
     std::string debugName = "ComputeProgram";
-    std::vector<BindingState> bindings;
-    std::vector<uint32_t> samplerBaseShaderIndices;
-    std::vector<uint32_t> imageBaseShaderIndices;
-    std::vector<uint32_t> bufferBaseShaderIndices;
+    std::vector<std::shared_ptr<ComputeDescriptorTables>> frameTables;
+
+    Result acquireTables(RenderFrameContext& frame, uint32_t tableIndex,
+        std::shared_ptr<ComputeDescriptorTables>& outTables)
+    {
+        for (const auto& tables : frameTables) {
+            if (tables->completion.isComplete()) {
+                tables->completion = frame.completion();
+                std::fill(tables->usedTables.begin(), tables->usedTables.end(), false);
+            }
+            if (tables->completion.sameSubmission(frame.completion()) && !tables->usedTables[tableIndex]) {
+                tables->usedTables[tableIndex] = true;
+                outTables = tables;
+                return {};
+            }
+        }
+
+        auto tables = std::make_shared<ComputeDescriptorTables>();
+        Result result = device->createBindlessHeap(heap->desc(), tables->heap);
+        if (!result) {
+            return result;
+        }
+        tables->bindings = bindings;
+        tables->samplerBaseShaderIndices = samplerBaseShaderIndices;
+        tables->imageBaseShaderIndices = imageBaseShaderIndices;
+        tables->bufferBaseShaderIndices = bufferBaseShaderIndices;
+        // Allocate in exactly the original order so shader mappings remain valid
+        // for both constant-base and pushed-base pipelines.
+        for (auto& binding : tables->bindings) {
+            binding.handles.clear();
+        }
+        for (uint32_t set = 0; set < descriptorSetCount; ++set) {
+            for (size_t bindingIndex = 0; bindingIndex < bindings.size(); ++bindingIndex) {
+                auto& binding = tables->bindings[bindingIndex];
+                const uint32_t count = std::max(binding.desc.descriptorCount, 1u);
+                for (uint32_t index = 0; index < count; ++index) {
+                    BindlessHandle handle;
+                    switch (binding.desc.kind) {
+                    case ComputeResourceBindingKind::Sampler:
+                        result = tables->heap->allocateSampler(handle); break;
+                    case ComputeResourceBindingKind::AccelerationStructure:
+                        result = tables->heap->allocateAccelerationStructure(handle); break;
+                    case ComputeResourceBindingKind::PartitionedAccelerationStructure:
+                        result = tables->heap->allocatePartitionedAccelerationStructure(handle); break;
+                    case ComputeResourceBindingKind::StorageImage:
+                        result = tables->heap->allocateStorageImage(handle); break;
+                    case ComputeResourceBindingKind::StorageBuffer:
+                        result = tables->heap->allocateBuffer(handle); break;
+                    case ComputeResourceBindingKind::SampledImage:
+                        result = tables->heap->allocateSampledImage(handle); break;
+                    }
+                    if (!result) {
+                        return result;
+                    }
+                    if (handle.shaderIndex != bindings[bindingIndex].handles[set * count + index].shaderIndex) {
+                        return makeError(Error::Failure);
+                    }
+                    binding.handles.push_back(handle);
+                }
+            }
+        }
+        tables->usedTables.assign(descriptorSetCount, false);
+        tables->usedTables[tableIndex] = true;
+        tables->completion = frame.completion();
+        frameTables.push_back(tables);
+        outTables = std::move(tables);
+        return {};
+    }
 
     ~Impl()
     {
@@ -111,6 +186,7 @@ struct ComputeProgram::Impl {
         pipeline.reset();
         shader.reset();
         heap.reset();
+        frameTables.clear();
         pushConstantSize = 0;
         descriptorSetCount = 0;
         bindlessPushDataSize = 0;
@@ -126,7 +202,7 @@ struct ComputeProgram::Impl {
 };
 
 ComputeProgram::ComputeProgram()
-    : impl_(std::make_unique<Impl>())
+    : impl_(std::make_shared<Impl>())
 {
 }
 
@@ -140,7 +216,7 @@ Result ComputeProgram::initialize(
     std::string& log)
 {
     if (impl_ == nullptr) {
-        impl_ = std::make_unique<Impl>();
+        impl_ = std::make_shared<Impl>();
     }
     log.clear();
 
@@ -164,7 +240,8 @@ Result ComputeProgram::initialize(
         return makeError(Error::Unsupported);
     }
 
-    impl_->destroy();
+    impl_ = std::make_shared<Impl>();
+    impl_->device = &device;
     impl_->pushConstantSize = desc.pushConstantSize;
     impl_->descriptorSetCount = desc.descriptorSetCount;
     impl_->debugName = desc.debugName != nullptr ? desc.debugName : "ComputeProgram";
@@ -393,9 +470,7 @@ Result ComputeProgram::initialize(
 
 void ComputeProgram::clear()
 {
-    if (impl_ != nullptr) {
-        impl_->destroy();
-    }
+    impl_ = std::make_shared<Impl>();
 }
 
 bool ComputeProgram::valid() const
@@ -422,13 +497,28 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
         return makeError(Error::InvalidArgument);
     }
 
+    std::shared_ptr<ComputeDescriptorTables> retainedTables;
+    ComputeDescriptorTables* tables = impl_.get();
+    if (RenderFrameContext* frame = desc.commandBuffer->frameContext()) {
+        if (!frame->recording()) {
+            return makeError(Error::InvalidArgument);
+        }
+        Result result = impl_->acquireTables(*frame, desc.descriptorSetIndex, retainedTables);
+        if (!result) {
+            return result;
+        }
+        tables = retainedTables.get();
+        frame->retain(retainedTables);
+        frame->retain(impl_);
+    }
+
     std::vector<uint8_t> pushData(impl_->bindlessPushDataSize, 0);
     if (impl_->pushConstantSize != 0) {
         std::memcpy(pushData.data(), desc.pushData, impl_->pushConstantSize);
     }
     if (impl_->imageBasePushDataOffset != UINT32_MAX) {
         const uint32_t imageBase =
-            impl_->imageBaseShaderIndices[desc.descriptorSetIndex];
+            tables->imageBaseShaderIndices[desc.descriptorSetIndex];
         std::memcpy(
             pushData.data() + impl_->imageBasePushDataOffset,
             &imageBase,
@@ -436,7 +526,7 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
     }
     if (impl_->samplerBasePushDataOffset != UINT32_MAX) {
         const uint32_t samplerBase =
-            impl_->samplerBaseShaderIndices[desc.descriptorSetIndex];
+            tables->samplerBaseShaderIndices[desc.descriptorSetIndex];
         std::memcpy(
             pushData.data() + impl_->samplerBasePushDataOffset,
             &samplerBase,
@@ -444,14 +534,14 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
     }
     if (impl_->bufferBasePushDataOffset != UINT32_MAX) {
         const uint32_t bufferBase =
-            impl_->bufferBaseShaderIndices[desc.descriptorSetIndex];
+            tables->bufferBaseShaderIndices[desc.descriptorSetIndex];
         std::memcpy(
             pushData.data() + impl_->bufferBasePushDataOffset,
             &bufferBase,
             sizeof(bufferBase));
     }
 
-    for (const Impl::BindingState& expectedBinding : impl_->bindings) {
+    for (const Impl::BindingState& expectedBinding : tables->bindings) {
         const ComputeDispatchBinding* binding =
             findDispatchBinding(desc, expectedBinding.desc.binding);
         if (binding == nullptr) {
@@ -487,7 +577,7 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
                     expectedBinding.desc.binding);
                 return makeError(Error::InvalidArgument);
             }
-            result = impl_->heap->writeSampler(
+            result = tables->heap->writeSampler(
                 expectedBinding.handles[firstHandle],
                 *binding->sampler);
             break;
@@ -501,7 +591,7 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
                     expectedBinding.desc.binding);
                 return makeError(Error::InvalidArgument);
             }
-            result = impl_->heap->writeAccelerationStructure(
+            result = tables->heap->writeAccelerationStructure(
                 expectedBinding.handles[firstHandle],
                 *binding->accelerationStructure);
             break;
@@ -515,7 +605,7 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
                     expectedBinding.desc.binding);
                 return makeError(Error::InvalidArgument);
             }
-            result = impl_->heap->writePartitionedAccelerationStructure(
+            result = tables->heap->writePartitionedAccelerationStructure(
                 expectedBinding.handles[firstHandle],
                 *binding->partitionedAccelerationStructure);
             break;
@@ -542,7 +632,7 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
                         index);
                     return makeError(Error::InvalidArgument);
                 }
-                result = impl_->heap->writeStorageImage(
+                result = tables->heap->writeStorageImage(
                     expectedBinding.handles[firstHandle + index],
                     *textureView);
                 if (!result) {
@@ -571,7 +661,7 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
                         index);
                     return makeError(Error::InvalidArgument);
                 }
-                result = impl_->heap->writeSampledImage(
+                result = tables->heap->writeSampledImage(
                     expectedBinding.handles[firstHandle + index],
                     *textureView,
                     ResourceState::ShaderRead);
@@ -593,7 +683,7 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
                     binding->size);
                 return makeError(Error::InvalidArgument);
             }
-            result = impl_->heap->writeStorageBuffer(
+            result = tables->heap->writeStorageBuffer(
                 expectedBinding.handles[firstHandle],
                 *binding->buffer);
             break;
@@ -609,7 +699,7 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
         }
     }
 
-    desc.commandBuffer->bindBindlessHeap(*impl_->heap);
+    desc.commandBuffer->bindBindlessHeap(*tables->heap);
     desc.commandBuffer->bindComputePipeline(*impl_->pipeline);
     desc.commandBuffer->pushBindlessData(
         pushData.data(),

@@ -31,10 +31,11 @@ public:
     RenderGraphStreamingSubsystem(const RenderGraphStreamingSubsystem&) = delete;
     RenderGraphStreamingSubsystem& operator=(const RenderGraphStreamingSubsystem&) = delete;
 
-    Result initialize(Device& device, std::string& log);
+    Result initialize(Device& device, std::string& log, uint32_t frameSlotCount = 3);
     void reset();
 
     void beginFrame();
+    Result beginFrame(RenderFrameContext& frame);
     void flush(CommandBuffer& commandBuffer);
     void endFrame();
 

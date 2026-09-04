@@ -2,6 +2,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
 #include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
 #include "openpbr_data_constants.h"
@@ -556,6 +557,8 @@ struct ScenePathTraceCameraSnapshot {
 
 class ScenePathTracePass final : public ComputePass {
 public:
+    bool supportsFrameOverlap() const override { return cacheMode_ == kScenePathTraceCacheModeOff; }
+
     ~ScenePathTracePass() override = default;
 
     std::span<const RenderSubsystemId> requiredSubsystems() const override
@@ -1837,6 +1840,22 @@ private:
         if (cacheParamsBuffer_ == nullptr) {
             return makeError(Error::Failure);
         }
+        if (RenderFrameContext* frame = commandBuffer.frameContext()) {
+            auto allocation = std::find_if(cacheParamsAllocations_.begin(), cacheParamsAllocations_.end(),
+                [](const auto& candidate) { return candidate.completion.isComplete(); });
+            if (allocation == cacheParamsAllocations_.end()) {
+                std::unique_ptr<Buffer> buffer;
+                Result result = device_->createBuffer(cacheParamsBuffer_->desc(), buffer);
+                if (!result) {
+                    return result;
+                }
+                cacheParamsAllocations_.push_back({std::move(buffer), frame->completion()});
+                allocation = std::prev(cacheParamsAllocations_.end());
+            }
+            allocation->completion = frame->completion();
+            cacheParamsBuffer_ = allocation->buffer;
+            frame->retain(cacheParamsBuffer_);
+        }
         void* mapped = cacheParamsBuffer_->map();
         if (mapped == nullptr) {
             return makeError(Error::Failure);
@@ -1844,7 +1863,6 @@ private:
         std::memcpy(mapped, &params, sizeof(params));
         cacheParamsBuffer_->flush(0, sizeof(params));
         cacheParamsBuffer_->unmap();
-        (void)commandBuffer;
         return {};
     }
 
@@ -2675,7 +2693,12 @@ private:
     ComputeProgram tonemapProgram_;
     std::string compiledShaderKey_;
     uint32_t cacheMode_ = kScenePathTraceCacheModeOff;
-    std::unique_ptr<Buffer> cacheParamsBuffer_;
+    struct CacheParamsAllocation {
+        std::shared_ptr<Buffer> buffer;
+        GpuCompletionPoint completion;
+    };
+    std::vector<CacheParamsAllocation> cacheParamsAllocations_;
+    std::shared_ptr<Buffer> cacheParamsBuffer_;
     std::unique_ptr<Buffer> sharcHashEntriesBuffer_;
     std::unique_ptr<Buffer> sharcAccumulationBuffer_;
     std::unique_ptr<Buffer> sharcResolvedBuffer_;

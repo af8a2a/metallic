@@ -272,6 +272,7 @@ struct RenderGraphExecutor::Impl {
         uint32_t firstQuery = 0;
         uint32_t queryCount = 0;
         bool pending = false;
+        GpuCompletionPoint completion;
         RenderGraphExecutionStats stats;
     };
 
@@ -305,6 +306,8 @@ struct RenderGraphExecutor::Impl {
     bool activeGpuTimingValid = false;
     RenderGraphExecutionStats lastExecutionStats;
     uint64_t executionFrameIndex = 0;
+    std::vector<GpuCompletionPoint> externalCompletions;
+    std::array<uint64_t, 5> recordedSceneStamp{};
     bool hasSubmittedWork = false;
     bool isCompiled = false;
 
@@ -1073,6 +1076,13 @@ struct RenderGraphExecutor::Impl {
 
     Result waitForSubmittedWork(uint64_t timeoutNanoseconds)
     {
+        for (const GpuCompletionPoint& completion : externalCompletions) {
+            Result result = completion.wait(timeoutNanoseconds);
+            if (!result) {
+                return result;
+            }
+        }
+        externalCompletions.clear();
         if (!hasSubmittedWork) {
             return {};
         }
@@ -1143,6 +1153,14 @@ struct RenderGraphExecutor::Impl {
 
         for (GpuTimingSlot& slot : gpuTimingSlots) {
             if (!slot.pending || slot.queryCount == 0) {
+                continue;
+            }
+            if (slot.completion.isCancelled()) {
+                slot.pending = false;
+                slot.stats = {};
+                continue;
+            }
+            if (slot.completion.valid() && !slot.completion.isComplete()) {
                 continue;
             }
 
@@ -1219,6 +1237,8 @@ struct RenderGraphExecutor::Impl {
             }
             slot.stats = {};
             activeGpuTimingSlot = &slot;
+            slot.completion = commandBuffer.frameContext() != nullptr
+                ? commandBuffer.frameContext()->completion() : GpuCompletionPoint{};
             activeGpuTimingValid = true;
             nextGpuTimingSlot = (slotIndex + 1) % kGpuTimingSlotCount;
             return;
@@ -1311,11 +1331,10 @@ struct RenderGraphExecutor::Impl {
         ResourceState state,
         RenderGraphResourceAccess access)
     {
-        const bool needsSameStateStorageBarrier =
+        const bool needsSameStateWriteBarrier =
             resource.state == state &&
-            state == ResourceState::General &&
             (accessWrites(resource.lastAccess) || accessWrites(access));
-        if (resource.state == state && !needsSameStateStorageBarrier) {
+        if (resource.state == state && !needsSameStateWriteBarrier) {
             resource.lastAccess = access;
             return {};
         }
@@ -1580,7 +1599,8 @@ Result RenderGraphExecutor::compile(
         }
         impl_->subsystemHost->shutdown();
     }
-    Result subsystemResult = impl_->subsystemHost->initialize(device, 3, log);
+    Result subsystemResult = impl_->subsystemHost->initialize(device,
+        impl_->subsystemHost->frameSlotCount() != 0 ? impl_->subsystemHost->frameSlotCount() : 3, log);
     if (!subsystemResult) {
         impl_->isCompiled = false;
         return subsystemResult;
@@ -1912,6 +1932,35 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
         return makeError(Error::InvalidArgument);
     }
 
+    // External command buffers now outlive execute(). Guard destructive graph
+    // changes and legacy passes using the same completion points as the caller.
+    const scene::Scene* currentScene = impl_->runtimeScene;
+    const std::array<uint64_t, 5> sceneStamp = currentScene != nullptr
+        ? std::array<uint64_t, 5>{currentScene->resourceIdentity(), currentScene->contentRevision(),
+            currentScene->sceneGraph().structuralRevision(), currentScene->transformRevision(),
+            currentScene->visibilityRevision()}
+        : std::array<uint64_t, 5>{};
+    const bool requiresCompletedFrame = std::any_of(impl_->executionList.begin(), impl_->executionList.end(),
+        [](const Impl::CompiledNode& node) { return !node.pass->supportsFrameOverlap(); });
+    if (requiresCompletedFrame || sceneStamp != impl_->recordedSceneStamp || impl_->hasSubmittedWork) {
+        const profiling::NsightProfileRange waitMarker(profiling::NsightDomain::Render,
+            "Wait Graph Resources", profiling::NsightCategory::RenderGraph);
+        Result result = impl_->waitForSubmittedWork(UINT64_MAX);
+        if (!result) {
+            return result;
+        }
+    }
+    impl_->recordedSceneStamp = sceneStamp;
+    std::erase_if(impl_->externalCompletions, [](const auto& point) { return point.isComplete(); });
+    if (RenderFrameContext* frame = commandBuffer.frameContext()) {
+        if (!frame->recording()) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (std::none_of(impl_->externalCompletions.begin(), impl_->externalCompletions.end(),
+                [&](const auto& point) { return point.sameSubmission(frame->completion()); })) {
+            impl_->externalCompletions.push_back(frame->completion());
+        }
+    }
     impl_->historyResources = historyResources;
     std::string subsystemLog;
     const uint64_t frameIndex = impl_->executionFrameIndex++;
@@ -1920,11 +1969,14 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
         "Render Graph Execute",
         profiling::NsightCategory::RenderGraph,
         frameIndex);
+    RenderFrameContext* frameResources = commandBuffer.frameContext();
     Result result = impl_->subsystemHost->beginFrame(
-        frameIndex,
-        static_cast<uint32_t>(frameIndex % impl_->subsystemHost->frameSlotCount()),
+        frameResources != nullptr ? frameResources->frameIndex() : frameIndex,
+        frameResources != nullptr ? frameResources->slotIndex()
+            : static_cast<uint32_t>(frameIndex % impl_->subsystemHost->frameSlotCount()),
         historyResources,
-        subsystemLog);
+        subsystemLog,
+        frameResources);
     if (!result) {
         spdlog::error("[RenderGraph] {}", subsystemLog);
         impl_->historyResources = nullptr;
@@ -2019,7 +2071,8 @@ Result RenderGraphExecutor::beginSceneResourcePreparation(
     if (!registerBuiltInRenderSubsystems(*impl_->subsystemHost, log)) {
         return makeError(Error::InvalidArgument);
     }
-    Result result = impl_->subsystemHost->initialize(device, 3, log);
+    Result result = impl_->subsystemHost->initialize(device,
+        impl_->subsystemHost->frameSlotCount() != 0 ? impl_->subsystemHost->frameSlotCount() : 3, log);
     if (!result) {
         return result;
     }
@@ -2418,11 +2471,24 @@ uint32_t RenderGraphExecutor::height() const
 struct RenderGraphPreviewRenderer::Impl {
     Impl() : executor(subsystemHost, world) {}
 
+    ~Impl()
+    {
+        if (device != nullptr) {
+            (void)device->waitIdle();
+        }
+        if (commandPool != nullptr) {
+            (void)commandPool->reset();
+        }
+        (void)frameContext.reset();
+        (void)submissions.reset();
+    }
+
     std::unique_ptr<Device> device;
     Queue* graphicsQueue = nullptr;
     std::unique_ptr<CommandPool> commandPool;
     std::unique_ptr<CommandBuffer> commandBuffer;
-    std::unique_ptr<Fence> fence;
+    QueueSubmissionTracker submissions;
+    RenderFrameContext frameContext;
     std::unique_ptr<Buffer> readbackBuffer;
     RenderSubsystemHost subsystemHost;
     RenderWorld world;
@@ -2539,7 +2605,7 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
     if (!result) {
         return result;
     }
-    return impl_->device->createFence(true, impl_->fence);
+    return impl_->submissions.initialize(*impl_->device, *impl_->graphicsQueue);
 }
 
 Result RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth, uint32_t newHeight)
@@ -2557,7 +2623,6 @@ Result RenderGraphPreviewRenderer::render(
         impl_->graphicsQueue == nullptr ||
         impl_->commandPool == nullptr ||
         impl_->commandBuffer == nullptr ||
-        impl_->fence == nullptr ||
         newWidth == 0 ||
         newHeight == 0) {
         return makeError(Error::InvalidArgument);
@@ -2571,7 +2636,7 @@ Result RenderGraphPreviewRenderer::render(
         return makeError(Error::InvalidArgument);
     }
 
-    Result result = impl_->fence->wait();
+    Result result = impl_->frameContext.wait();
     if (!result) {
         return result;
     }
@@ -2633,15 +2698,28 @@ Result RenderGraphPreviewRenderer::render(
         return result;
     }
 
-    result = impl_->fence->reset();
+    result = impl_->frameContext.begin(impl_->historyFrameIndex);
     if (!result) {
         return result;
     }
+    struct RecordingScope {
+        Impl& impl;
+        RenderGraph& graph;
+        ~RecordingScope()
+        {
+            if (impl.frameContext.recording()) {
+                (void)impl.commandPool->reset();
+                impl.frameContext.cancel();
+                impl.historyResources.invalidateAll();
+                graph.markDirty();
+            }
+        }
+    } recordingScope{*impl_, graph};
     result = impl_->commandPool->reset();
     if (!result) {
         return result;
     }
-    result = impl_->commandBuffer->begin();
+    result = impl_->commandBuffer->begin(&impl_->frameContext);
     if (!result) {
         return result;
     }
@@ -2679,15 +2757,14 @@ Result RenderGraphPreviewRenderer::render(
     }
 
     CommandBuffer* commandBuffers[] = {impl_->commandBuffer.get()};
-    result = impl_->graphicsQueue->submit(QueueSubmitDesc{
+    result = impl_->submissions.submit(QueueSubmitDesc{
         .commandBuffers = commandBuffers,
         .commandBufferCount = 1,
-        .signalFence = impl_->fence.get(),
-    });
+    }, impl_->frameContext);
     if (!result) {
         return result;
     }
-    result = impl_->fence->wait();
+    result = impl_->frameContext.wait();
     if (!result) {
         return result;
     }

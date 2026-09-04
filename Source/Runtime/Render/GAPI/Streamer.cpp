@@ -1,4 +1,5 @@
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 
 #include <algorithm>
@@ -116,8 +117,14 @@ struct StreamerImpl {
     };
 
     struct BufferGarbage {
-        std::unique_ptr<Buffer> buffer;
+        std::shared_ptr<Buffer> buffer;
         uint32_t frameCount = 0;
+    };
+
+    struct UploadSlot {
+        GpuCompletionPoint completion;
+        uint64_t dynamicOffset = 0;
+        uint64_t constantOffset = 0;
     };
 
     explicit StreamerImpl(Device& streamerDevice)
@@ -132,6 +139,14 @@ struct StreamerImpl {
         }
 
         desc = streamerDesc;
+        const uint64_t constantAlignment = std::max<uint64_t>(1, device->capabilities().constantBufferOffsetAlignment);
+        if (desc.constantBufferSize > UINT64_MAX - (constantAlignment - 1)) {
+            return makeError(Error::InvalidArgument);
+        }
+        constantBufferStride = alignUp(desc.constantBufferSize, constantAlignment);
+        if (constantBufferStride > UINT64_MAX / desc.queuedFrameCount) {
+            return makeError(Error::InvalidArgument);
+        }
         if (desc.dynamicBufferSizePerFrame == 0) {
             desc.dynamicBufferSizePerFrame = kDynamicBufferChunkSize;
         }
@@ -139,15 +154,45 @@ struct StreamerImpl {
 
         if (desc.constantBufferSize > 0) {
             BufferDesc bufferDesc{
-                .size = desc.constantBufferSize,
+                .size = constantBufferStride * desc.queuedFrameCount,
                 .usage = BufferUsageBits::Constant,
                 .memoryLocation = desc.constantBufferMemoryLocation,
             };
-            Result result = device->createBuffer(bufferDesc, constantBuffer);
-            if (!result || constantBuffer == nullptr) {
+            std::unique_ptr<Buffer> buffer;
+            Result result = device->createBuffer(bufferDesc, buffer);
+            if (!result || buffer == nullptr) {
                 return result ? makeError(Error::Failure) : result;
             }
+            constantBuffer = std::move(buffer);
         }
+        return {};
+    }
+
+    Result beginFrame(RenderFrameContext& frame)
+    {
+        std::lock_guard lock(mutex);
+        if (!frame.recording() || frame.slotIndex() >= desc.queuedFrameCount ||
+            !bufferRequests.empty() || !textureRequests.empty() ||
+            (activeFrame != nullptr && activeFrame != &frame)) {
+            return makeError(Error::InvalidArgument);
+        }
+        uploadSlots.resize(desc.queuedFrameCount);
+        UploadSlot& slot = uploadSlots[frame.slotIndex()];
+        if (!slot.completion.sameSubmission(frame.completion())) {
+            if (!slot.completion.isComplete()) {
+                return makeError(Error::InvalidArgument);
+            }
+            slot = UploadSlot{.completion = frame.completion()};
+            dynamicBufferOffset = 0;
+            constantBufferOffset = 0;
+        } else if (activeFrame == nullptr) {
+            dynamicBufferOffset = slot.dynamicOffset;
+            constantBufferOffset = slot.constantOffset;
+        }
+        frameIndex = frame.slotIndex();
+        activeFrame = &frame;
+        completionTracked = true;
+        frame.retain(constantBuffer);
         return {};
     }
 
@@ -175,10 +220,14 @@ struct StreamerImpl {
         }
 
         if (dynamicBuffer != nullptr) {
-            garbage.push_back(BufferGarbage{
-                .buffer = std::move(dynamicBuffer),
-                .frameCount = 0,
-            });
+            if (activeFrame != nullptr) {
+                activeFrame->retain(dynamicBuffer);
+            } else {
+                garbage.push_back(BufferGarbage{
+                    .buffer = dynamicBuffer,
+                    .frameCount = 0,
+                });
+            }
         }
         dynamicBuffer = std::move(newBuffer);
         dynamicBufferSizePerFrame = newSizePerFrame;
@@ -188,6 +237,9 @@ struct StreamerImpl {
     BufferOffset streamBufferData(const StreamBufferDataDesc& streamDesc)
     {
         std::lock_guard lock(mutex);
+        if (completionTracked && (activeFrame == nullptr || !activeFrame->recording())) {
+            return {};
+        }
         if (streamDesc.dataChunkCount == 0 ||
             streamDesc.dataChunks == nullptr ||
             desc.queuedFrameCount == 0) {
@@ -241,6 +293,10 @@ struct StreamerImpl {
         dynamicBuffer->flush(bufferOffset, dataSize);
         dynamicBuffer->unmap();
 
+        if (activeFrame != nullptr) {
+            activeFrame->retain(dynamicBuffer);
+        }
+
         if (streamDesc.dstBuffer != nullptr) {
             bufferRequests.push_back(BufferCopyRequest{
                 .destination = streamDesc.dstBuffer,
@@ -263,6 +319,9 @@ struct StreamerImpl {
     BufferOffset streamTextureData(const StreamTextureDataDesc& streamDesc)
     {
         std::lock_guard lock(mutex);
+        if (completionTracked && (activeFrame == nullptr || !activeFrame->recording())) {
+            return {};
+        }
         if (streamDesc.data == nullptr ||
             streamDesc.dstTexture == nullptr ||
             desc.queuedFrameCount == 0) {
@@ -372,6 +431,9 @@ struct StreamerImpl {
         dynamicBuffer->flush(bufferOffset, dataSize);
         dynamicBuffer->unmap();
 
+        if (activeFrame != nullptr) {
+            activeFrame->retain(dynamicBuffer);
+        }
         textureRequests.push_back(TextureCopyRequest{
             .copy = BufferTextureCopyDesc{
                 .buffer = dynamicBuffer.get(),
@@ -403,6 +465,9 @@ struct StreamerImpl {
     uint64_t streamConstantData(const void* data, uint64_t byteSize)
     {
         std::lock_guard lock(mutex);
+        if (completionTracked && (activeFrame == nullptr || !activeFrame->recording())) {
+            return kInvalidStreamOffset;
+        }
         if (constantBuffer == nullptr ||
             (byteSize > 0 && data == nullptr) ||
             byteSize > desc.constantBufferSize ||
@@ -421,28 +486,33 @@ struct StreamerImpl {
             : 1;
         uint64_t offset = alignUp(constantBufferOffset, alignment);
         if (offset + byteSize > desc.constantBufferSize) {
+            if (completionTracked) {
+                return kInvalidStreamOffset;
+            }
             offset = 0;
         }
         if (offset + byteSize > desc.constantBufferSize) {
             return kInvalidStreamOffset;
         }
 
+        const uint64_t bufferOffset = offset +
+            (completionTracked ? static_cast<uint64_t>(frameIndex) * constantBufferStride : 0);
         if (byteSize > 0) {
             void* mapped = constantBuffer->map();
             if (mapped == nullptr) {
                 return kInvalidStreamOffset;
             }
             std::memcpy(
-                static_cast<uint8_t*>(mapped) + offset,
+                static_cast<uint8_t*>(mapped) + bufferOffset,
                 data,
                 static_cast<size_t>(byteSize));
-            constantBuffer->flush(offset, byteSize);
+            constantBuffer->flush(bufferOffset, byteSize);
             constantBuffer->unmap();
         }
         constantBufferOffset = offset + byteSize;
         currentFrameConstantBytes += byteSize;
         ++currentFrameConstantRequestCount;
-        return offset;
+        return bufferOffset;
     }
 
     void copyStreamedData(CommandBuffer& commandBuffer)
@@ -474,6 +544,11 @@ struct StreamerImpl {
     void endFrame()
     {
         std::lock_guard lock(mutex);
+        if (activeFrame != nullptr) {
+            UploadSlot& slot = uploadSlots[frameIndex];
+            slot.dynamicOffset = dynamicBufferOffset;
+            slot.constantOffset = constantBufferOffset;
+        }
         bufferRequests.clear();
         textureRequests.clear();
 
@@ -488,7 +563,7 @@ struct StreamerImpl {
             ++index;
         }
 
-        if (desc.queuedFrameCount != 0) {
+        if (!completionTracked && desc.queuedFrameCount != 0) {
             frameIndex = (frameIndex + 1) % desc.queuedFrameCount;
         }
         ++frameSerial;
@@ -505,7 +580,10 @@ struct StreamerImpl {
         totalConstantBytes += currentFrameConstantBytes;
         currentFrameConstantBytes = 0;
         currentFrameConstantRequestCount = 0;
-        dynamicBufferOffset = 0;
+        if (!completionTracked) {
+            dynamicBufferOffset = 0;
+        }
+        activeFrame = nullptr;
     }
 
     StreamerStats stats() const
@@ -548,14 +626,18 @@ struct StreamerImpl {
 
     Device* device = nullptr;
     StreamerDesc desc;
-    std::unique_ptr<Buffer> dynamicBuffer;
-    std::unique_ptr<Buffer> constantBuffer;
+    std::shared_ptr<Buffer> dynamicBuffer;
+    std::shared_ptr<Buffer> constantBuffer;
+    std::vector<UploadSlot> uploadSlots;
+    RenderFrameContext* activeFrame = nullptr;
+    bool completionTracked = false;
     std::vector<BufferCopyRequest> bufferRequests;
     std::vector<TextureCopyRequest> textureRequests;
     std::vector<BufferGarbage> garbage;
     uint64_t dynamicBufferOffset = 0;
     uint64_t dynamicBufferSizePerFrame = 0;
     uint64_t constantBufferOffset = 0;
+    uint64_t constantBufferStride = 0;
     uint64_t currentFrameDynamicBytes = 0;
     uint64_t lastFrameDynamicBytes = 0;
     uint64_t peakFrameDynamicBytes = 0;
@@ -629,6 +711,11 @@ void Streamer::endFrame()
     if (impl_ != nullptr) {
         impl_->endFrame();
     }
+}
+
+Result Streamer::beginFrame(RenderFrameContext& frame)
+{
+    return impl_ != nullptr ? impl_->beginFrame(frame) : makeError(Error::InvalidArgument);
 }
 
 void CommandBuffer::copyStreamedData(Streamer& streamer)

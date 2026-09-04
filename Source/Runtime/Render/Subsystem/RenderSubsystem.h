@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 
 #include <any>
@@ -33,6 +34,7 @@ struct RenderSubsystemFrameContext {
     CommandBuffer* commandBuffer = nullptr;
     uint64_t frameIndex = 0;
     uint32_t frameSlot = 0;
+    RenderFrameContext* frameResources = nullptr;
 };
 
 class RenderSubsystemShaderReload {
@@ -138,7 +140,8 @@ public:
         uint64_t frameIndex,
         uint32_t frameSlot,
         HistoryResourceManager* historyResources,
-        std::string& log);
+        std::string& log,
+        RenderFrameContext* frameResources = nullptr);
     Result recordPreGraph(
         CommandBuffer& commandBuffer,
         Streamer* streamer,
@@ -192,6 +195,9 @@ private:
     std::vector<std::string> activeOrder_;
     std::vector<std::string> preGraphOrder_;
     std::vector<std::vector<std::shared_ptr<void>>> retiredByFrameSlot_;
+    DeferredReleaseQueue deferredReleases_;
+    std::vector<GpuCompletionPoint> pendingCompletions_;
+    RenderFrameContext* frameResources_ = nullptr;
     Device* device_ = nullptr;
     RenderWorld* world_ = nullptr;
     HistoryResourceManager* historyResources_ = nullptr;

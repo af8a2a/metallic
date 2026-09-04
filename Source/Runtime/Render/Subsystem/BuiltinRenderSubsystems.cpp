@@ -10,14 +10,17 @@ Result RenderUploadSubsystem::initialize(
     const RenderSubsystemInitContext& context,
     std::string& log)
 {
-    return streaming_.initialize(context.device, log);
+    return streaming_.initialize(context.device, log, context.host.frameSlotCount());
 }
 
 Result RenderUploadSubsystem::beginFrame(
-    const RenderSubsystemFrameContext&,
+    const RenderSubsystemFrameContext& context,
     RenderChangeBits&,
     std::string&)
 {
+    if (context.frameResources != nullptr) {
+        return streaming_.beginFrame(*context.frameResources);
+    }
     streaming_.beginFrame();
     return {};
 }

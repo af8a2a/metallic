@@ -7,6 +7,8 @@ namespace {
 
 class SceneRayQueryVisualizationPass final : public ComputePass {
 public:
+    bool supportsFrameOverlap() const override { return true; }
+
     ~SceneRayQueryVisualizationPass() override = default;
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
