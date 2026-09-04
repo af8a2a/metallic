@@ -2185,13 +2185,16 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     const auto abort = [&](Result failure) {
         impl_->recordingQueue = nullptr;
         impl_->historyResources = nullptr;
-        if (slot.frame.recording()) {
+        const bool discardAll = slot.frame.recording();
+        // Roll back in reverse recording order before destroying individual
+        // command buffers; container destruction order is not transaction order.
+        slot.frame.cancel(); // Preserves resources for any accepted prefix.
+        if (discardAll) {
             slot.commandBuffers.clear();
             for (auto& context : slot.queues) {
                 if (context.commandPool != nullptr) { (void)context.commandPool->reset(); }
             }
         }
-        slot.frame.cancel(); // Seals successful segments instead of releasing their resources.
         if (slot.frame.completion().isSubmitted()) {
             impl_->lastSubmittedCompletion = slot.frame.completion();
             impl_->hasSubmittedWork = true;

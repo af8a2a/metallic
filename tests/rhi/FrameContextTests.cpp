@@ -5,6 +5,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
 #include <algorithm>
 #include <array>
@@ -879,6 +880,228 @@ METALLIC_REGISTER_RHI_TEST(FrameCompletionLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(FrameUploadLifetimeTest);
 METALLIC_REGISTER_RHI_TEST(FrameDescriptorSnapshotTest);
 METALLIC_REGISTER_RHI_TEST(FrameHistoryDependencyTest);
+
+class FrameSubmissionTransactionsTest final : public RhiTest {
+public:
+    FrameSubmissionTransactionsTest()
+    {
+        type = RhiTestType::Command;
+        name = "frame_submission_transactions";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        auto* queue = context.device.getQueue(render::QueueType::Graphics);
+        if (queue == nullptr) { return RhiTestResult::skip("requires a graphics queue"); }
+        std::vector<int> events;
+        Commands commands;
+        FRAME_REQUIRE(commands.initialize(context.device, *queue));
+        render::RenderSubsystemHost host;
+        std::string log;
+        FRAME_REQUIRE(host.initialize(context.device, 2, log));
+        auto registerEvent = [&](render::CommandBuffer& buffer, int event) {
+            return host.deferSubmission(buffer,
+                [&, event]() { events.push_back(event); },
+                [&, event]() { events.push_back(-event); });
+        };
+        render::CommandBuffer* buffers[] = {commands.buffer.get()};
+        const render::QueueSubmitDesc submit{.commandBuffers = buffers, .commandBufferCount = 1};
+
+        // Direct external submit: validation failure leaves a recording retryable.
+        FRAME_REQUIRE(commands.buffer->begin());
+        FRAME_REQUIRE(registerEvent(*commands.buffer, 1));
+        FRAME_REQUIRE(commands.buffer->end());
+        if (queue->submit({.commandBufferCount = 1}) || !events.empty()) {
+            return RhiTestResult::fail("rejected submit resolved a transaction");
+        }
+        FRAME_REQUIRE(queue->submit(submit));
+        FRAME_REQUIRE(queue->waitIdle());
+        FRAME_REQUIRE(commands.pool->reset());
+        if (events != std::vector<int>{1}) { return RhiTestResult::fail("external submit did not commit exactly once"); }
+
+        // Pool reset and implicit command-buffer re-record discard pending work.
+        FRAME_REQUIRE(commands.buffer->begin());
+        FRAME_REQUIRE(registerEvent(*commands.buffer, 2));
+        FRAME_REQUIRE(registerEvent(*commands.buffer, 3));
+        FRAME_REQUIRE(commands.buffer->end());
+        FRAME_REQUIRE(commands.pool->reset());
+        if (queue->submit(submit) || events != std::vector<int>{1, -3, -2}) {
+            return RhiTestResult::fail("pool reset did not cancel in reverse order or allowed resubmission");
+        }
+        FRAME_REQUIRE(commands.buffer->begin());
+        FRAME_REQUIRE(registerEvent(*commands.buffer, 4));
+        FRAME_REQUIRE(commands.buffer->end());
+        FRAME_REQUIRE(commands.buffer->begin());
+        FRAME_REQUIRE(commands.buffer->end());
+        if (events.back() != -4) { return RhiTestResult::fail("re-record left an unresolved publication"); }
+
+        // endFrame does not resolve GPU publication; frame cancellation does.
+        FRAME_REQUIRE(commands.begin(0));
+        FRAME_REQUIRE(host.beginFrame(0, 0, nullptr, log, &commands.frame));
+        FRAME_REQUIRE(registerEvent(*commands.buffer, 5));
+        FRAME_REQUIRE(commands.buffer->end());
+        host.endFrame();
+        if (events.back() != -4) { return RhiTestResult::fail("endFrame committed unsubmitted work"); }
+        if (host.beginFrame(1, 1, nullptr, log)) {
+            return RhiTestResult::fail("next CPU frame consumed an unresolved subsystem publication");
+        }
+        commands.frame.cancel();
+        if (events.back() != -5 || queue->submit(submit)) {
+            return RhiTestResult::fail("cancelled frame remained submittable");
+        }
+
+        // A partial batch must commit its accepted prefix and cancel only the tail.
+        render::QueueSubmissionTracker tracker;
+        FRAME_REQUIRE(tracker.initialize(context.device, *queue));
+        FRAME_REQUIRE(commands.begin(1));
+        std::unique_ptr<render::CommandBuffer> tail;
+        FRAME_REQUIRE(commands.pool->createCommandBuffer(tail));
+        FRAME_REQUIRE(registerEvent(*commands.buffer, 6));
+        FRAME_REQUIRE(commands.buffer->end());
+        FRAME_REQUIRE(tail->begin(&commands.frame));
+        FRAME_REQUIRE(registerEvent(*tail, 7));
+        FRAME_REQUIRE(tail->end());
+        render::GpuCompletionPoint prefix;
+        FRAME_REQUIRE(tracker.submitSegment(submit, commands.frame, prefix));
+        commands.frame.cancel();
+        FRAME_REQUIRE(commands.frame.wait(kWaitTimeout));
+        if (!commands.frame.completion().isSubmitted() || events != std::vector<int>{1, -3, -2, -4, -5, 6, -7}) {
+            return RhiTestResult::fail("partial batch rolled back its submitted prefix or retained its tail");
+        }
+
+        // Host teardown cancels before destroying callback owners, even when an
+        // external command buffer outlives the host's active subsystems.
+        FRAME_REQUIRE(commands.pool->reset());
+        FRAME_REQUIRE(commands.buffer->begin());
+        FRAME_REQUIRE(registerEvent(*commands.buffer, 8));
+        FRAME_REQUIRE(commands.buffer->end());
+        host.shutdown();
+        FRAME_REQUIRE(commands.pool->reset());
+        if (events.back() != -8 || events.size() != 8 || queue->submit(submit)) {
+            return RhiTestResult::fail("host shutdown did not cancel exactly once");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+class FrameEnvironmentProbePass final : public render::UnsafePass {
+public:
+    inline static int publicationCount = 0;
+    std::span<const render::RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array ids{render::EnvironmentLightingSubsystem::kSubsystemId};
+        return ids;
+    }
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferOutput("data").buffer(16, 16).storageReadWrite();
+        return reflection;
+    }
+    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    {
+        render::ShaderCompileResult shader;
+        auto result = render::compileSlangShaderToSpirv({.moduleName = "FrameEnvironmentProbe",
+            .entryPointName = "readEnvironment", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+        if (!result) { log = shader.diagnostics; return result; }
+        const render::ComputeProgramBindingDesc bindings[] = {
+            {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
+            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
+        return program_.initialize(*context.device, {.spirv = shader.spirv.data(),
+            .byteSize = shader.spirv.size() * sizeof(uint32_t), .bindings = bindings,
+            .bindingCount = 2, .requiresRayQuery = false}, log);
+    }
+    render::Result execute(render::RenderGraphExecutionContext& context) override
+    {
+        if (properties().value("failRecording", false)) { return render::makeError(render::Error::Failure); }
+        const int previous = publicationCount++;
+        auto publication = std::make_shared<render::SubmissionTransaction>([] {},
+            [previous]() { publicationCount = previous; });
+        auto publicationResult = context.commandBuffer().addSubmissionTransaction(publication);
+        if (!publicationResult) { return publicationResult; }
+        if (properties().value("failSubmission", false)) {
+            // An explicitly cancelled transaction makes just this segment invalid
+            // at the RHI boundary, after the graph prologue has been submitted.
+            auto transaction = std::make_shared<render::SubmissionTransaction>([] {}, [] {});
+            auto result = context.commandBuffer().addSubmissionTransaction(transaction);
+            if (!result) { return result; }
+            transaction->cancel();
+        }
+        const auto& snapshot = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot();
+        render::TextureView* views[] = {snapshot.radianceView};
+        const render::ComputeDispatchBinding bindings[] = {
+            {.binding = 0, .textureViews = views, .textureViewCount = 1},
+            {.binding = 1, .buffer = context.outputBuffer("data").buffer()}};
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 2});
+    }
+private:
+    render::ComputeProgram program_;
+};
+
+class FrameEnvironmentRecoveryTest final : public RhiTest {
+public:
+    FrameEnvironmentRecoveryTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "frame_environment_submission_recovery";
+    }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        const auto result = render::createDevice({.applicationName = "Environment submission recovery",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("requires bindless descriptors"); }
+        FRAME_REQUIRE(result);
+        render::registerRenderGraphPassType("FrameEnvironmentProbePass", "Environment submission probe",
+            [] { return std::make_unique<FrameEnvironmentProbePass>(); });
+        for (bool partialSubmission : {false, true}) {
+            FrameEnvironmentProbePass::publicationCount = 0;
+            render::RenderGraph graph;
+            graph.addNode("FrameEnvironmentProbePass", "First");
+            graph.addNode("FrameEnvironmentProbePass", "Probe",
+                {{"failRecording", !partialSubmission}, {"failSubmission", partialSubmission}});
+            graph.addNode("FrameEnvironmentProbePass", "Tail");
+            graph.markOutput("First.data");
+            graph.markOutput("Probe.data");
+            graph.markOutput("Tail.data");
+            render::RenderGraphExecutor executor;
+            std::string log;
+            FRAME_REQUIRE(executor.compile(*device, graph, 1, 1, log));
+            const render::RenderGraphSubmitDesc submit{.graphicsQueue = device->getQueue(render::QueueType::Graphics)};
+            if (executor.execute(submit) || executor.compiled()) {
+                return RhiTestResult::fail("failed graph remained compiled");
+            }
+            if (executor.lastSubmittedCompletion().isSubmitted() != partialSubmission) {
+                return RhiTestResult::fail("graph lost its partial-submission completion");
+            }
+            FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+            if (FrameEnvironmentProbePass::publicationCount != (partialSubmission ? 1 : 0)) {
+                return RhiTestResult::fail("graph did not roll back its unsubmitted tail in reverse recording order");
+            }
+            auto* environment = executor.subsystemHost()->get<render::EnvironmentLightingSubsystem>();
+            if (environment->snapshot().valid() != partialSubmission ||
+                environment->snapshot().resourceRevision != (partialSubmission ? 1u : 0u)) {
+                return RhiTestResult::fail("environment publication does not match the accepted graph prefix");
+            }
+            render::RenderGraph recovered;
+            recovered.addNode("FrameEnvironmentProbePass", "Probe");
+            recovered.markOutput("Probe.data");
+            FRAME_REQUIRE(executor.compile(*device, recovered, 1, 1, log));
+            FRAME_REQUIRE(executor.execute(submit));
+            FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+            auto* buffer = executor.outputResource("Probe.data")->buffer;
+            std::array<uint32_t, 4> words{};
+            if (!readWords(*buffer, words.data(), words.size()) || words[3] != 0x3f800000u ||
+                environment->snapshot().resourceRevision != 1) {
+                return RhiTestResult::fail("environment retry did not restore the uploaded alpha=1 pixel exactly once");
+            }
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(FrameSubmissionTransactionsTest);
+METALLIC_REGISTER_RHI_TEST(FrameEnvironmentRecoveryTest);
 
 #undef FRAME_REQUIRE
 } // namespace

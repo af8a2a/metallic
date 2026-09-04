@@ -403,10 +403,31 @@ Result EnvironmentLightingSubsystem::recordPreGraph(
     if (context.commandBuffer == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (readyDecode_ == nullptr) {
-        return {};
+    if (pendingPublication_ != nullptr && !pendingPublication_->resolved()) {
+        log = "Environment publication must be submitted or cancelled before recording again";
+        return makeError(Error::InvalidArgument);
     }
-    return publishDecoded(context, std::move(*readyDecode_), log);
+    if (readyDecode_ == nullptr) { return {}; }
+    const auto decoded = readyDecode_;
+    const auto previousResources = resources_;
+    const auto previousSnapshot = snapshot_;
+    const auto previousRevision = resourceRevision_;
+    Result result = context.host.deferSubmission(*context.commandBuffer, {},
+        [this, decoded, previousResources, previousSnapshot, previousRevision]() {
+            resources_ = previousResources;
+            resourceRevision_ = previousRevision;
+            if (decoded->generation == requestedGeneration_) {
+                snapshot_.status = previousSnapshot.status;
+                snapshot_.error = previousSnapshot.error;
+                // A completed async decode may have replaced this placeholder.
+                if (readyDecode_ == nullptr) { readyDecode_ = decoded; }
+            }
+            refreshSnapshot();
+        }, &pendingPublication_);
+    if (!result) { return result; }
+    result = publishDecoded(context, *decoded, log);
+    if (result && readyDecode_ == decoded) { readyDecode_.reset(); }
+    return result;
 }
 
 Result EnvironmentLightingSubsystem::prepareShaderReload(
@@ -441,10 +462,9 @@ Result EnvironmentLightingSubsystem::prepareShaderReload(
 
 Result EnvironmentLightingSubsystem::publishDecoded(
     const RenderSubsystemFrameContext& context,
-    DecodedEnvironment decoded,
+    const DecodedEnvironment& decoded,
     std::string& log)
 {
-    readyDecode_.reset();
     if (decoded.generation != requestedGeneration_ ||
         device_ == nullptr ||
         gpuPrecompute_ == nullptr ||
@@ -557,6 +577,9 @@ Result EnvironmentLightingSubsystem::publishDecoded(
     staging->radiance->flush(0, radianceBytes);
     staging->radiance->unmap();
 
+    // Keep every referenced allocation alive even if a later recording step fails.
+    context.host.retire(std::static_pointer_cast<void>(staging));
+    context.host.retire(std::static_pointer_cast<void>(next));
     TextureBarrierDesc textureToTransfer{
         .texture = next->radiance.get(),
         .before = ResourceState::Undefined,
@@ -643,8 +666,6 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         .buffers = &sphericalHarmonicsToRead,
         .bufferCount = 1,
     });
-    context.host.retire(std::static_pointer_cast<void>(staging));
-
     if (resources_ != nullptr) {
         context.host.retire(std::static_pointer_cast<void>(resources_));
     }
@@ -655,7 +676,7 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         : (decoded.error.empty()
             ? EnvironmentLightingStatus::Ready
             : EnvironmentLightingStatus::Degraded);
-    snapshot_.error = std::move(decoded.error);
+    snapshot_.error = decoded.error;
     refreshSnapshot();
     return {};
 }
@@ -684,6 +705,8 @@ void EnvironmentLightingSubsystem::refreshSnapshot()
 
 void EnvironmentLightingSubsystem::shutdown()
 {
+    if (pendingPublication_ != nullptr) { pendingPublication_->cancel(); }
+    pendingPublication_.reset();
     for (DecodeJob& job : decodeJobs_) {
         if (job.future.valid()) {
             job.future.wait();

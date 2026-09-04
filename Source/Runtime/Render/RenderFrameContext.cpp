@@ -6,6 +6,86 @@
 
 namespace metallic::render {
 
+SubmissionTransaction::SubmissionTransaction(std::function<void()> submitted, std::function<void()> cancelled)
+    : submitted_(std::move(submitted)), cancelled_(std::move(cancelled))
+{
+}
+
+SubmissionTransaction::~SubmissionTransaction()
+{
+    cancel();
+}
+
+void SubmissionTransaction::submit() noexcept
+{
+    if (resolved()) { return; }
+    status_ = Status::Submitted;
+    auto callback = std::move(submitted_);
+    cancelled_ = {};
+    if (callback) { callback(); }
+}
+
+void SubmissionTransaction::cancel() noexcept
+{
+    if (resolved()) { return; }
+    status_ = Status::Cancelled;
+    auto callback = std::move(cancelled_);
+    submitted_ = {};
+    if (callback) { callback(); }
+}
+
+detail::CommandSubmissionState::~CommandSubmissionState()
+{
+    cancel();
+}
+
+bool detail::CommandSubmissionState::canSubmit() const
+{
+    return !submitted && !cancelled && std::none_of(transactions.begin(), transactions.end(),
+        [](const auto& transaction) { return transaction->cancelled(); });
+}
+
+void detail::CommandSubmissionState::submit() noexcept
+{
+    submitted = true;
+    for (const auto& transaction : transactions) { transaction->submit(); }
+}
+
+void detail::CommandSubmissionState::cancel() noexcept
+{
+    if (submitted || cancelled) { return; }
+    cancelled = true;
+    for (auto iter = transactions.rbegin(); iter != transactions.rend(); ++iter) { (*iter)->cancel(); }
+}
+
+void detail::CommandSubmissionRegistry::add(const std::shared_ptr<CommandSubmissionState>& recording)
+{
+    std::erase_if(recordings, [](const auto& entry) {
+        const auto state = entry.lock();
+        return state == nullptr || state->submitted || state->cancelled;
+    });
+    recordings.push_back(recording);
+}
+
+void detail::CommandSubmissionRegistry::cancel() noexcept
+{
+    for (auto iter = recordings.rbegin(); iter != recordings.rend(); ++iter) {
+        if (auto recording = iter->lock()) { recording->cancel(); }
+    }
+    recordings.clear();
+}
+
+Result CommandBuffer::addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction)
+{
+    if (!recording_ || submission_ == nullptr || !submission_->canSubmit() ||
+        transaction == nullptr || transaction->resolved() || transaction->attached_) {
+        return makeError(Error::InvalidArgument);
+    }
+    transaction->attached_ = true;
+    submission_->transactions.push_back(std::move(transaction));
+    return {};
+}
+
 struct GpuCompletionPoint::State {
     enum class Status { Recording, Submitting, Submitted, Cancelled };
     Status status = Status::Recording;
@@ -123,6 +203,7 @@ bool RenderFrameContext::recording() const
 
 void RenderFrameContext::cancel()
 {
+    recordings_.cancel();
     if (recording()) {
         completion_.state_->status = GpuCompletionPoint::State::Status::Cancelled;
         resources_.clear();
@@ -141,6 +222,7 @@ Result RenderFrameContext::finishSubmission()
         completion_.state_->status != GpuCompletionPoint::State::Status::Submitting) {
         return makeError(Error::InvalidArgument);
     }
+    recordings_.cancel();
     completion_.state_->status = GpuCompletionPoint::State::Status::Submitted;
     return {};
 }

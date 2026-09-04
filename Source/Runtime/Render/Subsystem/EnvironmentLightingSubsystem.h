@@ -79,7 +79,7 @@ private:
     void pollDecodeJobs(RenderChangeBits& changes);
     Result publishDecoded(
         const RenderSubsystemFrameContext& context,
-        DecodedEnvironment decoded,
+        const DecodedEnvironment& decoded,
         std::string& log);
     void refreshSnapshot();
 
@@ -92,7 +92,8 @@ private:
     std::vector<DecodeJob> decodeJobs_;
     std::filesystem::path pendingDecodePath_;
     uint64_t pendingDecodeGeneration_ = 0;
-    std::unique_ptr<DecodedEnvironment> readyDecode_;
+    std::shared_ptr<DecodedEnvironment> readyDecode_;
+    std::shared_ptr<SubmissionTransaction> pendingPublication_;
     EnvironmentLightingSnapshot snapshot_;
     EnvironmentSettings requestedSettings_;
     uint64_t requestedSettingsRevision_ = 0;

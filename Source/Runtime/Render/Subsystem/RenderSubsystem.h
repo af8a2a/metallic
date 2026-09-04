@@ -136,6 +136,8 @@ public:
     Result activate(RenderSubsystemId id, std::string& log);
     void setWorld(RenderWorld* world);
 
+    // The previous CPU recording must have been submitted or cancelled; its GPU
+    // completion may still be pending in another slot.
     Result beginFrame(
         uint64_t frameIndex,
         uint32_t frameSlot,
@@ -179,6 +181,11 @@ public:
     uint32_t frameSlotCount() const { return frameSlotCount_; }
 
     void retire(std::shared_ptr<void> resource);
+    // Register before publishing state. endFrame only closes CPU recording;
+    // Queue::submit commits, and frame/pool cancellation rolls back in reverse order.
+    Result deferSubmission(CommandBuffer& commandBuffer,
+        std::function<void()> submitted, std::function<void()> cancelled,
+        std::shared_ptr<SubmissionTransaction>* outTransaction = nullptr);
 
 private:
     struct Record;
@@ -195,6 +202,7 @@ private:
     std::vector<std::string> activeOrder_;
     std::vector<std::string> preGraphOrder_;
     std::vector<std::vector<std::shared_ptr<void>>> retiredByFrameSlot_;
+    std::vector<std::shared_ptr<SubmissionTransaction>> pendingTransactions_;
     DeferredReleaseQueue deferredReleases_;
     std::vector<GpuCompletionPoint> pendingCompletions_;
     RenderFrameContext* frameResources_ = nullptr;

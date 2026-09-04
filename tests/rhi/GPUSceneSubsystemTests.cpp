@@ -1880,5 +1880,136 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(GPUSceneViewGpuResourcesTest);
 
+#define SUBMISSION_CHECK(expression) do { \
+    if (!(expression)) { return RhiTestResult::fail(#expression); } \
+} while (false)
+
+class GPUSceneSubmissionRecoveryTest final : public RhiTest {
+public:
+    GPUSceneSubmissionRecoveryTest()
+    {
+        type = RhiTestType::Command;
+        name = "gpu_scene_submission_recovery";
+    }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        const auto result = render::createDevice({.applicationName = "GPUScene submission recovery",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("requires bindless buffers"); }
+        SUBMISSION_CHECK(result);
+        auto* queue = device->getQueue(render::QueueType::Graphics);
+        if (queue == nullptr) { return RhiTestResult::skip("requires a graphics queue"); }
+        std::string log;
+        render::RenderSubsystemHost host;
+        SUBMISSION_CHECK(host.registerSubsystem<render::GPUSceneSubsystem>(log));
+        SUBMISSION_CHECK(host.initialize(*device, 2, log));
+        SUBMISSION_CHECK(host.activate(render::GPUSceneSubsystem::kSubsystemId, log));
+        SUBMISSION_CHECK(host.beginFrame(0, 0, nullptr, log));
+        host.endFrame();
+        auto* subsystem = host.get<render::GPUSceneSubsystem>();
+        std::vector<scene::RenderPrimitive> primitives{makeTrianglePrimitive()};
+        std::vector<scene::RenderMaterial> materials(1);
+        std::vector<scene::RenderNode> nodes(1);
+        nodes[0].object = static_cast<scene::SceneEntity>(1);
+        nodes[0].nodeIndex = 0;
+        nodes[0].renderPrimitiveIndex = 0;
+        nodes[0].materialIndex = 0;
+        nodes[0].transformRevision = 1;
+        SUBMISSION_CHECK(subsystem->scene().rebuild(makeSourceView(primitives, nodes, materials, 1, 1, 1), log));
+        render::GPUSceneViewId view;
+        const render::GPUSceneViewDesc viewDesc{
+            .frameSlotCount = 2, .instanceCapacity = 1, .visibleMeshletCapacity = {1, 1, 1, 1},
+            .hzbWidth = 1, .hzbHeight = 1, .hzbMipCount = 1, .hzbElementCount = 1};
+        SUBMISSION_CHECK(subsystem->createView(viewDesc, view, log));
+        render::RenderFrameContext frame;
+        render::QueueSubmissionTracker tracker;
+        SUBMISSION_CHECK(tracker.initialize(*device, *queue));
+        std::unique_ptr<render::CommandPool> pool;
+        std::unique_ptr<render::CommandBuffer> commands;
+        std::unique_ptr<render::Buffer> readback;
+        SUBMISSION_CHECK(device->createCommandPool(*queue, pool));
+        SUBMISSION_CHECK(pool->createCommandBuffer(commands));
+        SUBMISSION_CHECK(device->createBuffer({.size = sizeof(render::GPUSceneGpuInstanceRecord),
+            .usage = render::BufferUsageBits::TransferDestination,
+            .memoryLocation = render::MemoryLocation::HostReadback}, readback));
+        struct Drain {
+            render::Queue& queue;
+            ~Drain() { (void)queue.waitIdle(); }
+        } drain{*queue};
+        constexpr std::array required{render::GPUSceneSubsystem::kSubsystemId};
+        render::Buffer* committedInstances = nullptr;
+        for (uint64_t index = 0; index < 4; ++index) {
+            if (index == 2) {
+                nodes[0].worldMatrix = translationMatrix(float3(2.0f, 3.0f, 4.0f));
+                nodes[0].transformRevision = 2;
+                SUBMISSION_CHECK(subsystem->scene().sync(makeSourceView(primitives, nodes, materials, 2, 1, 1)) ==
+                    render::GPUSceneSyncResult::Updated);
+            }
+            SUBMISSION_CHECK(frame.begin(index + 1));
+            SUBMISSION_CHECK(pool->reset());
+            SUBMISSION_CHECK(commands->begin(&frame));
+            SUBMISSION_CHECK(host.beginFrame(index + 1, 0, nullptr, log, &frame));
+            const auto previousStats = subsystem->gpuUploadStats();
+            SUBMISSION_CHECK(host.recordPreGraph(*commands, nullptr, required, log));
+            SUBMISSION_CHECK(subsystem->prepareView(view, 0, {.width = 1, .height = 1}));
+            SUBMISSION_CHECK(subsystem->recordInitialize(*commands, view, 0, log));
+            SUBMISSION_CHECK(subsystem->markViewHzbValid(view, 0, true));
+            auto* instances = subsystem->globalBufferViews().instances.buffer;
+            SUBMISSION_CHECK(instances != nullptr);
+            if (index >= 2) { SUBMISSION_CHECK(instances == committedInstances); }
+            const std::array barriers{
+                render::BufferBarrierDesc{.buffer = instances, .before = render::ResourceState::ShaderRead,
+                    .after = render::ResourceState::TransferSource},
+                render::BufferBarrierDesc{.buffer = readback.get(), .before = render::ResourceState::Undefined,
+                    .after = render::ResourceState::TransferDestination}};
+            commands->barrier({.buffers = barriers.data(), .bufferCount = 2});
+            commands->copyBuffer({.source = instances, .destination = readback.get(),
+                .size = sizeof(render::GPUSceneGpuInstanceRecord)});
+            const render::BufferBarrierDesc restore{.buffer = instances, .before = render::ResourceState::TransferSource,
+                .after = render::ResourceState::ShaderRead};
+            commands->barrier({.buffers = &restore, .bufferCount = 1});
+            SUBMISSION_CHECK(host.recordPostGraph(*commands, nullptr, required, log));
+            SUBMISSION_CHECK(commands->end());
+            host.endFrame();
+            render::CommandBuffer* buffers[] = {commands.get()};
+            if (index % 2 == 0) {
+                // Exercise both explicit frame cancellation and external pool reset.
+                if (index == 0) { frame.cancel(); }
+                else { SUBMISSION_CHECK(pool->reset()); frame.cancel(); }
+                SUBMISSION_CHECK(subsystem->gpuUploadStats().fullUploadCount == previousStats.fullUploadCount);
+                SUBMISSION_CHECK(subsystem->gpuUploadStats().instanceUploadCount == previousStats.instanceUploadCount);
+                SUBMISSION_CHECK(subsystem->gpuUploadStats().uploadedByteCount == previousStats.uploadedByteCount);
+                SUBMISSION_CHECK(!subsystem->globalBufferViews().validFor(
+                    subsystem->drawSet().generation, subsystem->drawSet().revision));
+                render::GPUSceneViewGpuResourcesView resources;
+                SUBMISSION_CHECK(subsystem->viewGpuResources(view, 0, resources));
+                SUBMISSION_CHECK(resources.frameSlotInitialized == (index != 0));
+                SUBMISSION_CHECK(resources.hzbInitialized == (index != 0));
+                SUBMISSION_CHECK(subsystem->prepareView(view, 0, {.width = 1, .height = 1}));
+                SUBMISSION_CHECK(!subsystem->visibleDrawSet(view, 0)->stats.hzbValid);
+                SUBMISSION_CHECK(!queue->submit({.commandBuffers = buffers, .commandBufferCount = 1}));
+                continue;
+            }
+            SUBMISSION_CHECK(tracker.submit({.commandBuffers = buffers, .commandBufferCount = 1}, frame));
+            SUBMISSION_CHECK(frame.wait(5'000'000'000ull));
+            committedInstances = instances;
+            SUBMISSION_CHECK(subsystem->gpuUploadStats().fullUploadCount == 1);
+            SUBMISSION_CHECK(subsystem->gpuUploadStats().instanceUploadCount == (index == 3 ? 1u : 0u));
+            readback->invalidate();
+            const void* mapped = readback->map();
+            SUBMISSION_CHECK(mapped != nullptr);
+            render::GPUSceneGpuInstanceRecord instance;
+            std::memcpy(&instance, mapped, sizeof(instance));
+            readback->unmap();
+            SUBMISSION_CHECK(std::memcmp(instance.worldMatrix.data(), nodes[0].worldMatrix.a, sizeof(float) * 16) == 0);
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GPUSceneSubmissionRecoveryTest);
+#undef SUBMISSION_CHECK
+
 } // namespace
 } // namespace metallic::tests

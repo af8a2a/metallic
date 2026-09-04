@@ -1144,6 +1144,7 @@ struct QueueImpl;
 struct SwapchainImpl;
 struct CommandPoolImpl;
 struct CommandBufferImpl;
+struct CommandSubmissionState;
 struct FenceImpl;
 struct TimestampQueryPoolImpl;
 struct RayTracingAccelerationStructureCompactionQueryPoolImpl;
@@ -1636,6 +1637,7 @@ private:
 };
 
 class RenderFrameContext;
+class SubmissionTransaction;
 class GpuCompletionPoint;
 
 class Streamer {
@@ -1682,6 +1684,7 @@ public:
     // Queue::submit merges these waits and the command buffer retains their
     // timeline lifetimes until its next recording. Call while recording.
     Result addDependency(const GpuCompletionPoint& completion);
+    Result addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction);
     Result end();
     void beginDebugLabel(const DebugLabelDesc& desc);
     void endDebugLabel();
@@ -1743,6 +1746,7 @@ private:
 
     std::unique_ptr<detail::CommandBufferImpl> impl_;
     RenderFrameContext* frameContext_ = nullptr;
+    std::shared_ptr<detail::CommandSubmissionState> submission_;
     std::shared_ptr<const void> frameRecording_;
     std::vector<SemaphoreSubmitDesc> dependencyWaits_;
     std::vector<std::shared_ptr<const void>> dependencyLifetimes_;

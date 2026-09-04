@@ -1018,6 +1018,20 @@ Result GPUSceneSubsystem::recordInitialize(
     }
     ViewGpuResources& resources = *found->second;
     ViewGpuResources::FrameSlotResources& slot = resources.frameSlots[frameSlot];
+    const auto owned = found->second;
+    const bool initialized = slot.initialized;
+    const bool hzbInitialized = resources.hzbInitialized;
+    Result result = host_->deferSubmission(commandBuffer, {},
+        [this, owned, frameSlot, initialized, hzbInitialized]() {
+            owned->frameSlots[frameSlot].initialized = initialized;
+            owned->hzbInitialized = hzbInitialized;
+            const auto current = viewGpuResources_.find(viewResourceKey(owned->sourceView));
+            if (current != viewGpuResources_.end() && current->second == owned) {
+                scene_.invalidateViewGpuResources(owned->sourceView, true);
+            }
+        });
+    if (!result) { return result; }
+    host_->retire(std::static_pointer_cast<void>(owned));
     std::vector<BufferBarrierDesc> barriers;
     barriers.reserve(9);
     auto initializeResource = [&barriers](const GpuBufferResource& resource) {
@@ -1279,6 +1293,10 @@ Result GPUSceneSubsystem::recordPreGraph(
         log = "GPUSceneSubsystem recordPreGraph requires an initialized subsystem and command buffer";
         return makeError(Error::InvalidArgument);
     }
+    if (pendingPublication_ != nullptr && !pendingPublication_->resolved()) {
+        log = "GPUScene publication must be submitted or cancelled before recording again";
+        return makeError(Error::InvalidArgument);
+    }
     const GPUSceneDrawSet& drawSet = scene_.drawSet();
     if (drawSet.generation == 0 || drawSet.revision == 0) {
         scene_.invalidateGpuResources();
@@ -1300,6 +1318,23 @@ Result GPUSceneSubsystem::recordPreGraph(
     }
 
     Result result;
+    if (upload != PendingUpload::None) {
+        const auto previousResources = gpuResources_;
+        const auto previousRevision = gpuResources_ != nullptr ? gpuResources_->revision : 0;
+        const auto previousLayout = rasterDrawLayout_;
+        const auto previousStats = gpuUploadStats_;
+        result = context.host.deferSubmission(*context.commandBuffer, {},
+            [this, previousResources, previousRevision, previousLayout, previousStats, upload]() {
+                gpuResources_ = previousResources;
+                if (gpuResources_ != nullptr) { gpuResources_->revision = previousRevision; }
+                rasterDrawLayout_ = previousLayout;
+                gpuUploadStats_ = previousStats;
+                scene_.invalidateGpuResources();
+                if (gpuResources_ != nullptr) { scene_.setGlobalBufferViews(gpuResources_->views()); }
+                requestUpload(upload);
+            }, &pendingPublication_);
+        if (!result) { return result; }
+    }
     if (upload == PendingUpload::Full) {
         result = uploadFullScene(context, log);
     } else if (upload == PendingUpload::Instances) {
@@ -1522,6 +1557,7 @@ Result GPUSceneSubsystem::uploadFullScene(
         });
         uploadedBytes += copy.byteSize;
     }
+    context.host.retire(std::static_pointer_cast<void>(next));
     if (!toTransfer.empty()) {
         context.commandBuffer->barrier(BarrierDesc{
             .buffers = toTransfer.data(),
@@ -1734,6 +1770,8 @@ void GPUSceneSubsystem::releaseBindings(
 
 void GPUSceneSubsystem::shutdown()
 {
+    if (pendingPublication_ != nullptr) { pendingPublication_->cancel(); }
+    pendingPublication_.reset();
     scene_.invalidateGpuResources();
     viewGpuResources_.clear();
     gpuResources_.reset();
@@ -2017,6 +2055,17 @@ Result GPUSceneSubsystem::recordBuildHzb(
         }
     }
 
+    const auto owned = viewGpuResources_.find(viewResourceKey(view));
+    if (owned == viewGpuResources_.end()) { return makeError(Error::InvalidArgument); }
+    Result result = host_->deferSubmission(commandBuffer, {},
+        [this, resources = owned->second, view]() {
+            const auto current = viewGpuResources_.find(viewResourceKey(view));
+            if (current != viewGpuResources_.end() && current->second == resources) {
+                scene_.invalidateViewGpuResources(view, true);
+            }
+        });
+    if (!result) { return result; }
+    host_->retire(std::static_pointer_cast<void>(owned->second));
     commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
     const BufferBarrierDesc writeBarrier{
         .buffer = writeBuffer,

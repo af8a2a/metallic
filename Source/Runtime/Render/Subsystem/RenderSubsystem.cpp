@@ -167,6 +167,11 @@ Result RenderSubsystemHost::beginFrame(
         log = "RenderSubsystemHost requires a recording frame with the same slot";
         return makeError(Error::InvalidArgument);
     }
+    if (std::any_of(pendingTransactions_.begin(), pendingTransactions_.end(),
+            [](const auto& transaction) { return !transaction->resolved(); })) {
+        log = "Previous subsystem recording must be submitted or cancelled before beginFrame";
+        return makeError(Error::InvalidArgument);
+    }
     deferredReleases_.collect();
     std::erase_if(pendingCompletions_, [](const auto& point) { return point.isComplete(); });
     retiredByFrameSlot_[frameSlot].clear();
@@ -361,6 +366,11 @@ void RenderSubsystemHost::endFrame()
 
 void RenderSubsystemHost::shutdown()
 {
+    // Resolve callbacks while their subsystem owners are still alive.
+    for (auto iter = pendingTransactions_.rbegin(); iter != pendingTransactions_.rend(); ++iter) {
+        (*iter)->cancel();
+    }
+    pendingTransactions_.clear();
     endFrame();
     for (const auto& completion : pendingCompletions_) {
         (void)completion.wait();
@@ -401,6 +411,20 @@ bool RenderSubsystemHost::isRegistered(RenderSubsystemId id) const
 bool RenderSubsystemHost::isActive(RenderSubsystemId id) const
 {
     return get(id) != nullptr;
+}
+
+Result RenderSubsystemHost::deferSubmission(CommandBuffer& commandBuffer,
+    std::function<void()> submitted, std::function<void()> cancelled,
+    std::shared_ptr<SubmissionTransaction>* outTransaction)
+{
+    std::erase_if(pendingTransactions_, [](const auto& transaction) { return transaction->resolved(); });
+    auto transaction = std::make_shared<SubmissionTransaction>(std::move(submitted), std::move(cancelled));
+    Result result = commandBuffer.addSubmissionTransaction(transaction);
+    if (result) {
+        pendingTransactions_.push_back(transaction);
+        if (outTransaction != nullptr) { *outTransaction = transaction; }
+    }
+    return result;
 }
 
 void RenderSubsystemHost::retire(std::shared_ptr<void> resource)

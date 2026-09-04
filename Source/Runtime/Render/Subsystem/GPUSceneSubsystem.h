@@ -290,6 +290,7 @@ private:
     uint64_t sourceOverrideRevision_ = 0;
     uint64_t nextSourceOverrideToken_ = 1;
     std::shared_ptr<GpuResources> gpuResources_;
+    std::shared_ptr<SubmissionTransaction> pendingPublication_;
     std::unordered_map<uint64_t, std::shared_ptr<ViewGpuResources>> viewGpuResources_;
     uint64_t nextViewGpuResourceAllocationId_ = 1;
     GPUSceneGpuUploadStats gpuUploadStats_;

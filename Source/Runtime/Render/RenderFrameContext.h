@@ -2,10 +2,52 @@
 
 #include "Runtime/Render/GAPI/Rhi.h"
 
+#include <functional>
 #include <memory>
 #include <vector>
 
 namespace metallic::render {
+
+// A CPU publication made while recording. Submission means the queue accepted
+// the commands, not that the GPU finished. Callbacks must not throw or submit work.
+class SubmissionTransaction {
+public:
+    SubmissionTransaction(std::function<void()> submitted, std::function<void()> cancelled);
+    ~SubmissionTransaction();
+    SubmissionTransaction(const SubmissionTransaction&) = delete;
+    SubmissionTransaction& operator=(const SubmissionTransaction&) = delete;
+    bool resolved() const { return status_ != Status::Pending; }
+    bool cancelled() const { return status_ == Status::Cancelled; }
+    void cancel() noexcept;
+
+private:
+    enum class Status { Pending, Submitted, Cancelled };
+    Status status_ = Status::Pending;
+    bool attached_ = false;
+    std::function<void()> submitted_;
+    std::function<void()> cancelled_;
+    void submit() noexcept;
+    friend struct detail::CommandSubmissionState;
+    friend class CommandBuffer;
+};
+
+namespace detail {
+struct CommandSubmissionState {
+    ~CommandSubmissionState();
+    bool canSubmit() const;
+    void submit() noexcept;
+    void cancel() noexcept;
+    bool submitted = false;
+    bool cancelled = false;
+    std::vector<std::shared_ptr<SubmissionTransaction>> transactions;
+};
+
+struct CommandSubmissionRegistry {
+    void add(const std::shared_ptr<CommandSubmissionState>& recording);
+    void cancel() noexcept;
+    std::vector<std::weak_ptr<CommandSubmissionState>> recordings;
+};
+} // namespace detail
 
 // Copies refer to the same one-shot recording/batch. A batch becomes waitable
 // only after it is sealed, and completes when every contributing queue finishes.
@@ -41,8 +83,8 @@ public:
 
     Result begin(uint64_t frameIndex, uint64_t timeoutNanoseconds = UINT64_MAX);
     Result wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
-    // Reset/discard recorded command buffers before cancelling a frame that will
-    // not be submitted. Cancelled recordings must never subsequently be submitted.
+    // Roll back unsubmitted recordings in reverse order. They become invalid for
+    // submission and must be reset before reuse. Accepted segments remain alive.
     void cancel();
     // Seal a batch after its final successful segment, including partial failure.
     Result finishSubmission();
@@ -60,6 +102,8 @@ private:
     GpuCompletionPoint completion_;
     std::vector<std::shared_ptr<void>> resources_;
     std::vector<GpuCompletionPoint> dependencies_;
+    detail::CommandSubmissionRegistry recordings_;
+    friend class CommandBuffer;
     friend class QueueSubmissionTracker;
 };
 

@@ -2809,6 +2809,7 @@ struct GraphicsShaderObjectProgramImpl {
 };
 
 struct CommandPoolImpl {
+    std::shared_ptr<CommandSubmissionRegistry> submissions = std::make_shared<CommandSubmissionRegistry>();
     DeviceImpl* device = nullptr;
     VkCommandPool pool = VK_NULL_HANDLE;
     uint32_t queueFamilyIndex = 0;
@@ -2816,6 +2817,7 @@ struct CommandPoolImpl {
 };
 
 struct CommandBufferImpl {
+    std::shared_ptr<CommandSubmissionRegistry> submissions;
     DeviceImpl* device = nullptr;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
@@ -3600,7 +3602,8 @@ Result Queue::submit(const QueueSubmitDesc& desc)
     commandBuffers.reserve(desc.commandBufferCount);
     for (uint32_t index = 0; index < desc.commandBufferCount; ++index) {
         CommandBuffer* commandBuffer = desc.commandBuffers[index];
-        if (commandBuffer == nullptr || commandBuffer->impl_ == nullptr) {
+        if (commandBuffer == nullptr || commandBuffer->impl_ == nullptr || commandBuffer->recording_ ||
+            commandBuffer->submission_ == nullptr || !commandBuffer->submission_->canSubmit()) {
             return makeError(Error::InvalidArgument);
         }
         for (const auto& wait : commandBuffer->dependencyWaits_) {
@@ -3665,7 +3668,17 @@ Result Queue::submit(const QueueSubmitDesc& desc)
         fence = desc.signalFence->impl_->fence;
     }
 
-    return resultFromVk(vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence));
+    const Result result = resultFromVk(vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence));
+    if (result) {
+        // Mark the whole accepted batch before invoking any CPU publication hooks.
+        for (uint32_t index = 0; index < desc.commandBufferCount; ++index) {
+            desc.commandBuffers[index]->submission_->submitted = true;
+        }
+        for (uint32_t index = 0; index < desc.commandBufferCount; ++index) {
+            desc.commandBuffers[index]->submission_->submit();
+        }
+    }
+    return result;
 }
 
 Result Queue::waitIdle()
@@ -4686,6 +4699,10 @@ Result CommandBuffer::begin(RenderFrameContext* frameContext)
     Result result = resultFromVk(vkBeginCommandBuffer(impl_->commandBuffer, &beginInfo));
     recording_ = result.has_value();
     if (result) {
+        if (submission_ != nullptr) { submission_->cancel(); }
+        submission_ = std::make_shared<detail::CommandSubmissionState>();
+        impl_->submissions->add(submission_);
+        if (frameContext != nullptr) { frameContext->recordings_.add(submission_); }
         dependencyWaits_.clear();
         dependencyLifetimes_.clear();
     }
@@ -6596,6 +6613,7 @@ CommandPool::~CommandPool()
     if (impl_ != nullptr && impl_->pool != VK_NULL_HANDLE) {
         vkDestroyCommandPool(impl_->device->device, impl_->pool, nullptr);
         impl_->pool = VK_NULL_HANDLE;
+        impl_->submissions->cancel();
     }
 }
 
@@ -6607,7 +6625,9 @@ Result CommandPool::reset()
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    return resultFromVk(vkResetCommandPool(impl_->device->device, impl_->pool, 0));
+    const Result result = resultFromVk(vkResetCommandPool(impl_->device->device, impl_->pool, 0));
+    if (result) { impl_->submissions->cancel(); }
+    return result;
 }
 
 Result CommandPool::createCommandBuffer(std::unique_ptr<CommandBuffer>& outCommandBuffer)
@@ -6631,6 +6651,7 @@ Result CommandPool::createCommandBuffer(std::unique_ptr<CommandBuffer>& outComma
     }
 
     auto commandBufferImpl = std::make_unique<detail::CommandBufferImpl>();
+    commandBufferImpl->submissions = impl_->submissions;
     commandBufferImpl->device = impl_->device;
     commandBufferImpl->pool = impl_->pool;
     commandBufferImpl->commandBuffer = commandBuffer;
