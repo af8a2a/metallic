@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/RenderGraph/RenderGraphNode.h"
+#include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.h"
 #include "Runtime/Scene/SceneLoad.h"
 
@@ -9,6 +10,10 @@ struct RenderGraphSubmitDesc {
     Queue* graphicsQueue = nullptr;
     Queue* computeQueue = nullptr;
     Queue* copyQueue = nullptr;
+    HistoryResourceManager* historyResources = nullptr;
+    // Dependencies supplied by the caller, retained until this graph completes.
+    std::span<const GpuCompletionPoint> waitCompletions;
+    uint64_t slotWaitTimeoutNanoseconds = UINT64_MAX;
 };
 
 struct RenderGraphCompileOptions {
@@ -63,6 +68,7 @@ public:
     Result reloadShaders(std::string& log);
     Result execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources = nullptr);
     Result execute(const RenderGraphSubmitDesc& desc);
+    GpuCompletionPoint lastSubmittedCompletion() const;
     Result waitForSubmittedWork(uint64_t timeoutNanoseconds = UINT64_MAX);
     void bindRuntimeScene(const scene::Scene* scene);
     void bindRenderWorld(RenderWorld* world);

@@ -304,6 +304,10 @@ public:
     // Opt in only when execute() preserves resources/descriptors used by earlier
     // submissions. Legacy passes with singleton host uploads/readbacks wait.
     virtual bool supportsFrameOverlap() const { return false; }
+    // Opt in only when GPU dependencies are reflected graph resources and any
+    // private resources support the selected queue family. Other passes execute
+    // on graphics and form an ordering boundary for independent graph branches.
+    virtual bool supportsAsyncQueue() const { return false; }
     virtual Result prepare(const RenderGraphCompileContext& context, std::string& log);
     virtual Result compile(const RenderGraphCompileContext& context, std::string& log);
     virtual Result execute(RenderGraphExecutionContext& context) = 0;

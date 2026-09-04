@@ -1067,12 +1067,12 @@ public:
     }
 };
 
-class StreamerRenderGraphUnsupportedDoesNotBeginFrameTest : public RhiTest {
+class StreamerRenderGraphInvalidDoesNotBeginFrameTest : public RhiTest {
 public:
-    StreamerRenderGraphUnsupportedDoesNotBeginFrameTest()
+    StreamerRenderGraphInvalidDoesNotBeginFrameTest()
     {
         type = RhiTestType::Command;
-        name = "streamer_render_graph_unsupported_does_not_begin_frame";
+        name = "streamer_render_graph_invalid_does_not_begin_frame";
     }
 
     RhiTestResult run(RhiTestContext& context) override
@@ -1085,7 +1085,7 @@ public:
         }
 
         render::RenderGraph graph;
-        graph.setName("StreamerUnsupportedCrossQueue");
+        graph.setName("StreamerInvalidQueues");
         graph.addNode("StreamerCrossQueueSourcePass", "Source");
         graph.addNode("StreamerCrossQueueSinkPass", "Sink");
         graph.addEdge("Source.data", "Sink.data");
@@ -1100,12 +1100,12 @@ public:
 
         const render::RenderGraphStreamingStats before = executor.streamingStats();
         result = executor.execute(render::RenderGraphSubmitDesc{
-            .graphicsQueue = &context.graphicsQueue,
+            .graphicsQueue = nullptr,
             .computeQueue = computeQueue,
         });
-        if (!render::hasError(result, render::Error::Unsupported)) {
+        if (!render::hasError(result, render::Error::InvalidArgument)) {
             return RhiTestResult::fail(
-                std::string("expected Unsupported for cross-queue resource edge, got ") +
+                std::string("expected InvalidArgument for missing graphics queue, got ") +
                 toString(result));
         }
 
@@ -1114,7 +1114,7 @@ public:
             after.streamer.frameIndex != before.streamer.frameIndex ||
             after.flushCount != before.flushCount ||
             after.transferCount != before.transferCount) {
-            return RhiTestResult::fail("unsupported submit started or mutated the RenderGraph streaming frame");
+            return RhiTestResult::fail("invalid submit started or mutated the RenderGraph streaming frame");
         }
         return RhiTestResult::pass();
     }
@@ -2014,7 +2014,7 @@ METALLIC_REGISTER_RHI_TEST(StreamerBufferUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerTextureUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerConstantUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphFlushTest);
-METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphUnsupportedDoesNotBeginFrameTest);
+METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphInvalidDoesNotBeginFrameTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyUploadTest);
 METALLIC_REGISTER_RHI_TEST(MeshletStreamClasPagePlanTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestPatchTest);

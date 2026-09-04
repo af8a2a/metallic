@@ -527,6 +527,353 @@ public:
     }
 };
 
+// Signals all gates before waiting on any queue; a failed assertion cannot
+// deadlock destruction when queues depend on one another.
+struct DeviceDrain {
+    render::Device& device;
+    render::Semaphore* first = nullptr;
+    render::Semaphore* second = nullptr;
+    ~DeviceDrain()
+    {
+        for (auto* gate : {first, second}) {
+            if (gate != nullptr && gate->currentValue() < 1) { (void)gate->signal(1); }
+        }
+        (void)device.waitIdle();
+    }
+};
+
+class FrameMultiQueueCompletionTest : public RhiTest {
+public:
+    FrameMultiQueueCompletionTest() { type = RhiTestType::Command; name = "frame_multi_queue_completion"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        auto* copyQueue = context.device.getQueue(render::QueueType::Copy);
+        if (copyQueue == nullptr) { return RhiTestResult::skip("independent copy queue unavailable"); }
+        render::QueueSubmissionTracker graphics, copy;
+        render::RenderFrameContext frame;
+        render::DeferredReleaseQueue retired;
+        std::unique_ptr<render::Semaphore> graphicsGate, copyGate;
+        FRAME_REQUIRE(graphics.initialize(context.device, context.graphicsQueue));
+        FRAME_REQUIRE(copy.initialize(context.device, *copyQueue));
+        FRAME_REQUIRE(context.device.createSemaphore(graphicsGate));
+        FRAME_REQUIRE(context.device.createSemaphore(copyGate));
+        DeviceDrain drain{context.device, graphicsGate.get(), copyGate.get()};
+        FRAME_REQUIRE(frame.begin(0));
+        auto resource = std::make_shared<uint32_t>(17);
+        const std::weak_ptr<uint32_t> weak = resource;
+        frame.retain(resource);
+        retired.retire(frame.completion(), std::move(resource));
+        const auto batch = frame.completion();
+        render::GpuCompletionPoint graphicsPoint, copyPoint;
+        render::SemaphoreSubmitDesc graphicsWait{.semaphore = graphicsGate.get(), .value = 1};
+        render::SemaphoreSubmitDesc copyWait{.semaphore = copyGate.get(), .value = 1};
+        FRAME_REQUIRE(graphics.submitSegment({.waitSemaphores = &graphicsWait, .waitSemaphoreCount = 1}, frame, graphicsPoint));
+        FRAME_REQUIRE(copy.submitSegment({.waitSemaphores = &copyWait, .waitSemaphoreCount = 1}, frame, copyPoint));
+        std::vector<render::SemaphoreSubmitDesc> waits;
+        if (batch.isSubmitted() || batch.isComplete() || batch.wait(0) || batch.appendWaits(waits) || frame.begin(1, 0)) {
+            return RhiTestResult::fail("open submission batch was reusable or waitable");
+        }
+        // Simulate a later submission rejected before reaching the driver.
+        render::GpuCompletionPoint failed;
+        if (copy.submitSegment({.commandBufferCount = 1}, frame, failed) || failed.valid()) {
+            return RhiTestResult::fail("failed segment acquired a completion value");
+        }
+        frame.cancel();
+        if (!batch.isSubmitted() || batch.isCancelled() || batch.value() != 0) {
+            return RhiTestResult::fail("partial multi-queue batch was cancelled instead of sealed");
+        }
+        FRAME_REQUIRE(batch.appendWaits(waits));
+        FRAME_REQUIRE(batch.appendWaits(waits));
+        if (waits.size() != 2) { return RhiTestResult::fail("composite waits were not coalesced per queue"); }
+        FRAME_REQUIRE(graphicsGate->signal(1));
+        FRAME_REQUIRE(graphicsPoint.wait(kWaitTimeout));
+        retired.collect();
+        if (batch.isComplete() || batch.wait(0) || copyPoint.isComplete() || weak.expired()) {
+            return RhiTestResult::fail("graphics completion prematurely retired copy-queue resources");
+        }
+        FRAME_REQUIRE(copyGate->signal(1));
+        FRAME_REQUIRE(batch.wait(kWaitTimeout));
+        FRAME_REQUIRE(frame.begin(1));
+        retired.collect();
+        if (!weak.expired() || !batch.isComplete()) {
+            return RhiTestResult::fail("completed partial batch failed to release resources");
+        }
+        // Two signals from one queue collapse to the final value, while old
+        // segment points continue identifying their original submission.
+        FRAME_REQUIRE(copy.submitSegment({}, frame, copyPoint));
+        const auto oldCopy = copyPoint;
+        FRAME_REQUIRE(copy.submitSegment({}, frame, copyPoint));
+        FRAME_REQUIRE(frame.finishSubmission());
+        FRAME_REQUIRE(frame.wait(kWaitTimeout));
+        if (oldCopy.value() != 2 || copyPoint.value() != 3 || frame.completion().value() != 3) {
+            return RhiTestResult::fail("failed segment consumed a timeline value or rewrote old completion");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+class FrameGraphTransferPass final : public render::RenderGraphPass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsAsyncQueue() const override { return true; }
+    render::QueueType queueType() const override
+    {
+        const std::string queue = properties().value("queue", std::string("graphics"));
+        return queue == "copy" ? render::QueueType::Copy : queue == "compute"
+            ? render::QueueType::Compute : render::QueueType::Graphics;
+    }
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        if (properties().value("copy", false)) {
+            reflection.addBufferInput("source").buffer(16).transferRead();
+        }
+        reflection.addBufferOutput("data").buffer(16).transferWrite();
+        return reflection;
+    }
+    render::Result execute(render::RenderGraphExecutionContext& context) override
+    {
+        if (properties().value("fail", false)) { return render::makeError(render::Error::Failure); }
+        auto* output = context.outputBuffer("data").buffer();
+        if (properties().value("copy", false)) {
+            context.commandBuffer().copyBuffer({.source = context.inputBuffer("source").buffer(),
+                .destination = output, .size = 16});
+            return {};
+        }
+        const uint32_t value = 100 + static_cast<uint32_t>(context.frameIndex());
+        const std::array<uint32_t, 4> words{value, value + 1, value + 2, value + 3};
+        const render::StreamDataChunk chunk{.data = words.data(), .size = sizeof(words)};
+        return context.streamer()->streamBufferData({.dataChunks = &chunk, .dataChunkCount = 1,
+            .dstBuffer = output}).valid() ? render::Result{} : render::makeError(render::Error::Failure);
+    }
+};
+
+class FrameGraphHistoryPass final : public render::UnsafePass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferInput("source").buffer(16).transferRead();
+        reflection.addBufferOutput("data").buffer(16).transferWrite();
+        return reflection;
+    }
+    render::Result execute(render::RenderGraphExecutionContext& context) override
+    {
+        auto* history = context.historyResources();
+        if (history == nullptr) { return render::makeError(render::Error::InvalidArgument); }
+        render::Result result = history->ensureBuffer("self-submit-history", {.size = 16,
+            .usage = render::BufferUsageBits::TransferSource | render::BufferUsageBits::TransferDestination});
+        if (!result) { return result; }
+        result = history->transitionBuffer(context.commandBuffer(), "self-submit-history",
+            render::HistorySlot::Current, render::ResourceState::TransferDestination);
+        if (!result) { return result; }
+        auto* source = context.inputBuffer("source").buffer();
+        context.commandBuffer().copyBuffer({.source = source,
+            .destination = history->buffer("self-submit-history", render::HistorySlot::Current).buffer, .size = 16});
+        if (history->hasPrevious("self-submit-history")) {
+            result = history->transitionBuffer(context.commandBuffer(), "self-submit-history",
+                render::HistorySlot::Previous, render::ResourceState::TransferSource);
+            if (!result) { return result; }
+            source = history->buffer("self-submit-history", render::HistorySlot::Previous).buffer;
+        }
+        context.commandBuffer().copyBuffer({.source = source,
+            .destination = context.outputBuffer("data").buffer(), .size = 16});
+        history->markWritten("self-submit-history");
+        return {};
+    }
+};
+
+void registerFrameGraphTransferPass()
+{
+    static const bool registered = [] {
+        render::registerRenderGraphPassType("FrameGraphHistoryPass", "Self submission test history",
+            [] { return std::make_unique<FrameGraphHistoryPass>(); });
+        render::registerRenderGraphPassType("FrameGraphTransferPass", "Frame submission test transfer",
+            [] { return std::make_unique<FrameGraphTransferPass>(); });
+        return true;
+    }();
+    (void)registered;
+}
+
+class FrameSelfSubmitTwoSlotTest : public RhiTest {
+public:
+    FrameSelfSubmitTwoSlotTest() { type = RhiTestType::Rendering; name = "frame_self_submit_two_slots"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        auto* copyQueue = context.device.getQueue(render::QueueType::Copy);
+        if (copyQueue == nullptr) { return RhiTestResult::skip("independent copy queue unavailable"); }
+        registerFrameGraphTransferPass();
+        render::RenderGraph graph;
+        graph.addNode("TriangleRasterPass", "Triangle");
+        graph.addNode("FrameGraphTransferPass", "Upload", {{"queue", "copy"}});
+        graph.markOutput("Triangle.color");
+        graph.markOutput("Upload.data");
+        render::RenderGraphExecutor executor;
+        Commands blockedGraphics, consumer;
+        render::QueueSubmissionTracker blocker, consumerTracker;
+        std::unique_ptr<render::Buffer> consumerReadback;
+        std::unique_ptr<render::Semaphore> gate;
+        FRAME_REQUIRE(blocker.initialize(context.device, context.graphicsQueue));
+        FRAME_REQUIRE(blockedGraphics.initialize(context.device, context.graphicsQueue));
+        FRAME_REQUIRE(context.device.createSemaphore(gate));
+        FRAME_REQUIRE(consumer.initialize(context.device, *copyQueue));
+        FRAME_REQUIRE(consumerTracker.initialize(context.device, *copyQueue));
+        FRAME_REQUIRE(context.device.createBuffer({.size = 16,
+            .usage = render::BufferUsageBits::TransferDestination,
+            .memoryLocation = render::MemoryLocation::HostReadback,
+            .queueAccess = render::QueueAccessBits::Copy}, consumerReadback));
+        std::string log;
+        FRAME_REQUIRE(executor.compile(context.device, graph, 16, 16, log));
+        DeviceDrain drain{context.device, gate.get()};
+        GateWatchdog watchdog(*gate);
+        FRAME_REQUIRE(blockedGraphics.begin(0));
+        FRAME_REQUIRE(blockedGraphics.submit(blocker, gate.get()));
+        render::RenderGraphSubmitDesc submit{.graphicsQueue = &context.graphicsQueue,
+            .copyQueue = copyQueue, .slotWaitTimeoutNanoseconds = 0};
+        FRAME_REQUIRE(executor.execute(submit));
+        const auto first = executor.lastSubmittedCompletion();
+        std::vector<render::SemaphoreSubmitDesc> waits;
+        FRAME_REQUIRE(first.appendWaits(waits));
+        size_t finished = 0;
+        for (const auto& wait : waits) {
+            if (wait.semaphore->wait(wait.value, 300'000'000ull)) { ++finished; }
+        }
+        if (waits.size() != 2 || finished != 1 || first.isComplete()) {
+            return RhiTestResult::fail("independent copy branch was blocked by the graphics branch");
+        }
+        std::array<uint32_t, 4> actual{};
+        if (!readWords(*executor.outputResource("Upload.data")->buffer, actual.data(), actual.size()) ||
+            actual != std::array<uint32_t, 4>{100, 101, 102, 103}) {
+            return RhiTestResult::fail("copy-queue upload did not finish while graphics was blocked");
+        }
+        FRAME_REQUIRE(executor.execute(submit));
+        const auto second = executor.lastSubmittedCompletion();
+        const uint64_t recorded = executor.streamingStats().frameIndex;
+        if (first.isComplete() || second.isComplete() || executor.execute(submit) ||
+            !executor.compiled() || executor.streamingStats().frameIndex != recorded || executor.waitForSubmittedWork(0)) {
+            return RhiTestResult::fail("self submission failed two-slot overlap/backpressure contract");
+        }
+        // Consume the pending graph on an externally recorded command buffer.
+        // transitionOutput attaches the aggregate wait to Queue::submit.
+        FRAME_REQUIRE(consumer.begin(0));
+        FRAME_REQUIRE(executor.transitionOutput(*consumer.buffer, "Upload.data", render::ResourceState::TransferSource));
+        FRAME_REQUIRE(consumer.buffer->addDependency(second)); // Duplicate is coalesced.
+        consumer.buffer->copyBuffer({.source = executor.outputResource("Upload.data")->buffer,
+            .destination = consumerReadback.get(), .size = 16});
+        FRAME_REQUIRE(consumer.submit(consumerTracker));
+        if (consumer.frame.completion().isComplete()) {
+            return RhiTestResult::fail("external consumer ignored pending graph completion");
+        }
+        FRAME_REQUIRE(gate->signal(1));
+        watchdog.worker.request_stop();
+        FRAME_REQUIRE(consumer.frame.wait(kWaitTimeout));
+        if (!readWords(*consumerReadback, actual.data(), actual.size()) ||
+            actual != std::array<uint32_t, 4>{101, 102, 103, 104}) {
+            return RhiTestResult::fail("pending self-to-external handoff copied the wrong frame");
+        }
+        submit.slotWaitTimeoutNanoseconds = kWaitTimeout;
+        for (uint32_t index = 2; index < 6; ++index) { FRAME_REQUIRE(executor.execute(submit)); }
+        FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+        if (!first.isComplete() || !second.isComplete() ||
+            !readWords(*executor.outputResource("Upload.data")->buffer, actual.data(), actual.size()) ||
+            actual != std::array<uint32_t, 4>{105, 106, 107, 108}) {
+            return RhiTestResult::fail("self-submitted upload data was corrupted through slot reuse");
+        }
+        FRAME_REQUIRE(executor.compile(context.device, graph, 24, 24, log));
+        return RhiTestResult::pass();
+    }
+};
+
+class FrameCrossQueueGraphTest : public RhiTest {
+public:
+    FrameCrossQueueGraphTest() { type = RhiTestType::Rendering; name = "frame_cross_queue_graph_dependencies"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        auto* compute = context.device.getQueue(render::QueueType::Compute);
+        auto* copy = context.device.getQueue(render::QueueType::Copy);
+        if (compute == nullptr || copy == nullptr) { return RhiTestResult::skip("compute/copy queue unavailable"); }
+        registerFrameGraphTransferPass();
+        render::RenderGraph graph;
+        graph.addNode("FrameGraphTransferPass", "Upload", {{"queue", "copy"}});
+        graph.addNode("FrameGraphTransferPass", "Compute", {{"queue", "compute"}, {"copy", true}});
+        graph.addNode("FrameGraphTransferPass", "Graphics", {{"copy", true}});
+        graph.addNode("FrameGraphTransferPass", "FanOut", {{"queue", "copy"}, {"copy", true}});
+        graph.addNode("FrameGraphHistoryPass", "History");
+        graph.addNode("TriangleRasterPass", "Triangle");
+        graph.addNode("CopyColorPass", "TextureCopy");
+        graph.addEdge("Upload.data", "Compute.source");
+        graph.addEdge("Compute.data", "Graphics.source");
+        graph.addEdge("Compute.data", "FanOut.source");
+        graph.addEdge("Triangle.color", "TextureCopy.source");
+        graph.addEdge("Upload.data", "History.source");
+        graph.markOutput("Graphics.data");
+        graph.markOutput("FanOut.data");
+        graph.markOutput("TextureCopy.color");
+        graph.markOutput("History.data");
+        render::HistoryResourceManager history;
+        FRAME_REQUIRE(history.initialize(context.device));
+        render::RenderGraphExecutor executor;
+        std::string log;
+        FRAME_REQUIRE(executor.compile(context.device, graph, 16, 16, log));
+        DeviceDrain drain{context.device};
+        const render::RenderGraphSubmitDesc submit{.graphicsQueue = &context.graphicsQueue,
+            .computeQueue = compute, .copyQueue = copy, .historyResources = &history};
+        for (uint32_t index = 0; index < 6; ++index) { FRAME_REQUIRE(executor.execute(submit)); }
+        FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+        for (const auto* name : {"Graphics.data", "FanOut.data"}) {
+            std::array<uint32_t, 4> actual{};
+            if (!readWords(*executor.outputResource(name)->buffer, actual.data(), actual.size()) ||
+                actual != std::array<uint32_t, 4>{105, 106, 107, 108}) {
+                return RhiTestResult::fail("cross-queue dependency chain/fan-out copied stale data");
+            }
+        }
+        std::array<uint32_t, 4> previous{};
+        if (!readWords(*executor.outputResource("History.data")->buffer, previous.data(), previous.size()) ||
+            previous != std::array<uint32_t, 4>{104, 105, 106, 107}) {
+            return RhiTestResult::fail("self-submitted history was not advanced/ordered across frames");
+        }
+        // Switching to caller-owned graphics commands requires a drain and an
+        // acquire barrier for graph outputs last used on the copy queue.
+        Commands readback;
+        render::QueueSubmissionTracker tracker;
+        std::unique_ptr<render::Buffer> pixels;
+        FRAME_REQUIRE(readback.initialize(context.device, context.graphicsQueue));
+        FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
+        FRAME_REQUIRE(context.device.createBuffer({.size = 16 * 16 * 4,
+            .usage = render::BufferUsageBits::TransferDestination,
+            .memoryLocation = render::MemoryLocation::HostReadback}, pixels));
+        FRAME_REQUIRE(readback.begin(6));
+        FRAME_REQUIRE(executor.transitionOutput(*readback.buffer, "TextureCopy.color", render::ResourceState::TransferSource));
+        readback.buffer->copyTextureToBuffer({.texture = executor.outputResource("TextureCopy.color")->texture,
+            .buffer = pixels.get(), .width = 16, .height = 16});
+        FRAME_REQUIRE(readback.submit(tracker));
+        FRAME_REQUIRE(readback.frame.wait(kWaitTimeout));
+        std::array<uint32_t, 256> image{};
+        if (!readWords(*pixels, image.data(), image.size()) || image[0] == image[136]) {
+            return RhiTestResult::fail("graphics-to-copy texture transition lost rendered contents");
+        }
+        // A recording failure must cancel the new slot and require recompilation,
+        // without replacing a previously returned successful completion point.
+        const auto good = executor.lastSubmittedCompletion();
+        graph.addNode("FrameGraphTransferPass", "Failure", {{"fail", true}});
+        graph.markOutput("Failure.data");
+        FRAME_REQUIRE(executor.compile(context.device, graph, 16, 16, log));
+        if (executor.execute(submit) || executor.compiled() || !executor.lastSubmittedCompletion().sameSubmission(good)) {
+            return RhiTestResult::fail("failed graph recording remained executable or published a false completion");
+        }
+        FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+        FRAME_REQUIRE(executor.compile(context.device, render::RenderGraph::createDefaultTriangleGraph(), 16, 16, log));
+        FRAME_REQUIRE(executor.execute(submit));
+        FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(FrameMultiQueueCompletionTest);
+METALLIC_REGISTER_RHI_TEST(FrameSelfSubmitTwoSlotTest);
+METALLIC_REGISTER_RHI_TEST(FrameCrossQueueGraphTest);
+
 METALLIC_REGISTER_RHI_TEST(FrameTwoSlotGraphTest);
 METALLIC_REGISTER_RHI_TEST(FrameCompletionLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(FrameUploadLifetimeTest);

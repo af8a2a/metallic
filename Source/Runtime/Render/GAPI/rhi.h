@@ -419,6 +419,9 @@ struct TextureBarrierDesc {
     uint32_t mipCount = 1;
     uint32_t baseLayer = 0;
     uint32_t layerCount = 1;
+    // Previous access is covered by a semaphore wait on the consuming queue.
+    // The resource must be shared with this queue family; no ownership transfer.
+    bool acquireFromQueue = false;
 };
 
 struct BufferBarrierDesc {
@@ -427,6 +430,7 @@ struct BufferBarrierDesc {
     ResourceState after = ResourceState::Undefined;
     uint64_t offset = 0;
     uint64_t size = UINT64_MAX;
+    bool acquireFromQueue = false;
 };
 
 struct ClusterAccelerationStructureProperties {
@@ -1015,6 +1019,7 @@ struct StreamerDesc {
     };
     uint64_t dynamicBufferSizePerFrame = 1024ull * 1024ull;
     uint32_t queuedFrameCount = 2;
+    QueueAccessBits constantBufferQueueAccess = QueueAccessBits::Graphics;
 };
 
 struct StreamerPendingCopyStats {
@@ -1631,6 +1636,7 @@ private:
 };
 
 class RenderFrameContext;
+class GpuCompletionPoint;
 
 class Streamer {
 public:
@@ -1673,6 +1679,9 @@ public:
 
     Result begin(RenderFrameContext* frameContext = nullptr);
     RenderFrameContext* frameContext() const { return frameContext_; }
+    // Queue::submit merges these waits and the command buffer retains their
+    // timeline lifetimes until its next recording. Call while recording.
+    Result addDependency(const GpuCompletionPoint& completion);
     Result end();
     void beginDebugLabel(const DebugLabelDesc& desc);
     void endDebugLabel();
@@ -1735,6 +1744,9 @@ private:
     std::unique_ptr<detail::CommandBufferImpl> impl_;
     RenderFrameContext* frameContext_ = nullptr;
     std::shared_ptr<const void> frameRecording_;
+    std::vector<SemaphoreSubmitDesc> dependencyWaits_;
+    std::vector<std::shared_ptr<const void>> dependencyLifetimes_;
+    bool recording_ = false;
 
     friend class QueueSubmissionTracker;
     friend class CommandPool;

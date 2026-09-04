@@ -7,8 +7,8 @@
 
 namespace metallic::render {
 
-// Copies refer to the same one-shot submission. A recording point is neither
-// complete nor waitable; it becomes submitted only after Queue::submit succeeds.
+// Copies refer to the same one-shot recording/batch. A batch becomes waitable
+// only after it is sealed, and completes when every contributing queue finishes.
 class GpuCompletionPoint {
 public:
     bool valid() const { return state_ != nullptr; }
@@ -18,6 +18,9 @@ public:
     bool sameSubmission(const GpuCompletionPoint& other) const { return state_ == other.state_; }
     uint64_t value() const;
     Result wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
+    // Append/coalesce timeline waits. Keep this point alive until the waiting
+    // submission completes. value() is zero for a point covering multiple queues.
+    Result appendWaits(std::vector<SemaphoreSubmitDesc>& waits) const;
 
 private:
     struct State;
@@ -41,9 +44,12 @@ public:
     // Reset/discard recorded command buffers before cancelling a frame that will
     // not be submitted. Cancelled recordings must never subsequently be submitted.
     void cancel();
+    // Seal a batch after its final successful segment, including partial failure.
+    Result finishSubmission();
     Result reset();
     bool recording() const;
     void retain(std::shared_ptr<void> resource);
+    Result addDependency(GpuCompletionPoint completion);
     uint64_t frameIndex() const { return frameIndex_; }
     uint32_t slotIndex() const { return slotIndex_; }
     const GpuCompletionPoint& completion() const { return completion_; }
@@ -53,6 +59,7 @@ private:
     uint64_t frameIndex_ = 0;
     GpuCompletionPoint completion_;
     std::vector<std::shared_ptr<void>> resources_;
+    std::vector<GpuCompletionPoint> dependencies_;
     friend class QueueSubmissionTracker;
 };
 
@@ -66,6 +73,10 @@ public:
     QueueSubmissionTracker& operator=(const QueueSubmissionTracker&) = delete;
     Result initialize(Device& device, Queue& queue);
     Result submit(const QueueSubmitDesc& desc, RenderFrameContext& frame);
+    // All command buffers must be recorded before the first segment is submitted.
+    // The returned point covers this segment; frame.completion() covers the batch.
+    Result submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame,
+        GpuCompletionPoint& completion);
     Result wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
     Result reset();
 

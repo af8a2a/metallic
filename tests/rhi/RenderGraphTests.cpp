@@ -1232,8 +1232,8 @@ public:
             return RhiTestResult::fail("TriangleRasterPass is not classified as Raster/Graphics");
         }
         if (copy->kind() != render::RenderGraphPassKind::Unsafe ||
-            copy->queueType() != render::QueueType::Graphics) {
-            return RhiTestResult::fail("CopyColorPass is not classified as Unsafe/Graphics");
+            copy->queueType() != render::QueueType::Copy) {
+            return RhiTestResult::fail("CopyColorPass is not classified as Unsafe/Copy");
         }
         if (bufferWrite->kind() != render::RenderGraphPassKind::Compute ||
             bufferWrite->queueType() != render::QueueType::Compute) {
@@ -1299,7 +1299,7 @@ public:
                     passInfo.queueType == render::QueueType::Graphics;
             } else if (passInfo.type == "CopyColorPass") {
                 foundCopy = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
-                    passInfo.queueType == render::QueueType::Graphics;
+                    passInfo.queueType == render::QueueType::Copy;
             } else if (passInfo.type == "RenderGraphBufferWritePass") {
                 foundBufferWrite = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;

@@ -157,6 +157,7 @@ struct StreamerImpl {
                 .size = constantBufferStride * desc.queuedFrameCount,
                 .usage = BufferUsageBits::Constant,
                 .memoryLocation = desc.constantBufferMemoryLocation,
+                .queueAccess = desc.constantBufferQueueAccess,
             };
             std::unique_ptr<Buffer> buffer;
             Result result = device->createBuffer(bufferDesc, buffer);

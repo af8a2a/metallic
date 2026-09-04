@@ -1,15 +1,19 @@
 #include "Runtime/Render/RenderFrameContext.h"
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 namespace metallic::render {
 
 struct GpuCompletionPoint::State {
-    enum class Status { Recording, Submitted, Cancelled };
+    enum class Status { Recording, Submitting, Submitted, Cancelled };
     Status status = Status::Recording;
-    std::shared_ptr<Semaphore> timeline;
-    uint64_t value = 0;
+    struct Signal {
+        std::shared_ptr<Semaphore> timeline;
+        uint64_t value = 0;
+    };
+    std::vector<Signal> signals;
 };
 
 bool GpuCompletionPoint::isSubmitted() const
@@ -25,12 +29,13 @@ bool GpuCompletionPoint::isCancelled() const
 bool GpuCompletionPoint::isComplete() const
 {
     return state_ == nullptr || isCancelled() ||
-        (isSubmitted() && state_->timeline->currentValue() >= state_->value);
+        (isSubmitted() && std::all_of(state_->signals.begin(), state_->signals.end(),
+            [](const auto& signal) { return signal.timeline->currentValue() >= signal.value; }));
 }
 
 uint64_t GpuCompletionPoint::value() const
 {
-    return state_ != nullptr ? state_->value : 0;
+    return state_ != nullptr && state_->signals.size() == 1 ? state_->signals.front().value : 0;
 }
 
 Result GpuCompletionPoint::wait(uint64_t timeoutNanoseconds) const
@@ -41,7 +46,47 @@ Result GpuCompletionPoint::wait(uint64_t timeoutNanoseconds) const
     if (!isSubmitted()) {
         return makeError(Error::InvalidArgument);
     }
-    return state_->timeline->wait(state_->value, timeoutNanoseconds);
+    const auto begin = std::chrono::steady_clock::now();
+    for (const auto& signal : state_->signals) {
+        uint64_t remaining = timeoutNanoseconds;
+        if (remaining != UINT64_MAX) {
+            const auto elapsed = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - begin).count());
+            remaining -= std::min(remaining, elapsed);
+        }
+        Result result = signal.timeline->wait(signal.value, remaining);
+        if (!result) { return result; }
+    }
+    return {};
+}
+
+Result GpuCompletionPoint::appendWaits(std::vector<SemaphoreSubmitDesc>& waits) const
+{
+    if (state_ == nullptr || isCancelled()) { return {}; }
+    if (!isSubmitted()) { return makeError(Error::InvalidArgument); }
+    for (const auto& signal : state_->signals) {
+        const auto existing = std::find_if(waits.begin(), waits.end(),
+            [&](const auto& wait) { return wait.semaphore == signal.timeline.get(); });
+        if (existing == waits.end()) {
+            waits.push_back({.semaphore = signal.timeline.get(), .value = signal.value,
+                .stages = PipelineStageBits::AllCommands});
+        } else {
+            existing->value = std::max(existing->value, signal.value);
+            existing->stages = PipelineStageBits::AllCommands;
+        }
+    }
+    return {};
+}
+
+Result CommandBuffer::addDependency(const GpuCompletionPoint& completion)
+{
+    if (!recording_) { return makeError(Error::InvalidArgument); }
+    Result result = completion.appendWaits(dependencyWaits_);
+    if (result && completion.valid() &&
+        std::find(dependencyLifetimes_.begin(), dependencyLifetimes_.end(), completion.state_) == dependencyLifetimes_.end()) {
+        dependencyLifetimes_.push_back(completion.state_);
+    }
+    return result;
 }
 
 RenderFrameContext::~RenderFrameContext()
@@ -59,6 +104,7 @@ Result RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanosecond
         return result;
     }
     resources_.clear();
+    dependencies_.clear();
     completion_.state_ = std::make_shared<GpuCompletionPoint::State>();
     frameIndex_ = frameIndex;
     return {};
@@ -80,7 +126,23 @@ void RenderFrameContext::cancel()
     if (recording()) {
         completion_.state_->status = GpuCompletionPoint::State::Status::Cancelled;
         resources_.clear();
+        dependencies_.clear();
+    } else if (completion_.state_ != nullptr &&
+        completion_.state_->status == GpuCompletionPoint::State::Status::Submitting) {
+        // Successful segments cannot be cancelled. Preserve their resources and
+        // make the partial batch waitable before returning an error to the caller.
+        (void)finishSubmission();
     }
+}
+
+Result RenderFrameContext::finishSubmission()
+{
+    if (completion_.state_ == nullptr ||
+        completion_.state_->status != GpuCompletionPoint::State::Status::Submitting) {
+        return makeError(Error::InvalidArgument);
+    }
+    completion_.state_->status = GpuCompletionPoint::State::Status::Submitted;
+    return {};
 }
 
 Result RenderFrameContext::reset()
@@ -91,6 +153,7 @@ Result RenderFrameContext::reset()
         return result;
     }
     resources_.clear();
+    dependencies_.clear();
     completion_ = {};
     return {};
 }
@@ -100,6 +163,18 @@ void RenderFrameContext::retain(std::shared_ptr<void> resource)
     if (resource != nullptr && recording()) {
         resources_.push_back(std::move(resource));
     }
+}
+
+Result RenderFrameContext::addDependency(GpuCompletionPoint completion)
+{
+    if (!recording() || (completion.valid() && !completion.isSubmitted() && !completion.isCancelled())) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (completion.valid() && std::none_of(dependencies_.begin(), dependencies_.end(),
+            [&](const auto& point) { return point.sameSubmission(completion); })) {
+        dependencies_.push_back(std::move(completion));
+    }
+    return {};
 }
 
 QueueSubmissionTracker::~QueueSubmissionTracker()
@@ -124,8 +199,21 @@ Result QueueSubmissionTracker::initialize(Device& device, Queue& queue)
 
 Result QueueSubmissionTracker::submit(const QueueSubmitDesc& desc, RenderFrameContext& frame)
 {
-    if (queue_ == nullptr || timeline_ == nullptr || !frame.recording() ||
+    if (!frame.recording()) { return makeError(Error::InvalidArgument); }
+    GpuCompletionPoint completion;
+    Result result = submitSegment(desc, frame, completion);
+    return result ? frame.finishSubmission() : result;
+}
+
+Result QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame,
+    GpuCompletionPoint& completion)
+{
+    using State = GpuCompletionPoint::State;
+    if (queue_ == nullptr || timeline_ == nullptr || frame.completion_.state_ == nullptr ||
+        (frame.completion_.state_->status != State::Status::Recording &&
+            frame.completion_.state_->status != State::Status::Submitting) ||
         nextValue_ == UINT64_MAX ||
+        (desc.waitSemaphoreCount != 0 && desc.waitSemaphores == nullptr) ||
         (desc.signalSemaphoreCount != 0 && desc.signalSemaphores == nullptr) ||
         (desc.commandBufferCount != 0 && desc.commandBuffers == nullptr)) {
         return makeError(Error::InvalidArgument);
@@ -145,18 +233,39 @@ Result QueueSubmissionTracker::submit(const QueueSubmitDesc& desc, RenderFrameCo
         .value = nextValue_,
         .stages = PipelineStageBits::AllCommands,
     });
+    std::vector<SemaphoreSubmitDesc> waits;
+    if (desc.waitSemaphoreCount != 0) {
+        waits.assign(desc.waitSemaphores, desc.waitSemaphores + desc.waitSemaphoreCount);
+    }
+    for (const auto& point : frame.dependencies_) {
+        Result result = point.appendWaits(waits);
+        if (!result) { return result; }
+    }
     QueueSubmitDesc submission = desc;
+    submission.waitSemaphores = waits.data();
+    submission.waitSemaphoreCount = static_cast<uint32_t>(waits.size());
     submission.signalSemaphores = signals.data();
     submission.signalSemaphoreCount = static_cast<uint32_t>(signals.size());
+    auto segment = std::make_shared<State>();
+    segment->signals.push_back({timeline_, nextValue_});
+    auto& state = *frame.completion_.state_;
+    state.signals.reserve(state.signals.size() + 1);
     Result result = queue_->submit(submission);
     if (!result) {
         return result;
     }
-    auto& state = *frame.completion_.state_;
-    state.timeline = timeline_;
-    state.value = nextValue_++;
-    state.status = GpuCompletionPoint::State::Status::Submitted;
-    lastSubmission_ = frame.completion_;
+    const auto existing = std::find_if(state.signals.begin(), state.signals.end(),
+        [&](const auto& signal) { return signal.timeline == timeline_; });
+    if (existing == state.signals.end()) {
+        state.signals.push_back({timeline_, nextValue_});
+    } else {
+        existing->value = nextValue_;
+    }
+    ++nextValue_;
+    state.status = State::Status::Submitting;
+    segment->status = State::Status::Submitted;
+    completion.state_ = std::move(segment);
+    lastSubmission_ = completion;
     return {};
 }
 

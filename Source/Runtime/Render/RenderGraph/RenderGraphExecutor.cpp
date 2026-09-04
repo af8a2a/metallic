@@ -243,13 +243,20 @@ struct RenderGraphExecutor::Impl {
     struct QueueCommandContext {
         Queue* queue = nullptr;
         std::unique_ptr<CommandPool> commandPool;
-        bool resetForCurrentSubmit = false;
+    };
+
+    struct SubmissionSlot {
+        RenderFrameContext frame;
+        std::array<QueueCommandContext, 3> queues;
+        std::vector<std::unique_ptr<CommandBuffer>> commandBuffers;
+        explicit SubmissionSlot(uint32_t index) : frame(index) {}
     };
 
     struct SubmissionSegment {
-        QueueType queueType = QueueType::Graphics;
         Queue* queue = nullptr;
         CommandBuffer* commandBuffer = nullptr;
+        std::vector<size_t> predecessors;
+        GpuCompletionPoint completion;
     };
 
     struct BindlessResourcePlan {
@@ -294,10 +301,12 @@ struct RenderGraphExecutor::Impl {
     std::unique_ptr<BindlessHeap> bindlessHeap;
     std::shared_ptr<SceneResourceSnapshot> pendingSceneResourceSnapshot;
     std::vector<std::string> requiredSubsystemIds;
-    std::array<QueueCommandContext, 3> queueCommandContexts;
-    std::vector<std::unique_ptr<CommandBuffer>> submittedCommandBuffers;
-    std::unique_ptr<Semaphore> submittedTimelineSemaphore;
-    uint64_t submittedTimelineValue = 0;
+    std::array<std::unique_ptr<SubmissionSlot>, 2> submissionSlots{
+        std::make_unique<SubmissionSlot>(0), std::make_unique<SubmissionSlot>(1)};
+    std::unordered_map<Queue*, std::unique_ptr<QueueSubmissionTracker>> submissionTrackers;
+    GpuCompletionPoint lastSubmittedCompletion;
+    Queue* recordingQueue = nullptr;
+    std::unordered_map<RenderGraphResource*, Queue*> resourceQueues;
     std::unique_ptr<TimestampQueryPool> gpuTimestampQueryPool;
     std::array<GpuTimingSlot, kGpuTimingSlotCount> gpuTimingSlots;
     std::vector<RenderGraphExecutionStats> completedGpuExecutionStats;
@@ -310,6 +319,8 @@ struct RenderGraphExecutor::Impl {
     std::array<uint64_t, 5> recordedSceneStamp{};
     bool hasSubmittedWork = false;
     bool isCompiled = false;
+
+    ~Impl() { (void)waitForSubmittedWork(UINT64_MAX); }
 
     RenderUploadSubsystem* uploadSubsystem() const
     {
@@ -856,6 +867,7 @@ struct RenderGraphExecutor::Impl {
                         .mipCount = 1,
                         .layerCount = 1,
                         .memoryLocation = MemoryLocation::Device,
+                        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
                     };
 
                     Result result = graphDevice.createTexture(desc, slot.texture);
@@ -915,6 +927,9 @@ struct RenderGraphExecutor::Impl {
                     }
 
                     const bool markedBufferOutput = isOutputMarked(graph, fullName);
+                    if (markedBufferOutput || options.enablePreviewOutputAccess) {
+                        usage = addBufferUsage(usage, BufferUsageBits::TransferSource);
+                    }
                     BufferDesc desc{
                         .size = field.size,
                         .structureStride = field.structureStride,
@@ -922,6 +937,7 @@ struct RenderGraphExecutor::Impl {
                         .memoryLocation = markedBufferOutput
                             ? MemoryLocation::HostReadback
                             : field.memoryLocation,
+                        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
                     };
 
                     Result result = graphDevice.createBuffer(desc, slot.buffer);
@@ -1069,35 +1085,25 @@ struct RenderGraphExecutor::Impl {
         return 0;
     }
 
-    QueueCommandContext& queueCommandContext(QueueType type)
-    {
-        return queueCommandContexts[queueContextIndex(type)];
-    }
-
     Result waitForSubmittedWork(uint64_t timeoutNanoseconds)
     {
+        const auto begin = std::chrono::steady_clock::now();
+        auto remaining = [&]() {
+            if (timeoutNanoseconds == UINT64_MAX) { return UINT64_MAX; }
+            const auto elapsed = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - begin).count());
+            return timeoutNanoseconds - std::min(timeoutNanoseconds, elapsed);
+        };
         for (const GpuCompletionPoint& completion : externalCompletions) {
-            Result result = completion.wait(timeoutNanoseconds);
-            if (!result) {
-                return result;
-            }
+            Result result = completion.wait(remaining());
+            if (!result) { return result; }
         }
         externalCompletions.clear();
-        if (!hasSubmittedWork) {
-            return {};
+        for (const auto& slot : submissionSlots) {
+            Result result = slot->frame.wait(remaining());
+            if (!result) { return result; }
         }
-
-        if (submittedTimelineSemaphore != nullptr) {
-            Result result = submittedTimelineSemaphore->wait(submittedTimelineValue, timeoutNanoseconds);
-            if (!result) {
-                return result;
-            }
-        }
-
         hasSubmittedWork = false;
-        submittedTimelineValue = 0;
-        submittedCommandBuffers.clear();
-        submittedTimelineSemaphore.reset();
         return {};
     }
 
@@ -1264,65 +1270,17 @@ struct RenderGraphExecutor::Impl {
         activeGpuTimingValid = false;
     }
 
-    Result prepareCommandPool(QueueType type, Queue& queue, CommandPool*& outCommandPool)
+    Result prepareCommandPool(SubmissionSlot& slot, QueueType type, Queue& queue, CommandPool*& out)
     {
-        outCommandPool = nullptr;
-        QueueCommandContext& context = queueCommandContext(type);
+        QueueCommandContext& context = slot.queues[queueContextIndex(type)];
         if (context.queue != &queue || context.commandPool == nullptr) {
             context.commandPool.reset();
             Result result = device->createCommandPool(queue, context.commandPool);
-            if (!result || context.commandPool == nullptr) {
-                return result ? makeError(Error::Failure) : result;
-            }
+            if (!result) { return result; }
             context.queue = &queue;
         }
-
-        if (!context.resetForCurrentSubmit) {
-            Result result = context.commandPool->reset();
-            if (!result) {
-                return result;
-            }
-            context.resetForCurrentSubmit = true;
-        }
-
-        outCommandPool = context.commandPool.get();
-        return {};
-    }
-
-    bool hasCrossQueueResourceEdges(std::string& log) const
-    {
-        for (const auto& [inputName, outputName] : inputAliases) {
-            std::string inputPass;
-            std::string inputField;
-            std::string outputPass;
-            std::string outputField;
-            if (!splitRenderGraphFieldName(inputName, inputPass, inputField) ||
-                !splitRenderGraphFieldName(outputName, outputPass, outputField)) {
-                continue;
-            }
-
-            const CompiledNode* inputNode = compiledNode(inputPass);
-            const CompiledNode* outputNode = compiledNode(outputPass);
-            if (inputNode == nullptr || outputNode == nullptr) {
-                continue;
-            }
-
-            if (inputNode->queueType != outputNode->queueType) {
-                log = std::string("RenderGraph multi-queue submission does not yet support "
-                    "cross-queue resource edges: ") +
-                    outputName +
-                    " (" +
-                    queueTypeName(outputNode->queueType) +
-                    ") -> " +
-                    inputName +
-                    " (" +
-                    queueTypeName(inputNode->queueType) +
-                    ")";
-                return true;
-            }
-        }
-
-        return false;
+        out = context.commandPool.get();
+        return out != nullptr ? Result{} : makeError(Error::Failure);
     }
 
     Result transition(
@@ -1331,10 +1289,13 @@ struct RenderGraphExecutor::Impl {
         ResourceState state,
         RenderGraphResourceAccess access)
     {
+        Queue*& previousQueue = resourceQueues[&resource];
+        const bool acquireFromQueue = previousQueue != recordingQueue && resource.state != ResourceState::Undefined;
+        previousQueue = recordingQueue;
         const bool needsSameStateWriteBarrier =
             resource.state == state &&
             (accessWrites(resource.lastAccess) || accessWrites(access));
-        if (resource.state == state && !needsSameStateWriteBarrier) {
+        if (resource.state == state && !needsSameStateWriteBarrier && !acquireFromQueue) {
             resource.lastAccess = access;
             return {};
         }
@@ -1351,6 +1312,7 @@ struct RenderGraphExecutor::Impl {
                 .mipCount = resource.desc.mipCount,
                 .baseLayer = 0,
                 .layerCount = resource.desc.layerCount,
+                .acquireFromQueue = acquireFromQueue,
             };
             commandBuffer.barrier(BarrierDesc{
                 .textures = &barrier,
@@ -1366,6 +1328,7 @@ struct RenderGraphExecutor::Impl {
                 .after = state,
                 .offset = 0,
                 .size = resource.bufferDesc.size,
+                .acquireFromQueue = acquireFromQueue,
             };
             commandBuffer.barrier(BarrierDesc{
                 .buffers = &barrier,
@@ -1509,12 +1472,7 @@ RenderGraphExecutor::RenderGraphExecutor(RenderSubsystemHost& subsystemHost, Ren
     impl_->world = &world;
 }
 
-RenderGraphExecutor::~RenderGraphExecutor()
-{
-    if (impl_ != nullptr) {
-        (void)impl_->waitForSubmittedWork(UINT64_MAX);
-    }
-}
+RenderGraphExecutor::~RenderGraphExecutor() = default;
 RenderGraphExecutor::RenderGraphExecutor(RenderGraphExecutor&&) noexcept = default;
 RenderGraphExecutor& RenderGraphExecutor::operator=(RenderGraphExecutor&&) noexcept = default;
 
@@ -1579,14 +1537,17 @@ Result RenderGraphExecutor::compile(
     }
 
     if (impl_->device != nullptr && impl_->device != &device) {
-        for (Impl::QueueCommandContext& queueContext : impl_->queueCommandContexts) {
-            queueContext.queue = nullptr;
-            queueContext.commandPool.reset();
-            queueContext.resetForCurrentSubmit = false;
+        for (auto& slot : impl_->submissionSlots) {
+            slot->commandBuffers.clear();
+            (void)slot->frame.reset();
+            slot->queues = {};
         }
+        impl_->lastSubmittedCompletion = {};
+        impl_->submissionTrackers.clear();
         impl_->pendingSceneResourceSnapshot.reset();
     }
 
+    impl_->resourceQueues.clear();
     if (!registerBuiltInRenderSubsystems(*impl_->subsystemHost, log)) {
         impl_->isCompiled = false;
         return makeError(Error::InvalidArgument);
@@ -1600,7 +1561,7 @@ Result RenderGraphExecutor::compile(
         impl_->subsystemHost->shutdown();
     }
     Result subsystemResult = impl_->subsystemHost->initialize(device,
-        impl_->subsystemHost->frameSlotCount() != 0 ? impl_->subsystemHost->frameSlotCount() : 3, log);
+        impl_->subsystemHost->frameSlotCount() != 0 ? impl_->subsystemHost->frameSlotCount() : 2, log);
     if (!subsystemResult) {
         impl_->isCompiled = false;
         return subsystemResult;
@@ -1961,6 +1922,8 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
             impl_->externalCompletions.push_back(frame->completion());
         }
     }
+    Result dependencyResult = commandBuffer.addDependency(impl_->lastSubmittedCompletion);
+    if (!dependencyResult) { return dependencyResult; }
     impl_->historyResources = historyResources;
     std::string subsystemLog;
     const uint64_t frameIndex = impl_->executionFrameIndex++;
@@ -2072,7 +2035,7 @@ Result RenderGraphExecutor::beginSceneResourcePreparation(
         return makeError(Error::InvalidArgument);
     }
     Result result = impl_->subsystemHost->initialize(device,
-        impl_->subsystemHost->frameSlotCount() != 0 ? impl_->subsystemHost->frameSlotCount() : 3, log);
+        impl_->subsystemHost->frameSlotCount() != 0 ? impl_->subsystemHost->frameSlotCount() : 2, log);
     if (!result) {
         return result;
     }
@@ -2139,227 +2102,250 @@ void RenderGraphExecutor::acceptSceneResourcePreparation()
 
 Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 {
-    if (!impl_->isCompiled || impl_->device == nullptr) {
+    if (!impl_->isCompiled || impl_->device == nullptr || impl_->executionList.empty()) {
         return makeError(Error::InvalidArgument);
     }
 
-    impl_->historyResources = nullptr;
-    Result result = impl_->waitForSubmittedWork(UINT64_MAX);
-    if (!result) {
-        return result;
-    }
-
-    std::string crossQueueLog;
-    if (impl_->hasCrossQueueResourceEdges(crossQueueLog)) {
-        return makeError(Error::Unsupported);
-    }
-
-    std::string subsystemLog;
-    const uint64_t frameIndex = impl_->executionFrameIndex++;
-    result = impl_->subsystemHost->beginFrame(
-        frameIndex,
-        static_cast<uint32_t>(frameIndex % impl_->subsystemHost->frameSlotCount()),
-        nullptr,
-        subsystemLog);
-    if (!result) {
-        spdlog::error("[RenderGraph] {}", subsystemLog);
-        return result;
-    }
-    RenderSubsystemFrameEndScope subsystemFrameScope(*impl_->subsystemHost);
-    RenderUploadSubsystem* upload = impl_->uploadSubsystem();
-    const std::vector<RenderSubsystemId> requiredSubsystems = impl_->requiredSubsystemViews();
-    impl_->submittedCommandBuffers.clear();
-    impl_->submittedTimelineSemaphore.reset();
-    impl_->submittedTimelineValue = 0;
-
-    for (Impl::QueueCommandContext& queueContext : impl_->queueCommandContexts) {
-        queueContext.resetForCurrentSubmit = false;
-    }
-
-    impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex};
-    const auto cpuBegin = std::chrono::steady_clock::now();
-    std::vector<Impl::SubmissionSegment> segments;
-    CommandBuffer* currentCommandBuffer = nullptr;
-    QueueType currentQueueType = QueueType::Graphics;
-    bool hasCurrentSegment = false;
-    bool preGraphRecorded = false;
-
-    auto endCurrentSegment = [&]() -> Result {
-        if (currentCommandBuffer == nullptr) {
-            return {};
-        }
-        Result endResult = currentCommandBuffer->end();
-        if (!endResult) {
-            return endResult;
-        }
-        currentCommandBuffer = nullptr;
-        hasCurrentSegment = false;
-        return {};
+    // Preflight before beginning a slot or mutating subsystem/resource state.
+    // Unreviewed passes retain the universal-queue execution contract.
+    const auto selectedType = [](const Impl::CompiledNode& node) {
+        return node.pass->supportsAsyncQueue() ? node.queueType : QueueType::Graphics;
     };
-
-    auto beginSegment = [&](QueueType queueType, Queue& queue) -> Result {
-        CommandPool* commandPool = nullptr;
-        Result prepareResult = impl_->prepareCommandPool(queueType, queue, commandPool);
-        if (!prepareResult) {
-            return prepareResult;
-        }
-        if (commandPool == nullptr) {
-            return makeError(Error::Failure);
-        }
-
-        std::unique_ptr<CommandBuffer> commandBuffer;
-        Result createResult = commandPool->createCommandBuffer(commandBuffer);
-        if (!createResult || commandBuffer == nullptr) {
-            return createResult ? makeError(Error::Failure) : createResult;
-        }
-        Result beginResult = commandBuffer->begin();
-        if (!beginResult) {
-            return beginResult;
-        }
-
-        currentCommandBuffer = commandBuffer.get();
-        currentQueueType = queueType;
-        hasCurrentSegment = true;
-        segments.push_back(Impl::SubmissionSegment{
-            .queueType = queueType,
-            .queue = &queue,
-            .commandBuffer = currentCommandBuffer,
-        });
-        impl_->submittedCommandBuffers.push_back(std::move(commandBuffer));
-        return {};
+    const auto selectedQueue = [&](QueueType type) {
+        Queue* queue = queueForSubmitDesc(desc, type);
+        return queue != nullptr ? queue : desc.graphicsQueue;
     };
-
-    for (Impl::CompiledNode& node : impl_->executionList) {
-        Queue* queue = queueForSubmitDesc(desc, node.queueType);
-        if (queue == nullptr) {
+    const bool subsystemCommands = impl_->requiredSubsystemIds.size() > 1;
+    if (desc.graphicsQueue != nullptr && desc.graphicsQueue->type() != QueueType::Graphics) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (subsystemCommands && desc.graphicsQueue == nullptr) { return makeError(Error::InvalidArgument); }
+    for (const auto& node : impl_->executionList) {
+        const QueueType type = selectedType(node);
+        Queue* queue = selectedQueue(type);
+        if (queue == nullptr || (type == QueueType::Graphics && queue->type() != QueueType::Graphics) ||
+            (type == QueueType::Compute && queue->type() == QueueType::Copy)) {
             return makeError(Error::InvalidArgument);
         }
-        if (!hasCurrentSegment || node.queueType != currentQueueType) {
-            result = endCurrentSegment();
-            if (!result) {
-                return result;
-            }
-            result = beginSegment(node.queueType, *queue);
-            if (!result) {
-                return result;
+    }
+    std::vector<SemaphoreSubmitDesc> initialWaits;
+    for (const auto& point : desc.waitCompletions) {
+        Result result = point.appendWaits(initialWaits);
+        if (!result) { return result; }
+    }
+
+    const auto externalDependencies = impl_->externalCompletions;
+    const scene::Scene* scene = impl_->runtimeScene;
+    const std::array<uint64_t, 5> sceneStamp = scene != nullptr
+        ? std::array<uint64_t, 5>{scene->resourceIdentity(), scene->contentRevision(),
+            scene->sceneGraph().structuralRevision(), scene->transformRevision(), scene->visibilityRevision()}
+        : std::array<uint64_t, 5>{};
+    const bool requiresCompletedFrame = std::any_of(impl_->executionList.begin(), impl_->executionList.end(),
+        [](const auto& node) { return !node.pass->supportsFrameOverlap(); });
+    if (requiresCompletedFrame || sceneStamp != impl_->recordedSceneStamp || !impl_->externalCompletions.empty()) {
+        Result result = impl_->waitForSubmittedWork(desc.slotWaitTimeoutNanoseconds);
+        if (!result) { return result; }
+    }
+
+    const uint64_t frameIndex = impl_->executionFrameIndex;
+    const uint32_t slotCount = std::min(2u, impl_->subsystemHost->frameSlotCount());
+    if (slotCount == 0) { return makeError(Error::InvalidArgument); }
+    Impl::SubmissionSlot& slot = *impl_->submissionSlots[frameIndex % slotCount];
+    Result result = slot.frame.wait(desc.slotWaitTimeoutNanoseconds);
+    if (!result) { return result; }
+    slot.commandBuffers.clear();
+    for (auto& context : slot.queues) {
+        if (context.commandPool != nullptr) {
+            result = context.commandPool->reset();
+            if (!result) { return result; }
+        }
+    }
+    result = slot.frame.begin(frameIndex, 0);
+    if (!result) { return result; }
+    // Shared graph targets/history remain ordered across frames on the GPU.
+    // This bounds CPU recording to two slots without cloning persistent targets.
+    result = impl_->lastSubmittedCompletion.appendWaits(initialWaits);
+    if (!result) { slot.frame.cancel(); return result; }
+    slot.frame.retain(std::make_shared<GpuCompletionPoint>(impl_->lastSubmittedCompletion));
+    for (const auto& point : desc.waitCompletions) {
+        slot.frame.retain(std::make_shared<GpuCompletionPoint>(point));
+    }
+    for (const auto& point : externalDependencies) {
+        result = slot.frame.addDependency(point);
+        if (!result) { slot.frame.cancel(); return result; }
+    }
+    impl_->recordedSceneStamp = sceneStamp;
+    impl_->historyResources = desc.historyResources;
+    const auto cpuBegin = std::chrono::steady_clock::now();
+    impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex};
+    const auto updateCpuTime = [&]() {
+        impl_->lastExecutionStats.cpuMilliseconds = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - cpuBegin).count();
+    };
+    const auto abort = [&](Result failure) {
+        impl_->recordingQueue = nullptr;
+        impl_->historyResources = nullptr;
+        if (slot.frame.recording()) {
+            slot.commandBuffers.clear();
+            for (auto& context : slot.queues) {
+                if (context.commandPool != nullptr) { (void)context.commandPool->reset(); }
             }
         }
-
-        if (!preGraphRecorded) {
-            result = impl_->subsystemHost->recordPreGraph(
-                *currentCommandBuffer,
-                upload != nullptr ? upload->streamer() : nullptr,
-                requiredSubsystems,
-                subsystemLog);
-            if (!result) {
-                spdlog::error("[RenderGraph] {}", subsystemLog);
-                std::string cleanupLog;
-                (void)impl_->subsystemHost->recordPostGraph(
-                    *currentCommandBuffer,
-                    upload != nullptr ? upload->streamer() : nullptr,
-                    requiredSubsystems,
-                    cleanupLog);
-                return result;
-            }
-            if (upload != nullptr) {
-                upload->flush(*currentCommandBuffer);
-            }
-            preGraphRecorded = true;
+        slot.frame.cancel(); // Seals successful segments instead of releasing their resources.
+        if (slot.frame.completion().isSubmitted()) {
+            impl_->lastSubmittedCompletion = slot.frame.completion();
+            impl_->hasSubmittedWork = true;
         }
+        // Resource states were advanced while recording. Recompile before retrying.
+        impl_->isCompiled = false;
+        if (desc.historyResources != nullptr) {
+            desc.historyResources->reset();
+            (void)desc.historyResources->initialize(*impl_->device);
+        }
+        updateCpuTime();
+        return failure;
+    };
 
-        result = impl_->executeNode(*currentCommandBuffer, node, frameIndex);
+    std::string log;
+    if (desc.historyResources != nullptr) { desc.historyResources->beginFrame(frameIndex); }
+    result = impl_->subsystemHost->beginFrame(frameIndex, slot.frame.slotIndex(),
+        desc.historyResources, log, &slot.frame);
+    if (!result) { return abort(result); }
+    RenderSubsystemFrameEndScope subsystemFrameScope(*impl_->subsystemHost);
+    RenderUploadSubsystem* upload = impl_->uploadSubsystem();
+    const auto requiredSubsystems = impl_->requiredSubsystemViews();
+    std::vector<Impl::SubmissionSegment> segments;
+    const auto beginSegment = [&](QueueType type) -> Result {
+        Queue* queue = selectedQueue(type);
+        CommandPool* pool = nullptr;
+        Result created = impl_->prepareCommandPool(slot, type, *queue, pool);
+        if (!created) { return created; }
+        auto& tracker = impl_->submissionTrackers[queue];
+        if (tracker == nullptr) {
+            tracker = std::make_unique<QueueSubmissionTracker>();
+            created = tracker->initialize(*impl_->device, *queue);
+            if (!created) { tracker.reset(); return created; }
+        }
+        std::unique_ptr<CommandBuffer> buffer;
+        created = pool->createCommandBuffer(buffer);
+        if (!created) { return created; }
+        slot.commandBuffers.push_back(std::move(buffer));
+        CommandBuffer* commands = slot.commandBuffers.back().get();
+        created = commands->begin(&slot.frame);
+        if (!created) { return created; }
+        segments.push_back({.queue = queue, .commandBuffer = commands});
+        impl_->recordingQueue = queue;
+        return {};
+    };
+    const auto addDependency = [&](size_t destination, size_t source) {
+        auto& predecessors = segments[destination].predecessors;
+        if (source != destination && std::find(predecessors.begin(), predecessors.end(), source) == predecessors.end()) {
+            predecessors.push_back(source);
+        }
+    };
+    // The always-present scene resource registry/upload subsystem has no GPU
+    // hooks. Explicit subsystem requirements get graphics prologue/epilogue
+    // boundaries because their private resource accesses are not graph fields.
+    if (subsystemCommands) {
+        result = beginSegment(QueueType::Graphics);
+        if (!result) { return abort(result); }
+        auto& commands = *segments.back().commandBuffer;
+        result = impl_->subsystemHost->recordPreGraph(commands,
+            upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, log);
         if (!result) {
             std::string cleanupLog;
-            (void)impl_->subsystemHost->recordPostGraph(
-                *currentCommandBuffer,
-                upload != nullptr ? upload->streamer() : nullptr,
-                requiredSubsystems,
-                cleanupLog);
-            const auto cpuEnd = std::chrono::steady_clock::now();
-            impl_->lastExecutionStats.cpuMilliseconds =
-                std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
-            return result;
+            (void)impl_->subsystemHost->recordPostGraph(commands,
+                upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, cleanupLog);
+            return abort(result);
         }
+        if (upload != nullptr) { upload->flush(commands); }
+        result = commands.end();
+        if (!result) { return abort(result); }
     }
 
-    if (currentCommandBuffer != nullptr) {
-        result = impl_->subsystemHost->recordPostGraph(
-            *currentCommandBuffer,
-            upload != nullptr ? upload->streamer() : nullptr,
-            requiredSubsystems,
-            subsystemLog);
-        if (!result) {
-            spdlog::error("[RenderGraph] {}", subsystemLog);
-            return result;
+    std::unordered_map<std::string, size_t> lastResourceUse;
+    size_t orderingBoundary = subsystemCommands ? 0 : SIZE_MAX;
+    for (auto& node : impl_->executionList) {
+        result = beginSegment(selectedType(node));
+        if (!result) { return abort(result); }
+        const size_t index = segments.size() - 1;
+        if (orderingBoundary != SIZE_MAX) { addDependency(index, orderingBoundary); }
+        const bool opaque = !node.pass->supportsAsyncQueue();
+        if (opaque) {
+            for (size_t previous = 0; previous < index; ++previous) { addDependency(index, previous); }
+            orderingBoundary = index;
         }
-    }
-
-    result = endCurrentSegment();
-    if (!result) {
-        const auto cpuEnd = std::chrono::steady_clock::now();
-        impl_->lastExecutionStats.cpuMilliseconds =
-            std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
-        return result;
-    }
-
-    if (segments.empty()) {
-        return makeError(Error::InvalidArgument);
-    }
-
-    result = impl_->device->createSemaphore(impl_->submittedTimelineSemaphore);
-    if (!result || impl_->submittedTimelineSemaphore == nullptr) {
-        return result ? makeError(Error::Failure) : result;
-    }
-
-    for (size_t index = 0; index < segments.size(); ++index) {
-        Impl::SubmissionSegment& segment = segments[index];
-        CommandBuffer* commandBuffers[] = {segment.commandBuffer};
-
-        SemaphoreSubmitDesc waitSemaphore{};
-        const bool waitsOnPrevious = index > 0;
-        if (waitsOnPrevious) {
-            waitSemaphore = SemaphoreSubmitDesc{
-                .semaphore = impl_->submittedTimelineSemaphore.get(),
-                .value = static_cast<uint64_t>(index),
-                .stages = PipelineStageBits::AllCommands,
-            };
-        }
-
-        SemaphoreSubmitDesc signalSemaphore{
-            .semaphore = impl_->submittedTimelineSemaphore.get(),
-            .value = static_cast<uint64_t>(index + 1),
-            .stages = PipelineStageBits::AllCommands,
-        };
-
-        result = segment.queue->submit(QueueSubmitDesc{
-            .waitSemaphores = waitsOnPrevious ? &waitSemaphore : nullptr,
-            .waitSemaphoreCount = waitsOnPrevious ? 1u : 0u,
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
-            .signalSemaphores = &signalSemaphore,
-            .signalSemaphoreCount = 1,
-        });
-        if (!result) {
-            impl_->hasSubmittedWork = index > 0;
-            impl_->submittedTimelineValue = static_cast<uint64_t>(index);
-            if (!impl_->hasSubmittedWork) {
-                impl_->submittedCommandBuffers.clear();
-                impl_->submittedTimelineSemaphore.reset();
-                impl_->submittedTimelineValue = 0;
+        // Conservatively order every use, including readers: image layout
+        // transitions themselves can write memory. Disjoint branches stay independent.
+        for (const auto& field : node.reflection.fields()) {
+            std::string name = makeRenderGraphFieldName(node.name, field.name);
+            if (field.visibility != RenderGraphFieldVisibility::Output) {
+                const auto alias = impl_->inputAliases.find(name);
+                if (alias == impl_->inputAliases.end()) { continue; }
+                name = alias->second;
             }
-            const auto cpuEnd = std::chrono::steady_clock::now();
-            impl_->lastExecutionStats.cpuMilliseconds =
-                std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
-            return result;
+            const auto previous = lastResourceUse.find(name);
+            if (previous != lastResourceUse.end()) { addDependency(index, previous->second); }
+            lastResourceUse[name] = index;
         }
-        impl_->hasSubmittedWork = true;
-        impl_->submittedTimelineValue = static_cast<uint64_t>(index + 1);
+        result = impl_->executeNode(*segments[index].commandBuffer, node, frameIndex);
+        if (!result) {
+            if (subsystemCommands && beginSegment(QueueType::Graphics)) {
+                std::string cleanupLog;
+                (void)impl_->subsystemHost->recordPostGraph(*segments.back().commandBuffer,
+                    upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, cleanupLog);
+            }
+            return abort(result);
+        }
+        result = segments[index].commandBuffer->end();
+        if (!result) { return abort(result); }
     }
+    if (subsystemCommands) {
+        result = beginSegment(QueueType::Graphics);
+        if (!result) { return abort(result); }
+        const size_t index = segments.size() - 1;
+        for (size_t previous = 0; previous < index; ++previous) { addDependency(index, previous); }
+        result = impl_->subsystemHost->recordPostGraph(*segments[index].commandBuffer,
+            upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, log);
+        if (!result) { return abort(result); }
+        result = segments[index].commandBuffer->end();
+        if (!result) { return abort(result); }
+    }
+    impl_->recordingQueue = nullptr;
+    impl_->historyResources = nullptr;
 
-    const auto cpuEnd = std::chrono::steady_clock::now();
-    impl_->lastExecutionStats.cpuMilliseconds =
-        std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
+    std::unordered_set<Queue*> startedQueues;
+    for (auto& segment : segments) {
+        std::vector<SemaphoreSubmitDesc> waits;
+        if (startedQueues.insert(segment.queue).second) { waits = initialWaits; }
+        for (size_t predecessor : segment.predecessors) {
+            const auto& producer = segments[predecessor];
+            if (producer.queue != segment.queue) {
+                result = producer.completion.appendWaits(waits);
+                if (!result) { return abort(result); }
+            }
+        }
+        CommandBuffer* buffer = segment.commandBuffer;
+        result = impl_->submissionTrackers.at(segment.queue)->submitSegment(QueueSubmitDesc{
+            .waitSemaphores = waits.data(),
+            .waitSemaphoreCount = static_cast<uint32_t>(waits.size()),
+            .commandBuffers = &buffer,
+            .commandBufferCount = 1,
+        }, slot.frame, segment.completion);
+        if (!result) { return abort(result); }
+    }
+    result = slot.frame.finishSubmission();
+    if (!result) { return abort(result); }
+    impl_->lastSubmittedCompletion = slot.frame.completion();
+    impl_->hasSubmittedWork = true;
+    ++impl_->executionFrameIndex;
+    updateCpuTime();
     return {};
+}
+
+GpuCompletionPoint RenderGraphExecutor::lastSubmittedCompletion() const
+{
+    return impl_->lastSubmittedCompletion;
 }
 
 Result RenderGraphExecutor::waitForSubmittedWork(uint64_t timeoutNanoseconds)
@@ -2408,6 +2394,16 @@ Result RenderGraphExecutor::transitionOutput(
     RenderGraphResource* resource = outputResource(fullName);
     if (resource == nullptr) {
         return makeError(Error::InvalidArgument);
+    }
+    if (impl_->lastSubmittedCompletion.valid()) {
+        Result result = commandBuffer.addDependency(impl_->lastSubmittedCompletion);
+        if (!result) { return result; }
+        if (auto* frame = commandBuffer.frameContext()) {
+            if (std::none_of(impl_->externalCompletions.begin(), impl_->externalCompletions.end(),
+                    [&](const auto& point) { return point.sameSubmission(frame->completion()); })) {
+                impl_->externalCompletions.push_back(frame->completion());
+            }
+        }
     }
     return impl_->transition(
         commandBuffer,

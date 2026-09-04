@@ -12,6 +12,8 @@ StreamerDesc defaultRenderGraphStreamerDesc()
     desc.dynamicBufferDesc.usage = BufferUsageBits::TransferSource |
         BufferUsageBits::Storage |
         BufferUsageBits::Constant;
+    desc.dynamicBufferDesc.queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy;
+    desc.constantBufferQueueAccess = desc.dynamicBufferDesc.queueAccess;
     return desc;
 }
 

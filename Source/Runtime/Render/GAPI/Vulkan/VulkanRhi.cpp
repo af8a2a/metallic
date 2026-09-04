@@ -839,12 +839,12 @@ VkCompareOp toVkCompareOp(CompareOp compareOp)
     return VK_COMPARE_OP_LESS_OR_EQUAL;
 }
 
-StateInfo stateInfo(ResourceState state)
+StateInfo stateInfo(ResourceState state, VkQueueFlags queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)
 {
     const VkPipelineStageFlags2 shaderReadStages =
-        VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT |
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        ((queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0
+            ? VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : 0) |
+        ((queueFlags & VK_QUEUE_COMPUTE_BIT) != 0 ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0);
 
     switch (state) {
     case ResourceState::Undefined:
@@ -3603,6 +3603,18 @@ Result Queue::submit(const QueueSubmitDesc& desc)
         if (commandBuffer == nullptr || commandBuffer->impl_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
+        for (const auto& wait : commandBuffer->dependencyWaits_) {
+            const VkSemaphore semaphore = wait.semaphore->impl_->semaphore;
+            const auto existing = std::find_if(waitSemaphores.begin(), waitSemaphores.end(),
+                [&](const auto& entry) { return entry.semaphore == semaphore; });
+            if (existing == waitSemaphores.end()) {
+                waitSemaphores.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                    .semaphore = semaphore, .value = wait.value, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT});
+            } else {
+                existing->value = std::max(existing->value, wait.value);
+                existing->stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            }
+        }
         commandBuffers.push_back({
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
             .commandBuffer = commandBuffer->impl_->commandBuffer,
@@ -4672,6 +4684,11 @@ Result CommandBuffer::begin(RenderFrameContext* frameContext)
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
     Result result = resultFromVk(vkBeginCommandBuffer(impl_->commandBuffer, &beginInfo));
+    recording_ = result.has_value();
+    if (result) {
+        dependencyWaits_.clear();
+        dependencyLifetimes_.clear();
+    }
     frameContext_ = result ? frameContext : nullptr;
     frameRecording_ = frameContext_ != nullptr ? frameContext_->completion().state_ : nullptr;
     return result;
@@ -4682,7 +4699,9 @@ Result CommandBuffer::end()
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    return resultFromVk(vkEndCommandBuffer(impl_->commandBuffer));
+    Result result = resultFromVk(vkEndCommandBuffer(impl_->commandBuffer));
+    if (result) { recording_ = false; }
+    return result;
 }
 
 void CommandBuffer::beginDebugLabel(const DebugLabelDesc& desc)
@@ -4854,14 +4873,14 @@ void CommandBuffer::barrier(const BarrierDesc& desc)
             continue;
         }
 
-        const StateInfo before = stateInfo(barrier.before);
-        const StateInfo after = stateInfo(barrier.after);
+        const StateInfo before = stateInfo(barrier.before, impl_->queueFlags);
+        const StateInfo after = stateInfo(barrier.after, impl_->queueFlags);
         const TextureDesc& textureDesc = barrier.texture->impl_->desc;
 
         imageBarriers.push_back({
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask = before.stage,
-            .srcAccessMask = before.access,
+            .srcStageMask = barrier.acquireFromQueue ? VK_PIPELINE_STAGE_2_NONE : before.stage,
+            .srcAccessMask = barrier.acquireFromQueue ? VK_ACCESS_2_NONE : before.access,
             .dstStageMask = after.stage,
             .dstAccessMask = after.access,
             .oldLayout = before.layout,
@@ -4888,12 +4907,12 @@ void CommandBuffer::barrier(const BarrierDesc& desc)
             continue;
         }
 
-        const StateInfo before = stateInfo(barrier.before);
-        const StateInfo after = stateInfo(barrier.after);
+        const StateInfo before = stateInfo(barrier.before, impl_->queueFlags);
+        const StateInfo after = stateInfo(barrier.after, impl_->queueFlags);
         bufferBarriers.push_back({
             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = before.stage,
-            .srcAccessMask = before.access,
+            .srcStageMask = barrier.acquireFromQueue ? VK_PIPELINE_STAGE_2_NONE : before.stage,
+            .srcAccessMask = barrier.acquireFromQueue ? VK_ACCESS_2_NONE : before.access,
             .dstStageMask = after.stage,
             .dstAccessMask = after.access,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
