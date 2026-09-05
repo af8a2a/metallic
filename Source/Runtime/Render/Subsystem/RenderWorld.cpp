@@ -44,4 +44,15 @@ RenderChangeBits RenderWorld::consumeChanges()
     return changes;
 }
 
+bool RenderWorld::setLighting(scene::LightingSettings lighting)
+{
+    if (!scene::validLightingSettings(lighting)) {
+        return false;
+    }
+    lighting_ = std::move(lighting);
+    ++lightingRevision_;
+    pendingChanges_ |= RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;
+    return true;
+}
+
 } // namespace metallic::render

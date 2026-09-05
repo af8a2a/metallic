@@ -2544,6 +2544,7 @@ void applyLightProperties(RenderLight& light, const LightProperties& properties)
     light.type = properties.type;
     light.color = properties.color;
     light.intensity = properties.intensity;
+    light.intensityUnit = properties.intensityUnit;
     light.range = properties.range;
     light.innerConeAngle = properties.innerConeAngle;
     light.outerConeAngle = properties.outerConeAngle;

@@ -1,4 +1,6 @@
-// GPU precomputation for environment spherical harmonics.
+// GPU projection and cosine convolution: irradiance SH through l=2.
+#include "SphericalHarmonics.slang"
+#include "ProceduralEnvironment.slang"
 
 static const uint kIntegratePartials = 0u;
 static const uint kFinalizeCoefficients = 1u;
@@ -22,27 +24,12 @@ struct EnvironmentLightingPrecomputePush
     uint height;
     uint partialCount;
     uint dispatchWidth;
-    uint padding0;
+    uint procedural;
     uint padding1;
     uint padding2;
 };
 
 groupshared float4 gShared[kCoefficientCount * kThreadCount];
-
-float shBasis(uint coefficientIndex, float3 direction)
-{
-    switch (coefficientIndex) {
-    case 0u: return 0.282095;
-    case 1u: return 0.488603 * direction.y;
-    case 2u: return 0.488603 * direction.z;
-    case 3u: return 0.488603 * direction.x;
-    case 4u: return 1.092548 * direction.x * direction.y;
-    case 5u: return 1.092548 * direction.y * direction.z;
-    case 6u: return 0.315392 * (3.0 * direction.z * direction.z - 1.0);
-    case 7u: return 1.092548 * direction.x * direction.z;
-    default: return 0.546274 * (direction.x * direction.x - direction.y * direction.y);
-    }
-}
 
 void integratePartials(
     uint3 groupId,
@@ -61,10 +48,11 @@ void integratePartials(
         float phi = (uv.x - 0.5) * (2.0 * kPi);
         float sineTheta = sin(theta);
         direction = float3(cos(phi) * sineTheta, cos(theta), sin(phi) * sineTheta);
-        float solidAngle = sineTheta *
-            (2.0 * kPi / float(push.width)) *
-            (kPi / float(push.height));
-        float3 radiance = gEnvironmentMap.Load(int3(texel, 0)).rgb;
+        float solidAngle = (2.0 * kPi / float(push.width)) *
+            (cos(float(texel.y) * kPi / float(push.height)) -
+                cos(float(texel.y + 1u) * kPi / float(push.height)));
+        float3 radiance = push.procedural != 0u ? proceduralEnvironmentLocalRadiance(direction)
+            : gEnvironmentMap.Load(int3(texel, 0)).rgb;
         radiance = all(isfinite(radiance)) ? max(radiance, 0.0) : float3(0.0);
         weightedRadiance = float4(radiance * solidAngle, 0.0);
     }
@@ -109,7 +97,7 @@ void finalizeCoefficient(
         GroupMemoryBarrierWithGroupSync();
     }
     if (groupThreadIndex == 0u && coefficientIndex < kCoefficientCount) {
-        gCoefficients[coefficientIndex] = gShared[0];
+        gCoefficients[coefficientIndex] = gShared[0] * shCosineConvolution(coefficientIndex);
     }
 }
 

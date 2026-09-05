@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Scene/SceneEnvironment.h"
+#include "Runtime/Scene/SceneLighting.h"
 #include "Runtime/Scene/Scene.h"
 
 #include <filesystem>
@@ -29,6 +30,8 @@ public:
     bool setSourceEnabled(std::string_view sourceId, bool enabled);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
     bool setEnvironment(EnvironmentSettings environment);
+    bool setLighting(LightingSettings lighting);
+    const LightingSettings& lighting() const { return lighting_; }
 
     bool dirty() const { return dirty_; }
     void setDirty(bool dirty) { dirty_ = dirty; }
@@ -56,6 +59,7 @@ private:
     std::filesystem::path documentPath_;
     std::string documentWarning_;
     EnvironmentSettings environment_;
+    LightingSettings lighting_;
     bool sidecarLoaded_ = false;
     bool hasEnvironmentSettings_ = false;
     bool compositionDocument_ = false;

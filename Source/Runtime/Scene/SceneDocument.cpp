@@ -48,7 +48,7 @@ bool lightPropertiesNearlyEqualForDocument(
     const LightProperties& rhs)
 {
     constexpr float kColorEpsilon = 0.000001f;
-    return lhs.type == rhs.type &&
+    return lhs.type == rhs.type && lhs.intensityUnit == rhs.intensityUnit &&
         std::abs(lhs.color.x - rhs.color.x) <= kColorEpsilon &&
         std::abs(lhs.color.y - rhs.color.y) <= kColorEpsilon &&
         std::abs(lhs.color.z - rhs.color.z) <= kColorEpsilon &&
@@ -170,6 +170,12 @@ bool parseLightProperties(
         !readOptionalFiniteNumber(value, "intensity", properties.intensity, reason)) {
         return false;
     }
+    if (value.contains("intensityUnit") &&
+        (!value["intensityUnit"].is_string() ||
+            !parseLightUnit(value["intensityUnit"].get<std::string>(), properties.intensityUnit))) {
+        reason = "intensityUnit must be si, lux, candela, lumens or ev100";
+        return false;
+    }
     if (current.type == "directional") {
         if (value.contains("range") || value.contains("innerConeAngle") ||
             value.contains("outerConeAngle")) {
@@ -223,6 +229,7 @@ nlohmann::json serializeLightProperties(const LightProperties& properties)
         {"type", properties.type},
         {"color", {properties.color.x, properties.color.y, properties.color.z}},
         {"intensity", properties.intensity},
+        {"intensityUnit", lightUnitName(properties.intensityUnit)},
     };
     if (properties.type != "directional") {
         value["range"] = properties.range;
@@ -609,6 +616,7 @@ void SceneDocument::clear()
     documentPath_.clear();
     documentWarning_.clear();
     environment_ = EnvironmentSettings{};
+    lighting_ = LightingSettings{};
     sidecarLoaded_ = false;
     hasEnvironmentSettings_ = false;
     compositionDocument_ = false;
@@ -709,6 +717,16 @@ bool SceneDocument::setEnvironment(EnvironmentSettings environment)
     return true;
 }
 
+bool SceneDocument::setLighting(LightingSettings lighting)
+{
+    if (!validLightingSettings(lighting)) {
+        return false;
+    }
+    lighting_ = std::move(lighting);
+    dirty_ = true;
+    return true;
+}
+
 bool SceneDocument::applySidecar(const std::filesystem::path& path)
 {
     nlohmann::json document;
@@ -769,11 +787,56 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
     }
 
     environment_ = EnvironmentSettings{};
+    lighting_ = LightingSettings{};
     if (version >= 2 && document.contains("world")) {
         if (!document["world"].is_object()) {
             appendWarning(documentWarning_, "Ignored a non-object world setting.");
         } else {
             const nlohmann::json& world = document["world"];
+            if (world.contains("lighting")) {
+                const auto& lighting = world["lighting"];
+                if (!lighting.is_object() ||
+                    (lighting.contains("exposureEV100") && !lighting["exposureEV100"].is_number()) ||
+                    (lighting.contains("lights") && !lighting["lights"].is_array())) {
+                    documentWarning_ = "Invalid world.lighting settings.";
+                    return false;
+                }
+                lighting_.exposureEV100 = lighting.value("exposureEV100", 0.0f);
+                if (lighting.contains("lights")) {
+                    for (const auto& value : lighting["lights"]) {
+                        PunctualLight light;
+                        std::string reason;
+                        if (!value.is_object() || !value.contains("type") ||
+                            !value["type"].is_string() ||
+                            (value.contains("name") && !value["name"].is_string()) ||
+                            (value.contains("enabled") && !value["enabled"].is_boolean())) {
+                            documentWarning_ = "Invalid world.lighting light.";
+                            return false;
+                        }
+                        light.properties.type = value["type"].get<std::string>();
+                        if (!parseLightProperties(value, light.properties, light.properties, reason)) {
+                            documentWarning_ = "Invalid world.lighting light: " + reason;
+                            return false;
+                        }
+                        auto readVector = [&](const char* key, float3& vector) {
+                            if (!value.contains(key)) { return true; }
+                            return readOptionalColor(nlohmann::json{{"color", value[key]}}, vector, reason);
+                        };
+                        if (!readVector("position", light.position) ||
+                            !readVector("direction", light.direction)) {
+                            documentWarning_ = "Invalid world.lighting pose: " + reason;
+                            return false;
+                        }
+                        light.name = value.value("name", "Light");
+                        light.enabled = value.value("enabled", true);
+                        lighting_.lights.push_back(std::move(light));
+                    }
+                }
+                if (!validLightingSettings(lighting_)) {
+                    documentWarning_ = "Invalid world.lighting physical values or light direction.";
+                    return false;
+                }
+            }
             if (world.contains("environment")) {
                 if (!world["environment"].is_object()) {
                     appendWarning(documentWarning_, "Ignored a non-object world.environment setting.");
@@ -1108,7 +1171,20 @@ bool SceneDocument::save(std::string& message)
         document["sceneIndex"] = sceneIndex();
     }
     document["nodes"] = std::move(nodeOverrides);
+    nlohmann::json serializedLights = nlohmann::json::array();
+    for (const PunctualLight& light : lighting_.lights) {
+        nlohmann::json value = serializeLightProperties(light.properties);
+        value["name"] = light.name;
+        value["enabled"] = light.enabled;
+        value["position"] = {light.position.x, light.position.y, light.position.z};
+        value["direction"] = {light.direction.x, light.direction.y, light.direction.z};
+        serializedLights.push_back(std::move(value));
+    }
     document["world"] = {
+        {"lighting", {
+            {"exposureEV100", lighting_.exposureEV100},
+            {"lights", std::move(serializedLights)},
+        }},
         {"environment", {
             {"enabled", environment_.enabled},
             {"path", serializedEnvironmentPath.generic_string()},

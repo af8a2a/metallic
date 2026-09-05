@@ -8,6 +8,7 @@
 #define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
 
 #include "GPUDrivenSceneCommon.slang"
+#include "SphericalHarmonics.slang"
 
 #ifndef GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE
 #define GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE 0
@@ -105,7 +106,6 @@ static const uint kModeBaseColor = 4u;
 static const uint kEnvironmentModeProcedural = 0u;
 static const uint kEnvironmentModeMap = 1u;
 static const uint kEnvironmentModeDisabled = 2u;
-static const uint kEnvironmentSampleCount = 24u;
 static const uint kStreamMaxMeshletVertices = 128u;
 static const uint kStreamMaxMeshletTriangles = 128u;
 static const uint kStreamPayloadHeaderBytes = 112u;
@@ -872,7 +872,7 @@ float3 environmentRadiance(float3 direction, GPUDrivenPreviewParams params, GPUD
         float3(0.0)) * params.environmentIntensity;
 }
 
-float3 environmentSHRadiance(
+float3 environmentSHIrradiance(
     float3 direction,
     GPUDrivenPreviewParams params,
     GPUDrivenPreviewPush push)
@@ -883,21 +883,6 @@ float3 environmentSHRadiance(
         direction.x * cosine - direction.z * sine,
         direction.y,
         direction.x * sine + direction.z * cosine);
-    float x = rotatedDirection.x;
-    float y = rotatedDirection.y;
-    float z = rotatedDirection.z;
-    float basis[9] =
-    {
-        0.282095,
-        0.488603 * y,
-        0.488603 * z,
-        0.488603 * x,
-        1.092548 * x * y,
-        1.092548 * y * z,
-        0.315392 * (3.0 * z * z - 1.0),
-        1.092548 * x * z,
-        0.546274 * (x * x - y * y),
-    };
     DescriptorHandle<StructuredBuffer<float4>> coefficientsHandle =
         DescriptorHandle<StructuredBuffer<float4>>(uint2(
             push.bufferShaderIndexBase + push.environmentSHBuffer,
@@ -905,7 +890,7 @@ float3 environmentSHRadiance(
     StructuredBuffer<float4> coefficients = coefficientsHandle;
     float3 radiance = float3(0.0);
     for (uint coefficientIndex = 0u; coefficientIndex < 9u; ++coefficientIndex) {
-        radiance += coefficients[coefficientIndex].xyz * basis[coefficientIndex];
+        radiance += coefficients[coefficientIndex].xyz * shBasis(coefficientIndex, rotatedDirection);
     }
     return max(radiance, float3(0.0)) * params.environmentIntensity;
 }
@@ -914,18 +899,6 @@ float3 hashColor(uint seed)
 {
     float3 value = frac(sin(float3(seed, seed * 17u + 13u, seed * 31u + 7u) * 0.017453292) * 43758.5453);
     return lerp(float3(0.18, 0.34, 0.62), float3(0.95, 0.82, 0.35), value);
-}
-
-float3 environmentIntegrationDirection(uint sampleIndex)
-{
-    // A fixed Fibonacci sphere makes the environment quadrature spatially
-    // coherent: neighboring surfaces evaluate the same incident directions
-    // while OpenPBR supplies their smoothly varying BSDF response.
-    float unitIndex = (float(sampleIndex) + 0.5) / float(kEnvironmentSampleCount);
-    float y = 1.0 - 2.0 * unitIndex;
-    float radius = sqrt(max(1.0 - y * y, 0.0));
-    float phi = 2.0 * kPi * frac((float(sampleIndex) + 0.5) * 0.61803398875);
-    return float3(cos(phi) * radius, y, sin(phi) * radius);
 }
 
 float3 acesToneMap(float3 color)
@@ -1085,25 +1058,11 @@ uint shadeDeferredSurface(
         OpenPBR_BaseRgbWavelengths_nm,
         OpenPBR_VacuumIor,
         viewDirection);
-    float3 reflectedEnvironment = float3(0.0);
-    for (uint sampleIndex = 0u; sampleIndex < kEnvironmentSampleCount; ++sampleIndex) {
-        float3 localDirection = environmentIntegrationDirection(sampleIndex);
-        float3 lightDirection = safeNormalize(
-            tangent * localDirection.x +
-                normal * localDirection.y +
-                bitangent * localDirection.z,
-            normal);
-        OpenPBR_DiffuseSpecular bsdf = openpbr_eval(prepared, lightDirection);
-        float3 incidentRadiance = params.environmentMode == kEnvironmentModeMap
-            ? environmentSHRadiance(lightDirection, params, push)
-            : environmentRadiance(lightDirection, params, push);
-        reflectedEnvironment +=
-            max(openpbr_get_sum_of_diffuse_specular(bsdf), float3(0.0)) *
-            incidentRadiance;
-    }
-    float uniformSphereWeight = 4.0 * kPi / float(kEnvironmentSampleCount);
+    float3 reflectedEnvironment = params.environmentMode == kEnvironmentModeDisabled ? float3(0.0)
+        : environmentSHIrradiance(normal, params, push) * baseColor *
+            (1.0 - metallic) * (1.0 - transmission) / kPi;
     float3 radiance = max(prepared.emission, float3(0.0)) +
-        reflectedEnvironment * (occlusion * uniformSphereWeight);
+        reflectedEnvironment * occlusion;
     return packHdrColor(radiance);
 }
 

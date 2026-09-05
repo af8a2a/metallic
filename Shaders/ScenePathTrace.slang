@@ -206,6 +206,9 @@ Texture2D<float4> gEnvironmentMap;
 [[vk::binding(13, 0)]]
 Texture2D<float> gEnvironmentImportancePdf;
 
+#include "PhotometricLighting.slang"
+#include "ProceduralEnvironment.slang"
+
 
 static const uint kMaxMaterialTextures = 256u;
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
@@ -754,14 +757,7 @@ bool sampleEnvironmentLight(ScenePathTracePush push, inout uint seed, out Enviro
 
 float3 proceduralSkyRadiance(float3 direction, float rotationRadians)
 {
-    float t = saturate(direction.y * 0.5 + 0.5);
-    float3 horizon = float3(0.62, 0.70, 0.78);
-    float3 zenith = float3(0.12, 0.24, 0.48);
-    float3 sunDirection = safeNormalize(
-        environmentLocalDirectionToWorld(kEnvironmentKeyLightDirection, rotationRadians),
-        float3(0.0, 1.0, 0.0));
-    float sun = pow(saturate(dot(direction, sunDirection)), 256.0);
-    return lerp(horizon, zenith, t) * 0.45 + sun * float3(7.0, 6.4, 5.3);
+    return proceduralEnvironmentLocalRadiance(environmentLocalDirectionToWorld(direction, -rotationRadians));
 }
 
 float2 environmentUvFromDirection(float3 direction, float rotationRadians)
@@ -1731,6 +1727,18 @@ float3 pathTrace(
 #endif
 
         EnvironmentLightSample lightSample;
+        for (uint i = 0u; i < punctualLightCount(); ++i) {
+            PunctualLightSample light = samplePunctualLight(i, hit.position);
+            float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
+                baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
+            if (luminanceMax(bsdf * light.illuminance) <= 0.0) { continue; }
+            float3 origin = offsetRay(hit.position,
+                dot(light.direction, hit.geometryNormal) >= 0.0 ? hit.geometryNormal : -hit.geometryNormal);
+            if (!traceShadow(origin, light.direction,
+                    max(light.distance - length(origin - hit.position), 0.0), push)) {
+                radiance += throughput * bsdf * light.illuminance;
+            }
+        }
         if (sampleEnvironmentLight(push, seed, lightSample)) {
             float3 lightDirection = lightSample.direction;
             float lightMisWeight = environmentLightMisWeight(
@@ -2005,6 +2013,7 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     return;
 #endif
 
+    color *= lightingExposure();
     color = color / (color + float3(1.0, 1.0, 1.0));
     color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
     color = saturate(color);

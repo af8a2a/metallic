@@ -318,6 +318,7 @@ bool isSceneAwareRenderPassType(const std::string& type)
         type == "SceneMaterialShaderObjectPass" ||
         type == "SceneMaterialVisualizationPass" ||
         type == "ScenePathTracePass" ||
+        type == "SceneRealtimeLightingPass" ||
         type == "SceneRtxdiPass";
 }
 
@@ -665,6 +666,13 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
                 {"center", {0.0f, 1.0f, 0.0f}},
                 {"up", {0.0f, 1.0f, 0.0f}},
             }},
+        };
+    }
+    if (type == "SceneRealtimeLightingPass") {
+        return render::RenderGraphProperties{
+            {"path", "Asset/meet_mat.glb"},
+            {"camera", {{"eye", {0.0f, 0.25f, 3.0f}}, {"center", {0.0f, 0.15f, 0.0f}},
+                {"up", {0.0f, 1.0f, 0.0f}}, {"fovDegrees", 50.0f}}},
         };
     }
     if (type == "ScenePathTracePass") {
@@ -3405,6 +3413,8 @@ void EditorApplication::drawSceneListTab()
     if (ImGui::CollapsingHeader(("Lights (" + std::to_string(scene_.lights().size()) + ")").c_str())) {
         drawEnvironmentControls();
         ImGui::Separator();
+        drawLightingControls();
+        ImGui::Separator();
         ImGui::BeginChild("LightsScrollRegion", ImVec2(0, 120.0f * mainScale_), false, ImGuiWindowFlags_HorizontalScrollbar);
         for (size_t index = 0; index < scene_.lights().size(); ++index) {
             const scene::RenderLight& light = scene_.lights()[index];
@@ -4060,6 +4070,112 @@ void EditorApplication::drawEnvironmentControls()
     renderGraphStatus_ = "Updated scene environment";
 }
 
+void EditorApplication::drawLightingControls()
+{
+    ImGui::TextUnformatted("Physical Lighting (metres)");
+    ImGui::BeginDisabled(!scene_.valid());
+    ImGui::PushID("WorldLighting");
+    scene::LightingSettings lighting = renderWorld_.lighting();
+    bool changed = ImGui::DragFloat("Exposure EV100", &lighting.exposureEV100,
+        0.1f, -32.0f, 32.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    for (const char* type : {"directional", "point", "spot"}) {
+        const std::string label = std::string("Add ") + type;
+        if (ImGui::Button(label.c_str())) {
+            scene::PunctualLight light;
+            light.name = type;
+            light.properties.type = type;
+            light.properties.intensityUnit = light.properties.type == "directional"
+                ? scene::LightUnit::Lux : scene::LightUnit::Candela;
+            lighting.lights.push_back(std::move(light));
+            changed = true;
+        }
+    }
+    for (size_t i = 0; i < lighting.lights.size();) {
+        auto& light = lighting.lights[i];
+        auto& p = light.properties;
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::TreeNode("Light", "%s #%zu", light.name.c_str(), i + 1)) {
+            changed |= ImGui::Checkbox("Enabled", &light.enabled);
+            float color[] = {p.color.x, p.color.y, p.color.z};
+            if (ImGui::ColorEdit3("Linear color", color, ImGuiColorEditFlags_Float)) {
+                p.color = float3(color[0], color[1], color[2]);
+                changed = true;
+            }
+            const bool directional = p.type == "directional";
+            const bool spot = p.type == "spot";
+            scene::LightUnit unit = p.intensityUnit;
+            if (ImGui::BeginCombo("Unit", scene::lightUnitName(unit))) {
+                for (scene::LightUnit candidate : {scene::LightUnit::Lux, scene::LightUnit::Candela,
+                         scene::LightUnit::Lumens, scene::LightUnit::EV100}) {
+                    if (!scene::validLightUnit(p.type, candidate)) { continue; }
+                    if (ImGui::Selectable(scene::lightUnitName(candidate), candidate == unit)) {
+                        double si = scene::lightIntensitySI(p.type, unit, p.intensity, p.innerConeAngle, p.outerConeAngle);
+                        // Zero cannot be represented logarithmically; keep an off light off.
+                        if (candidate != scene::LightUnit::EV100 || si > 0.0) {
+                            p.intensity = scene::lightIntensityFromSI(p.type, candidate, si, p.innerConeAngle, p.outerConeAngle);
+                            p.intensityUnit = candidate;
+                            changed = true;
+                        }
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            const double minIntensity = p.intensityUnit == scene::LightUnit::EV100 ? -32.0 : 0.0;
+            const double maxIntensity = p.intensityUnit == scene::LightUnit::EV100 ? 38.0 : 1e12;
+            changed |= ImGui::DragScalar("Intensity", ImGuiDataType_Double, &p.intensity,
+                0.1f, &minIntensity, &maxIntensity, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            if (!directional) {
+                float position[] = {light.position.x, light.position.y, light.position.z};
+                if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
+                    light.position = float3(position[0], position[1], position[2]);
+                    changed = true;
+                }
+                const double minRange = 0.0;
+                changed |= ImGui::DragScalar("Range (m; 0 = infinite)", ImGuiDataType_Double,
+                    &p.range, 0.1f, &minRange, nullptr, "%.2f");
+            }
+            if (directional || spot) {
+                float direction[] = {light.direction.x, light.direction.y, light.direction.z};
+                if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
+                    light.direction = float3(direction[0], direction[1], direction[2]);
+                    changed = true;
+                }
+            }
+            if (spot) {
+                float outer = static_cast<float>(p.outerConeAngle * 57.295779513);
+                float inner = static_cast<float>(p.innerConeAngle * 57.295779513);
+                if (ImGui::SliderFloat("Outer cone (deg)", &outer, 0.1f, 90.0f)) {
+                    p.outerConeAngle = double(outer) / 57.295779513;
+                    p.innerConeAngle = std::min(p.innerConeAngle, p.outerConeAngle - 1e-5);
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Inner cone (deg)", &inner, 0.0f, outer - 0.001f)) {
+                    p.innerConeAngle = double(inner) / 57.295779513;
+                    changed = true;
+                }
+            }
+            const bool remove = ImGui::Button("Remove light");
+            ImGui::TreePop();
+            if (remove) {
+                lighting.lights.erase(lighting.lights.begin() + static_cast<std::ptrdiff_t>(i));
+                changed = true;
+                ImGui::PopID();
+                continue;
+            }
+        }
+        ImGui::PopID();
+        ++i;
+    }
+    ImGui::PopID();
+    ImGui::EndDisabled();
+    if (changed && scene_.setLighting(lighting)) {
+        renderWorld_.setLighting(std::move(lighting));
+        sceneNonTransformDirty_ = true;
+        updateSceneDirtyState();
+        viewportPreviewNeedsRender_ = true;
+    }
+}
+
 void EditorApplication::beginEnvironmentEdit()
 {
     if (environmentEditBaselineValid_) {
@@ -4640,6 +4756,7 @@ void EditorApplication::executePendingSceneAction()
         cancelSceneLoad();
         clearSceneAccelerationStructure();
         scene_.clear();
+        renderWorld_.setLighting({});
         renderWorld_.notifySceneChanged();
         resetTransformHistory();
         sceneSelection_ = SceneSelection{};
@@ -4702,6 +4819,7 @@ void EditorApplication::drawUnsavedSceneModal()
                 ? "Failed to discard scene changes."
                 : "Failed to discard scene changes: " + message;
         } else {
+            renderWorld_.setLighting(scene_.lighting());
             sceneSelection_ = SceneSelection{};
             renderWorld_.notifySceneChanged();
             if (environmentEditBaselineValid_) {
@@ -5166,13 +5284,34 @@ void EditorApplication::drawSelectedLightComponentInspector()
         changed = true;
     }
     trackEditItem();
+    if (ImGui::BeginCombo("Intensity unit", scene::lightUnitName(edited.intensityUnit))) {
+        for (scene::LightUnit unit : {scene::LightUnit::Lux, scene::LightUnit::Candela,
+                 scene::LightUnit::Lumens, scene::LightUnit::EV100}) {
+            if (!scene::validLightUnit(edited.type, unit)) { continue; }
+            if (ImGui::Selectable(scene::lightUnitName(unit), edited.intensityUnit == unit)) {
+                const double si = scene::lightIntensitySI(edited.type, edited.intensityUnit,
+                    edited.intensity, edited.innerConeAngle, edited.outerConeAngle);
+                if (unit != scene::LightUnit::EV100 || si > 0.0) {
+                    beginInspectorPropertyEdit(object.entity(), scene_.sceneGraph().lifetimeRevision(), properties);
+                    edited.intensity = scene::lightIntensityFromSI(edited.type, unit, si,
+                        edited.innerConeAngle, edited.outerConeAngle);
+                    edited.intensityUnit = unit;
+                    changed = true;
+                    editDeactivated = true;
+                }
+            }
+        }
+        ImGui::EndCombo();
+    }
+    const double minimumIntensity = edited.intensityUnit == scene::LightUnit::EV100 ? -32.0 : 0.0;
+    const double maximumIntensity = edited.intensityUnit == scene::LightUnit::EV100 ? 38.0 : kMaximumValue;
     const bool intensityChanged = ImGui::DragScalar(
         "Intensity",
         ImGuiDataType_Double,
         &edited.intensity,
         kIntensityStep,
-        &kMinimumValue,
-        &kMaximumValue,
+        &minimumIntensity,
+        &maximumIntensity,
         "%.3f",
         ImGuiSliderFlags_AlwaysClamp);
     trackEditItem();
@@ -6452,6 +6591,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
 
     clearSceneAccelerationStructure();
     scene_.clear();
+    renderWorld_.setLighting({});
     renderWorld_.notifySceneChanged();
     resetTransformHistory();
     sceneSelection_ = SceneSelection{};
@@ -6946,6 +7086,7 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     }
     historyResources_.invalidateAll();
     scene_ = std::move(*loadedScene);
+    renderWorld_.setLighting(scene_.lighting());
     if (renderWorld_.scene() == &scene_) {
         renderWorld_.notifySceneChanged();
     } else {
@@ -7791,7 +7932,8 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         node->type == "GPUDrivenStreamAssetPass" ||
         node->type == "SceneRayQueryVisualizationPass" ||
         node->type == "SceneMaterialVisualizationPass" ||
-        node->type == "ScenePathTracePass";
+        node->type == "ScenePathTracePass" ||
+        node->type == "SceneRealtimeLightingPass";
     if (hasStaticScenePath) {
         static int editingScenePathNodeId = -1;
         static char scenePathBuffer[260] = {};

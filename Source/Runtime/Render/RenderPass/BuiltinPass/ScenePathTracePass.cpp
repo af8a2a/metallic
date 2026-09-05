@@ -2,6 +2,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
 #include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
@@ -97,7 +98,7 @@ static_assert(offsetof(SceneSharcMaintenancePush, frameIndex) ==
 struct ScenePathTraceTonemapPush {
     uint32_t width = 1;
     uint32_t height = 1;
-    uint32_t padding0 = 0;
+    float exposure = 1.0f;
     uint32_t padding1 = 0;
 };
 
@@ -557,6 +558,8 @@ struct ScenePathTraceCameraSnapshot {
 
 class ScenePathTracePass final : public ComputePass {
 public:
+    explicit ScenePathTracePass(bool realtime = false) : realtime_(realtime) {}
+
     bool supportsFrameOverlap() const override { return cacheMode_ == kScenePathTraceCacheModeOff; }
 
     ~ScenePathTracePass() override = default;
@@ -573,7 +576,7 @@ public:
     {
         const bool exportGuides = exportDenoiserGuides(properties());
         RenderPassReflection reflection;
-        reflection.addTextureOutput("color", "Path-traced glTF scene")
+        reflection.addTextureOutput("color", realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene")
             .storageReadWrite()
             .format = exportGuides ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
         if (exportGuides) {
@@ -604,6 +607,14 @@ public:
 
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
+        if (realtime_) {
+            std::vector<RenderGraphRuntimeSetting> settings{
+                runtimeBoolSetting("flipBitangent", "Flip Bitangent", false, true),
+                runtimeBoolSetting("debugDisableShadows", "Disable Shadows", false, true),
+            };
+            appendCameraRuntimeSettings(settings, {0.0f, 0.2f, 2.5f}, {0.0f, 0.0f, 0.0f}, 50.0f, true);
+            return settings;
+        }
         std::vector<RenderGraphRuntimeSetting> settings{
             runtimeIntSetting(
                 "maxDepth",
@@ -728,12 +739,13 @@ public:
         }
         device_ = context.device;
         graphicsQueue_ = context.graphicsQueue;
-        sceneResourceManager_ = context.sceneResourceManager;
+        sceneResourceManager_ = context.sceneResourceManager != nullptr
+            ? context.sceneResourceManager : &fallbackSceneResourceManager_;
 
         Result result;
-        if (context.sceneResourceManager != nullptr) {
+        {
             std::shared_ptr<SceneResourceSnapshot> snapshot;
-            result = context.sceneResourceManager->acquire(
+            result = sceneResourceManager_->acquire(
                 *context.device,
                 *context.graphicsQueue,
                 properties(),
@@ -747,13 +759,6 @@ public:
             if (result && snapshot != nullptr) {
                 sceneResources_ = *snapshot->pathTraceResources;
             }
-        } else {
-            result = sceneResources_.prepare(
-                *context.device,
-                *context.graphicsQueue,
-                properties(),
-                context.runtimeScene,
-                log);
         }
         if (!result) {
             return result;
@@ -764,15 +769,17 @@ public:
             resetAccumulation_ = true;
             hasPreviousCamera_ = false;
         }
-        const std::string bsdf = stringProperty(properties(), "bsdf", "standard");
-        const bool useOpenPBR = bsdf == "openpbr" || bsdf == "OpenPBR";
+        const bool useOpenPBR = useOpenPBRBsdf(properties());
         const bool exportGuides = exportDenoiserGuides(properties());
         const bool ntcActive = sceneResources_.neuralTextures().active();
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
         const char* moduleName = nullptr;
         const char* entryPointName = nullptr;
-        if (useOpenPBR) {
+        if (realtime_) {
+            moduleName = "SceneRealtimeLighting";
+            entryPointName = "sceneRealtimeLightingMain";
+        } else if (useOpenPBR) {
             moduleName = exportGuides
                 ? kOpenPBRRayQueryPathTraceGuidesShaderModuleName
                 : kOpenPBRRayQueryPathTraceShaderModuleName;
@@ -787,7 +794,7 @@ public:
                 ? kScenePathTraceGuidesEntryPoint
                 : kScenePathTraceEntryPoint;
         }
-        const uint32_t requestedCacheMode = cacheModeFromProperties(properties());
+        const uint32_t requestedCacheMode = realtime_ ? kScenePathTraceCacheModeOff : cacheModeFromProperties(properties());
         uint32_t cacheMode = requestedCacheMode;
         std::string cacheWarning;
         if (cacheMode != kScenePathTraceCacheModeOff) {
@@ -856,6 +863,7 @@ public:
 
         // Keep the conventional binding table stable; append NTC descriptors only when active.
         std::vector<ComputeProgramBindingDesc> baseBindings{
+            ComputeProgramBindingDesc{.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
             ComputeProgramBindingDesc{
                 .binding = 0,
                 .kind = ComputeResourceBindingKind::AccelerationStructure,
@@ -906,6 +914,11 @@ public:
                 .kind = ComputeResourceBindingKind::SampledImage,
             },
         };
+        if (realtime_) {
+            baseBindings.push_back(ComputeProgramBindingDesc{
+                .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
+            });
+        }
         if (useOpenPBR) {
             baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kOpenPBRLut2DBinding,
@@ -1381,6 +1394,24 @@ public:
         if (!environment.valid()) {
             return {};
         }
+        const scene::Scene* lightScene = nullptr;
+        Result lightResult = sceneResourceManager_->resolveScene(
+            context.properties(), context.runtimeScene(), lightScene, syncLog);
+        if (!lightResult || context.subsystems() == nullptr) {
+            return lightResult ? makeError(Error::InvalidArgument) : lightResult;
+        }
+        const uint64_t previousLightRevision = lights_.revision();
+        lightResult = lights_.update(*device_, context.commandBuffer(), *context.subsystems(),
+            lightScene, context.world() != nullptr ? context.world()->lighting() : scene::LightingSettings{});
+        if (!lightResult) { return lightResult; }
+        if (previousLightRevision != lights_.revision()) {
+            resetAccumulation_ = true;
+            // Invalidate radiance caches as well as the displayed accumulation.
+            sharcClearPending_ = true;
+#if METALLIC_HAS_NRC
+            nrcSceneRevision_ = 0;
+#endif
+        }
         if (environment.resourceRevision != environmentResourceRevision_ ||
             environment.settingsRevision != environmentSettingsRevision_) {
             environmentResourceRevision_ = environment.resourceRevision;
@@ -1506,6 +1537,7 @@ public:
         }
 
         std::vector<ComputeDispatchBinding> bindings{
+            ComputeDispatchBinding{.binding = 50, .buffer = lights_.buffer()},
             ComputeDispatchBinding{
                 .binding = 0,
                 .accelerationStructure =
@@ -1559,6 +1591,11 @@ public:
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentImportancePdfViews)),
             },
         };
+        if (realtime_) {
+            bindings.push_back(ComputeDispatchBinding{
+                .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,
+            });
+        }
         if (useOpenPBR) {
             const auto& lut2DViews = openPBRLuts_.lut2DViews();
             const auto& lut3DViews = openPBRLuts_.lut3DViews();
@@ -1691,9 +1728,9 @@ private:
         return texture.valid() && texture.texture() != nullptr && texture.view() != nullptr;
     }
 
-    static bool exportDenoiserGuides(const RenderGraphProperties& properties)
+    bool exportDenoiserGuides(const RenderGraphProperties& properties) const
     {
-        return boolProperty(properties, "exportDenoiserGuides", false);
+        return !realtime_ && boolProperty(properties, "exportDenoiserGuides", false);
     }
 
     Result prepareHistoryTextures(
@@ -1708,7 +1745,7 @@ private:
         // resolve pass adds predicted radiance before a separate tonemap pass.
         const bool debugViewEnabled =
             useOpenPBRBsdf(context.properties()) && push.debugView != kScenePathTraceDebugViewFinal;
-        const bool accumulationEnabled = !debugViewEnabled &&
+        const bool accumulationEnabled = !realtime_ && !debugViewEnabled &&
             (push.cacheMode == kScenePathTraceCacheModeNrc ||
                 boolProperty(context.properties(), "accumulate", true));
         push.enableAccumulation = accumulationEnabled && history != nullptr ? 1u : 0u;
@@ -2338,6 +2375,7 @@ private:
         ScenePathTraceTonemapPush tonemapPush{
             .width = push.width,
             .height = push.height,
+            .exposure = context.world() != nullptr ? std::exp2(-context.world()->lighting().exposureEV100) : 1.0f,
         };
         const std::array<ComputeDispatchBinding, 2> tonemapBindings{
             ComputeDispatchBinding{.binding = 0, .textureView = historyCurrentView},
@@ -2421,10 +2459,10 @@ private:
         return iter->get<std::string>();
     }
 
-    static bool useOpenPBRBsdf(const RenderGraphProperties& properties)
+    bool useOpenPBRBsdf(const RenderGraphProperties& properties) const
     {
         const std::string bsdf = stringProperty(properties, "bsdf", "standard");
-        return bsdf == "openpbr" || bsdf == "OpenPBR";
+        return realtime_ || bsdf == "openpbr" || bsdf == "OpenPBR";
     }
 
     static uint32_t debugViewFromProperties(const RenderGraphProperties& properties)
@@ -2682,6 +2720,9 @@ private:
         }
     }
 
+    bool realtime_ = false;
+    SceneLightResources lights_;
+    SceneResourceManager fallbackSceneResourceManager_;
     ScenePathTraceResources sceneResources_;
     SceneResourceManager* sceneResourceManager_ = nullptr;
     Device* device_ = nullptr;
@@ -2730,6 +2771,11 @@ private:
 std::unique_ptr<RenderGraphPass> createScenePathTracePass()
 {
     return std::make_unique<ScenePathTracePass>();
+}
+
+std::unique_ptr<RenderGraphPass> createSceneRealtimeLightingPass()
+{
+    return std::make_unique<ScenePathTracePass>(true);
 }
 
 } // namespace metallic::render::builtin_pass

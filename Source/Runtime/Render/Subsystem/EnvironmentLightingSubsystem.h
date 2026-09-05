@@ -24,6 +24,8 @@ struct EnvironmentLightingSnapshot {
     EnvironmentLightingStatus status = EnvironmentLightingStatus::Uninitialized;
     TextureView* radianceView = nullptr;
     TextureView* pdfView = nullptr;
+    // Nine RGB irradiance SH coefficients (l <= 2), cosine-convolved on GPU.
+    // Evaluate at the normal, multiply by diffuse albedo / pi exactly once.
     Buffer* sphericalHarmonicsBuffer = nullptr;
     uint32_t width = 1;
     uint32_t height = 1;

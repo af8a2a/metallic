@@ -4,6 +4,7 @@
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.h"
 #include "Runtime/Scene/SceneLoad.h"
+#include "Runtime/Scene/SceneLighting.h"
 
 namespace metallic::render {
 struct RenderGraphSubmitDesc {
@@ -125,6 +126,7 @@ public:
     Result render(RenderGraph& graph, uint32_t width, uint32_t height);
     Result render(RenderGraph& graph, uint32_t width, uint32_t height, std::string_view outputName);
     void setEnvironment(EnvironmentSettings environment);
+    bool setLighting(scene::LightingSettings lighting);
     RenderSubsystemHost* subsystemHost();
     const RenderSubsystemHost* subsystemHost() const;
     const std::vector<uint32_t>& pixels() const;

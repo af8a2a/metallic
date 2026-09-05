@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Scene/SceneEnvironment.h"
+#include "Runtime/Scene/SceneLighting.h"
 
 #include <cstdint>
 
@@ -52,6 +53,9 @@ public:
 
     void setEnvironment(EnvironmentSettings settings);
     const EnvironmentSettings& environment() const { return environment_; }
+    bool setLighting(scene::LightingSettings lighting);
+    const scene::LightingSettings& lighting() const { return lighting_; }
+    uint64_t lightingRevision() const { return lightingRevision_; }
 
     uint64_t sceneRevision() const { return sceneRevision_; }
     uint64_t environmentRevision() const { return environmentRevision_; }
@@ -60,6 +64,8 @@ public:
 private:
     const scene::Scene* scene_ = nullptr;
     EnvironmentSettings environment_;
+    scene::LightingSettings lighting_;
+    uint64_t lightingRevision_ = 1;
     uint64_t sceneRevision_ = 1;
     uint64_t environmentRevision_ = 1;
     RenderChangeBits pendingChanges_ = RenderChangeBits::None;

@@ -43,7 +43,7 @@ struct EnvironmentLightingPrecomputePush {
     uint32_t height = 1;
     uint32_t partialCount = 1;
     uint32_t dispatchWidth = 1;
-    uint32_t padding0 = 0;
+    uint32_t procedural = 0;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
 };
@@ -122,7 +122,8 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
         Buffer& partials,
         Buffer& coefficients,
         uint32_t width,
-        uint32_t height)
+        uint32_t height,
+        bool procedural)
     {
         const uint64_t texelCount = static_cast<uint64_t>(width) * height;
         const uint32_t partialCount = static_cast<uint32_t>(
@@ -145,6 +146,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             .height = height,
             .partialCount = partialCount,
             .dispatchWidth = dispatchWidth,
+            .procedural = procedural ? 1u : 0u,
         };
         Result result = program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
@@ -551,7 +553,9 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         log = "EnvironmentLightingSubsystem failed to create the radiance staging buffer";
         return result ? makeError(Error::Failure) : result;
     }
-    const uint64_t texelCount = static_cast<uint64_t>(next->width) * next->height;
+    const uint32_t shWidth = decoded.mapAvailable ? next->width : 256u;
+    const uint32_t shHeight = decoded.mapAvailable ? next->height : 128u;
+    const uint64_t texelCount = static_cast<uint64_t>(shWidth) * shHeight;
     const uint64_t partialCount =
         (texelCount + kEnvironmentSHThreadCount - 1u) / kEnvironmentSHThreadCount;
     const uint64_t partialBytes = partialCount * kSphericalHarmonicsBytes;
@@ -648,8 +652,9 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         *next->radianceView,
         *staging->sphericalHarmonicsPartials,
         *next->sphericalHarmonicsBuffer,
-        next->width,
-        next->height);
+        shWidth,
+        shHeight,
+        !decoded.mapAvailable);
     if (!result) {
         log = "EnvironmentLightingSubsystem failed to integrate environment SH on the GPU: ";
         log += resultToString(result);

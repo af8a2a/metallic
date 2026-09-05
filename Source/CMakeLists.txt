@@ -50,6 +50,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/ImportanceSampling.cpp
     Runtime/Render/ReGIR.cpp
     Runtime/Render/SceneResourceManager.cpp
+    Runtime/Render/SceneLightResources.cpp
     Runtime/Render/Subsystem/BuiltinRenderSubsystems.cpp
     Runtime/Render/Subsystem/EnvironmentLightingSubsystem.cpp
     Runtime/Render/Subsystem/GPUScene.cpp

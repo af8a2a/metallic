@@ -20,6 +20,7 @@ std::unique_ptr<RenderGraphPass> createSceneRayQueryVisualizationPass();
 std::unique_ptr<RenderGraphPass> createVisibilityBufferPass();
 std::unique_ptr<RenderGraphPass> createGPUDrivenStreamAssetPass();
 std::unique_ptr<RenderGraphPass> createScenePathTracePass();
+std::unique_ptr<RenderGraphPass> createSceneRealtimeLightingPass();
 std::unique_ptr<RenderGraphPass> createSceneRtxdiPass();
 std::unique_ptr<RenderGraphPass> createRtxdiConfidencePass();
 std::unique_ptr<RenderGraphPass> createRtxdiCompositePass();

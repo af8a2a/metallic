@@ -281,6 +281,7 @@ struct RenderLight {
     double range = 0.0;
     double innerConeAngle = 0.0;
     double outerConeAngle = 0.7853981633974483;
+    LightUnit intensityUnit = LightUnit::SI;
     float4x4 worldMatrix = float4x4::Identity();
     uint64_t contentRevision = 0;
     bool visible = true;

@@ -619,6 +619,26 @@ float3 pathTraceOpenPBR(
 
         radiance += throughput * max(prepared.emission, float3(0.0, 0.0, 0.0));
 
+        if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
+            for (uint i = 0u; i < punctualLightCount(); ++i) {
+                PunctualLightSample light = samplePunctualLight(i, hit.position);
+                float3 weight = max(openpbr_get_sum_of_diffuse_specular(
+                    openpbr_eval(prepared, light.direction)), float3(0.0));
+                if (luminanceMax(weight * light.illuminance) <= 0.0) { continue; }
+                float3 origin = offsetRay(hit.position,
+                    openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
+                OpenPBRInteriorStack shadowStack = interiorStack;
+                if (dot(viewDirection, hit.geometryNormal) * dot(light.direction, hit.geometryNormal) < 0.0) {
+                    openPbrUpdateInteriorStackAfterTransmission(shadowStack, hit, material);
+                }
+                float distance = max(light.distance - length(origin - hit.position), 0.0);
+                float3 visibility = openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)
+                    ? float3(1.0) : openPbrShadowTransmittance(origin, light.direction, distance, shadowStack, push);
+                // Delta lights cannot be hit by BSDF sampling: MIS weight is 1.
+                radiance += throughput * weight * light.illuminance * visibility;
+            }
+        }
+
         EnvironmentLightSample lightSample;
         bool directLightingEnabled = !openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting);
         bool sampledEnvironment = directLightingEnabled && sampleEnvironmentLight(push, seed, lightSample);
@@ -740,10 +760,12 @@ void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
 
     bool debugViewEnabled = push.debugView != kOpenPBRDebugViewFinal;
     uint samples = debugViewEnabled ? 1u : clamp(push.samples, 1u, 16u);
+    // Keep diagnostic environment/shadow samples stable between frames.
+    uint sampleFrame = debugViewEnabled ? 0u : push.sampleFrame;
     uint seed = hash(
         pixel.x +
         pixel.y * max(push.width, 1u) +
-        (push.sampleFrame + 1u) * 0x9e3779b9u);
+        (sampleFrame + 1u) * 0x9e3779b9u);
     float3 color = float3(0.0, 0.0, 0.0);
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
         float2 jitter = push.temporalJitter != 0u
@@ -763,6 +785,7 @@ void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     if (debugViewEnabled) {
         color = saturate(color);
     } else {
+        color *= lightingExposure();
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
         color = saturate(color);

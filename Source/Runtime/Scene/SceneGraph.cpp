@@ -184,8 +184,10 @@ bool validCameraProperties(const CameraProperties& properties)
 
 bool validLightProperties(const LightProperties& properties)
 {
+    const double intensitySI = lightIntensitySI(properties.type, properties.intensityUnit,
+        properties.intensity, properties.innerConeAngle, properties.outerConeAngle);
     if (!validLightColor(properties.color) ||
-        !std::isfinite(properties.intensity) || properties.intensity < 0.0 ||
+        !std::isfinite(intensitySI) || intensitySI < 0.0 || intensitySI > 1e12 ||
         !std::isfinite(properties.range) ||
         !std::isfinite(properties.innerConeAngle) ||
         !std::isfinite(properties.outerConeAngle)) {
@@ -221,7 +223,7 @@ bool lightPropertiesNearlyEqual(
     const LightProperties& lhs,
     const LightProperties& rhs)
 {
-    return lhs.type == rhs.type &&
+    return lhs.type == rhs.type && lhs.intensityUnit == rhs.intensityUnit &&
         propertyValuesNearlyEqual(lhs.color.x, rhs.color.x) &&
         propertyValuesNearlyEqual(lhs.color.y, rhs.color.y) &&
         propertyValuesNearlyEqual(lhs.color.z, rhs.color.z) &&

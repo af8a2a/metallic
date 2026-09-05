@@ -2674,6 +2674,11 @@ void RenderGraphPreviewRenderer::setEnvironment(EnvironmentSettings environment)
     impl_->world.setEnvironment(std::move(environment));
 }
 
+bool RenderGraphPreviewRenderer::setLighting(scene::LightingSettings lighting)
+{
+    return impl_->world.setLighting(std::move(lighting));
+}
+
 RenderSubsystemHost* RenderGraphPreviewRenderer::subsystemHost()
 {
     return &impl_->subsystemHost;

@@ -7,6 +7,7 @@
 #include <entt/entity/entity.hpp>
 
 #include "ml.h"
+#include "Runtime/Scene/Photometry.h"
 
 namespace metallic::scene {
 
@@ -35,6 +36,7 @@ struct LightProperties {
     double range = 0.0;
     double innerConeAngle = 0.0;
     double outerConeAngle = 0.7853981633974483;
+    LightUnit intensityUnit = LightUnit::SI;
 };
 
 bool validCameraProperties(const CameraProperties& properties);

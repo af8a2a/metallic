@@ -63,6 +63,25 @@ bool applySampleScenePath(RenderGraph& graph, const RenderSampleDesc& desc, std:
     return true;
 }
 
+class RealtimeLightingSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "realtime-lighting"; }
+    std::string_view name() const override { return "Real-time / Physical Lighting"; }
+    std::string_view category() const override { return "Lighting"; }
+    std::string_view description() const override
+    {
+        return "OpenPBR punctual lighting, ray-query shadows and GPU SH environment GI. Add lights in Physical Lighting.";
+    }
+    std::string scenePath() const override { return "Asset/meet_mat.glb"; }
+    std::string graphPath() const override { return "Pipelines/Samples/realtime_lighting.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"Lighting"}; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        return RenderSampleEnvironmentDesc{.enabled = true, .path = "Asset/ABeautifulGame/environment.hdr"};
+    }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class PathTracingMeetMatSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-meet-mat"; }
@@ -537,7 +556,9 @@ const RenderSample& gpuDrivenTerrainP1UnifiedSample()
 
 std::vector<const RenderSample*> builtInRenderSamples()
 {
+    static const RealtimeLightingSample realtimeLighting;
     return {
+        &realtimeLighting,
         &pathTracingMeetMatSample(),
         &pathTracingSharcMeetMatSample(),
         &pathTracingNrcMeetMatSample(),

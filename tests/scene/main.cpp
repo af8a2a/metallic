@@ -4665,6 +4665,91 @@ TEST(SceneEditing, DocumentRoundTrip)
     testSceneDocumentRoundTrip(prepareOutputDirectory());
 }
 
+TEST(Photometry, UnitsAndValidation)
+{
+    using namespace metallic::scene;
+    constexpr double pi = 3.14159265358979323846;
+    EXPECT_DOUBLE_EQ(lightIntensitySI("directional", LightUnit::Lux, 120000.0), 120000.0);
+    EXPECT_DOUBLE_EQ(lightIntensitySI("directional", LightUnit::EV100, 0.0), 2.5);
+    EXPECT_DOUBLE_EQ(lightIntensitySI("point", LightUnit::EV100, -2.0), 0.25);
+    EXPECT_NEAR(lightIntensitySI("point", LightUnit::Lumens, 4.0 * pi * 100.0), 100.0, 1e-10);
+    for (const char* type : {"directional", "point", "spot"}) {
+        for (LightUnit unit : {LightUnit::SI, LightUnit::Lux, LightUnit::Candela, LightUnit::Lumens, LightUnit::EV100}) {
+            if (!validLightUnit(type, unit)) { continue; }
+            double value = lightIntensityFromSI(type, unit, 100.0, 0.1, 0.5);
+            EXPECT_NEAR(lightIntensitySI(type, unit, value, 0.1, 0.5), 100.0, 1e-10);
+        }
+    }
+    EXPECT_LT(lightSolidAngle("spot", 0.1, 0.5), 2.0 * pi * (1.0 - std::cos(0.5)));
+    LightProperties light{.type = "point", .intensity = -2.0, .intensityUnit = LightUnit::EV100};
+    EXPECT_TRUE(validLightProperties(light));
+    light.intensityUnit = LightUnit::Candela;
+    EXPECT_FALSE(validLightProperties(light));
+    light.intensity = 100.0;
+    light.intensityUnit = LightUnit::Lux;
+    EXPECT_FALSE(validLightProperties(light));
+    LightingSettings settings;
+    settings.lights.emplace_back().properties.type = "directional";
+    settings.lights[0].direction = float3(0.0f);
+    EXPECT_FALSE(validLightingSettings(settings));
+}
+
+TEST(SceneEditing, PhysicalLightingRoundTrip)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "photometric_lights";
+    std::filesystem::create_directories(directory);
+    const auto path = writeFullScene(directory);
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(path));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(path));
+    LightingSettings lighting;
+    lighting.exposureEV100 = 12.0f;
+    for (const char* type : {"directional", "point", "spot"}) {
+        PunctualLight light;
+        light.name = type;
+        light.properties.type = type;
+        light.properties.intensityUnit = LightUnit::EV100;
+        light.properties.intensity = -1.0;
+        light.position = float3(-1.0f, 2.0f, 3.0f);
+        light.direction = float3(0.0f, -2.0f, -1.0f);
+        light.enabled = light.properties.type != "point";
+        lighting.lights.push_back(light);
+    }
+    ASSERT_TRUE(document.setLighting(lighting));
+    ASSERT_FALSE(document.lights().empty());
+    const auto entity = document.lights()[0].object;
+    auto properties = document.sceneGraph().object(entity).getComponent<LightComponent>().properties;
+    properties.intensity = -3.0;
+    properties.intensityUnit = LightUnit::EV100;
+    ASSERT_TRUE(document.setObjectLightProperties(entity, properties));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    SceneDocument restored;
+    ASSERT_TRUE(restored.load(document.documentPath())) << restored.lastLoadResult().error;
+    ASSERT_EQ(restored.lighting().lights.size(), 3u);
+    EXPECT_FLOAT_EQ(restored.lighting().exposureEV100, 12.0f);
+    for (size_t i = 0; i < 3; ++i) {
+        const auto& light = restored.lighting().lights[i];
+        EXPECT_EQ(light.properties.type, lighting.lights[i].properties.type);
+        EXPECT_EQ(light.properties.intensityUnit, LightUnit::EV100);
+        EXPECT_DOUBLE_EQ(light.properties.intensity, -1.0);
+        EXPECT_FLOAT_EQ(light.position.x, -1.0f);
+        EXPECT_FLOAT_EQ(light.direction.y, -2.0f);
+        EXPECT_EQ(light.enabled, lighting.lights[i].enabled);
+    }
+    EXPECT_EQ(restored.lights()[0].intensityUnit, LightUnit::EV100);
+    EXPECT_DOUBLE_EQ(restored.lights()[0].intensity, -3.0);
+    auto invalid = lighting;
+    invalid.exposureEV100 = std::numeric_limits<float>::infinity();
+    EXPECT_FALSE(restored.setLighting(invalid));
+    ASSERT_TRUE(restored.setLighting({}));
+    ASSERT_TRUE(restored.revert(message)) << message;
+    EXPECT_EQ(restored.lighting().lights.size(), 3u);
+    restored.clear();
+    EXPECT_TRUE(restored.lighting().lights.empty());
+}
+
 TEST(SceneEditing, ComponentPropertyRoundTrip)
 {
     testSceneDocumentPropertyRoundTrip(prepareOutputDirectory());
