@@ -7593,18 +7593,47 @@ void EditorApplication::drawRenderGraphSettingsPanel()
 
 void EditorApplication::drawRenderPassesPanel()
 {
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float clearWidth = ImGui::CalcTextSize("Clear").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - clearWidth - spacing));
+    bool searchChanged = ImGui::InputTextWithHint(
+        "##RenderPassSearch", "Search name, type or description...",
+        renderPassSearch_, sizeof(renderPassSearch_), ImGuiInputTextFlags_EscapeClearsAll);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(renderPassSearch_[0] == '\0');
+    if (ImGui::Button("Clear")) {
+        renderPassSearch_[0] = '\0';
+        searchChanged = true;
+    }
+    ImGui::EndDisabled();
+
+    // Keep the search field visible while scrolling through the matching cards.
+    if (!ImGui::BeginChild("RenderPassResults", ImVec2(0.0f, 0.0f))) {
+        ImGui::EndChild();
+        return;
+    }
+    if (searchChanged) {
+        ImGui::SetScrollY(0.0f);
+    }
+
     const float cardWidth = 148.0f * mainScale_;
     const float cardHeight = 86.0f * mainScale_;
-    const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const int columnCount = std::max(
         1,
         static_cast<int>((ImGui::GetContentRegionAvail().x + spacing) / (cardWidth + spacing)));
 
+    int matchCount = 0;
     if (ImGui::BeginTable("RenderPassPalette", columnCount, ImGuiTableFlags_SizingStretchSame)) {
-        int index = 0;
         for (const render::RenderGraphPassInfo& passInfo : render::listRenderGraphPassTypes()) {
+            if (renderPassSearch_[0] != '\0' &&
+                ImStristr(passInfo.type.c_str(), nullptr, renderPassSearch_, nullptr) == nullptr &&
+                ImStristr(render::renderGraphPassKindName(passInfo.kind), nullptr, renderPassSearch_, nullptr) == nullptr &&
+                ImStristr(passInfo.description.c_str(), nullptr, renderPassSearch_, nullptr) == nullptr) {
+                continue;
+            }
+            ++matchCount;
             ImGui::TableNextColumn();
-            ImGui::PushID(index++);
+            ImGui::PushID(passInfo.type.c_str());
 
             const ImVec2 cardMin = ImGui::GetCursorScreenPos();
             const bool clicked = ImGui::InvisibleButton("RenderPassCard", ImVec2(cardWidth, cardHeight));
@@ -7665,6 +7694,10 @@ void EditorApplication::drawRenderPassesPanel()
         }
         ImGui::EndTable();
     }
+    if (matchCount == 0) {
+        ImGui::TextDisabled("No matching render passes.");
+    }
+    ImGui::EndChild();
 }
 
 void EditorApplication::drawRenderGraphRenderUiPanel()
