@@ -312,7 +312,7 @@ bool isRenderGraphFilePath(const std::filesystem::path& path)
 bool isSceneAwareRenderPassType(const std::string& type)
 {
     return type == "BunnyWireframePass" ||
-        type == "GPUDrivenPreviewPass" ||
+        type == "VisibilityBufferPass" ||
         type == "GPUDrivenStreamAssetPass" ||
         type == "SceneRayQueryVisualizationPass" ||
         type == "SceneMaterialShaderObjectPass" ||
@@ -625,10 +625,10 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             }},
         };
     }
-    if (type == "GPUDrivenPreviewPass") {
+    if (type == "VisibilityBufferPass") {
         return render::RenderGraphProperties{
             {"path", "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"},
-            {"mode", "meshlet"},
+            {"visualization", "meshlet"},
             {"camera", {
                 {"projection", "perspective"},
                 {"fovDegrees", 60.0f},
@@ -7728,7 +7728,7 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
     }
 
     const bool hasStaticScenePath =
-        node->type == "GPUDrivenPreviewPass" ||
+        node->type == "VisibilityBufferPass" ||
         node->type == "GPUDrivenStreamAssetPass" ||
         node->type == "SceneRayQueryVisualizationPass" ||
         node->type == "SceneMaterialVisualizationPass" ||

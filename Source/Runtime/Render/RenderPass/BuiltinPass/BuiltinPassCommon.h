@@ -74,22 +74,22 @@ inline constexpr const char* kMaterialShaderObjectAlternateFragmentEntryPoint =
     "materialShaderObjectAlternateFragmentMain";
 inline constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "SceneRayQueryVisualize";
 inline constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQueryVisualizeMain";
-inline constexpr const char* kGPUDrivenPreviewShaderModuleName = "GPUDrivenPreview";
-inline constexpr const char* kGPUDrivenDeferredShaderModuleName = "GPUDrivenDeferred";
-inline constexpr const char* kGPUDrivenPreviewAmplificationEntryPoint =
-    "gpuDrivenPreviewAmplificationMain";
-inline constexpr const char* kGPUDrivenPreviewMeshEntryPoint = "gpuDrivenPreviewMeshMain";
-inline constexpr const char* kGPUDrivenPreviewFragmentEntryPoint = "gpuDrivenPreviewFragmentMain";
-inline constexpr const char* kGPUDrivenPreviewMaskedFragmentEntryPoint =
-    "gpuDrivenPreviewMaskedFragmentMain";
+inline constexpr const char* kVisibilityBufferShaderModuleName = "VisibilityBuffer";
+inline constexpr const char* kGPUDrivenCullingShaderModuleName = "GPUDrivenCulling";
+inline constexpr const char* kVisibilityBufferCompositeShaderModuleName = "VisibilityBufferComposite";
+inline constexpr const char* kVisibilityBufferAmplificationEntryPoint =
+    "visibilityBufferAmplificationMain";
+inline constexpr const char* kVisibilityBufferMeshEntryPoint = "visibilityBufferMeshMain";
+inline constexpr const char* kVisibilityBufferFragmentEntryPoint = "visibilityBufferFragmentMain";
+inline constexpr const char* kVisibilityBufferMaskedFragmentEntryPoint =
+    "visibilityBufferMaskedFragmentMain";
 inline constexpr const char* kGPUDrivenPreviewResetEntryPoint = "gpuDrivenPreviewResetMain";
 inline constexpr const char* kGPUDrivenPreviewInstanceCullEntryPoint = "gpuDrivenPreviewInstanceCullMain";
 inline constexpr const char* kGPUDrivenPreviewHzbEntryPoint = "gpuDrivenPreviewHzbMain";
-inline constexpr const char* kGPUDrivenPreviewDeferredEntryPoint = "gpuDrivenPreviewDeferredMain";
-inline constexpr const char* kGPUDrivenPreviewCompositeVertexEntryPoint =
-    "gpuDrivenPreviewCompositeVertexMain";
-inline constexpr const char* kGPUDrivenPreviewCompositeFragmentEntryPoint =
-    "gpuDrivenPreviewCompositeFragmentMain";
+inline constexpr const char* kVisibilityBufferCompositeVertexEntryPoint =
+    "visibilityBufferCompositeVertexMain";
+inline constexpr const char* kVisibilityBufferCompositeFragmentEntryPoint =
+    "visibilityBufferCompositeFragmentMain";
 inline constexpr const char* kGPUDrivenStreamAssetShaderModuleName = "GPUDrivenStreamAsset";
 inline constexpr const char* kGPUDrivenStreamAssetMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
 inline constexpr const char* kGPUDrivenStreamAssetFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";

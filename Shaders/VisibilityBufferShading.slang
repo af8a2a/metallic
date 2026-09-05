@@ -7,7 +7,7 @@
 #define OPENPBR_FEATURE_EnableMetallic true
 #define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
 
-#include "GPUDrivenRasterCommon.slang"
+#include "GPUDrivenSceneCommon.slang"
 
 #ifndef GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE
 #define GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE 0
@@ -97,7 +97,6 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 
 #include "../External/openpbr-bsdf/openpbr.h"
 
-static const uint kInvalidTextureIndex = 0xffffffffu;
 static const uint kModeMeshlet = 0u;
 static const uint kModePrimitive = 1u;
 static const uint kModeLod = 2u;
@@ -124,42 +123,6 @@ static const uint kStreamStateLockedFallback = 3u;
 static const uint kStreamPageStateMask = 0x00000007u;
 static const uint kStreamPageDeviceOffsetMask = 0xfffffff8u;
 static const float kPi = 3.14159265358979323846;
-
-struct GPUDrivenPreviewPush
-{
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
-    uint positionBuffer;
-    uint meshletBuffer;
-    uint meshletDrawBuffer;
-    uint meshletVertexBuffer;
-    uint meshletTriangleBuffer;
-    uint paramsBuffer;
-    uint transformBuffer;
-    uint instanceBuffer;
-    uint instanceVisibilityBuffer;
-    uint visibleInstanceIdsBuffer;
-    uint visibleInstanceCounterBuffer;
-    uint visibleMeshletBuffer0;
-    uint visibleMeshletBuffer1;
-    uint indirectBuffer0;
-    uint indirectBuffer1;
-    uint hzbBuffer0;
-    uint hzbBuffer1;
-    uint deferredColorBuffer;
-    uint depthImage;
-    uint visibilityImage;
-    uint passIndex;
-    uint mipLevel;
-    uint projectWithCullingCamera;
-    uint materialBuffer;
-    uint materialTextureRemapBuffer;
-    uint environmentImage;
-    uint environmentSHBuffer;
-    uint streamDeferredBindingsBuffer;
-    uint residentRecordCapacity;
-    uint streamOwnerMaskBuffer;
-};
 
 struct GPUDrivenStreamDeferredBindings
 {
@@ -248,149 +211,6 @@ struct GPUDrivenStreamDeferredParams
     float4 previousUpProjection;
     float4 previousViewport;
     float4 previousClipOrtho;
-};
-
-struct GPUDrivenPreviewVertex
-{
-    float4 position;
-    float4 normal;
-    float4 tangent;
-    float2 texcoord;
-    uint flags;
-    uint reserved;
-};
-
-struct SceneTransform
-{
-    float4 world0;
-    float4 world1;
-    float4 world2;
-    float4 world3;
-};
-
-struct GPUDrivenPreviewMeshlet
-{
-    uint4 ranges;
-    uint4 lod;
-    float4 boundingSphere;
-    float4 coneApexCutoff;
-    float4 coneAxisLodError;
-};
-
-struct GPUDrivenPreviewGeometry
-{
-    uint4 source;
-    uint4 counts;
-    uint4 payload;
-    uint4 meshletPayload;
-    float4 localBoundingSphere;
-    uint4 identity;
-};
-
-struct GPUDrivenPreviewInstance
-{
-    float4 world0;
-    float4 world1;
-    float4 world2;
-    float4 world3;
-    float4 previousWorld0;
-    float4 previousWorld1;
-    float4 previousWorld2;
-    float4 previousWorld3;
-    float4 localBoundingSphere;
-    uint4 identity;
-};
-
-struct GPUDrivenPreviewTextureInfo
-{
-    uint textureIndex;
-    uint texCoord;
-    uint padding0;
-    uint padding1;
-    float4 transform0;
-    float4 transform1;
-};
-
-struct GPUDrivenPreviewMaterial
-{
-    float4 baseColor;
-    float4 emissive;
-    float4 params;
-    float4 textureParams;
-    float4 glassParams;
-    float4 attenuationColor;
-    float4 diffuseTransmission;
-    GPUDrivenPreviewTextureInfo baseColorTexture;
-    GPUDrivenPreviewTextureInfo metallicRoughnessTexture;
-    GPUDrivenPreviewTextureInfo normalTexture;
-    GPUDrivenPreviewTextureInfo occlusionTexture;
-    GPUDrivenPreviewTextureInfo emissiveTexture;
-    GPUDrivenPreviewTextureInfo transmissionTexture;
-    GPUDrivenPreviewTextureInfo thicknessTexture;
-    GPUDrivenPreviewTextureInfo diffuseTransmissionTexture;
-    GPUDrivenPreviewTextureInfo diffuseTransmissionColorTexture;
-    uint4 identity;
-};
-
-SceneTransform instanceTransform(GPUDrivenPreviewInstance instance)
-{
-    SceneTransform transform;
-    transform.world0 = instance.world0;
-    transform.world1 = instance.world1;
-    transform.world2 = instance.world2;
-    transform.world3 = instance.world3;
-    return transform;
-}
-
-uint loadPackedMeshletTriangleIndex(
-    StructuredBuffer<uint> triangleWords,
-    uint firstWord,
-    uint triangleIndex,
-    uint triangleCorner)
-{
-    uint byteOffset = triangleIndex * 3u + triangleCorner;
-    uint word = triangleWords[firstWord + (byteOffset >> 2u)];
-    return (word >> ((byteOffset & 3u) * 8u)) & 0xffu;
-}
-
-struct GPUDrivenPreviewParams
-{
-    float4 eye;
-    float4 center;
-    float4 upProjection;
-    float4 viewport;
-    float4 clipOrtho;
-    float4 clearColor;
-    float4 previousEye;
-    float4 previousCenter;
-    float4 previousUpProjection;
-    float4 previousViewport;
-    float4 previousClipOrtho;
-    float4 renderEye;
-    float4 renderCenter;
-    float4 renderUpProjection;
-    float4 renderViewport;
-    float4 renderClipOrtho;
-    uint mode;
-    uint meshletOffset;
-    uint meshletCount;
-    uint selectedLodLevel;
-    uint instanceCount;
-    uint width;
-    uint height;
-    uint hzbMipCount;
-    uint frameIndex;
-    uint hzbValid;
-    uint cullingFlags;
-    uint materialTextureCount;
-    float environmentIntensity;
-    float environmentRotationRadians;
-    uint environmentMode;
-    uint environmentVisible;
-    uint materialCount;
-    uint visibleMeshletCapacity;
-    uint shadingPadding1;
-    uint shadingPadding2;
 };
 
 float3 safeNormalize(float3 value, float3 fallback)
@@ -534,7 +354,7 @@ struct GPUDrivenDeferredSurface
     uint materialIndex;
     uint primitiveIndex;
     uint lodLevel;
-    uint colorSeed;
+    uint lodGroupIndex;
 };
 
 uint streamDeferredPageState(GPUDrivenStreamDeferredPageTableEntry entry)
@@ -673,7 +493,6 @@ bool decodeStreamDeferredSurface(
     surface.materialIndex = 0u;
     surface.primitiveIndex = 0u;
     surface.lodLevel = 0u;
-    surface.colorSeed = record.clusterIndex;
 
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredParams>> streamParamsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredParams>>(uint2(
@@ -939,7 +758,6 @@ bool decodeStreamDeferredSurface(
     surface.materialIndex = instance.identity.y;
     surface.primitiveIndex = group.primitiveIndex;
     surface.lodLevel = group.lodLevel;
-    surface.colorSeed = ((group.pageIndex + 1u) * 0x9e3779b9u) ^ record.clusterIndex;
     return true;
 }
 
@@ -1289,45 +1107,17 @@ uint shadeDeferredSurface(
     return packHdrColor(radiance);
 }
 
-void gpuDrivenPreviewDeferredResident(
-    uint3 dispatchThreadId : SV_DispatchThreadID,
-    uniform GPUDrivenPreviewPush push)
+bool decodeResidentVisibilitySurface(
+    uint meshletIndex,
+    uint triangleIndex,
+    float2 pixelCenter,
+    GPUDrivenPreviewParams params,
+    GPUDrivenPreviewPush push,
+    out GPUDrivenDeferredSurface surface)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
-    GPUDrivenPreviewParams params = paramsHandle[0];
-    if (dispatchThreadId.x >= params.width || dispatchThreadId.y >= params.height) {
-        return;
-    }
-
-    DescriptorHandle<Texture2D<uint>> visibilityHandle =
-        DescriptorHandle<Texture2D<uint>>(uint2(push.imageShaderIndexBase + push.visibilityImage, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> colorHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.deferredColorBuffer, 0));
-    Texture2D<uint> visibility = visibilityHandle;
-    RWStructuredBuffer<uint> colors = colorHandle;
-    uint packedVisibility = visibility.Load(int3(dispatchThreadId.xy, 0));
-    uint outputIndex = dispatchThreadId.y * params.width + dispatchThreadId.x;
-    float2 pixelCenter = float2(dispatchThreadId.xy) + 0.5;
-
-    if (packedVisibility == 0u) {
-        if (params.mode == kModeShaded && params.environmentVisible != 0u) {
-            colors[outputIndex] = packHdrColor(environmentRadiance(cameraRayDirection(pixelCenter, params), params, push));
-        } else {
-            colors[outputIndex] = packColor(params.clearColor.xyz);
-        }
-        return;
-    }
-
-    uint meshletIndex = 0u;
-    uint triangleIndex = 0u;
-    if (!unpackVisibilityId(packedVisibility, meshletIndex, triangleIndex)) {
-        colors[outputIndex] = packColor(params.clearColor.xyz);
-        return;
-    }
+    surface = (GPUDrivenDeferredSurface)0;
     if (!visibilityRecordIndexValid(meshletIndex, push.residentRecordCapacity)) {
-        colors[outputIndex] = packColor(params.clearColor.xyz);
-        return;
+        return false;
     }
 
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshletHandle =
@@ -1341,13 +1131,11 @@ void gpuDrivenPreviewDeferredResident(
     VisibleClusterRecord meshletDraw = meshletDraws[meshletIndex];
     if (visibleClusterSource(meshletDraw) != kVisibleClusterSourceResident ||
         meshletDraw.instanceIndex >= params.instanceCount) {
-        colors[outputIndex] = packColor(params.clearColor.xyz);
-        return;
+        return false;
     }
     GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.clusterIndex];
     if (triangleIndex >= meshlet.ranges.w) {
-        colors[outputIndex] = packColor(params.clearColor.xyz);
-        return;
+        return false;
     }
 
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewGeometry>> geometryHandle =
@@ -1363,16 +1151,12 @@ void gpuDrivenPreviewDeferredResident(
     GPUDrivenPreviewGeometry geometry = geometries[meshletDraw.dataIndex];
     GPUDrivenPreviewInstance instance = instances[meshletDraw.instanceIndex];
 
+    surface.materialIndex = instance.identity.y;
+    surface.primitiveIndex = geometry.source.x;
+    surface.lodLevel = meshlet.lod.y;
+    surface.lodGroupIndex = meshlet.lod.x;
     if (params.mode != kModeShaded && params.mode != kModeBaseColor) {
-        uint colorSeed = meshletIndex;
-        if (params.mode == kModePrimitive) {
-            colorSeed = geometry.source.x;
-        } else if (params.mode == kModeLod) {
-            colorSeed = geometry.source.x * 1009u +
-                meshlet.lod.y * 131u + meshlet.lod.x * 17u + 1u;
-        }
-        colors[outputIndex] = packColor(hashColor(colorSeed + 1u));
-        return;
+        return true;
     }
 
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vertexHandle =
@@ -1424,66 +1208,26 @@ void gpuDrivenPreviewDeferredResident(
             safeNormalize(cross(float3(0.0, 1.0, 0.0), normal), float3(1.0, 0.0, 0.0)));
     float tangentSign = localTangent.w < 0.0 ? -1.0 : 1.0;
 
-    GPUDrivenDeferredSurface surface;
     surface.worldPosition = worldPosition;
     surface.geometryNormal = geometryNormal;
     surface.normal = normal;
     surface.tangent = tangent;
     surface.texcoord = texcoord;
     surface.tangentSign = tangentSign;
-    surface.materialIndex = instance.identity.y;
-    surface.primitiveIndex = geometry.source.x;
-    surface.lodLevel = meshlet.lod.y;
-    surface.colorSeed = meshletIndex;
-    colors[outputIndex] = shadeDeferredSurface(surface, pixelCenter, params, push);
+    return true;
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void gpuDrivenPreviewDeferredMain(
-    uint3 dispatchThreadId : SV_DispatchThreadID,
-    uniform GPUDrivenPreviewPush push)
+bool decodeStreamVisibilitySurface(
+    uint recordIndex,
+    uint triangleIndex,
+    float2 pixelCenter,
+    GPUDrivenPreviewParams params,
+    GPUDrivenPreviewPush push,
+    out GPUDrivenDeferredSurface surface)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(
-            push.bufferShaderIndexBase + push.paramsBuffer,
-            0));
-    GPUDrivenPreviewParams params = paramsHandle[0];
-    if (dispatchThreadId.x >= params.width || dispatchThreadId.y >= params.height) {
-        return;
-    }
-
-    DescriptorHandle<Texture2D<uint>> visibilityHandle =
-        DescriptorHandle<Texture2D<uint>>(uint2(
-            push.imageShaderIndexBase + push.visibilityImage,
-            0));
-    Texture2D<uint> visibility = visibilityHandle;
-    uint packedVisibility = visibility.Load(int3(dispatchThreadId.xy, 0));
-    if (packedVisibility == 0u) {
-        gpuDrivenPreviewDeferredResident(dispatchThreadId, push);
-        return;
-    }
-
-    uint recordIndex = 0u;
-    uint triangleIndex = 0u;
-    if (!unpackVisibilityId(packedVisibility, recordIndex, triangleIndex)) {
-        gpuDrivenPreviewDeferredResident(dispatchThreadId, push);
-        return;
-    }
-    if (visibilityRecordIndexValid(recordIndex, push.residentRecordCapacity)) {
-        gpuDrivenPreviewDeferredResident(dispatchThreadId, push);
-        return;
-    }
-
-    DescriptorHandle<RWStructuredBuffer<uint>> colorHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            push.bufferShaderIndexBase + push.deferredColorBuffer,
-            0));
-    RWStructuredBuffer<uint> colors = colorHandle;
-    uint outputIndex = dispatchThreadId.y * params.width + dispatchThreadId.x;
+    surface = (GPUDrivenDeferredSurface)0;
     if (push.streamDeferredBindingsBuffer == kInvalidTextureIndex) {
-        colors[outputIndex] = packColor(params.clearColor.xyz);
-        return;
+        return false;
     }
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredBindings>> bindingsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredBindings>>(uint2(
@@ -1497,8 +1241,7 @@ void gpuDrivenPreviewDeferredMain(
             bindings.visibleRecordCapacity) ||
         recordIndex < bindings.visibleRecordBase ||
         recordIndex - bindings.visibleRecordBase >= bindings.visibleRecordCapacity) {
-        colors[outputIndex] = packColor(params.clearColor.xyz);
-        return;
+        return false;
     }
 
     uint localRecordIndex = recordIndex - bindings.visibleRecordBase;
@@ -1509,12 +1252,9 @@ void gpuDrivenPreviewDeferredMain(
     StructuredBuffer<VisibleClusterRecord> streamRecords = streamRecordHandle;
     VisibleClusterRecord record = streamRecords[localRecordIndex];
     if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) {
-        colors[outputIndex] = packColor(params.clearColor.xyz);
-        return;
+        return false;
     }
 
-    GPUDrivenDeferredSurface surface;
-    float2 pixelCenter = float2(dispatchThreadId.xy) + 0.5;
     if (!decodeStreamDeferredSurface(
             record,
             triangleIndex,
@@ -1523,23 +1263,80 @@ void gpuDrivenPreviewDeferredMain(
             push,
             bindings,
             surface)) {
-        colors[outputIndex] = packColor(params.clearColor.xyz);
+        return false;
+    }
+    surface.lodGroupIndex = record.clusterIndex;
+    return true;
+}
+
+// Resolve the winning triangle once per pixel. Rasterization never evaluates
+// OpenPBR or exports normal/tangent/material G-buffers.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void visibilityBufferShadeMain(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uniform GPUDrivenPreviewPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(
+            push.bufferShaderIndexBase + push.paramsBuffer, 0));
+    GPUDrivenPreviewParams params = paramsHandle[0];
+    if (dispatchThreadId.x >= params.width || dispatchThreadId.y >= params.height) {
         return;
     }
+
+    DescriptorHandle<Texture2D<uint>> visibilityHandle =
+        DescriptorHandle<Texture2D<uint>>(uint2(
+            push.imageShaderIndexBase + push.visibilityImage, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> colorHandle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
+            push.bufferShaderIndexBase + push.deferredColorBuffer, 0));
+    Texture2D<uint> visibility = visibilityHandle;
+    RWStructuredBuffer<uint> colors = colorHandle;
+    uint packedVisibility = visibility.Load(int3(dispatchThreadId.xy, 0));
+    uint outputIndex = dispatchThreadId.y * params.width + dispatchThreadId.x;
+    float2 pixelCenter = float2(dispatchThreadId.xy) + 0.5;
+    uint background = packColor(params.clearColor.xyz);
+    if (packedVisibility == 0u) {
+        if (params.mode == kModeShaded && params.environmentVisible != 0u) {
+            background = packHdrColor(environmentRadiance(
+                cameraRayDirection(pixelCenter, params), params, push));
+        }
+        colors[outputIndex] = background;
+        return;
+    }
+
+    uint recordIndex = 0u;
+    uint triangleIndex = 0u;
+    if (!unpackVisibilityId(packedVisibility, recordIndex, triangleIndex)) {
+        colors[outputIndex] = background;
+        return;
+    }
+
+    GPUDrivenDeferredSurface surface;
+    bool decoded = false;
+    if (visibilityRecordIndexValid(recordIndex, push.residentRecordCapacity)) {
+        decoded = decodeResidentVisibilitySurface(
+            recordIndex, triangleIndex, pixelCenter, params, push, surface);
+    } else {
+        decoded = decodeStreamVisibilitySurface(
+            recordIndex, triangleIndex, pixelCenter, params, push, surface);
+    }
+    if (!decoded) {
+        colors[outputIndex] = background;
+        return;
+    }
+
     if (params.mode != kModeShaded && params.mode != kModeBaseColor) {
         uint colorSeed = recordIndex;
         if (params.mode == kModePrimitive) {
             colorSeed = surface.primitiveIndex;
         } else if (params.mode == kModeLod) {
             colorSeed = surface.primitiveIndex * 1009u +
-                surface.lodLevel * 131u + record.clusterIndex * 17u + 1u;
+                surface.lodLevel * 131u + surface.lodGroupIndex * 17u + 1u;
         }
         colors[outputIndex] = packColor(hashColor(colorSeed + 1u));
         return;
     }
-    colors[outputIndex] = shadeDeferredSurface(
-        surface,
-        pixelCenter,
-        params,
-        push);
+    colors[outputIndex] = shadeDeferredSurface(surface, pixelCenter, params, push);
 }

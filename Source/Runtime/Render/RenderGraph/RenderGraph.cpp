@@ -1320,6 +1320,11 @@ bool deserializeRenderGraphFromString(
             node.id = nodeJson.value("id", 0u);
             node.name = nodeJson.value("name", "");
             node.type = nodeJson.value("type", "");
+            // Preserve saved graphs across the visibility pass rename without
+            // exposing a second, legacy pass type in the editor registry.
+            if (node.type == "GPUDrivenPreviewPass") {
+                node.type = "VisibilityBufferPass";
+            }
             node.properties = nodeJson.value("properties", RenderGraphProperties::object());
             if (nodeJson.contains("position")) {
                 node.uiX = nodeJson["position"].value("x", 0.0f);

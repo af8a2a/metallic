@@ -3,7 +3,7 @@
 > 目标：地形不建独立 tile 渲染路径，而是以 **cluster（meshlet）为单元进入 Metallic 现有 GPU-Driven mesh shader 管线**，
 > 与普通场景共用剔除 + 光栅 + 延迟着色 + 流式 + RT，实现 Nanite-like 地形。
 > 前提阅读：`Documentation/UnrealLandscapeResearch.md`（UE 5.6 地形调研）。本文件所有 `file:line` 引用基于
-> `E:\metallic` 当前源码（`Shaders/GPUDrivenPreview.slang`、`Shaders/GPUDrivenDeferred.slang`、
+> `E:\metallic` 当前源码（`Shaders/VisibilityBuffer.slang`、`Shaders/VisibilityBufferShading.slang`、
 > `Shaders/GPUDrivenStreamAsset.slang`、`Source/Runtime/Render/MeshletStream*.{h,cpp}`、
 > `Source/Runtime/Scene/MeshletStreamAsset.h`）。
 
@@ -32,9 +32,9 @@
 
 ### 2.1 GPUDrivenDeferred 路径（完整着色，无流式/LOD 选择）
 
-帧流程（`Shaders/GPUDrivenPreview.slang` + `GPUDrivenDeferred.slang`，CPU 侧 `GPUDrivenPreviewPass.cpp`；
-pass 注册 `GPUDrivenPreviewPass.cpp:613` + `BuiltinRenderPasses.cpp:47-49`，图 `Pipelines/Samples/gpu_driven_sponza.metallic_graph.json:43`；
-`execute()` 帧序 `GPUDrivenPreviewPass.cpp:1002-1225`：sync → early cull(reset→instanceCull→compact) → drawVisibility(0) → buildHzb →
+帧流程（`Shaders/GPUDrivenCulling.slang` + `VisibilityBuffer.slang` + `VisibilityBufferShading.slang`，CPU 侧 `VisibilityBufferPass.cpp`；
+pass 注册 `VisibilityBufferPass.cpp:613` + `BuiltinRenderPasses.cpp:47-49`，图 `Pipelines/Samples/gpu_driven_sponza.metallic_graph.json:43`；
+`execute()` 帧序 `VisibilityBufferPass.cpp:1002-1225`：sync → early cull(reset→instanceCull→compact) → drawVisibility(0) → buildHzb →
 late cull → drawVisibility(1) → buildHzb → dispatchDeferred → composite）：
 
 1. **实例剔除 compute**（`gpuDrivenPreviewInstanceCullMain`，Preview.slang:580-652）：
@@ -47,7 +47,7 @@ late cull → drawVisibility(1) → buildHzb → dispatchDeferred → composite�
    写 `(meshletIndex<<1)|chunkIndex`。CPU 侧 `meshletDraws` 缓冲布局 = **baseRange + 每 LOD 的 lodRanges**
    （GPUSceneSubsystem.cpp:492-540）—— LOD 区间已上传，只是选择逻辑未启用（见 2.3 差距表）。
 3. **Mesh shader 光栅**（`gpuDrivenPreviewMeshMain`，739-843）：每 chunk 一个 DispatchMesh，
-   CPU 侧 per-bucket `drawMeshTasksIndirect`（GPUDrivenPreviewPass.cpp:1985-1988）；
+   CPU 侧 per-bucket `drawMeshTasksIndirect`（VisibilityBufferPass.cpp:1985-1988）；
    - 解码：三角形索引打包 1 字节/角（`loadPackedMeshletTriangleIndex`，121-130），
      顶点从全局 position buffer 取 `GPUDrivenPreviewVertex`（float4 pos/normal/tangent + float2 uv + flags = 64B，52-60）；
    - **meshlet 级剔除在 mesh shader 内**：视锥 + 法线锥背面（`meshletVisible`，525-551，调用点 794）——

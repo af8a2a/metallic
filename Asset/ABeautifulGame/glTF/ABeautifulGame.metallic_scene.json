@@ -1,0 +1,15 @@
+{
+  "nodes": [],
+  "sceneIndex": 0,
+  "source": "ABeautifulGame.gltf",
+  "version": 3,
+  "world": {
+    "environment": {
+      "enabled": true,
+      "intensity": 1.0,
+      "path": "",
+      "rotationDegrees": 0.0,
+      "visible": true
+    }
+  }
+}

@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Runtime/Render/RenderSample.h"
 
 #include <spdlog/spdlog.h>
 
@@ -7,7 +8,7 @@
 
 namespace {
 
-constexpr const char* kGPUDrivenSampleId = "gpu-driven-sample";
+constexpr const char* kGPUDrivenSampleId = metallic::render::kDefaultGPUDrivenSampleId;
 constexpr const char* kGPUDrivenUsdSampleId = "gpu-driven-usd";
 constexpr const char* kGPUDrivenStreamAssetSampleId = "gpu-driven-streamasset";
 constexpr const char* kGPUDrivenTerrainP0SampleId = "gpu-driven-terrain-p0";
@@ -18,6 +19,7 @@ void printUsage()
 {
     spdlog::info(
         "MetallicGPUDrivenSample options:\n"
+        "  Default: SuperSponza through VisibilityBufferPass (VBuffer + optional visualization)\n"
         "  --smoke-test                 Render one frame and exit\n"
         "  --debug-control              Enable local Agent debug control\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization\n"

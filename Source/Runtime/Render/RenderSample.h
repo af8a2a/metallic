@@ -10,6 +10,10 @@
 
 namespace metallic::render {
 
+// The standalone GPUDriven executable and its explicit visibility option use
+// this same sample, whose graph is backed by VisibilityBufferPass.
+inline constexpr const char* kDefaultGPUDrivenSampleId = "gpu-driven-sample";
+
 struct RenderSampleEnvironmentDesc {
     bool enabled = true;
     std::string path;

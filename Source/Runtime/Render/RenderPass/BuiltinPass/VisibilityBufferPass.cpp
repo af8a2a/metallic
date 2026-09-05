@@ -5,14 +5,12 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/SceneResourceManager.h"
-#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-#include "openpbr_data_constants.h"
 
 #include <atomic>
 #include <chrono>
@@ -33,7 +31,7 @@ void logGPUDrivenCompileStage(
     const double elapsedMilliseconds = std::chrono::duration<double, std::milli>(
         GPUDrivenCompileClock::now() - begin).count();
     spdlog::info(
-        "[GPUDrivenPreviewPass] Compile stage '{}' completed in {:.2f} ms",
+        "[VisibilityBufferPass] Compile stage '{}' completed in {:.2f} ms",
         stage,
         elapsedMilliseconds);
 }
@@ -50,18 +48,14 @@ const char* pipelineCacheLoadStatusName(PipelineCacheLoadStatus status)
 }
 
 constexpr uint32_t kGPUDrivenMaxMaterialTextures = 256;
-constexpr uint32_t kGPUDrivenEnvironmentModeProcedural = 0;
-constexpr uint32_t kGPUDrivenEnvironmentModeMap = 1;
-constexpr uint32_t kGPUDrivenEnvironmentModeDisabled = 2;
-constexpr uint32_t kGPUDrivenOpenPBRLut2DCount = 6;
-constexpr uint32_t kGPUDrivenOpenPBRLut3DCount = 2;
-constexpr uint32_t kGPUDrivenOpenPBRLutSize = OpenPBR_EnergyTableSize;
-constexpr uint32_t kGPUDrivenOpenPBRLtcSize = OpenPBR_LTCTableSize;
-constexpr float kGPUDrivenOpenPBRLutScale = 1.0f / 65535.0f;
+constexpr uint32_t kVisibilityModeTriangle = 3;
+constexpr uint32_t kVisibilityModeDepth = 4;
+constexpr uint32_t kVisibilityModeCoverage = 5;
+constexpr uint32_t kVisibilityModeNone = 6;
 constexpr uint32_t kGPUDrivenInvalidBindlessIndex =
     std::numeric_limits<uint32_t>::max();
 constexpr const char* kGPUDrivenPipelineCachePath =
-    PROJECT_SOURCE_DIR "/.cache/pso/GPUDrivenPreviewPass.pso";
+    PROJECT_SOURCE_DIR "/.cache/pso/VisibilityBufferPass.pso";
 
 bool previewStreamEnabled(const RenderGraphProperties& properties)
 {
@@ -129,7 +123,7 @@ bool resolvePreviewStreamSource(
 {
     outSelection = {};
     if (runtimeScene == nullptr) {
-        log = "GPUDrivenPreviewPass stream integration requires a runtime scene";
+        log = "VisibilityBufferPass stream integration requires a runtime scene";
         return false;
     }
 
@@ -138,7 +132,7 @@ bool resolvePreviewStreamSource(
     if (sourceIdProperty != properties.end()) {
         if (!sourceIdProperty->is_string() ||
             sourceIdProperty->get_ref<const std::string&>().empty()) {
-            log = "GPUDrivenPreviewPass streamSourceId must be a non-empty string";
+            log = "VisibilityBufferPass streamSourceId must be a non-empty string";
             return false;
         }
         requestedSourceId = sourceIdProperty->get<std::string>();
@@ -147,7 +141,7 @@ bool resolvePreviewStreamSource(
     const std::vector<scene::SceneSourceDesc>& sources = runtimeScene->sources();
     if (sources.empty()) {
         if (!requestedSourceId.empty()) {
-            log = "GPUDrivenPreviewPass streamSourceId was provided for a non-composed scene";
+            log = "VisibilityBufferPass streamSourceId was provided for a non-composed scene";
             return false;
         }
         outSelection.sourcePath = scenePath;
@@ -166,7 +160,7 @@ bool resolvePreviewStreamSource(
                 return candidate.id == requestedSourceId;
             });
         if (source == sources.end()) {
-            log = "GPUDrivenPreviewPass streamSourceId '" + requestedSourceId +
+            log = "VisibilityBufferPass streamSourceId '" + requestedSourceId +
                 "' does not name a composed scene source";
             return false;
         }
@@ -199,7 +193,7 @@ bool resolvePreviewStreamSource(
         const std::filesystem::path assetPath =
             previewStreamAssetPath(properties, scenePath);
         if (!candidateAsset.open(assetPath, reason)) {
-            log = "GPUDrivenPreviewPass cannot inspect streamAssetPath '" +
+            log = "VisibilityBufferPass cannot inspect streamAssetPath '" +
                 assetPath.string() + "': " + reason;
             return false;
         }
@@ -215,8 +209,8 @@ bool resolvePreviewStreamSource(
     }
 
     log = matches.empty()
-        ? "GPUDrivenPreviewPass could not uniquely match the stream asset to a composed scene source; set streamSourceId"
-        : "GPUDrivenPreviewPass stream asset matches multiple composed scene sources; set streamSourceId to disambiguate the owner";
+        ? "VisibilityBufferPass could not uniquely match the stream asset to a composed scene source; set streamSourceId"
+        : "VisibilityBufferPass stream asset matches multiple composed scene sources; set streamSourceId to disambiguate the owner";
     return false;
 }
 
@@ -288,66 +282,6 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .enableClusterRtx = false,
     };
 }
-
-using GPUDrivenOpenPBRLutScalar = uint16_t;
-
-struct GPUDrivenOpenPBRVec3 {
-    float x;
-    float y;
-    float z;
-};
-
-constexpr GPUDrivenOpenPBRVec3 vec3(float x, float y, float z)
-{
-    return GPUDrivenOpenPBRVec3{x, y, z};
-}
-
-static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBRIdealDielectricEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_dielectric_energy_complement_data.h"
-};
-
-static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBRIdealDielectricAverageEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_dielectric_avg_energy_complement_data.h"
-};
-
-static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBRIdealDielectricReflectionRatio[] = {
-#include "impl/data/openpbr_ideal_dielectric_reflection_ratio_data.h"
-};
-
-static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBROpaqueDielectricEnergyComplement[] = {
-#include "impl/data/openpbr_opaque_dielectric_energy_complement_data.h"
-};
-
-static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBROpaqueDielectricAverageEnergyComplement[] = {
-#include "impl/data/openpbr_opaque_dielectric_avg_energy_complement_data.h"
-};
-
-static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBRIdealMetalEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_metal_energy_complement_data.h"
-};
-
-static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBRIdealMetalAverageEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_metal_avg_energy_complement_data.h"
-};
-
-static constexpr GPUDrivenOpenPBRVec3 kGPUDrivenOpenPBRLtc[] = {
-#include "impl/data/openpbr_ltc_data.h"
-};
-
-static_assert(std::size(kGPUDrivenOpenPBRIdealDielectricEnergyComplement) ==
-    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
-static_assert(std::size(kGPUDrivenOpenPBRIdealDielectricAverageEnergyComplement) ==
-    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
-static_assert(std::size(kGPUDrivenOpenPBRIdealDielectricReflectionRatio) ==
-    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
-static_assert(std::size(kGPUDrivenOpenPBROpaqueDielectricEnergyComplement) ==
-    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
-static_assert(std::size(kGPUDrivenOpenPBROpaqueDielectricAverageEnergyComplement) ==
-    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
-static_assert(std::size(kGPUDrivenOpenPBRIdealMetalEnergyComplement) ==
-    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
-static_assert(std::size(kGPUDrivenOpenPBRIdealMetalAverageEnergyComplement) == kGPUDrivenOpenPBRLutSize);
-static_assert(std::size(kGPUDrivenOpenPBRLtc) == kGPUDrivenOpenPBRLtcSize * kGPUDrivenOpenPBRLtcSize);
 
 struct GPUDrivenPreviewTextureResource {
     std::unique_ptr<Buffer> uploadBuffer;
@@ -453,150 +387,6 @@ Result createGPUDrivenTexture(
     return {};
 }
 
-template <size_t ValueCount>
-Result createGPUDrivenOpenPBRScalarLut(
-    Device& device,
-    const GPUDrivenOpenPBRLutScalar (&values)[ValueCount],
-    uint32_t width,
-    uint32_t height,
-    uint32_t depth,
-    std::string_view label,
-    GPUDrivenPreviewTextureResource& outTexture,
-    std::string& log)
-{
-    const uint64_t texelCount =
-        static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * static_cast<uint64_t>(depth);
-    if (texelCount != ValueCount) {
-        return makeError(Error::InvalidArgument);
-    }
-    std::vector<float> pixels(static_cast<size_t>(texelCount) * 4u, 0.0f);
-    for (size_t index = 0; index < static_cast<size_t>(texelCount); ++index) {
-        pixels[index * 4u] = static_cast<float>(values[index]) * kGPUDrivenOpenPBRLutScale;
-        pixels[index * 4u + 3u] = 1.0f;
-    }
-    return createGPUDrivenTexture(
-        device,
-        pixels.data(),
-        static_cast<uint64_t>(pixels.size() * sizeof(float)),
-        width,
-        height,
-        Format::Rgba32Sfloat,
-        label,
-        outTexture,
-        log,
-        depth);
-}
-
-Result prepareGPUDrivenOpenPBRLuts(
-    Device& device,
-    std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut2DCount>& lut2D,
-    std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut3DCount>& lut3D,
-    std::string& log)
-{
-    Result result = createGPUDrivenOpenPBRScalarLut(
-        device,
-        kGPUDrivenOpenPBRIdealDielectricAverageEnergyComplement,
-        kGPUDrivenOpenPBRLutSize,
-        kGPUDrivenOpenPBRLutSize,
-        1,
-        "GPUDriven OpenPBR ideal dielectric average energy complement LUT",
-        lut2D[0],
-        log);
-    if (!result) {
-        return result;
-    }
-    result = createGPUDrivenOpenPBRScalarLut(
-        device,
-        kGPUDrivenOpenPBRIdealDielectricReflectionRatio,
-        kGPUDrivenOpenPBRLutSize,
-        kGPUDrivenOpenPBRLutSize,
-        1,
-        "GPUDriven OpenPBR ideal dielectric reflection ratio LUT",
-        lut2D[1],
-        log);
-    if (!result) {
-        return result;
-    }
-    result = createGPUDrivenOpenPBRScalarLut(
-        device,
-        kGPUDrivenOpenPBROpaqueDielectricAverageEnergyComplement,
-        kGPUDrivenOpenPBRLutSize,
-        kGPUDrivenOpenPBRLutSize,
-        1,
-        "GPUDriven OpenPBR opaque dielectric average energy complement LUT",
-        lut2D[2],
-        log);
-    if (!result) {
-        return result;
-    }
-    result = createGPUDrivenOpenPBRScalarLut(
-        device,
-        kGPUDrivenOpenPBRIdealMetalEnergyComplement,
-        kGPUDrivenOpenPBRLutSize,
-        kGPUDrivenOpenPBRLutSize,
-        1,
-        "GPUDriven OpenPBR ideal metal energy complement LUT",
-        lut2D[3],
-        log);
-    if (!result) {
-        return result;
-    }
-    result = createGPUDrivenOpenPBRScalarLut(
-        device,
-        kGPUDrivenOpenPBRIdealMetalAverageEnergyComplement,
-        kGPUDrivenOpenPBRLutSize,
-        1,
-        1,
-        "GPUDriven OpenPBR ideal metal average energy complement LUT",
-        lut2D[4],
-        log);
-    if (!result) {
-        return result;
-    }
-
-    std::vector<float> ltcPixels(std::size(kGPUDrivenOpenPBRLtc) * 4u, 0.0f);
-    for (size_t index = 0; index < std::size(kGPUDrivenOpenPBRLtc); ++index) {
-        ltcPixels[index * 4u] = kGPUDrivenOpenPBRLtc[index].x;
-        ltcPixels[index * 4u + 1u] = kGPUDrivenOpenPBRLtc[index].y;
-        ltcPixels[index * 4u + 2u] = kGPUDrivenOpenPBRLtc[index].z;
-        ltcPixels[index * 4u + 3u] = 1.0f;
-    }
-    result = createGPUDrivenTexture(
-        device,
-        ltcPixels.data(),
-        static_cast<uint64_t>(ltcPixels.size() * sizeof(float)),
-        kGPUDrivenOpenPBRLtcSize,
-        kGPUDrivenOpenPBRLtcSize,
-        Format::Rgba32Sfloat,
-        "GPUDriven OpenPBR LTC LUT",
-        lut2D[5],
-        log);
-    if (!result) {
-        return result;
-    }
-    result = createGPUDrivenOpenPBRScalarLut(
-        device,
-        kGPUDrivenOpenPBRIdealDielectricEnergyComplement,
-        kGPUDrivenOpenPBRLutSize,
-        kGPUDrivenOpenPBRLutSize,
-        kGPUDrivenOpenPBRLutSize,
-        "GPUDriven OpenPBR ideal dielectric energy complement LUT",
-        lut3D[0],
-        log);
-    if (!result) {
-        return result;
-    }
-    return createGPUDrivenOpenPBRScalarLut(
-        device,
-        kGPUDrivenOpenPBROpaqueDielectricEnergyComplement,
-        kGPUDrivenOpenPBRLutSize,
-        kGPUDrivenOpenPBRLutSize,
-        kGPUDrivenOpenPBRLutSize,
-        "GPUDriven OpenPBR opaque dielectric energy complement LUT",
-        lut3D[1],
-        log);
-}
-
 Result uploadGPUDrivenTexture(CommandBuffer& commandBuffer, GPUDrivenPreviewTextureResource& texture)
 {
     if (texture.uploaded) {
@@ -693,7 +483,7 @@ bool decodeGPUDrivenMaterialTexture(
         pixels = stbi_load(imagePath.string().c_str(), &width, &height, &channels, 4);
     }
     if (pixels == nullptr || width <= 0 || height <= 0) {
-        log += "Warning: GPUDrivenPreviewPass failed to decode material texture ";
+        log += "Warning: VisibilityBufferPass failed to decode material texture ";
         log += texture.name.empty() ? image.name : texture.name;
         if (const char* reason = stbi_failure_reason()) {
             log += ": ";
@@ -715,68 +505,6 @@ bool decodeGPUDrivenMaterialTexture(
     outImage.pixels.assign(pixels, pixels + static_cast<size_t>(byteSize));
     stbi_image_free(pixels);
     return true;
-}
-
-GPUDrivenPreviewGpuTextureInfo gpuDrivenTextureInfo(
-    const scene::RenderTextureInfo& textureInfo,
-    const std::vector<uint32_t>& textureIndexMap)
-{
-    GPUDrivenPreviewGpuTextureInfo result;
-    if (textureInfo.textureIndex >= 0 &&
-        static_cast<size_t>(textureInfo.textureIndex) < textureIndexMap.size()) {
-        result.textureIndex = textureIndexMap[static_cast<size_t>(textureInfo.textureIndex)];
-    }
-    result.texCoord = 0;
-    result.transform0[0] = textureInfo.uvTransform[0];
-    result.transform0[1] = textureInfo.uvTransform[1];
-    result.transform0[2] = textureInfo.uvTransform[2];
-    result.transform1[0] = textureInfo.uvTransform[3];
-    result.transform1[1] = textureInfo.uvTransform[4];
-    result.transform1[2] = textureInfo.uvTransform[5];
-    return result;
-}
-
-GPUDrivenPreviewGpuMaterial gpuDrivenMaterial(
-    const scene::RenderMaterial& material,
-    const std::vector<uint32_t>& textureIndexMap)
-{
-    GPUDrivenPreviewGpuMaterial result;
-    result.baseColor[0] = material.baseColorFactor.x;
-    result.baseColor[1] = material.baseColorFactor.y;
-    result.baseColor[2] = material.baseColorFactor.z;
-    result.baseColor[3] = material.baseColorFactor.w;
-    result.emissive[0] = material.emissiveFactor.x;
-    result.emissive[1] = material.emissiveFactor.y;
-    result.emissive[2] = material.emissiveFactor.z;
-    result.params[0] = material.metallicFactor;
-    result.params[1] = material.roughnessFactor;
-    result.params[2] = material.alphaCutoff;
-    result.params[3] = material.doubleSided ? 1.0f : 0.0f;
-    result.textureParams[0] = material.normalTextureScale;
-    result.textureParams[1] = material.occlusionTextureStrength;
-    result.glassParams[0] = material.transmissionFactor;
-    result.glassParams[1] = material.ior;
-    result.glassParams[2] = material.thicknessFactor;
-    result.glassParams[3] = material.attenuationDistance;
-    result.attenuationColor[0] = material.attenuationColor.x;
-    result.attenuationColor[1] = material.attenuationColor.y;
-    result.attenuationColor[2] = material.attenuationColor.z;
-    result.diffuseTransmission[0] = material.diffuseTransmissionColor.x;
-    result.diffuseTransmission[1] = material.diffuseTransmissionColor.y;
-    result.diffuseTransmission[2] = material.diffuseTransmissionColor.z;
-    result.diffuseTransmission[3] = material.diffuseTransmissionFactor;
-    result.baseColorTexture = gpuDrivenTextureInfo(material.baseColorTexture, textureIndexMap);
-    result.metallicRoughnessTexture = gpuDrivenTextureInfo(material.metallicRoughnessTexture, textureIndexMap);
-    result.normalTexture = gpuDrivenTextureInfo(material.normalTexture, textureIndexMap);
-    result.occlusionTexture = gpuDrivenTextureInfo(material.occlusionTexture, textureIndexMap);
-    result.emissiveTexture = gpuDrivenTextureInfo(material.emissiveTexture, textureIndexMap);
-    result.transmissionTexture = gpuDrivenTextureInfo(material.transmissionTexture, textureIndexMap);
-    result.thicknessTexture = gpuDrivenTextureInfo(material.thicknessTexture, textureIndexMap);
-    result.diffuseTransmissionTexture = gpuDrivenTextureInfo(material.diffuseTransmissionTexture, textureIndexMap);
-    result.diffuseTransmissionColorTexture = gpuDrivenTextureInfo(
-        material.diffuseTransmissionColorTexture,
-        textureIndexMap);
-    return result;
 }
 
 struct GPUDrivenPreviewMeshletRange {
@@ -815,65 +543,31 @@ struct GPUDrivenPreviewFrameSlotBindings {
     std::array<BindlessHandle, 2> indirectHandles;
 };
 
-struct GPUDrivenStreamDeferredBindings {
-    uint32_t pageBuffer = 0;
-    uint32_t activeGroupBuffer = 0;
-    uint32_t pageTableBuffer = 0;
-    uint32_t activeHeaderBuffer = 0;
-    uint32_t paramsBuffer = 0;
-    uint32_t visibleClusterBuffer = 0;
-    uint32_t visibleRecordBase = 0;
-    uint32_t visibleRecordCapacity = 0;
-};
-
-static_assert(sizeof(GPUDrivenStreamDeferredBindings) == 32);
-
-enum GPUDrivenStreamDeferredResourceIndex : uint32_t {
-    GPUDrivenStreamDeferredPage,
-    GPUDrivenStreamDeferredActiveGroup,
-    GPUDrivenStreamDeferredPageTable,
-    GPUDrivenStreamDeferredActiveHeader,
-    GPUDrivenStreamDeferredParams,
-    GPUDrivenStreamDeferredVisibleCluster,
-    GPUDrivenStreamDeferredResourceCount,
-};
-
 struct GPUDrivenPreviewBindingBundle {
     std::unique_ptr<Buffer> materialTextureRemapBuffer;
-    std::unique_ptr<Buffer> streamDeferredBindingsBuffer;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer;
     std::unique_ptr<BindlessHeap> heap;
     GPUSceneConsumerBindings gpuSceneBindings;
     BindlessHandle materialTextureRemapHandle;
     std::vector<GPUDrivenPreviewFrameSlotBindings> frameSlots;
     std::array<BindlessHandle, 2> hzbHandles;
-    BindlessHandle deferredColorHandle;
     BindlessHandle depthImageHandle;
     BindlessHandle visibilityImageHandle;
     BindlessHandle cullingDepthImageHandle;
     std::vector<BindlessHandle> materialTextureHandles;
-    BindlessHandle environmentTextureHandle;
-    BindlessHandle environmentSHBufferHandle;
-    std::array<BindlessHandle, kGPUDrivenOpenPBRLut2DCount> openPBRLut2DHandles;
-    std::array<BindlessHandle, kGPUDrivenOpenPBRLut3DCount> openPBRLut3DHandles;
-    std::array<BindlessHandle, GPUDrivenStreamDeferredResourceCount>
-        streamDeferredResourceHandles;
-    BindlessHandle streamDeferredBindingsHandle;
     BindlessHandle streamOwnerMaskHandle;
 };
 
 struct GPUDrivenPreviewRetiredViewResources {
-    std::unique_ptr<Buffer> deferredColorBuffer;
     GPUDrivenPreviewCullingTargets cullingTargets;
     std::unique_ptr<Buffer> materialTextureRemapBuffer;
-    std::unique_ptr<Buffer> streamDeferredBindingsBuffer;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer;
     std::unique_ptr<BindlessHeap> bindlessHeap;
 };
 
-class GPUDrivenPreviewPass final : public UnsafePass {
+class VisibilityBufferPass final : public UnsafePass {
 public:
-    ~GPUDrivenPreviewPass() override
+    ~VisibilityBufferPass() override
     {
         releaseGPUSceneSourceLease();
         if (gpuSceneSubsystem_ != nullptr && gpuSceneView_.valid()) {
@@ -884,7 +578,6 @@ public:
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {
         static constexpr std::array required{
-            EnvironmentLightingSubsystem::kSubsystemId,
             GPUSceneSubsystem::kSubsystemId,
         };
         return required;
@@ -900,7 +593,7 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        reflection.addTextureOutput("color", "OpenPBR deferred shading and meshlet visualization")
+        reflection.addTextureOutput("color", "Optional visibility-buffer diagnostic display (no material shading)")
             .format = Format::Rgba8Unorm;
         RenderGraphField& visibility = reflection.addTextureOutput(
             "visibility",
@@ -920,10 +613,14 @@ public:
     {
         std::vector<RenderGraphRuntimeSetting> settings{
             runtimeEnumSetting(
-                "mode",
-                "Mode",
+                "visualization",
+                "Visualization",
                 "meshlet",
-                {{"Shaded", "shaded"}, {"Base Color", "baseColor"}, {"Meshlet", "meshlet"}, {"Primitive", "primitive"}, {"LOD Group", "lod"}}),
+                {{"Meshlet ID", "meshlet"},
+                 {"Triangle ID", "triangle"},
+                 {"Depth", "depth"},
+                 {"Coverage", "coverage"},
+                 {"Off (VBuffer Only)", "none"}}),
             runtimeIntSetting("lodLevel", "LOD Level", 0, 0, 31),
             runtimeBoolSetting("instanceFrustumCull", "Instance Frustum Cull", true),
             runtimeBoolSetting("instanceHzbCull", "Instance HZB Cull", true),
@@ -951,7 +648,7 @@ public:
             !capabilities.meshShader ||
             !capabilities.geometryShader ||
             !capabilities.bindlessDescriptorHeap) {
-            log = "GPUDrivenPreviewPass requires taskShader, meshShader, geometryShader, and bindlessDescriptorHeap capabilities";
+            log = "VisibilityBufferPass requires taskShader, meshShader, geometryShader, and bindlessDescriptorHeap capabilities";
             return makeError(Error::Unsupported);
         }
         amplificationWaveOps_ = capabilities.taskShaderSubgroupBallot;
@@ -965,7 +662,7 @@ public:
             capabilities.maxSubgroupSize >=
                 kGPUDrivenPreviewAmplificationGroupSize;
         spdlog::info(
-            "[GPUDrivenPreviewPass] Amplification subgroup mode={} native={} range={}..{}",
+            "[VisibilityBufferPass] Amplification subgroup mode={} native={} range={}..{}",
             amplificationWave32_
                 ? "required Wave32"
                 : (amplificationWaveOps_
@@ -976,7 +673,7 @@ public:
             capabilities.maxSubgroupSize);
         GPUSceneSubsystem* gpuSceneSubsystem = context.subsystem<GPUSceneSubsystem>();
         if (gpuSceneSubsystem == nullptr) {
-            log = "GPUDrivenPreviewPass requires GPUSceneSubsystem";
+            log = "VisibilityBufferPass requires GPUSceneSubsystem";
             return makeError(Error::InvalidArgument);
         }
         if (gpuSceneSubsystem_ != gpuSceneSubsystem) {
@@ -1003,7 +700,7 @@ public:
                 .frameSlotCount = requestedFrameSlotCount,
             });
             if (!gpuSceneView_.valid()) {
-                log = "GPUDrivenPreviewPass failed to allocate a GPUScene View";
+                log = "VisibilityBufferPass failed to allocate a GPUScene View";
                 return makeError(Error::Failure);
             }
         }
@@ -1108,14 +805,14 @@ public:
             return makeError(Error::Failure);
         }
         spdlog::info(
-            "[GPUDrivenPreviewPass] CPU raster plan vertices={} uniqueMeshlets={} meshletDraws={} instances={}; GPU payload is owned by GPUScene",
+            "[VisibilityBufferPass] CPU raster plan vertices={} uniqueMeshlets={} meshletDraws={} instances={}; GPU payload is owned by GPUScene",
             vertices.size(),
             meshlets.size(),
             meshletDraws.size(),
             instances.size());
         logGPUDrivenCompileStage("meshlet scene", compileStageBegin);
         if (runtimeScene == nullptr) {
-            log = "GPUDrivenPreviewPass shading requires a runtime scene";
+            log = "VisibilityBufferPass alpha testing requires a runtime scene";
             return makeError(Error::InvalidArgument);
         }
         if (requestedStreamEnabled) {
@@ -1128,7 +825,7 @@ public:
                     requestedStreamSource.sourcePath),
                 log);
             if (!streamResult) {
-                log = "GPUDrivenPreviewPass stream integration failed: " + log;
+                log = "VisibilityBufferPass stream integration failed: " + log;
                 return streamResult;
             }
             streamEnabled_ = true;
@@ -1142,19 +839,16 @@ public:
         } else {
             resetStreamIntegration();
         }
-        std::vector<GPUDrivenPreviewGpuMaterial> materials;
         compileStageBegin = GPUDrivenCompileClock::now();
-        Result result = prepareShadingResources(
+        Result result = prepareAlphaTestResources(
             *context.device,
             *runtimeScene,
-            properties(),
-            materials,
             log);
         if (!result) {
             return result;
         }
-        logGPUDrivenCompileStage("shading resources", compileStageBegin);
-        materialCount_ = static_cast<uint32_t>(materials.size());
+        logGPUDrivenCompileStage("alpha-test resources", compileStageBegin);
+        materialCount_ = static_cast<uint32_t>(std::max<size_t>(runtimeScene->materials().size(), 1u));
         materialTextureCount_ = materialCount_ * kGPUSceneMaterialTextureSlotCount;
 
         baseMeshletRange_ = baseMeshletRange;
@@ -1162,7 +856,7 @@ public:
         drawTaskCount_ = maxMeshletRangeCount(baseMeshletRange_, lodLevelRanges_);
         instanceCount_ = static_cast<uint32_t>(instances.size());
         if (drawTaskCount_ == 0 || instanceCount_ == 0) {
-            log = "GPUDrivenPreviewPass found no drawable meshlet instances";
+            log = "VisibilityBufferPass found no drawable meshlet instances";
             return makeError(Error::Failure);
         }
         residentRecordCapacity_ = static_cast<uint32_t>(meshletDraws.size());
@@ -1170,7 +864,7 @@ public:
         if (streamEnabled_ && !visibilityRecordRangeFitsId(
                 residentRecordCapacity_,
                 streamRuntime_.visibleClusterCapacity())) {
-            log = "GPUDrivenPreviewPass resident + stream records exceed the visibility ID range";
+            log = "VisibilityBufferPass resident + stream records exceed the visibility ID range";
             return makeError(Error::InvalidArgument);
         }
 
@@ -1181,7 +875,6 @@ public:
         frameIndex_ = 0;
         invalidateHzbHistory();
         previousCameraValid_ = false;
-        frameBuffersInitialized_ = false;
         cullingTargetsInitialized_ = false;
         freezeCullingCamera_ = false;
         frozenCullingCameraValid_ = false;
@@ -1191,9 +884,6 @@ public:
         frameSlotResources_.resize(frameSlotCount_);
 
         GPUDrivenPreviewGpuParams params;
-        const EnvironmentSettings initialEnvironment = context.world() != nullptr
-            ? context.world()->environment()
-            : EnvironmentSettings{};
         buildParams(
             context.width,
             context.height,
@@ -1208,8 +898,6 @@ public:
             nullptr,
             materialTextureCount_,
             materialCount_,
-            initialEnvironment,
-            false,
             params);
 
         compileStageBegin = GPUDrivenCompileClock::now();
@@ -1220,22 +908,12 @@ public:
                 sizeof(params),
                 frameSlotResources_[frameSlot].paramsBuffer,
                 log,
-                "GPUDrivenPreviewPass frame-slot params");
+                "VisibilityBufferPass frame-slot params");
             if (!result) {
                 return result;
             }
         }
         result = ensureGPUSceneViewResources(frameWidth_, frameHeight_, log);
-        if (!result) {
-            return result;
-        }
-        result = createDeviceStorageBuffer(
-            *context.device,
-            static_cast<uint64_t>(frameWidth_) * frameHeight_ * sizeof(uint32_t),
-            BufferUsageBits::Storage,
-            deferredColorBuffer_,
-            log,
-            "deferred color");
         if (!result) {
             return result;
         }
@@ -1251,7 +929,6 @@ public:
 
         GPUDrivenPreviewBindingBundle initialBindings;
         result = createBindingBundle(
-            *deferredColorBuffer_,
             *cullingTargets_.depthView,
             false,
             initialBindings,
@@ -1276,7 +953,7 @@ public:
             result = context.device->createGraphicsPipeline(
                 GraphicsPipelineDesc{
                     .taskShader = amplificationShader_.get(),
-                    .meshShader = meshShader_.get(),
+                    .meshShader = masked ? maskedMeshShader_.get() : meshShader_.get(),
                     .fragmentShader = masked ? maskedFragmentShader_.get() : fragmentShader_.get(),
                     .taskRequiredSubgroupSize = amplificationWave32_
                         ? kGPUDrivenPreviewAmplificationGroupSize
@@ -1286,7 +963,7 @@ public:
                     .depthStencilFormat = Format::D32Sfloat,
                     .rasterization = RasterizationState{
                         .cullMode = doubleSided ? CullMode::None : CullMode::Back,
-                        // gpuDrivenPreviewMeshMain flips clip-space Y while the
+                        // visibilityBufferMeshMain flips clip-space Y while the
                         // positive-height Vulkan viewport flips winding again.
                         .frontFace = FrontFace::CounterClockwise,
                     },
@@ -1301,7 +978,7 @@ public:
                 visibilityPipelines_[bucketIndex]);
             if (!result || visibilityPipelines_[bucketIndex] == nullptr) {
                 log += resultMessage(
-                    "createGraphicsPipeline(GPUDrivenPreviewPass visibility bucket)",
+                    "createGraphicsPipeline(VisibilityBufferPass visibility bucket)",
                     result);
                 log += '\n';
                 return result ? makeError(Error::Failure) : result;
@@ -1318,7 +995,7 @@ public:
             },
             compositePipeline_);
         if (!result || compositePipeline_ == nullptr) {
-            log += resultMessage("createGraphicsPipeline(GPUDrivenPreviewPass composite)", result);
+            log += resultMessage("createGraphicsPipeline(VisibilityBufferPass composite)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
@@ -1327,14 +1004,14 @@ public:
             const Result saveResult = pipelineCache_->save();
             const PipelineCacheStats stats = pipelineCache_->stats();
             spdlog::info(
-                "[GPUDrivenPreviewPass] PSO cache status={} hits={} misses={} stored={} bytes={}",
+                "[VisibilityBufferPass] PSO cache status={} hits={} misses={} stored={} bytes={}",
                 pipelineCacheLoadStatusName(stats.loadStatus),
                 stats.hitCount,
                 stats.missCount,
                 stats.storedPsoCount,
                 stats.backendDataSize);
             if (!saveResult) {
-                log += "Warning: GPUDrivenPreviewPass failed to save PSO cache\n";
+                log += "Warning: VisibilityBufferPass failed to save PSO cache\n";
             }
         }
 
@@ -1356,18 +1033,12 @@ public:
         if (!syncResult) {
             return syncResult;
         }
-        EnvironmentLightingSubsystem* environmentSubsystem =
-            context.subsystem<EnvironmentLightingSubsystem>();
         GPUSceneSubsystem* gpuSceneSubsystem = context.subsystem<GPUSceneSubsystem>();
-        if (environmentSubsystem == nullptr || gpuSceneSubsystem == nullptr) {
+        if (gpuSceneSubsystem == nullptr) {
             return makeError(Error::InvalidArgument);
         }
         if (gpuSceneSubsystem != gpuSceneSubsystem_ || !gpuSceneView_.valid()) {
             return makeError(Error::InvalidArgument);
-        }
-        const EnvironmentLightingSnapshot& environment = environmentSubsystem->snapshot();
-        if (!environment.valid()) {
-            return {};
         }
         TextureHandle color = context.outputTexture("color");
         TextureHandle visibility = context.outputTexture("visibility");
@@ -1395,7 +1066,7 @@ public:
             *gpuSceneSubsystem,
             gpuSceneLog);
         if (!result) {
-            spdlog::error("[GPUDrivenPreviewPass] {}", gpuSceneLog);
+            spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
             return result;
         }
         result = ensureFrameResources(
@@ -1418,7 +1089,7 @@ public:
                 *gpuSceneSubsystem,
                 gpuSceneLog);
             if (!result) {
-                spdlog::error("[GPUDrivenPreviewPass] {}", gpuSceneLog);
+                spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
                 return result;
             }
             streamFrame = streamFrameDesc(context);
@@ -1453,37 +1124,16 @@ public:
             *context.subsystems(),
             gpuSceneLog);
         if (!result) {
-            spdlog::error("[GPUDrivenPreviewPass] {}", gpuSceneLog);
+            spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
             return result;
         }
         result = updateParamsBuffer(
             context.width(),
             context.height(),
-            context.properties(),
-            environment.settings,
-            environment.mapAvailable);
+            context.properties());
         if (!result) {
             return result;
         }
-        if (!environmentBindingValid_ ||
-            environment.resourceRevision != environmentResourceRevision_) {
-            result = bindlessHeap_->writeSampledImage(
-                environmentTextureHandle_,
-                *environment.radianceView,
-                ResourceState::ShaderRead);
-            if (!result) {
-                return result;
-            }
-            result = bindlessHeap_->writeStorageBuffer(
-                environmentSHBufferHandle_,
-                *environment.sphericalHarmonicsBuffer);
-            if (!result) {
-                return result;
-            }
-            environmentResourceRevision_ = environment.resourceRevision;
-            environmentBindingValid_ = true;
-        }
-
         result = bindlessHeap_->writeSampledImage(
             depthImageHandle_,
             *depth.view(),
@@ -1518,7 +1168,7 @@ public:
         if (streamEnabled_) {
             gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, UINT32_MAX, residentRecordCapacity_);
         }
-        result = uploadShadingTextures(commandBuffer);
+        result = uploadAlphaTestTextures(commandBuffer);
         if (!result) {
             return result;
         }
@@ -1666,19 +1316,10 @@ public:
                 return result;
             }
         }
-        if (streamEnabled_) {
-            result = streamRuntime_.cmdPrepareDeferred(commandBuffer);
-            if (!result) {
-                return result;
-            }
-            commandBuffer.bindBindlessHeap(*bindlessHeap_);
-        }
-        dispatchDeferred(commandBuffer);
-        barrierBuffer(commandBuffer, *deferredColorBuffer_, ResourceState::General, ResourceState::General);
+        // Display the final IDs/depth while the images are shader-readable.
+        drawComposite(commandBuffer, color);
         transitionTexture(commandBuffer, *visibility.texture(), ResourceState::ShaderRead, ResourceState::ColorAttachment);
         transitionTexture(commandBuffer, *depth.texture(), ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
-        drawComposite(commandBuffer, color);
-
         hzbValid_ = true;
         if (!gpuSceneSubsystem->markViewHzbValid(
                 gpuSceneView_,
@@ -1718,10 +1359,7 @@ private:
         streamVisibleInstanceIdsHandle_ = {};
         streamVisibleInstanceCounterHandle_ = {};
         streamHzbHandles_ = {};
-        streamDeferredResourceHandles_ = {};
-        streamDeferredBindingsHandle_ = {};
         streamOwnerMaskHandle_ = {};
-        streamDeferredBindingsBuffer_.reset();
         streamOwnerMaskBuffer_.reset();
         streamEnabled_ = false;
         compiledStreamAssetPath_.clear();
@@ -1735,7 +1373,7 @@ private:
     {
         BindlessHeap* heap = streamRuntime_.bindlessHeap();
         if (!streamEnabled_ || heap == nullptr) {
-            log = "GPUDrivenPreviewPass stream runtime has no bindless heap";
+            log = "VisibilityBufferPass stream runtime has no bindless heap";
             return makeError(Error::InvalidArgument);
         }
         auto allocateBuffer = [&](BindlessHandle& handle,
@@ -1743,7 +1381,7 @@ private:
             Result result = heap->allocateBuffer(handle);
             if (!result || !handle.valid()) {
                 log += resultMessage(
-                    std::string("allocateBuffer(GPUDrivenPreviewPass stream ") +
+                    std::string("allocateBuffer(VisibilityBufferPass stream ") +
                         label + ")",
                     result);
                 log += '\n';
@@ -1756,7 +1394,7 @@ private:
             Result result = heap->allocateSampledImage(handle);
             if (!result || !handle.valid()) {
                 log += resultMessage(
-                    std::string("allocateSampledImage(GPUDrivenPreviewPass stream ") +
+                    std::string("allocateSampledImage(VisibilityBufferPass stream ") +
                         label + ")",
                     result);
                 log += '\n';
@@ -1848,7 +1486,7 @@ private:
         std::string_view label)
     {
         if (byteSize == 0) {
-            log = std::string("GPUDrivenPreviewPass ") + std::string(label) + " buffer size is zero";
+            log = std::string("VisibilityBufferPass ") + std::string(label) + " buffer size is zero";
             return makeError(Error::InvalidArgument);
         }
         Result result = device.createBuffer(
@@ -1860,7 +1498,7 @@ private:
             },
             outBuffer);
         if (!result || outBuffer == nullptr) {
-            log += resultMessage(std::string("createBuffer(GPUDrivenPreviewPass ") + std::string(label) + ")", result);
+            log += resultMessage(std::string("createBuffer(VisibilityBufferPass ") + std::string(label) + ")", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
@@ -1889,7 +1527,7 @@ private:
             },
             targets.visibility);
         if (!result || targets.visibility == nullptr) {
-            log += resultMessage("createTexture(GPUDrivenPreviewPass culling visibility)", result);
+            log += resultMessage("createTexture(VisibilityBufferPass culling visibility)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
@@ -1898,7 +1536,7 @@ private:
             TextureViewDesc{.format = Format::R32Uint},
             targets.visibilityView);
         if (!result || targets.visibilityView == nullptr) {
-            log += resultMessage("createTextureView(GPUDrivenPreviewPass culling visibility)", result);
+            log += resultMessage("createTextureView(VisibilityBufferPass culling visibility)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
@@ -1917,7 +1555,7 @@ private:
             },
             targets.depth);
         if (!result || targets.depth == nullptr) {
-            log += resultMessage("createTexture(GPUDrivenPreviewPass culling depth)", result);
+            log += resultMessage("createTexture(VisibilityBufferPass culling depth)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
@@ -1926,7 +1564,7 @@ private:
             TextureViewDesc{.format = Format::D32Sfloat},
             targets.depthView);
         if (!result || targets.depthView == nullptr) {
-            log += resultMessage("createTextureView(GPUDrivenPreviewPass culling depth)", result);
+            log += resultMessage("createTextureView(VisibilityBufferPass culling depth)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
@@ -1986,7 +1624,7 @@ private:
             outShader);
         if (!result) {
             log += resultMessage(
-                std::string("createShaderModule(GPUDrivenPreviewPass ") + entryPoint + ")",
+                std::string("createShaderModule(VisibilityBufferPass ") + entryPoint + ")",
                 result);
             log += '\n';
         }
@@ -1996,44 +1634,38 @@ private:
     Result createPipelines(Device& device, std::string& log)
     {
         struct ShaderRequest {
-            const char* moduleName = kGPUDrivenPreviewShaderModuleName;
+            const char* moduleName = kVisibilityBufferShaderModuleName;
             const char* entryPoint = nullptr;
             bool meshShadingShader = false;
             std::unique_ptr<ShaderModule>* shader = nullptr;
         };
         const std::array<ShaderRequest, 10> requests{
-            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewAmplificationEntryPoint, true, &amplificationShader_},
-            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewMeshEntryPoint, true, &meshShader_},
-            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewFragmentEntryPoint, false, &fragmentShader_},
-            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewMaskedFragmentEntryPoint, false, &maskedFragmentShader_},
-            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewResetEntryPoint, false, &resetShader_},
-            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewInstanceCullEntryPoint, false, &instanceCullShader_},
-            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewHzbEntryPoint, false, &hzbShader_},
-            ShaderRequest{kGPUDrivenDeferredShaderModuleName, kGPUDrivenPreviewDeferredEntryPoint, false, &deferredShader_},
-            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewCompositeVertexEntryPoint, false, &compositeVertexShader_},
-            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewCompositeFragmentEntryPoint, false, &compositeFragmentShader_},
-        };
-        const std::string lut2DShaderBase = std::to_string(openPBRLut2DHandles_[0].shaderIndex);
-        const std::string lut3DShaderBase = std::to_string(openPBRLut3DHandles_[0].shaderIndex);
-        const std::array<SlangMacroDefine, 2> openPBRDefines{
-            SlangMacroDefine{"GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE", lut2DShaderBase.c_str()},
-            SlangMacroDefine{"GPU_DRIVEN_OPENPBR_LUT_3D_SHADER_BASE", lut3DShaderBase.c_str()},
+            ShaderRequest{kVisibilityBufferShaderModuleName, kVisibilityBufferAmplificationEntryPoint, true, &amplificationShader_},
+            ShaderRequest{kVisibilityBufferShaderModuleName, kVisibilityBufferMeshEntryPoint, true, &meshShader_},
+            ShaderRequest{kVisibilityBufferShaderModuleName, kVisibilityBufferMeshEntryPoint, true, &maskedMeshShader_},
+            ShaderRequest{kVisibilityBufferShaderModuleName, kVisibilityBufferFragmentEntryPoint, false, &fragmentShader_},
+            ShaderRequest{kVisibilityBufferShaderModuleName, kVisibilityBufferMaskedFragmentEntryPoint, false, &maskedFragmentShader_},
+            ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewResetEntryPoint, false, &resetShader_},
+            ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewInstanceCullEntryPoint, false, &instanceCullShader_},
+            ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewHzbEntryPoint, false, &hzbShader_},
+            ShaderRequest{kVisibilityBufferCompositeShaderModuleName, kVisibilityBufferCompositeVertexEntryPoint, false, &compositeVertexShader_},
+            ShaderRequest{kVisibilityBufferCompositeShaderModuleName, kVisibilityBufferCompositeFragmentEntryPoint, false, &compositeFragmentShader_},
         };
         const SlangMacroDefine amplificationDefine{
             "GPU_DRIVEN_AMPLIFICATION_WAVE_OPS",
             amplificationWaveOps_ ? "1" : "0",
         };
+        const SlangMacroDefine maskedMeshDefine{"VISIBILITY_BUFFER_ALPHA_MASKED", "1"};
         for (const ShaderRequest& request : requests) {
-            const bool isDeferred = request.moduleName == kGPUDrivenDeferredShaderModuleName;
             const bool isAmplification = request.shader == &amplificationShader_;
             const SlangMacroDefine* macroDefines = nullptr;
             uint32_t macroDefineCount = 0;
             if (isAmplification) {
                 macroDefines = &amplificationDefine;
                 macroDefineCount = 1u;
-            } else if (isDeferred) {
-                macroDefines = openPBRDefines.data();
-                macroDefineCount = static_cast<uint32_t>(openPBRDefines.size());
+            } else if (request.shader == &maskedMeshShader_) {
+                macroDefines = &maskedMeshDefine;
+                macroDefineCount = 1u;
             }
             const auto shaderCompileBegin = GPUDrivenCompileClock::now();
             Result result = createShader(
@@ -2081,7 +1713,7 @@ private:
             PipelineCacheDesc{.filePath = kGPUDrivenPipelineCachePath},
             pipelineCache_);
         if (!result || pipelineCache_ == nullptr) {
-            log += resultMessage("createPipelineCache(GPUDrivenPreviewPass)", result);
+            log += resultMessage("createPipelineCache(VisibilityBufferPass)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
@@ -2098,7 +1730,7 @@ private:
                 },
                 pipeline);
             if (!result || pipeline == nullptr) {
-                log += resultMessage(std::string("createComputePipeline(GPUDrivenPreviewPass ") + label + ")", result);
+                log += resultMessage(std::string("createComputePipeline(VisibilityBufferPass ") + label + ")", result);
                 log += '\n';
                 return result ? makeError(Error::Failure) : result;
             }
@@ -2118,8 +1750,7 @@ private:
         if (!result) {
             return result;
         }
-        result = createCompute(*deferredShader_, deferredPipeline_, "deferred");
-        if (!result || !streamEnabled_) {
+        if (!streamEnabled_) {
             return result;
         }
 
@@ -2137,7 +1768,7 @@ private:
                 pipeline);
             if (!streamResult || pipeline == nullptr) {
                 log += resultMessage(
-                    std::string("createComputePipeline(GPUDrivenPreviewPass stream ") +
+                    std::string("createComputePipeline(VisibilityBufferPass stream ") +
                         label + ")",
                     streamResult);
                 log += '\n';
@@ -2179,7 +1810,7 @@ private:
             streamVisibilityPipeline_);
         if (!result || streamVisibilityPipeline_ == nullptr) {
             log += resultMessage(
-                "createGraphicsPipeline(GPUDrivenPreviewPass stream visibility)",
+                "createGraphicsPipeline(VisibilityBufferPass stream visibility)",
                 result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
@@ -2219,7 +1850,7 @@ private:
         if (gpuSceneSubsystem_ == nullptr ||
             !gpuSceneView_.valid() ||
             frameSlotResources_.size() != frameSlotCount_) {
-            log = "GPUDrivenPreviewPass has no GPUScene View allocation to refresh";
+            log = "VisibilityBufferPass has no GPUScene View allocation to refresh";
             return makeError(Error::InvalidArgument);
         }
 
@@ -2230,7 +1861,7 @@ private:
                     gpuSceneView_,
                     frameSlot,
                     resources)) {
-                log = "GPUDrivenPreviewPass failed to query GPUScene View resources";
+                log = "VisibilityBufferPass failed to query GPUScene View resources";
                 return makeError(Error::Failure);
             }
             if (allocationId == 0) {
@@ -2240,7 +1871,7 @@ private:
             } else if (allocationId != resources.allocationId ||
                        hzbBuffers_[0] != resources.hzbHistory[0].buffer ||
                        hzbBuffers_[1] != resources.hzbHistory[1].buffer) {
-                log = "GPUDrivenPreviewPass received inconsistent GPUScene frame-slot resources";
+                log = "VisibilityBufferPass received inconsistent GPUScene frame-slot resources";
                 return makeError(Error::Failure);
             }
 
@@ -2265,14 +1896,14 @@ private:
                             resources.desc.visibleMeshletCapacity[bucketIndex] ||
                         bucket.visibleMeshletOffset !=
                             bucketIndex * resources.desc.visibleMeshletCapacity[bucketIndex]) {
-                        log = "GPUDrivenPreviewPass received an incompatible GPUScene bucket layout";
+                        log = "VisibilityBufferPass received an incompatible GPUScene bucket layout";
                         return makeError(Error::Failure);
                     }
                 }
             }
         }
         if (allocationId == 0 || hzbBuffers_[0] == nullptr || hzbBuffers_[1] == nullptr) {
-            log = "GPUDrivenPreviewPass received an empty GPUScene View allocation";
+            log = "VisibilityBufferPass received an empty GPUScene View allocation";
             return makeError(Error::Failure);
         }
         gpuSceneViewAllocationId_ = allocationId;
@@ -2285,7 +1916,7 @@ private:
         std::string& log)
     {
         if (gpuSceneSubsystem_ == nullptr || !gpuSceneView_.valid()) {
-            log = "GPUDrivenPreviewPass requires a live GPUScene View";
+            log = "VisibilityBufferPass requires a live GPUScene View";
             return makeError(Error::InvalidArgument);
         }
         Result result = gpuSceneSubsystem_->ensureViewGpuResources(
@@ -2305,19 +1936,19 @@ private:
         if (drawSet.generation == 0 || drawSet.revision == 0 ||
             !views.validFor(drawSet.generation, drawSet.revision) ||
             !layout.validFor(drawSet.generation, drawSet.revision)) {
-            log = "GPUDrivenPreviewPass requires current GPUScene raster buffers and layout";
+            log = "VisibilityBufferPass requires current GPUScene raster buffers and layout";
             return makeError(Error::InvalidArgument);
         }
         if (layout.maxRangeCount == 0 || subsystem.instances().empty() ||
             subsystem.materials().empty()) {
-            log = "GPUDrivenPreviewPass GPUScene raster layout has no drawable instances";
+            log = "VisibilityBufferPass GPUScene raster layout has no drawable instances";
             return makeError(Error::Failure);
         }
         if (views.meshletDraws.structureStride != sizeof(VisibleClusterRecord) ||
             views.meshletDraws.size % sizeof(VisibleClusterRecord) != 0 ||
             views.meshletDraws.size / sizeof(VisibleClusterRecord) >
                 std::numeric_limits<uint32_t>::max()) {
-            log = "GPUDrivenPreviewPass received an invalid resident visible-record buffer";
+            log = "VisibilityBufferPass received an invalid resident visible-record buffer";
             return makeError(Error::Failure);
         }
         const uint32_t residentRecordCapacity = static_cast<uint32_t>(
@@ -2325,7 +1956,7 @@ private:
         if (!visibilityRecordRangeFitsId(
                 residentRecordCapacity,
                 streamEnabled_ ? streamRuntime_.visibleClusterCapacity() : 0u)) {
-            log = "GPUDrivenPreviewPass resident + stream records exceed the visibility ID range";
+            log = "VisibilityBufferPass resident + stream records exceed the visibility ID range";
             return makeError(Error::Failure);
         }
         residentRecordCapacity_ = residentRecordCapacity;
@@ -2335,13 +1966,13 @@ private:
         };
         if (!encodedRangeValid(layout.baseRange) ||
             !std::ranges::all_of(layout.lodRanges, encodedRangeValid)) {
-            log = "GPUDrivenPreviewPass GPUScene raster layout exceeds the visibility ID range";
+            log = "VisibilityBufferPass GPUScene raster layout exceeds the visibility ID range";
             return makeError(Error::Failure);
         }
         if (subsystem.materials().size() >
             std::numeric_limits<uint32_t>::max() /
                 kGPUSceneMaterialTextureSlotCount) {
-            log = "GPUDrivenPreviewPass GPUScene material remap is too large";
+            log = "VisibilityBufferPass GPUScene material remap is too large";
             return makeError(Error::Failure);
         }
 
@@ -2367,7 +1998,7 @@ private:
 
         GPUSceneViewGpuResourcesView currentViewResources;
         if (!subsystem.viewGpuResources(gpuSceneView_, 0, currentViewResources)) {
-            log = "GPUDrivenPreviewPass could not query its GPUScene View allocation";
+            log = "VisibilityBufferPass could not query its GPUScene View allocation";
             return makeError(Error::Failure);
         }
         constexpr uint32_t requiredVisibleMeshletCapacity = 1u;
@@ -2413,14 +2044,14 @@ private:
         std::string& log)
     {
         if (bindlessHeap_ == nullptr || materialTextureRemapBuffer_ == nullptr ||
-            deferredColorBuffer_ == nullptr || cullingTargets_.depthView == nullptr) {
-            log = "GPUDrivenPreviewPass cannot bind GPUScene before consumer resources exist";
+            cullingTargets_.depthView == nullptr) {
+            log = "VisibilityBufferPass cannot bind GPUScene before consumer resources exist";
             return makeError(Error::InvalidArgument);
         }
         const GPUSceneGlobalBufferViews& views = subsystem.globalBufferViews();
         if (!views.validFor(subsystem.drawSet().generation,
                             subsystem.drawSet().revision)) {
-            log = "GPUDrivenPreviewPass cannot bind stale GPUScene global buffers";
+            log = "VisibilityBufferPass cannot bind stale GPUScene global buffers";
             return makeError(Error::InvalidArgument);
         }
         const uint64_t expectedRemapBytes =
@@ -2446,7 +2077,6 @@ private:
 
         GPUDrivenPreviewBindingBundle replacement;
         Result result = createBindingBundle(
-            *deferredColorBuffer_,
             *cullingTargets_.depthView,
             true,
             replacement,
@@ -2458,8 +2088,6 @@ private:
         retired->bindlessHeap = std::move(bindlessHeap_);
         retired->materialTextureRemapBuffer =
             std::move(materialTextureRemapBuffer_);
-        retired->streamDeferredBindingsBuffer =
-            std::move(streamDeferredBindingsBuffer_);
         retired->streamOwnerMaskBuffer = std::move(streamOwnerMaskBuffer_);
         installBindingBundle(std::move(replacement));
         subsystemHost.retire(std::static_pointer_cast<void>(retired));
@@ -2493,7 +2121,7 @@ private:
             .indirectBuffer1 = slot.indirectHandles[1].index,
             .hzbBuffer0 = hzbHandles_[0].index,
             .hzbBuffer1 = hzbHandles_[1].index,
-            .deferredColorBuffer = deferredColorHandle_.index,
+            .deferredColorBuffer = kGPUDrivenInvalidBindlessIndex,
             .depthImage = freezeCullingCamera_
                 ? cullingDepthImageHandle_.index
                 : depthImageHandle_.index,
@@ -2503,12 +2131,9 @@ private:
             .projectWithCullingCamera = projectWithCullingCamera ? 1u : 0u,
             .materialBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Materials].index,
             .materialTextureRemapBuffer = materialTextureRemapHandle_.index,
-            .environmentImage = environmentTextureHandle_.index,
-            .environmentSHBuffer = environmentSHBufferHandle_.index,
-            .streamDeferredBindingsBuffer =
-                streamEnabled_ && streamDeferredBindingsHandle_.valid()
-                ? streamDeferredBindingsHandle_.index
-                : kGPUDrivenInvalidBindlessIndex,
+            .environmentImage = kGPUDrivenInvalidBindlessIndex,
+            .environmentSHBuffer = kGPUDrivenInvalidBindlessIndex,
+            .streamDeferredBindingsBuffer = kGPUDrivenInvalidBindlessIndex,
             .residentRecordCapacity = residentRecordCapacity_,
             .streamOwnerMaskBuffer =
                 streamEnabled_ && streamOwnerMaskHandle_.valid()
@@ -2563,21 +2188,8 @@ private:
             activeFrameSlot_,
             log);
         if (!result) {
-            spdlog::error("[GPUDrivenPreviewPass] {}", log);
+            spdlog::error("[VisibilityBufferPass] {}", log);
             return result;
-        }
-
-        if (!frameBuffersInitialized_) {
-            const BufferBarrierDesc barrier{
-                .buffer = deferredColorBuffer_.get(),
-                .before = ResourceState::Undefined,
-                .after = ResourceState::General,
-            };
-            commandBuffer.barrier(BarrierDesc{
-                .buffers = &barrier,
-                .bufferCount = 1,
-            });
-            frameBuffersInitialized_ = true;
         }
 
         if (!cullingTargetsInitialized_) {
@@ -2627,7 +2239,7 @@ private:
             desc,
             log);
         if (!result) {
-            spdlog::error("[GPUDrivenPreviewPass] {}", log);
+            spdlog::error("[VisibilityBufferPass] {}", log);
         }
         return result;
     }
@@ -2729,17 +2341,9 @@ private:
             desc,
             log);
         if (!result) {
-            spdlog::error("[GPUDrivenPreviewPass] {}", log);
+            spdlog::error("[VisibilityBufferPass] {}", log);
         }
         return result;
-    }
-
-    void dispatchDeferred(CommandBuffer& commandBuffer)
-    {
-        const GPUDrivenPreviewUserPush push = makePush();
-        commandBuffer.pushBindlessData(&push, sizeof(push));
-        commandBuffer.bindComputePipeline(*deferredPipeline_);
-        commandBuffer.dispatch(divideRoundUp(frameWidth_, 8u), divideRoundUp(frameHeight_, 8u), 1);
     }
 
     void drawComposite(CommandBuffer& commandBuffer, TextureHandle color)
@@ -2771,10 +2375,17 @@ private:
             .maxDepth = 1.0f,
         });
         commandBuffer.setScissor(renderArea);
+        // Stream rasterization binds its own heap; the frozen-camera path does
+        // not run a final viewport HZB dispatch to restore this pass's heap.
+        commandBuffer.bindBindlessHeap(*bindlessHeap_);
         commandBuffer.bindGraphicsPipeline(*compositePipeline_);
-        const GPUDrivenPreviewUserPush push = makePush();
+        GPUDrivenPreviewUserPush push = makePush();
+        // Frozen HZB depth belongs to the culling camera, not the debug viewport.
+        push.depthImage = depthImageHandle_.index;
         commandBuffer.pushBindlessData(&push, sizeof(push));
-        commandBuffer.draw(3);
+        if (previousParams_.mode != kVisibilityModeNone) {
+            commandBuffer.draw(3);
+        }
         commandBuffer.endRendering();
     }
 
@@ -2830,7 +2441,7 @@ private:
             (streamEnabled_ ? streamRuntime_.frameIndex() : frameIndex_) & 1u,
             log);
         if (!result) {
-            spdlog::error("[GPUDrivenPreviewPass] {}", log);
+            spdlog::error("[VisibilityBufferPass] {}", log);
         }
         return result;
     }
@@ -2872,7 +2483,7 @@ private:
             runtimeScene,
             scenePathFromProperties(properties()));
         if (runtimeScene == nullptr || !streamRuntime_.ready()) {
-            log = "GPUDrivenPreviewPass stream integration requires its runtime scene";
+            log = "VisibilityBufferPass stream integration requires its runtime scene";
             return makeError(Error::InvalidArgument);
         }
         std::vector<uint32_t> runtimeRenderNodeIndices(
@@ -2894,7 +2505,7 @@ private:
                     ? static_cast<int32_t>(localRenderNodeIndex)
                     : scene::kInvalidSceneIndex);
             if (runtimeRenderNodeIndex == scene::kInvalidSceneIndex) {
-                log = "GPUDrivenPreviewPass stream source '" +
+                log = "VisibilityBufferPass stream source '" +
                     compiledStreamSourceId_ + "' has no render node " +
                     std::to_string(localRenderNodeIndex);
                 return makeError(Error::InvalidArgument);
@@ -2930,7 +2541,7 @@ private:
         }
         result = streamRuntime_.syncGPUSceneInstanceMapping(mapping);
         if (!result) {
-            log = "GPUDrivenPreviewPass failed to upload the stream GPUScene mapping";
+            log = "VisibilityBufferPass failed to upload the stream GPUScene mapping";
             return result;
         }
         streamMappedInstanceCount_ = mappedCount;
@@ -3041,36 +2652,13 @@ private:
                 .visibleInstanceCounterBuffer =
                     streamVisibleInstanceCounterHandle_.index,
             });
-        if (!result || streamDeferredBindingsBuffer_ == nullptr ||
-            streamOwnerMaskBuffer_ == nullptr) {
+        if (!result || streamOwnerMaskBuffer_ == nullptr) {
             return result ? makeError(Error::InvalidArgument) : result;
         }
-        const GPUDrivenStreamDeferredBindings deferredBindings{
-            .pageBuffer = streamDeferredResourceHandles_[
-                GPUDrivenStreamDeferredPage].index,
-            .activeGroupBuffer = streamDeferredResourceHandles_[
-                GPUDrivenStreamDeferredActiveGroup].index,
-            .pageTableBuffer = streamDeferredResourceHandles_[
-                GPUDrivenStreamDeferredPageTable].index,
-            .activeHeaderBuffer = streamDeferredResourceHandles_[
-                GPUDrivenStreamDeferredActiveHeader].index,
-            .paramsBuffer = streamDeferredResourceHandles_[
-                GPUDrivenStreamDeferredParams].index,
-            .visibleClusterBuffer = streamDeferredResourceHandles_[
-                GPUDrivenStreamDeferredVisibleCluster].index,
-            .visibleRecordBase = residentRecordCapacity_,
-            .visibleRecordCapacity = streamRecordCapacity,
-        };
         result = updateHostStorageBuffer(
-            *streamDeferredBindingsBuffer_,
-            &deferredBindings,
-            sizeof(deferredBindings));
-        if (result) {
-            result = updateHostStorageBuffer(
-                *streamOwnerMaskBuffer_,
-                streamOwnerMask_.data(),
-                static_cast<uint64_t>(streamOwnerMask_.size()) * sizeof(uint32_t));
-        }
+            *streamOwnerMaskBuffer_,
+            streamOwnerMask_.data(),
+            static_cast<uint64_t>(streamOwnerMask_.size()) * sizeof(uint32_t));
         return result;
     }
 
@@ -3159,7 +2747,7 @@ private:
             desc,
             log);
         if (!result) {
-            spdlog::error("[GPUDrivenPreviewPass] {}", log);
+            spdlog::error("[VisibilityBufferPass] {}", log);
         }
         return result;
     }
@@ -3224,23 +2812,14 @@ private:
         return {};
     }
 
-    Result prepareShadingResources(
+    Result prepareAlphaTestResources(
         Device& device,
         const scene::Scene& loadedScene,
-        const RenderGraphProperties& properties,
-        std::vector<GPUDrivenPreviewGpuMaterial>& outMaterials,
         std::string& log)
     {
         materialTextures_.clear();
         materialTextureHandles_.clear();
         logicalTextureToMaterialTexture_.clear();
-        environmentTextureHandle_ = {};
-        environmentSHBufferHandle_ = {};
-        openPBRLut2D_ = {};
-        openPBRLut3D_ = {};
-        openPBRLut2DHandles_ = {};
-        openPBRLut3DHandles_ = {};
-        environmentResourceRevision_ = 0;
 
         const uint8_t whitePixel[4] = {255u, 255u, 255u, 255u};
         GPUDrivenPreviewTextureResource fallbackTexture;
@@ -3251,7 +2830,7 @@ private:
             1,
             1,
             Format::Rgba8Unorm,
-            "GPUDrivenPreviewPass material fallback",
+            "VisibilityBufferPass material fallback",
             fallbackTexture,
             log);
         if (!result) {
@@ -3268,7 +2847,21 @@ private:
             std::string warning;
             bool decoded = false;
         };
-        const size_t textureCount = loadedScene.textures().size();
+        // Opaque rasterization does not sample material textures. Retain only
+        // the base-color alpha images needed to preserve MASK coverage.
+        std::vector<uint32_t> alphaTextureIndices;
+        for (const scene::RenderMaterial& material : loadedScene.materials()) {
+            const int32_t textureIndex = material.baseColorTexture.textureIndex;
+            if (material.alphaMode == "MASK" && textureIndex >= 0 &&
+                static_cast<size_t>(textureIndex) < loadedScene.textures().size()) {
+                alphaTextureIndices.push_back(static_cast<uint32_t>(textureIndex));
+            }
+        }
+        std::sort(alphaTextureIndices.begin(), alphaTextureIndices.end());
+        alphaTextureIndices.erase(
+            std::unique(alphaTextureIndices.begin(), alphaTextureIndices.end()),
+            alphaTextureIndices.end());
+        const size_t textureCount = alphaTextureIndices.size();
         const size_t hardwareThreads =
             std::max<size_t>(std::thread::hardware_concurrency(), 1u);
         const size_t decodeWorkerLimit = std::min<size_t>(
@@ -3294,7 +2887,7 @@ private:
                     MaterialDecodeTaskResult& decoded = decodedBatch[localIndex];
                     decoded.decoded = decodeGPUDrivenMaterialTexture(
                         loadedScene,
-                        static_cast<uint32_t>(batchBegin + localIndex),
+                        alphaTextureIndices[batchBegin + localIndex],
                         decoded.image,
                         decoded.warning);
                 }
@@ -3329,7 +2922,7 @@ private:
                     decoded.image.width,
                     decoded.image.height,
                     Format::Rgba8Unorm,
-                    "GPUDrivenPreviewPass material texture",
+                    "VisibilityBufferPass material texture",
                     texture,
                     log);
                 if (!result) {
@@ -3337,52 +2930,26 @@ private:
                 }
                 materialTextureCreateMilliseconds += std::chrono::duration<double, std::milli>(
                     GPUDrivenCompileClock::now() - textureCreateBegin).count();
-                const size_t textureIndex = batchBegin + localIndex;
+                const size_t textureIndex = alphaTextureIndices[batchBegin + localIndex];
                 textureIndexMap[textureIndex] = static_cast<uint32_t>(materialTextures_.size());
                 materialTextures_.push_back(std::move(texture));
             }
         }
         spdlog::info(
-            "[GPUDrivenPreviewPass] Processed {} material texture decodes with {} workers in {:.2f} ms and created textures in {:.2f} ms",
+            "[VisibilityBufferPass] Processed {} alpha-test texture decodes with {} workers in {:.2f} ms and created textures in {:.2f} ms",
             attemptedTextureCount,
             decodeWorkerLimit,
             materialDecodeWallMilliseconds,
             materialTextureCreateMilliseconds);
         logicalTextureToMaterialTexture_ = textureIndexMap;
 
-        outMaterials.clear();
-        outMaterials.reserve(std::max<size_t>(loadedScene.materials().size(), 1u));
-        if (loadedScene.materials().empty()) {
-            outMaterials.push_back(GPUDrivenPreviewGpuMaterial{});
-        } else {
-            for (const scene::RenderMaterial& material : loadedScene.materials()) {
-                outMaterials.push_back(gpuDrivenMaterial(material, textureIndexMap));
-            }
-        }
-
-        auto shadingStageBegin = GPUDrivenCompileClock::now();
-        result = prepareGPUDrivenOpenPBRLuts(device, openPBRLut2D_, openPBRLut3D_, log);
-        logGPUDrivenCompileStage("OpenPBR LUT textures", shadingStageBegin);
-        return result;
+        return {};
     }
 
-    Result uploadShadingTextures(CommandBuffer& commandBuffer)
+    Result uploadAlphaTestTextures(CommandBuffer& commandBuffer)
     {
         for (GPUDrivenPreviewTextureResource& texture : materialTextures_) {
             Result result = uploadGPUDrivenTexture(commandBuffer, texture);
-            if (!result) {
-                return result;
-            }
-        }
-        Result result;
-        for (GPUDrivenPreviewTextureResource& texture : openPBRLut2D_) {
-            result = uploadGPUDrivenTexture(commandBuffer, texture);
-            if (!result) {
-                return result;
-            }
-        }
-        for (GPUDrivenPreviewTextureResource &texture : openPBRLut3D_) {
-            result = uploadGPUDrivenTexture(commandBuffer, texture);
             if (!result) {
                 return result;
             }
@@ -3455,7 +3022,7 @@ private:
     {
         Result result = heap.allocateBuffer(outHandle);
         if (!result || !outHandle.valid()) {
-            log += resultMessage(std::string("allocateBuffer(GPUDrivenPreviewPass ") +
+            log += resultMessage(std::string("allocateBuffer(VisibilityBufferPass ") +
                                      std::string(label) + ")",
                                  result);
             log += '\n';
@@ -3464,7 +3031,7 @@ private:
 
         result = heap.writeStorageBuffer(outHandle, buffer);
         if (!result) {
-            log += resultMessage(std::string("writeStorageBuffer(GPUDrivenPreviewPass ") +
+            log += resultMessage(std::string("writeStorageBuffer(VisibilityBufferPass ") +
                                      std::string(label) + ")",
                                  result);
             log += '\n';
@@ -3473,7 +3040,6 @@ private:
     }
 
     Result createBindingBundle(
-        Buffer& deferredColorBuffer,
         TextureView& cullingDepthView,
         bool includeGPUSceneBindings,
         GPUDrivenPreviewBindingBundle& outBundle,
@@ -3482,7 +3048,7 @@ private:
         if (device_ == nullptr || gpuSceneSubsystem_ == nullptr ||
             frameSlotResources_.size() != frameSlotCount_ || hzbBuffers_[0] == nullptr ||
             hzbBuffers_[1] == nullptr) {
-            log = "GPUDrivenPreviewPass cannot build bindings before GPU resources "
+            log = "VisibilityBufferPass cannot build bindings before GPU resources "
                   "are ready";
             return makeError(Error::InvalidArgument);
         }
@@ -3490,16 +3056,14 @@ private:
         GPUDrivenPreviewBindingBundle bundle;
         Result result = device_->createBindlessHeap(
             BindlessHeapDesc{
-                .maxSampledImages = 4u + static_cast<uint32_t>(materialTextures_.size()) +
-                                    kGPUDrivenOpenPBRLut2DCount +
-                                    kGPUDrivenOpenPBRLut3DCount,
-                .maxBuffers = 5u + frameSlotCount_ * 8u +
+                .maxSampledImages = 3u + static_cast<uint32_t>(materialTextures_.size()),
+                .maxBuffers = 3u + frameSlotCount_ * 8u +
                     static_cast<uint32_t>(kGPUSceneGlobalBufferKindCount) +
-                    (streamEnabled_ ? 8u : 0u),
+                    (streamEnabled_ ? 1u : 0u),
             },
             bundle.heap);
         if (!result || bundle.heap == nullptr) {
-            log += resultMessage("createBindlessHeap(GPUDrivenPreviewPass)", result);
+            log += resultMessage("createBindlessHeap(VisibilityBufferPass)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
@@ -3511,7 +3075,7 @@ private:
         auto allocateImage = [&](BindlessHandle& handle, std::string_view label) -> Result {
             Result allocateResult = bundle.heap->allocateSampledImage(handle);
             if (!allocateResult || !handle.valid()) {
-                log += resultMessage(std::string("allocateSampledImage(GPUDrivenPreviewPass ") +
+                log += resultMessage(std::string("allocateSampledImage(VisibilityBufferPass ") +
                                          std::string(label) + ")",
                                      allocateResult);
                 log += '\n';
@@ -3524,7 +3088,7 @@ private:
             Result writeResult =
                 bundle.heap->writeSampledImage(handle, view, ResourceState::ShaderRead);
             if (!writeResult) {
-                log += resultMessage(std::string("writeSampledImage(GPUDrivenPreviewPass ") +
+                log += resultMessage(std::string("writeSampledImage(VisibilityBufferPass ") +
                                          std::string(label) + ")",
                                      writeResult);
                 log += '\n';
@@ -3540,7 +3104,7 @@ private:
                 resources.instanceVisibilityBuffer == nullptr ||
                 resources.visibleInstanceIdsBuffer == nullptr ||
                 resources.visibleInstanceCounterBuffer == nullptr) {
-                log = "GPUDrivenPreviewPass frame-slot binding resource is null";
+                log = "VisibilityBufferPass frame-slot binding resource is null";
                 return makeError(Error::InvalidArgument);
             }
             result =
@@ -3569,7 +3133,7 @@ private:
             for (uint32_t phaseIndex = 0; phaseIndex < kGPUSceneCullPhaseCount; ++phaseIndex) {
                 if (resources.visibleMeshletBuffers[phaseIndex] == nullptr ||
                     resources.indirectBuffers[phaseIndex] == nullptr) {
-                    log = "GPUDrivenPreviewPass cull-phase binding resource is null";
+                    log = "VisibilityBufferPass cull-phase binding resource is null";
                     return makeError(Error::InvalidArgument);
                 }
                 result = bindBuffer(*resources.visibleMeshletBuffers[phaseIndex],
@@ -3593,79 +3157,10 @@ private:
                 return result;
             }
         }
-        result = bindBuffer(deferredColorBuffer, bundle.deferredColorHandle, "deferred color");
-        if (!result) {
-            return result;
-        }
         if (streamEnabled_) {
-            const MeshletStreamDeferredGpuResourcesView streamResources =
-                streamRuntime_.deferredGpuResources();
-            if (!streamResources.valid() || streamOwnerMask_.empty()) {
-                log = "GPUDrivenPreviewPass stream deferred resources are incomplete";
+            if (streamOwnerMask_.empty()) {
+                log = "VisibilityBufferPass stream ownership mask is empty";
                 return makeError(Error::InvalidArgument);
-            }
-            const std::array<Buffer*, GPUDrivenStreamDeferredResourceCount>
-                streamBuffers{
-                    streamResources.pageBuffer,
-                    streamResources.activeGroupBuffer,
-                    streamResources.pageTableBuffer,
-                    streamResources.activeHeaderBuffer,
-                    streamResources.paramsBuffer,
-                    streamResources.visibleClusterBuffer,
-                };
-            const std::array<const char*, GPUDrivenStreamDeferredResourceCount>
-                streamLabels{
-                    "stream pages",
-                    "stream active groups",
-                    "stream page table",
-                    "stream active header",
-                    "stream params",
-                    "stream visible records",
-                };
-            for (uint32_t resourceIndex = 0;
-                 resourceIndex < streamBuffers.size();
-                 ++resourceIndex) {
-                result = bindBuffer(
-                    *streamBuffers[resourceIndex],
-                    bundle.streamDeferredResourceHandles[resourceIndex],
-                    streamLabels[resourceIndex]);
-                if (!result) {
-                    return result;
-                }
-            }
-
-            const GPUDrivenStreamDeferredBindings streamBindings{
-                .pageBuffer = bundle.streamDeferredResourceHandles[
-                    GPUDrivenStreamDeferredPage].index,
-                .activeGroupBuffer = bundle.streamDeferredResourceHandles[
-                    GPUDrivenStreamDeferredActiveGroup].index,
-                .pageTableBuffer = bundle.streamDeferredResourceHandles[
-                    GPUDrivenStreamDeferredPageTable].index,
-                .activeHeaderBuffer = bundle.streamDeferredResourceHandles[
-                    GPUDrivenStreamDeferredActiveHeader].index,
-                .paramsBuffer = bundle.streamDeferredResourceHandles[
-                    GPUDrivenStreamDeferredParams].index,
-                .visibleClusterBuffer = bundle.streamDeferredResourceHandles[
-                    GPUDrivenStreamDeferredVisibleCluster].index,
-                .visibleRecordBase = residentRecordCapacity_,
-                .visibleRecordCapacity = streamResources.visibleRecordCapacity,
-            };
-            result = uploadStorageBuffer(
-                *device_,
-                &streamBindings,
-                sizeof(streamBindings),
-                bundle.streamDeferredBindingsBuffer,
-                log,
-                "GPUDrivenPreviewPass stream deferred bindings");
-            if (!result) {
-                return result;
-            }
-            result = bindBuffer(
-                *bundle.streamDeferredBindingsBuffer,
-                bundle.streamDeferredBindingsHandle,
-                "stream deferred bindings");
-            if (!result) {
-                return result;
             }
             result = uploadStorageBuffer(
                 *device_,
@@ -3673,7 +3168,7 @@ private:
                 static_cast<uint64_t>(streamOwnerMask_.size()) * sizeof(uint32_t),
                 bundle.streamOwnerMaskBuffer,
                 log,
-                "GPUDrivenPreviewPass stream owner mask");
+                "VisibilityBufferPass stream owner mask");
             if (!result) {
                 return result;
             }
@@ -3706,7 +3201,7 @@ private:
         for (size_t textureIndex = 0; textureIndex < materialTextures_.size(); ++textureIndex) {
             GPUDrivenPreviewTextureResource& texture = materialTextures_[textureIndex];
             if (texture.view == nullptr) {
-                log = "GPUDrivenPreviewPass material texture view is null";
+                log = "VisibilityBufferPass material texture view is null";
                 return makeError(Error::InvalidArgument);
             }
             result = allocateImage(bundle.materialTextureHandles[textureIndex], "material");
@@ -3720,12 +3215,12 @@ private:
             }
         }
         if (bundle.materialTextureHandles.empty()) {
-            log = "GPUDrivenPreviewPass material texture descriptor remap is empty";
+            log = "VisibilityBufferPass material texture descriptor remap is empty";
             return makeError(Error::InvalidArgument);
         }
         if (materialTextureCount_ == 0 ||
             materialTextureCount_ % kGPUSceneMaterialTextureSlotCount != 0) {
-            log = "GPUDrivenPreviewPass canonical material texture remap size is invalid";
+            log = "VisibilityBufferPass canonical material texture remap size is invalid";
             return makeError(Error::InvalidArgument);
         }
         std::vector<uint32_t> materialTextureRemap(
@@ -3780,7 +3275,7 @@ private:
             *device_, materialTextureRemap.data(),
             static_cast<uint64_t>(materialTextureRemap.size() * sizeof(uint32_t)),
             bundle.materialTextureRemapBuffer, log,
-            "GPUDrivenPreviewPass material texture descriptor remap");
+            "VisibilityBufferPass material texture descriptor remap");
         if (!result) {
             return result;
         }
@@ -3788,60 +3283,6 @@ private:
                             "material texture descriptor remap");
         if (!result) {
             return result;
-        }
-
-        result = allocateImage(bundle.environmentTextureHandle, "environment");
-        if (!result) {
-            return result;
-        }
-        result = bundle.heap->allocateBuffer(bundle.environmentSHBufferHandle);
-        if (!result || !bundle.environmentSHBufferHandle.valid()) {
-            log += resultMessage("allocateBuffer(GPUDrivenPreviewPass environment SH)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        for (size_t textureIndex = 0; textureIndex < openPBRLut2D_.size(); ++textureIndex) {
-            if (openPBRLut2D_[textureIndex].view == nullptr) {
-                log = "GPUDrivenPreviewPass OpenPBR 2D LUT view is null";
-                return makeError(Error::InvalidArgument);
-            }
-            result = allocateImage(bundle.openPBRLut2DHandles[textureIndex], "OpenPBR 2D LUT");
-            if (!result) {
-                return result;
-            }
-            if (textureIndex > 0 && bundle.openPBRLut2DHandles[textureIndex].index !=
-                                        bundle.openPBRLut2DHandles[0].index + textureIndex) {
-                log += "GPUDrivenPreviewPass OpenPBR 2D LUT descriptors are not "
-                       "contiguous\n";
-                return makeError(Error::Failure);
-            }
-            result = writeImage(bundle.openPBRLut2DHandles[textureIndex],
-                                *openPBRLut2D_[textureIndex].view, "OpenPBR 2D LUT");
-            if (!result) {
-                return result;
-            }
-        }
-        for (size_t textureIndex = 0; textureIndex < openPBRLut3D_.size(); ++textureIndex) {
-            if (openPBRLut3D_[textureIndex].view == nullptr) {
-                log = "GPUDrivenPreviewPass OpenPBR 3D LUT view is null";
-                return makeError(Error::InvalidArgument);
-            }
-            result = allocateImage(bundle.openPBRLut3DHandles[textureIndex], "OpenPBR 3D LUT");
-            if (!result) {
-                return result;
-            }
-            if (textureIndex > 0 && bundle.openPBRLut3DHandles[textureIndex].index !=
-                                        bundle.openPBRLut3DHandles[0].index + textureIndex) {
-                log += "GPUDrivenPreviewPass OpenPBR 3D LUT descriptors are not "
-                       "contiguous\n";
-                return makeError(Error::Failure);
-            }
-            result = writeImage(bundle.openPBRLut3DHandles[textureIndex],
-                                *openPBRLut3D_[textureIndex].view, "OpenPBR 3D LUT");
-            if (!result) {
-                return result;
-            }
         }
 
         if (includeGPUSceneBindings) {
@@ -3862,25 +3303,14 @@ private:
     {
         bindlessHeap_ = std::move(bundle.heap);
         materialTextureRemapBuffer_ = std::move(bundle.materialTextureRemapBuffer);
-        streamDeferredBindingsBuffer_ =
-            std::move(bundle.streamDeferredBindingsBuffer);
         streamOwnerMaskBuffer_ = std::move(bundle.streamOwnerMaskBuffer);
         gpuSceneBindings_ = bundle.gpuSceneBindings;
         materialTextureRemapHandle_ = bundle.materialTextureRemapHandle;
         hzbHandles_ = bundle.hzbHandles;
-        deferredColorHandle_ = bundle.deferredColorHandle;
         depthImageHandle_ = bundle.depthImageHandle;
         visibilityImageHandle_ = bundle.visibilityImageHandle;
         cullingDepthImageHandle_ = bundle.cullingDepthImageHandle;
         materialTextureHandles_ = std::move(bundle.materialTextureHandles);
-        environmentTextureHandle_ = bundle.environmentTextureHandle;
-        environmentSHBufferHandle_ = bundle.environmentSHBufferHandle;
-        openPBRLut2DHandles_ = bundle.openPBRLut2DHandles;
-        openPBRLut3DHandles_ = bundle.openPBRLut3DHandles;
-        streamDeferredResourceHandles_ =
-            bundle.streamDeferredResourceHandles;
-        streamDeferredBindingsHandle_ =
-            bundle.streamDeferredBindingsHandle;
         streamOwnerMaskHandle_ = bundle.streamOwnerMaskHandle;
         for (size_t frameSlot = 0; frameSlot < bundle.frameSlots.size(); ++frameSlot) {
             GPUDrivenPreviewFrameSlotResources& resources = frameSlotResources_[frameSlot];
@@ -3893,7 +3323,6 @@ private:
             resources.indirectHandles = bindings.indirectHandles;
         }
         bindingViewAllocationId_ = gpuSceneViewAllocationId_;
-        environmentBindingValid_ = false;
     }
 
     Result ensureFrameResources(
@@ -3914,28 +3343,16 @@ private:
 
         const uint32_t mipCount = computeHzbMipCount(width, height);
         const uint64_t elementCount = computeHzbElementCount(width, height, mipCount);
-        std::unique_ptr<Buffer> resizedDeferredColorBuffer;
         GPUDrivenPreviewCullingTargets resizedCullingTargets;
         std::string log;
-        Result result = createDeviceStorageBuffer(
-            *device_,
-            static_cast<uint64_t>(width) * height * sizeof(uint32_t),
-            BufferUsageBits::Storage,
-            resizedDeferredColorBuffer,
-            log,
-            "resized deferred color");
-        if (!result) {
-            spdlog::error("[GPUDrivenPreviewPass] {}", log);
-            return result;
-        }
-        result = createCullingTargets(
+        Result result = createCullingTargets(
             *device_,
             width,
             height,
             resizedCullingTargets,
             log);
         if (!result) {
-            spdlog::error("[GPUDrivenPreviewPass] {}", log);
+            spdlog::error("[VisibilityBufferPass] {}", log);
             return result;
         }
 
@@ -3947,13 +3364,12 @@ private:
         if (!result) {
             hzbMipCount_ = previousHzbMipCount;
             hzbElementCount_ = previousHzbElementCount;
-            spdlog::error("[GPUDrivenPreviewPass] {}", log);
+            spdlog::error("[VisibilityBufferPass] {}", log);
             return result;
         }
 
         GPUDrivenPreviewBindingBundle resizedBindings;
         result = createBindingBundle(
-            *resizedDeferredColorBuffer,
             *resizedCullingTargets.depthView,
             true,
             resizedBindings,
@@ -3961,25 +3377,21 @@ private:
         if (!result) {
             hzbMipCount_ = previousHzbMipCount;
             hzbElementCount_ = previousHzbElementCount;
-            spdlog::error("[GPUDrivenPreviewPass] {}", log);
+            spdlog::error("[VisibilityBufferPass] {}", log);
             return result;
         }
 
         auto retired = std::make_shared<GPUDrivenPreviewRetiredViewResources>();
-        retired->deferredColorBuffer = std::move(deferredColorBuffer_);
         retired->cullingTargets = std::move(cullingTargets_);
         retired->bindlessHeap = std::move(bindlessHeap_);
         retired->materialTextureRemapBuffer = std::move(materialTextureRemapBuffer_);
-        retired->streamDeferredBindingsBuffer =
-            std::move(streamDeferredBindingsBuffer_);
         retired->streamOwnerMaskBuffer = std::move(streamOwnerMaskBuffer_);
-        deferredColorBuffer_ = std::move(resizedDeferredColorBuffer);
         cullingTargets_ = std::move(resizedCullingTargets);
         installBindingBundle(std::move(resizedBindings));
         subsystemHost->retire(std::static_pointer_cast<void>(retired));
 
         spdlog::info(
-            "[GPUDrivenPreviewPass] Resized frame resources {}x{} -> {}x{}",
+            "[VisibilityBufferPass] Resized frame resources {}x{} -> {}x{}",
             frameWidth_,
             frameHeight_,
             width,
@@ -3989,7 +3401,6 @@ private:
         frameIndex_ = 0;
         invalidateHzbHistory();
         previousCameraValid_ = false;
-        frameBuffersInitialized_ = false;
         cullingTargetsInitialized_ = false;
         return {};
     }
@@ -4079,7 +3490,10 @@ private:
         if (!properties.is_object()) {
             return kGPUDrivenPreviewModeMeshlet;
         }
-        auto iter = properties.find("mode");
+        auto iter = properties.find("visualization");
+        if (iter == properties.end()) {
+            iter = properties.find("mode"); // Compatibility with saved preview settings.
+        }
         if (iter == properties.end() || !iter->is_string()) {
             return kGPUDrivenPreviewModeMeshlet;
         }
@@ -4090,12 +3504,19 @@ private:
         if (value == "lod" || value == "lodLevel" || value == "lod level" || value == "LOD") {
             return kGPUDrivenPreviewModeLod;
         }
-        if (value == "shaded" || value == "openpbr" || value == "material") {
-            return kGPUDrivenPreviewModeShaded;
+        if (value == "triangle") {
+            return kVisibilityModeTriangle;
         }
-        if (value == "baseColor" || value == "base color" || value == "albedo") {
-            return kGPUDrivenPreviewModeBaseColor;
+        if (value == "depth") {
+            return kVisibilityModeDepth;
         }
+        if (value == "coverage") {
+            return kVisibilityModeCoverage;
+        }
+        if (value == "none" || value == "off") {
+            return kVisibilityModeNone;
+        }
+        // Old shading modes now fall back to raw meshlet-ID visualization.
         return kGPUDrivenPreviewModeMeshlet;
     }
 
@@ -4215,7 +3636,7 @@ private:
         std::string& log)
     {
         if (outVertices.size() + primitive.positions.size() > std::numeric_limits<uint32_t>::max()) {
-            log = "GPUDrivenPreviewPass scene is too large to address with uint32 vertex indices";
+            log = "VisibilityBufferPass scene is too large to address with uint32 vertex indices";
             return false;
         }
 
@@ -4264,7 +3685,7 @@ private:
         std::string& log)
     {
         if (static_cast<size_t>(firstCluster) + clusterCount > clusters.size()) {
-            log = "GPUDrivenPreviewPass found invalid meshlet cluster range";
+            log = "VisibilityBufferPass found invalid meshlet cluster range";
             return false;
         }
 
@@ -4277,7 +3698,7 @@ private:
                 static_cast<size_t>(cluster.vertexOffset) + cluster.vertexCount > clusterVertices.size() ||
                 static_cast<size_t>(cluster.triangleOffset) + static_cast<size_t>(cluster.triangleCount) * 3u >
                     clusterTriangles.size()) {
-                log = "GPUDrivenPreviewPass found invalid meshlet cluster data";
+                log = "VisibilityBufferPass found invalid meshlet cluster data";
                 return false;
             }
 
@@ -4288,7 +3709,7 @@ private:
                 const uint32_t localVertex =
                     clusterVertices[static_cast<size_t>(cluster.vertexOffset) + vertexIndex];
                 if (localVertex >= primitive.positions.size()) {
-                    log = "GPUDrivenPreviewPass found out-of-range meshlet vertex reference";
+                    log = "VisibilityBufferPass found out-of-range meshlet vertex reference";
                     return false;
                 }
                 outMeshletVertices.push_back(positionBase + localVertex);
@@ -4298,7 +3719,7 @@ private:
                 const uint32_t localVertex =
                     clusterTriangles[static_cast<size_t>(cluster.triangleOffset) + triangleIndex];
                 if (localVertex >= cluster.vertexCount) {
-                    log = "GPUDrivenPreviewPass found out-of-range meshlet triangle index";
+                    log = "VisibilityBufferPass found out-of-range meshlet triangle index";
                     return false;
                 }
                 outMeshletTriangles.push_back(localVertex);
@@ -4353,12 +3774,12 @@ private:
     {
         const std::filesystem::path path = scenePathFromProperties(properties);
         if (runtimeScene == nullptr) {
-            log = "GPUDrivenPreviewPass requires a runtime scene resource provider";
+            log = "VisibilityBufferPass requires a runtime scene resource provider";
             return false;
         }
         const scene::Scene& loadedScene = *runtimeScene;
         if (!loadedScene.bounds().valid) {
-            log = "GPUDrivenPreviewPass scene bounds are unavailable";
+            log = "VisibilityBufferPass scene bounds are unavailable";
             return false;
         }
 
@@ -4410,7 +3831,7 @@ private:
             }
             if (!primitive.localBounds.valid ||
                 drawableSources.size() >= std::numeric_limits<uint32_t>::max()) {
-                log = "GPUDrivenPreviewPass found invalid or unaddressable instance bounds";
+                log = "VisibilityBufferPass found invalid or unaddressable instance bounds";
                 return false;
             }
 
@@ -4430,7 +3851,7 @@ private:
             buildGPUDrivenPreviewGeometryDedupPlan(geometrySources);
         if (geometryPlan.conflictingPayloadCount != 0) {
             spdlog::warn(
-                "[GPUDrivenPreviewPass] {} geometry key payload conflict(s); preserving independent payloads",
+                "[VisibilityBufferPass] {} geometry key payload conflict(s); preserving independent payloads",
                 geometryPlan.conflictingPayloadCount);
         }
 
@@ -4450,7 +3871,7 @@ private:
             const scene::RenderNode& renderNode = *source.renderNode;
             const uint32_t geometryIndex = geometryPlan.geometryIndices[sourceIndex];
             if (geometryIndex >= geometryPayloads.size()) {
-                log = "GPUDrivenPreviewPass produced an invalid geometry dedup assignment";
+                log = "VisibilityBufferPass produced an invalid geometry dedup assignment";
                 return false;
             }
             GeometryPayload& geometry = geometryPayloads[geometryIndex];
@@ -4546,7 +3967,7 @@ private:
                                          const GPUDrivenPreviewMeshletRange& geometryRange) {
             if (static_cast<uint64_t>(outMeshletDraws.size()) + geometryRange.count >
                 std::numeric_limits<uint32_t>::max()) {
-                log = "GPUDrivenPreviewPass scene is too large to address meshlet draws";
+                log = "VisibilityBufferPass scene is too large to address meshlet draws";
                 return false;
             }
             for (uint32_t meshletOffset = 0; meshletOffset < geometryRange.count; ++meshletOffset) {
@@ -4596,15 +4017,15 @@ private:
             outMeshletVertices.empty() ||
             outMeshletTriangles.empty() ||
             outInstances.empty()) {
-            log = "GPUDrivenPreviewPass found no drawable meshlet geometry in " + path.string();
+            log = "VisibilityBufferPass found no drawable meshlet geometry in " + path.string();
             return false;
         }
         if (!visibilityRecordCapacityFitsId(outMeshletDraws.size())) {
-            log = "GPUDrivenPreviewPass scene has too many meshlets for the packed visibility format";
+            log = "VisibilityBufferPass scene has too many meshlets for the packed visibility format";
             return false;
         }
         if (outBaseMeshletRange.count == 0) {
-            log = "GPUDrivenPreviewPass found no base meshlet geometry in " + path.string();
+            log = "VisibilityBufferPass found no base meshlet geometry in " + path.string();
             return false;
         }
         return true;
@@ -4624,8 +4045,6 @@ private:
         const GPUDrivenPreviewGpuParams* previousParams,
         uint32_t materialTextureCount,
         uint32_t materialCount,
-        const EnvironmentSettings& environment,
-        bool environmentMapAvailable,
         GPUDrivenPreviewGpuParams& outParams)
     {
         outParams = GPUDrivenPreviewGpuParams{};
@@ -4710,16 +4129,6 @@ private:
         outParams.materialTextureCount = std::max(materialTextureCount, 1u);
         outParams.materialCount = std::max(materialCount, 1u);
         outParams.visibleMeshletCapacity = 1u;
-        outParams.environmentIntensity = std::max(environment.intensity, 0.0f);
-        outParams.environmentRotationRadians =
-            environment.rotationDegrees * (kPi / 180.0f);
-        outParams.environmentMode = !environment.enabled
-            ? kGPUDrivenEnvironmentModeDisabled
-            : (environmentMapAvailable
-                ? kGPUDrivenEnvironmentModeMap
-                : kGPUDrivenEnvironmentModeProcedural);
-        outParams.environmentVisible =
-            environment.enabled && environment.visible ? 1u : 0u;
         const GPUDrivenPreviewGpuParams& previous = previousParams != nullptr ? *previousParams : outParams;
         std::memcpy(outParams.previousEye, previous.eye, sizeof(outParams.previousEye));
         std::memcpy(outParams.previousCenter, previous.center, sizeof(outParams.previousCenter));
@@ -4731,9 +4140,7 @@ private:
     Result updateParamsBuffer(
         uint32_t width,
         uint32_t height,
-        const RenderGraphProperties& properties,
-        const EnvironmentSettings& environment,
-        bool environmentMapAvailable)
+        const RenderGraphProperties& properties)
     {
         GPUDrivenPreviewFrameSlotResources& slot = activeFrameResources();
         if (slot.paramsBuffer == nullptr || !drawBounds_.valid) {
@@ -4769,8 +4176,6 @@ private:
             previousCameraValid_ ? &previousParams_ : nullptr,
             materialTextureCount_,
             materialCount_,
-            environment,
-            environmentMapAvailable,
             params);
 
         if (freezeCullingCamera &&
@@ -4801,16 +4206,12 @@ private:
     }
 
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
-    std::unique_ptr<Buffer> streamDeferredBindingsBuffer_;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer_;
     std::vector<GPUDrivenPreviewFrameSlotResources> frameSlotResources_;
     std::array<Buffer*, 2> hzbBuffers_{};
-    std::unique_ptr<Buffer> deferredColorBuffer_;
     GPUDrivenPreviewCullingTargets cullingTargets_;
     MeshletStreamRuntime streamRuntime_;
     std::vector<GPUDrivenPreviewTextureResource> materialTextures_;
-    std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut2DCount> openPBRLut2D_;
-    std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut3DCount> openPBRLut3D_;
     Device* device_ = nullptr;
     GPUSceneSubsystem* gpuSceneSubsystem_ = nullptr;
     const scene::Scene* gpuSceneSource_ = nullptr;
@@ -4821,18 +4222,10 @@ private:
     GPUSceneConsumerBindings gpuSceneBindings_;
     BindlessHandle materialTextureRemapHandle_;
     std::array<BindlessHandle, 2> hzbHandles_;
-    BindlessHandle deferredColorHandle_;
     BindlessHandle depthImageHandle_;
     BindlessHandle visibilityImageHandle_;
     BindlessHandle cullingDepthImageHandle_;
     std::vector<BindlessHandle> materialTextureHandles_;
-    BindlessHandle environmentTextureHandle_;
-    BindlessHandle environmentSHBufferHandle_;
-    std::array<BindlessHandle, kGPUDrivenOpenPBRLut2DCount> openPBRLut2DHandles_;
-    std::array<BindlessHandle, kGPUDrivenOpenPBRLut3DCount> openPBRLut3DHandles_;
-    std::array<BindlessHandle, GPUDrivenStreamDeferredResourceCount>
-        streamDeferredResourceHandles_;
-    BindlessHandle streamDeferredBindingsHandle_;
     BindlessHandle streamOwnerMaskHandle_;
     BindlessHandle streamVisibilityImageHandle_;
     BindlessHandle streamDepthImageHandle_;
@@ -4842,12 +4235,12 @@ private:
     std::array<BindlessHandle, 2> streamHzbHandles_;
     std::unique_ptr<ShaderModule> amplificationShader_;
     std::unique_ptr<ShaderModule> meshShader_;
+    std::unique_ptr<ShaderModule> maskedMeshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<ShaderModule> maskedFragmentShader_;
     std::unique_ptr<ShaderModule> resetShader_;
     std::unique_ptr<ShaderModule> instanceCullShader_;
     std::unique_ptr<ShaderModule> hzbShader_;
-    std::unique_ptr<ShaderModule> deferredShader_;
     std::unique_ptr<ShaderModule> compositeVertexShader_;
     std::unique_ptr<ShaderModule> compositeFragmentShader_;
     std::unique_ptr<ShaderModule> streamMeshShader_;
@@ -4860,7 +4253,6 @@ private:
     std::unique_ptr<ComputePipeline> resetPipeline_;
     std::unique_ptr<ComputePipeline> instanceCullPipeline_;
     std::unique_ptr<ComputePipeline> hzbPipeline_;
-    std::unique_ptr<ComputePipeline> deferredPipeline_;
     std::unique_ptr<GraphicsPipeline> streamVisibilityPipeline_;
     std::unique_ptr<ComputePipeline> streamCullResetPipeline_;
     std::unique_ptr<ComputePipeline> streamInstanceCullPipeline_;
@@ -4902,22 +4294,19 @@ private:
     uint32_t activeFrameSlot_ = 0;
     bool hzbValid_ = false;
     bool previousCameraValid_ = false;
-    bool frameBuffersInitialized_ = false;
     bool cullingTargetsInitialized_ = false;
     bool freezeCullingCamera_ = false;
     bool frozenCullingCameraValid_ = false;
-    bool environmentBindingValid_ = false;
     bool streamEnabled_ = false;
     bool amplificationWaveOps_ = false;
     bool amplificationWave32_ = false;
-    uint64_t environmentResourceRevision_ = 0;
 };
 
 } // namespace
 
-std::unique_ptr<RenderGraphPass> createGPUDrivenPreviewPass()
+std::unique_ptr<RenderGraphPass> createVisibilityBufferPass()
 {
-    return std::make_unique<GPUDrivenPreviewPass>();
+    return std::make_unique<VisibilityBufferPass>();
 }
 
 } // namespace metallic::render::builtin_pass

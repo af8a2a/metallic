@@ -306,12 +306,12 @@ public:
 
 class GPUDrivenSample final : public RenderSample {
 public:
-    std::string_view id() const override { return "gpu-driven-sample"; }
+    std::string_view id() const override { return kDefaultGPUDrivenSampleId; }
     std::string_view name() const override { return "GPUDrivenSample"; }
     std::string_view category() const override { return "GPUDriven"; }
     std::string_view description() const override
     {
-        return "SuperSponza visibility-buffer sample with two-pass HZB culling and compute OpenPBR environment shading.";
+        return "Default GPUDriven sample producing raw visibility/depth with Wave32 AS/MS culling and optional ID/depth diagnostics.";
     }
     std::string scenePath() const override { return "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"; }
     bool loadSceneInEditor() const override { return false; }
@@ -320,16 +320,6 @@ public:
         return "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
-    std::optional<RenderSampleEnvironmentDesc> environment() const override
-    {
-        return RenderSampleEnvironmentDesc{
-            .enabled = true,
-            .path = "Asset/ABeautifulGame/environment.hdr",
-            .intensity = 3.0f,
-            .rotationDegrees = 0.0f,
-            .visible = true,
-        };
-    }
     std::string previewOutput() const override { return "GPUDriven.color"; }
 };
 
@@ -352,16 +342,6 @@ public:
         return "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
-    std::optional<RenderSampleEnvironmentDesc> environment() const override
-    {
-        return RenderSampleEnvironmentDesc{
-            .enabled = true,
-            .path = "Asset/ABeautifulGame/environment.hdr",
-            .intensity = 3.0f,
-            .rotationDegrees = 0.0f,
-            .visible = true,
-        };
-    }
     std::string previewOutput() const override { return "GPUDriven.color"; }
 };
 
@@ -454,16 +434,6 @@ public:
         return "Pipelines/Samples/gpu_driven_terrain_p1_unified.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
-    std::optional<RenderSampleEnvironmentDesc> environment() const override
-    {
-        return RenderSampleEnvironmentDesc{
-            .enabled = true,
-            .path = "Asset/ABeautifulGame/environment.hdr",
-            .intensity = 3.0f,
-            .rotationDegrees = 0.0f,
-            .visible = true,
-        };
-    }
     std::string previewOutput() const override { return "GPUDriven.color"; }
 };
 

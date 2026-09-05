@@ -37,13 +37,15 @@
                 "instanceHzbCull": true,
                 "meshletFrustumCull": true,
                 "meshletNormalConeCull": true,
-                "mode": "shaded",
+                "visualization": "meshlet",
                 "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"
             },
-            "type": "GPUDrivenPreviewPass"
+            "type": "VisibilityBufferPass"
         }
     ],
     "outputs": [
+        "GPUDriven.visibility",
+        "GPUDriven.depth",
         "GPUDriven.color"
     ],
     "version": 1

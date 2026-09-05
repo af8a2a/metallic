@@ -1203,7 +1203,7 @@ public:
         const std::unique_ptr<render::RenderGraphPass> materialVisualization =
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenPreview =
-            render::createRenderGraphPass("GPUDrivenPreviewPass");
+            render::createRenderGraphPass("VisibilityBufferPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenStreamAsset =
             render::createRenderGraphPass("GPUDrivenStreamAssetPass");
         const std::unique_ptr<render::RenderGraphPass> nrdDenoise =
@@ -1262,7 +1262,7 @@ public:
         }
         if (gpuDrivenPreview->kind() != render::RenderGraphPassKind::Unsafe ||
             gpuDrivenPreview->queueType() != render::QueueType::Graphics) {
-            return RhiTestResult::fail("GPUDrivenPreviewPass is not classified as Unsafe/Graphics");
+            return RhiTestResult::fail("VisibilityBufferPass is not classified as Unsafe/Graphics");
         }
         if (gpuDrivenStreamAsset->kind() != render::RenderGraphPassKind::Unsafe ||
             gpuDrivenStreamAsset->queueType() != render::QueueType::Graphics) {
@@ -1319,7 +1319,7 @@ public:
             } else if (passInfo.type == "SceneMaterialVisualizationPass") {
                 foundMaterialVisualization = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
-            } else if (passInfo.type == "GPUDrivenPreviewPass") {
+            } else if (passInfo.type == "VisibilityBufferPass") {
                 foundGPUDrivenPreview = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
                     passInfo.queueType == render::QueueType::Graphics;
             } else if (passInfo.type == "GPUDrivenStreamAssetPass") {
@@ -1478,7 +1478,7 @@ public:
         const std::unique_ptr<render::RenderGraphPass> materialVisualization =
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenPreview =
-            render::createRenderGraphPass("GPUDrivenPreviewPass");
+            render::createRenderGraphPass("VisibilityBufferPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenStreamAsset =
             render::createRenderGraphPass("GPUDrivenStreamAssetPass");
         const std::unique_ptr<render::RenderGraphPass> streamlineDlssSr =
@@ -1535,12 +1535,21 @@ public:
         if (!hasBoolRuntimeSetting(*materialVisualization, "flipBitangent")) {
             return RhiTestResult::fail("SceneMaterialVisualizationPass missing Bool runtime setting flipBitangent");
         }
+        if (!hasRuntimeSetting(*gpuDrivenPreview, "visualization",
+                render::RenderGraphRuntimeSettingType::Enum, false, false)) {
+            return RhiTestResult::fail("VisibilityBufferPass must expose runtime-only visualization");
+        }
+        const auto visibilitySubsystems = gpuDrivenPreview->requiredSubsystems();
+        if (std::find(visibilitySubsystems.begin(), visibilitySubsystems.end(),
+                render::EnvironmentLightingSubsystem::kSubsystemId) != visibilitySubsystems.end()) {
+            return RhiTestResult::fail("VisibilityBufferPass must not require environment lighting");
+        }
         if (!hasBoolRuntimeSetting(*gpuDrivenPreview, "instanceFrustumCull") ||
             !hasBoolRuntimeSetting(*gpuDrivenPreview, "instanceHzbCull") ||
             !hasBoolRuntimeSetting(*gpuDrivenPreview, "meshletFrustumCull") ||
             !hasBoolRuntimeSetting(*gpuDrivenPreview, "meshletNormalConeCull") ||
             !hasBoolRuntimeSetting(*gpuDrivenPreview, "freezeCullingCamera")) {
-            return RhiTestResult::fail("GPUDrivenPreviewPass missing visibility culling runtime settings");
+            return RhiTestResult::fail("VisibilityBufferPass missing visibility culling runtime settings");
         }
         if (!hasBoolRuntimeSetting(*gpuDrivenStreamAsset, "enableGpuLodSelection")) {
             return RhiTestResult::fail("GPUDrivenStreamAssetPass missing Bool runtime setting enableGpuLodSelection");
@@ -1763,6 +1772,69 @@ public:
         }
         if (legacyEdgeIds.size() != 7u) {
             return RhiTestResult::fail("legacy graph changed edge count");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+class VisibilityBufferPassLegacyGraphTest : public RhiTest {
+public:
+    VisibilityBufferPassLegacyGraphTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_visibility_buffer_pass_legacy_json";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const std::string legacyJson = R"json({
+            "version": 1,
+            "name": "SavedVisibilityGraph",
+            "nodes": [{
+                "id": 7,
+                "name": "GPUDriven",
+                "type": "GPUDrivenPreviewPass",
+                "position": {"x": 12.0, "y": 34.0},
+                "properties": {"mode": "baseColor", "freezeCullingCamera": true}
+            }],
+            "edges": [],
+            "outputs": ["GPUDriven.color", "GPUDriven.visibility", "GPUDriven.depth"]
+        })json";
+        render::RenderGraph graph;
+        std::string message;
+        if (!render::deserializeRenderGraphFromString(legacyJson, graph, message)) {
+            return RhiTestResult::fail(message);
+        }
+        const render::RenderGraphNode* node = graph.findNode("GPUDriven");
+        if (node == nullptr || node->id != 7u ||
+            node->type != "VisibilityBufferPass" ||
+            node->uiX != 12.0f || node->uiY != 34.0f ||
+            node->properties.value("mode", "") != "baseColor" ||
+            !node->properties.value("freezeCullingCamera", false) ||
+            graph.outputs().size() != 3u ||
+            graph.firstOutputName() != "GPUDriven.color") {
+            return RhiTestResult::fail("legacy visibility graph migration changed node data or output connections");
+        }
+        const std::string serialized = render::serializeRenderGraphToString(graph);
+        if (serialized.find("GPUDrivenPreviewPass") != std::string::npos ||
+            serialized.find("VisibilityBufferPass") == std::string::npos) {
+            return RhiTestResult::fail("migrated visibility graph did not serialize the canonical pass name");
+        }
+        render::RenderGraph reloaded;
+        if (!render::deserializeRenderGraphFromString(serialized, reloaded, message) ||
+            reloaded.findNode("GPUDriven") == nullptr ||
+            reloaded.findNode("GPUDriven")->type != "VisibilityBufferPass") {
+            return RhiTestResult::fail("canonical visibility graph did not round-trip: " + message);
+        }
+        bool foundCanonical = false;
+        for (const render::RenderGraphPassInfo& info : render::listRenderGraphPassTypes()) {
+            if (info.type == "GPUDrivenPreviewPass") {
+                return RhiTestResult::fail("legacy visibility pass is still exposed in the editor registry");
+            }
+            foundCanonical = foundCanonical || info.type == "VisibilityBufferPass";
+        }
+        if (!foundCanonical || render::createRenderGraphPass("VisibilityBufferPass") == nullptr) {
+            return RhiTestResult::fail("VisibilityBufferPass is not registered");
         }
         return RhiTestResult::pass();
     }
@@ -2033,7 +2105,7 @@ public:
         }
 
         render::RenderSampleLoadResult gpuDrivenSample;
-        if (!render::loadBuiltInRenderSample("gpu-driven-sample", gpuDrivenSample, message)) {
+        if (!render::loadBuiltInRenderSample(render::kDefaultGPUDrivenSampleId, gpuDrivenSample, message)) {
             return RhiTestResult::fail(message);
         }
         if (gpuDrivenSample.desc.id != "gpu-driven-sample" ||
@@ -2042,18 +2114,18 @@ public:
             gpuDrivenSample.desc.scenePath != "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf" ||
             gpuDrivenSample.desc.loadSceneInEditor ||
             gpuDrivenSample.desc.graphPath != "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json" ||
-            !gpuDrivenSample.desc.environment.has_value() ||
-            gpuDrivenSample.desc.environment->path != "Asset/ABeautifulGame/environment.hdr" ||
+            gpuDrivenSample.desc.environment.has_value() ||
             gpuDrivenSample.desc.previewOutput != "GPUDriven.color" ||
             gpuDrivenSample.desc.requiresStreamline) {
             return RhiTestResult::fail("GPUDrivenSample metadata did not load as expected");
         }
         const render::RenderGraphNode* gpuDriven = gpuDrivenSample.graph.findNode("GPUDriven");
-        if (gpuDriven == nullptr ||
-            gpuDriven->type != "GPUDrivenPreviewPass" ||
+        if (gpuDrivenSample.graph.nodes().size() != 1u ||
+            gpuDriven == nullptr ||
+            gpuDriven->type != "VisibilityBufferPass" ||
             !gpuDriven->properties.is_object() ||
             gpuDriven->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||
-            gpuDriven->properties.value("mode", "") != "shaded" ||
+            gpuDriven->properties.value("visualization", "") != "meshlet" ||
             !gpuDriven->properties.contains("camera") ||
             !gpuDriven->properties["camera"].is_object()) {
             return RhiTestResult::fail("GPUDrivenSample did not apply pass defaults");
@@ -2061,7 +2133,8 @@ public:
         if (!gpuDrivenSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (gpuDrivenSample.graph.firstOutputName() != "GPUDriven.color") {
+        if (gpuDrivenSample.graph.firstOutputName() != "GPUDriven.visibility" ||
+            gpuDrivenSample.graph.outputs().size() != 3u) {
             return RhiTestResult::fail("GPUDrivenSample graph first output changed");
         }
         bool requiresStreamline = true;
@@ -2178,7 +2251,7 @@ public:
             !gpuDrivenTerrainP1Sample.desc.loadSceneInEditor ||
             gpuDrivenTerrainP1Sample.desc.graphPath !=
                 "Pipelines/Samples/gpu_driven_terrain_p1_unified.metallic_graph.json" ||
-            !gpuDrivenTerrainP1Sample.desc.environment.has_value() ||
+            gpuDrivenTerrainP1Sample.desc.environment.has_value() ||
             gpuDrivenTerrainP1Sample.desc.previewOutput != "GPUDriven.color") {
             return RhiTestResult::fail(
                 "GPUDriven Terrain P1 unified sample metadata did not load as expected");
@@ -2186,7 +2259,7 @@ public:
         const render::RenderGraphNode* gpuDrivenTerrainP1 =
             gpuDrivenTerrainP1Sample.graph.findNode("GPUDriven");
         if (gpuDrivenTerrainP1 == nullptr ||
-            gpuDrivenTerrainP1->type != "GPUDrivenPreviewPass" ||
+            gpuDrivenTerrainP1->type != "VisibilityBufferPass" ||
             !gpuDrivenTerrainP1->properties.is_object() ||
             gpuDrivenTerrainP1->properties.value("path", "") !=
                 gpuDrivenTerrainP1Sample.desc.scenePath ||
@@ -2195,7 +2268,7 @@ public:
             !gpuDrivenTerrainP1->properties.value("enableMeshletStreaming", false) ||
             !gpuDrivenTerrainP1->properties.value("instanceHzbCull", false) ||
             !gpuDrivenTerrainP1->properties.value("meshletFrustumCull", false) ||
-            gpuDrivenTerrainP1->properties.value("mode", "") != "shaded" ||
+            gpuDrivenTerrainP1->properties.value("visualization", "") != "meshlet" ||
             !gpuDrivenTerrainP1->properties.contains("camera") ||
             !gpuDrivenTerrainP1->properties["camera"].is_object()) {
             return RhiTestResult::fail(
@@ -2204,7 +2277,7 @@ public:
         if (!gpuDrivenTerrainP1Sample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (gpuDrivenTerrainP1Sample.graph.firstOutputName() != "GPUDriven.color") {
+        if (gpuDrivenTerrainP1Sample.graph.firstOutputName() != "GPUDriven.visibility") {
             return RhiTestResult::fail("GPUDriven Terrain P1 unified graph first output changed");
         }
 
@@ -3199,8 +3272,8 @@ public:
         };
         render::Result result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "GPUDrivenPreview",
-                .entryPointName = "gpuDrivenPreviewAmplificationMain",
+                .moduleName = "VisibilityBuffer",
+                .entryPointName = "visibilityBufferAmplificationMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
@@ -3208,14 +3281,14 @@ public:
             amplificationCompile);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreview amplification shader compile returned ") +
+                std::string("VisibilityBuffer amplification shader compile returned ") +
                 toString(result) +
                 ": " +
                 amplificationCompile.diagnostics);
         }
         if (amplificationCompile.spirv.empty()) {
             return RhiTestResult::fail(
-                "GPUDrivenPreview amplification shader produced empty SPIR-V");
+                "VisibilityBuffer amplification shader produced empty SPIR-V");
         }
 
         const render::SlangMacroDefine atomicFallbackDefine{
@@ -3228,8 +3301,8 @@ public:
         render::ShaderCompileResult atomicFallbackCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "GPUDrivenPreview",
-                .entryPointName = "gpuDrivenPreviewAmplificationMain",
+                .moduleName = "VisibilityBuffer",
+                .entryPointName = "visibilityBufferAmplificationMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = atomicFallbackCapabilities,
                 .capabilityCount = static_cast<uint32_t>(
@@ -3240,21 +3313,21 @@ public:
             atomicFallbackCompile);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreview atomic amplification fallback compile returned ") +
+                std::string("VisibilityBuffer atomic amplification fallback compile returned ") +
                 toString(result) +
                 ": " +
                 atomicFallbackCompile.diagnostics);
         }
         if (atomicFallbackCompile.spirv.empty()) {
             return RhiTestResult::fail(
-                "GPUDrivenPreview atomic amplification fallback produced empty SPIR-V");
+                "VisibilityBuffer atomic amplification fallback produced empty SPIR-V");
         }
 
         render::ShaderCompileResult meshCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "GPUDrivenPreview",
-                .entryPointName = "gpuDrivenPreviewMeshMain",
+                .moduleName = "VisibilityBuffer",
+                .entryPointName = "visibilityBufferMeshMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
@@ -3262,55 +3335,111 @@ public:
             meshCompile);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreview mesh shader compile returned ") +
+                std::string("VisibilityBuffer mesh shader compile returned ") +
                 toString(result) +
                 ": " +
                 meshCompile.diagnostics);
         }
         if (meshCompile.spirv.empty()) {
-            return RhiTestResult::fail("GPUDrivenPreview mesh shader produced empty SPIR-V");
+            return RhiTestResult::fail("VisibilityBuffer mesh shader produced empty SPIR-V");
+        }
+
+        const render::SlangMacroDefine maskedMeshDefine{
+            "VISIBILITY_BUFFER_ALPHA_MASKED", "1",
+        };
+        render::ShaderCompileResult maskedMeshCompile;
+        result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "VisibilityBuffer",
+                .entryPointName = "visibilityBufferMeshMain",
+                .searchPath = kShaderSearchPath,
+                .capabilities = atomicFallbackCapabilities,
+                .capabilityCount = static_cast<uint32_t>(
+                    std::size(atomicFallbackCapabilities)),
+                .macroDefines = &maskedMeshDefine,
+                .macroDefineCount = 1u,
+            },
+            maskedMeshCompile);
+        if (!result || maskedMeshCompile.spirv.empty()) {
+            return RhiTestResult::fail(
+                "VisibilityBuffer masked mesh compile failed: " +
+                maskedMeshCompile.diagnostics);
+        }
+
+        // No vertex attributes in opaque visibility rasterization. Only the
+        // masked variant may export UV and material index as user locations.
+        auto countLocations = [](const std::vector<uint32_t>& spirv) -> uint32_t {
+            constexpr uint16_t kOpDecorate = 71;
+            constexpr uint16_t kOpMemberDecorate = 72;
+            constexpr uint32_t kDecorationLocation = 30;
+            uint32_t count = 0;
+            for (size_t offset = 5; offset < spirv.size();) {
+                const uint32_t words = spirv[offset] >> 16u;
+                const uint16_t opcode = static_cast<uint16_t>(spirv[offset]);
+                if (words == 0 || offset + words > spirv.size()) {
+                    return UINT32_MAX;
+                }
+                if ((opcode == kOpDecorate && words >= 4 &&
+                        spirv[offset + 2] == kDecorationLocation) ||
+                    (opcode == kOpMemberDecorate && words >= 5 &&
+                        spirv[offset + 3] == kDecorationLocation)) {
+                    ++count;
+                }
+                offset += words;
+            }
+            return count;
+        };
+        if (countLocations(meshCompile.spirv) != 0u ||
+            countLocations(maskedMeshCompile.spirv) != 2u) {
+            return RhiTestResult::fail(
+                "VisibilityBuffer mesh interfaces must be position-only for opaque and UV/material for masked");
         }
 
         render::ShaderCompileResult fragmentCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "GPUDrivenPreview",
-                .entryPointName = "gpuDrivenPreviewFragmentMain",
+                .moduleName = "VisibilityBuffer",
+                .entryPointName = "visibilityBufferFragmentMain",
                 .searchPath = kShaderSearchPath,
             },
             fragmentCompile);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreview fragment shader compile returned ") +
+                std::string("VisibilityBuffer fragment shader compile returned ") +
                 toString(result) +
                 ": " +
                 fragmentCompile.diagnostics);
         }
         if (fragmentCompile.spirv.empty()) {
-            return RhiTestResult::fail("GPUDrivenPreview fragment shader produced empty SPIR-V");
+            return RhiTestResult::fail("VisibilityBuffer fragment shader produced empty SPIR-V");
         }
 
-        constexpr std::array<const char*, 6> additionalEntryPoints{
-            "gpuDrivenPreviewMaskedFragmentMain",
-            "gpuDrivenPreviewResetMain",
-            "gpuDrivenPreviewInstanceCullMain",
-            "gpuDrivenPreviewHzbMain",
-            "gpuDrivenPreviewCompositeVertexMain",
-            "gpuDrivenPreviewCompositeFragmentMain",
+        struct ShaderEntry {
+            const char* module;
+            const char* entry;
         };
-        size_t additionalWordCount = 0;
-        for (const char* entryPoint : additionalEntryPoints) {
+        constexpr std::array<ShaderEntry, 6> additionalEntryPoints{
+            ShaderEntry{"VisibilityBuffer", "visibilityBufferMaskedFragmentMain"},
+            ShaderEntry{"GPUDrivenCulling", "gpuDrivenPreviewResetMain"},
+            ShaderEntry{"GPUDrivenCulling", "gpuDrivenPreviewInstanceCullMain"},
+            ShaderEntry{"GPUDrivenCulling", "gpuDrivenPreviewHzbMain"},
+            ShaderEntry{"VisibilityBufferComposite", "visibilityBufferCompositeVertexMain"},
+            ShaderEntry{"VisibilityBufferComposite", "visibilityBufferCompositeFragmentMain"},
+        };
+        size_t additionalWordCount = maskedMeshCompile.spirv.size();
+        for (const ShaderEntry& shaderEntry : additionalEntryPoints) {
+            const char* entryPoint = shaderEntry.entry;
             render::ShaderCompileResult compile;
             result = render::compileSlangShaderToSpirv(
                 render::SlangShaderDesc{
-                    .moduleName = "GPUDrivenPreview",
+                    .moduleName = shaderEntry.module,
                     .entryPointName = entryPoint,
                     .searchPath = kShaderSearchPath,
                 },
                 compile);
             if (!result) {
                 return RhiTestResult::fail(
-                    std::string("GPUDrivenPreview shader compile returned ") +
+                    std::string("VisibilityBuffer shader compile returned ") +
                     toString(result) +
                     " for " +
                     entryPoint +
@@ -3319,30 +3448,13 @@ public:
             }
             if (compile.spirv.empty()) {
                 return RhiTestResult::fail(
-                    std::string("GPUDrivenPreview shader produced empty SPIR-V for ") + entryPoint);
+                    std::string("VisibilityBuffer shader produced empty SPIR-V for ") + entryPoint);
             }
             additionalWordCount += compile.spirv.size();
         }
 
-        render::ShaderCompileResult deferredCompile;
-        result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
-                .moduleName = "GPUDrivenDeferred",
-                .entryPointName = "gpuDrivenPreviewDeferredMain",
-                .searchPath = kShaderSearchPath,
-            },
-            deferredCompile);
-        if (!result || deferredCompile.spirv.empty()) {
-            return RhiTestResult::fail(
-                std::string("GPUDriven OpenPBR deferred shader compile returned ") +
-                toString(result) +
-                ": " +
-                deferredCompile.diagnostics);
-        }
-        additionalWordCount += deferredCompile.spirv.size();
-
         return RhiTestResult::pass(
-            std::string("compiled GPUDrivenPreview shaders, amplification words=") +
+            std::string("compiled VisibilityBuffer shaders, amplification words=") +
             std::to_string(amplificationCompile.spirv.size()) +
             ", mesh words=" +
             std::to_string(meshCompile.spirv.size()) +
@@ -6959,9 +7071,9 @@ public:
     }
 };
 
-class RenderGraphGPUDrivenPreviewPassSmokeTest : public RhiTest {
+class RenderGraphVisibilityBufferPassSmokeTest : public RhiTest {
 public:
-    RenderGraphGPUDrivenPreviewPassSmokeTest()
+    RenderGraphVisibilityBufferPassSmokeTest()
     {
         type = RhiTestType::Rendering;
         name = "render_graph_gpu_driven_preview_pass_smoke";
@@ -6972,7 +7084,7 @@ public:
         std::unique_ptr<render::Device> device;
         render::Result result = render::createDevice(
             render::DeviceDesc{
-                .applicationName = "Metallic GPUDrivenPreviewPass Smoke Test",
+                .applicationName = "Metallic VisibilityBufferPass Smoke Test",
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
                 .enableMeshShader = true,
@@ -6994,7 +7106,7 @@ public:
         render::RenderGraph graph;
         graph.setName("GPUDrivenPreviewSmoke");
         graph.addNode(
-            "GPUDrivenPreviewPass",
+            "VisibilityBufferPass",
             "GPUDriven",
             render::RenderGraphProperties{
                 {"path", "Asset/StandfordBunny/scene.gltf"},
@@ -7018,7 +7130,7 @@ public:
                     ": " +
                     log);
             }
-            return RhiTestResult::pass("GPUDrivenPreviewPass reported Unsupported without required capabilities");
+            return RhiTestResult::pass("VisibilityBufferPass reported Unsupported without required capabilities");
         }
 
         if (!result) {
@@ -7886,7 +7998,7 @@ public:
         render::RenderDebugRuntime debugRuntime;
         debug::DebugValue debugJobs = debug::DebugValue::array();
         graph.addNode(
-            "GPUDrivenPreviewPass",
+            "VisibilityBufferPass",
             "GPUDriven",
             render::RenderGraphProperties{
                 {"path", sourcePath.string()},
@@ -7934,7 +8046,7 @@ public:
                     toString(result) + ": " + log);
             }
             return RhiTestResult::skip(
-                "GPUDrivenPreviewPass mixed producer mode requires task/mesh/geometry shaders and bindless descriptors");
+                "VisibilityBufferPass mixed producer mode requires task/mesh/geometry shaders and bindless descriptors");
         }
         if (!result) {
             return RhiTestResult::fail(
@@ -8269,7 +8381,7 @@ public:
                 depthPixels[pixelIndex] > 1.0f ||
                 (red <= 8u && green <= 8u && blue <= 8u)) {
                 return RhiTestResult::fail(
-                    "mixed-producer visibility was not resolved by the shared depth/deferred surfaces");
+                    "mixed-producer visibility does not match the shared depth/debug surfaces");
             }
 
             if (recordIndex < streamRecordBase) {
@@ -8318,16 +8430,93 @@ public:
         for (const render::RenderGraphNodeExecutionStat& node :
              executor.executionStats().nodes) {
             unifiedPassNodeCount +=
-                node.type == "GPUDrivenPreviewPass" ? 1u : 0u;
+                node.type == "VisibilityBufferPass" ? 1u : 0u;
         }
         if (unifiedPassNodeCount != 1) {
             return RhiTestResult::fail(
-                "mixed producers were not resolved by one unified raster/deferred graph node");
+                "mixed producers were not rasterized by one visibility-buffer graph node");
+        }
+
+        const auto* visualizationNode = graph.findNode("GPUDriven");
+        if (visualizationNode == nullptr) {
+            return RhiTestResult::fail("mixed-producer visualization node is missing");
+        }
+        const auto visualizationNodeId = visualizationNode->id;
+        const std::array visualizationModes{"triangle", "depth", "coverage", "none"};
+        for (size_t configuration = 0; configuration < visualizationModes.size() * 2; ++configuration) {
+            const char* mode = visualizationModes[configuration % visualizationModes.size()];
+            const bool freezeCullingCamera = configuration >= visualizationModes.size();
+            if (!graph.setNodeRuntimeProperty(visualizationNodeId, "visualization", mode) ||
+                !graph.setNodeRuntimeProperty(
+                    visualizationNodeId, "freezeCullingCamera", freezeCullingCamera) ||
+                !executor.syncRuntimeProperties(graph)) {
+                return RhiTestResult::fail("could not switch mixed-producer visualization");
+            }
+            result = fence->reset();
+            if (result) {
+                result = commandPool->reset();
+            }
+            if (result) {
+                result = commandBuffer->begin();
+            }
+            if (result) {
+                result = executor.execute(*commandBuffer);
+            }
+            for (const char* outputName : {
+                     "GPUDriven.color", "GPUDriven.visibility", "GPUDriven.depth"}) {
+                if (result) {
+                    result = executor.transitionOutput(
+                        *commandBuffer, outputName, render::ResourceState::TransferSource);
+                }
+            }
+            if (result) {
+                commandBuffer->copyTextureToBuffer(colorCopy);
+                commandBuffer->copyTextureToBuffer(visibilityCopy);
+                commandBuffer->copyTextureToBuffer(depthCopy);
+                result = commandBuffer->end();
+            }
+            if (result) {
+                result = graphicsQueue->submit(render::QueueSubmitDesc{
+                    .commandBuffers = commandBuffers,
+                    .commandBufferCount = 1,
+                    .signalFence = fence.get(),
+                });
+            }
+            if (result) {
+                result = fence->wait(5'000'000'000ull);
+            }
+            if (!result) {
+                return RhiTestResult::fail(
+                    std::string("capture visualization returned ") + toString(result));
+            }
+            std::vector<uint32_t> displayPixels(kWidth * kHeight);
+            std::vector<uint32_t> currentVisibility(kWidth * kHeight);
+            std::vector<float> currentDepth(kWidth * kHeight);
+            if (!copyReadback(*colorReadback, displayPixels.data(), kPixelByteSize) ||
+                !copyReadback(*visibilityReadback, currentVisibility.data(), kPixelByteSize) ||
+                !copyReadback(*depthReadback, currentDepth.data(), kPixelByteSize)) {
+                return RhiTestResult::fail("could not read visualization surfaces");
+            }
+            if (currentVisibility != visibilityPixels || currentDepth != depthPixels) {
+                return RhiTestResult::fail(
+                    std::string("visualization changed raw visibility/depth: ") + mode);
+            }
+            for (size_t pixelIndex = 0; pixelIndex < displayPixels.size(); ++pixelIndex) {
+                if (std::string_view(mode) == "coverage" &&
+                    ((displayPixels[pixelIndex] == 0xffffffffu) !=
+                     (visibilityPixels[pixelIndex] != 0u))) {
+                    return RhiTestResult::fail("coverage visualization does not match raw IDs");
+                }
+                if (std::string_view(mode) == "none" &&
+                    displayPixels[pixelIndex] != displayPixels.front()) {
+                    return RhiTestResult::fail("disabled visualization still draws color");
+                }
+            }
         }
 
         (void)device->waitIdle();
         return RhiTestResult::pass(
-            "shared visibility/depth/color resolved residentPixels=" +
+            "visualization preserves shared visibility/depth; residentPixels=" +
             std::to_string(residentPixelCount) +
             " streamPixels=" + std::to_string(streamPixelCount) +
             " residentRecords=" + std::to_string(residentRecordIds.size()) +
@@ -8335,9 +8524,9 @@ public:
     }
 };
 
-class RenderGraphGPUDrivenPreviewPassRenderTest : public RhiTest {
+class RenderGraphVisibilityBufferPassRenderTest : public RhiTest {
 public:
-    RenderGraphGPUDrivenPreviewPassRenderTest()
+    RenderGraphVisibilityBufferPassRenderTest()
     {
         type = RhiTestType::Rendering;
         name = "render_graph_gpu_driven_preview_pass_render";
@@ -8366,7 +8555,7 @@ public:
         render::RenderGraph graph;
         graph.setName("GPUDrivenPreviewRender");
         graph.addNode(
-            "GPUDrivenPreviewPass",
+            "VisibilityBufferPass",
             "GPUDriven",
             render::RenderGraphProperties{
                 {"path", "Asset/StandfordBunny/scene.gltf"},
@@ -8388,10 +8577,10 @@ public:
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(
-                    std::string("GPUDrivenPreviewPass is unsupported on this device: ") + preview.lastLog());
+                    std::string("VisibilityBufferPass is unsupported on this device: ") + preview.lastLog());
             }
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass render returned ") +
+                std::string("VisibilityBufferPass render returned ") +
                 toString(result) +
                 ": " +
                 preview.lastLog());
@@ -8400,7 +8589,7 @@ public:
         const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 512) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass produced too few visible pixels: ") +
+                std::string("VisibilityBufferPass produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
         const std::vector<uint32_t> firstFramePixels = preview.pixels();
@@ -8408,7 +8597,7 @@ public:
         result = preview.render(graph, 192, 192);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass second-frame HZB render returned ") +
+                std::string("VisibilityBufferPass second-frame HZB render returned ") +
                 toString(result) +
                 ": " +
                 preview.lastLog());
@@ -8416,7 +8605,7 @@ public:
         const uint32_t hzbVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (hzbVisiblePixelCount < 512) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass second-frame HZB render produced too few visible pixels: ") +
+                std::string("VisibilityBufferPass second-frame HZB render produced too few visible pixels: ") +
                 std::to_string(hzbVisiblePixelCount));
         }
         if (preview.pixels() != firstFramePixels) {
@@ -8425,7 +8614,7 @@ public:
                 mismatchCount += preview.pixels()[pixelIndex] != firstFramePixels[pixelIndex] ? 1u : 0u;
             }
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass stationary HZB frame changed ") +
+                std::string("VisibilityBufferPass stationary HZB frame changed ") +
                 std::to_string(mismatchCount) +
                 " pixels");
         }
@@ -8438,7 +8627,7 @@ public:
         result = preview.render(graph, 192, 192);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass narrow culling-camera render returned ") +
+                std::string("VisibilityBufferPass narrow culling-camera render returned ") +
                 toString(result) +
                 ": " +
                 preview.lastLog());
@@ -8452,7 +8641,7 @@ public:
         result = preview.render(graph, 192, 192);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass frozen-camera capture render returned ") +
+                std::string("VisibilityBufferPass frozen-camera capture render returned ") +
                 toString(result) +
                 ": " +
                 preview.lastLog());
@@ -8470,7 +8659,7 @@ public:
         result = preview.render(graph, 192, 192);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass frozen-culling observation render returned ") +
+                std::string("VisibilityBufferPass frozen-culling observation render returned ") +
                 toString(result) +
                 ": " +
                 preview.lastLog());
@@ -8478,7 +8667,7 @@ public:
         const uint32_t frozenVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (frozenVisiblePixelCount < 512) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass frozen culling produced too few visible pixels: ") +
+                std::string("VisibilityBufferPass frozen culling produced too few visible pixels: ") +
                 std::to_string(frozenVisiblePixelCount));
         }
         const std::vector<uint32_t> frozenObservationPixels = preview.pixels();
@@ -8486,7 +8675,7 @@ public:
         result = preview.render(graph, 192, 192);
         if (!result || preview.pixels() != frozenObservationPixels) {
             return RhiTestResult::fail(
-                "GPUDrivenPreviewPass frozen culling camera was not stable while observing from another view");
+                "VisibilityBufferPass frozen culling camera was not stable while observing from another view");
         }
 
         if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "freezeCullingCamera", false)) {
@@ -8495,7 +8684,7 @@ public:
         result = preview.render(graph, 192, 192);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass restored live-camera render returned ") +
+                std::string("VisibilityBufferPass restored live-camera render returned ") +
                 toString(result) +
                 ": " +
                 preview.lastLog());
@@ -8503,7 +8692,7 @@ public:
         const uint32_t liveVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (liveVisiblePixelCount < 512) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass restored live culling produced too few visible pixels: ") +
+                std::string("VisibilityBufferPass restored live culling produced too few visible pixels: ") +
                 std::to_string(liveVisiblePixelCount));
         }
         size_t cullingCameraMismatchCount = 0;
@@ -8528,7 +8717,7 @@ public:
         result = preview.render(graph, 128, 96);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass resize-down render returned ") +
+                std::string("VisibilityBufferPass resize-down render returned ") +
                 toString(result) +
                 ": " +
                 preview.lastLog());
@@ -8536,14 +8725,14 @@ public:
         const uint32_t resizedDownVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (resizedDownVisiblePixelCount < 128) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass resize-down render produced too few visible pixels: ") +
+                std::string("VisibilityBufferPass resize-down render produced too few visible pixels: ") +
                 std::to_string(resizedDownVisiblePixelCount));
         }
 
         result = preview.render(graph, 256, 144);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass resize-up render returned ") +
+                std::string("VisibilityBufferPass resize-up render returned ") +
                 toString(result) +
                 ": " +
                 preview.lastLog());
@@ -8551,14 +8740,14 @@ public:
         const uint32_t resizedUpVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (resizedUpVisiblePixelCount < 256) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass resize-up render produced too few visible pixels: ") +
+                std::string("VisibilityBufferPass resize-up render produced too few visible pixels: ") +
                 std::to_string(resizedUpVisiblePixelCount));
         }
 
         render::RenderGraph lodGraph;
         lodGraph.setName("GPUDrivenPreviewLodRender");
         lodGraph.addNode(
-            "GPUDrivenPreviewPass",
+            "VisibilityBufferPass",
             "GPUDriven",
             render::RenderGraphProperties{
                 {"path", "Asset/StandfordBunny/scene.gltf"},
@@ -8581,10 +8770,10 @@ public:
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(
-                    std::string("GPUDrivenPreviewPass LOD mode is unsupported on this device: ") + preview.lastLog());
+                    std::string("VisibilityBufferPass LOD mode is unsupported on this device: ") + preview.lastLog());
             }
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass LOD render returned ") +
+                std::string("VisibilityBufferPass LOD render returned ") +
                 toString(result) +
                 ": " +
                 preview.lastLog());
@@ -8593,7 +8782,7 @@ public:
         const uint32_t lodVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (lodVisiblePixelCount < 512) {
             return RhiTestResult::fail(
-                std::string("GPUDrivenPreviewPass LOD mode produced too few visible pixels: ") +
+                std::string("VisibilityBufferPass LOD mode produced too few visible pixels: ") +
                 std::to_string(lodVisiblePixelCount));
         }
 
@@ -8646,11 +8835,11 @@ public:
         render::RenderGraph graph;
         graph.setName("GPUDrivenAlphaMaskRender");
         graph.addNode(
-            "GPUDrivenPreviewPass",
+            "VisibilityBufferPass",
             "GPUDriven",
             render::RenderGraphProperties{
                 {"path", scenePath.string()},
-                {"mode", "shaded"},
+                {"visualization", "coverage"},
                 {"instanceHzbCull", false},
                 {"meshletNormalConeCull", false},
                 {"camera", {
@@ -8672,10 +8861,10 @@ public:
                 const uint8_t r = static_cast<uint8_t>(pixel & 0xffu);
                 const uint8_t g = static_cast<uint8_t>((pixel >> 8u) & 0xffu);
                 const uint8_t b = static_cast<uint8_t>((pixel >> 16u) & 0xffu);
-                if (r > 48 && r > g + 32 && r > b + 32) {
+                if (r == 255 && g == 255 && b == 255) {
                     ++counts[0];
                 }
-                if (b > 48 && b > r + 32 && b > g + 32) {
+                if (r != g && (r >= 32 || g >= 32 || b >= 32)) {
                     ++counts[1];
                 }
                 if (r < 32 && g < 32 && b < 32) {
@@ -8689,7 +8878,7 @@ public:
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(
-                    std::string("GPUDrivenPreviewPass is unsupported: ") +
+                    std::string("VisibilityBufferPass is unsupported: ") +
                     preview.lastLog());
             }
             return RhiTestResult::fail(
@@ -8697,10 +8886,10 @@ public:
                 toString(result) + ": " + preview.lastLog());
         }
         const std::array<uint32_t, 3> front = classifyPixels();
-        if (front[0] < 1024 || front[2] < 1024 || front[1] > 64) {
+        if (front[0] < 1024 || front[0] > 7500 || front[2] < 1024 || front[1] > 64) {
             return RhiTestResult::fail(
-                "GPUDriven MASK/BLEND classification is incorrect on the front face: red=" +
-                std::to_string(front[0]) + " blue=" + std::to_string(front[1]) +
+                "GPUDriven MASK/BLEND classification is incorrect on the front face: coverage=" +
+                std::to_string(front[0]) + " unexpected-color=" + std::to_string(front[1]) +
                 " dark=" + std::to_string(front[2]));
         }
 
@@ -8719,21 +8908,21 @@ public:
                 toString(result) + ": " + preview.lastLog());
         }
         const std::array<uint32_t, 3> back = classifyPixels();
-        if (back[0] < 1024 || back[2] < 1024 || back[1] > 64) {
+        if (back[0] < 1024 || back[0] > 7500 || back[2] < 1024 || back[1] > 64) {
             return RhiTestResult::fail(
-                "GPUDriven double-sided MASK did not survive back-face rendering: red=" +
-                std::to_string(back[0]) + " blue=" + std::to_string(back[1]) +
+                "GPUDriven double-sided MASK did not survive back-face rendering: coverage=" +
+                std::to_string(back[0]) + " unexpected-color=" + std::to_string(back[1]) +
                 " dark=" + std::to_string(back[2]));
         }
 
         render::RenderGraph singleSidedGraph;
         singleSidedGraph.setName("GPUDrivenSingleSidedMaskRender");
         singleSidedGraph.addNode(
-            "GPUDrivenPreviewPass",
+            "VisibilityBufferPass",
             "GPUDriven",
             render::RenderGraphProperties{
                 {"path", singleSidedScenePath.string()},
-                {"mode", "shaded"},
+                {"visualization", "coverage"},
                 {"instanceHzbCull", false},
                 {"meshletNormalConeCull", false},
                 {"camera", {
@@ -8758,8 +8947,8 @@ public:
         if (singleSidedBack[0] > 64 || singleSidedBack[1] > 64 ||
             singleSidedBack[2] < 4096) {
             return RhiTestResult::fail(
-                "GPUDriven single-sided MASK was not back-face culled: red=" +
-                std::to_string(singleSidedBack[0]) + " blue=" +
+                "GPUDriven single-sided MASK was not back-face culled: coverage=" +
+                std::to_string(singleSidedBack[0]) + " unexpected-color=" +
                 std::to_string(singleSidedBack[1]) + " dark=" +
                 std::to_string(singleSidedBack[2]));
         }
@@ -8800,11 +8989,11 @@ public:
         render::RenderGraph graph;
         graph.setName("GPUDrivenSponzaVisibilityRender");
         graph.addNode(
-            "GPUDrivenPreviewPass",
+            "VisibilityBufferPass",
             "GPUDriven",
             render::RenderGraphProperties{
                 {"path", "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"},
-                {"mode", "shaded"},
+                {"visualization", "meshlet"},
                 {"instanceFrustumCull", true},
                 {"instanceHzbCull", true},
                 {"meshletFrustumCull", true},
@@ -8835,169 +9024,79 @@ public:
                 preview.lastLog());
         }
 
-        render::EnvironmentLightingSubsystem* environmentSubsystem =
-            preview.subsystemHost()->get<render::EnvironmentLightingSubsystem>();
-        if (environmentSubsystem == nullptr) {
-            return RhiTestResult::fail("SuperSponza environment subsystem was not activated");
+
+        const std::vector<uint32_t> meshletPixels = preview.pixels();
+        if (countVisiblePixels(meshletPixels) < 2048) {
+            return RhiTestResult::fail("Sponza visibility contains too few covered pixels");
         }
-        bool environmentReady = false;
-        for (uint32_t attempt = 0; attempt < 5000 && !environmentReady; ++attempt) {
-            const render::EnvironmentLightingSnapshot& snapshot = environmentSubsystem->snapshot();
-            environmentReady = snapshot.status == render::EnvironmentLightingStatus::Ready &&
-                snapshot.mapAvailable;
-            if (!environmentReady) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                result = preview.render(graph, 256, 256);
-                if (!result) {
-                    return RhiTestResult::fail(
-                        "SuperSponza failed while waiting for the environment snapshot");
+        result = preview.render(graph, 256, 256);
+        if (!result || preview.pixels() != meshletPixels) {
+            return RhiTestResult::fail("stationary HZB changed meshlet-ID visualization");
+        }
+        // Lighting is intentionally irrelevant to this pass, even with an
+        // invalid environment path; no environment subsystem should activate.
+        environment.path = "Asset/does-not-exist.hdr";
+        environment.rotationDegrees = 90.0f;
+        environment.intensity = 100.0f;
+        preview.setEnvironment(environment);
+        result = preview.render(graph, 256, 256);
+        if (!result || preview.pixels() != meshletPixels ||
+            preview.subsystemHost()->get<render::EnvironmentLightingSubsystem>() != nullptr) {
+            return RhiTestResult::fail("visibility rasterization still depends on environment shading");
+        }
+        render::RenderGraphNode* node = graph.findNode("GPUDriven");
+        if (node == nullptr) {
+            return RhiTestResult::fail("Sponza visibility node is missing");
+        }
+        std::string message;
+        for (const char* mode : {"meshlet", "triangle", "depth", "coverage", "none"}) {
+            if (!graph.setNodeRuntimeProperty(node->id, "visualization", mode)) {
+                return RhiTestResult::fail("failed to select visibility visualization");
+            }
+            result = preview.render(graph, 256, 256);
+            if (!result) {
+                return RhiTestResult::fail(std::string("Sponza visualization ") + mode +
+                    " returned " + toString(result) + ": " + preview.lastLog());
+            }
+            const auto& pixels = preview.pixels();
+            size_t different = 0;
+            size_t covered = 0;
+            for (size_t i = 0; i < pixels.size(); ++i) {
+                const bool wasCovered = (meshletPixels[i] & 0xffu) >= 32u;
+                const uint32_t rgb = pixels[i] & 0x00ffffffu;
+                covered += wasCovered ? 1u : 0u;
+                different += pixels[i] != meshletPixels[i] ? 1u : 0u;
+                if (std::string_view(mode) == "coverage" &&
+                    ((rgb == 0x00ffffffu) != wasCovered)) {
+                    return RhiTestResult::fail("coverage display differs from visibility coverage");
+                }
+                if (std::string_view(mode) == "depth" && wasCovered &&
+                    (((rgb >> 8u) & 0xffu) != (rgb & 0xffu) ||
+                        ((rgb >> 16u) & 0xffu) != (rgb & 0xffu))) {
+                    return RhiTestResult::fail("device-depth visualization is not grayscale");
+                }
+                if (std::string_view(mode) == "none" && pixels[i] != pixels.front()) {
+                    return RhiTestResult::fail("disabled visualization did not clear the debug output");
                 }
             }
-        }
-        if (!environmentReady) {
-            return RhiTestResult::fail("SuperSponza environment snapshot did not become ready");
-        }
-
-        const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
-        if (visiblePixelCount < 2048) {
-            return RhiTestResult::fail(
-                std::string("SuperSponza visibility render produced too few visible pixels: ") +
-                std::to_string(visiblePixelCount));
-        }
-        const std::vector<uint32_t> firstFramePixels = preview.pixels();
-
-        result = preview.render(graph, 256, 256);
-        if (!result) {
-            return RhiTestResult::fail(
-                std::string("SuperSponza stationary HZB render returned ") +
-                toString(result) +
-                ": " +
-                preview.lastLog());
-        }
-        if (preview.pixels() != firstFramePixels) {
-            size_t mismatchCount = 0;
-            for (size_t pixelIndex = 0; pixelIndex < firstFramePixels.size(); ++pixelIndex) {
-                mismatchCount += preview.pixels()[pixelIndex] != firstFramePixels[pixelIndex] ? 1u : 0u;
+            if (covered < 2048 || (std::string_view(mode) == "triangle" && different < 1024)) {
+                return RhiTestResult::fail("triangle-ID visualization did not distinguish triangles");
             }
-            return RhiTestResult::fail(
-                std::string("SuperSponza stationary meshlet visualization changed ") +
-                std::to_string(mismatchCount) +
-                " pixels");
+            if (!saveRgba8Png(
+                    context.outputDirectory / (std::string("visibility_buffer_sponza_") + mode + ".png"),
+                    reinterpret_cast<const uint8_t*>(pixels.data()), 256, 256, message)) {
+                return RhiTestResult::fail(message);
+            }
         }
-        render::RenderGraphNode* gpuDrivenNode = graph.findNode("GPUDriven");
-        if (gpuDrivenNode == nullptr) {
-            return RhiTestResult::fail("failed to find the SuperSponza GPUDriven node");
+        graph.setNodeRuntimeProperty(node->id, "visualization", "meshlet");
+        for (uint32_t frame = 0; frame < 2; ++frame) {
+            result = preview.render(graph, 256, 133);
+            if (!result || preview.pixels().size() != 256u * 133u ||
+                countVisiblePixels(preview.pixels()) < 1024) {
+                return RhiTestResult::fail("Sponza non-square visibility/HZB regression");
+            }
         }
-        environment.rotationDegrees = 90.0f;
-        preview.setEnvironment(environment);
-        result = preview.render(graph, 256, 256);
-        if (!result) {
-            return RhiTestResult::fail(
-                std::string("SuperSponza rotated-environment render returned ") +
-                toString(result) +
-                ": " +
-                preview.lastLog());
-        }
-        size_t environmentMismatchCount = 0;
-        for (size_t pixelIndex = 0; pixelIndex < firstFramePixels.size(); ++pixelIndex) {
-            environmentMismatchCount +=
-                preview.pixels()[pixelIndex] != firstFramePixels[pixelIndex] ? 1u : 0u;
-        }
-        if (environmentMismatchCount < 4096) {
-            return RhiTestResult::fail(
-                "rotating the HDR environment did not materially change the OpenPBR resolve");
-        }
-        environment.rotationDegrees = 0.0f;
-        preview.setEnvironment(environment);
-        result = preview.render(graph, 256, 256);
-        if (!result || preview.pixels() != firstFramePixels) {
-            return RhiTestResult::fail(
-                "restoring the HDR environment rotation did not restore the deterministic OpenPBR image");
-        }
-        if (
-            !graph.setNodeRuntimeProperty(gpuDrivenNode->id, "freezeCullingCamera", true)) {
-            return RhiTestResult::fail("failed to freeze the SuperSponza culling camera");
-        }
-        result = preview.render(graph, 256, 256);
-        if (!result || preview.pixels() != firstFramePixels) {
-            return RhiTestResult::fail(
-                "SuperSponza changed when switching to the captured culling camera");
-        }
-        result = preview.render(graph, 256, 256);
-        if (!result || preview.pixels() != firstFramePixels) {
-            return RhiTestResult::fail(
-                "SuperSponza frozen-camera HZB result was not stable");
-        }
-        if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "freezeCullingCamera", false)) {
-            return RhiTestResult::fail("failed to restore live SuperSponza camera culling");
-        }
-        if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "mode", "meshlet")) {
-            return RhiTestResult::fail("failed to select the SuperSponza meshlet debug resolve");
-        }
-        result = preview.render(graph, 256, 256);
-        if (!result) {
-            return RhiTestResult::fail(
-                std::string("SuperSponza meshlet debug comparison returned ") +
-                toString(result));
-        }
-        size_t debugMismatchCount = 0;
-        for (size_t pixelIndex = 0; pixelIndex < firstFramePixels.size(); ++pixelIndex) {
-            debugMismatchCount +=
-                preview.pixels()[pixelIndex] != firstFramePixels[pixelIndex] ? 1u : 0u;
-        }
-        if (debugMismatchCount < 4096) {
-            return RhiTestResult::fail(
-                "SuperSponza OpenPBR shading was not distinguishable from meshlet debug colors");
-        }
-
-        const auto* debugBytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
-        const std::filesystem::path debugOutputPath =
-            context.outputDirectory / "render_graph_gpu_driven_sponza_meshlets.png";
-        std::string outputMessage;
-        if (!saveRgba8Png(
-                debugOutputPath,
-                debugBytes,
-                256,
-                256,
-                outputMessage)) {
-            return RhiTestResult::fail(outputMessage);
-        }
-
-        if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "mode", "baseColor")) {
-            return RhiTestResult::fail("failed to select the SuperSponza base-color resolve");
-        }
-        result = preview.render(graph, 256, 256);
-        if (!result) {
-            return RhiTestResult::fail(
-                std::string("SuperSponza base-color resolve returned ") + toString(result));
-        }
-        const auto* baseColorBytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
-        const std::filesystem::path baseColorOutputPath =
-            context.outputDirectory / "render_graph_gpu_driven_sponza_base_color.png";
-        if (!saveRgba8Png(
-                baseColorOutputPath,
-                baseColorBytes,
-                256,
-                256,
-                outputMessage)) {
-            return RhiTestResult::fail(outputMessage);
-        }
-
-        const auto* bytes = reinterpret_cast<const uint8_t*>(firstFramePixels.data());
-        const std::filesystem::path outputPath =
-            context.outputDirectory / "render_graph_gpu_driven_sponza_openpbr.png";
-        if (!saveRgba8Png(
-                outputPath,
-                bytes,
-                256,
-                256,
-                outputMessage)) {
-            return RhiTestResult::fail(outputMessage);
-        }
-        return RhiTestResult::pass(
-            std::string("SuperSponza OpenPBR pixels=") + std::to_string(visiblePixelCount) +
-            ", environment mismatches=" + std::to_string(environmentMismatchCount) +
-            ", wrote " + outputPath.string());
+        return RhiTestResult::pass("validated unshaded ID/depth/coverage/off visualizations");
     }
 };
 
@@ -9360,6 +9459,7 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
+METALLIC_REGISTER_RHI_TEST(VisibilityBufferPassLegacyGraphTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphDlssRrMotionVectorContractTest);
@@ -9411,10 +9511,10 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphMultiQueueSubmitTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphImageSamplePassPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphMaterialShaderObjectPassSmokeTest);
-METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassSmokeTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphVisibilityBufferPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenMixedProducerRenderTest);
-METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassRenderTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphVisibilityBufferPassRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenAlphaMaskRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenSponzaVisibilityRenderTest);
 METALLIC_REGISTER_RHI_TEST(ImportancePdfSizeTest);

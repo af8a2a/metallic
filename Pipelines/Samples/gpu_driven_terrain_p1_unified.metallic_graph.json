@@ -46,16 +46,18 @@
                 "maxTraversalWorkItems": 65536,
                 "meshletFrustumCull": true,
                 "meshletNormalConeCull": true,
-                "mode": "shaded",
+                "visualization": "meshlet",
                 "pageLoadConcurrency": 2,
                 "path": "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf",
                 "selectedLodLevel": 0,
                 "streamAssetPath": "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf.meshstream.bin"
             },
-            "type": "GPUDrivenPreviewPass"
+            "type": "VisibilityBufferPass"
         }
     ],
     "outputs": [
+        "GPUDriven.visibility",
+        "GPUDriven.depth",
         "GPUDriven.color"
     ],
     "version": 1

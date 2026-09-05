@@ -286,7 +286,7 @@ ALandscape (ALandscapeProxy 子类, Landscape.h:250)
 ### 9.1 Metallic 现有能力盘点
 
 - `Source/Runtime/Render/Subsystem/GPUScene.*`：几何/材质/实例 GPU 记录、draw key、bucket、meshlet LOD（GPUScene.h:80-147）。
-- `Shaders/GPUDrivenDeferred.slang`：实例剔除 + HZB（hzbBuffer0/1）、meshlet 两阶段剔除 + visibility buffer、indirect draw、延迟着色（OpenPBR）。**已具备 GPU-Driven 基座**。
+- `Shaders/GPUDrivenCulling.slang` + `VisibilityBuffer.slang` + `VisibilityBufferShading.slang`：实例剔除 + HZB（hzbBuffer0/1）、AS meshlet 两阶段剔除 + Mesh Shader visibility buffer、延迟着色（OpenPBR）。**已具备 GPU-Driven 基座**。
 - `Source/Runtime/Render/MeshletStream*`：meshlet 流式页加载（Nanite 式流式基础）。
 - RenderGraph（JSON 描述、typed pass）+ Vulkan RHI + Slang。
 

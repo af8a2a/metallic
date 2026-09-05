@@ -261,7 +261,7 @@ sequenceDiagram
 | RTXDI | `RtxdiCompositePass` | 合成去噪 diffuse/specular、材质和 emissive |
 | 去噪 | `NrdDenoisePass` | NRD RELAX 去噪 |
 | 去噪 | `StreamlineDlssRrPass` | NVIDIA Streamline DLSS Ray Reconstruction |
-| GPU-driven | `GPUDrivenPreviewPass` | Visibility Buffer、两阶段 HZB 实例剔除、meshlet 剔除、可锁存的独立剔除相机，以及基于 OpenPBR 与环境 SH 的 compute deferred 着色/调试可视化 |
+| GPU-driven | `VisibilityBufferPass` | 原始 Visibility Buffer / depth、两阶段 HZB 实例剔除、meshlet 剔除、可锁存的独立剔除相机，以及可选的 ID / depth / coverage 可视化；不执行材质着色 |
 | GPU-driven | `GPUDrivenStreamAssetPass` | 分页 StreamAsset、GPU LOD/遍历和 Mesh Shader 绘制 |
 | 测试 | `RenderGraphBufferWritePass`、`RenderGraphBufferCopyPass` | 缓冲、Bindless 和拷贝路径验证 |
 
@@ -374,7 +374,7 @@ TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进�
 
 RHI 通过 `PipelineCache` 暴露不依赖图形后端的 PSO 缓存生命周期。Pass 可由 `Device::createPipelineCache()` 创建内存缓存或指定 `.pso` 持久化路径，并在 graphics/compute pipeline 描述中传入同一个缓存。公共层按 shader 二进制内容、entry point 与完整 RHI pipeline state 计算版本化 PSO hash；hash 命中时复用后端缓存，shader 或 pipeline state 改变时形成新 hash 并重新创建 PSO。`.pso` 是版本化容器，保存排序后的 PSO hash 表、后端/设备兼容键、校验值和不透明后端数据；损坏、后端不匹配、驱动或设备身份改变时会安全回退为空缓存。当前 Vulkan 实现用 `VkPipelineCache`，该端口可由后续 D3D12 后端映射到 `ID3D12PipelineLibrary`。
 
-PSO 缓存不替代 Slang 源码到 SPIR-V 的编译缓存；它优化的是驱动侧 graphics/compute pipeline 创建。GPUDriven 样例将缓存保存在 `.cache/pso/GPUDrivenPreviewPass.pso`，并记录 load status、hit/miss、PSO 数和后端数据大小。
+PSO 缓存不替代 Slang 源码到 SPIR-V 的编译缓存；它优化的是驱动侧 graphics/compute pipeline 创建。GPUDriven 样例将缓存保存在 `.cache/pso/VisibilityBufferPass.pso`，并记录 load status、hit/miss、PSO 数和后端数据大小。
 
 三类资产的关系是：
 

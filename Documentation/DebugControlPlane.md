@@ -158,7 +158,7 @@ events contain up to 64 nodes and 256 edges. Shader/pipeline registries are outs
 v1. GPUScene global tables include instances, geometries, meshlets, meshlet draws
 (`VisibleClusterRecord`) and draw-instance IDs.
 
-GPUDrivenPreviewPass and GPUDrivenStreamAssetPass publish AfterTraversal when
+VisibilityBufferPass and GPUDrivenStreamAssetPass publish AfterTraversal when
 streaming is active, AfterEarlyCull, AfterLateCull, and AfterPass. RTAS-only
 visualization publishes Traversal/AfterPass. They sample without pausing or
 splitting the pass. Copies occur outside dynamic rendering scopes.

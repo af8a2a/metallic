@@ -44,9 +44,9 @@ void registerBuiltInRenderGraphPasses()
         "Visualize a glTF acceleration structure with RayQuery",
         []() { return builtin_pass::createSceneRayQueryVisualizationPass(); });
     registerRenderGraphPassType(
-        "GPUDrivenPreviewPass",
-        "Render meshlet visibility with two-pass HZB culling and compute deferred visualization",
-        []() { return builtin_pass::createGPUDrivenPreviewPass(); });
+        "VisibilityBufferPass",
+        "Rasterize raw visibility/depth with Wave32 AS/MS culling and optional ID/depth visualization",
+        []() { return builtin_pass::createVisibilityBufferPass(); });
     registerRenderGraphPassType(
         "GPUDrivenStreamAssetPass",
         "Stream and visualize meshlet streamasset pages with mesh shaders",
