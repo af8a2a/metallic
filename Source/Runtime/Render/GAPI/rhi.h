@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -1749,6 +1751,9 @@ public:
     void bindGraphicsShaderObjectProgram(GraphicsShaderObjectProgram& program);
     void bindBindlessHeap(BindlessHeap& heap);
     void pushBindlessData(const void* data, uint32_t byteSize);
+    // Record compute-only instrumentation, restoring the compute pipeline,
+    // descriptor heap and shared push data before returning. No rendering scope.
+    Result recordIsolatedCompute(const std::function<Result()>& record);
     void draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
     void drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     void drawMeshTasksIndirect(Buffer& buffer, uint64_t offset = 0);

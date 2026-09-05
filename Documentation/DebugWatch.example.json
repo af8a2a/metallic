@@ -1,0 +1,26 @@
+{
+  "everyExecutions": 60,
+  "maxSamples": 120,
+  "timeoutMs": 300000,
+  "trigger": { "probe": "requestErrors", "field": "matchedCount", "op": "gt", "value": 0 },
+  "probe": {
+    "pass": "GPUDriven",
+    "checkpoint": "AfterPass",
+    "probes": [
+      {
+        "name": "requestErrors",
+        "id": "streaming.GPUDriven.requestHeader",
+        "field": "invalidPageCounter",
+        "operation": "count",
+        "predicate": "gt",
+        "value": 0,
+        "count": 1
+      }
+    ],
+    "resources": [
+      { "id": "streaming.GPUDriven.requestHeader", "count": 1 },
+      { "id": "streaming.GPUDriven.activeHeader", "count": 1 },
+      { "id": "streaming.GPUDriven.pageTable", "count": 1 }
+    ]
+  }
+}

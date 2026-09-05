@@ -7952,9 +7952,11 @@ public:
                             resources.push_back({{"id", id}, {"count", 1}});
                         }
                     }
-                    batches.push_back({{"pass", "GPUDriven"}, {"checkpoint", point}, {"resources", std::move(resources)}});
+                    batches.push_back({{"pass", "GPUDriven"}, {"checkpoint", point}, {"resources", std::move(resources)},
+                        {"probes", {{{"id", "streaming.GPUDriven.activeHeader"}, {"name", "active"},
+                            {"operation", "minMax"}, {"field", "activeGroupCount"}, {"count", 1}}}}});
                 }
-                const auto queued = debugRuntime.core().dispatch({{"method", "capture.batch"}, {"params", {{"batches", batches}}}});
+                const auto queued = debugRuntime.core().dispatch({{"method", "gpu.probe"}, {"params", {{"batches", batches}}}});
                 if (queued["status"] != "ok") { return RhiTestResult::fail("Mixed debug capture enqueue: " + queued.dump()); }
                 debugJobs = queued["result"]["jobs"];
             }
@@ -7981,6 +7983,11 @@ public:
             const auto execution = completed["result"]["evidence"]["execution"].get<uint64_t>();
             if (debugExecution != UINT64_MAX && execution != debugExecution) { return RhiTestResult::fail("Mixed checkpoints span executions"); }
             debugExecution = execution;
+            const auto comparison = debugRuntime.core().dispatch({{"method", "eval"}, {"params", {
+                {"job", job.at("job")}, {"expression", "probes.active.min == buffers[\"streaming.GPUDriven.activeHeader\"][0].activeGroupCount"}}}});
+            if (comparison["status"] != "ok" || comparison["result"]["value"] != true) {
+                return RhiTestResult::fail("GPU probe differs from checkpoint readback: " + comparison.dump());
+            }
         }
         const auto residentRecord = debugRuntime.core().dispatch({{"method", "eval"}, {"params", {
             {"job", debugJobs.back().at("job")}, {"expression", "buffers[\"gpuScene.GPUDriven.meshletDraws\"][0].source.name"}}}});

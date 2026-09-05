@@ -1,5 +1,6 @@
 #include "Runtime/Debug/DebugCore.h"
 #include "Runtime/Debug/DebugTransport.h"
+#include "Runtime/Debug/DebugProbe.h"
 
 #include <gtest/gtest.h>
 #include <cmath>
@@ -193,3 +194,98 @@ TEST(DebugTransport, RoundTripSessionAndShutdown)
     server.stop();
 }
 #endif
+
+
+TEST(DebugProbe, ProtocolAndBoundedWatchLifecycle)
+{
+    DebugCore core;
+    core.setGraph(graph());
+    DebugValue spec{{"pass", "Cull"}, {"probes", {{{"id", "indices"}, {"name", "bounds"},
+        {"operation", "outOfBounds"}, {"upper", 4}, {"count", 8}}}}};
+    auto bad = spec;
+    bad["probes"][0]["operation"] = "arbitraryShader";
+    EXPECT_EQ(request(core, "gpu.probe", bad)["error"]["code"], "Unsupported");
+    EXPECT_EQ(request(core, "capture.batch", spec)["error"]["code"], "InvalidArgument");
+    bad = spec; bad["probes"][0]["count"] = -1;
+    EXPECT_EQ(request(core, "gpu.probe", bad)["error"]["code"], "InvalidArgument");
+    bad = spec; bad["probes"].push_back(bad["probes"][0]);
+    EXPECT_EQ(request(core, "gpu.probe", bad)["error"]["code"], "InvalidArgument");
+    const DebugValue config{{"probe", spec}, {"everyExecutions", 3}, {"maxSamples", 3},
+        {"trigger", {{"probe", "bounds"}, {"field", "matchedCount"}, {"op", "gt"}, {"value", 0}}}};
+    auto response = request(core, "watch.create", config);
+    ASSERT_EQ(response["status"], "ok") << response.dump();
+    const auto id = response["result"]["watch"];
+    auto pending = core.takeRequests("graph", 1);
+    ASSERT_EQ(pending.size(), 1);
+    const auto first = pending[0].id;
+    EXPECT_TRUE(core.reserve(first, 32));
+    auto capture = std::make_shared<DebugCapture>();
+    capture->snapshot.values["probes"]["bounds"] = {{"matchedCount", 0}};
+    core.complete(first, capture);
+    EXPECT_EQ(request(core, "jobs.get", {{"job", first}})["result"]["reservedBytes"], 0);
+    EXPECT_TRUE(core.takeRequests("graph", 1).empty());
+    EXPECT_TRUE(core.takeRequests("graph", 1).empty());
+    pending = core.takeRequests("graph", 1);
+    ASSERT_EQ(pending.size(), 1);
+    const auto second = pending[0].id;
+    auto hit = std::make_shared<DebugCapture>();
+    hit->snapshot.evidence.execution = 4;
+    hit->snapshot.values["probes"]["bounds"] = {{"matchedCount", 2}};
+    EXPECT_TRUE(core.reserve(second, 32)); core.complete(second, hit);
+    response = request(core, "watch.get", {{"watch", id}});
+    EXPECT_EQ(response["result"]["state"], "Triggered");
+    EXPECT_EQ(response["result"]["samples"], 2);
+    EXPECT_EQ(response["result"]["result"]["evidence"]["execution"], 4);
+    EXPECT_EQ(response["result"]["job"], second);
+    EXPECT_TRUE(core.takeRequests("graph", 1).empty());
+    EXPECT_EQ(request(core, "watch.delete", {{"watch", id}})["status"], "ok");
+    EXPECT_TRUE(request(core, "watch.list")["result"].empty());
+    response = request(core, "watch.create", config);
+    const auto stale = response["result"]["watch"];
+    core.setGraph(graph(2));
+    EXPECT_EQ(request(core, "watch.get", {{"watch", stale}})["result"]["result"]["reason"], "StaleHandle");
+    response = request(core, "watch.create", config);
+    const auto cancelId = response["result"]["watch"];
+    pending = core.takeRequests("graph", 2); ASSERT_EQ(pending.size(), 1);
+    EXPECT_TRUE(core.reserve(pending[0].id, 64));
+    request(core, "watch.cancel", {{"watch", cancelId}});
+    EXPECT_EQ(request(core, "jobs.get", {{"job", pending[0].id}})["result"]["reservedBytes"], 64);
+    core.complete(pending[0].id, nullptr);
+    EXPECT_EQ(request(core, "jobs.get", {{"job", pending[0].id}})["result"]["reservedBytes"], 0);
+    auto one = config; one["maxSamples"] = 1;
+    response = request(core, "watch.create", one);
+    const auto limited = response["result"]["watch"];
+    pending = core.takeRequests("graph", 2); ASSERT_EQ(pending.size(), 1);
+    core.complete(pending[0].id, capture);
+    EXPECT_EQ(request(core, "watch.get", {{"watch", limited}})["result"]["state"], "Completed");
+    EXPECT_TRUE(core.takeRequests("graph", 2).empty());
+    one["timeoutMs"] = 1;
+    response = request(core, "watch.create", one);
+    const auto timed = response["result"]["watch"];
+    std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    EXPECT_EQ(request(core, "watch.get", {{"watch", timed}})["result"]["state"], "Expired");
+}
+
+TEST(DebugProbe, PartialMergeAndOfflineEvaluation)
+{
+    const uint32_t words[] = {2, 1, 1, 0, 0xc0200000, 0x40a00000, 2, 0x7fc00000,
+                             1, 2, 0, 2, 0, 0, 3, 0x7f800000};
+    DebugArtifact artifact;
+    artifact.layout = probePartialLayout();
+    artifact.bytes.assign(reinterpret_cast<const uint8_t*>(words), reinterpret_cast<const uint8_t*>(words) + sizeof(words));
+    artifact.metadata = {{"id", "probe.finite"}, {"name", "finite"}, {"kind", "gpuProbe"}, {"source", "FloatBuffer"},
+        {"operation", "nonFinite"}, {"scalarType", "f32"}, {"field", "value"}, {"elementCount", 6}, {"elementOffset", 10},
+        {"configuration", DebugValue::object()}, {"coverage", {{"completeCoverage", false}}}};
+    auto summary = summarizeProbe(artifact.bytes, artifact.metadata);
+    ASSERT_TRUE(summary);
+    EXPECT_EQ((*summary)["matchedCount"], 3); EXPECT_EQ((*summary)["finiteCount"], 3);
+    EXPECT_EQ((*summary)["min"], -2.5); EXPECT_EQ((*summary)["max"], 5.0);
+    EXPECT_EQ((*summary)["firstIndex"], 12); EXPECT_TRUE(std::isnan((*summary)["firstValue"].get<double>()));
+    DebugCapture capture; capture.artifacts.push_back(artifact);
+    const auto root = capture.evaluationRoot(); ASSERT_TRUE(root);
+    EXPECT_EQ(*evaluate("probes.finite.matchedCount", *root), 3);
+    EXPECT_FALSE(root->at("buffers").contains("FloatBuffer"));
+    EXPECT_EQ(decodeLossless(encodeLossless(capture.manifest()))["artifacts"][0]["kind"], "gpuProbe");
+    artifact.metadata["elementCount"] = 7;
+    EXPECT_EQ(summarizeProbe(artifact.bytes, artifact.metadata).error().code, "InvalidProbeResult");
+}

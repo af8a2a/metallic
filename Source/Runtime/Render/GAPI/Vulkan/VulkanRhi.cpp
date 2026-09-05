@@ -2836,6 +2836,7 @@ struct CommandBufferImpl {
     VkQueueFlags queueFlags = 0;
     VkPipelineLayout currentGraphicsPipelineLayout = VK_NULL_HANDLE;
     VkPipelineLayout currentComputePipelineLayout = VK_NULL_HANDLE;
+    VkPipeline currentComputePipeline = VK_NULL_HANDLE;
     VkShaderStageFlags currentGraphicsPipelineBindlessPushStages =
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     BindlessHeapImpl* currentBindlessHeap = nullptr;
@@ -4702,6 +4703,7 @@ Result CommandBuffer::begin(RenderFrameContext* frameContext)
 
     impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
     impl_->currentComputePipelineLayout = VK_NULL_HANDLE;
+    impl_->currentComputePipeline = VK_NULL_HANDLE;
     impl_->currentGraphicsPipelineBindlessPushStages =
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     impl_->currentBindlessHeap = nullptr;
@@ -5474,6 +5476,7 @@ void CommandBuffer::bindComputePipeline(ComputePipeline& pipeline)
         return;
     }
     vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.impl_->pipeline);
+    impl_->currentComputePipeline = pipeline.impl_->pipeline;
     impl_->currentComputePipelineLayout = pipeline.impl_->layout;
     impl_->currentComputePipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
     impl_->currentBindlessUserDataOffset = pipeline.impl_->bindlessUserDataOffset;
@@ -5497,6 +5500,7 @@ void CommandBuffer::bindComputePipeline(
         std::memcpy(impl_->currentBindlessUserData.data(), bindlessData, byteSize);
     }
     vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.impl_->pipeline);
+    impl_->currentComputePipeline = pipeline.impl_->pipeline;
     impl_->currentComputePipelineLayout = pipeline.impl_->layout;
     impl_->currentComputePipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
     impl_->currentBindlessUserDataOffset = pipeline.impl_->bindlessUserDataOffset;
@@ -5689,6 +5693,37 @@ void CommandBuffer::pushBindlessData(const void* data, uint32_t byteSize)
     if (impl_->currentBindlessHeap != nullptr) {
         pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
     }
+}
+
+Result CommandBuffer::recordIsolatedCompute(const std::function<Result()>& record)
+{
+    if (!impl_ || !recording_ || !(impl_->queueFlags & VK_QUEUE_COMPUTE_BIT)) {
+        return makeError(Error::Unsupported);
+    }
+    const auto pipeline = impl_->currentComputePipeline;
+    const auto layout = impl_->currentComputePipelineLayout;
+    const auto usesHeap = impl_->currentComputePipelineUsesBindlessHeap;
+    auto* heap = impl_->currentBindlessHeap;
+    const auto offset = impl_->currentBindlessUserDataOffset;
+    auto data = impl_->currentBindlessUserData;
+    const auto restore = [&] {
+        impl_->currentComputePipeline = pipeline;
+        impl_->currentComputePipelineLayout = layout;
+        impl_->currentComputePipelineUsesBindlessHeap = usesHeap;
+        impl_->currentBindlessHeap = heap;
+        impl_->currentBindlessUserDataOffset = offset;
+        impl_->currentBindlessUserData = std::move(data);
+        if (pipeline) { vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline); }
+        if (heap) {
+            heap->heap.bind(impl_->commandBuffer, heap->samplerHeap.address, heap->resourceHeap.address);
+            pushCurrentBindlessData(*impl_, *heap);
+        }
+    };
+    try {
+        const auto result = record();
+        restore();
+        return result;
+    } catch (...) { restore(); throw; }
 }
 
 void CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)

@@ -1,4 +1,6 @@
 #include "Runtime/Render/Debug/RenderDebug.h"
+#include "Runtime/Render/Debug/GpuDebugProbe.h"
+#include "Runtime/Debug/DebugProbe.h"
 
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Task/TaskSystem.h"
@@ -78,6 +80,8 @@ DebugValue resourceMetadata(const DebugResourceBinding& binding)
         value["size"] = binding.size ? binding.size : binding.buffer->desc().size - binding.offset;
         value["layout"] = binding.layout;
         value["structureStride"] = binding.buffer->desc().structureStride;
+        value["probeSupported"] = binding.state != ResourceState::Undefined && binding.metadata.value("captureSupported", true) &&
+            (uint32_t(binding.buffer->desc().usage) & uint32_t(BufferUsageBits::Storage)) != 0;
     }
     return value;
 }
@@ -90,6 +94,9 @@ struct RenderDebugRuntime::Execution {
     std::vector<debug::DebugCaptureRequest> requests;
     uint64_t capturedBytes = 0;
     uint64_t recordingNs = 0;
+    uint64_t probeRecordingNs = 0;
+    uint64_t probeScanBytes = 0;
+    uint64_t probeReadbackBytes = 0;
     bool ended = false;
     bool success = false;
 };
@@ -99,6 +106,8 @@ struct RenderDebugRuntime::Readback {
     std::shared_ptr<Execution> execution;
     std::shared_ptr<debug::DebugCapture> capture;
     std::vector<std::unique_ptr<Buffer>> buffers;
+    std::vector<std::unique_ptr<Buffer>> probeOutputs;
+    debug::DebugError recordingError;
     std::atomic<int> submission{0}; // 0 recorded, 1 submitted, -1 cancelled
 };
 
@@ -149,6 +158,12 @@ RenderDebugRuntime::RenderDebugRuntime(debug::DebugLimits limits)
     core_.setSchema("resources", {{"access", "Descriptor only; capture.batch reads contents"}});
     core_.setSchema("tasks", {{"fields", {"events", "dropped"}}});
     core_.setSchema("validation", {{"fields", {"events", "dropped"}}, {"attribution", "No inferred pass association"}});
+    core_.setSchema("probes", {{"operations", {"count", "outOfBounds", "nonFinite", "minMax"}},
+        {"scalarTypes", {"u32", "i32", "f32"}}, {"predicates", {"all", "eq", "ne", "lt", "le", "gt", "ge"}},
+        {"source", "Produced storage buffers at compute-capable checkpoints"}, {"maxProbesPerJob", 8},
+        {"maxElementsPerProbe", 16u << 20}, {"scanBytesPerJobAndExecution", limits.probeScanBytes},
+        {"maxGroupPartials", 256}, {"resultLayout", debug::probePartialLayout().schema()},
+        {"watchLimit", 16}, {"watchSemantics", "Asynchronous; saves matching boundary evidence, never pauses execution"}});
 }
 
 RenderDebugRuntime::~RenderDebugRuntime()
@@ -248,13 +263,18 @@ void RenderDebugRuntime::boundary(CommandBuffer& commands, std::string_view chec
         meta["pass"] = pass;
         meta["execution"] = snapshot.evidence.execution;
         meta["sample"] = snapshot.evidence.sample;
+        if (meta.contains("probeSupported")) {
+            meta["probeSupported"] = meta.at("probeSupported").get<bool>() &&
+                (uint32_t(commands.queueCapabilities()) & uint32_t(QueueAccessBits::Compute)) != 0;
+        }
         snapshot.values["resources"][binding.id] = std::move(meta);
     }
     for (auto it = current_->requests.begin(); it != current_->requests.end();) {
         if (it->specification.at("pass").get<std::string>() == pass && it->specification.value("checkpoint", "AfterPass") == checkpoint) {
             const auto started = std::chrono::steady_clock::now();
             capture(commands, *it, resources, snapshot);
-            current_->recordingNs += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
+            auto& elapsed = it->specification.contains("probes") ? current_->probeRecordingNs : current_->recordingNs;
+            elapsed += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
             it = current_->requests.erase(it);
         } else { ++it; }
     }
@@ -266,6 +286,14 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
     if (core_.cancelled(request.id)) { return; }
     auto reject = [&](std::string code, std::string message) { core_.fail(request.id, {std::move(code), std::move(message)}); };
     if (!commands.frameContext()) { reject("Unsupported", "GPU capture requires a tracked RenderFrameContext"); return; }
+    const bool probing = request.specification.contains("probes");
+    if (probing && !(uint32_t(commands.queueCapabilities()) & uint32_t(QueueAccessBits::Compute))) {
+        reject("Unsupported", "GPU Probe requires a compute-capable command queue"); return;
+    }
+    auto prepared = prepareDebugProbes(request.specification, resources, layouts_, snapshot.evidence,
+        core_.limits().probeScanBytes - current_->probeScanBytes);
+    if (!prepared) { reject(prepared.error().code, prepared.error().message); return; }
+    auto& probes = *prepared;
     struct Copy {
         const DebugResourceBinding* source;
         uint64_t offset = 0;
@@ -279,7 +307,7 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
     std::vector<Copy> copies;
     uint64_t total = 0;
     try {
-        for (const auto& spec : request.specification.at("resources")) {
+        for (const auto& spec : request.specification.value("resources", DebugValue::array())) {
             const std::string id = spec.at("id");
             const auto found = std::find_if(resources.begin(), resources.end(), [&](const auto& b) { return b.id == id; });
             if (found == resources.end()) { reject("NotFound", "Resource unavailable at checkpoint: " + id); return; }
@@ -364,9 +392,23 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
             copies.push_back(copy);
         }
     } catch (const std::exception& error) { reject("InvalidArgument", error.what()); return; }
-    const uint64_t metadataBytes = debug::encodeLossless(readback->capture->manifest()).dump().size();
-    if (metadataBytes > core_.limits().jobBytes - total ||
-        total > core_.limits().frameBytes - current_->capturedBytes || !core_.reserve(request.id, total + metadataBytes)) {
+    uint64_t probeBytes = 0;
+    for (const auto& probe : probes) {
+        const auto bytes = probe.push.groupCount * 32u;
+        if (bytes > core_.limits().jobBytes - total) { reject("BudgetExceeded", "Probe result exceeds job budget"); return; }
+        total += bytes; probeBytes += bytes;
+        readback->capture->artifacts.push_back({probe.metadata, debug::probePartialLayout(), {}});
+    }
+    uint64_t metadataBytes = debug::encodeLossless(readback->capture->manifest()).dump().size();
+    for (const auto& probe : probes) {
+        // Completion adds a typed summary, including the user configuration and
+        // coverage. Reserve its upper bound before recording, too.
+        metadataBytes += debug::encodeLossless(probe.metadata).dump().size() + 1024;
+    }
+    // Charge scratch output as well as host readback so in-flight probes cannot
+    // hide GPU allocations outside the evidence pool.
+    if (metadataBytes > core_.limits().jobBytes - total || probeBytes > core_.limits().jobBytes - total - metadataBytes ||
+        total > core_.limits().frameBytes - current_->capturedBytes || !core_.reserve(request.id, total + probeBytes + metadataBytes)) {
         reject("BudgetExceeded", "Capture pool or execution byte budget exceeded"); return;
     }
     // Allocate every destination before recording anything: batch preflight is atomic.
@@ -377,9 +419,30 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
         if (!result) { reject("ReadbackAllocationFailed", resultToString(result)); return; }
         readback->buffers.push_back(std::move(buffer));
     }
+    if (!probes.empty()) {
+        if (!probeProgram_) { probeProgram_ = std::make_unique<ComputeProgram>(); }
+        std::string log;
+        auto result = initializeDebugProbe(*device_, *probeProgram_, log);
+        if (!result) { reject("ProbeInitializationFailed", log); return; }
+        for (const auto& probe : probes) {
+            std::unique_ptr<Buffer> output, host;
+            const uint64_t bytes = probe.push.groupCount * 32u;
+            result = device_->createBuffer({.size = bytes, .structureStride = 32,
+                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, output);
+            if (result) { result = device_->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::HostReadback,
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, host); }
+            if (!result) { reject("ProbeAllocationFailed", resultToString(result)); return; }
+            readback->probeOutputs.push_back(std::move(output)); readback->buffers.push_back(std::move(host));
+        }
+    }
     auto transaction = std::make_shared<SubmissionTransaction>([readback] { readback->submission = 1; }, [readback] { readback->submission = -1; });
     if (!commands.addSubmissionTransaction(transaction)) { reject("InvalidState", "Could not track capture submission"); return; }
     commands.frameContext()->retain(readback);
+    current_->capturedBytes += total;
+    for (const auto& probe : probes) { current_->probeScanBytes += probe.scanBytes; }
+    current_->probeReadbackBytes += probeBytes;
     for (size_t i = 0; i < copies.size(); ++i) {
         const auto& copy = copies[i];
         if (copy.source->texture) {
@@ -399,7 +462,22 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
             commands.barrier({.buffers = &barrier, .bufferCount = 1});
         }
     }
-    current_->capturedBytes += total;
+    if (!probes.empty()) {
+        const auto result = commands.recordIsolatedCompute([&]() -> Result {
+            for (size_t i = 0; i < probes.size(); ++i) {
+                const auto result = recordDebugProbe(commands, *probeProgram_, probes[i], *readback->probeOutputs[i], *readback->buffers[copies.size() + i]);
+                if (!result) { return result; }
+            }
+            return {};
+        });
+        if (!result) {
+            // Earlier dispatches/copies may already be recorded. Keep their
+            // reservation and resources until submission completion or reset.
+            core_.transition(request.id, "Recorded");
+            readback->recordingError = {"ProbeRecordingFailed", resultToString(result)};
+            readbacks_.push_back(std::move(readback)); return;
+        }
+    }
     core_.transition(request.id, "Recorded");
     readbacks_.push_back(std::move(readback));
 }
@@ -413,7 +491,9 @@ void RenderDebugRuntime::endExecution(bool success)
     current_->snapshot.values["tasks"] = core_.events("tasks");
     current_->snapshot.values["validation"] = core_.events("validation");
     current_->snapshot.values["debugControl"] = {{"recordedBytes", current_->capturedBytes},
-        {"captureRecordingNs", current_->recordingNs}, {"gpuCaptureTimeNs", nullptr}, {"gpuProbesEnabled", false}};
+        {"captureRecordingNs", current_->recordingNs}, {"gpuCaptureTimeNs", nullptr}, {"gpuProbesEnabled", true},
+        {"probeScanBytes", current_->probeScanBytes}, {"probeReadbackBytes", current_->probeReadbackBytes},
+        {"probeRecordingNs", current_->probeRecordingNs}, {"gpuProbeTimeNs", nullptr}};
     if (!current_->completion.valid()) {
         current_->snapshot.evidence.provenance["completion"] = "Untracked";
         core_.publish(current_->snapshot);
@@ -432,6 +512,7 @@ void RenderDebugRuntime::poll()
             core_.fail(readback->job, {"Cancelled", "Recording was not submitted"});
         } else if (readback->submission != 1 || !completion.isComplete()) { ++it; continue; }
         else if (core_.cancelled(readback->job)) { core_.complete(readback->job, nullptr); }
+        else if (!readback->recordingError.code.empty()) { core_.fail(readback->job, readback->recordingError); }
         else {
             bool valid = true;
             for (size_t i = 0; i < readback->buffers.size(); ++i) {
@@ -445,6 +526,14 @@ void RenderDebugRuntime::poll()
                 buffer.unmap();
             }
             if (valid) {
+                for (const auto& artifact : readback->capture->artifacts) {
+                    if (artifact.metadata.value("kind", "") != "gpuProbe") { continue; }
+                    const auto summary = debug::summarizeProbe(artifact.bytes, artifact.metadata);
+                    if (!summary) { valid = false; core_.fail(readback->job, summary.error()); break; }
+                    readback->capture->snapshot.values["probes"][artifact.metadata.at("name").get<std::string>()] = *summary;
+                }
+            }
+            if (valid) {
                 readback->capture->snapshot.evidence.provenance["executionComplete"] = readback->execution->success;
                 readback->capture->snapshot.evidence.provenance["completion"] = "Ready";
                 core_.complete(readback->job, readback->capture);
@@ -452,6 +541,7 @@ void RenderDebugRuntime::poll()
             else { core_.fail(readback->job, {"ReadbackFailed", "Could not map completed readback"}); }
         }
         readback->buffers.clear();
+        readback->probeOutputs.clear();
         readback->capture.reset();
         readback->execution.reset();
         it = readbacks_.erase(it);
@@ -476,15 +566,16 @@ void RenderDebugRuntime::drain()
             if (!result) {
                 for (const auto& readback : readbacks_) {
                     core_.fail(readback->job, {"DeviceLost", resultToString(result)});
-                    readback->buffers.clear(); readback->capture.reset(); readback->execution.reset();
+                    readback->buffers.clear(); readback->probeOutputs.clear(); readback->capture.reset(); readback->execution.reset();
                 }
-                readbacks_.clear(); executions_.clear(); return;
+                readbacks_.clear(); executions_.clear(); probeProgram_.reset(); return;
             }
         }
     }
     poll();
     for (const auto& readback : readbacks_) { core_.fail(readback->job, {"Cancelled", "Runtime shutdown"}); }
     readbacks_.clear(); executions_.clear(); current_.reset();
+    probeProgram_.reset();
 }
 
 } // namespace metallic::render

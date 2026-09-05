@@ -1,4 +1,5 @@
 #include "Runtime/Debug/DebugCore.h"
+#include "Runtime/Debug/DebugProbe.h"
 
 #include <algorithm>
 #include <cmath>
@@ -79,6 +80,12 @@ DebugResult<DebugValue> DebugCapture::statistics() const
     DebugValue result = DebugValue::object();
     uint64_t elements = 0;
     for (const auto& artifact : artifacts) {
+        if (artifact.metadata.value("kind", "") == "gpuProbe") {
+            auto summary = summarizeProbe(artifact.bytes, artifact.metadata);
+            if (!summary) { return std::unexpected(summary.error()); }
+            result[artifact.metadata.at("id").get<std::string>()] = std::move(*summary);
+            continue;
+        }
         if (!artifact.layout.stride) { return std::unexpected(DebugError{"LayoutMismatch", "Missing layout"}); }
         elements += artifact.bytes.size() / artifact.layout.stride;
         if (elements > 262144) { return std::unexpected(DebugError{"BudgetExceeded", "CPU statistics support 262144 elements; select a smaller range"}); }

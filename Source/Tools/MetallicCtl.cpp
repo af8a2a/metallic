@@ -182,6 +182,12 @@ DebugValue run(Options& options)
         method = "jobs." + word(1); params["job"] = word(2);
     } else if (method == "capture" && word(1) == "batch") {
         method = "capture.batch"; params = readJson(params.at("spec").get<std::string>());
+    } else if (method == "probe") {
+        method = "gpu.probe"; params = readJson(params.at("spec").get<std::string>());
+    } else if (method == "watch") {
+        method = "watch." + word(1);
+        if (word(1) == "create") { params = readJson(params.at("spec").get<std::string>()); }
+        else if (word(1) != "list") { params["watch"] = word(2); }
     } else if (method == "inspect") {
         if (word(1) != "buffer" && word(1) != "texture") { throw std::runtime_error("Expected inspect buffer or texture"); }
         method = "capture.batch";
@@ -204,7 +210,7 @@ DebugValue run(Options& options)
         if (words.size() > 2) { params = decodeLossless(DebugValue::parse(word(2))); }
     }
     auto response = invoke(options, method, params);
-    if (method == "capture.batch" && options.wait && response["status"] == "ok") {
+    if ((method == "capture.batch" || method == "gpu.probe") && options.wait && response["status"] == "ok") {
         const auto waitForJob = [&](const DebugValue& job) -> DebugValue {
             DebugValue response;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(options.timeoutMs);
@@ -259,6 +265,8 @@ int main(int argc, char** argv)
                     "  rg trace RESOURCE [--direction backward|forward]\n"
                     "  eval EXPR [--job ID] [--frame N] | object.get PATH [--offset N --count N]\n"
                     "  capture batch --spec FILE [--wait] | capture export JOB --out NEW_DIRECTORY\n"
+                    "  probe --spec FILE [--wait] | watch create --spec FILE\n"
+                    "  watch list | watch get/cancel/delete ID\n"
                     "  inspect buffer ID --pass PASS --checkpoint POINT --count N [--offset N --layout TYPE]\n"
                     "  inspect texture ID --pass PASS --roi X,Y,W,H [--stats --wait]\n"
                     "  jobs get|cancel ID | call METHOD JSON | repl\n"

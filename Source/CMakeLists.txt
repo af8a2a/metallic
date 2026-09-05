@@ -9,6 +9,8 @@ add_library(MetallicDebugCore STATIC
     Runtime/Debug/DebugEval.cpp
     Runtime/Debug/DebugCore.cpp
     Runtime/Debug/DebugAnalysis.cpp
+    Runtime/Debug/DebugProbe.cpp
+    Runtime/Debug/DebugWatch.cpp
     Runtime/Debug/DebugTransport.cpp
 )
 target_include_directories(MetallicDebugCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -41,6 +43,7 @@ endif()
 add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Debug/RenderDebug.cpp
     Runtime/Render/Debug/RenderDebugProviders.cpp
+    Runtime/Render/Debug/GpuDebugProbe.cpp
     Runtime/Render/ComputeProgram.cpp
     Runtime/Render/RenderFrameContext.cpp
     Runtime/Render/HistoryResources.cpp

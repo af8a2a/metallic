@@ -1,7 +1,8 @@
-# Engine debug control plane and typed evaluation (v1)
+# Engine debug control plane and typed evaluation (v2)
 
 The debug control plane lets a local agent query an executing Metallic instance,
-capture GPU data at a named boundary, and repeat the same CPU analysis offline.
+capture GPU data or run fixed GPU probes at a named boundary, and repeat the same
+CPU analysis offline. Bounded watches retain evidence when a probe matches.
 It is opt-in and independent of ImGui. It does not pause passes or execute user
 code in the engine.
 
@@ -241,14 +242,14 @@ eligible execution occurs. Startup/shutdown follow the ownership rules in
 
 `METALLIC_DEBUG_LIMITS` accepts a startup JSON object with snapshotCount,
 snapshotBytes, capturePoolBytes, jobBytes, frameBytes, queueCount and
-commandsPerFrame. Byte limits count serialized metadata/raw evidence, excluding
+commandsPerFrame, plus the V2 probeScanBytes limit. Byte limits count serialized metadata/raw evidence, excluding
 C++ allocator and temporary CPU decode overhead. Capture preflight, recording and
 mapping are owner-thread work; the 1 ms dispatch limit does not promise a 1 ms
 GPU-copy or readback CPU cost. Completed jobs can be evicted under pool/queue
 pressure, so export evidence that must persist. Oversized batches fail rather
 than being split across frames. The frame's debugControl values report copy bytes
-and CPU recording time; GPU copy duration is currently unknown (null), and no
-continuous GPU probe is enabled.
+and CPU recording time; GPU copy duration is currently unknown (null). Probes and
+watches run only when explicitly requested; see the V2 section below.
 
 ## Protocol and extension points
 
@@ -318,6 +319,117 @@ The mixed-producer raster regression also captures all four Preview checkpoints,
 checks Resident typed decoding and the stream visibility-record base, and retains
 its existing image checks for both resident and streamed geometry.
 
-Follow-up phases remain: fixed Slang GPU probes/watch; pre-recorded submission
-stepping; restricted IR-to-Slang GPU evaluation; and revision-checked runtime
-setting transactions. V1 exposes no pause, GPU eval or mutation method.
+Follow-up phases remain: pre-recorded submission stepping, restricted IR-to-Slang
+GPU evaluation and revision-checked runtime setting transactions. There is no
+pause, arbitrary GPU eval or mutation method.
+
+## V2: fixed GPU Probe and Watch
+
+`--debug-control` now also exposes explicit `gpu.probe` and bounded watches. CPU
+`eval` remains side-effect free. `schema probes` advertises operations, scalar
+types, result layout and limits. The first probe lazily compiles the fixed Slang
+kernel and creates its pipeline; later probes reuse it and immutable per-recording
+descriptor tables. This first-use CPU cost is included in recording time.
+
+```powershell
+metallicctl --pid 1234 --json schema probes
+metallicctl --pid 1234 --json probe --spec Documentation/DebugProbe.example.json --wait
+metallicctl --pid 1234 --json eval 'probes.requestErrors.matchedCount' --job 7
+metallicctl --pid 1234 capture export 7 --out .tmp/probe-evidence
+metallicctl --capture .tmp/probe-evidence --json eval 'probes.requestErrors.matchedCount'
+metallicctl --pid 1234 --json watch create --spec Documentation/DebugWatch.example.json
+metallicctl --pid 1234 --json watch get 1
+metallicctl --pid 1234 --json watch cancel 1
+metallicctl --pid 1234 --json watch delete 1
+```
+
+`gpu.probe` accepts one `{pass, checkpoint, probes, resources?}` specification or
+the same atomic `batches` grouping as capture. Each probe has a resource `id`, an
+optional unique `name` (defaults to id), `operation`, explicit positive `count`,
+and optional element `offset`, `field` (defaults to `value`), vector `component`,
+`layout`, `layoutHash` and `allocation`. The layout must be registered; graph raw
+buffers need an explicit layout. No offsets/strides are inferred from GPU memory.
+
+| Operation | Parameters and result semantics |
+| --- | --- |
+| count | Optional predicate `all/eq/ne/lt/le/gt/ge`, with typed `value` for comparisons; returns matchedCount |
+| outOfBounds | Integer field, inclusive `lower` (default 0) and exclusive `upper`; matches indices outside this interval |
+| nonFinite | f32 field; returns separate nanCount/infCount and their combined matchedCount |
+| minMax | Finite-only extrema; min/max are null when no finite value exists |
+
+All operations also return count, finiteCount, nanCount, infCount, finite-only
+min/max, the first matching absolute element index/value (null for no match),
+configuration and coverage. Min/max probes have no matching predicate. u32/i32
+comparisons and extrema are exact, including UINT32_MAX and INT32_MIN. f32
+thresholds are rounded to f32 (the threshold bits are recorded); comparisons
+follow floating-point rules, including NaN inequality. Zero signs compare equal;
+the deterministic reduction order chooses one representative. Packed u32 fields
+use the registered bit extraction and scale; enum predicates use numeric values.
+
+The source must be a produced Storage buffer with an explicit owner state and a
+compute-capable command queue. u32/i32/f32 scalar fields and vector components are
+supported. Texture, u64, f16 and arbitrary expression probes return Unsupported;
+texture ROI capture remains available for CPU analysis. Index bounds do not accept
+floating-point fields. Producer restrictions from V1 still apply.
+
+The fixed kernel uses 128 threads per group, capped at 256 groups, with strided
+iteration and shared-memory reduction. It needs neither float atomics nor a
+particular wave size. Each group emits a 32-byte summary. CPU code merges at most
+8 KiB per probe; this same merge runs over exported binary summaries during offline
+evaluation. The source data is not downloaded or exposed as a captured array.
+`probes.NAME` contains results; `buffers` contains only explicitly requested raw
+captures. `stats` also recognizes probe summaries rather than treating their raw
+IEEE bits as source statistics.
+
+Probes execute inside the original command buffer at the specified checkpoint,
+outside dynamic rendering. They restore the source access state, compute pipeline,
+descriptor heap and shared push data. There are no extra submissions or per-query
+waitIdle calls. GPU scratch/results live through the same tracked completion as
+capture, including cancellation and partially submitted recordings. Ready is
+published only after completion; later source writes cannot alter the summaries.
+
+Limits: at most 8 probes per job, 16,777,216 elements per probe, and 32-bit byte
+addressing. The default scan budget is **64 MiB per job and graph execution**,
+configurable through `METALLIC_DEBUG_LIMITS.probeScanBytes` (up to 1 GiB). Scans are
+charged by record stride, including repeated scans of the same resource. Result
+readbacks also consume the existing 16 MiB per-execution readback budget; scratch,
+readback and a conservative metadata/summary allowance consume the job and pool
+budgets. Exceeding any budget fails the whole request before recording.
+`debugControl.probeScanBytes`, `probeReadbackBytes` and `probeRecordingNs` report
+probe work separately; the latter includes optional companion captures. GPU timing
+is currently unavailable (`gpuProbeTimeNs: null`), never inferred from CPU time.
+
+A watch uses one checkpoint specification under `probe`, a trigger naming one
+probe, `everyExecutions` (default 60), `maxSamples` (default 120, maximum 10,000),
+and a wall-clock `timeoutMs` (default five minutes, maximum one hour). Trigger
+fields are matchedCount/nanCount/infCount, with gt/ge/eq and an unsigned threshold.
+The first sample targets the next execution. Later samples are at least the chosen
+number of graph executions apart. Only one sample may be outstanding per watch;
+busy samples are skipped, never accumulated. The normal bounded command queue and
+per-frame budgets still apply. A watch fails explicitly on queue/budget errors,
+source invalidation or sample failure. Generation changes never retarget it.
+
+Watch states are Active, Triggered, Completed (sample limit), Expired, Failed and
+Cancelled. Up to 16 watches may exist; delete finished watches to free entries.
+Triggered evidence is pinned against automatic pool eviction until the watch is
+cancelled/deleted. The returned job supports normal eval/export. Non-triggering
+sample captures are discarded after completion; only their compact result remains.
+Cancelling/deleting stops delivery while retaining submitted work until completion.
+
+Optional `resources` are copied on **every sampled boundary**, then retained only
+when the trigger matches. This is necessary to preserve corresponding raw evidence:
+an asynchronous trigger cannot retroactively capture an earlier resource version.
+A trigger reports an anomaly in that sampled execution; it does not pause the GPU
+or claim to locate the first failing execution. A zero match count only applies to
+the selected storage interval. Include counters and dependencies when interpreting
+sparse GPUDriven lists; storage capacity is not a live worklist.
+
+```powershell
+pwsh -File tests/debug/DebugProbeE2E.ps1 -EnginePid 1234 -CaptureDirectory .tmp/new-probe-evidence
+```
+
+V2 tests cover large scans beyond the group cap, exact extrema, NaN/Inf, packed
+fields, invalid ranges/layouts/types, scan budgets, completion/cancellation, binding
+restoration, watches and online/offline result equality. The mixed GPUDriven raster
+test probes and captures all four checkpoints and compares their values while
+retaining its image checks.

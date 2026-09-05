@@ -12,6 +12,7 @@ class RenderSubsystemHost;
 class RenderGraphExecutionContext;
 class GPUSceneSubsystem;
 class MeshletStreamRuntime;
+class ComputeProgram;
 struct GPUSceneViewTag;
 template <typename Tag> struct GPUSceneId;
 
@@ -79,6 +80,7 @@ private:
     std::shared_ptr<TaskSink> taskSink_;
     uint64_t taskSubscription_ = 0;
     uint64_t nextSample_ = 1;
+    std::unique_ptr<ComputeProgram> probeProgram_;
 };
 
 std::unordered_map<std::string, debug::DebugTypeDesc> renderDebugLayouts();

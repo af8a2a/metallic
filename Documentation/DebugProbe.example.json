@@ -1,0 +1,26 @@
+{
+  "pass": "GPUDriven",
+  "checkpoint": "AfterPass",
+  "probes": [
+    {
+      "name": "requestErrors",
+      "id": "streaming.GPUDriven.requestHeader",
+      "field": "invalidPageCounter",
+      "operation": "count",
+      "predicate": "gt",
+      "value": 0,
+      "count": 1
+    },
+    {
+      "name": "pageStates",
+      "id": "streaming.GPUDriven.pageTable",
+      "field": "state",
+      "operation": "minMax",
+      "count": 1
+    }
+  ],
+  "resources": [
+    { "id": "streaming.GPUDriven.requestHeader", "count": 1 },
+    { "id": "streaming.GPUDriven.pageTable", "count": 1 }
+  ]
+}

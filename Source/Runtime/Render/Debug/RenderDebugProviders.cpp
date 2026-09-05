@@ -14,6 +14,7 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     std::unordered_map<std::string, DebugTypeDesc> result;
     auto add = [&](DebugTypeDesc type) { result.emplace(type.name, std::move(type)); };
     add({"u32", 4, {{"value", "u32", 0}}});
+    add({"i32", 4, {{"value", "i32", 0}}});
     add({"u64", 8, {{"value", "u64", 0}}});
     add({"f32", 4, {{"value", "f32", 0}}});
     add({"RGBA8", 4, {{"r", "u8", 0}, {"g", "u8", 1}, {"b", "u8", 2}, {"a", "u8", 3}}});

@@ -2016,6 +2016,7 @@ int EditorApplication::run(
                 limits.capturePoolBytes = values.value("capturePoolBytes", limits.capturePoolBytes);
                 limits.jobBytes = values.value("jobBytes", limits.jobBytes);
                 limits.frameBytes = values.value("frameBytes", limits.frameBytes);
+                limits.probeScanBytes = values.value("probeScanBytes", limits.probeScanBytes);
                 limits.queueCount = values.value("queueCount", limits.queueCount);
                 limits.commandsPerFrame = values.value("commandsPerFrame", limits.commandsPerFrame);
             }

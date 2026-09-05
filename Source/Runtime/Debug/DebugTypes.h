@@ -77,6 +77,7 @@ struct DebugLimits {
     uint64_t frameBytes = 16ull << 20;
     uint32_t queueCount = 256;
     uint32_t commandsPerFrame = 8;
+    uint64_t probeScanBytes = 64ull << 20; // Per job and graph execution, independent of readback bytes.
 };
 
 DebugValue encodeLossless(const DebugValue& value);

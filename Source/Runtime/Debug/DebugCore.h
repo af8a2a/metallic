@@ -70,7 +70,21 @@ public:
     void expire();
 
 private:
+    struct Watch {
+        DebugValue specification;
+        DebugValue trigger;
+        DebugValue result;
+        std::string graph;
+        uint64_t generation = 0;
+        std::string state = "Active";
+        std::string job;
+        uint64_t every = 1, nextTick = 0, samples = 0, maxSamples = 120;
+        std::chrono::steady_clock::time_point deadline;
+    };
     DebugValue route(std::string_view method, const DebugValue& params);
+    DebugValue enqueueCaptureLocked(const DebugValue& params, bool probe);
+    void updateWatchesLocked();
+    DebugValue watchRouteLocked(std::string_view method, const DebugValue& params);
     void expireLocked();
     void pruneLocked(uint64_t needed = 0);
     DebugLimits limits_;
@@ -88,6 +102,9 @@ private:
     std::deque<std::string> order_;
     std::unordered_map<std::string, std::deque<DebugValue>> events_;
     std::unordered_map<std::string, uint64_t> droppedEvents_;
+    std::unordered_map<std::string, Watch> watches_;
+    uint64_t nextWatch_ = 1;
+    uint64_t executionTick_ = 0;
 };
 
 DebugValue debugErrorResponse(const DebugValue& id, std::string code, std::string message);
