@@ -266,6 +266,7 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
 
 set(METALLIC_EDITOR_SOURCES
     Editor/EditorApplication.cpp
+    Editor/EditorApplicationSmokeTests.cpp
     Editor/EditorProfiler.cpp
     Editor/NvmlMonitor.cpp
 )

@@ -2055,6 +2055,11 @@ int EditorApplication::run(
             (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "maxDepth", 1);
             (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "accumulate", false);
         }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_VIEWPORTS")) {
+            const bool passed = runMultiViewportSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
         uint32_t smokeFrameCount = 1;
         if (const char* count = std::getenv("METALLIC_SMOKE_TEST_FRAMES")) {
             smokeFrameCount = static_cast<uint32_t>(std::clamp(std::strtoul(count, nullptr, 10), 1ul, 64ul));
@@ -2103,7 +2108,9 @@ int EditorApplication::run(
         if ((SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) != 0) {
             auto profileScope = profiler_.scope("Minimized Wait");
             SDL_Delay(10);
-            continue;
+            if (!renderGraphEditorOpen_ && ImGui::GetPlatformIO().Viewports.Size <= 1) {
+                continue;
+            }
         }
 
         {
@@ -2253,12 +2260,17 @@ bool EditorApplication::initialize()
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+        io.ConfigDpiScaleFonts = true;
+        io.ConfigDpiScaleViewports = true;
         loadDefaultImGuiLayoutIfMissing();
 
         applyNvproImGuiStyle();
         ImGuiStyle& style = ImGui::GetStyle();
         style.ScaleAllSizes(mainScale_);
         style.FontScaleDpi = mainScale_;
+        style.WindowRounding = 0.0f;
+        style.Colors[ImGuiCol_WindowBg].w = 1.0f;
 
         ImNodes::CreateContext();
         imnodesContextCreated_ = true;
@@ -2742,9 +2754,8 @@ bool EditorApplication::renderFrame()
         running_ = false;
         return false;
     }
-    if (framebufferWidth <= 0 || framebufferHeight <= 0) {
-        return true;
-    }
+    const bool renderMainViewport = framebufferWidth > 0 && framebufferHeight > 0 &&
+        (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) == 0;
 
     {
         auto profileScope = profiler_.scope("Poll Nsight Capture");
@@ -2788,10 +2799,10 @@ bool EditorApplication::renderFrame()
         pollShaderHotReload();
     }
 
-    if (swapchainOutOfDate_ ||
+    if (renderMainViewport && (swapchainOutOfDate_ ||
         swapchain_ == nullptr ||
         swapchainWidth_ != static_cast<uint32_t>(framebufferWidth) ||
-        swapchainHeight_ != static_cast<uint32_t>(framebufferHeight)) {
+        swapchainHeight_ != static_cast<uint32_t>(framebufferHeight))) {
         auto profileScope = profiler_.scope("Resize Swapchain");
         if (!createOrResizeSwapchain(
                 static_cast<uint32_t>(framebufferWidth),
@@ -2827,7 +2838,7 @@ bool EditorApplication::renderFrame()
         auto profileScope = profiler_.scope("ImGui Render");
         ImGui::Render();
     }
-    if (!renderVulkanFrame()) {
+    if (!renderVulkanFrame(renderMainViewport)) {
         running_ = false;
         return false;
     }
@@ -6098,7 +6109,7 @@ bool EditorApplication::renderGraphPreview()
     return true;
 }
 
-bool EditorApplication::renderVulkanFrame()
+bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
 {
     FrameSlot& frame = frameSlots_[currentFrameSlot_];
     if (swapchain_ == nullptr ||
@@ -6115,25 +6126,25 @@ bool EditorApplication::renderVulkanFrame()
     render::Result result;
 
     uint32_t imageIndex = 0;
-    {
+    if (renderMainViewport) {
         auto profileScope = profiler_.scope("Acquire Swapchain Image");
         result = swapchain_->acquireNextImage(*frame.imageAvailable, imageIndex);
-    }
-    if (smokeTest_) {
-        spdlog::info("[Smoke] Acquired swapchain image {}", imageIndex);
-    }
-    if (!result) {
-        if (render::hasError(result, render::Error::OutOfDate)) {
-            swapchainOutOfDate_ = true;
-            return true;
+        if (!result) {
+            if (render::hasError(result, render::Error::OutOfDate)) {
+                swapchainOutOfDate_ = true;
+                renderMainViewport = false;
+            } else {
+                spdlog::error("acquireNextImage failed with Result {}", render::resultToString(result));
+                return false;
+            }
+        } else if (smokeTest_) {
+            spdlog::info("[Smoke] Acquired swapchain image {}", imageIndex);
         }
-        spdlog::error("acquireNextImage failed with Result {}", render::resultToString(result));
-        return false;
     }
-    if (imageIndex >= swapchainImageViews_.size() ||
+    if (renderMainViewport && (imageIndex >= swapchainImageViews_.size() ||
         imageIndex >= swapchainImageStates_.size() ||
         imageIndex >= renderFinishedSemaphores_.size() ||
-        renderFinishedSemaphores_[imageIndex] == nullptr) {
+        renderFinishedSemaphores_[imageIndex] == nullptr)) {
         spdlog::error("acquireNextImage returned invalid image index {}", imageIndex);
         return false;
     }
@@ -6176,79 +6187,81 @@ bool EditorApplication::renderVulkanFrame()
         spdlog::info("[Smoke] Recorded RenderGraph preview");
     }
 
-    render::Texture* swapchainTexture = swapchain_->texture(imageIndex);
-    if (swapchainTexture == nullptr || swapchainImageViews_[imageIndex] == nullptr) {
-        endFrameLabel();
-        return false;
+    if (renderMainViewport) {
+        render::Texture* swapchainTexture = swapchain_->texture(imageIndex);
+        if (swapchainTexture == nullptr || swapchainImageViews_[imageIndex] == nullptr) {
+            endFrameLabel();
+            return false;
+        }
+
+        render::TextureBarrierDesc toColor{
+            .texture = swapchainTexture,
+            .before = swapchainImageStates_[imageIndex],
+            .after = render::ResourceState::ColorAttachment,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        };
+        frame.commandBuffer->barrier(render::BarrierDesc{
+            .textures = &toColor,
+            .textureCount = 1,
+        });
+        swapchainImageStates_[imageIndex] = render::ResourceState::ColorAttachment;
+
+        const render::Rect renderArea{
+            .x = 0,
+            .y = 0,
+            .width = swapchain_->width(),
+            .height = swapchain_->height(),
+        };
+        render::RenderingAttachmentDesc colorAttachment{
+            .view = swapchainImageViews_[imageIndex].get(),
+            .state = render::ResourceState::ColorAttachment,
+            .loadOp = render::LoadOp::Clear,
+            .storeOp = render::StoreOp::Store,
+            .clearColor = render::ColorValue{
+                clearColor_[0],
+                clearColor_[1],
+                clearColor_[2],
+                clearColor_[3],
+            },
+        };
+        frame.commandBuffer->beginDebugLabel(render::DebugLabelDesc{
+            .name = "Editor ImGui",
+            .color = render::ColorValue{0.22f, 0.70f, 0.45f, 1.0f},
+        });
+        frame.commandBuffer->beginRendering(render::RenderingDesc{
+            .renderArea = renderArea,
+            .colorAttachments = &colorAttachment,
+            .colorAttachmentCount = 1,
+        });
+
+        {
+            auto profileScope = profiler_.scope("Record ImGui Draw");
+            ImGui_ImplVulkan_RenderDrawData(
+                ImGui::GetDrawData(),
+                render::vulkan::nativeCommandBuffer(*frame.commandBuffer));
+        }
+
+        frame.commandBuffer->endRendering();
+        frame.commandBuffer->endDebugLabel();
+
+        render::TextureBarrierDesc toPresent{
+            .texture = swapchainTexture,
+            .before = render::ResourceState::ColorAttachment,
+            .after = render::ResourceState::Present,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        };
+        frame.commandBuffer->barrier(render::BarrierDesc{
+            .textures = &toPresent,
+            .textureCount = 1,
+        });
+        swapchainImageStates_[imageIndex] = render::ResourceState::Present;
     }
-
-    render::TextureBarrierDesc toColor{
-        .texture = swapchainTexture,
-        .before = swapchainImageStates_[imageIndex],
-        .after = render::ResourceState::ColorAttachment,
-        .baseMip = 0,
-        .mipCount = 1,
-        .baseLayer = 0,
-        .layerCount = 1,
-    };
-    frame.commandBuffer->barrier(render::BarrierDesc{
-        .textures = &toColor,
-        .textureCount = 1,
-    });
-    swapchainImageStates_[imageIndex] = render::ResourceState::ColorAttachment;
-
-    const render::Rect renderArea{
-        .x = 0,
-        .y = 0,
-        .width = swapchain_->width(),
-        .height = swapchain_->height(),
-    };
-    render::RenderingAttachmentDesc colorAttachment{
-        .view = swapchainImageViews_[imageIndex].get(),
-        .state = render::ResourceState::ColorAttachment,
-        .loadOp = render::LoadOp::Clear,
-        .storeOp = render::StoreOp::Store,
-        .clearColor = render::ColorValue{
-            clearColor_[0],
-            clearColor_[1],
-            clearColor_[2],
-            clearColor_[3],
-        },
-    };
-    frame.commandBuffer->beginDebugLabel(render::DebugLabelDesc{
-        .name = "Editor ImGui",
-        .color = render::ColorValue{0.22f, 0.70f, 0.45f, 1.0f},
-    });
-    frame.commandBuffer->beginRendering(render::RenderingDesc{
-        .renderArea = renderArea,
-        .colorAttachments = &colorAttachment,
-        .colorAttachmentCount = 1,
-    });
-
-    {
-        auto profileScope = profiler_.scope("Record ImGui Draw");
-        ImGui_ImplVulkan_RenderDrawData(
-            ImGui::GetDrawData(),
-            render::vulkan::nativeCommandBuffer(*frame.commandBuffer));
-    }
-
-    frame.commandBuffer->endRendering();
-    frame.commandBuffer->endDebugLabel();
-
-    render::TextureBarrierDesc toPresent{
-        .texture = swapchainTexture,
-        .before = render::ResourceState::ColorAttachment,
-        .after = render::ResourceState::Present,
-        .baseMip = 0,
-        .mipCount = 1,
-        .baseLayer = 0,
-        .layerCount = 1,
-    };
-    frame.commandBuffer->barrier(render::BarrierDesc{
-        .textures = &toPresent,
-        .textureCount = 1,
-    });
-    swapchainImageStates_[imageIndex] = render::ResourceState::Present;
 
     endFrameLabel();
     {
@@ -6262,33 +6275,61 @@ bool EditorApplication::renderVulkanFrame()
 
     render::CommandBuffer* commandBuffers[] = {frame.commandBuffer.get()};
     render::SwapchainSemaphoreSubmitDesc waitSemaphore{
-        .semaphore = frame.imageAvailable.get(),
+        .semaphore = renderMainViewport ? frame.imageAvailable.get() : nullptr,
         .stages = render::PipelineStageBits::ColorAttachment,
     };
     render::SwapchainSemaphoreSubmitDesc signalSemaphore{
-        .semaphore = renderFinishedSemaphores_[imageIndex].get(),
+        .semaphore = renderMainViewport ? renderFinishedSemaphores_[imageIndex].get() : nullptr,
         .stages = render::PipelineStageBits::AllCommands,
     };
+    const bool viewportsEnabled = (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
+    const bool hasPlatformWindows = viewportsEnabled && ImGui::GetPlatformIO().Viewports.Size > 1;
+    render::GpuCompletionPoint segmentCompletion;
     {
         auto profileScope = profiler_.scope("Submit Frame");
-        result = frameSubmissions_.submit(render::QueueSubmitDesc{
+        const render::QueueSubmitDesc submitDesc{
             .waitSwapchainSemaphores = &waitSemaphore,
-            .waitSwapchainSemaphoreCount = 1,
+            .waitSwapchainSemaphoreCount = renderMainViewport ? 1u : 0u,
             .commandBuffers = commandBuffers,
             .commandBufferCount = 1,
             .signalSwapchainSemaphores = &signalSemaphore,
-            .signalSwapchainSemaphoreCount = 1,
-        }, frame.context);
+            .signalSwapchainSemaphoreCount = renderMainViewport ? 1u : 0u,
+        };
+        result = hasPlatformWindows
+            ? frameSubmissions_.submitSegment(submitDesc, frame.context, segmentCompletion)
+            : frameSubmissions_.submit(submitDesc, frame.context);
     }
     if (!result) {
         spdlog::error("graphicsQueue submit failed with Result {}", render::resultToString(result));
         return false;
+    }
+    if (viewportsEnabled) {
+        auto profileScope = profiler_.scope("Platform Windows");
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+        if (hasPlatformWindows) {
+            // The ImGui backend submits directly to our graphics queue. Seal the
+            // frame after those draws so preview resources outlive every window.
+            result = frameSubmissions_.submitSegment({}, frame.context, segmentCompletion);
+            if (result) {
+                result = frame.context.finishSubmission();
+            }
+            if (!result) {
+                spdlog::error("Platform window completion failed: {}", render::resultToString(result));
+                (void)device_->waitIdle();
+                frame.context.cancel();
+                return false;
+            }
+        }
     }
     if (smokeTest_) {
         spdlog::info("[Smoke] Submitted editor frame {} slot {} completion {}",
             submittedFrameIndex_, currentFrameSlot_, frame.context.completion().value());
     }
     ++submittedFrameIndex_;
+    if (!renderMainViewport) {
+        return true;
+    }
     {
         auto profileScope = profiler_.scope("Present");
         result = swapchain_->present(*graphicsQueue_, imageIndex, *renderFinishedSemaphores_[imageIndex]);
@@ -7201,13 +7242,21 @@ void EditorApplication::drawRenderGraphEditorWindow()
         return;
     }
 
+    ImGuiWindowClass windowClass;
+    windowClass.ParentViewportId = 0;
+    windowClass.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge;
+    windowClass.ViewportFlagsOverrideClear =
+        ImGuiViewportFlags_NoDecoration | ImGuiViewportFlags_NoTaskBarIcon;
+    ImGui::SetNextWindowClass(&windowClass);
+
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(
         ImVec2(viewport->WorkPos.x + 48.0f * mainScale_, viewport->WorkPos.y + 48.0f * mainScale_),
         ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(1220.0f * mainScale_, 760.0f * mainScale_), ImGuiCond_FirstUseEver);
 
-    if (!ImGui::Begin("Render Graph Editor", &renderGraphEditorOpen_, ImGuiWindowFlags_NoDocking)) {
+    if (!ImGui::Begin("Render Graph Editor", &renderGraphEditorOpen_,
+            ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar)) {
         ImGui::End();
         return;
     }

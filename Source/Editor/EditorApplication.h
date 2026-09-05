@@ -48,6 +48,7 @@ private:
     void pollEvents();
     void pollShaderHotReload();
     bool renderFrame();
+    bool runMultiViewportSmokeTest();
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();
@@ -152,7 +153,7 @@ private:
     bool updateViewportPreview(uint32_t width, uint32_t height);
     void destroyViewportTexture();
     bool renderGraphPreview();
-    bool renderVulkanFrame();
+    bool renderVulkanFrame(bool renderMainViewport);
     void initializeNsightGraphicsCapture();
     void requestNsightGraphicsCapture();
     void pollNsightGraphicsCapture();

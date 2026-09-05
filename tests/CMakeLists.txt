@@ -1,5 +1,19 @@
 include(GoogleTest)
 
+if(WIN32)
+    add_test(NAME MetallicEditorMultiViewportSmoke
+        COMMAND ${CMAKE_COMMAND}
+            "-DEDITOR_EXECUTABLE=$<TARGET_FILE:Metallic>"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/editor-multi-viewport"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunMultiViewportSmoke.cmake"
+    )
+    set_tests_properties(MetallicEditorMultiViewportSmoke PROPERTIES
+        LABELS "editor"
+        TIMEOUT 90
+        RESOURCE_LOCK MetallicEditor
+    )
+endif()
+
 add_executable(MetallicDebugTests debug/DebugCoreTests.cpp)
 target_link_libraries(MetallicDebugTests PRIVATE MetallicDebugCore GTest::gtest_main)
 if(WIN32)
