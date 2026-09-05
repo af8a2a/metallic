@@ -24,14 +24,22 @@ std::filesystem::path projectPath(std::string_view path)
     return resolved;
 }
 
-bool graphHasOutput(const RenderGraph& graph, std::string_view outputName)
+bool graphHasTextureOutput(const RenderGraph& graph, std::string_view outputName)
 {
-    return std::any_of(
-        graph.outputs().begin(),
-        graph.outputs().end(),
-        [&](const RenderGraphOutput& output) {
-            return makeRenderGraphFieldName(output.passName, output.fieldName) == outputName;
-        });
+    std::string passName;
+    std::string fieldName;
+    if (!splitRenderGraphFieldName(outputName, passName, fieldName)) {
+        return false;
+    }
+    const RenderGraphNode* node = graph.findNode(passName);
+    std::unique_ptr<RenderGraphPass> pass = node != nullptr ? createRenderGraphPass(node->type) : nullptr;
+    if (pass == nullptr) {
+        return false;
+    }
+    pass->setProperties(node->properties);
+    const RenderPassReflection reflection = pass->reflect(RenderGraphCompileContext{});
+    const RenderGraphField* field = reflection.findField(fieldName, RenderGraphFieldVisibility::Output);
+    return field != nullptr && field->resourceType == RenderGraphResourceType::Texture2D;
 }
 
 bool applySampleScenePath(RenderGraph& graph, const RenderSampleDesc& desc, std::string& outMessage)
@@ -80,7 +88,7 @@ public:
             .visible = true,
         };
     }
-    std::string previewOutput() const override { return "PathTrace.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class PathTracingSharcMeetMatSample final : public RenderSample {
@@ -108,7 +116,7 @@ public:
             .visible = true,
         };
     }
-    std::string previewOutput() const override { return "PathTrace.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class PathTracingNrcMeetMatSample final : public RenderSample {
@@ -136,7 +144,7 @@ public:
             .visible = true,
         };
     }
-    std::string previewOutput() const override { return "PathTrace.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class PathTracingSample final : public RenderSample {
@@ -164,7 +172,7 @@ public:
             .visible = true,
         };
     }
-    std::string previewOutput() const override { return "PathTrace.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class PathTracingDlssRrSample final : public RenderSample {
@@ -192,7 +200,7 @@ public:
             .visible = true,
         };
     }
-    std::string previewOutput() const override { return "DlssRr.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
     bool requiresStreamline() const override { return true; }
 };
 
@@ -221,7 +229,7 @@ public:
             .visible = true,
         };
     }
-    std::string previewOutput() const override { return "DlssSr.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
     bool requiresStreamline() const override { return true; }
 };
 
@@ -250,7 +258,7 @@ public:
             .visible = true,
         };
     }
-    std::string previewOutput() const override { return "Composite.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class RtxcrMaterialSample final : public RenderSample {
@@ -283,7 +291,7 @@ public:
             .visible = true,
         };
     }
-    std::string previewOutput() const override { return "PathTrace.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class MaterialVisualizationABeautifulGameSample final : public RenderSample {
@@ -301,7 +309,7 @@ public:
         return "Pipelines/Samples/material_visualization_abeautiful_game.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"MaterialViz"}; }
-    std::string previewOutput() const override { return "MaterialViz.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class GPUDrivenSample final : public RenderSample {
@@ -320,7 +328,7 @@ public:
         return "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
-    std::string previewOutput() const override { return "GPUDriven.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class GPUDrivenUsdSample final : public RenderSample {
@@ -342,7 +350,7 @@ public:
         return "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
-    std::string previewOutput() const override { return "GPUDriven.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class GPUDrivenRtasVisualizationSample final : public RenderSample {
@@ -371,7 +379,7 @@ public:
             .visible = true,
         };
     }
-    std::string previewOutput() const override { return "GPUDriven.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class GPUDrivenStreamAssetSample final : public RenderSample {
@@ -390,7 +398,7 @@ public:
         return "Pipelines/Samples/gpu_driven_sponza_streamasset.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
-    std::string previewOutput() const override { return "GPUDriven.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class GPUDrivenTerrainP0Sample final : public RenderSample {
@@ -412,7 +420,7 @@ public:
         return "Pipelines/Samples/gpu_driven_terrain_p0_streamasset.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
-    std::string previewOutput() const override { return "GPUDriven.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class GPUDrivenTerrainP1UnifiedSample final : public RenderSample {
@@ -434,7 +442,7 @@ public:
         return "Pipelines/Samples/gpu_driven_terrain_p1_unified.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
-    std::string previewOutput() const override { return "GPUDriven.color"; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 const RenderSample& pathTracingMeetMatSample()
@@ -603,8 +611,8 @@ bool loadRenderSample(
     if (desc.previewOutput.empty()) {
         desc.previewOutput = graph.firstOutputName();
     }
-    if (!graphHasOutput(graph, desc.previewOutput)) {
-        outMessage = "Sample previewOutput is not a marked graph output: " + desc.previewOutput;
+    if (!graphHasTextureOutput(graph, desc.previewOutput)) {
+        outMessage = "Sample previewOutput is not a texture output: " + desc.previewOutput;
         return false;
     }
 

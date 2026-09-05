@@ -1887,7 +1887,7 @@ public:
             sample.desc.category != "PathTracing" ||
             sample.desc.scenePath != "Asset/meet_mat.glb" ||
             sample.desc.graphPath != "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json" ||
-            sample.desc.previewOutput != "PathTrace.color") {
+            sample.desc.previewOutput != "FinalBlit.color") {
             return RhiTestResult::fail("built-in Sample metadata did not load as expected");
         }
 
@@ -1902,7 +1902,7 @@ public:
         if (!sample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (sample.graph.firstOutputName() != "PathTrace.color") {
+        if (sample.graph.firstOutputName() != "FinalBlit.color") {
             return RhiTestResult::fail("Sample graph first output changed");
         }
 
@@ -1917,7 +1917,7 @@ public:
             pathTracingSample.desc.graphPath != "Pipelines/Samples/pathtracing_abeautiful_game_openpbr.metallic_graph.json" ||
             !pathTracingSample.desc.environment.has_value() ||
             pathTracingSample.desc.environment->path != "Asset/ABeautifulGame/environment.hdr" ||
-            pathTracingSample.desc.previewOutput != "PathTrace.color") {
+            pathTracingSample.desc.previewOutput != "FinalBlit.color") {
             return RhiTestResult::fail("OpenPBR PathTracingSample metadata did not load as expected");
         }
         const render::RenderGraphNode* openPBRPathTrace = pathTracingSample.graph.findNode("PathTrace");
@@ -1930,7 +1930,7 @@ public:
         if (!pathTracingSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (pathTracingSample.graph.firstOutputName() != "PathTrace.color") {
+        if (pathTracingSample.graph.firstOutputName() != "FinalBlit.color") {
             return RhiTestResult::fail("OpenPBR PathTracingSample graph first output changed");
         }
 
@@ -1945,7 +1945,7 @@ public:
             rtxdiSample.desc.graphPath != "Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json" ||
             !rtxdiSample.desc.environment.has_value() ||
             rtxdiSample.desc.environment->path != "Asset/ABeautifulGame/environment.hdr" ||
-            rtxdiSample.desc.previewOutput != "Composite.color") {
+            rtxdiSample.desc.previewOutput != "FinalBlit.color") {
             return RhiTestResult::fail("RTXDI Sample metadata did not load as expected");
         }
         const render::RenderGraphNode* rtxdi = rtxdiSample.graph.findNode("Rtxdi");
@@ -1983,7 +1983,7 @@ public:
         if (!rtxdiSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (rtxdiSample.graph.firstOutputName() != "Composite.color") {
+        if (rtxdiSample.graph.firstOutputName() != "FinalBlit.color") {
             return RhiTestResult::fail("RTXDI Sample graph first output changed");
         }
 
@@ -1998,7 +1998,7 @@ public:
             rtxcrSample.desc.graphPath !=
                 "Pipelines/Samples/rtxcr_material_showcase.metallic_graph.json" ||
             rtxcrSample.desc.scenePath.find("ponyTail_15vtx.gltf") == std::string::npos ||
-            rtxcrSample.desc.previewOutput != "PathTrace.color") {
+            rtxcrSample.desc.previewOutput != "FinalBlit.color") {
             return RhiTestResult::fail("RTXCR Sample metadata did not load as expected");
         }
         const render::RenderGraphNode* rtxcr = rtxcrSample.graph.findNode("PathTrace");
@@ -2014,7 +2014,7 @@ public:
         if (!rtxcrSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (rtxcrSample.graph.firstOutputName() != "PathTrace.color") {
+        if (rtxcrSample.graph.firstOutputName() != "FinalBlit.color") {
             return RhiTestResult::fail("RTXCR Sample graph first output changed");
         }
 
@@ -2027,7 +2027,7 @@ public:
             dlssSrSample.desc.category != "PathTracing" ||
             dlssSrSample.desc.scenePath != "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf" ||
             dlssSrSample.desc.graphPath != "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_sr.metallic_graph.json" ||
-            dlssSrSample.desc.previewOutput != "DlssSr.color" ||
+            dlssSrSample.desc.previewOutput != "FinalBlit.color" ||
             !dlssSrSample.desc.requiresStreamline) {
             return RhiTestResult::fail("DLSS-SR PathTracingSample metadata did not load as expected");
         }
@@ -2044,7 +2044,7 @@ public:
         if (!dlssSrSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (dlssSrSample.graph.firstOutputName() != "DlssSr.color") {
+        if (dlssSrSample.graph.firstOutputName() != "FinalBlit.color") {
             return RhiTestResult::fail("DLSS-SR PathTracingSample graph first output changed");
         }
 
@@ -2057,7 +2057,7 @@ public:
             dlssRrSample.desc.category != "PathTracing" ||
             dlssRrSample.desc.scenePath != "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf" ||
             dlssRrSample.desc.graphPath != "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json" ||
-            dlssRrSample.desc.previewOutput != "DlssRr.color" ||
+            dlssRrSample.desc.previewOutput != "FinalBlit.color" ||
             !dlssRrSample.desc.requiresStreamline) {
             return RhiTestResult::fail("DLSS-RR PathTracingSample metadata did not load as expected");
         }
@@ -2074,7 +2074,7 @@ public:
         if (!dlssRrSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (dlssRrSample.graph.firstOutputName() != "DlssRr.color") {
+        if (dlssRrSample.graph.firstOutputName() != "FinalBlit.color") {
             return RhiTestResult::fail("DLSS-RR PathTracingSample graph first output changed");
         }
 
@@ -2087,7 +2087,7 @@ public:
             materialSample.desc.category != "Material" ||
             materialSample.desc.scenePath != "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf" ||
             materialSample.desc.graphPath != "Pipelines/Samples/material_visualization_abeautiful_game.metallic_graph.json" ||
-            materialSample.desc.previewOutput != "MaterialViz.color") {
+            materialSample.desc.previewOutput != "FinalBlit.color") {
             return RhiTestResult::fail("material visualization Sample metadata did not load as expected");
         }
         const render::RenderGraphNode* materialViz = materialSample.graph.findNode("MaterialViz");
@@ -2100,7 +2100,7 @@ public:
         if (!materialSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (materialSample.graph.firstOutputName() != "MaterialViz.color") {
+        if (materialSample.graph.firstOutputName() != "FinalBlit.color") {
             return RhiTestResult::fail("material visualization Sample graph first output changed");
         }
 
@@ -2115,12 +2115,12 @@ public:
             gpuDrivenSample.desc.loadSceneInEditor ||
             gpuDrivenSample.desc.graphPath != "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json" ||
             gpuDrivenSample.desc.environment.has_value() ||
-            gpuDrivenSample.desc.previewOutput != "GPUDriven.color" ||
+            gpuDrivenSample.desc.previewOutput != "FinalBlit.color" ||
             gpuDrivenSample.desc.requiresStreamline) {
             return RhiTestResult::fail("GPUDrivenSample metadata did not load as expected");
         }
         const render::RenderGraphNode* gpuDriven = gpuDrivenSample.graph.findNode("GPUDriven");
-        if (gpuDrivenSample.graph.nodes().size() != 1u ||
+        if (gpuDrivenSample.graph.nodes().size() != 2u ||
             gpuDriven == nullptr ||
             gpuDriven->type != "VisibilityBufferPass" ||
             !gpuDriven->properties.is_object() ||
@@ -2133,8 +2133,8 @@ public:
         if (!gpuDrivenSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (gpuDrivenSample.graph.firstOutputName() != "GPUDriven.visibility" ||
-            gpuDrivenSample.graph.outputs().size() != 3u) {
+        if (gpuDrivenSample.graph.firstOutputName() != "FinalBlit.color" ||
+            !gpuDrivenSample.graph.outputs().empty()) {
             return RhiTestResult::fail("GPUDrivenSample graph first output changed");
         }
         bool requiresStreamline = true;
@@ -2167,7 +2167,7 @@ public:
             gpuDrivenStreamAssetSample.desc.loadSceneInEditor ||
             gpuDrivenStreamAssetSample.desc.graphPath !=
                 "Pipelines/Samples/gpu_driven_sponza_streamasset.metallic_graph.json" ||
-            gpuDrivenStreamAssetSample.desc.previewOutput != "GPUDriven.color") {
+            gpuDrivenStreamAssetSample.desc.previewOutput != "FinalBlit.color") {
             return RhiTestResult::fail("GPUDriven StreamAsset sample metadata did not load as expected");
         }
         const render::RenderGraphNode* gpuDrivenStreamAsset =
@@ -2185,7 +2185,7 @@ public:
         if (!gpuDrivenStreamAssetSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (gpuDrivenStreamAssetSample.graph.firstOutputName() != "GPUDriven.color") {
+        if (gpuDrivenStreamAssetSample.graph.firstOutputName() != "FinalBlit.color") {
             return RhiTestResult::fail("GPUDriven StreamAsset graph first output changed");
         }
         if (!render::setRenderSampleScenePath(
@@ -2211,7 +2211,7 @@ public:
             gpuDrivenTerrainP0Sample.desc.loadSceneInEditor ||
             gpuDrivenTerrainP0Sample.desc.graphPath !=
                 "Pipelines/Samples/gpu_driven_terrain_p0_streamasset.metallic_graph.json" ||
-            gpuDrivenTerrainP0Sample.desc.previewOutput != "GPUDriven.color") {
+            gpuDrivenTerrainP0Sample.desc.previewOutput != "FinalBlit.color") {
             return RhiTestResult::fail("GPUDriven Terrain P0 sample metadata did not load as expected");
         }
         const render::RenderGraphNode* gpuDrivenTerrainP0 =
@@ -2232,7 +2232,7 @@ public:
         if (!gpuDrivenTerrainP0Sample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (gpuDrivenTerrainP0Sample.graph.firstOutputName() != "GPUDriven.color") {
+        if (gpuDrivenTerrainP0Sample.graph.firstOutputName() != "FinalBlit.color") {
             return RhiTestResult::fail("GPUDriven Terrain P0 graph first output changed");
         }
 
@@ -2252,7 +2252,7 @@ public:
             gpuDrivenTerrainP1Sample.desc.graphPath !=
                 "Pipelines/Samples/gpu_driven_terrain_p1_unified.metallic_graph.json" ||
             gpuDrivenTerrainP1Sample.desc.environment.has_value() ||
-            gpuDrivenTerrainP1Sample.desc.previewOutput != "GPUDriven.color") {
+            gpuDrivenTerrainP1Sample.desc.previewOutput != "FinalBlit.color") {
             return RhiTestResult::fail(
                 "GPUDriven Terrain P1 unified sample metadata did not load as expected");
         }
@@ -2277,7 +2277,7 @@ public:
         if (!gpuDrivenTerrainP1Sample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (gpuDrivenTerrainP1Sample.graph.firstOutputName() != "GPUDriven.visibility") {
+        if (gpuDrivenTerrainP1Sample.graph.firstOutputName() != "FinalBlit.color") {
             return RhiTestResult::fail("GPUDriven Terrain P1 unified graph first output changed");
         }
 
@@ -2294,7 +2294,7 @@ public:
                 "Pipelines/Samples/gpu_driven_sponza_rtas_visualization.metallic_graph.json" ||
             !gpuDrivenRtasSample.desc.environment.has_value() ||
             gpuDrivenRtasSample.desc.environment->path != "Asset/ABeautifulGame/environment.hdr" ||
-            gpuDrivenRtasSample.desc.previewOutput != "GPUDriven.color") {
+            gpuDrivenRtasSample.desc.previewOutput != "FinalBlit.color") {
             return RhiTestResult::fail("GPUDriven RTAS visualization sample metadata did not load as expected");
         }
         const render::RenderGraphNode* gpuDrivenRtas = gpuDrivenRtasSample.graph.findNode("GPUDriven");
@@ -2310,7 +2310,7 @@ public:
         if (!gpuDrivenRtasSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (gpuDrivenRtasSample.graph.firstOutputName() != "GPUDriven.color") {
+        if (gpuDrivenRtasSample.graph.firstOutputName() != "FinalBlit.color") {
             return RhiTestResult::fail("GPUDriven RTAS visualization graph first output changed");
         }
 
@@ -2378,7 +2378,7 @@ public:
         if (!render::loadRenderSample(fallback, sample, message)) {
             return RhiTestResult::fail(message);
         }
-        if (sample.desc.previewOutput != "PathTrace.color") {
+        if (sample.desc.previewOutput != "FinalBlit.color") {
             return RhiTestResult::fail("Sample loader did not fallback to first graph output");
         }
         const render::RenderGraphNode* node = sample.graph.findNode("PathTrace");
@@ -2386,15 +2386,22 @@ public:
             return RhiTestResult::fail("Sample loader did not override target scene path");
         }
 
-        const TestPathTraceSample invalid(
-            "test-invalid-preview",
-            "Asset/meet_mat.glb",
-            "Missing.color");
-        if (render::loadRenderSample(invalid, sample, message)) {
-            return RhiTestResult::fail("Sample loader accepted invalid previewOutput");
+        for (const char* output : {"FinalBlit.color", "PathTrace.color"}) {
+            const TestPathTraceSample explicitPreview(
+                "test-explicit-preview", "Asset/meet_mat.glb", output);
+            if (!render::loadRenderSample(explicitPreview, sample, message) ||
+                sample.desc.previewOutput != output || !sample.graph.outputs().empty()) {
+                return RhiTestResult::fail("Sample loader rejected an unmarked texture preview: " + message);
+            }
         }
-        if (message.find("previewOutput") == std::string::npos) {
-            return RhiTestResult::fail("Sample loader did not report previewOutput failure");
+        for (const char* output : {"Missing.color", "PathTrace.missing", "FinalBlit.source"}) {
+            const TestPathTraceSample invalid("test-invalid-preview", "Asset/meet_mat.glb", output);
+            if (render::loadRenderSample(invalid, sample, message)) {
+                return RhiTestResult::fail("Sample loader accepted invalid previewOutput");
+            }
+            if (message.find("previewOutput") == std::string::npos) {
+                return RhiTestResult::fail("Sample loader did not report previewOutput failure");
+            }
         }
         return RhiTestResult::pass();
     }

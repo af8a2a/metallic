@@ -1,5 +1,11 @@
 {
-    "edges": [],
+    "edges": [
+        {
+            "dst": "FinalBlit.source",
+            "id": 1,
+            "src": "MaterialViz.color"
+        }
+    ],
     "name": "ABeautifulGameMaterialVisualization",
     "nodes": [
         {
@@ -36,10 +42,18 @@
                 "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"
             },
             "type": "SceneMaterialVisualizationPass"
+        },
+        {
+            "id": 2,
+            "name": "FinalBlit",
+            "position": {
+                "x": 1055.0,
+                "y": 281.0
+            },
+            "properties": {},
+            "type": "FinalBlitPass"
         }
     ],
-    "outputs": [
-        "MaterialViz.color"
-    ],
+    "outputs": [],
     "version": 1
 }

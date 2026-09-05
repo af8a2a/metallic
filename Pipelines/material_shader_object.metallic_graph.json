@@ -1,5 +1,11 @@
 {
-    "edges": [],
+    "edges": [
+        {
+            "dst": "FinalBlit.source",
+            "id": 1,
+            "src": "MaterialScene.color"
+        }
+    ],
     "name": "MaterialShaderObject",
     "nodes": [
         {
@@ -14,10 +20,18 @@
                 "path": "Asset/StandfordBunny/scene.gltf"
             },
             "type": "SceneMaterialShaderObjectPass"
+        },
+        {
+            "id": 2,
+            "name": "FinalBlit",
+            "position": {
+                "x": 760.0,
+                "y": 80.0
+            },
+            "properties": {},
+            "type": "FinalBlitPass"
         }
     ],
-    "outputs": [
-        "MaterialScene.color"
-    ],
+    "outputs": [],
     "version": 1
 }

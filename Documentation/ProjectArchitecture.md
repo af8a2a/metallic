@@ -463,8 +463,8 @@ Pass 类型名会写入 Pipeline JSON，应视为资产兼容性标识，不能�
 
 ### 13.2 新增内置 Sample
 
-1. 在 `Pipelines/Samples/` 创建并验证图资产；
-2. 在 `RenderSample.cpp` 实现描述类，指定 scene、environment target 和 preview output；
+1. 在 `Pipelines/Samples/` 创建并验证图资产，将最终颜色连接到名为 `FinalBlit` 的 `FinalBlitPass.source`，使用空的 `outputs` 数组；DLSS 图连接重建后的 color，去噪图连接合成后的 color；
+2. 在 `RenderSample.cpp` 实现描述类，指定 scene、environment target，并将 preview output 设为 `FinalBlit.color`。FinalBlit 自动成为执行根；未连接或输入不是可用颜色纹理时输出 UV 渐变。加载器也允许显式选择未标记的中间纹理输出进行调试；
 3. 注册到 `builtInRenderSamples()`；
 4. 若需要独立命令行入口，在 `Source/Samples/` 增加薄封装并配置 CMake；
 5. 至少覆盖图加载、目标节点存在性和 smoke test。

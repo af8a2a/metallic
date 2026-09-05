@@ -1,5 +1,11 @@
 {
-    "edges": [],
+    "edges": [
+        {
+            "dst": "FinalBlit.source",
+            "id": 1,
+            "src": "GPUDriven.color"
+        }
+    ],
     "name": "GPUDrivenSample",
     "nodes": [
         {
@@ -41,12 +47,18 @@
                 "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"
             },
             "type": "VisibilityBufferPass"
+        },
+        {
+            "id": 2,
+            "name": "FinalBlit",
+            "position": {
+                "x": 1055.0,
+                "y": 281.0
+            },
+            "properties": {},
+            "type": "FinalBlitPass"
         }
     ],
-    "outputs": [
-        "GPUDriven.visibility",
-        "GPUDriven.depth",
-        "GPUDriven.color"
-    ],
+    "outputs": [],
     "version": 1
 }

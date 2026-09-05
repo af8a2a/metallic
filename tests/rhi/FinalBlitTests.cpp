@@ -1,7 +1,9 @@
 #include "RhiTest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/RenderSample.h"
 
 #include <cmath>
+#include <unordered_map>
 
 namespace metallic::tests {
 namespace {
@@ -208,6 +210,90 @@ private:
     }
 };
 
+class FinalBlitPipelinesTest : public RhiTest {
+public:
+    FinalBlitPipelinesTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_final_blit_pipelines";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const std::unordered_map<std::string, std::string> expectedSources{
+            {"default.metallic_graph.json", "PathTrace.color"},
+            {"material_shader_object.metallic_graph.json", "MaterialScene.color"},
+            {"gpu_driven_sponza.metallic_graph.json", "GPUDriven.color"},
+            {"gpu_driven_sponza_rtas_visualization.metallic_graph.json", "GPUDriven.color"},
+            {"gpu_driven_sponza_streamasset.metallic_graph.json", "GPUDriven.color"},
+            {"gpu_driven_terrain_p0_streamasset.metallic_graph.json", "GPUDriven.color"},
+            {"gpu_driven_terrain_p1_unified.metallic_graph.json", "GPUDriven.color"},
+            {"material_visualization_abeautiful_game.metallic_graph.json", "MaterialViz.color"},
+            {"pathtracing_abeautiful_game_openpbr.metallic_graph.json", "PathTrace.color"},
+            {"pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json", "DlssRr.color"},
+            {"pathtracing_abeautiful_game_openpbr_dlss_sr.metallic_graph.json", "DlssSr.color"},
+            {"pathtracing_meet_mat.metallic_graph.json", "PathTrace.color"},
+            {"pathtracing_meet_mat_nrc.metallic_graph.json", "PathTrace.color"},
+            {"pathtracing_meet_mat_sharc.metallic_graph.json", "PathTrace.color"},
+            {"rtxcr_material_showcase.metallic_graph.json", "PathTrace.color"},
+            {"rtxdi_meet_mat.metallic_graph.json", "Composite.color"},
+        };
+        std::string log;
+        size_t graphCount = 0;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(PROJECT_SOURCE_DIR "/Pipelines")) {
+            const std::string filename = entry.path().filename().string();
+            if (!entry.is_regular_file() || !filename.ends_with(".metallic_graph.json")) {
+                continue;
+            }
+            render::RenderGraph graph;
+            if (!render::loadRenderGraphFromFile(entry.path(), graph, log) || !graph.validate(log)) {
+                return RhiTestResult::fail(filename + ": " + log);
+            }
+            const auto expected = expectedSources.find(filename);
+            if (expected == expectedSources.end() || !hasFinalOutput(graph, expected->second)) {
+                return RhiTestResult::fail(filename + " must present its final color through FinalBlit");
+            }
+            ++graphCount;
+        }
+        if (graphCount != expectedSources.size()) {
+            return RhiTestResult::fail("Not all expected pipeline assets were checked");
+        }
+        for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
+            render::RenderSampleLoadResult sample;
+            if (!render::loadBuiltInRenderSample(desc.id, sample, log)) {
+                return RhiTestResult::fail(desc.id + ": " + log);
+            }
+            const auto expected = expectedSources.find(std::filesystem::path(desc.graphPath).filename().string());
+            if (desc.previewOutput != "FinalBlit.color" || sample.desc.previewOutput != "FinalBlit.color" ||
+                expected == expectedSources.end() || !hasFinalOutput(sample.graph, expected->second)) {
+                return RhiTestResult::fail(desc.id + " bypasses FinalBlit presentation");
+            }
+        }
+        return RhiTestResult::pass("All pipeline assets and built-in Samples present through FinalBlit");
+    }
+
+private:
+    static bool hasFinalOutput(const render::RenderGraph& graph, std::string_view sourceOutput)
+    {
+        const render::RenderGraphNode* final = graph.findNode("FinalBlit");
+        if (final == nullptr || final->type != "FinalBlitPass" || !graph.outputs().empty() ||
+            graph.firstOutputName() != "FinalBlit.color") {
+            return false;
+        }
+        size_t connections = 0;
+        for (const render::RenderGraphEdge& edge : graph.edges()) {
+            if (edge.dstPass == final->name && edge.dstField == "source") {
+                if (render::makeRenderGraphFieldName(edge.srcPass, edge.srcField) != sourceOutput) {
+                    return false;
+                }
+                ++connections;
+            }
+        }
+        return connections == 1;
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(FinalBlitPipelinesTest);
 METALLIC_REGISTER_RHI_TEST(FinalBlitGraphTest);
 METALLIC_REGISTER_RHI_TEST(FinalBlitPixelsTest);
 

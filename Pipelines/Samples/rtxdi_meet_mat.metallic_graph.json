@@ -79,6 +79,11 @@
             "dst": "Relax.specularConfidence",
             "id": 17,
             "src": "Confidence.specularConfidence"
+        },
+        {
+            "dst": "FinalBlit.source",
+            "id": 18,
+            "src": "Composite.color"
         }
     ],
     "name": "RtxdiRelaxSample",
@@ -210,13 +215,18 @@
                 "exposure": 1.0
             },
             "type": "RtxdiCompositePass"
+        },
+        {
+            "id": 5,
+            "name": "FinalBlit",
+            "position": {
+                "x": 1918.7313232421875,
+                "y": 233.73342895507812
+            },
+            "properties": {},
+            "type": "FinalBlitPass"
         }
     ],
-    "outputs": [
-        "Composite.color",
-        "Rtxdi.color",
-        "Confidence.diffuseConfidence",
-        "Confidence.specularConfidence"
-    ],
+    "outputs": [],
     "version": 1
 }

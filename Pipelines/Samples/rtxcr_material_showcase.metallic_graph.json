@@ -1,5 +1,11 @@
 {
-    "edges": [],
+    "edges": [
+        {
+            "dst": "FinalBlit.source",
+            "id": 1,
+            "src": "PathTrace.color"
+        }
+    ],
     "name": "RTXCRClairePonytail",
     "nodes": [
         {
@@ -24,10 +30,18 @@
                 "samples": 4
             },
             "type": "ScenePathTracePass"
+        },
+        {
+            "id": 2,
+            "name": "FinalBlit",
+            "position": {
+                "x": 1040.0,
+                "y": 240.0
+            },
+            "properties": {},
+            "type": "FinalBlitPass"
         }
     ],
-    "outputs": [
-        "PathTrace.color"
-    ],
+    "outputs": [],
     "version": 1
 }

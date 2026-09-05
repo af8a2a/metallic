@@ -1,5 +1,11 @@
 {
-    "edges": [],
+    "edges": [
+        {
+            "dst": "FinalBlit.source",
+            "id": 1,
+            "src": "GPUDriven.color"
+        }
+    ],
     "name": "GPUDrivenTerrainP1Unified",
     "nodes": [
         {
@@ -53,12 +59,18 @@
                 "streamAssetPath": "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf.meshstream.bin"
             },
             "type": "VisibilityBufferPass"
+        },
+        {
+            "id": 2,
+            "name": "FinalBlit",
+            "position": {
+                "x": 1055.0,
+                "y": 281.0
+            },
+            "properties": {},
+            "type": "FinalBlitPass"
         }
     ],
-    "outputs": [
-        "GPUDriven.visibility",
-        "GPUDriven.depth",
-        "GPUDriven.color"
-    ],
+    "outputs": [],
     "version": 1
 }

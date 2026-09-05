@@ -17,6 +17,8 @@ GPUScene → instance cull → Wave32 AS meshlet cull → MS + visibility PS
                           HZB → late cull/raster → final visibility/depth
                                                         ↓ (optional)
                                           ID / depth / coverage display
+                                                        ↓
+                                     GPUDriven.color → FinalBlit → Viewport
 ```
 
 1. `GPUDrivenCulling.slang` 先进行实例视锥/HZB 剔除，使用上一帧相机与上一帧 HZB。
@@ -25,7 +27,7 @@ GPUScene → instance cull → Wave32 AS meshlet cull → MS + visibility PS
 4. 深度附件使用 `D32Sfloat`。Opaque fragment 允许 early depth；masked fragment 先按 alpha cutoff discard，不能强制 early depth 写入。四个 raster bucket 分别覆盖 opaque/masked 与单面/双面材质，BLEND 暂不进入此路径。
 5. Compute 将第一阶段深度归约成当前 HZB：Reversed-Z 用 min，普通 Z 用 max。第二阶段只重测之前的 HZB 遮挡候选，AS/MS 将恢复可见的 meshlet 补绘到同一 visibility/depth。
 6. 完整深度再生成下一帧 HZB，直接保留最终 `GPUDriven.visibility`（R32Uint）和 `GPUDriven.depth`（D32Sfloat），不执行属性重建或材质着色。
-7. 可选的 `VisibilityBufferComposite.slang` 直接读取原始 ID / depth，输出 `GPUDriven.color`（Rgba8Unorm）供视口调试显示，不改变原始输出。关闭可视化时只清空 color，不绘制全屏三角形。内置图以 visibility 为首个输出，同时导出 depth 和 color；样例的 `previewOutput` 仍选择 color，因为原始整数 ID 不是 RGBA 图像。
+7. 可选的 `VisibilityBufferComposite.slang` 直接读取原始 ID / depth，输出 `GPUDriven.color`（Rgba8Unorm）供视口调试显示，不改变原始输出。关闭可视化时只清空 color，不绘制全屏三角形。内置图将 `GPUDriven.color` 连接到 `FinalBlit.source`，样例的 `previewOutput` 为自动呈现输出 `FinalBlit.color`，JSON 的 `outputs` 数组为空。原始 visibility / depth 仍是节点输出，可供后续 Pass 使用；整数 ID 应先经过可视化再呈现。
 
 本 Pass 不再创建 OpenPBR compute 管线、LUT 或 deferred color buffer，也不依赖环境光子系统。材质贴图只上传 MASK 几何所需的 base-color alpha 贴图；这属于可见性判定，不是着色。`VisibilityBufferShading.slang` 暂保留源码供后续独立着色阶段使用，当前 Pass 不编译、不调度它。
 

@@ -30,11 +30,27 @@ bool EditorApplication::runMultiViewportSmokeTest()
     };
 
     const bool testFinalBlit = std::getenv("METALLIC_SMOKE_TEST_FINAL_BLIT") != nullptr;
-    const std::string sourceOutput = activePreviewOutput_;
+    std::string sourceOutput = activePreviewOutput_;
     std::string finalInput;
     uint32_t finalId = 0;
     uint32_t finalEdgeId = 0;
     if (testFinalBlit) {
+        // Samples already contain FinalBlit. Replace it to exercise adding a
+        // presentation node, while retaining the original scene color source.
+        if (const render::RenderGraphNode* existing = renderGraph_.findNode("FinalBlit");
+            existing != nullptr && existing->type == "FinalBlitPass") {
+            sourceOutput.clear();
+            for (const render::RenderGraphEdge& edge : renderGraph_.edges()) {
+                if (edge.dstPass == existing->name && edge.dstField == "source") {
+                    sourceOutput = render::makeRenderGraphFieldName(edge.srcPass, edge.srcField);
+                    break;
+                }
+            }
+            if (!expect(!sourceOutput.empty(), "Sample FinalBlit has a connected color source")) {
+                return false;
+            }
+            renderGraph_.removeNode(existing->id);
+        }
         renderGraph_.clearOutputs();
         addRenderGraphNode("FinalBlitPass", ImVec2(-1.0f, -1.0f));
         finalId = static_cast<uint32_t>(selectedGraphNodeId_);

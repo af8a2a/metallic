@@ -34,6 +34,11 @@
             "dst": "DlssRr.specularHitDistance",
             "id": 7,
             "src": "PathTrace.specularHitDistance"
+        },
+        {
+            "dst": "FinalBlit.source",
+            "id": 8,
+            "src": "DlssRr.color"
         }
     ],
     "name": "PathTracingSampleDLSSRR",
@@ -111,10 +116,18 @@
                 "resetSerial": 0
             },
             "type": "StreamlineDlssRrPass"
+        },
+        {
+            "id": 3,
+            "name": "FinalBlit",
+            "position": {
+                "x": 1260.0,
+                "y": 280.0
+            },
+            "properties": {},
+            "type": "FinalBlitPass"
         }
     ],
-    "outputs": [
-        "DlssRr.color"
-    ],
+    "outputs": [],
     "version": 1
 }

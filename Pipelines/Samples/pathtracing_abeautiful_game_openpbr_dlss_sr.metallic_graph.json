@@ -14,6 +14,11 @@
             "dst": "DlssSr.depth",
             "id": 3,
             "src": "PathTrace.depth"
+        },
+        {
+            "dst": "FinalBlit.source",
+            "id": 4,
+            "src": "DlssSr.color"
         }
     ],
     "name": "PathTracingSampleDLSSSR",
@@ -91,10 +96,18 @@
                 "resetSerial": 0
             },
             "type": "StreamlineDlssSrPass"
+        },
+        {
+            "id": 3,
+            "name": "FinalBlit",
+            "position": {
+                "x": 1260.0,
+                "y": 280.0
+            },
+            "properties": {},
+            "type": "FinalBlitPass"
         }
     ],
-    "outputs": [
-        "DlssSr.color"
-    ],
+    "outputs": [],
     "version": 1
 }
