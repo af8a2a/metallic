@@ -5,6 +5,9 @@ endif()
 file(MAKE_DIRECTORY "${TEST_DIRECTORY}")
 set(ENV{METALLIC_SMOKE_TEST_VIEWPORTS} 1)
 set(ENV{METALLIC_DEBUG_VALIDATION} 1)
+if(FINAL_BLIT)
+    set(ENV{METALLIC_SMOKE_TEST_FINAL_BLIT} 1)
+endif()
 execute_process(
     COMMAND "${EDITOR_EXECUTABLE}" --smoke-test --debug-control
     WORKING_DIRECTORY "${TEST_DIRECTORY}"
@@ -21,4 +24,7 @@ endif()
 if(NOT log MATCHES "\\[Smoke Viewports\\] Passed")
     message(FATAL_ERROR "Multi-viewport smoke test did not complete:\n${log}")
 endif()
-message(STATUS "Multi-viewport window lifecycle passed without Vulkan validation messages")
+if(FINAL_BLIT AND NOT log MATCHES "\\[Smoke FinalBlit\\] Passed")
+    message(FATAL_ERROR "FinalBlit smoke test did not complete:\n${log}")
+endif()
+message(STATUS "Editor smoke test passed without Vulkan validation messages")

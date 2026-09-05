@@ -1,6 +1,18 @@
 include(GoogleTest)
 
 if(WIN32)
+    add_test(NAME MetallicEditorFinalBlitSmoke
+        COMMAND ${CMAKE_COMMAND}
+            "-DEDITOR_EXECUTABLE=$<TARGET_FILE:Metallic>"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/editor-final-blit"
+            -DFINAL_BLIT=ON
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunMultiViewportSmoke.cmake"
+    )
+    set_tests_properties(MetallicEditorFinalBlitSmoke PROPERTIES
+        LABELS "editor"
+        TIMEOUT 90
+        RESOURCE_LOCK MetallicEditor
+    )
     add_test(NAME MetallicEditorMultiViewportSmoke
         COMMAND ${CMAKE_COMMAND}
             "-DEDITOR_EXECUTABLE=$<TARGET_FILE:Metallic>"
@@ -87,6 +99,7 @@ add_executable(MetallicRhiTests
     rhi/BindlessBufferTests.cpp
     rhi/CommandSubmissionTests.cpp
     rhi/FrameContextTests.cpp
+    rhi/FinalBlitTests.cpp
     rhi/GPUSceneSubsystemTests.cpp
     rhi/HistoryResourcesTests.cpp
     rhi/RenderGraphTests.cpp

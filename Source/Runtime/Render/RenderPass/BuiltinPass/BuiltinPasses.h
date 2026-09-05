@@ -10,6 +10,7 @@ namespace builtin_pass {
 
 std::unique_ptr<RenderGraphPass> createClearColorPass();
 std::unique_ptr<RenderGraphPass> createCopyColorPass();
+std::unique_ptr<RenderGraphPass> createFinalBlitPass();
 std::unique_ptr<RenderGraphPass> createTriangleRasterPass();
 std::unique_ptr<RenderGraphPass> createImageSamplePass();
 std::unique_ptr<RenderGraphPass> createBunnyWireframePass();

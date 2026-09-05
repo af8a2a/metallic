@@ -442,6 +442,13 @@ bool buildActiveGraph(
     for (const RenderGraphOutput& output : graph.outputs()) {
         visitInputs(output.passName);
     }
+    const std::string presentationOutput = graph.presentationOutputName();
+    if (!presentationOutput.empty()) {
+        std::string passName;
+        std::string fieldName;
+        splitRenderGraphFieldName(presentationOutput, passName, fieldName);
+        visitInputs(passName);
+    }
     for (const std::string& output : extraOutputs) {
         std::string passName;
         std::string fieldName;

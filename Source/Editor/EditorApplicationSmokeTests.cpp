@@ -5,6 +5,7 @@
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
+#include <cstdlib>
 
 namespace metallic {
 
@@ -28,10 +29,44 @@ bool EditorApplication::runMultiViewportSmokeTest()
             : nullptr;
     };
 
+    const bool testFinalBlit = std::getenv("METALLIC_SMOKE_TEST_FINAL_BLIT") != nullptr;
+    const std::string sourceOutput = activePreviewOutput_;
+    std::string finalInput;
+    uint32_t finalId = 0;
+    uint32_t finalEdgeId = 0;
+    if (testFinalBlit) {
+        renderGraph_.clearOutputs();
+        addRenderGraphNode("FinalBlitPass", ImVec2(-1.0f, -1.0f));
+        finalId = static_cast<uint32_t>(selectedGraphNodeId_);
+        const render::RenderGraphNode* node = renderGraph_.findNode(finalId);
+        if (!expect(node != nullptr && activePreviewOutput_ == renderGraph_.presentationOutputName(),
+                "Adding FinalBlit selects its automatic output")) {
+            return false;
+        }
+        finalInput = render::makeRenderGraphFieldName(node->name, "source");
+    }
     renderGraphEditorOpen_ = true;
     SDL_WindowID closedWindowId = 0;
     for (uint32_t index = 0; index < 16; ++index) {
         auto profileFrame = profiler_.beginFrame();
+        if (testFinalBlit && index == 2) {
+            const render::RenderGraphEdge* edge = renderGraph_.addEdge(sourceOutput, finalInput);
+            if (!expect(edge != nullptr, "Connect scene output to FinalBlit")) {
+                return false;
+            }
+            finalEdgeId = edge->id;
+            viewportPreviewValid_ = false;
+            if (!expect(activePreviewRenderGraphNode() != renderGraph_.findNode(finalId),
+                    "Source runtime settings remain available through FinalBlit")) {
+                return false;
+            }
+        } else if (testFinalBlit && index == 8) {
+            renderGraph_.removeEdge(finalEdgeId);
+            viewportPreviewValid_ = false;
+        } else if (testFinalBlit && index == 12) {
+            renderGraph_.renameNode(finalId, "FinalPresentation");
+            viewportPreviewValid_ = false;
+        }
         if (index == 4) {
             SDL_Window* graph = graphWindow();
             if (!expect(graph != nullptr && SDL_SetWindowSize(graph, 960, 640) &&
@@ -72,6 +107,14 @@ bool EditorApplication::runMultiViewportSmokeTest()
             return false;
         }
 
+        if (testFinalBlit && !expect(viewportPreviewValid_ &&
+                activePreviewOutput_ == renderGraph_.presentationOutputName() &&
+                graphExecutor_->outputResource(activePreviewOutput_) != nullptr &&
+                renderGraph_.outputs().empty(),
+                "FinalBlit presents without manually marked outputs")) {
+            return false;
+        }
+
         if (index == 10 || index == 11) {
             if (!expect(!renderGraphEditorOpen_, "Native close only closes the graph editor")) {
                 return false;
@@ -108,6 +151,9 @@ bool EditorApplication::runMultiViewportSmokeTest()
             }
         }
         SDL_Delay(10);
+    }
+    if (testFinalBlit) {
+        spdlog::info("[Smoke FinalBlit] Passed automatic output, connection, disconnection and rename");
     }
     spdlog::info("[Smoke Viewports] Passed open, resize, minimize, restore, close, reopen and resource retirement");
     return true;

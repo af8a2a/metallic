@@ -71,6 +71,7 @@ public:
     void markDirty() { dirty_ = true; }
     void clear();
 
+    std::string presentationOutputName() const;
     std::string firstOutputName() const;
 
     static RenderGraph createDefaultTriangleGraph();

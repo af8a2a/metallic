@@ -745,6 +745,8 @@ struct RenderGraphExecutor::Impl {
                             changed)) {
                         return makeError(Error::InvalidArgument);
                     }
+                } else if (!destinationField->matchOutputExtent) {
+                    // Resampling inputs keep their producer's independent extent.
                 } else if (!destinationHasTextureOutputs) {
                     if (!constrainDimension(
                             source.width,
@@ -781,6 +783,8 @@ struct RenderGraphExecutor::Impl {
                             changed)) {
                         return makeError(Error::InvalidArgument);
                     }
+                } else if (!destinationField->matchOutputExtent) {
+                    // Resampling inputs keep their producer's independent extent.
                 } else if (!destinationHasTextureOutputs) {
                     if (!constrainDimension(
                             source.height,
@@ -909,7 +913,8 @@ struct RenderGraphExecutor::Impl {
                     if (usage == TextureUsageBits::None) {
                         usage = TextureUsageBits::ColorAttachment;
                     }
-                    if (isOutputMarked(graph, fullName) || options.enablePreviewOutputAccess) {
+                    if (field.presentationOutput || isOutputMarked(graph, fullName) ||
+                        options.enablePreviewOutputAccess) {
                         usage = addTextureUsage(usage, TextureUsageBits::TransferSource);
                         usage = addTextureUsage(usage, TextureUsageBits::Sampled);
                     }

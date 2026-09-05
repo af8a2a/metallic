@@ -1036,16 +1036,12 @@ bool RenderGraph::validate(std::string& log) const
         log = validationPrefix("graph has no nodes");
         return false;
     }
-    if (outputs_.empty()) {
-        log = validationPrefix("graph has no marked output");
-        return false;
-    }
-
     std::unordered_set<uint32_t> ids;
     std::unordered_set<uint32_t> edgeIds;
     std::unordered_set<std::string> names;
     std::unordered_map<std::string, RenderPassReflection> reflections;
     const RenderGraphCompileContext reflectContext{};
+    std::string presentationOutput;
 
     for (const RenderGraphNode& node : nodes_) {
         if (node.id == 0 || !ids.insert(node.id).second) {
@@ -1064,6 +1060,20 @@ bool RenderGraph::validate(std::string& log) const
         pass->setProperties(node.properties);
         RenderPassReflection reflection = pass->reflect(reflectContext);
         for (const RenderGraphField& field : reflection.fields()) {
+            if (field.presentationOutput) {
+                if (field.visibility != RenderGraphFieldVisibility::Output ||
+                    field.resourceType != RenderGraphResourceType::Texture2D) {
+                    log = validationPrefix("presentation requires a texture output");
+                    return false;
+                }
+                const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
+                if (!presentationOutput.empty()) {
+                    log = validationPrefix("multiple presentation outputs: '" + presentationOutput +
+                        "' and '" + fullName + "'");
+                    return false;
+                }
+                presentationOutput = fullName;
+            }
             if (!accessMatchesResourceType(field.access, field.resourceType)) {
                 log = validationPrefix(
                     std::string("field access does not match resource type '") +
@@ -1098,6 +1108,11 @@ bool RenderGraph::validate(std::string& log) const
             }
         }
         reflections.emplace(node.name, std::move(reflection));
+    }
+
+    if (outputs_.empty() && presentationOutput.empty()) {
+        log = validationPrefix("graph has no marked output or presentation output");
+        return false;
     }
 
     for (const RenderGraphOutput& output : outputs_) {
@@ -1190,8 +1205,29 @@ void RenderGraph::clear()
     markDirty();
 }
 
+std::string RenderGraph::presentationOutputName() const
+{
+    for (const RenderGraphNode& node : nodes_) {
+        std::unique_ptr<RenderGraphPass> pass = createRenderGraphPass(node.type);
+        if (pass == nullptr) {
+            continue;
+        }
+        pass->setProperties(node.properties);
+        const RenderPassReflection reflection = pass->reflect(RenderGraphCompileContext{});
+        for (const RenderGraphField& field : reflection.fields()) {
+            if (field.visibility == RenderGraphFieldVisibility::Output && field.presentationOutput) {
+                return makeRenderGraphFieldName(node.name, field.name);
+            }
+        }
+    }
+    return {};
+}
+
 std::string RenderGraph::firstOutputName() const
 {
+    if (std::string output = presentationOutputName(); !output.empty()) {
+        return output;
+    }
     if (outputs_.empty()) {
         return {};
     }

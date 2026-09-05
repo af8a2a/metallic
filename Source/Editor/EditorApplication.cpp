@@ -3811,18 +3811,19 @@ void EditorApplication::drawStatisticsPanel()
 
 render::RenderGraphNode* EditorApplication::activePreviewRenderGraphNode()
 {
-    render::RenderGraphNode* node = activePreviewOutput_.empty()
-        ? nullptr
-        : findRenderGraphNodeForOutput(renderGraph_, activePreviewOutput_);
-    if (node != nullptr) {
-        return node;
+    render::RenderGraphNode* node = findRenderGraphNodeForOutput(renderGraph_, activePreviewOutput_);
+    if (node == nullptr) {
+        node = findRenderGraphNodeForOutput(renderGraph_, renderGraph_.firstOutputName());
     }
-
-    const std::string fallbackOutput = renderGraph_.firstOutputName();
-    if (fallbackOutput.empty() || fallbackOutput == activePreviewOutput_) {
-        return nullptr;
+    // Keep the source pass's runtime settings and camera available through FinalBlit.
+    if (node != nullptr && node->type == "FinalBlitPass") {
+        for (const render::RenderGraphEdge& edge : renderGraph_.edges()) {
+            if (edge.dstPass == node->name && edge.dstField == "source") {
+                return renderGraph_.findNode(edge.srcPass);
+            }
+        }
     }
-    return findRenderGraphNodeForOutput(renderGraph_, fallbackOutput);
+    return node;
 }
 
 render::RenderGraphNode* EditorApplication::viewportCameraRenderGraphNode()
@@ -5949,6 +5950,12 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
         return false;
     }
 
+    if (!activePreviewOutput_.empty() &&
+        findRenderGraphNodeForOutput(renderGraph_, activePreviewOutput_) == nullptr) {
+        activePreviewOutput_ = renderGraph_.firstOutputName();
+        copyToBuffer(activePreviewOutput_, previewOutputBuffer_, sizeof(previewOutputBuffer_));
+        viewportPreviewValid_ = false;
+    }
     const std::string previewOutput = activePreviewOutput_.empty()
         ? renderGraph_.firstOutputName()
         : activePreviewOutput_;
@@ -7047,6 +7054,10 @@ void EditorApplication::addRenderGraphNode(std::string type, ImVec2 screenPositi
     if (type.empty()) {
         return;
     }
+    if (type == "FinalBlitPass" && !renderGraph_.presentationOutputName().empty()) {
+        renderGraphStatus_ = "The graph already has a FinalBlit presentation output";
+        return;
+    }
 
     const std::string nodeName = makeUniqueNodeName(renderGraph_, type);
     render::RenderGraphProperties properties = defaultPropertiesForPass(type);
@@ -7072,6 +7083,11 @@ void EditorApplication::addRenderGraphNode(std::string type, ImVec2 screenPositi
 
     selectedGraphNodeId_ = static_cast<int>(node->id);
     selectedGraphLinkId_ = -1;
+    if (node->type == "FinalBlitPass") {
+        activePreviewOutput_ = renderGraph_.presentationOutputName();
+        copyToBuffer(activePreviewOutput_, previewOutputBuffer_, sizeof(previewOutputBuffer_));
+        copyToBuffer(activePreviewOutput_, graphOutputBuffer_, sizeof(graphOutputBuffer_));
+    }
     viewportPreviewValid_ = false;
     renderGraphStatus_ = std::string("Added ") + node->name;
 }
@@ -7199,7 +7215,7 @@ void EditorApplication::drawRenderGraphNode(const render::RenderGraphNode& node)
     for (const render::RenderGraphField& field : reflection.fields()) {
         if (field.visibility == render::RenderGraphFieldVisibility::Output) {
             const std::string fullName = render::makeRenderGraphFieldName(node.name, field.name);
-            const bool markedOutput = isMarkedRenderGraphOutput(renderGraph_, fullName);
+            const bool markedOutput = field.presentationOutput || isMarkedRenderGraphOutput(renderGraph_, fullName);
             const bool previewOutput = fullName == activePreviewOutput_;
             const int attributeId = graphOutputAttributeId(node, outputIndex++);
             if (markedOutput) {
@@ -7216,7 +7232,7 @@ void EditorApplication::drawRenderGraphNode(const render::RenderGraphNode& node)
             label += "  ";
             label += renderGraphFieldTag(field);
             if (markedOutput) {
-                label += "  [Graph Output]";
+                label += field.presentationOutput ? "  [Present]" : "  [Graph Output]";
             }
             if (previewOutput) {
                 label += "  [Preview]";
@@ -7439,7 +7455,8 @@ void EditorApplication::drawRenderGraphPanel()
         if (ImGui::MenuItem("Preview This Output")) {
             setActivePreviewOutput(graphOutputBuffer_);
         }
-        if (ImGui::MenuItem("Set Graph Output")) {
+        if (ImGui::MenuItem("Set Graph Output", nullptr, false,
+                graphOutputBuffer_ != renderGraph_.presentationOutputName())) {
             markRenderGraphOutput(graphOutputBuffer_);
         }
         ImGui::EndPopup();
@@ -7550,6 +7567,15 @@ void EditorApplication::drawRenderGraphSettingsPanel()
         ImGui::EndCombo();
     }
     ImGui::Separator();
+    const std::string presentationOutput = renderGraph_.presentationOutputName();
+    if (!presentationOutput.empty()) {
+        ImGui::TextUnformatted("Final Output (automatic)");
+        ImGui::TextWrapped("%s", presentationOutput.c_str());
+        if (ImGui::Button("Show Final Output")) {
+            setActivePreviewOutput(presentationOutput);
+        }
+        ImGui::Separator();
+    }
     ImGui::TextUnformatted("Graph Output");
     ImGui::PushItemWidth(-1.0f);
     ImGui::InputText("##GraphOutput", graphOutputBuffer_, sizeof(graphOutputBuffer_));
@@ -7815,7 +7841,10 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         for (const render::RenderGraphField& field : reflection.fields()) {
             const std::string fullName = render::makeRenderGraphFieldName(node->name, field.name);
             ImGui::PushID(fullName.c_str());
-            if (field.visibility == render::RenderGraphFieldVisibility::Output) {
+            if (field.presentationOutput) {
+                ImGui::TextUnformatted("Present (automatic)");
+                ImGui::SameLine();
+            } else if (field.visibility == render::RenderGraphFieldVisibility::Output) {
                 bool output = isMarkedRenderGraphOutput(renderGraph_, fullName);
                 if (ImGui::Checkbox("Graph Output", &output)) {
                     if (output) {

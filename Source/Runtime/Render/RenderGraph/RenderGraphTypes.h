@@ -105,6 +105,10 @@ struct RenderGraphField {
     BufferViewType bufferViewType = BufferViewType::Raw;
     ResourceState state = ResourceState::ColorAttachment;
     bool optional = false;
+    // Presentation outputs are execution roots without a manual markOutput().
+    bool presentationOutput = false;
+    // Disable for inputs that can be resampled to a different output extent.
+    bool matchOutputExtent = true;
     uint32_t width = 0;
     uint32_t height = 0;
     uint64_t size = 0;
