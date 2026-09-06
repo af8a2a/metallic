@@ -4075,7 +4075,7 @@ void EditorApplication::drawLightingControls()
     ImGui::TextUnformatted("Physical Lighting (metres)");
     ImGui::BeginDisabled(!scene_.valid());
     ImGui::PushID("WorldLighting");
-    scene::LightingSettings lighting = renderWorld_.lighting();
+    scene::LightingSettings lighting = scene_.lighting();
     bool changed = ImGui::DragFloat("Exposure EV100", &lighting.exposureEV100,
         0.1f, -32.0f, 32.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     for (const char* type : {"directional", "point", "spot"}) {
@@ -4095,6 +4095,12 @@ void EditorApplication::drawLightingControls()
         auto& p = light.properties;
         ImGui::PushID(static_cast<int>(i));
         if (ImGui::TreeNode("Light", "%s #%zu", light.name.c_str(), i + 1)) {
+            if (light.imported.has_value()) {
+                ImGui::TextDisabled("Imported source: %s / node %d",
+                    light.imported->sourceId.empty() ? "<scene>" : light.imported->sourceId.c_str(),
+                    light.imported->sourceNodeIndex);
+                ImGui::TextWrapped("Pose follows the source hierarchy. World-space edits are stored as local offsets.");
+            }
             changed |= ImGui::Checkbox("Enabled", &light.enabled);
             float color[] = {p.color.x, p.color.y, p.color.z};
             if (ImGui::ColorEdit3("Linear color", color, ImGuiColorEditFlags_Float)) {
@@ -4169,7 +4175,7 @@ void EditorApplication::drawLightingControls()
     ImGui::PopID();
     ImGui::EndDisabled();
     if (changed && scene_.setLighting(lighting)) {
-        renderWorld_.setLighting(std::move(lighting));
+        renderWorld_.setLighting(scene_.lighting());
         sceneNonTransformDirty_ = true;
         updateSceneDirtyState();
         viewportPreviewNeedsRender_ = true;
@@ -4592,6 +4598,7 @@ bool EditorApplication::applySceneEditValue(
     if (light == nullptr || !scene_.setObjectLightProperties(object, *light)) {
         return false;
     }
+    renderWorld_.setLighting(scene_.lighting());
     notifyScenePropertiesChanged();
     return true;
 }
@@ -5226,6 +5233,11 @@ void EditorApplication::drawSelectedLightComponentInspector()
     const bool point = properties.type == "point";
     const bool spot = properties.type == "spot";
     const bool supportedType = directional || point || spot;
+    const auto& nativeLights = scene_.lighting().lights;
+    const bool hasNativeLight = std::any_of(nativeLights.begin(), nativeLights.end(),
+        [&object](const scene::PunctualLight& candidate) {
+            return candidate.imported.has_value() && candidate.imported->object == object.entity();
+        });
     const char* readOnlyReason = nullptr;
     if (object.hasComponent<scene::GeneratedComponent>()) {
         readOnlyReason = "Generated lights are runtime-owned and cannot be saved.";
@@ -5237,6 +5249,8 @@ void EditorApplication::drawSelectedLightComponentInspector()
         readOnlyReason = "Light render snapshot mapping is unavailable; properties are read-only.";
     } else if (!supportedType) {
         readOnlyReason = "This light type is not supported by the Inspector.";
+    } else if (snapshot->virtualLightSceneIdentity != 0 && !hasNativeLight) {
+        readOnlyReason = "The imported virtual light was removed. Its source metadata is read-only.";
     } else if (gizmoWasUsing_ || inspectorTransformEditing_ || ImGuizmo::IsUsingAny()) {
         readOnlyReason = "Finish the active transform edit before changing light properties.";
     } else if (inspectorPropertyEditing_ &&
@@ -5382,6 +5396,7 @@ void EditorApplication::drawSelectedLightComponentInspector()
                 properties);
         }
         if (scene_.setObjectLightProperties(object.entity(), edited)) {
+            renderWorld_.setLighting(scene_.lighting());
             notifyScenePropertiesChanged();
             sceneStatus_ = "Updated LightComponent properties.";
         } else {
@@ -6595,9 +6610,9 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
     renderWorld_.notifySceneChanged();
     resetTransformHistory();
     sceneSelection_ = SceneSelection{};
-    sceneStatus_ = "StreamAsset-only sample: editor scene loading skipped for " + sample.desc.scenePath;
+    sceneStatus_ = "Sample uses no editor scene: " + sample.desc.name;
     spdlog::info(
-        "[Startup] Skipped editor scene and static RTAS loading for StreamAsset-only sample '{}'",
+        "[Startup] Skipped editor scene and static RTAS loading for sample '{}'",
         sample.desc.name);
 }
 

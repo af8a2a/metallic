@@ -63,6 +63,29 @@ bool applySampleScenePath(RenderGraph& graph, const RenderSampleDesc& desc, std:
     return true;
 }
 
+class LightGridDebugSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "light-grid-debug"; }
+    std::string_view name() const override { return "LightGrid / Coverage Heatmap"; }
+    std::string_view category() const override { return "Lighting"; }
+    std::string_view description() const override
+    {
+        return "Asset-free clustered-light test bench with deterministic point/spot lights, depth slices and overflow diagnostics.";
+    }
+    std::string scenePath() const override { return {}; }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/light_grid_debug.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {}; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        return RenderSampleEnvironmentDesc{.enabled = false};
+    }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class RealtimeLightingSample final : public RenderSample {
 public:
     std::string_view id() const override { return "realtime-lighting"; }
@@ -557,8 +580,10 @@ const RenderSample& gpuDrivenTerrainP1UnifiedSample()
 std::vector<const RenderSample*> builtInRenderSamples()
 {
     static const RealtimeLightingSample realtimeLighting;
+    static const LightGridDebugSample lightGridDebug;
     return {
         &realtimeLighting,
+        &lightGridDebug,
         &pathTracingMeetMatSample(),
         &pathTracingSharcMeetMatSample(),
         &pathTracingNrcMeetMatSample(),
@@ -613,7 +638,7 @@ bool loadRenderSample(
         outMessage = "Sample graphPath is required";
         return false;
     }
-    if (desc.scenePath.empty()) {
+    if (desc.scenePath.empty() && (desc.loadSceneInEditor || !desc.scenePathTargets.empty())) {
         outMessage = "Sample scenePath is required";
         return false;
     }

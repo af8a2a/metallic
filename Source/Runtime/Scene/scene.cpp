@@ -2525,6 +2525,7 @@ LightProperties makeLightProperties(const tinygltf::Light& light)
         .range = light.range,
         .innerConeAngle = light.spot.innerConeAngle,
         .outerConeAngle = light.spot.outerConeAngle,
+        .intensityUnit = light.type == "directional" ? LightUnit::Lux : LightUnit::Candela,
     };
 }
 
@@ -4668,6 +4669,17 @@ bool Scene::setObjectLightProperties(
     return true;
 }
 
+bool Scene::virtualizeImportedLight(SceneEntity object)
+{
+    for (RenderLight& light : lights_) {
+        if (light.object == object) {
+            light.virtualLightSceneIdentity = resourceIdentity_;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool Scene::setSourceMountMatrix(
     std::string_view sourceId,
     const float4x4& mountMatrix)
@@ -4870,6 +4882,7 @@ void Scene::syncSceneNodeProjection()
 
 void Scene::clearParsedData()
 {
+    lighting_ = LightingSettings{};
     filename_.clear();
     sceneName_.clear();
     sceneIndex_ = kInvalidSceneIndex;

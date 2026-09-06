@@ -12,6 +12,10 @@ void registerBuiltInRenderGraphPasses()
     registered = true;
 
     registerRenderGraphPassType(
+        "LightGridDebugPass",
+        "Visualize clustered light coverage, depth slices and list overflow with an asset-free test bench",
+        []() { return builtin_pass::createLightGridDebugPass(); });
+    registerRenderGraphPassType(
         "ClearColorPass",
         "Clear a color texture",
         []() { return builtin_pass::createClearColorPass(); });

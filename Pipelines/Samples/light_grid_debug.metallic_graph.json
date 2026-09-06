@@ -1,0 +1,51 @@
+{
+    "name": "LightGridDebug",
+    "version": 1,
+    "nodes": [
+        {
+            "id": 1,
+            "name": "LightGridDebug",
+            "type": "LightGridDebugPass",
+            "position": {"x": 300, "y": 250},
+            "properties": {
+                "source": "bench",
+                "visualization": "peak",
+                "sliceIndex": 16,
+                "viewDepth": 10.0,
+                "heatmapMaxLights": 32,
+                "showGrid": true,
+                "showLegend": true,
+                "showCounts": false,
+                "includeGlobalLights": false,
+                "tileSize": 32,
+                "depthSliceCount": 32,
+                "maxLightsPerCell": 64,
+                "camera": {
+                    "eye": [0.0, 0.0, 0.0],
+                    "center": [0.0, 0.0, -1.0],
+                    "up": [0.0, 1.0, 0.0],
+                    "fovDegrees": 60.0,
+                    "znear": 0.1,
+                    "zfar": 60.0,
+                    "projection": "perspective",
+                    "orthoHeight": 20.0
+                },
+                "lightCount": 512,
+                "lightRange": 3.0,
+                "seed": 1,
+                "spotFraction": 0.25,
+                "layout": "volume",
+                "animate": false
+            }
+        },
+        {
+            "id": 2,
+            "name": "FinalBlit",
+            "type": "FinalBlitPass",
+            "position": {"x": 800, "y": 250},
+            "properties": {}
+        }
+    ],
+    "edges": [{"id": 1, "src": "LightGridDebug.color", "dst": "FinalBlit.source"}],
+    "outputs": []
+}

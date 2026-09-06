@@ -31,7 +31,7 @@ public:
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
     bool setEnvironment(EnvironmentSettings environment);
     bool setLighting(LightingSettings lighting);
-    const LightingSettings& lighting() const { return lighting_; }
+    const LightingSettings& lighting() const;
 
     bool dirty() const { return dirty_; }
     void setDirty(bool dirty) { dirty_ = dirty; }
@@ -54,12 +54,15 @@ private:
         const SceneLoadProgressCallback& progressCallback,
         bool deferMeshletBuild);
     bool applySidecar(const std::filesystem::path& path);
+    void importVirtualLights();
 
     std::filesystem::path sourcePath_;
     std::filesystem::path documentPath_;
     std::string documentWarning_;
     EnvironmentSettings environment_;
-    LightingSettings lighting_;
+    // Remembers imported nodes even after their native light is deleted, so a
+    // reload does not recreate it. New source nodes can still be imported.
+    std::vector<ImportedLightBinding> importedLightSources_;
     bool sidecarLoaded_ = false;
     bool hasEnvironmentSettings_ = false;
     bool compositionDocument_ = false;

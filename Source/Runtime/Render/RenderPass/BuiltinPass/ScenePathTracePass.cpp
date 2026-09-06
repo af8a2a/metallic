@@ -1401,8 +1401,9 @@ public:
             return lightResult ? makeError(Error::InvalidArgument) : lightResult;
         }
         const uint64_t previousLightRevision = lights_.revision();
+        const auto resolvedLighting = resolveSceneLighting(lightScene, context.world());
         lightResult = lights_.update(*device_, context.commandBuffer(), *context.subsystems(),
-            lightScene, context.world() != nullptr ? context.world()->lighting() : scene::LightingSettings{});
+            lightScene, resolvedLighting);
         if (!lightResult) { return lightResult; }
         if (previousLightRevision != lights_.revision()) {
             resetAccumulation_ = true;

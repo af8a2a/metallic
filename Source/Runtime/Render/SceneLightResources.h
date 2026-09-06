@@ -10,6 +10,12 @@
 
 namespace metallic::render {
 
+class RenderWorld;
+
+// A resolved/override scene owns its authored imports. Only independent manual
+// world lights may accompany a different scene; same-scene world edits win.
+scene::LightingSettings resolveSceneLighting(const scene::Scene* actualScene, const RenderWorld* world);
+
 // Shared C++/Slang ABI. Element zero contains count and exposure; lights start at 1.
 struct GpuPunctualLight {
     float positionRange[4] = {};
@@ -21,6 +27,8 @@ static_assert(sizeof(GpuPunctualLight) == 64);
 
 // Stable source slots: imported lights first, then virtual world lights. Inactive
 // or invalid sources retain their slot and provenance, with enabled=false.
+// Document-owned imports emit only from their native virtual slot, whose pose
+// and visibility are resolved against the matching current RenderLight source.
 struct SceneLightRecord {
     GpuPunctualLight gpu;
     int32_t sourceRenderLightIndex = scene::kInvalidSceneIndex;

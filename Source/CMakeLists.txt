@@ -78,6 +78,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinRenderPasses.cpp
     Runtime/Render/RenderPass/BuiltinPass/BunnyWireframePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ClearColorPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/LightGridDebugPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/CopyColorPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/FinalBlitPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp

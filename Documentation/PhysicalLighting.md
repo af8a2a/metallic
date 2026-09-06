@@ -1,10 +1,20 @@
 # Physical lighting
 
-Select **Real-time / Physical Lighting** in Samples, then use the **Physical Lighting** panel to add, disable, edit or remove directional, point and spot lights. World lights and manual exposure are saved in `world.lighting` in the scene document; they survive reload and Discard restores the saved state. Imported glTF lights remain editable through their LightComponent Inspector, including intensity units and undo/redo. Changing units preserves the physical intensity (zero cannot be converted to a finite EV).
+Select **Real-time / Physical Lighting** in Samples, then use the **Physical Lighting** panel to add, disable, edit or remove directional, point and spot lights. Imported glTF lights appear in the same panel as native virtual lights. World lights and manual exposure are saved in `world.lighting` in the scene document; they survive reload and Discard restores the saved state. Changing units preserves the physical intensity (zero cannot be converted to a finite EV).
+
+## Imported glTF lights
+
+Each active glTF node that references a punctual light creates its own native `PunctualLight`, including separate instances of the same glTF light definition. The document identifies the source with `(sourceId, sourceNodeIndex)`, so repeated assets in a composed scene remain distinct. Names, linear colors, intensity, range and cone angles are preserved; directional intensity is lux and point/spot intensity is candela. An omitted or zero range remains unbounded.
+
+Imported virtual lights retain a source-node binding. Their position and emission direction follow the complete parent hierarchy and source mount, with glTF's local -Z emission axis. The Physical Lighting panel displays the current world-space pose and the import source; editing that pose stores a source-local offset rather than detaching the light. Parent/source visibility and the light's own Enabled switch both control its contribution. Manual virtual lights without an import binding continue to use independent world-space poses.
+
+The source `LightComponent` remains hierarchy and import metadata, not a second emitter. Its Inspector edits the same native light properties, including intensity units and undo/redo; removing the native light makes the old Inspector read-only. Saved edits and removals survive reload, and removed imported lights are not recreated from their original defaults. Scene replacement uses the new document's lights instead of appending another copy. The common runtime light packing resolves the live source transform and emits a converted light only once across real-time shading, path tracing and clustered LightGrid consumers.
+
+A scene resolved independently by a render-graph pass or selected through `sourceOverride` uses its own authored lights, adding only manually created, unbound world lights; it never borrows imported-light bindings from another scene.
 
 ## Units and calibration
 
-Scene distances are **metres**. Colors are linear RGB multipliers. The default imported `si` unit follows [KHR_lights_punctual](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_lights_punctual/README.md): directional intensity is lux; point/spot intensity is candela.
+Scene distances are **metres**. Colors are linear RGB multipliers. glTF imports follow [KHR_lights_punctual](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_lights_punctual/README.md): directional intensity is lux; point/spot intensity is candela. The source `si` convention and native Lux/Candela authoring units represent the same physical values.
 
 | Light | Authoring units | Conversion to transport units |
 | --- | --- | --- |
@@ -25,13 +35,13 @@ An HDR file is not inherently calibrated. To compare it against physical lamps, 
 - `SceneRealtimeLightingPass` evaluates OpenPBR direct lighting with one primary ray and shadow rays for directional/point/spot lights. Diffuse environment GI is a deterministic nine-coefficient SH lookup. It is independent of the diagnostic `VisibilityBufferPass` and requires Vulkan ray-query support. It has no stochastic accumulation, multi-bounce transport, environment specular prefilter or indirect visibility solver; SH GI is an unoccluded low-frequency diffuse approximation modulated by material occlusion.
 - `ScenePathTracePass` consumes the same physical lights as delta-light next-event estimates (MIS weight 1), alongside the existing environment PDF/MIS sampler. It does not sample the irradiance SH as radiance. OpenPBR supports transmission-aware shadow transport; the standard material path uses its direct-light BRDF and opaque shadow queries.
 - Environment PDF construction, SH projection and cosine convolution run entirely on the GPU. SH covers bands l=0,1,2 (nine RGB coefficients), with convolution factors π, 2π/3, π/4. Consumers evaluate irradiance in the rotated environment frame and apply diffuse albedo/π exactly once. The procedural sky is also projected on the GPU.
-- Light buffers are immutable per update and retained for in-flight frames. Light changes invalidate path-tracing history and radiance caches. Imported scene lights and world lights are additive; light visibility/enabled state excludes them from the buffer.
+- Light buffers are immutable per update and retained for in-flight frames. Light changes invalidate path-tracing history and radiance caches. Imported native lights and manually added world lights are additive; converted source metadata does not emit a duplicate contribution. Source visibility and virtual-light enabled state exclude inactive lights from the buffer.
 
 The existing RTXDI many-light benchmark retains its own synthetic benchmark lights; the physical scene-light path described here is the new real-time pass and the standard/OpenPBR path tracers.
 
 ## DrawSet light candidates
 
-`GPUSceneSubsystem::beginFrame` synchronizes imported scene lights and virtual world lights, including worlds without a Scene. Shared `SceneLightRecord` packing preserves source slots and the physical `GpuPunctualLight` data; disabled, invalid, black and zero-intensity sources retain their slots but do not enter `GPUSceneDrawSet::lights`.
+`GPUSceneSubsystem::beginFrame` synchronizes scene and virtual world lights, including worlds without a Scene. Shared `SceneLightRecord` packing resolves imported native-light bindings against the current source pose and suppresses duplicate imported emission. It preserves source slots and the physical `GpuPunctualLight` data; disabled, invalid, black and zero-intensity sources retain their slots but do not enter `GPUSceneDrawSet::lights`.
 
 `GPUScene::prepareView` collects candidates independently for each View/frame slot, alongside coarse mesh collection. It follows Unreal's `ComputeLightVisibility` (`Renderer/Private/SceneVisibility.cpp`) and `FSphere::FromCone` (`Core/Public/Math/Sphere.h`): point lights use their attenuation sphere; spot lights use a conservative sphere enclosing their radial range and outer cone. Non-normalized inward frustum planes are supported, tangency is retained, and invalid/zero planes are skipped. Neither mesh visibility predicates nor HZB occlusion remove lights. There is no screen-size or brightness threshold.
 
@@ -72,6 +82,8 @@ The design references local Unreal `Renderer/Private/LightGridInjection.cpp`, `S
 ## Validation
 
 `Photometry.UnitsAndValidation` and `SceneEditing.PhysicalLightingRoundTrip` verify units, negative EV, validation, imported overrides, virtual light persistence and discard. RHI tests `photometric_gpu_units_falloff_sh` and `photometric_realtime_render` verify GPU inverse-square attenuation, directional invariance, spot cutoff, unit equivalence, exposure, constant-environment irradiance and live light add/edit/remove.
+
+`SceneEditing.ImportedGltfLights*` covers per-node native-light creation, physical parameters, saved edits/deletions, legacy document loading, composed-source identities, transactional loads/edits, stale-setting rejection and orphaned bindings. RHI tests `imported_virtual_light_*` cover single-emitter ownership, live hierarchy/visibility binding, GPUScene candidate collection and independently resolved scene/source-override isolation.
 
 The `gpu_scene_light_*` tests cover source collection/lifetime, independent light revisions, per-view/frame-slot snapshots, conservative point/spot culling, perspective/orthographic camera planes and light-only world synchronization.
 

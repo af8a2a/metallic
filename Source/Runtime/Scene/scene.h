@@ -11,6 +11,7 @@
 #include "ml.h"
 #include "Runtime/Scene/SceneLoad.h"
 #include "Runtime/Scene/SceneGraph.h"
+#include "Runtime/Scene/SceneLighting.h"
 
 namespace metallic::scene {
 
@@ -285,6 +286,8 @@ struct RenderLight {
     float4x4 worldMatrix = float4x4::Identity();
     uint64_t contentRevision = 0;
     bool visible = true;
+    // Source-node metadata only when nonzero: a native PunctualLight owns emission.
+    uint64_t virtualLightSceneIdentity = 0;
 };
 
 // Stable description of one 3D asset mounted into a composed scene. The id,
@@ -326,6 +329,9 @@ public:
     bool setObjectVisible(SceneEntity object, bool visible);
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
+    // SceneDocument import transfers emission ownership while preserving source
+    // nodes, transform inheritance and editable LightComponent metadata.
+    bool virtualizeImportedLight(SceneEntity object);
     bool setSourceMountMatrix(std::string_view sourceId, const float4x4& mountMatrix);
     bool setSourceEnabled(std::string_view sourceId, bool enabled);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
@@ -361,10 +367,16 @@ public:
     const std::vector<RenderMaterial>& materials() const { return materials_; }
     const std::vector<RenderCamera>& cameras() const { return cameras_; }
     const std::vector<RenderLight>& lights() const { return lights_; }
+    // Authored document lights remain available when a render graph resolves
+    // this scene independently of the editor's active RenderWorld.
+    const LightingSettings& authoredLighting() const { return lighting_; }
     uint64_t transformRevision() const { return sceneGraph_.transformRevision(); }
     uint64_t contentRevision() const { return sceneGraph_.contentRevision(); }
     uint64_t visibilityRevision() const { return sceneGraph_.visibilityRevision(); }
     uint64_t resourceIdentity() const { return resourceIdentity_; }
+
+protected:
+    mutable LightingSettings lighting_;
 
 private:
     struct DeferredMeshletCacheTarget {

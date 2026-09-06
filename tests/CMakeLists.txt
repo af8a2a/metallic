@@ -103,6 +103,8 @@ add_executable(MetallicRhiTests
     rhi/FinalBlitTests.cpp
     rhi/GPUSceneSubsystemTests.cpp
     rhi/HistoryResourcesTests.cpp
+    rhi/ImportedVirtualLightTests.cpp
+    rhi/LightGridDebugPassTests.cpp
     rhi/PhotometricLightingTests.cpp
     rhi/RenderGraphTests.cpp
     rhi/RenderingTests.cpp

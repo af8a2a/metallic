@@ -129,6 +129,7 @@ void expectLightProperties(
 {
     EXPECT_EQ(actual.type, expected.type) << label << " type";
     expectVec3(actual.color, expected.color, label + " color");
+    EXPECT_EQ(actual.intensityUnit, expected.intensityUnit) << label << " intensityUnit";
     EXPECT_NEAR(actual.intensity, expected.intensity, 0.000000001)
         << label << " intensity";
     EXPECT_NEAR(actual.range, expected.range, 0.000000001) << label << " range";
@@ -160,6 +161,7 @@ void expectLightSnapshot(
 {
     EXPECT_EQ(actual.type, expected.type) << label << " type";
     expectVec3(actual.color, expected.color, label + " color");
+    EXPECT_EQ(actual.intensityUnit, expected.intensityUnit) << label << " intensityUnit";
     EXPECT_NEAR(actual.intensity, expected.intensity, 0.000000001)
         << label << " intensity";
     EXPECT_NEAR(actual.range, expected.range, 0.000000001) << label << " range";
@@ -789,6 +791,50 @@ std::filesystem::path writeEditablePropertiesScene(const std::filesystem::path& 
 }
 )json");
     return gltfPath;
+}
+
+std::filesystem::path writeNativePunctualScene(const std::filesystem::path& directory)
+{
+    std::filesystem::create_directories(directory);
+    const auto path = directory / "native_lights.gltf";
+    writeTextFile(path, R"json(
+{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "extensionsUsed": ["KHR_lights_punctual"],
+  "extensions": {
+    "KHR_lights_punctual": {
+      "lights": [
+        { "name": "Imported Sun", "type": "directional", "color": [1, 0.8, 0.6], "intensity": 12 },
+        { "name": "Shared Point", "type": "point", "color": [0.2, 0.4, 0.8], "intensity": 100, "range": 7 },
+        { "name": "Imported Spot", "type": "spot", "color": [0.7, 0.5, 0.3], "intensity": 40, "range": 9,
+          "spot": { "innerConeAngle": 0.1, "outerConeAngle": 0.6 } },
+        { "name": "Unused Definition", "type": "point", "intensity": 999 }
+      ]
+    }
+  },
+  "nodes": [
+    { "name": "Imported Root", "matrix": [0, 0, -2, 0, 0, 3, 0, 0, 4, 0, 0, 0, 10, 20, 30, 1],
+      "children": [1, 2, 3, 4] },
+    { "name": "Sun Node", "translation": [1, 0, 0], "extensions": { "KHR_lights_punctual": { "light": 0 } } },
+    { "name": "Point Node A", "translation": [0, 1, 0], "extensions": { "KHR_lights_punctual": { "light": 1 } } },
+    { "name": "Spot Node", "translation": [0, 0, 1], "extensions": { "KHR_lights_punctual": { "light": 2 } } },
+    { "name": "Point Node B", "translation": [-1, 0, 0], "extensions": { "KHR_lights_punctual": { "light": 1 } } }
+  ],
+  "scenes": [{ "nodes": [0] }]
+}
+)json");
+    return path;
+}
+
+const metallic::scene::PunctualLight* findImportedLight(
+    const metallic::scene::LightingSettings& settings, std::string_view sourceId, int32_t nodeIndex)
+{
+    const auto found = std::ranges::find_if(settings.lights, [&](const auto& light) {
+        return light.imported.has_value() && light.imported->sourceId == sourceId &&
+            light.imported->sourceNodeIndex == nodeIndex;
+    });
+    return found != settings.lights.end() ? &*found : nullptr;
 }
 
 std::filesystem::path writeGeneratedTangentScene(const std::filesystem::path& directory)
@@ -4703,7 +4749,9 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     std::filesystem::remove(SceneDocument::sidecarPathForSource(path));
     SceneDocument document;
     ASSERT_TRUE(document.load(path));
-    LightingSettings lighting;
+    LightingSettings lighting = document.lighting();
+    ASSERT_EQ(lighting.lights.size(), 1u);
+    ASSERT_TRUE(lighting.lights[0].imported.has_value());
     lighting.exposureEV100 = 12.0f;
     for (const char* type : {"directional", "point", "spot"}) {
         PunctualLight light;
@@ -4727,17 +4775,20 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     ASSERT_TRUE(document.save(message)) << message;
     SceneDocument restored;
     ASSERT_TRUE(restored.load(document.documentPath())) << restored.lastLoadResult().error;
-    ASSERT_EQ(restored.lighting().lights.size(), 3u);
+    ASSERT_EQ(restored.lighting().lights.size(), 4u);
     EXPECT_FLOAT_EQ(restored.lighting().exposureEV100, 12.0f);
     for (size_t i = 0; i < 3; ++i) {
-        const auto& light = restored.lighting().lights[i];
-        EXPECT_EQ(light.properties.type, lighting.lights[i].properties.type);
+        const auto& light = restored.lighting().lights[i + 1];
+        EXPECT_FALSE(light.imported.has_value());
+        EXPECT_EQ(light.properties.type, lighting.lights[i + 1].properties.type);
         EXPECT_EQ(light.properties.intensityUnit, LightUnit::EV100);
         EXPECT_DOUBLE_EQ(light.properties.intensity, -1.0);
         EXPECT_FLOAT_EQ(light.position.x, -1.0f);
         EXPECT_FLOAT_EQ(light.direction.y, -2.0f);
-        EXPECT_EQ(light.enabled, lighting.lights[i].enabled);
+        EXPECT_EQ(light.enabled, lighting.lights[i + 1].enabled);
     }
+    EXPECT_EQ(restored.lighting().lights[0].properties.intensityUnit, LightUnit::EV100);
+    EXPECT_DOUBLE_EQ(restored.lighting().lights[0].properties.intensity, -3.0);
     EXPECT_EQ(restored.lights()[0].intensityUnit, LightUnit::EV100);
     EXPECT_DOUBLE_EQ(restored.lights()[0].intensity, -3.0);
     auto invalid = lighting;
@@ -4745,9 +4796,426 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     EXPECT_FALSE(restored.setLighting(invalid));
     ASSERT_TRUE(restored.setLighting({}));
     ASSERT_TRUE(restored.revert(message)) << message;
-    EXPECT_EQ(restored.lighting().lights.size(), 3u);
+    EXPECT_EQ(restored.lighting().lights.size(), 4u);
     restored.clear();
     EXPECT_TRUE(restored.lighting().lights.empty());
+}
+
+TEST(SceneEditing, ImportedGltfLightsBecomeNativeVirtualLights)
+{
+    using namespace metallic::scene;
+    const auto path = writeNativePunctualScene(prepareOutputDirectory() / "native_gltf_import");
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(path));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(path)) << document.lastLoadResult().error;
+    EXPECT_FALSE(document.dirty());
+    ASSERT_EQ(document.lights().size(), 4u);
+    const LightingSettings imported = document.lighting();
+    ASSERT_EQ(imported.lights.size(), 4u);
+    const std::array<float3, 4> positions{float3(10, 20, 28), float3(10, 23, 30),
+        float3(14, 20, 30), float3(10, 20, 32)};
+    const std::array<const char*, 4> types{"directional", "point", "spot", "point"};
+    const std::array<double, 4> intensities{12.0, 100.0, 40.0, 100.0};
+    const std::array<double, 4> ranges{0.0, 7.0, 9.0, 7.0};
+    for (int32_t node = 1; node <= 4; ++node) {
+        const auto* light = findImportedLight(imported, "main", node);
+        ASSERT_NE(light, nullptr) << node;
+        EXPECT_EQ(light->properties.type, types[node - 1]);
+        EXPECT_EQ(light->properties.intensityUnit, node == 1 ? LightUnit::Lux : LightUnit::Candela);
+        EXPECT_DOUBLE_EQ(light->properties.intensity, intensities[node - 1]);
+        EXPECT_DOUBLE_EQ(light->properties.range, ranges[node - 1]);
+        EXPECT_TRUE(light->enabled);
+        EXPECT_FALSE(light->name.empty());
+        expectVec3(light->position, positions[node - 1], "imported world position");
+        expectVec3(light->direction, float3(-1, 0, 0), "imported normalized emission direction");
+        EXPECT_EQ(light->imported->object, document.objectForNode(node).entity());
+        EXPECT_EQ(light->imported->sceneIdentity, document.resourceIdentity());
+        expectVec3(light->imported->localPosition, float3(0.0f), "initial node-relative position");
+    }
+    const auto* spot = findImportedLight(imported, "main", 3);
+    ASSERT_NE(spot, nullptr);
+    EXPECT_DOUBLE_EQ(spot->properties.innerConeAngle, 0.1);
+    EXPECT_DOUBLE_EQ(spot->properties.outerConeAngle, 0.6);
+    expectVec3(spot->properties.color, float3(0.7f, 0.5f, 0.3f), "imported spot color");
+
+    float4x4 root = document.nodes()[0].localMatrix;
+    root.a03 += 5.0f;
+    root.a13 += 7.0f;
+    root.a23 += 9.0f;
+    ASSERT_TRUE(document.setNodeLocalMatrix(0, root));
+    LightingSettings moved = document.lighting();
+    for (int32_t node = 1; node <= 4; ++node) {
+        const auto* light = findImportedLight(moved, "main", node);
+        ASSERT_NE(light, nullptr);
+        expectVec3(light->position, positions[node - 1] + float3(5, 7, 9), "parent translation follows node");
+        EXPECT_DOUBLE_EQ(light->properties.intensity, intensities[node - 1]);
+        EXPECT_DOUBLE_EQ(light->properties.range, ranges[node - 1]);
+    }
+    root.a02 *= 2.0f;
+    root.a11 *= 2.0f;
+    root.a20 *= 2.0f;
+    ASSERT_TRUE(document.setNodeLocalMatrix(0, root));
+    moved = document.lighting();
+    const auto* scaled = findImportedLight(moved, "main", 2);
+    ASSERT_NE(scaled, nullptr);
+    expectVec3(scaled->position, float3(15, 33, 39), "non-uniform scale changes node pose");
+    EXPECT_DOUBLE_EQ(scaled->properties.intensity, 100.0);
+    EXPECT_DOUBLE_EQ(scaled->properties.range, 7.0);
+    expectVec3(scaled->direction, float3(-1, 0, 0), "scale does not change normalized emission");
+
+    auto edited = document.lighting();
+    auto native = std::ranges::find_if(edited.lights, [](const auto& light) {
+        return light.imported && light.imported->sourceNodeIndex == 3;
+    });
+    ASSERT_NE(native, edited.lights.end());
+    native->position = float3(21, 28, 33);
+    native->direction = float3(0, 0, -1);
+    native->properties.intensity = 27.0;
+    native->properties.range = 17.0;
+    ASSERT_TRUE(document.setLighting(edited));
+    const auto sourceObject = document.objectForNode(3);
+    const auto& sourceProperties = sourceObject.getComponent<LightComponent>().properties;
+    EXPECT_DOUBLE_EQ(sourceProperties.intensity, 27.0);
+    EXPECT_DOUBLE_EQ(sourceProperties.range, 17.0);
+    auto editedSnapshot = document.lighting();
+    const auto* editedSpot = findImportedLight(editedSnapshot, "main", 3);
+    ASSERT_NE(editedSpot, nullptr);
+    expectVec3(editedSpot->position, float3(21, 28, 33), "native world pose edit");
+    expectVec3(editedSpot->direction, float3(0, 0, -1), "native direction edit");
+    root.a03 += 3.0f;
+    ASSERT_TRUE(document.setNodeLocalMatrix(0, root));
+    editedSnapshot = document.lighting();
+    editedSpot = findImportedLight(editedSnapshot, "main", 3);
+    ASSERT_NE(editedSpot, nullptr);
+    expectVec3(editedSpot->position, float3(24, 28, 33), "edited local offset follows later parent transform");
+    expectVec3(editedSpot->direction, float3(0, 0, -1), "translation preserves edited emission direction");
+}
+
+TEST(SceneEditing, ImportedGltfLightsPersistDeletionAndTransactionalLoads)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "native_gltf_roundtrip";
+    const auto path = writeNativePunctualScene(directory);
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(path));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(path)) << document.lastLoadResult().error;
+    auto settings = document.lighting();
+    ASSERT_EQ(settings.lights.size(), 4u);
+    settings.exposureEV100 = 9.0f;
+    for (auto& light : settings.lights) {
+        if (light.imported->sourceNodeIndex == 2) {
+            light.name = "Edited imported point";
+            light.enabled = false;
+            light.position = float3(15, 24, 31);
+            light.properties.intensity = 225.0;
+        }
+    }
+    PunctualLight manual;
+    manual.name = "Hand-authored point";
+    manual.properties.intensityUnit = LightUnit::Candela;
+    manual.properties.intensity = 18.0;
+    settings.lights.push_back(manual);
+    ASSERT_TRUE(document.setLighting(settings));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    nlohmann::json saved;
+    {
+        std::ifstream stream(document.documentPath(), std::ios::binary);
+        ASSERT_TRUE(stream.good());
+        stream >> saved;
+    }
+    EXPECT_EQ(saved.value("version", 0), 3);
+    ASSERT_TRUE(saved["world"]["lighting"].contains("importedSources"));
+    EXPECT_EQ(saved["world"]["lighting"]["importedSources"].size(), 4u);
+    ASSERT_EQ(saved["world"]["lighting"]["lights"].size(), 5u);
+    size_t boundCount = 0;
+    for (const auto& light : saved["world"]["lighting"]["lights"]) {
+        if (!light.contains("source")) { continue; }
+        ++boundCount;
+        const auto& source = light["source"];
+        EXPECT_EQ(source.value("sourceId", ""), "main");
+        EXPECT_GE(source.value("nodeIndex", -1), 1);
+        EXPECT_LE(source.value("nodeIndex", -1), 4);
+        ASSERT_EQ(source["localPosition"].size(), 3u);
+        ASSERT_EQ(source["localDirection"].size(), 3u);
+        EXPECT_FALSE(source.contains("object"));
+        EXPECT_FALSE(source.contains("sceneIdentity"));
+    }
+    EXPECT_EQ(boundCount, 4u);
+
+    SceneDocument restored;
+    ASSERT_TRUE(restored.load(document.documentPath())) << restored.documentWarning();
+    for (uint32_t repeat = 0; repeat < 2; ++repeat) {
+        auto snapshot = restored.lighting();
+        ASSERT_EQ(snapshot.lights.size(), 5u);
+        EXPECT_FLOAT_EQ(snapshot.exposureEV100, 9.0f);
+        const auto* point = findImportedLight(snapshot, "main", 2);
+        ASSERT_NE(point, nullptr);
+        EXPECT_EQ(point->name, "Edited imported point");
+        EXPECT_FALSE(point->enabled);
+        EXPECT_DOUBLE_EQ(point->properties.intensity, 225.0);
+        EXPECT_EQ(point->properties.intensityUnit, LightUnit::Candela);
+        expectVec3(point->position, float3(15, 24, 31), "round-tripped imported world position");
+        EXPECT_EQ(point->imported->sceneIdentity, restored.resourceIdentity());
+        EXPECT_EQ(point->imported->object, restored.objectForNode(2).entity());
+        ASSERT_TRUE(restored.load(document.documentPath())) << restored.documentWarning();
+    }
+    ASSERT_TRUE(restored.setLighting({}));
+    ASSERT_TRUE(restored.revert(message)) << message;
+    EXPECT_EQ(restored.lighting().lights.size(), 5u);
+
+    auto unsaved = restored.lighting();
+    unsaved.exposureEV100 = 11.0f;
+    ASSERT_TRUE(restored.setLighting(unsaved));
+    const uint64_t identity = restored.resourceIdentity();
+    const auto entity = restored.objectForNode(2).entity();
+    EXPECT_FALSE(restored.load(directory / "missing.gltf"));
+    EXPECT_TRUE(restored.dirty());
+    EXPECT_EQ(restored.resourceIdentity(), identity);
+    EXPECT_EQ(restored.objectForNode(2).entity(), entity);
+    EXPECT_EQ(restored.lighting().lights.size(), 5u);
+    EXPECT_FLOAT_EQ(restored.lighting().exposureEV100, 11.0f);
+    bool cancelled = false;
+    EXPECT_FALSE(restored.load(path, [&](const SceneLoadProgress& progress) {
+        if (progress.phase == SceneLoadPhase::Finalizing) { cancelled = true; return false; }
+        return true;
+    }));
+    EXPECT_TRUE(cancelled);
+    EXPECT_TRUE(restored.dirty());
+    EXPECT_EQ(restored.resourceIdentity(), identity);
+    EXPECT_EQ(restored.objectForNode(2).entity(), entity);
+    EXPECT_EQ(restored.lighting().lights.size(), 5u);
+    EXPECT_FLOAT_EQ(restored.lighting().exposureEV100, 11.0f);
+
+    auto remaining = restored.lighting();
+    std::erase_if(remaining.lights, [](const auto& light) {
+        return light.imported && light.imported->sourceNodeIndex == 1;
+    });
+    ASSERT_EQ(remaining.lights.size(), 4u);
+    ASSERT_TRUE(restored.setLighting(remaining));
+    ASSERT_TRUE(restored.save(message)) << message;
+    ASSERT_TRUE(restored.load(document.documentPath())) << restored.documentWarning();
+    EXPECT_EQ(restored.lighting().lights.size(), 4u);
+    EXPECT_EQ(findImportedLight(restored.lighting(), "main", 1), nullptr);
+    // Imported RenderLight metadata is still present, but cannot resurrect a
+    // deleted native light when the document is opened again.
+    EXPECT_EQ(restored.lights().size(), 4u);
+    ASSERT_TRUE(restored.setLighting({}));
+    ASSERT_TRUE(restored.save(message)) << message;
+    ASSERT_TRUE(restored.load(path)) << restored.documentWarning();
+    EXPECT_TRUE(restored.lighting().lights.empty());
+    EXPECT_EQ(restored.lights().size(), 4u);
+    restored.clear();
+    EXPECT_TRUE(restored.lighting().lights.empty());
+}
+
+TEST(SceneEditing, ImportedGltfLightsUpgradeLegacyManualLighting)
+{
+    using namespace metallic::scene;
+    const auto path = writeNativePunctualScene(prepareOutputDirectory() / "native_gltf_legacy");
+    const auto sidecar = SceneDocument::sidecarPathForSource(path);
+    const nlohmann::json legacy{
+        {"version", 3}, {"source", path.filename().generic_string()}, {"sceneIndex", 0},
+        {"nodes", nlohmann::json::array()},
+        {"world", {{"lighting", {{"exposureEV100", 4.0}, {"lights", {
+            {{"name", "Legacy manual"}, {"type", "point"}, {"intensity", 13.0},
+                {"intensityUnit", "candela"}, {"position", {1.0, 2.0, 3.0}}}
+        }}}}}}};
+    writeTextFile(sidecar, legacy.dump(2));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(path)) << document.documentWarning();
+    const auto imported = document.lighting();
+    ASSERT_EQ(imported.lights.size(), 5u);
+    EXPECT_EQ(std::ranges::count_if(imported.lights,
+        [](const auto& light) { return light.imported.has_value(); }), 4);
+    const auto manual = std::ranges::find_if(imported.lights,
+        [](const auto& light) { return !light.imported.has_value(); });
+    ASSERT_NE(manual, imported.lights.end());
+    EXPECT_EQ(manual->name, "Legacy manual");
+    EXPECT_DOUBLE_EQ(manual->properties.intensity, 13.0);
+    EXPECT_FLOAT_EQ(document.lighting().exposureEV100, 4.0f);
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    ASSERT_TRUE(document.load(sidecar)) << document.documentWarning();
+    EXPECT_EQ(document.lighting().lights.size(), 5u);
+}
+
+TEST(SceneEditing, ImportedGltfLightsKeepCompositeSourceIdentities)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "native_gltf_composite";
+    const auto path = writeNativePunctualScene(directory);
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(path));
+    const auto documentPath = directory / "native_world.metallic_scene.json";
+    float4x4 mount = float4x4::Identity();
+    mount.a03 = 50.0f;
+    nlohmann::json matrix = nlohmann::json::array();
+    for (float component : mount.a) { matrix.push_back(component); }
+    const nlohmann::json manifest{
+        {"version", 4}, {"sources", {
+            {{"id", "a"}, {"path", path.filename().generic_string()}, {"enabled", true}},
+            {{"id", "b"}, {"path", path.filename().generic_string()}, {"mountMatrix", matrix}, {"enabled", true}}
+        }}, {"nodes", nlohmann::json::array()}};
+    writeTextFile(documentPath, manifest.dump(2));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(documentPath)) << document.documentWarning();
+    auto settings = document.lighting();
+    ASSERT_EQ(settings.lights.size(), 8u);
+    for (int32_t node = 1; node <= 4; ++node) {
+        const auto* a = findImportedLight(settings, "a", node);
+        const auto* b = findImportedLight(settings, "b", node);
+        ASSERT_NE(a, nullptr);
+        ASSERT_NE(b, nullptr);
+        EXPECT_NE(a->imported->object, b->imported->object);
+        expectVec3(b->position, a->position + float3(50, 0, 0), "mounted same-path source light instance");
+    }
+    mount.a13 = 8.0f;
+    ASSERT_TRUE(document.setSourceMountMatrix("b", mount));
+    settings = document.lighting();
+    const auto* pointA = findImportedLight(settings, "a", 2);
+    const auto* pointB = findImportedLight(settings, "b", 2);
+    ASSERT_NE(pointA, nullptr);
+    ASSERT_NE(pointB, nullptr);
+    expectVec3(pointB->position, pointA->position + float3(50, 8, 0), "source mount edit updates native snapshot");
+    ASSERT_TRUE(document.setSourceEnabled("b", false));
+    settings = document.lighting();
+    ASSERT_EQ(settings.lights.size(), 8u);
+    for (int32_t node = 1; node <= 4; ++node) {
+        const auto* light = findImportedLight(settings, "b", node);
+        ASSERT_NE(light, nullptr);
+        EXPECT_TRUE(light->enabled) << "source visibility must not overwrite user-enabled state";
+        const auto object = document.objectForSourceNode("b", node);
+        ASSERT_TRUE(object);
+        const auto& component = object.getComponent<LightComponent>();
+        EXPECT_FALSE(document.lights()[static_cast<size_t>(component.renderLightIndex)].visible);
+    }
+    std::erase_if(settings.lights, [](const auto& light) {
+        return light.imported && light.imported->sourceId == "a" && light.imported->sourceNodeIndex == 2;
+    });
+    ASSERT_TRUE(document.setLighting(settings));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    ASSERT_TRUE(document.load(documentPath)) << document.documentWarning();
+    settings = document.lighting();
+    ASSERT_EQ(settings.lights.size(), 7u);
+    EXPECT_EQ(findImportedLight(settings, "a", 2), nullptr);
+    ASSERT_NE(findImportedLight(settings, "b", 2), nullptr);
+    EXPECT_TRUE(findImportedLight(settings, "b", 2)->enabled);
+    ASSERT_TRUE(document.setSourceEnabled("b", true));
+    EXPECT_EQ(document.lighting().lights.size(), 7u);
+}
+
+TEST(SceneEditing, ImportedGltfLightsRejectStaleSettingsAndAtomicEdits)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "native_gltf_stale_settings";
+    const auto firstPath = writeNativePunctualScene(directory / "first");
+    const auto secondPath = writeNativePunctualScene(directory / "second");
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(firstPath));
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(secondPath));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(firstPath)) << document.documentWarning();
+    auto stale = document.lighting();
+    ASSERT_EQ(stale.lights.size(), 4u);
+    const uint64_t firstIdentity = document.resourceIdentity();
+    stale.exposureEV100 = 6.0f;
+    stale.lights[0].properties.intensity = 300.0;
+    ASSERT_TRUE(document.load(secondPath)) << document.documentWarning();
+    ASSERT_NE(document.resourceIdentity(), firstIdentity);
+    const auto original = document.lighting();
+    const uint64_t contentRevision = document.contentRevision();
+    EXPECT_FALSE(document.setLighting(stale));
+    EXPECT_FALSE(document.dirty());
+    EXPECT_EQ(document.contentRevision(), contentRevision);
+    EXPECT_FLOAT_EQ(document.lighting().exposureEV100, original.exposureEV100);
+    ASSERT_EQ(document.lighting().lights.size(), original.lights.size());
+    for (int32_t node = 1; node <= 4; ++node) {
+        const auto* light = findImportedLight(document.lighting(), "main", node);
+        const auto* expected = findImportedLight(original, "main", node);
+        ASSERT_NE(light, nullptr);
+        ASSERT_NE(expected, nullptr);
+        expectLightProperties(light->properties, expected->properties, "stale native edit rejected");
+        EXPECT_EQ(light->imported->sceneIdentity, document.resourceIdentity());
+        const auto object = document.objectForNode(node);
+        expectLightProperties(object.getComponent<LightComponent>().properties,
+            expected->properties, "stale source component edit rejected");
+    }
+
+    auto invalid = original;
+    for (auto& light : invalid.lights) {
+        if (light.imported->sourceNodeIndex == 1) { light.properties.intensity = 45.0; }
+        if (light.imported->sourceNodeIndex == 2) { light.properties.outerConeAngle += 0.1; }
+    }
+    // A point cone is finite and passes generic photometry validation, but is
+    // incompatible with the source component. No earlier valid edit may leak.
+    ASSERT_TRUE(validLightingSettings(invalid));
+    EXPECT_FALSE(document.setLighting(invalid));
+    EXPECT_FALSE(document.dirty());
+    EXPECT_EQ(document.contentRevision(), contentRevision);
+    const auto after = document.lighting();
+    for (int32_t node = 1; node <= 4; ++node) {
+        const auto* light = findImportedLight(after, "main", node);
+        const auto* expected = findImportedLight(original, "main", node);
+        ASSERT_NE(light, nullptr);
+        ASSERT_NE(expected, nullptr);
+        expectLightProperties(light->properties, expected->properties, "atomic native properties unchanged");
+        const auto object = document.objectForNode(node);
+        expectLightProperties(object.getComponent<LightComponent>().properties,
+            expected->properties, "atomic source component properties unchanged");
+    }
+}
+
+TEST(SceneEditing, ImportedGltfLightsKeepOrphansEditable)
+{
+    using namespace metallic::scene;
+    const auto path = writeNativePunctualScene(prepareOutputDirectory() / "native_gltf_orphan");
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(path));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(path)) << document.documentWarning();
+    ASSERT_EQ(document.lighting().lights.size(), 4u);
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    nlohmann::json source;
+    {
+        std::ifstream stream(path, std::ios::binary);
+        ASSERT_TRUE(stream.good());
+        stream >> source;
+    }
+    // Remove only the final light node. Earlier source-node identities remain
+    // stable, and the shared point definition still belongs to node 2.
+    source["nodes"].erase(source["nodes"].size() - 1u);
+    source["nodes"][0]["children"] = {1, 2, 3};
+    writeTextFile(path, source.dump(2));
+    ASSERT_TRUE(document.load(path)) << document.documentWarning();
+    ASSERT_EQ(document.lights().size(), 3u);
+    auto settings = document.lighting();
+    ASSERT_EQ(settings.lights.size(), 4u);
+    const auto* orphan = findImportedLight(settings, "main", 4);
+    ASSERT_NE(orphan, nullptr);
+    EXPECT_EQ(orphan->imported->sceneIdentity, 0u);
+    EXPECT_EQ(orphan->imported->object, kNullSceneEntity);
+    const float3 lastPosition = orphan->position;
+    EXPECT_FALSE(document.documentWarning().empty());
+    settings.exposureEV100 = 7.0f;
+    for (auto& light : settings.lights) {
+        if (light.imported->sourceNodeIndex == 2) { light.properties.intensity = 80.0; }
+    }
+    ASSERT_TRUE(document.setLighting(settings));
+    auto edited = document.lighting();
+    ASSERT_NE(findImportedLight(edited, "main", 4), nullptr);
+    EXPECT_EQ(findImportedLight(edited, "main", 4)->imported->sceneIdentity, 0u);
+    expectVec3(findImportedLight(edited, "main", 4)->position, lastPosition, "orphan keeps its last world pose");
+    ASSERT_NE(findImportedLight(edited, "main", 2), nullptr);
+    EXPECT_DOUBLE_EQ(findImportedLight(edited, "main", 2)->properties.intensity, 80.0);
+    EXPECT_FLOAT_EQ(edited.exposureEV100, 7.0f);
+    const auto object = document.objectForNode(2);
+    EXPECT_DOUBLE_EQ(object.getComponent<LightComponent>().properties.intensity, 80.0);
+    ASSERT_TRUE(document.save(message)) << message;
+    ASSERT_TRUE(document.load(path)) << document.documentWarning();
+    EXPECT_EQ(document.lighting().lights.size(), 4u);
+    EXPECT_FLOAT_EQ(document.lighting().exposureEV100, 7.0f);
+    ASSERT_NE(findImportedLight(document.lighting(), "main", 4), nullptr);
+    EXPECT_EQ(findImportedLight(document.lighting(), "main", 4)->imported->sceneIdentity, 0u);
 }
 
 TEST(SceneEditing, ComponentPropertyRoundTrip)

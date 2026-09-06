@@ -228,6 +228,7 @@ public:
             {"gpu_driven_sponza_streamasset.metallic_graph.json", "GPUDriven.color"},
             {"gpu_driven_terrain_p0_streamasset.metallic_graph.json", "GPUDriven.color"},
             {"gpu_driven_terrain_p1_unified.metallic_graph.json", "GPUDriven.color"},
+            {"light_grid_debug.metallic_graph.json", "LightGridDebug.color"},
             {"material_visualization_abeautiful_game.metallic_graph.json", "MaterialViz.color"},
             {"pathtracing_abeautiful_game_openpbr.metallic_graph.json", "PathTrace.color"},
             {"pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json", "DlssRr.color"},
@@ -236,6 +237,7 @@ public:
             {"pathtracing_meet_mat_nrc.metallic_graph.json", "PathTrace.color"},
             {"pathtracing_meet_mat_sharc.metallic_graph.json", "PathTrace.color"},
             {"rtxcr_material_showcase.metallic_graph.json", "PathTrace.color"},
+            {"realtime_lighting.metallic_graph.json", "Lighting.color"},
             {"rtxdi_meet_mat.metallic_graph.json", "Composite.color"},
         };
         std::string log;

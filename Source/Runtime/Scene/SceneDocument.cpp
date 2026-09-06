@@ -1,5 +1,7 @@
 #include "Runtime/Scene/SceneDocument.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -429,6 +431,83 @@ bool parseCompositeSources(
     return true;
 }
 
+bool sameImportedSource(const ImportedLightBinding& a, const ImportedLightBinding& b)
+{
+    return a.sourceId == b.sourceId && a.sourceNodeIndex == b.sourceNodeIndex;
+}
+
+bool compatibleImportedProperties(const LightProperties& current, const LightProperties& next)
+{
+    // Match the source component's editable fields before publishing a batch.
+    return current.type == next.type &&
+        (current.type != "directional" || current.range == next.range) &&
+        (current.type == "spot" || (current.innerConeAngle == next.innerConeAngle &&
+            current.outerConeAngle == next.outerConeAngle));
+}
+
+const RenderLight* importedLightSource(const Scene& scene, const ImportedLightBinding& binding)
+{
+    const auto object = scene.objectForSourceNode(binding.sourceId, binding.sourceNodeIndex);
+    const auto* component = object.tryGetComponent<LightComponent>();
+    if (component == nullptr || component->renderLightIndex < 0 ||
+        static_cast<size_t>(component->renderLightIndex) >= scene.lights().size()) { return nullptr; }
+    const auto& light = scene.lights()[static_cast<size_t>(component->renderLightIndex)];
+    return light.object == object.entity() ? &light : nullptr;
+}
+
+float3 lightVector(const float4x4& matrix, const float3& value)
+{
+    return float3(matrix.a00 * value.x + matrix.a01 * value.y + matrix.a02 * value.z,
+        matrix.a10 * value.x + matrix.a11 * value.y + matrix.a12 * value.z,
+        matrix.a20 * value.x + matrix.a21 * value.y + matrix.a22 * value.z);
+}
+
+float3 lightPosition(const float4x4& matrix, const float3& value)
+{
+    return lightVector(matrix, value) + float3(matrix.a03, matrix.a13, matrix.a23);
+}
+
+float3 lightDirection(const float3& value)
+{
+    const double lengthSquared = double(value.x) * value.x + double(value.y) * value.y + double(value.z) * value.z;
+    return std::isfinite(lengthSquared) && lengthSquared > 1e-12
+        ? value * static_cast<float>(1.0 / std::sqrt(lengthSquared)) : float3(0.0f, 0.0f, -1.0f);
+}
+
+bool sameLightVector(const float3& a, const float3& b)
+{
+    return std::abs(a.x - b.x) < 1e-6f && std::abs(a.y - b.y) < 1e-6f && std::abs(a.z - b.z) < 1e-6f;
+}
+
+bool parseImportedSource(const nlohmann::json& value, ImportedLightBinding& binding)
+{
+    if (!value.is_object() || !value.contains("sourceId") || !value["sourceId"].is_string() ||
+        value["sourceId"].get_ref<const std::string&>().empty() ||
+        !value.contains("nodeIndex") || !value["nodeIndex"].is_number_integer()) { return false; }
+    const auto index = value["nodeIndex"].get<int64_t>();
+    if (index < 0 || index > INT32_MAX) { return false; }
+    binding.sourceId = value["sourceId"].get<std::string>();
+    binding.sourceNodeIndex = static_cast<int32_t>(index);
+    std::string reason;
+    for (const char* key : {"localPosition", "localDirection"}) {
+        if (value.contains(key) && !readOptionalColor(nlohmann::json{{"color", value[key]}},
+            std::string_view(key) == "localPosition" ? binding.localPosition : binding.localDirection, reason)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+nlohmann::json serializeImportedSource(const ImportedLightBinding& binding, bool includePose)
+{
+    nlohmann::json value{{"sourceId", binding.sourceId}, {"nodeIndex", binding.sourceNodeIndex}};
+    if (includePose) {
+        value["localPosition"] = {binding.localPosition.x, binding.localPosition.y, binding.localPosition.z};
+        value["localDirection"] = {binding.localDirection.x, binding.localDirection.y, binding.localDirection.z};
+    }
+    return value;
+}
+
 } // namespace
 
 std::filesystem::path SceneDocument::sidecarPathForSource(
@@ -580,6 +659,7 @@ bool SceneDocument::loadInternalInPlace(
         compositionDocument_ = false;
         return false;
     }
+    importVirtualLights();
     if (progressCallback && !progressCallback(SceneLoadProgress{
             .status = SceneLoadStatus::Running,
             .phase = SceneLoadPhase::Finalizing,
@@ -617,6 +697,7 @@ void SceneDocument::clear()
     documentWarning_.clear();
     environment_ = EnvironmentSettings{};
     lighting_ = LightingSettings{};
+    importedLightSources_.clear();
     sidecarLoaded_ = false;
     hasEnvironmentSettings_ = false;
     compositionDocument_ = false;
@@ -672,10 +753,19 @@ bool SceneDocument::setObjectLightProperties(
     const LightProperties& properties)
 {
     const ConstSceneObject sceneObject = sceneGraph().object(object);
+    const auto* component = sceneObject.tryGetComponent<LightComponent>();
+    const bool virtualized = component != nullptr && component->renderLightIndex >= 0 &&
+        static_cast<size_t>(component->renderLightIndex) < lights().size() &&
+        lights()[static_cast<size_t>(component->renderLightIndex)].virtualLightSceneIdentity != 0;
+    auto native = std::find_if(lighting_.lights.begin(), lighting_.lights.end(), [object](const auto& light) {
+        return light.imported && light.imported->object == object;
+    });
+    if (virtualized && native == lighting_.lights.end()) { return false; }
     if (!sceneObject || !sceneObject.hasComponent<SourceNodeComponent>() ||
         !Scene::setObjectLightProperties(object, properties)) {
         return false;
     }
+    if (native != lighting_.lights.end()) { native->properties = properties; }
     dirty_ = true;
     return true;
 }
@@ -722,9 +812,134 @@ bool SceneDocument::setLighting(LightingSettings lighting)
     if (!validLightingSettings(lighting)) {
         return false;
     }
+    // Validate and resolve every binding before publishing any edits. The UI
+    // edits world poses; only changed poses need an inverse source transform.
+    const auto& current = this->lighting();
+    std::unordered_set<std::string> seen;
+    for (auto& light : lighting.lights) {
+        if (!light.imported) { continue; }
+        const auto& binding = *light.imported;
+        const std::string key = binding.sourceId + ':' + std::to_string(binding.sourceNodeIndex);
+        const auto prior = std::find_if(current.lights.begin(), current.lights.end(), [&](const auto& value) {
+            return value.imported && sameImportedSource(*value.imported, binding);
+        });
+        const auto* source = importedLightSource(*this, binding);
+        if (!seen.emplace(key).second || prior == current.lights.end() ||
+            binding.sceneIdentity != prior->imported->sceneIdentity ||
+            binding.object != prior->imported->object) { return false; }
+        const bool moved = !sameLightVector(light.position, prior->position);
+        const bool rotated = !sameLightVector(light.direction, prior->direction);
+        light.imported = prior->imported;
+        if (light.imported->sceneIdentity == 0) {
+            // Keep orphaned bindings disabled, but do not let a removed source
+            // prevent editing exposure or the remaining lights in this document.
+            if (moved || rotated || light.properties.type != prior->properties.type) { return false; }
+            continue;
+        }
+        const auto* component = sceneGraph().object(light.imported->object).tryGetComponent<LightComponent>();
+        if (source == nullptr || source->virtualLightSceneIdentity != resourceIdentity() ||
+            component == nullptr || !compatibleImportedProperties(component->properties, light.properties)) {
+            return false;
+        }
+        if (moved || rotated) {
+            auto inverse = source->worldMatrix;
+            inverse.Invert();
+            if (!matrixNearlyEqual(source->worldMatrix * inverse, float4x4::Identity(), 0.001f)) { return false; }
+            if (moved) { light.imported->localPosition = lightPosition(inverse, light.position); }
+            if (rotated) { light.imported->localDirection = lightDirection(lightVector(inverse, light.direction)); }
+        }
+    }
+    if (!validLightingSettings(lighting)) { return false; }
+    for (const auto& light : lighting.lights) {
+        if (light.imported && light.imported->sceneIdentity != 0) {
+            // Keep the existing component inspector/undo and node overrides on
+            // the same physical parameters as the native-light editor.
+            (void)Scene::setObjectLightProperties(light.imported->object, light.properties);
+        }
+    }
     lighting_ = std::move(lighting);
     dirty_ = true;
     return true;
+}
+
+const LightingSettings& SceneDocument::lighting() const
+{
+    for (auto& light : lighting_.lights) {
+        if (!light.imported || light.imported->sceneIdentity == 0) { continue; }
+        const auto* source = importedLightSource(*this, *light.imported);
+        if (source == nullptr) { continue; }
+        light.position = lightPosition(source->worldMatrix, light.imported->localPosition);
+        light.direction = lightDirection(lightVector(source->worldMatrix, light.imported->localDirection));
+    }
+    return lighting_;
+}
+
+void SceneDocument::importVirtualLights()
+{
+    for (const auto& source : lights()) {
+        const auto object = sceneGraph().object(source.object);
+        const auto* node = object.tryGetComponent<SourceNodeComponent>();
+        if (node == nullptr) { continue; }
+        std::filesystem::path asset = filename();
+        for (const auto& mounted : sources()) {
+            if (mounted.id == node->sourceId) { asset = mounted.path; break; }
+        }
+        std::string extension = asset.extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (extension != ".gltf" && extension != ".glb") { continue; }
+        ImportedLightBinding binding{.sourceId = node->sourceId, .sourceNodeIndex = node->sourceNodeIndex,
+            .sceneIdentity = resourceIdentity(), .object = source.object};
+        (void)virtualizeImportedLight(source.object);
+        const bool known = std::any_of(importedLightSources_.begin(), importedLightSources_.end(), [&](const auto& value) {
+            return sameImportedSource(value, binding);
+        });
+        const bool exists = std::any_of(lighting_.lights.begin(), lighting_.lights.end(), [&](const auto& value) {
+            return value.imported && sameImportedSource(*value.imported, binding);
+        });
+        if (!known && exists) { importedLightSources_.push_back(binding); }
+        if (known || exists) { continue; }
+        const auto* component = object.tryGetComponent<LightComponent>();
+        if (component == nullptr || !validLightProperties(component->properties)) {
+            appendWarning(documentWarning_, "Skipped invalid imported light: " + source.name);
+            continue;
+        }
+        importedLightSources_.push_back(binding);
+        PunctualLight light;
+        light.name = source.name;
+        light.properties = component->properties;
+        light.imported = std::move(binding);
+        lighting_.lights.push_back(std::move(light));
+    }
+    for (auto& light : lighting_.lights) {
+        if (!light.imported) { continue; }
+        auto& binding = *light.imported;
+        const auto* source = importedLightSource(*this, binding);
+        const auto* component = source != nullptr
+            ? sceneGraph().object(source->object).tryGetComponent<LightComponent>() : nullptr;
+        if (component != nullptr && component->properties.type == light.properties.type) {
+            // Non-applicable fields are deliberately not serialized. Restore
+            // their exact source defaults (tinygltf's pi/4 is rounded) before
+            // checking the component editor's unchanged-field contract.
+            if (light.properties.type == "directional") { light.properties.range = component->properties.range; }
+            if (light.properties.type != "spot") {
+                light.properties.innerConeAngle = component->properties.innerConeAngle;
+                light.properties.outerConeAngle = component->properties.outerConeAngle;
+            }
+        }
+        if (source == nullptr || source->virtualLightSceneIdentity != resourceIdentity() ||
+            component == nullptr || !compatibleImportedProperties(component->properties, light.properties)) {
+            binding.sceneIdentity = 0;
+            binding.object = kNullSceneEntity;
+            appendWarning(documentWarning_, "Imported virtual light has no matching glTF source: " + light.name);
+            continue;
+        }
+        binding.sceneIdentity = resourceIdentity();
+        binding.object = source->object;
+        (void)Scene::setObjectLightProperties(source->object, light.properties);
+    }
+    (void)lighting();
 }
 
 bool SceneDocument::applySidecar(const std::filesystem::path& path)
@@ -802,6 +1017,23 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     return false;
                 }
                 lighting_.exposureEV100 = lighting.value("exposureEV100", 0.0f);
+                if (lighting.contains("importedSources")) {
+                    if (!lighting["importedSources"].is_array()) {
+                        documentWarning_ = "world.lighting.importedSources must be an array.";
+                        return false;
+                    }
+                    for (const auto& value : lighting["importedSources"]) {
+                        ImportedLightBinding binding;
+                        if (!parseImportedSource(value, binding) ||
+                            std::any_of(importedLightSources_.begin(), importedLightSources_.end(), [&](const auto& prior) {
+                                return sameImportedSource(prior, binding);
+                            })) {
+                            documentWarning_ = "Invalid or duplicate imported light source.";
+                            return false;
+                        }
+                        importedLightSources_.push_back(std::move(binding));
+                    }
+                }
                 if (lighting.contains("lights")) {
                     for (const auto& value : lighting["lights"]) {
                         PunctualLight light;
@@ -829,6 +1061,17 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                         }
                         light.name = value.value("name", "Light");
                         light.enabled = value.value("enabled", true);
+                        if (value.contains("source")) {
+                            ImportedLightBinding binding;
+                            if (!parseImportedSource(value["source"], binding) ||
+                                std::any_of(lighting_.lights.begin(), lighting_.lights.end(), [&](const auto& prior) {
+                                    return prior.imported && sameImportedSource(*prior.imported, binding);
+                                })) {
+                                documentWarning_ = "Invalid or duplicate virtual light source binding.";
+                                return false;
+                            }
+                            light.imported = std::move(binding);
+                        }
                         lighting_.lights.push_back(std::move(light));
                     }
                 }
@@ -1172,18 +1415,24 @@ bool SceneDocument::save(std::string& message)
     }
     document["nodes"] = std::move(nodeOverrides);
     nlohmann::json serializedLights = nlohmann::json::array();
-    for (const PunctualLight& light : lighting_.lights) {
+    for (const PunctualLight& light : lighting().lights) {
         nlohmann::json value = serializeLightProperties(light.properties);
         value["name"] = light.name;
         value["enabled"] = light.enabled;
         value["position"] = {light.position.x, light.position.y, light.position.z};
         value["direction"] = {light.direction.x, light.direction.y, light.direction.z};
+        if (light.imported) { value["source"] = serializeImportedSource(*light.imported, true); }
         serializedLights.push_back(std::move(value));
+    }
+    nlohmann::json serializedImportedSources = nlohmann::json::array();
+    for (const auto& source : importedLightSources_) {
+        serializedImportedSources.push_back(serializeImportedSource(source, false));
     }
     document["world"] = {
         {"lighting", {
             {"exposureEV100", lighting_.exposureEV100},
             {"lights", std::move(serializedLights)},
+            {"importedSources", std::move(serializedImportedSources)},
         }},
         {"environment", {
             {"enabled", environment_.enabled},
