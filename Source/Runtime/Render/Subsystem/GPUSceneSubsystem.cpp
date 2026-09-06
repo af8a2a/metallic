@@ -10,6 +10,23 @@
 namespace metallic::render {
 namespace {
 
+class GPUSceneLightGridShaderReload final : public RenderSubsystemShaderReload {
+public:
+    struct Entry {
+        // Grid-level reloads reference their owner. Keep even a destroyed View's
+        // grid alive until the host commits or discards the prepared reloads.
+        std::shared_ptr<ClusterLightGrid> owner;
+        std::unique_ptr<RenderSubsystemShaderReload> reload;
+    };
+
+    void commit() noexcept override
+    {
+        for (const Entry& entry : entries) { entry.reload->commit(); }
+    }
+
+    std::vector<Entry> entries;
+};
+
 uint32_t gpuUint(int32_t value)
 {
     return std::bit_cast<uint32_t>(value);
@@ -746,6 +763,13 @@ bool GPUSceneSubsystem::destroyView(GPUSceneViewId view)
 {
     if (!scene_.destroyView(view)) {
         return false;
+    }
+    const auto grids = lightGrids_.find(viewResourceKey(view));
+    if (grids != lightGrids_.end()) {
+        for (auto& grid : grids->second) {
+            if (host_ != nullptr) { host_->retire(std::move(grid)); }
+        }
+        lightGrids_.erase(grids);
     }
     const auto resources = viewGpuResources_.find(viewResourceKey(view));
     if (resources != viewGpuResources_.end()) {
@@ -1783,11 +1807,42 @@ void GPUSceneSubsystem::releaseBindings(
     bindings = {};
 }
 
+Result GPUSceneSubsystem::prepareShaderReload(
+    const RenderSubsystemInitContext& context,
+    std::unique_ptr<RenderSubsystemShaderReload>& outReload,
+    std::string& log)
+{
+    outReload.reset();
+    if (device_ != &context.device || host_ != &context.host) {
+        log = "GPUSceneSubsystem shader reload requires its initialized Device and host";
+        return makeError(Error::InvalidArgument);
+    }
+    auto reload = std::make_unique<GPUSceneLightGridShaderReload>();
+    for (const auto& [viewKey, grids] : lightGrids_) {
+        for (const auto& grid : grids) {
+            if (grid == nullptr) { continue; }
+            std::unique_ptr<RenderSubsystemShaderReload> gridReload;
+            Result result = grid->prepareShaderReload(context.device, gridReload, log);
+            if (!result) { return result; }
+            if (gridReload != nullptr) {
+                reload->entries.push_back({grid, std::move(gridReload)});
+            }
+        }
+    }
+    if (!reload->entries.empty()) {
+        log = "prepared cluster light-grid shaders for " +
+            std::to_string(reload->entries.size()) + " View/frame-slot grids";
+        outReload = std::move(reload);
+    }
+    return {};
+}
+
 void GPUSceneSubsystem::shutdown()
 {
     if (pendingPublication_ != nullptr) { pendingPublication_->cancel(); }
     pendingPublication_.reset();
     scene_.invalidateGpuResources();
+    lightGrids_.clear();
     viewGpuResources_.clear();
     gpuResources_.reset();
     rasterDrawLayout_ = {};
@@ -1808,6 +1863,30 @@ void GPUSceneSubsystem::shutdown()
     gpuUploadStats_ = {};
     pendingUpload_ = PendingUpload::Full;
     sourceDirty_ = true;
+}
+
+Result GPUSceneSubsystem::recordLightGrid(CommandBuffer& commandBuffer, GPUSceneViewId view,
+    uint32_t frameSlot, const ClusterLightGridDesc& desc, std::string& log)
+{
+    const uint32_t slots = scene_.viewFrameSlotCount(view);
+    if (device_ == nullptr || host_ == nullptr || frameSlot >= slots) {
+        log = "GPUScene light grid requires an initialized subsystem and live View/frame slot";
+        return makeError(Error::InvalidArgument);
+    }
+    auto& grids = lightGrids_[viewResourceKey(view)];
+    grids.resize(slots);
+    if (grids[frameSlot] == nullptr) { grids[frameSlot] = std::make_shared<ClusterLightGrid>(); }
+    return grids[frameSlot]->record(*device_, commandBuffer, *host_, scene_, view, frameSlot, desc, log);
+}
+
+const ClusterLightGridSnapshot* GPUSceneSubsystem::lightGrid(GPUSceneViewId view, uint32_t frameSlot) const
+{
+    const auto found = lightGrids_.find(viewResourceKey(view));
+    if (found == lightGrids_.end() || frameSlot >= found->second.size() ||
+        found->second[frameSlot] == nullptr) {
+        return nullptr;
+    }
+    return found->second[frameSlot]->snapshot(scene_);
 }
 
 Result GPUSceneSubsystem::recordCull(

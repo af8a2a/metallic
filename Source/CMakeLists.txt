@@ -45,6 +45,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Debug/RenderDebugProviders.cpp
     Runtime/Render/Debug/GpuDebugProbe.cpp
     Runtime/Render/ComputeProgram.cpp
+    Runtime/Render/ClusterLightGrid.cpp
     Runtime/Render/RenderFrameContext.cpp
     Runtime/Render/HistoryResources.cpp
     Runtime/Render/ImportanceSampling.cpp

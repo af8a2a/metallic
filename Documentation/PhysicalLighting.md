@@ -37,16 +37,42 @@ The existing RTXDI many-light benchmark retains its own synthetic benchmark ligh
 
 `GPUSceneSubsystem::visibleLights(view, frameSlot)` returns three deterministic source-ID lists:
 
-- `localLights`: finite-range point/spot candidates for a future LightGrid.
+- `localLights`: finite-range point/spot candidates for the clustered LightGrid.
 - `directionalLights`: global directional lights, unaffected by camera frustum.
 - `unboundedLocalLights`: range-zero point/spot lights, kept separately because a finite grid bound cannot represent their influence.
 
 Resolve each ID through `light(id)` to obtain its source indices/object, unmodified GPU payload and coarse `boundingSphere`. The sphere is not a replacement for the original position/range/cone used in future grid intersection. The collection has its own `lightGeneration`/`lightRevision`; parameter edits preserve IDs, while source-slot topology changes invalidate them. Check `visibleLights` or `lights.validFor(...)` before using a snapshot: light-only changes expire light lists without changing mesh DrawSet revisions or GPU allocations. GPUScene's geometric HZB state is independent; the renderer's existing global radiance-history invalidation/camera-cut policy remains unchanged.
 
-VisibilityBuffer and GPUDrivenStreamAsset provide the same camera used for mesh culling. VisibilityBuffer supports frozen and orthographic cameras; disabling `instanceFrustumCull` also disables light frustum rejection. This is the CPU coarse collection stage only, not LightGrid construction or GPU grid upload. Existing physical lighting and path tracing continue consuming the complete light buffer; camera-culled lists must not replace secondary-path lighting. Environment PDF and SH are not local-light candidates.
+VisibilityBuffer and GPUDrivenStreamAsset provide the same camera used for mesh culling. VisibilityBuffer supports frozen and orthographic cameras; disabling `instanceFrustumCull` disables only the coarse light frustum rejection, not clustered intersection. Environment PDF and SH are not local-light candidates.
+
+## GPU clustered LightGrid
+
+After coarse collection, both raster paths call `GPUSceneSubsystem::recordLightGrid` before traversal/culling/raster work. `lightGrid(view, frameSlot)` exposes the current GPU buffers and parameters; it returns null after the view is re-prepared, its light revision changes, its recording is cancelled, or its shader program is replaced. The RTAS diagnostic path does not construct a raster grid. The grid is currently a producer and shared shader query interface; existing physical-lighting/path-tracing shaders have not been changed to use camera-filtered lists for transport.
+
+The default is **64×64 screen pixels, 32 depth slices, 64 stored lights per cell**. `ClusterLightGridDesc` exposes these limits and the camera to callers. Perspective slices use the Unreal-style mapping `z = log2(depth * B + O) * S`, with `B=1/near`, `O=0`, and `S=sliceCount/log2(far/near)`; this chooses ordinary logarithmic spacing without Unreal's centimetre-scale near bias. Orthographic views use linear spacing. Depth is positive view-space distance, independent of reversed-Z. Partial edge tiles are clamped to the actual viewport; the frozen culling camera keeps its original aspect ratio even when the viewport resizes.
+
+`ClusterLightGrid.slang` dispatches one 64-thread group per cell. Eight view-space tile/depth corners define a conservative AABB. Threads test bounded local candidates against their original range spheres; spot lights additionally use Unreal's conservative cone/AABB separating-plane test. The emission point, radial range, outer cone and physical intensity are preserved. No CPU cell-light calculation, GPU readback, receiver-depth/HZB rejection or screen-size/brightness heuristic is used by the runtime.
+
+GPU data contract:
+
+| Buffer | Layout |
+| --- | --- |
+| `parameters` | One 128-byte `ClusterLightGridParams` |
+| `lights` | 64-byte physical records at stable GPUScene source slots, **no metadata header** |
+| `candidates` | Source indices: bounded locals, then directionals, then unbounded locals |
+| `cells` | 16-byte `{offset, count, overflow, totalCount}`, indexed `(z*gridY+y)*gridX+x` |
+| `lightIndices` | Cell source-index lists; fixed segment `cellIndex*maxLightsPerCell` |
+
+`ClusterLightGridCommon.slang` provides `clusterLightGridLookup`, `clusterLightGridLocalLightIndex`, and independent global-light helpers. Overflow never silently truncates lighting: a cell with more matches than capacity returns the **complete bounded-local candidate list** through the lookup helper. Outside the grid's XY/depth domain, the helper also falls back to that candidate list instead of incorrectly clamping into the last cell. This is still a view-filtered list, not a substitute for a full-scene query outside that view or on secondary rays. Global lights must be evaluated once in addition to local lookup. Stored cell order is GPU-atomic order and is not stable; source IDs and candidate ordering are stable. Do not pass these source indices to the old compact/header-prefixed `gPunctualLights` buffer.
+
+Each View/frame slot owns independently versioned resources, reused only after its tracked `RenderFrameContext` submission completes; resizing grows allocations and retains old buffers for in-flight commands. Legacy commands without a frame receive independent buffers and a separate program/descriptor table per recording; their submission state retains these until command reset (the RHI caller must finish GPU work before resetting). Output buffers end in `ShaderRead`. Every cell header is rewritten, including empty scenes, so unused index storage need not be cleared. Invalid/degenerate cameras and oversized allocations fail before dispatch (256 MiB cell/header budget per slot, depth slices 1–256, capacity 1–1024). Shader reload stages replacement programs for every active grid and commits only after all subsystem preparations succeed; old programs remain retained by their frames or command submissions.
+
+The design references local Unreal `Renderer/Private/LightGridInjection.cpp`, `Shaders/Private/LightGridInjection.usf`, and `RenderCore/Public/RenderUtils.h`. This implementation deliberately uses fixed cell segments and explicit fallback instead of UE's linked-list pool, compaction and overflow feedback.
 
 ## Validation
 
 `Photometry.UnitsAndValidation` and `SceneEditing.PhysicalLightingRoundTrip` verify units, negative EV, validation, imported overrides, virtual light persistence and discard. RHI tests `photometric_gpu_units_falloff_sh` and `photometric_realtime_render` verify GPU inverse-square attenuation, directional invariance, spot cutoff, unit equivalence, exposure, constant-environment irradiance and live light add/edit/remove.
 
 The `gpu_scene_light_*` tests cover source collection/lifetime, independent light revisions, per-view/frame-slot snapshots, conservative point/spot culling, perspective/orthographic camera planes and light-only world synchronization.
+
+The `cluster_light_grid_*` tests verify CPU camera/depth contracts and GPU-produced point/spot cell lists, actual shader lookup and fallback, source-slot holes, global-light separation, growth/shrink reuse, cancellation, View/frame-slot isolation and staged shader reload.

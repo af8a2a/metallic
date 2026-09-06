@@ -97,6 +97,7 @@ add_executable(MetallicRhiTests
     rhi/Main.cpp
     rhi/RhiTest.h
     rhi/BindlessBufferTests.cpp
+    rhi/ClusterLightGridTests.cpp
     rhi/CommandSubmissionTests.cpp
     rhi/FrameContextTests.cpp
     rhi/FinalBlitTests.cpp

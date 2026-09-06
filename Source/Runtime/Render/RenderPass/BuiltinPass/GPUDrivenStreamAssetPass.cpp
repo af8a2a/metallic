@@ -1,6 +1,7 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
@@ -919,6 +920,19 @@ public:
                 return result;
             }
 
+            // Empty candidate sets still dispatch so stale cell contents cannot
+            // survive into a later lighting consumer for this view/frame slot.
+            result = gpuSceneSubsystem->recordLightGrid(
+                context.commandBuffer(),
+                gpuSceneView_,
+                activeFrameSlot_,
+                lightGridDesc_,
+                gpuSceneLog);
+            if (!result) {
+                spdlog::error("[GPUDrivenStreamAssetPass] {}", gpuSceneLog);
+                return result;
+            }
+
             // Stream traversal currently also publishes the per-frame camera and
             // scene params consumed by the cull kernels. P2 can split that upload
             // from traversal so the early instance state also prunes page demand.
@@ -1170,15 +1184,33 @@ private:
             .cameraCut = cameraCut,
             .freezeCullingCamera = false,
         };
+        // The standalone stream path currently uses a perspective camera;
+        // consume the frame camera uploaded by traversal, with the same clip
+        // and FOV clamps used by its projection shader.
+        if (!std::isfinite(frame.camera.fovDegrees) ||
+            !std::isfinite(frame.camera.znear) ||
+            !std::isfinite(frame.camera.zfar)) {
+            spdlog::error("[GPUDrivenStreamAssetPass] Light grid camera has non-finite projection parameters");
+            return makeError(Error::InvalidArgument);
+        }
+        lightGridDesc_ = ClusterLightGridDesc{
+            .width = frameWidth_,
+            .height = frameHeight_,
+            .eye = frame.camera.eye,
+            .center = frame.camera.center,
+            .up = frame.camera.up,
+            .aspect = std::max(static_cast<float>(std::max(frame.width, 1u)) /
+                static_cast<float>(std::max(frame.height, 1u)), 0.001f),
+            .fovRadians = std::clamp(frame.camera.fovDegrees * 0.017453292519943295f,
+                0.017453292f, 3.12413936f),
+            .zNear = std::max(frame.camera.znear, 0.0001f),
+            .zFar = std::max(frame.camera.zfar, std::max(frame.camera.znear, 0.0001f) + 0.0001f),
+        };
         if (boolProperty(properties(), "instanceFrustumCull", true)) {
-            // The standalone stream path currently uses a perspective camera;
-            // consume the exact frame camera also uploaded by stream traversal.
             prepareInfo.lightFrustumPlanes = gpuSceneLightFrustumPlanes(
-                frame.camera.eye, frame.camera.center, frame.camera.up,
-                static_cast<float>(std::max(frame.width, 1u)) /
-                    static_cast<float>(std::max(frame.height, 1u)),
-                frame.camera.fovDegrees * 0.017453292519943295f,
-                frame.camera.znear, frame.camera.zfar);
+                lightGridDesc_.eye, lightGridDesc_.center, lightGridDesc_.up,
+                lightGridDesc_.aspect, lightGridDesc_.fovRadians,
+                lightGridDesc_.zNear, lightGridDesc_.zFar);
         }
         if (!subsystem.prepareView(
                 gpuSceneView_,
@@ -1679,6 +1711,7 @@ private:
     Device* device_ = nullptr;
     GPUSceneSubsystem* gpuSceneSubsystem_ = nullptr;
     GPUSceneViewId gpuSceneView_;
+    ClusterLightGridDesc lightGridDesc_;
     const scene::Scene* gpuSceneSource_ = nullptr;
     GPUSceneSourceOverrideToken gpuSceneSourceToken_;
     bool hzbValid_ = false;

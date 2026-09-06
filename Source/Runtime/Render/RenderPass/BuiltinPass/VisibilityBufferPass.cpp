@@ -2,6 +2,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
 #include "Runtime/Render/HistoryResources.h"
+#include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/SceneResourceManager.h"
@@ -2193,6 +2194,19 @@ private:
             return result;
         }
 
+        // Rebuild every prepared view, including zero-light frames, before any
+        // raster consumer can observe a cluster list from a previous frame.
+        result = gpuSceneSubsystem_->recordLightGrid(
+            commandBuffer,
+            gpuSceneView_,
+            activeFrameSlot_,
+            lightGridDesc_,
+            log);
+        if (!result) {
+            spdlog::error("[VisibilityBufferPass] {}", log);
+            return result;
+        }
+
         if (!cullingTargetsInitialized_) {
             const std::array<TextureBarrierDesc, 2> barriers{
                 TextureBarrierDesc{
@@ -2404,23 +2418,35 @@ private:
                 "freezeCullingCamera",
                 false),
         };
+        GPUDrivenPreviewGpuParams camera;
+        // View preparation precedes the parameter upload. Reuse its camera
+        // builder and the same frozen snapshot that updateParamsBuffer selects.
+        if (prepareInfo.freezeCullingCamera && freezeCullingCamera_ && frozenCullingCameraValid_) {
+            camera = frozenCullingCamera_;
+        } else {
+            buildParams(frameWidth_, frameHeight_, frameProperties, drawBounds_,
+                baseMeshletRange_, lodLevelRanges_, instanceCount_, hzbMipCount_,
+                frameIndex_, hzbValid_, nullptr, materialTextureCount_, materialCount_, camera);
+        }
+        lightGridDesc_ = ClusterLightGridDesc{
+            .width = frameWidth_,
+            .height = frameHeight_,
+            .eye = float3(camera.eye[0], camera.eye[1], camera.eye[2]),
+            .center = float3(camera.center[0], camera.center[1], camera.center[2]),
+            .up = float3(camera.upProjection[0], camera.upProjection[1], camera.upProjection[2]),
+            // A frozen camera retains its projection aspect across viewport resizes.
+            .aspect = std::max(camera.viewport[0], 0.001f),
+            .fovRadians = std::clamp(camera.viewport[3], 0.017453292f, 3.12413936f),
+            .zNear = std::max(camera.clipOrtho[0], 0.0001f),
+            .zFar = std::max(camera.clipOrtho[1], std::max(camera.clipOrtho[0], 0.0001f) + 0.0001f),
+            .orthoHeight = camera.upProjection[3] > 0.5f
+                ? std::max(camera.clipOrtho[2], 0.0002f) : 0.0f,
+        };
         if (boolProperty(&frameProperties, "instanceFrustumCull", true)) {
-            GPUDrivenPreviewGpuParams camera;
-            // View preparation precedes the parameter upload. Reuse its camera
-            // builder and the same frozen snapshot that updateParamsBuffer selects.
-            if (prepareInfo.freezeCullingCamera && freezeCullingCamera_ && frozenCullingCameraValid_) {
-                camera = frozenCullingCamera_;
-            } else {
-                buildParams(frameWidth_, frameHeight_, frameProperties, drawBounds_,
-                    baseMeshletRange_, lodLevelRanges_, instanceCount_, hzbMipCount_,
-                    frameIndex_, hzbValid_, nullptr, materialTextureCount_, materialCount_, camera);
-            }
             prepareInfo.lightFrustumPlanes = gpuSceneLightFrustumPlanes(
-                float3(camera.eye[0], camera.eye[1], camera.eye[2]),
-                float3(camera.center[0], camera.center[1], camera.center[2]),
-                float3(camera.upProjection[0], camera.upProjection[1], camera.upProjection[2]),
-                camera.viewport[0], camera.viewport[3], camera.clipOrtho[0], camera.clipOrtho[1],
-                camera.upProjection[3] > 0.5f ? camera.clipOrtho[2] : 0.0f);
+                lightGridDesc_.eye, lightGridDesc_.center, lightGridDesc_.up,
+                lightGridDesc_.aspect, lightGridDesc_.fovRadians,
+                lightGridDesc_.zNear, lightGridDesc_.zFar, lightGridDesc_.orthoHeight);
         }
         if (!subsystem.prepareView(gpuSceneView_, prepareInfo)) {
             return makeError(Error::InvalidArgument);
@@ -4297,6 +4323,7 @@ private:
     std::filesystem::path compiledStreamSourcePath_;
     GPUDrivenPreviewGpuParams previousParams_;
     GPUDrivenPreviewGpuParams frozenCullingCamera_;
+    ClusterLightGridDesc lightGridDesc_;
     uint32_t drawTaskCount_ = 0;
     uint32_t activeMeshletCount_ = 0;
     uint32_t instanceCount_ = 0;

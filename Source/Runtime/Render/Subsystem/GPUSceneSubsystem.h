@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Subsystem/GPUScene.h"
+#include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include <span>
@@ -94,6 +95,10 @@ public:
         std::string& log) override;
     Result recordPreGraph(
         const RenderSubsystemFrameContext& context,
+        std::string& log) override;
+    Result prepareShaderReload(
+        const RenderSubsystemInitContext& context,
+        std::unique_ptr<RenderSubsystemShaderReload>& outReload,
         std::string& log) override;
     void shutdown() override;
 
@@ -266,6 +271,10 @@ public:
         uint32_t frameSlot,
         const GPUSceneHzbRecordDesc& desc,
         std::string& log);
+    // Requires commandBuffer to belong to a recording RenderFrameContext.
+    Result recordLightGrid(CommandBuffer& commandBuffer, GPUSceneViewId view,
+        uint32_t frameSlot, const ClusterLightGridDesc& desc, std::string& log);
+    const ClusterLightGridSnapshot* lightGrid(GPUSceneViewId view, uint32_t frameSlot) const;
 
 private:
     struct GpuBufferResource;
@@ -307,6 +316,7 @@ private:
     std::shared_ptr<GpuResources> gpuResources_;
     std::shared_ptr<SubmissionTransaction> pendingPublication_;
     std::unordered_map<uint64_t, std::shared_ptr<ViewGpuResources>> viewGpuResources_;
+    std::unordered_map<uint64_t, std::vector<std::shared_ptr<ClusterLightGrid>>> lightGrids_;
     uint64_t nextViewGpuResourceAllocationId_ = 1;
     GPUSceneGpuUploadStats gpuUploadStats_;
     GPUSceneRasterDrawLayout rasterDrawLayout_;
