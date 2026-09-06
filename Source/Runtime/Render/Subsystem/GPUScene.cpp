@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <concepts>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <type_traits>
@@ -14,6 +15,60 @@ namespace {
 
 constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
+
+float4 lightBoundingSphere(const SceneLightRecord& record)
+{
+    const GpuPunctualLight& light = record.gpu;
+    float4 sphere(light.positionRange[0], light.positionRange[1],
+        light.positionRange[2], light.positionRange[3]);
+    if (!record.enabled || light.directionType[3] != 2.0f || sphere.w <= 0.0f) {
+        return sphere;
+    }
+    // UE FSphere::FromCone: range is radial attenuation distance, not cone
+    // height. Bound the spherical sector while retaining the original GPU data.
+    const double cosine = std::clamp(double(light.spot[1]), 0.0, 1.0);
+    const double sine = std::sqrt(std::max(0.0, 1.0 - cosine * cosine));
+    const double offset = cosine >= std::sqrt(0.5)
+        ? double(sphere.w) / (2.0 * cosine) : double(sphere.w) * cosine;
+    const double radius = cosine >= std::sqrt(0.5) ? offset : double(sphere.w) * sine;
+    const double x = double(sphere.x) + light.directionType[0] * offset;
+    const double y = double(sphere.y) + light.directionType[1] * offset;
+    const double z = double(sphere.z) + light.directionType[2] * offset;
+    const double maxFloat = std::numeric_limits<float>::max();
+    if (std::abs(x) > maxFloat || std::abs(y) > maxFloat || std::abs(z) > maxFloat) {
+        return sphere;
+    }
+    float4 result(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z), 0.0f);
+    const double rounding = std::hypot(x - result.x, y - result.y, z - result.z);
+    const double paddedRadius = radius + rounding +
+        8.0 * std::numeric_limits<float>::epsilon() * sphere.w;
+    if (paddedRadius > maxFloat) {
+        return sphere;
+    }
+    result.w = std::nextafter(static_cast<float>(paddedRadius),
+        std::numeric_limits<float>::infinity());
+    return result;
+}
+
+bool lightIntersectsFrustum(const float4& sphere, const std::array<float4, 6>& planes)
+{
+    for (const float4& plane : planes) {
+        const double length = std::hypot(double(plane.x), double(plane.y), double(plane.z));
+        if (!std::isfinite(length) || length == 0.0 || !std::isfinite(plane.w)) {
+            continue;
+        }
+        const double x = double(plane.x) * sphere.x;
+        const double y = double(plane.y) * sphere.y;
+        const double z = double(plane.z) * sphere.z;
+        const double radius = double(sphere.w) * length;
+        const double tolerance = 8.0 * std::numeric_limits<float>::epsilon() *
+            (std::abs(x) + std::abs(y) + std::abs(z) + std::abs(plane.w) + radius);
+        if (x + y + z + plane.w < -radius - tolerance) {
+            return false;
+        }
+    }
+    return true;
+}
 
 size_t bucketIndex(GPUSceneDrawBucket bucket)
 {
@@ -350,7 +405,8 @@ GPUSceneDrawBucket classifyGPUSceneMaterial(const scene::RenderMaterial& materia
 
 GPUSceneSourceView GPUSceneSourceView::fromScene(
     const scene::Scene& scene,
-    uint64_t externalRevision)
+    uint64_t externalRevision,
+    std::span<const scene::PunctualLight> virtualLights)
 {
     const scene::SceneGraph& graph = scene.sceneGraph();
     return GPUSceneSourceView{
@@ -363,6 +419,8 @@ GPUSceneSourceView GPUSceneSourceView::fromScene(
         .transformRevision = scene.transformRevision(),
         .visibilityRevision = scene.visibilityRevision(),
         .externalRevision = externalRevision,
+        .renderLights = scene.lights(),
+        .virtualLights = virtualLights,
     };
 }
 
@@ -527,11 +585,17 @@ void GPUScene::invalidateSourceIds()
     geometryGeneration_ = advanceGeneration(geometryGeneration_);
     materialGeneration_ = advanceGeneration(materialGeneration_);
     instanceGeneration_ = advanceGeneration(instanceGeneration_);
+    lightGeneration_ = advanceGeneration(lightGeneration_);
     drawSetGeneration_ = advanceGeneration(drawSetGeneration_);
     geometries_.clear();
     geometrySourcePrimitives_.clear();
     materials_.clear();
     instances_.clear();
+    lights_.clear();
+    drawSet_.lights.clear();
+    drawSet_.lightGeneration = 0;
+    drawSet_.lightRevision = 0;
+    invalidateVisibleLights();
     geometryForRenderPrimitive_.clear();
     materialForSourceMaterial_.clear();
     instanceForRenderNode_.clear();
@@ -754,6 +818,7 @@ Result GPUScene::rebuild(const GPUSceneSourceView& source, std::string& log)
     sourceVisibilityRevision_ = source.visibilityRevision;
     sourceExternalRevision_ = source.externalRevision;
     hasSource_ = true;
+    syncLights(source.renderLights, source.virtualLights);
     rebuildDrawSet();
     invalidateGpuResources();
     if (!invalidPrimitiveDiagnostics_.empty()) {
@@ -834,7 +899,11 @@ GPUSceneSyncResult GPUScene::sync(const GPUSceneSourceView& source)
     sourceTransformRevision_ = source.transformRevision;
     sourceVisibilityRevision_ = source.visibilityRevision;
     sourceExternalRevision_ = source.externalRevision;
+    const bool lightingUpdated = syncLights(source.renderLights, source.virtualLights);
     if (!updated && !historyUpdated) {
+        if (lightingUpdated) {
+            return GPUSceneSyncResult::LightingUpdated;
+        }
         ++stats_.unchangedSyncCount;
         return GPUSceneSyncResult::Unchanged;
     }
@@ -854,6 +923,67 @@ GPUSceneSyncResult GPUScene::sync(const GPUSceneSourceView& source)
     invalidateVisibleDrawSets();
     invalidateGpuResources();
     return updated ? GPUSceneSyncResult::Updated : GPUSceneSyncResult::HistoryUpdated;
+}
+
+bool GPUScene::syncLights(std::span<const scene::RenderLight> renderLights,
+    std::span<const scene::PunctualLight> virtualLights)
+{
+    const auto sources = buildSceneLightRecords(renderLights, virtualLights);
+    bool topologyChanged = sources.size() != lights_.size();
+    bool changed = topologyChanged || drawSet_.lightRevision == 0;
+    if (!topologyChanged) {
+        for (size_t index = 0; index < sources.size(); ++index) {
+            const SceneLightRecord& previous = lights_[index].source;
+            const SceneLightRecord& current = sources[index];
+            topologyChanged |= previous.sourceRenderLightIndex != current.sourceRenderLightIndex ||
+                previous.sourceVirtualLightIndex != current.sourceVirtualLightIndex ||
+                previous.sourceObject != current.sourceObject;
+            changed |= topologyChanged || previous.enabled != current.enabled ||
+                std::memcmp(&previous.gpu, &current.gpu, sizeof(GpuPunctualLight)) != 0;
+        }
+    }
+    if (!changed) {
+        return false;
+    }
+    if (topologyChanged) {
+        lightGeneration_ = advanceGeneration(lightGeneration_);
+    }
+    lights_.resize(sources.size());
+    drawSet_.lights.clear();
+    drawSet_.lights.reserve(sources.size());
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const SceneLightRecord& source = sources[index];
+        const GPUSceneLightId id{static_cast<uint32_t>(index), lightGeneration_};
+        lights_[index] = GPUSceneLightRecord{
+            .id = id,
+            .source = source,
+            .boundingSphere = lightBoundingSphere(source),
+            .unbounded = source.enabled &&
+                (source.gpu.directionType[3] == 0.0f || source.gpu.positionRange[3] == 0.0f),
+        };
+        if (source.enabled) {
+            drawSet_.lights.push_back(id);
+        }
+    }
+    drawSet_.lightGeneration = lightGeneration_;
+    drawSet_.lightRevision = nextLightRevision_++;
+    if (nextLightRevision_ == 0) {
+        nextLightRevision_ = 1;
+    }
+    invalidateVisibleLights();
+    return true;
+}
+
+const GPUSceneLightRecord* GPUScene::light(GPUSceneLightId id) const
+{
+    return id.generation == lightGeneration_ && id.index < lights_.size() && lights_[id.index].id == id
+        ? &lights_[id.index] : nullptr;
+}
+
+bool GPUSceneVisibleLightSet::validFor(uint32_t generation, uint64_t revision) const
+{
+    return generation != 0 && revision != 0 &&
+        sourceLightGeneration == generation && sourceLightRevision == revision;
 }
 
 void GPUScene::rebuildDrawSet()
@@ -903,6 +1033,14 @@ void GPUScene::rebuildDrawSet()
 void GPUScene::clearSource()
 {
     if (!hasSource_ && geometries_.empty() && materials_.empty() && instances_.empty()) {
+        // A virtual-light-only world never owned mesh resources. Clearing it
+        // must not create a mesh generation and schedule an empty GPU upload.
+        if (!lights_.empty()) {
+            lightGeneration_ = advanceGeneration(lightGeneration_);
+            lights_.clear();
+            drawSet_.lightRevision = 0;
+            syncLights({}, {});
+        }
         return;
     }
     const uint64_t fullRebuildCount = stats_.fullRebuildCount;
@@ -925,6 +1063,7 @@ void GPUScene::clearSource()
     stats_.incrementalSyncCount = incrementalSyncCount;
     stats_.unchangedSyncCount = unchangedSyncCount;
     stats_.viewCount = viewCount;
+    syncLights({}, {});
     rebuildDrawSet();
     invalidateGpuResources();
 }
@@ -1137,6 +1276,19 @@ bool GPUScene::prepareView(
         visible.instances.push_back(id);
         visible.buckets[bucketIndex(record.drawKey.bucket)].push_back(id);
     }
+    for (GPUSceneLightId id : drawSet_.lights) {
+        const GPUSceneLightRecord& record = lights_[id.index];
+        if (record.source.gpu.directionType[3] == 0.0f) {
+            visible.lights.directionalLights.push_back(id);
+        } else if (record.unbounded) {
+            visible.lights.unboundedLocalLights.push_back(id);
+        } else if (lightIntersectsFrustum(record.boundingSphere, info.lightFrustumPlanes)) {
+            visible.lights.localLights.push_back(id);
+        }
+    }
+    visible.lights.sourceLightGeneration = drawSet_.lightGeneration;
+    visible.lights.sourceLightRevision = drawSet_.lightRevision;
+    visible.lights.sourceLightCount = static_cast<uint32_t>(drawSet_.lights.size());
     visible.stats.sourceInstanceCount = static_cast<uint32_t>(drawSet_.instances.size());
     visible.stats.visibleInstanceCount = static_cast<uint32_t>(visible.instances.size());
     for (size_t index = 0; index < visible.buckets.size(); ++index) {
@@ -1182,6 +1334,14 @@ const GPUSceneVisibleDrawSet* GPUScene::visibleDrawSet(
             visible.stats.sourceDrawSetRevision == drawSet_.revision
         ? &visible
         : nullptr;
+}
+
+const GPUSceneVisibleLightSet* GPUScene::visibleLights(
+    GPUSceneViewId view, uint32_t frameSlot) const
+{
+    const GPUSceneVisibleDrawSet* visible = visibleDrawSet(view, frameSlot);
+    return visible != nullptr && visible->lights.validFor(drawSet_.lightGeneration, drawSet_.lightRevision)
+        ? &visible->lights : nullptr;
 }
 
 GPUSceneVisibleDrawSet* GPUScene::visibleDrawSetForUpdate(
@@ -1300,6 +1460,7 @@ bool GPUScene::setGlobalBufferViews(GPUSceneGlobalBufferViews views)
 
 void GPUScene::invalidateVisibleDrawSets()
 {
+    invalidateVisibleLights();
     for (ViewSlot& view : views_) {
         if (!view.occupied) {
             continue;
@@ -1309,6 +1470,16 @@ void GPUScene::invalidateVisibleDrawSets()
             visible.stats.sourceDrawSetRevision = 0;
             visible.gpu.sourceDrawSetGeneration = 0;
             visible.gpu.sourceDrawSetRevision = 0;
+        }
+    }
+}
+
+void GPUScene::invalidateVisibleLights()
+{
+    for (ViewSlot& view : views_) {
+        for (GPUSceneVisibleDrawSet& visible : view.frameSlots) {
+            visible.lights.sourceLightGeneration = 0;
+            visible.lights.sourceLightRevision = 0;
         }
     }
 }

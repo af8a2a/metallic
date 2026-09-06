@@ -2,6 +2,11 @@
 
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Scene/SceneLighting.h"
+
+#include <cstdint>
+#include <span>
+#include <vector>
 
 namespace metallic::render {
 
@@ -13,6 +18,20 @@ struct GpuPunctualLight {
     float spot[4] = {};
 };
 static_assert(sizeof(GpuPunctualLight) == 64);
+
+// Stable source slots: imported lights first, then virtual world lights. Inactive
+// or invalid sources retain their slot and provenance, with enabled=false.
+struct SceneLightRecord {
+    GpuPunctualLight gpu;
+    int32_t sourceRenderLightIndex = scene::kInvalidSceneIndex;
+    int32_t sourceVirtualLightIndex = scene::kInvalidSceneIndex;
+    scene::SceneEntity sourceObject = scene::kNullSceneEntity;
+    bool enabled = false;
+};
+
+std::vector<SceneLightRecord> buildSceneLightRecords(
+    std::span<const scene::RenderLight> renderLights,
+    std::span<const scene::PunctualLight> virtualLights);
 
 std::vector<GpuPunctualLight> buildPunctualLightRecords(
     const scene::Scene* scene, const scene::LightingSettings& settings);

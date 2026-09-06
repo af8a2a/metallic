@@ -5,6 +5,7 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #define STB_IMAGE_STATIC
@@ -1111,7 +1112,7 @@ public:
                 observedHistoryInvalidationRevision_ != invalidationRevision;
             observedHistoryInvalidationRevision_ = invalidationRevision;
         }
-        result = prepareGPUSceneView(*gpuSceneSubsystem, cameraCut);
+        result = prepareGPUSceneView(*gpuSceneSubsystem, cameraCut, context.properties());
         if (!result) {
             return result;
         }
@@ -2391,17 +2392,36 @@ private:
 
     Result prepareGPUSceneView(
         GPUSceneSubsystem& subsystem,
-        bool cameraCut)
+        bool cameraCut,
+        const RenderGraphProperties& frameProperties)
     {
-        const GPUSceneViewPrepareInfo prepareInfo{
+        GPUSceneViewPrepareInfo prepareInfo{
             .width = frameWidth_,
             .height = frameHeight_,
             .cameraCut = cameraCut,
             .freezeCullingCamera = boolProperty(
-                &properties(),
+                &frameProperties,
                 "freezeCullingCamera",
                 false),
         };
+        if (boolProperty(&frameProperties, "instanceFrustumCull", true)) {
+            GPUDrivenPreviewGpuParams camera;
+            // View preparation precedes the parameter upload. Reuse its camera
+            // builder and the same frozen snapshot that updateParamsBuffer selects.
+            if (prepareInfo.freezeCullingCamera && freezeCullingCamera_ && frozenCullingCameraValid_) {
+                camera = frozenCullingCamera_;
+            } else {
+                buildParams(frameWidth_, frameHeight_, frameProperties, drawBounds_,
+                    baseMeshletRange_, lodLevelRanges_, instanceCount_, hzbMipCount_,
+                    frameIndex_, hzbValid_, nullptr, materialTextureCount_, materialCount_, camera);
+            }
+            prepareInfo.lightFrustumPlanes = gpuSceneLightFrustumPlanes(
+                float3(camera.eye[0], camera.eye[1], camera.eye[2]),
+                float3(camera.center[0], camera.center[1], camera.center[2]),
+                float3(camera.upProjection[0], camera.upProjection[1], camera.upProjection[2]),
+                camera.viewport[0], camera.viewport[3], camera.clipOrtho[0], camera.clipOrtho[1],
+                camera.upProjection[3] > 0.5f ? camera.clipOrtho[2] : 0.0f);
+        }
         if (!subsystem.prepareView(gpuSceneView_, prepareInfo)) {
             return makeError(Error::InvalidArgument);
         }

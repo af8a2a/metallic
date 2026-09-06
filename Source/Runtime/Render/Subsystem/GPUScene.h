@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Scene/scene.h"
 
 #include <array>
@@ -35,11 +36,13 @@ struct GPUSceneId {
 struct GPUSceneGeometryTag;
 struct GPUSceneMaterialTag;
 struct GPUSceneInstanceTag;
+struct GPUSceneLightTag;
 struct GPUSceneViewTag;
 
 using GPUSceneGeometryId = GPUSceneId<GPUSceneGeometryTag>;
 using GPUSceneMaterialId = GPUSceneId<GPUSceneMaterialTag>;
 using GPUSceneInstanceId = GPUSceneId<GPUSceneInstanceTag>;
+using GPUSceneLightId = GPUSceneId<GPUSceneLightTag>;
 using GPUSceneViewId = GPUSceneId<GPUSceneViewTag>;
 
 enum class GPUSceneDrawBucket : uint8_t {
@@ -210,10 +213,13 @@ struct GPUSceneSourceView {
     uint64_t transformRevision = 0;
     uint64_t visibilityRevision = 0;
     uint64_t externalRevision = 0;
+    std::span<const scene::RenderLight> renderLights;
+    std::span<const scene::PunctualLight> virtualLights;
 
     static GPUSceneSourceView fromScene(
         const scene::Scene& scene,
-        uint64_t externalRevision = 0);
+        uint64_t externalRevision = 0,
+        std::span<const scene::PunctualLight> virtualLights = {});
 };
 
 struct GPUSceneGeometryRecord {
@@ -255,11 +261,24 @@ struct GPUSceneInstanceRecord {
     bool visible = true;
 };
 
+struct GPUSceneLightRecord {
+    GPUSceneLightId id;
+    SceneLightRecord source;
+    // Conservative world-space influence bound, not the emitter position/range.
+    float4 boundingSphere{};
+    bool unbounded = false;
+};
+
 struct GPUSceneDrawSet {
     uint32_t generation = 0;
     uint64_t revision = 0;
     std::vector<GPUSceneInstanceId> instances;
     std::array<std::vector<GPUSceneInstanceId>, kGPUSceneDrawBucketCount> buckets;
+    // Independent from mesh revisions: lighting edits must not invalidate HZB
+    // or trigger geometry uploads. IDs index GPUScene::lights() source slots.
+    uint32_t lightGeneration = 0;
+    uint64_t lightRevision = 0;
+    std::vector<GPUSceneLightId> lights;
 
     std::span<const GPUSceneInstanceId> instancesForBucket(GPUSceneDrawBucket bucket) const;
 };
@@ -411,11 +430,25 @@ struct GPUSceneVisibleDrawSetStats {
     bool hzbValid = false;
 };
 
+struct GPUSceneVisibleLightSet {
+    // Only bounded local lights are candidates for a future spatial LightGrid.
+    // Directional and unbounded local lights are evaluated separately.
+    std::vector<GPUSceneLightId> directionalLights;
+    std::vector<GPUSceneLightId> localLights;
+    std::vector<GPUSceneLightId> unboundedLocalLights;
+    uint32_t sourceLightGeneration = 0;
+    uint64_t sourceLightRevision = 0;
+    uint32_t sourceLightCount = 0;
+
+    bool validFor(uint32_t generation, uint64_t revision) const;
+};
+
 struct GPUSceneVisibleDrawSet {
     std::vector<GPUSceneInstanceId> instances;
     std::array<std::vector<GPUSceneInstanceId>, kGPUSceneDrawBucketCount> buckets;
     GPUSceneVisibleGpuResources gpu;
     GPUSceneVisibleDrawSetStats stats;
+    GPUSceneVisibleLightSet lights;
 
     std::span<const GPUSceneInstanceId> instancesForBucket(GPUSceneDrawBucket bucket) const;
 };
@@ -440,6 +473,10 @@ struct GPUSceneViewPrepareInfo {
     uint32_t height = 0;
     bool cameraCut = false;
     bool freezeCullingCamera = false;
+    // Inward world-space planes: dot(plane.xyz, point) + plane.w >= 0.
+    // Need not be normalized. Zero/invalid planes disable that boundary.
+    // Supply the same (possibly frozen) camera used for mesh coarse culling.
+    std::array<float4, 6> lightFrustumPlanes{};
 };
 
 struct GPUSceneStats {
@@ -478,6 +515,7 @@ struct GPUSceneInvalidPrimitiveDiagnostic {
 enum class GPUSceneSyncResult : uint8_t {
     Unchanged,
     HistoryUpdated,
+    LightingUpdated,
     Updated,
     RebuildRequired,
 };
@@ -492,6 +530,9 @@ public:
     void setDefaultFrameSlotCount(uint32_t frameSlotCount);
     Result rebuild(const GPUSceneSourceView& source, std::string& log);
     GPUSceneSyncResult sync(const GPUSceneSourceView& source);
+    // Also supports worlds containing only virtual lights, without a Scene.
+    bool syncLights(std::span<const scene::RenderLight> renderLights,
+        std::span<const scene::PunctualLight> virtualLights);
     void clearSource();
     void shutdown();
 
@@ -499,6 +540,7 @@ public:
     std::span<const GPUSceneGeometryRecord> geometries() const { return geometries_; }
     std::span<const GPUSceneMaterialRecord> materials() const { return materials_; }
     std::span<const GPUSceneInstanceRecord> instances() const { return instances_; }
+    std::span<const GPUSceneLightRecord> lights() const { return lights_; }
     std::span<const GPUSceneInvalidPrimitiveDiagnostic> invalidPrimitiveDiagnostics() const
     {
         return invalidPrimitiveDiagnostics_;
@@ -509,6 +551,7 @@ public:
     const scene::RenderPrimitive* geometrySourcePrimitive(GPUSceneGeometryId id) const;
     const GPUSceneMaterialRecord* material(GPUSceneMaterialId id) const;
     const GPUSceneInstanceRecord* instance(GPUSceneInstanceId id) const;
+    const GPUSceneLightRecord* light(GPUSceneLightId id) const;
 
     GPUSceneGeometryId geometryForRenderPrimitive(uint32_t renderPrimitiveIndex) const;
     GPUSceneMaterialId materialForSourceMaterial(uint32_t materialIndex) const;
@@ -533,6 +576,9 @@ public:
         const VisibilityPredicate& predicate = {});
     bool markViewHzbValid(GPUSceneViewId view, uint32_t frameSlot, bool valid = true);
     const GPUSceneVisibleDrawSet* visibleDrawSet(GPUSceneViewId view, uint32_t frameSlot) const;
+    // Use this accessor (or lights.validFor) before consuming light candidates:
+    // a light-only edit leaves mesh visibility valid but expires light lists.
+    const GPUSceneVisibleLightSet* visibleLights(GPUSceneViewId view, uint32_t frameSlot) const;
     GPUSceneVisibleDrawSet* visibleDrawSetForUpdate(GPUSceneViewId view, uint32_t frameSlot);
     bool setVisibleGpuResources(
         GPUSceneViewId view,
@@ -562,14 +608,17 @@ private:
     void invalidateSourceIds();
     void rebuildDrawSet();
     void invalidateVisibleDrawSets();
+    void invalidateVisibleLights();
     bool validView(GPUSceneViewId view) const;
 
     uint32_t defaultFrameSlotCount_ = 1;
     uint32_t geometryGeneration_ = 1;
     uint32_t materialGeneration_ = 1;
     uint32_t instanceGeneration_ = 1;
+    uint32_t lightGeneration_ = 1;
     uint32_t drawSetGeneration_ = 0;
     uint64_t nextDrawSetRevision_ = 1;
+    uint64_t nextLightRevision_ = 1;
     uint64_t temporalHistoryEpoch_ = 1;
     std::vector<GPUSceneGeometryRecord> geometries_;
     // Canonical, deduplicated CPU backing for persistent raster uploads.
@@ -577,6 +626,7 @@ private:
     std::vector<scene::RenderPrimitive> geometrySourcePrimitives_;
     std::vector<GPUSceneMaterialRecord> materials_;
     std::vector<GPUSceneInstanceRecord> instances_;
+    std::vector<GPUSceneLightRecord> lights_;
     GPUSceneDrawSet drawSet_;
     std::vector<GPUSceneGeometryId> geometryForRenderPrimitive_;
     std::vector<GPUSceneMaterialId> materialForSourceMaterial_;

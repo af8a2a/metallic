@@ -1229,6 +1229,15 @@ Result GPUSceneSubsystem::beginFrame(
     const uint64_t externalRevision = overrideScene != nullptr
         ? sourceOverrideRevision_
         : (world_ != nullptr ? world_->sceneRevision() : 0);
+    const auto virtualLights = world_ != nullptr
+        ? std::span<const scene::PunctualLight>(world_->lighting().lights)
+        : std::span<const scene::PunctualLight>();
+    const uint64_t previousLightRevision = scene_.drawSet().lightRevision;
+    const auto publishLightChanges = [&]() {
+        if (scene_.drawSet().lightRevision != previousLightRevision) {
+            changes |= RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;
+        }
+    };
 
     if (sourceDirty_ || currentScene != sourceScene_) {
         sourceDirty_ = false;
@@ -1237,6 +1246,8 @@ Result GPUSceneSubsystem::beginFrame(
             const bool hadSource = scene_.stats().geometryCount != 0 ||
                 scene_.stats().materialCount != 0 || scene_.stats().instanceCount != 0;
             scene_.clearSource();
+            scene_.syncLights({}, virtualLights);
+            publishLightChanges();
             if (hadSource) {
                 requestUpload(PendingUpload::Full);
                 changes |= RenderChangeBits::Geometry |
@@ -1247,11 +1258,12 @@ Result GPUSceneSubsystem::beginFrame(
         }
 
         Result result = scene_.rebuild(
-            GPUSceneSourceView::fromScene(*sourceScene_, externalRevision),
+            GPUSceneSourceView::fromScene(*sourceScene_, externalRevision, virtualLights),
             log);
         if (!result) {
             return result;
         }
+        publishLightChanges();
         requestUpload(PendingUpload::Full);
         changes |= RenderChangeBits::Geometry |
             RenderChangeBits::Material |
@@ -1260,11 +1272,13 @@ Result GPUSceneSubsystem::beginFrame(
     }
 
     if (sourceScene_ == nullptr) {
+        scene_.syncLights({}, virtualLights);
+        publishLightChanges();
         return {};
     }
 
     const GPUSceneSourceView source =
-        GPUSceneSourceView::fromScene(*sourceScene_, externalRevision);
+        GPUSceneSourceView::fromScene(*sourceScene_, externalRevision, virtualLights);
     const GPUSceneSyncResult syncResult = scene_.sync(source);
     if (syncResult == GPUSceneSyncResult::RebuildRequired) {
         Result result = scene_.rebuild(source, log);
@@ -1282,6 +1296,7 @@ Result GPUSceneSubsystem::beginFrame(
     } else if (syncResult == GPUSceneSyncResult::HistoryUpdated) {
         requestUpload(PendingUpload::Instances);
     }
+    publishLightChanges();
     return {};
 }
 

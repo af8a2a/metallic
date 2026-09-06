@@ -1,8 +1,10 @@
 #include "RhiTest.h"
 
 #include "Runtime/Render/Subsystem/BuiltinRenderSubsystems.h"
+#include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -2010,6 +2012,522 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(GPUSceneSubmissionRecoveryTest);
 #undef SUBMISSION_CHECK
+
+scene::PunctualLight makeCullingTestLight(
+    std::string type,
+    const float3& position,
+    double range)
+{
+    scene::PunctualLight light;
+    light.properties.type = std::move(type);
+    light.properties.intensity = 100.0;
+    light.properties.range = range;
+    light.position = position;
+    light.direction = float3(0.0f, 0.0f, -1.0f);
+    return light;
+}
+
+bool containsLight(
+    const std::vector<render::GPUSceneLightId>& lights,
+    render::GPUSceneLightId id)
+{
+    return std::find(lights.begin(), lights.end(), id) != lights.end();
+}
+
+class GPUSceneLightCollectionTest final : public RhiTest {
+public:
+    GPUSceneLightCollectionTest()
+    {
+        type = RhiTestType::Validation;
+        name = "gpu_scene_light_collection";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        std::vector<scene::RenderPrimitive> primitives{makeTrianglePrimitive()};
+        std::vector<scene::RenderNode> nodes(1);
+        nodes[0].renderPrimitiveIndex = 0;
+        nodes[0].materialIndex = 0;
+        std::vector<scene::RenderMaterial> materials(1);
+        std::vector<scene::RenderLight> imported(2);
+        imported[0].type = "directional";
+        imported[0].intensity = 4.0;
+        imported[0].intensityUnit = scene::LightUnit::Lux;
+        imported[0].object = static_cast<scene::SceneEntity>(42);
+        imported[1].type = "point";
+        imported[1].range = 2.0;
+        imported[1].visible = false;
+        std::vector<scene::PunctualLight> virtualLights{
+            makeCullingTestLight("point", float3(0.0f, 0.0f, 0.0f), 2.0),
+            makeCullingTestLight("spot", float3(0.0f, 0.0f, 0.0f), 0.0),
+            makeCullingTestLight("point", float3(0.0f, 0.0f, 0.0f), 2.0),
+        };
+        virtualLights[0].properties.intensity = 25.0;
+        virtualLights[0].properties.intensityUnit = scene::LightUnit::Candela;
+        virtualLights[1].properties.intensity = 0.0;
+        virtualLights[2].enabled = false;
+        auto source = makeSourceView(primitives, nodes, materials, 1, 1, 1);
+        source.renderLights = imported;
+        source.virtualLights = virtualLights;
+
+        render::GPUScene gpuScene;
+        gpuScene.setDefaultFrameSlotCount(2);
+        std::string log;
+        if (!gpuScene.rebuild(source, log)) {
+            return RhiTestResult::fail("light collection rebuild failed: " + log);
+        }
+        const auto records = gpuScene.lights();
+        if (records.size() != 5 || gpuScene.drawSet().lights.size() != 2 ||
+            records[0].source.sourceRenderLightIndex != 0 ||
+            records[0].source.sourceVirtualLightIndex != scene::kInvalidSceneIndex ||
+            records[0].source.sourceObject != imported[0].object ||
+            records[2].source.sourceRenderLightIndex != scene::kInvalidSceneIndex ||
+            records[2].source.sourceVirtualLightIndex != 0 ||
+            records[0].source.gpu.colorIntensity[3] != 4.0f ||
+            records[2].source.gpu.colorIntensity[3] != 25.0f ||
+            records[1].source.enabled || records[3].source.enabled ||
+            records[4].source.enabled) {
+            return RhiTestResult::fail("light source provenance, SI intensity or inactive slots are incorrect");
+        }
+        const auto directionalId = records[0].id;
+        const auto pointId = records[2].id;
+        const uint32_t lightGeneration = gpuScene.drawSet().lightGeneration;
+        const uint64_t lightRevision = gpuScene.drawSet().lightRevision;
+        const uint32_t geometryGeneration = gpuScene.drawSet().generation;
+        const uint64_t geometryRevision = gpuScene.drawSet().revision;
+        if (lightGeneration == 0 || lightRevision == 0 ||
+            gpuScene.light(directionalId) == nullptr || gpuScene.light(pointId) == nullptr) {
+            return RhiTestResult::fail("light collection did not establish generational source IDs");
+        }
+        const auto firstView = gpuScene.createView();
+        const auto secondView = gpuScene.createView();
+        const render::GPUSceneViewPrepareInfo info{.width = 64, .height = 64};
+        if (!gpuScene.prepareView(firstView, 0, info,
+                [](const render::GPUSceneInstanceRecord&) { return false; }) ||
+            !gpuScene.prepareView(firstView, 1, info) ||
+            !gpuScene.prepareView(secondView, 0, info) ||
+            !gpuScene.markViewHzbValid(firstView, 0)) {
+            return RhiTestResult::fail("light collection could not prepare isolated views and frame slots");
+        }
+        const auto* visible = gpuScene.visibleLights(firstView, 0);
+        const auto* drawSet = gpuScene.visibleDrawSet(firstView, 0);
+        if (visible == nullptr || drawSet == nullptr || !drawSet->instances.empty() ||
+            !visible->validFor(lightGeneration, lightRevision) ||
+            visible->sourceLightCount != 2 ||
+            visible->directionalLights != std::vector{directionalId} ||
+            visible->localLights != std::vector{pointId} ||
+            !visible->unboundedLocalLights.empty()) {
+            return RhiTestResult::fail("mesh predicate incorrectly affected independent light collection");
+        }
+        const uint64_t hzbEpoch = drawSet->stats.hzbHistoryEpoch;
+        virtualLights[0].properties.intensity = 50.0;
+        virtualLights[0].position = float3(3.0f, 0.0f, 0.0f);
+        imported[1].visible = true;
+        if (gpuScene.sync(source) != render::GPUSceneSyncResult::LightingUpdated ||
+            gpuScene.drawSet().generation != geometryGeneration ||
+            gpuScene.drawSet().revision != geometryRevision ||
+            gpuScene.drawSet().lightGeneration != lightGeneration ||
+            gpuScene.drawSet().lightRevision == lightRevision ||
+            gpuScene.light(pointId) == nullptr ||
+            gpuScene.light(pointId)->source.gpu.colorIntensity[3] != 50.0f ||
+            gpuScene.light(pointId)->source.gpu.positionRange[0] != 3.0f ||
+            gpuScene.visibleLights(firstView, 0) != nullptr ||
+            gpuScene.visibleLights(firstView, 1) != nullptr ||
+            gpuScene.visibleLights(secondView, 0) != nullptr) {
+            return RhiTestResult::fail("light-only sync lost stable IDs or failed to invalidate light snapshots");
+        }
+        drawSet = gpuScene.visibleDrawSet(firstView, 0);
+        if (drawSet == nullptr || !drawSet->stats.hzbValid ||
+            drawSet->stats.hzbHistoryEpoch != hzbEpoch) {
+            return RhiTestResult::fail("light-only sync invalidated geometry visibility or HZB history");
+        }
+        const uint64_t updatedLightRevision = gpuScene.drawSet().lightRevision;
+        if (gpuScene.sync(source) != render::GPUSceneSyncResult::Unchanged ||
+            gpuScene.syncLights(imported, virtualLights) ||
+            gpuScene.drawSet().lightRevision != updatedLightRevision ||
+            !gpuScene.prepareView(firstView, 0, info)) {
+            return RhiTestResult::fail("unchanged light sources advanced revisions or could not be recollected");
+        }
+        visible = gpuScene.visibleLights(firstView, 0);
+        if (visible == nullptr || visible->localLights.size() != 2 ||
+            visible->sourceLightCount != 3 ||
+            gpuScene.visibleLights(firstView, 1) != nullptr ||
+            gpuScene.visibleLights(secondView, 0) != nullptr ||
+            !gpuScene.visibleDrawSet(firstView, 0)->stats.hzbValid) {
+            return RhiTestResult::fail("light collection refresh leaked across frame slots or views");
+        }
+        virtualLights.push_back(makeCullingTestLight(
+            "directional", float3(0.0f, 0.0f, 0.0f), 0.0));
+        if (!gpuScene.syncLights(imported, virtualLights) ||
+            gpuScene.drawSet().lightGeneration == lightGeneration ||
+            gpuScene.light(pointId) != nullptr || gpuScene.light(directionalId) != nullptr ||
+            gpuScene.drawSet().generation != geometryGeneration ||
+            gpuScene.drawSet().revision != geometryRevision ||
+            !gpuScene.prepareView(firstView, 0, info)) {
+            return RhiTestResult::fail("light source topology did not invalidate only light IDs");
+        }
+        const auto lastId = gpuScene.lights().back().id;
+        visible = gpuScene.visibleLights(firstView, 0);
+        if (visible == nullptr || visible->directionalLights.size() != 2 ||
+            visible->sourceLightCount != 4) {
+            return RhiTestResult::fail("added light was not included in the next view collection");
+        }
+        gpuScene.clearSource();
+        if (!gpuScene.lights().empty() || !gpuScene.drawSet().lights.empty() ||
+            gpuScene.light(lastId) != nullptr ||
+            gpuScene.visibleLights(firstView, 0) != nullptr ||
+            gpuScene.visibleLights(firstView, 1) != nullptr ||
+            gpuScene.visibleLights(secondView, 0) != nullptr) {
+            return RhiTestResult::fail("clearSource retained stale light records or view collections");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GPUSceneLightCollectionTest);
+
+class GPUSceneLightFrustumTest final : public RhiTest {
+public:
+    GPUSceneLightFrustumTest()
+    {
+        type = RhiTestType::Validation;
+        name = "gpu_scene_light_frustum";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        std::vector<scene::PunctualLight> lights{
+            makeCullingTestLight("directional", float3(1000.0f, 0.0f, 0.0f), 0.0),
+            makeCullingTestLight("point", float3(1000.0f, 0.0f, 0.0f), 0.0),
+            makeCullingTestLight("spot", float3(1000.0f, 0.0f, 0.0f), 0.0),
+            makeCullingTestLight("point", float3(0.0f, 0.0f, 0.0f), 1.0),
+            makeCullingTestLight("point", float3(3.0f, 0.0f, 0.0f), 1.0),
+            makeCullingTestLight("point", float3(2.0f, 0.0f, 0.0f), 1.0),
+            makeCullingTestLight("point", float3(1.5f, 0.0f, 0.0f), 1.0),
+            makeCullingTestLight("point", float3(-5.0f, 0.0f, 0.0f), 1.0),
+            makeCullingTestLight("spot", float3(5.0f, 0.0f, 0.0f), 2.0),
+            makeCullingTestLight("spot", float3(1.5f, 0.0f, 0.0f), 2.0),
+            makeCullingTestLight("spot", float3(0.0f, 0.0f, 0.0f), 2.0),
+            makeCullingTestLight("point", float3(0.0f, 0.0f, 0.0f), 1.0),
+            makeCullingTestLight("point", float3(0.0f, 0.0f, 0.0f), 1.0),
+            makeCullingTestLight("point", float3(0.0f, 0.0f, 0.0f), 1.0),
+        };
+        const double pi = std::acos(-1.0);
+        lights[8].direction = float3(1.0f, 0.0f, 0.0f);
+        lights[8].properties.outerConeAngle = pi / 6.0;
+        lights[9].direction = float3(-1.0f, 0.0f, 0.0f);
+        lights[9].properties.outerConeAngle = pi / 6.0;
+        lights[10].direction = float3(0.0f, 0.0f, 1.0f);
+        lights[10].properties.outerConeAngle = pi / 3.0;
+        lights[11].properties.intensity = 0.0;
+        lights[12].properties.color = float3(0.0f, 0.0f, 0.0f);
+        lights[13].enabled = false;
+        lights.push_back(makeCullingTestLight("point", float3(
+            std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f), 1.0));
+        lights.push_back(makeCullingTestLight("point", float3(0.0f, 0.0f, 0.0f),
+            std::numeric_limits<double>::max()));
+        lights.push_back(makeCullingTestLight("point", float3(0.0f, 0.0f, 0.0f),
+            std::numeric_limits<double>::min()));
+        lights.push_back(makeCullingTestLight("spot", float3(0.0f, 0.0f, 0.0f), 1.0));
+        lights.back().direction = float3(0.0f, std::numeric_limits<float>::infinity(), 0.0f);
+
+        render::GPUScene gpuScene;
+        gpuScene.setDefaultFrameSlotCount(2);
+        if (!gpuScene.syncLights({}, lights) || gpuScene.lights().size() != lights.size() ||
+            gpuScene.drawSet().lights.size() != 11) {
+            return RhiTestResult::fail("standalone light collection did not filter inactive sources");
+        }
+        const auto records = gpuScene.lights();
+        const auto near = [](float actual, double expected) {
+            return std::abs(actual - expected) < 0.00002;
+        };
+        if (!records[0].unbounded || !records[1].unbounded || !records[2].unbounded ||
+            records[9].unbounded || records[10].unbounded ||
+            !near(records[9].boundingSphere.x, 1.5 - 2.0 / std::sqrt(3.0)) ||
+            !near(records[9].boundingSphere.y, 0.0) ||
+            !near(records[9].boundingSphere.z, 0.0) ||
+            !near(records[9].boundingSphere.w, 2.0 / std::sqrt(3.0)) ||
+            !near(records[10].boundingSphere.z, 1.0) ||
+            !near(records[10].boundingSphere.w, std::sqrt(3.0))) {
+            return RhiTestResult::fail("finite spot light spherical-sector bounds are incorrect");
+        }
+        render::GPUSceneViewPrepareInfo firstInfo;
+        // A box [-1,1]^3; intentionally non-unit normals test plane scaling.
+        firstInfo.lightFrustumPlanes = {
+            float4(2.0f, 0.0f, 0.0f, 2.0f),
+            float4(-3.0f, 0.0f, 0.0f, 3.0f),
+            float4(0.0f, 1.0f, 0.0f, 1.0f),
+            float4(0.0f, -1.0f, 0.0f, 1.0f),
+            float4(0.0f, 0.0f, 1.0f, 1.0f),
+            float4(0.0f, 0.0f, -1.0f, 1.0f),
+        };
+        const auto firstView = gpuScene.createView();
+        const auto secondView = gpuScene.createView();
+        if (!gpuScene.prepareView(firstView, 0, firstInfo)) {
+            return RhiTestResult::fail("standalone light frustum view preparation failed");
+        }
+        const auto* visible = gpuScene.visibleLights(firstView, 0);
+        if (visible == nullptr || visible->sourceLightCount != 11 ||
+            visible->directionalLights != std::vector{records[0].id} ||
+            visible->unboundedLocalLights != std::vector{records[1].id, records[2].id} ||
+            visible->localLights != std::vector{
+                records[3].id, records[5].id, records[6].id, records[9].id, records[10].id}) {
+            return RhiTestResult::fail("light frustum lost tangent/intersecting bounds or retained outside spheres");
+        }
+        const auto firstLocalIds = visible->localLights;
+        auto secondInfo = firstInfo;
+        secondInfo.lightFrustumPlanes[0] = float4(1.0f, 0.0f, 0.0f, -4.0f);
+        secondInfo.lightFrustumPlanes[1] = float4(-1.0f, 0.0f, 0.0f, 6.0f);
+        if (!gpuScene.prepareView(firstView, 1, secondInfo) ||
+            !gpuScene.prepareView(secondView, 0, secondInfo)) {
+            return RhiTestResult::fail("alternate light frusta could not be prepared");
+        }
+        visible = gpuScene.visibleLights(firstView, 1);
+        const auto* secondVisible = gpuScene.visibleLights(secondView, 0);
+        if (visible == nullptr || secondVisible == nullptr ||
+            !containsLight(visible->localLights, records[4].id) ||
+            !containsLight(visible->localLights, records[8].id) ||
+            containsLight(visible->localLights, records[3].id) ||
+            visible->localLights != secondVisible->localLights ||
+            gpuScene.visibleLights(firstView, 0)->localLights != firstLocalIds ||
+            visible->unboundedLocalLights.size() != 2 || visible->directionalLights.size() != 1) {
+            return RhiTestResult::fail("light frustum collection leaked between cameras or frame slots");
+        }
+        if (!gpuScene.prepareView(secondView, 1) ||
+            gpuScene.visibleLights(secondView, 1) == nullptr ||
+            gpuScene.visibleLights(secondView, 1)->localLights.size() != 8) {
+            return RhiTestResult::fail("default zero planes should retain every bounded light");
+        }
+        render::GPUSceneViewPrepareInfo invalidPlanes;
+        invalidPlanes.lightFrustumPlanes[0] = float4(
+            std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f, -1000.0f);
+        invalidPlanes.lightFrustumPlanes[1] = float4(
+            1.0f, 0.0f, 0.0f, -std::numeric_limits<float>::infinity());
+        if (!gpuScene.prepareView(secondView, 1, invalidPlanes) ||
+            gpuScene.visibleLights(secondView, 1) == nullptr ||
+            gpuScene.visibleLights(secondView, 1)->localLights.size() != 8 ||
+            gpuScene.visibleLights(firstView, 0)->localLights != firstLocalIds ||
+            gpuScene.prepareView(firstView, 2) || gpuScene.visibleLights(firstView, 2) != nullptr) {
+            return RhiTestResult::fail("invalid frustum planes or invalid frame slots violated conservative collection");
+        }
+        if (!gpuScene.destroyView(secondView) ||
+            gpuScene.visibleLights(secondView, 0) != nullptr ||
+            gpuScene.prepareView(secondView, 0)) {
+            return RhiTestResult::fail("destroyed view retained a visible light collection");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GPUSceneLightFrustumTest);
+
+class GPUSceneLightCameraFrustumTest final : public RhiTest {
+public:
+    GPUSceneLightCameraFrustumTest()
+    {
+        type = RhiTestType::Validation;
+        name = "gpu_scene_light_camera_frustum";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const float3 eye(10.0f, 5.0f, 3.0f);
+        const std::array positions{
+            float3(0.0f, 0.0f, -2.0f),
+            float3(0.0f, 0.0f, -0.2f),
+            float3(0.0f, 0.0f, -12.0f),
+            float3(3.0f, 0.0f, -2.0f),
+            float3(0.0f, 3.0f, -2.0f),
+            float3(1.5f, 0.0f, -2.0f),
+            float3(0.0f, 0.0f, 2.0f),
+            float3(0.0f, 0.0f, -0.9f),
+            float3(0.0f, 0.0f, -10.1f),
+        };
+        std::vector<scene::PunctualLight> lights;
+        for (const float3& position : positions) {
+            lights.push_back(makeCullingTestLight("point", eye + position, 0.1));
+        }
+        render::GPUScene gpuScene;
+        gpuScene.syncLights({}, lights);
+        const auto records = gpuScene.lights();
+        const auto view = gpuScene.createView();
+        render::GPUSceneViewPrepareInfo info;
+        info.lightFrustumPlanes = render::gpuSceneLightFrustumPlanes(
+            eye, eye + float3(0.0f, 0.0f, -1.0f), float3(0.0f, 1.0f, 0.0f),
+            1.0f, float(std::acos(-1.0) * 0.5), 1.0f, 10.0f);
+        if (!gpuScene.prepareView(view, 0, info)) {
+            return RhiTestResult::fail("perspective light camera could not be prepared");
+        }
+        const auto* visible = gpuScene.visibleLights(view, 0);
+        if (visible == nullptr || visible->localLights != std::vector{
+                records[0].id, records[5].id, records[7].id, records[8].id}) {
+            return RhiTestResult::fail("translated perspective camera planes lost clip tangencies or accepted outside lights");
+        }
+        info.lightFrustumPlanes = render::gpuSceneLightFrustumPlanes(
+            eye, eye + float3(0.0f, 0.0f, -1.0f), float3(0.0f, 1.0f, 0.0f),
+            1.0f, float(std::acos(-1.0) * 0.5), 1.0f, 10.0f, 2.0f);
+        if (!gpuScene.prepareView(view, 0, info)) {
+            return RhiTestResult::fail("orthographic light camera could not be prepared");
+        }
+        visible = gpuScene.visibleLights(view, 0);
+        if (visible == nullptr || visible->localLights != std::vector{
+                records[0].id, records[7].id, records[8].id}) {
+            return RhiTestResult::fail("orthographic light camera did not use a fixed-width clip volume");
+        }
+        info.lightFrustumPlanes = render::gpuSceneLightFrustumPlanes(
+            float3(std::numeric_limits<float>::quiet_NaN(), eye.y, eye.z),
+            eye + float3(0.0f, 0.0f, -1.0f), float3(0.0f, 1.0f, 0.0f),
+            1.0f, 1.0f, 1.0f, 10.0f);
+        if (!gpuScene.prepareView(view, 0, info) ||
+            gpuScene.visibleLights(view, 0) == nullptr ||
+            gpuScene.visibleLights(view, 0)->localLights.size() != lights.size()) {
+            return RhiTestResult::fail("invalid camera input should conservatively disable light frustum culling");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GPUSceneLightCameraFrustumTest);
+
+class GPUSceneWorldLightSyncTest final : public RhiTest {
+public:
+    GPUSceneWorldLightSyncTest()
+    {
+        type = RhiTestType::Validation;
+        name = "gpu_scene_world_light_sync";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        // beginFrame performs only source synchronization: no GPU initialization
+        // or command recording is needed to validate this integration boundary.
+        render::GPUSceneSubsystem subsystem;
+        render::RenderSubsystemHost host;
+        render::RenderWorld world;
+        scene::LightingSettings settings;
+        settings.lights.push_back(makeCullingTestLight(
+            "point", float3(1.0f, 2.0f, 3.0f), 5.0));
+        if (!world.setLighting(settings)) {
+            return RhiTestResult::fail("world light fixture was rejected");
+        }
+        render::RenderSubsystemFrameContext frame{
+            .device = context.device,
+            .host = host,
+            .world = &world,
+        };
+        render::RenderChangeBits changes = render::RenderChangeBits::None;
+        const auto lightingOnly = [&]() {
+            return render::hasRenderChange(changes, render::RenderChangeBits::Lighting) &&
+                !render::hasRenderChange(changes, render::RenderChangeBits::Geometry) &&
+                !render::hasRenderChange(changes, render::RenderChangeBits::Material);
+        };
+        std::string log;
+        subsystem.onWorldChanged(&world);
+        if (!subsystem.beginFrame(frame, changes, log) || !lightingOnly() ||
+            subsystem.lights().size() != 1 || subsystem.drawSet().lights.size() != 1 ||
+            subsystem.scene().stats().geometryCount != 0 ||
+            subsystem.scene().stats().instanceCount != 0) {
+            return RhiTestResult::fail("GPUScene beginFrame did not collect virtual lights without a scene: " + log);
+        }
+        const auto lightId = subsystem.lights().front().id;
+        const uint32_t geometryGeneration = subsystem.drawSet().generation;
+        const uint64_t geometryRevision = subsystem.drawSet().revision;
+        const uint32_t lightGeneration = subsystem.drawSet().lightGeneration;
+        const uint64_t lightRevision = subsystem.drawSet().lightRevision;
+        const auto view = subsystem.scene().createView();
+        if (!subsystem.prepareView(view, 0) || subsystem.visibleLights(view, 0) == nullptr) {
+            return RhiTestResult::fail("GPUScene could not prepare a light-only world view");
+        }
+        settings.lights[0].properties.intensity *= 2.0;
+        world.setLighting(settings);
+        changes = render::RenderChangeBits::None;
+        ++frame.frameIndex;
+        if (!subsystem.beginFrame(frame, changes, log) || !lightingOnly() ||
+            subsystem.drawSet().generation != geometryGeneration ||
+            subsystem.drawSet().revision != geometryRevision ||
+            subsystem.drawSet().lightGeneration != lightGeneration ||
+            subsystem.drawSet().lightRevision == lightRevision ||
+            subsystem.scene().light(lightId) == nullptr ||
+            subsystem.scene().light(lightId)->source.gpu.colorIntensity[3] != 200.0f ||
+            subsystem.visibleLights(view, 0) != nullptr ||
+            subsystem.visibleDrawSet(view, 0) == nullptr ||
+            subsystem.gpuUploadStats().fullUploadCount != 0 ||
+            subsystem.gpuUploadStats().instanceUploadCount != 0) {
+            return RhiTestResult::fail("world lighting-only update churned geometry state or missed light invalidation");
+        }
+        const uint64_t updatedRevision = subsystem.drawSet().lightRevision;
+        changes = render::RenderChangeBits::None;
+        ++frame.frameIndex;
+        if (!subsystem.beginFrame(frame, changes, log) ||
+            changes != render::RenderChangeBits::None ||
+            subsystem.drawSet().lightRevision != updatedRevision) {
+            return RhiTestResult::fail("unchanged world lights published repeated subsystem changes");
+        }
+
+        render::RenderWorld replacement;
+        settings.lights.clear();
+        settings.lights.push_back(makeCullingTestLight(
+            "spot", float3(9.0f, 0.0f, 0.0f), 3.0));
+        replacement.setLighting(settings);
+        frame.world = &replacement;
+        subsystem.onWorldChanged(&replacement);
+        changes = render::RenderChangeBits::None;
+        ++frame.frameIndex;
+        if (!subsystem.beginFrame(frame, changes, log) || !lightingOnly() ||
+            subsystem.lights().size() != 1 || subsystem.drawSet().lights.size() != 1 ||
+            subsystem.drawSet().generation != geometryGeneration ||
+            subsystem.drawSet().revision != geometryRevision ||
+            subsystem.scene().light(lightId) != nullptr ||
+            subsystem.lights().front().source.gpu.directionType[3] != 2.0f ||
+            subsystem.lights().front().source.gpu.positionRange[0] != 9.0f ||
+            subsystem.visibleLights(view, 0) != nullptr) {
+            return RhiTestResult::fail("world replacement kept the previous world's virtual light snapshot");
+        }
+        const auto replacementId = subsystem.lights().front().id;
+        frame.world = nullptr;
+        subsystem.onWorldChanged(nullptr);
+        changes = render::RenderChangeBits::None;
+        ++frame.frameIndex;
+        if (!subsystem.beginFrame(frame, changes, log) || !lightingOnly() ||
+            !subsystem.lights().empty() || !subsystem.drawSet().lights.empty() ||
+            subsystem.drawSet().generation != geometryGeneration ||
+            subsystem.drawSet().revision != geometryRevision ||
+            subsystem.scene().light(replacementId) != nullptr) {
+            return RhiTestResult::fail("removing a world retained its virtual lights");
+        }
+
+        // A scene override chooses imported geometry/lights, but must retain the
+        // active world's independent virtual lights.
+        scene::Scene overrideScene;
+        render::GPUSceneSourceOverrideToken token;
+        if (!subsystem.acquireSourceOverride(&overrideScene, token, log)) {
+            return RhiTestResult::fail("light sync could not acquire a source override: " + log);
+        }
+        frame.world = &replacement;
+        subsystem.onWorldChanged(&replacement);
+        changes = render::RenderChangeBits::None;
+        ++frame.frameIndex;
+        if (!subsystem.beginFrame(frame, changes, log) ||
+            subsystem.lights().size() != 1 ||
+            subsystem.lights().front().source.sourceVirtualLightIndex != 0 ||
+            subsystem.lights().front().source.gpu.positionRange[0] != 9.0f ||
+            !subsystem.releaseSourceOverride(token)) {
+            return RhiTestResult::fail("source override dropped the active world's virtual lights");
+        }
+        changes = render::RenderChangeBits::None;
+        ++frame.frameIndex;
+        if (!subsystem.beginFrame(frame, changes, log) ||
+            subsystem.sourceOverride() != nullptr || subsystem.lights().size() != 1 ||
+            subsystem.drawSet().lights.size() != 1 ||
+            subsystem.lights().front().source.sourceVirtualLightIndex != 0 ||
+            subsystem.lights().front().source.gpu.positionRange[0] != 9.0f) {
+            return RhiTestResult::fail("releasing the source override did not retain the active world's virtual lights");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GPUSceneWorldLightSyncTest);
 
 } // namespace
 } // namespace metallic::tests

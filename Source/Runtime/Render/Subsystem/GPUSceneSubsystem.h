@@ -103,6 +103,7 @@ public:
     std::span<const GPUSceneGeometryRecord> geometries() const { return scene_.geometries(); }
     std::span<const GPUSceneMaterialRecord> materials() const { return scene_.materials(); }
     std::span<const GPUSceneInstanceRecord> instances() const { return scene_.instances(); }
+    std::span<const GPUSceneLightRecord> lights() const { return scene_.lights(); }
     const GPUSceneStats& stats() const { return scene_.stats(); }
     // Set before allocating Views. Toggled only when starting a debug-enabled graph.
     void setDebugReadbackEnabled(bool enabled) { debugReadbackEnabled_ = enabled; }
@@ -122,6 +123,18 @@ public:
     GPUSceneInstanceId instanceForRenderNode(uint32_t renderNodeIndex) const
     {
         return scene_.instanceForRenderNode(renderNodeIndex);
+    }
+    const GPUSceneLightRecord* light(GPUSceneLightId id) const
+    {
+        return scene_.light(id);
+    }
+    const GPUSceneVisibleLightSet* visibleLights(GPUSceneViewId view, uint32_t frameSlot) const
+    {
+        return scene_.visibleLights(view, frameSlot);
+    }
+    const GPUSceneVisibleLightSet* visibleLights(GPUSceneViewId view) const
+    {
+        return scene_.visibleLights(view, currentFrameSlot_);
     }
 
     uint64_t currentFrameIndex() const { return currentFrameIndex_; }

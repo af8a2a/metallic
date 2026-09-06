@@ -6,6 +6,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
 #include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include <algorithm>
@@ -899,7 +900,7 @@ public:
                     observedHistoryInvalidationRevision_ != invalidationRevision;
                 observedHistoryInvalidationRevision_ = invalidationRevision;
             }
-            result = prepareGPUSceneView(*gpuSceneSubsystem, cameraCut);
+            result = prepareGPUSceneView(*gpuSceneSubsystem, cameraCut, frame);
             if (!result) {
                 return result;
             }
@@ -1154,18 +1155,31 @@ private:
         });
     }
 
-    Result prepareGPUSceneView(GPUSceneSubsystem& subsystem, bool cameraCut)
+    Result prepareGPUSceneView(
+        GPUSceneSubsystem& subsystem,
+        bool cameraCut,
+        const MeshletStreamFrameDesc& frame)
     {
         activeFrameSlot_ = subsystem.currentFrameSlot();
         if (activeFrameSlot_ >= frameSlotCount_) {
             return makeError(Error::InvalidArgument);
         }
-        const GPUSceneViewPrepareInfo prepareInfo{
+        GPUSceneViewPrepareInfo prepareInfo{
             .width = frameWidth_,
             .height = frameHeight_,
             .cameraCut = cameraCut,
             .freezeCullingCamera = false,
         };
+        if (boolProperty(properties(), "instanceFrustumCull", true)) {
+            // The standalone stream path currently uses a perspective camera;
+            // consume the exact frame camera also uploaded by stream traversal.
+            prepareInfo.lightFrustumPlanes = gpuSceneLightFrustumPlanes(
+                frame.camera.eye, frame.camera.center, frame.camera.up,
+                static_cast<float>(std::max(frame.width, 1u)) /
+                    static_cast<float>(std::max(frame.height, 1u)),
+                frame.camera.fovDegrees * 0.017453292519943295f,
+                frame.camera.znear, frame.camera.zfar);
+        }
         if (!subsystem.prepareView(
                 gpuSceneView_,
                 activeFrameSlot_,

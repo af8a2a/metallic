@@ -29,6 +29,24 @@ An HDR file is not inherently calibrated. To compare it against physical lamps, 
 
 The existing RTXDI many-light benchmark retains its own synthetic benchmark lights; the physical scene-light path described here is the new real-time pass and the standard/OpenPBR path tracers.
 
+## DrawSet light candidates
+
+`GPUSceneSubsystem::beginFrame` synchronizes imported scene lights and virtual world lights, including worlds without a Scene. Shared `SceneLightRecord` packing preserves source slots and the physical `GpuPunctualLight` data; disabled, invalid, black and zero-intensity sources retain their slots but do not enter `GPUSceneDrawSet::lights`.
+
+`GPUScene::prepareView` collects candidates independently for each View/frame slot, alongside coarse mesh collection. It follows Unreal's `ComputeLightVisibility` (`Renderer/Private/SceneVisibility.cpp`) and `FSphere::FromCone` (`Core/Public/Math/Sphere.h`): point lights use their attenuation sphere; spot lights use a conservative sphere enclosing their radial range and outer cone. Non-normalized inward frustum planes are supported, tangency is retained, and invalid/zero planes are skipped. Neither mesh visibility predicates nor HZB occlusion remove lights. There is no screen-size or brightness threshold.
+
+`GPUSceneSubsystem::visibleLights(view, frameSlot)` returns three deterministic source-ID lists:
+
+- `localLights`: finite-range point/spot candidates for a future LightGrid.
+- `directionalLights`: global directional lights, unaffected by camera frustum.
+- `unboundedLocalLights`: range-zero point/spot lights, kept separately because a finite grid bound cannot represent their influence.
+
+Resolve each ID through `light(id)` to obtain its source indices/object, unmodified GPU payload and coarse `boundingSphere`. The sphere is not a replacement for the original position/range/cone used in future grid intersection. The collection has its own `lightGeneration`/`lightRevision`; parameter edits preserve IDs, while source-slot topology changes invalidate them. Check `visibleLights` or `lights.validFor(...)` before using a snapshot: light-only changes expire light lists without changing mesh DrawSet revisions or GPU allocations. GPUScene's geometric HZB state is independent; the renderer's existing global radiance-history invalidation/camera-cut policy remains unchanged.
+
+VisibilityBuffer and GPUDrivenStreamAsset provide the same camera used for mesh culling. VisibilityBuffer supports frozen and orthographic cameras; disabling `instanceFrustumCull` also disables light frustum rejection. This is the CPU coarse collection stage only, not LightGrid construction or GPU grid upload. Existing physical lighting and path tracing continue consuming the complete light buffer; camera-culled lists must not replace secondary-path lighting. Environment PDF and SH are not local-light candidates.
+
 ## Validation
 
 `Photometry.UnitsAndValidation` and `SceneEditing.PhysicalLightingRoundTrip` verify units, negative EV, validation, imported overrides, virtual light persistence and discard. RHI tests `photometric_gpu_units_falloff_sh` and `photometric_realtime_render` verify GPU inverse-square attenuation, directional invariance, spot cutoff, unit equivalence, exposure, constant-environment irradiance and live light add/edit/remove.
+
+The `gpu_scene_light_*` tests cover source collection/lifetime, independent light revisions, per-view/frame-slot snapshots, conservative point/spot culling, perspective/orthographic camera planes and light-only world synchronization.
