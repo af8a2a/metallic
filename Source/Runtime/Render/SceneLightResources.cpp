@@ -1,12 +1,65 @@
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
+#include "Runtime/Render/ImportanceSampling.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <unordered_map>
 
 namespace metallic::render {
+
+struct SceneLightResources::SamplingState {
+    ImportancePdfCompute compute;
+    ImportancePdfTexture pdf;
+    ReGIRLightSelector grid;
+    bool cancelled = false;
+};
+
+Result SceneLightResources::buildSampling(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
+    TextureView& environment, const ReGIRBuildParameters& parameters,
+    uint32_t gridSize, uint32_t lightsPerCell, bool buildGrid, std::string& log)
+{
+    if (buffer_ == nullptr || parameters.lightCount != lightCount()) {
+        return makeError(Error::InvalidArgument);
+    }
+    const auto size = computeImportancePdfTextureSize(std::max(lightCount(), 1u));
+    if (sampling_ == nullptr || sampling_->cancelled || sampling_->pdf.textureWidth() != size.width ||
+        sampling_->pdf.textureHeight() != size.height || sampling_->grid.layout().gridSize != gridSize ||
+        sampling_->grid.layout().lightsPerCell != lightsPerCell) {
+        auto next = std::make_shared<SamplingState>();
+        Result result = next->compute.initialize(device, log);
+        if (!result) { return result; }
+        result = next->grid.initialize(device, log);
+        if (!result) { return result; }
+        result = next->pdf.initialize(device, size.width, size.height, "Physical light importance PDF", log);
+        if (!result) { return result; }
+        result = next->grid.ensureGrid(device, gridSize, lightsPerCell, log);
+        if (!result) { return result; }
+        host.retire(sampling_);
+        sampling_ = std::move(next);
+    }
+    if (auto* frame = commands.frameContext()) { frame->retain(sampling_); }
+    // PDF layout state is advanced while recording. If any later pass cancels
+    // this recording, recreate it instead of assuming those GPU transitions ran.
+    Result transaction = host.deferSubmission(commands, []() {},
+        [state = sampling_]() { state->cancelled = true; });
+    if (!transaction) { return transaction; }
+    Result result = sampling_->compute.buildLocalLights(commands, environment, sampling_->pdf, *buffer_, lightCount());
+    if (!result || !buildGrid) { return result; }
+    return sampling_->grid.build(commands, *sampling_->pdf.view(), *buffer_, parameters);
+}
+
+Buffer* SceneLightResources::reGIRBuffer() const
+{
+    return sampling_ != nullptr ? sampling_->grid.buffer() : nullptr;
+}
+
+TextureView* SceneLightResources::lightPdfView() const
+{
+    return sampling_ != nullptr ? sampling_->pdf.view() : nullptr;
+}
 
 scene::LightingSettings resolveSceneLighting(const scene::Scene* actualScene, const RenderWorld* world)
 {

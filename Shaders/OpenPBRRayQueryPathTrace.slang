@@ -620,22 +620,26 @@ float3 pathTraceOpenPBR(
         radiance += throughput * max(prepared.emission, float3(0.0, 0.0, 0.0));
 
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
-            for (uint i = 0u; i < punctualLightCount(); ++i) {
-                PunctualLightSample light = samplePunctualLight(i, hit.position);
+            uint punctualLightIndex;
+            float punctualInverseSourcePdf;
+            if (selectPunctualLight(hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
+                PunctualLightSample light = samplePunctualLight(punctualLightIndex, hit.position);
                 float3 weight = max(openpbr_get_sum_of_diffuse_specular(
                     openpbr_eval(prepared, light.direction)), float3(0.0));
-                if (luminanceMax(weight * light.illuminance) <= 0.0) { continue; }
-                float3 origin = offsetRay(hit.position,
-                    openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
-                OpenPBRInteriorStack shadowStack = interiorStack;
-                if (dot(viewDirection, hit.geometryNormal) * dot(light.direction, hit.geometryNormal) < 0.0) {
-                    openPbrUpdateInteriorStackAfterTransmission(shadowStack, hit, material);
+                if (luminanceMax(weight * light.illuminance) > 0.0) {
+                    float3 origin = offsetRay(hit.position,
+                        openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
+                    OpenPBRInteriorStack shadowStack = interiorStack;
+                    if (dot(viewDirection, hit.geometryNormal) * dot(light.direction, hit.geometryNormal) < 0.0) {
+                        openPbrUpdateInteriorStackAfterTransmission(shadowStack, hit, material);
+                    }
+                    float distance = max(light.distance - length(origin - hit.position), 0.0);
+                    float3 visibility = openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)
+                        ? float3(1.0) : openPbrShadowTransmittance(origin, light.direction, distance, shadowStack, push);
+                    // Delta lights cannot be hit by BSDF sampling: MIS weight
+                    // is one, independent of the environment NEE strategy.
+                    radiance += throughput * weight * light.illuminance * visibility * punctualInverseSourcePdf;
                 }
-                float distance = max(light.distance - length(origin - hit.position), 0.0);
-                float3 visibility = openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)
-                    ? float3(1.0) : openPbrShadowTransmittance(origin, light.direction, distance, shadowStack, push);
-                // Delta lights cannot be hit by BSDF sampling: MIS weight is 1.
-                radiance += throughput * weight * light.illuminance * visibility;
             }
         }
 

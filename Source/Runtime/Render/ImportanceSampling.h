@@ -55,7 +55,7 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 
 class ImportancePdfCompute final {
@@ -74,9 +74,8 @@ public:
         CommandBuffer& commandBuffer,
         TextureView& environmentMap,
         ImportancePdfTexture& localLightPdf,
-        uint32_t lightCount,
-        float localLightIntensity,
-        float sceneRadius);
+        Buffer& punctualLights,
+        uint32_t lightCount);
     Result buildEnvironment(
         CommandBuffer& commandBuffer,
         TextureView& environmentMap,

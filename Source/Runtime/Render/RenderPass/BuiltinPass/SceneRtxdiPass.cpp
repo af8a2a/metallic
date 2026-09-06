@@ -1,8 +1,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderGraph/NrdRuntime.h"
-#include "Runtime/Render/ImportanceSampling.h"
-#include "Runtime/Render/ReGIR.h"
+#include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/SceneResourceManager.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
@@ -76,9 +75,11 @@ public:
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         std::vector<RenderGraphRuntimeSetting> settings{
+            runtimeEnumSetting("lightSource", "Light Source", "scene",
+                {{"Scene / Virtual Lights", "scene"}, {"Synthetic Benchmark", "bench"}}, true),
             runtimeIntSetting(
                 "lightCount",
-                "Analytic Lights",
+                "Benchmark Lights",
                 static_cast<int32_t>(kDefaultRtxdiLightCount),
                 1,
                 static_cast<int32_t>(kMaxRtxdiLightCount),
@@ -220,25 +221,6 @@ public:
             resetHistory_ = true;
             hasPreviousCamera_ = false;
         }
-        result = importancePdfCompute_.initialize(*context.device, log);
-        if (!result) {
-            return result;
-        }
-        result = reGIR_.initialize(*context.device, log);
-        if (!result) {
-            return result;
-        }
-        result = ensureImportancePdfResources(
-            *context.device,
-            uintProperty(properties(), "lightCount", kDefaultRtxdiLightCount, 1, kMaxRtxdiLightCount),
-            log);
-        if (!result) {
-            return result;
-        }
-        result = ensureReGIRResources(*context.device, properties(), log);
-        if (!result) {
-            return result;
-        }
         const bool ntcActive = sceneResources_.neuralTextures().active();
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
@@ -324,9 +306,10 @@ public:
             {.binding = 19, .kind = ComputeResourceBindingKind::StorageImage},
             {.binding = 20, .kind = ComputeResourceBindingKind::StorageImage},
             {.binding = 21, .kind = ComputeResourceBindingKind::SampledImage},
-            {.binding = 22, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 23, .kind = ComputeResourceBindingKind::SampledImage},
-            {.binding = 24, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 53, .kind = ComputeResourceBindingKind::SampledImage},
         };
         if (ntcActive) {
             bindings.push_back({
@@ -415,25 +398,6 @@ public:
         if (device_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        std::string importanceLog;
-        Result importanceResult = ensureImportancePdfResources(
-            *device_,
-            uintProperty(
-                context.properties(),
-                "lightCount",
-                kDefaultRtxdiLightCount,
-                1,
-                kMaxRtxdiLightCount),
-            importanceLog);
-        if (!importanceResult) {
-            spdlog::warn("[SceneRtxdiPass] Local light PDF rebuild failed: {}", importanceLog);
-            return importanceResult;
-        }
-        Result reGIRResult = ensureReGIRResources(*device_, context.properties(), importanceLog);
-        if (!reGIRResult) {
-            spdlog::warn("[SceneRtxdiPass] ReGIR rebuild failed: {}", importanceLog);
-            return reGIRResult;
-        }
         EnvironmentLightingSubsystem* environmentSubsystem =
             context.subsystem<EnvironmentLightingSubsystem>();
         if (environmentSubsystem == nullptr) {
@@ -443,6 +407,33 @@ public:
         if (!environment.valid()) {
             return {};
         }
+        const scene::Scene* lightScene = nullptr;
+        if (sceneResourceManager_ == nullptr || context.subsystems() == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        Result lightResult = sceneResourceManager_->resolveScene(
+            context.properties(), context.runtimeScene(), lightScene, syncLog);
+        if (!lightResult) { return lightResult; }
+        auto lighting = resolveSceneLighting(lightScene, context.world());
+        const bool benchmark = context.properties().value("lightSource", std::string("scene")) == "bench";
+        if (benchmark) {
+            lighting.lights = benchmarkLights(context.properties(), sceneResources_.bounds(), frameIndex_);
+        }
+        const uint64_t previousLightRevision = lights_.revision();
+        const uint32_t previousLightCount = lights_.lightCount();
+        lightResult = lights_.update(*device_, context.commandBuffer(), *context.subsystems(),
+            benchmark ? nullptr : lightScene, lighting);
+        if (!lightResult) { return lightResult; }
+        const float benchmarkIntensity = floatProperty(context.properties(), "lightIntensity", 12.0f);
+        const bool benchmarkAnimated = boolProperty(&context.properties(), "animateLights", true);
+        if (previousLightRevision != lights_.revision() &&
+            (!benchmark || !wasBenchmark_ || previousLightCount != lights_.lightCount() ||
+                benchmarkIntensity != previousBenchmarkIntensity_ || benchmarkAnimated != previousBenchmarkAnimated_)) {
+            resetHistory_ = true;
+        }
+        wasBenchmark_ = benchmark;
+        previousBenchmarkIntensity_ = benchmarkIntensity;
+        previousBenchmarkAnimated_ = benchmarkAnimated;
         if (environment.resourceRevision != environmentResourceRevision_ ||
             environment.settingsRevision != environmentSettingsRevision_) {
             environmentResourceRevision_ = environment.resourceRevision;
@@ -474,11 +465,6 @@ public:
             materialTextureViews[0] == nullptr ||
             environmentTextureView == nullptr ||
             environmentImportanceTextureView == nullptr ||
-            !localLightPdf_.valid() ||
-            localLightPdf_.view() == nullptr ||
-            !importancePdfCompute_.valid() ||
-            !reGIR_.valid() ||
-            reGIR_.buffer() == nullptr ||
             context.historyResources() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
@@ -520,6 +506,7 @@ public:
             environment.settings,
             push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
+        push.lightCount = lights_.lightCount();
         push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
         if (!environment.mapAvailable) {
             push.behaviorFlags &= ~kRtxdiBehaviorEnvironmentEnabled;
@@ -544,18 +531,7 @@ public:
         if (!result) {
             return result;
         }
-        result = importancePdfCompute_.buildLocalLights(
-            context.commandBuffer(),
-            *environmentTextureView,
-            localLightPdf_,
-            push.lightCount,
-            push.lightIntensity,
-            push.sceneCenterRadius[3]);
-        if (!result) {
-            return result;
-        }
-
-        if ((push.behaviorFlags & kRtxdiBehaviorReGIR) != 0u) {
+        {
             ReGIRBuildParameters reGIRBuild;
             reGIRBuild.lightCount = push.lightCount;
             reGIRBuild.buildSamples = uintProperty(
@@ -565,27 +541,26 @@ public:
                 1,
                 kMaxReGIRBuildSamples);
             reGIRBuild.frameIndex = push.frameIndex;
-            reGIRBuild.animateLights =
-                (push.behaviorFlags & kRtxdiBehaviorAnimateLights) != 0u;
             reGIRBuild.sceneCenter[0] = push.sceneCenterRadius[0];
             reGIRBuild.sceneCenter[1] = push.sceneCenterRadius[1];
             reGIRBuild.sceneCenter[2] = push.sceneCenterRadius[2];
             reGIRBuild.sceneRadius = push.sceneCenterRadius[3];
-            reGIRBuild.lightIntensity = push.lightIntensity;
             reGIRBuild.samplingJitter = std::max(
                 floatProperty(context.properties(), "regirSamplingJitter", 1.0f),
                 0.0f);
-            result = reGIR_.build(
-                context.commandBuffer(),
-                *localLightPdf_.view(),
-                reGIRBuild);
+            result = lights_.buildSampling(*device_, context.commandBuffer(), *context.subsystems(),
+                *environmentTextureView, reGIRBuild,
+                uintProperty(context.properties(), "regirGridSize", kDefaultReGIRGridSize, 4, kMaxReGIRGridSize),
+                uintProperty(context.properties(), "regirLightsPerCell", kDefaultReGIRLightsPerCell, 8, kMaxReGIRLightsPerCell),
+                (push.behaviorFlags & kRtxdiBehaviorReGIR) != 0u ||
+                    visualizationModeFromProperties(context.properties()) == kRtxdiVisualizationReGIRCells, syncLog);
             if (!result) {
                 return result;
             }
         }
 
         TextureView* const environmentTextureViews[] = {environmentTextureView};
-        TextureView* const localLightPdfViews[] = {localLightPdf_.view()};
+        TextureView* const localLightPdfViews[] = {lights_.lightPdfView()};
         TextureView* const environmentImportanceTextureViews[] = {environmentImportanceTextureView};
         std::vector<ComputeDispatchBinding> bindings{
             {
@@ -623,7 +598,7 @@ public:
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
             },
             {
-                .binding = 22,
+                .binding = 53,
                 .textureViews = localLightPdfViews,
                 .textureViewCount = static_cast<uint32_t>(std::size(localLightPdfViews)),
             },
@@ -632,7 +607,8 @@ public:
                 .textureViews = environmentImportanceTextureViews,
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentImportanceTextureViews)),
             },
-            {.binding = 24, .buffer = reGIR_.buffer()},
+            {.binding = 50, .buffer = lights_.buffer()},
+            {.binding = 52, .buffer = lights_.reGIRBuffer()},
         };
         const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
         if (neuralTextures.active()) {
@@ -686,57 +662,42 @@ public:
     }
 
 private:
-    Result ensureImportancePdfResources(
-        Device& device,
-        uint32_t lightCount,
-        std::string& log)
+    static std::vector<scene::PunctualLight> benchmarkLights(
+        const RenderGraphProperties& properties, const scene::Bounds& bounds, uint32_t frameIndex)
     {
-        if (!localLightPdf_.valid() || localLightPdfLightCount_ != lightCount) {
-            const ImportancePdfSize localPdfSize = computeImportancePdfTextureSize(lightCount);
-            ImportancePdfTexture nextPdf;
-            Result result = nextPdf.initialize(
-                device,
-                localPdfSize.width,
-                localPdfSize.height,
-                "SceneRtxdiPass local light importance PDF",
-                log);
-            if (!result) {
-                return result;
-            }
-            if (localLightPdf_.valid()) {
-                retiredLocalLightPdfs_.push_back(std::move(localLightPdf_));
-            }
-            localLightPdf_ = std::move(nextPdf);
-            localLightPdfLightCount_ = lightCount;
-            resetHistory_ = true;
-        }
-
-        return {};
-    }
-
-    Result ensureReGIRResources(
-        Device& device,
-        const RenderGraphProperties& properties,
-        std::string& log)
-    {
-        const uint32_t gridSize = uintProperty(
-            properties,
-            "regirGridSize",
-            kDefaultReGIRGridSize,
-            4,
-            kMaxReGIRGridSize);
-        const uint32_t lightsPerCell = uintProperty(
-            properties,
-            "regirLightsPerCell",
-            kDefaultReGIRLightsPerCell,
-            8,
-            kMaxReGIRLightsPerCell);
-        const bool layoutChanged =
-            reGIR_.layout().gridSize != gridSize ||
-            reGIR_.layout().lightsPerCell != lightsPerCell;
-        Result result = reGIR_.ensureGrid(device, gridSize, lightsPerCell, log);
-        if (result && layoutChanged) {
-            resetHistory_ = true;
+        // The optional test bench now authors ordinary physical lights. Neither
+        // the PDF builder nor the transport shaders synthesize a separate light type.
+        const uint32_t count = uintProperty(properties, "lightCount", kDefaultRtxdiLightCount, 1, kMaxRtxdiLightCount);
+        const float radius = bounds.valid ? std::max(bounds.radius(), 0.01f) : 1.0f;
+        const float3 center = bounds.valid ? bounds.center() : float3(0.0f);
+        const bool animate = boolProperty(&properties, "animateLights", true);
+        const float animation = animate ? static_cast<float>(frameIndex) * 0.0125f : 0.0f;
+        const double intensity = std::max(floatProperty(properties, "lightIntensity", 12.0f), 0.0f) *
+            double(radius) * radius / count;
+        const auto random = [](uint32_t value) {
+            value ^= value >> 16u;
+            value *= 0x7feb352du;
+            value ^= value >> 15u;
+            value *= 0x846ca68bu;
+            value ^= value >> 16u;
+            return float(value & 0x00ffffffu) / 16777216.0f;
+        };
+        std::vector<scene::PunctualLight> result(count);
+        for (uint32_t index = 0; index < count; ++index) {
+            const float layer = (float(index / 16u) + 0.5f) / float((count + 15u) / 16u);
+            const float angle = float(index) * 2.39996322973f + animation * (0.55f + random(index + 19u));
+            const float distance = radius * (0.55f + random(index * 11u + 7u) * 0.5f);
+            const float wobble = animate
+                ? std::sin(animation * (0.7f + random(index + 31u)) + float(index % 16u)) * radius * 0.08f : 0.0f;
+            auto& light = result[index];
+            light.name = "Benchmark " + std::to_string(index);
+            light.position = center + float3(std::cos(angle) * distance,
+                radius * (-0.2f + 1.6f * layer) + wobble, std::sin(angle) * distance);
+            light.properties.color = float3(0.2f + 0.8f * random((index + 1u) * 3u),
+                0.2f + 0.8f * random((index + 1u) * 3u + 1u),
+                0.2f + 0.8f * random((index + 1u) * 3u + 2u));
+            light.properties.intensity = intensity * (0.65f + random(index * 17u + 3u) * 0.7f);
+            light.properties.intensityUnit = scene::LightUnit::Candela;
         }
         return result;
     }
@@ -1068,11 +1029,10 @@ private:
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     SceneResourceManager* sceneResourceManager_ = nullptr;
-    ImportancePdfCompute importancePdfCompute_;
-    ImportancePdfTexture localLightPdf_;
-    ReGIRLightSelector reGIR_;
-    std::vector<ImportancePdfTexture> retiredLocalLightPdfs_;
-    uint32_t localLightPdfLightCount_ = 0;
+    SceneLightResources lights_;
+    bool wasBenchmark_ = false;
+    bool previousBenchmarkAnimated_ = false;
+    float previousBenchmarkIntensity_ = 0.0f;
     uint64_t sceneResourceRevision_ = 0;
     uint64_t environmentResourceRevision_ = 0;
     uint64_t environmentSettingsRevision_ = 0;

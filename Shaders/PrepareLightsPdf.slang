@@ -1,5 +1,8 @@
 // GPU PDF preparation for RTXDI-style local-light and environment importance sampling.
 
+#define METALLIC_PUNCTUAL_SAMPLING_DISABLE_RESOURCES
+#include "PunctualLightSampling.slang"
+
 static const uint kMaxPdfMipCount = 16u;
 static const uint kPrepareLocalLights = 0u;
 static const uint kPrepareEnvironment = 1u;
@@ -24,26 +27,7 @@ struct PrepareLightsPdfPush
     uint padding0;
     uint2 sourceSize;
     uint2 destinationSize;
-    float localLightIntensity;
-    float sceneRadius;
-    uint padding1;
-    uint padding2;
 };
-
-uint hash(uint value)
-{
-    value ^= value >> 16u;
-    value *= 0x7feb352du;
-    value ^= value >> 15u;
-    value *= 0x846ca68bu;
-    value ^= value >> 16u;
-    return value;
-}
-
-float hashToFloat(uint value)
-{
-    return float(hash(value) & 0x00ffffffu) / 16777216.0;
-}
 
 float luminance(float3 color)
 {
@@ -60,20 +44,6 @@ uint2 linearIndexToZCurve(uint index)
     return position;
 }
 
-float localLightPower(uint lightIndex, PrepareLightsPdfPush push)
-{
-    uint value = lightIndex + 1u;
-    float3 color = 0.2 + float3(
-        hashToFloat(value * 3u + 0u),
-        hashToFloat(value * 3u + 1u),
-        hashToFloat(value * 3u + 2u)) * 0.8;
-    color *= 0.65 + hashToFloat(lightIndex * 17u + 3u) * 0.7;
-    float commonIntensity = max(push.localLightIntensity, 0.0) *
-        max(push.sceneRadius, 0.01) * max(push.sceneRadius, 0.01) /
-        float(max(push.lightCount, 1u));
-    return max(luminance(color * commonIntensity), 0.0);
-}
-
 void prepareLocalLightPdf(uint2 dispatchPosition, PrepareLightsPdfPush push)
 {
     if (any(dispatchPosition >= push.destinationSize)) {
@@ -85,8 +55,8 @@ void prepareLocalLightPdf(uint2 dispatchPosition, PrepareLightsPdfPush push)
     if (any(pdfPosition >= push.destinationSize)) {
         return;
     }
-    gLocalPdfMips[0][pdfPosition] = linearIndex < push.lightCount
-        ? localLightPower(linearIndex, push)
+    gLocalPdfMips[0][pdfPosition] = linearIndex < min(push.lightCount, punctualLightCount())
+        ? punctualLightPower(gPunctualLights[linearIndex + 1u])
         : 0.0;
 }
 
@@ -124,11 +94,11 @@ void generateLocalMip(uint2 position, PrepareLightsPdfPush push)
     }
     uint2 sourcePosition = position * 2u;
     float sum =
-        loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 0u), push.sourceSize) +
-        loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 0u), push.sourceSize) +
-        loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 1u), push.sourceSize) +
-        loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 1u), push.sourceSize);
-    gLocalPdfMips[push.sourceMipLevel + 1u][position] = sum * 0.25;
+        loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 0u), push.sourceSize) * 0.25 +
+        loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 0u), push.sourceSize) * 0.25 +
+        loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 1u), push.sourceSize) * 0.25 +
+        loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 1u), push.sourceSize) * 0.25;
+    gLocalPdfMips[push.sourceMipLevel + 1u][position] = sum;
 }
 
 void generateEnvironmentMip(uint2 position, PrepareLightsPdfPush push)
@@ -138,11 +108,11 @@ void generateEnvironmentMip(uint2 position, PrepareLightsPdfPush push)
     }
     uint2 sourcePosition = position * 2u;
     float sum =
-        loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 0u), push.sourceSize) +
-        loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 0u), push.sourceSize) +
-        loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 1u), push.sourceSize) +
-        loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 1u), push.sourceSize);
-    gEnvironmentPdfMips[push.sourceMipLevel + 1u][position] = sum * 0.25;
+        loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 0u), push.sourceSize) * 0.25 +
+        loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 0u), push.sourceSize) * 0.25 +
+        loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 1u), push.sourceSize) * 0.25 +
+        loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 1u), push.sourceSize) * 0.25;
+    gEnvironmentPdfMips[push.sourceMipLevel + 1u][position] = sum;
 }
 
 [shader("compute")]

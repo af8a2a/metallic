@@ -1,8 +1,10 @@
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <array>
+#include <cmath>
 #include <iterator>
 #include <limits>
 #include <string_view>
@@ -26,14 +28,14 @@ struct BuildReGIRPush {
     uint32_t lightsPerCell = 0;
     uint32_t buildSamples = 0;
     uint32_t frameIndex = 0;
-    uint32_t animateLights = 0;
-    uint32_t lightSlotCount = 0;
     uint32_t padding0 = 0;
-    float sceneCenterRadius[4] = {};
-    float lightIntensity = 1.0f;
-    float samplingJitter = 1.0f;
+    uint32_t lightSlotCount = 0;
     uint32_t padding1 = 0;
+    float sceneCenterRadius[4] = {};
+    float samplingJitter = 1.0f;
     uint32_t padding2 = 0;
+    uint32_t padding3 = 0;
+    uint32_t padding4 = 0;
 };
 
 static_assert(sizeof(BuildReGIRPush) == 64);
@@ -85,8 +87,11 @@ ReGIRGridLayout computeReGIRGridLayout(uint32_t gridSize, uint32_t lightsPerCell
 struct ReGIRLightSelector::Impl {
     ComputeProgram program;
     ReGIRGridLayout layout;
-    std::unique_ptr<Buffer> buffer;
-    std::vector<std::unique_ptr<Buffer>> retiredBuffers;
+    std::shared_ptr<Buffer> buffer;
+    // Legacy callers without a frame context must keep the selector alive until
+    // GPU completion. Frame-context callers retain only their submitted buffer.
+    std::vector<std::shared_ptr<Buffer>> retiredBuffers;
+    bool needsExplicitRetention = false;
     ResourceState state = ResourceState::Undefined;
 
     void clearGrid()
@@ -94,6 +99,7 @@ struct ReGIRLightSelector::Impl {
         layout = {};
         buffer.reset();
         retiredBuffers.clear();
+        needsExplicitRetention = false;
         state = ResourceState::Undefined;
     }
 };
@@ -136,6 +142,7 @@ Result ReGIRLightSelector::initialize(Device& device, std::string& log)
     const ComputeProgramBindingDesc bindings[] = {
         {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
         {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer},
+        {.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
     };
     return impl_->program.initialize(
         device,
@@ -146,6 +153,7 @@ Result ReGIRLightSelector::initialize(Device& device, std::string& log)
             .bindings = bindings,
             .bindingCount = static_cast<uint32_t>(std::size(bindings)),
             .debugName = "BuildReGIR",
+            .requiresRayQuery = false,
         },
         log);
 }
@@ -185,10 +193,11 @@ Result ReGIRLightSelector::ensureGrid(
         return result ? makeError(Error::Failure) : result;
     }
 
-    if (impl_->buffer != nullptr) {
+    if (impl_->buffer != nullptr && impl_->needsExplicitRetention) {
         impl_->retiredBuffers.push_back(std::move(impl_->buffer));
     }
     impl_->buffer = std::move(nextBuffer);
+    impl_->needsExplicitRetention = false;
     impl_->layout = nextLayout;
     impl_->state = ResourceState::Undefined;
     return {};
@@ -197,11 +206,26 @@ Result ReGIRLightSelector::ensureGrid(
 Result ReGIRLightSelector::build(
     CommandBuffer& commandBuffer,
     TextureView& localLightPdf,
+    Buffer& punctualLights,
     const ReGIRBuildParameters& parameters)
 {
-    if (!valid() || parameters.lightCount == 0 || parameters.buildSamples == 0) {
+    constexpr uint64_t kPunctualLightByteSize = 64;
+    if (!valid() || parameters.buildSamples == 0 ||
+        !std::isfinite(parameters.sceneRadius) || parameters.sceneRadius <= 0.0f ||
+        !std::isfinite(parameters.samplingJitter) || parameters.samplingJitter < 0.0f ||
+        !std::isfinite(parameters.sceneCenter[0]) || !std::isfinite(parameters.sceneCenter[1]) ||
+        !std::isfinite(parameters.sceneCenter[2]) ||
+        !hasFlag(punctualLights.desc().usage, BufferUsageBits::Storage) ||
+        punctualLights.desc().size < (uint64_t(parameters.lightCount) + 1u) * kPunctualLightByteSize) {
         return makeError(Error::InvalidArgument);
     }
+    if (auto* frame = commandBuffer.frameContext()) {
+        if (!frame->recording()) { return makeError(Error::InvalidArgument); }
+        frame->retain(impl_->buffer);
+    } else {
+        impl_->needsExplicitRetention = true;
+    }
+    commandBuffer.hostWriteBarrier();
 
     BufferBarrierDesc toGeneral{
         .buffer = impl_->buffer.get(),
@@ -221,6 +245,7 @@ Result ReGIRLightSelector::build(
             .textureViewCount = static_cast<uint32_t>(std::size(pdfViews)),
         },
         {.binding = 1, .buffer = impl_->buffer.get()},
+        {.binding = 50, .buffer = &punctualLights},
     };
     BuildReGIRPush push;
     push.lightCount = parameters.lightCount;
@@ -228,13 +253,11 @@ Result ReGIRLightSelector::build(
     push.lightsPerCell = impl_->layout.lightsPerCell;
     push.buildSamples = parameters.buildSamples;
     push.frameIndex = parameters.frameIndex;
-    push.animateLights = parameters.animateLights ? 1u : 0u;
     push.lightSlotCount = impl_->layout.lightSlotCount;
     push.sceneCenterRadius[0] = parameters.sceneCenter[0];
     push.sceneCenterRadius[1] = parameters.sceneCenter[1];
     push.sceneCenterRadius[2] = parameters.sceneCenter[2];
     push.sceneCenterRadius[3] = parameters.sceneRadius;
-    push.lightIntensity = parameters.lightIntensity;
     push.samplingJitter = parameters.samplingJitter;
 
     Result result = impl_->program.dispatch(ComputeDispatchDesc{
@@ -243,8 +266,8 @@ Result ReGIRLightSelector::build(
         .bindingCount = static_cast<uint32_t>(std::size(bindings)),
         .pushData = &push,
         .pushDataSize = sizeof(push),
-        .groupCountX = (impl_->layout.lightSlotCount + kReGIRBuildGroupSize - 1u) /
-            kReGIRBuildGroupSize,
+        .groupCountX = static_cast<uint32_t>((uint64_t(impl_->layout.lightSlotCount) +
+            kReGIRBuildGroupSize - 1u) / kReGIRBuildGroupSize),
         .groupCountY = 1,
         .groupCountZ = 1,
     });

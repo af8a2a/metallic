@@ -4,6 +4,7 @@
 #define NRD_HEADER_ONLY
 #include "NRD.hlsli"
 #include "NeuralTextureSampling.slang"
+#include "PunctualLightSampling.slang"
 
 [[vk::binding(0, 0)]]
 RaytracingAccelerationStructure gScene;
@@ -133,14 +134,10 @@ RWTexture2D<float4> gEmissive;
 [[vk::binding(21, 0)]]
 Texture2D<float4> gEnvironmentMap;
 
-[[vk::binding(22, 0)]]
-Texture2D<float> gLocalLightPdf;
 
 [[vk::binding(23, 0)]]
 Texture2D<float> gEnvironmentPdf;
 
-[[vk::binding(24, 0)]]
-StructuredBuffer<uint4> gReGIRData;
 
 static const uint kMaxMaterialTextures = 256u;
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
@@ -162,10 +159,7 @@ static const uint kBehaviorEnvironmentImportance = 1u << 7u;
 static const uint kBehaviorVisualizationShift = 8u;
 static const uint kBehaviorVisualizationMask = 3u;
 static const uint kBehaviorReGIR = 1u << 10u;
-static const uint kReGIRHeaderRecordCount = 3u;
-static const uint kReGIRMagic = 0x52454749u;
 static const float kPi = 3.14159265358979323846;
-static const float kGoldenAngle = 2.39996322972865332;
 
 struct SceneRtxdiPush
 {
@@ -244,11 +238,6 @@ struct Surface
     float roughness;
 };
 
-struct AnalyticLight
-{
-    float3 position;
-    float3 radiance;
-};
 
 struct LightEvaluation
 {
@@ -312,15 +301,6 @@ float luminance(float3 color)
     return dot(color, float3(0.2126, 0.7152, 0.0722));
 }
 
-uint zCurveToLinearIndex(uint2 position)
-{
-    uint index = 0u;
-    for (uint bit = 0u; bit < 16u; ++bit) {
-        index |= ((position.x >> bit) & 1u) << (bit * 2u);
-        index |= ((position.y >> bit) & 1u) << (bit * 2u + 1u);
-    }
-    return index;
-}
 
 float loadImportanceWeight(Texture2D<float> pdfTexture, uint2 position, uint mipLevel)
 {
@@ -385,113 +365,21 @@ bool sampleImportanceMipmap(
     return pdf > 0.0 && all(position < pdfTextureSize);
 }
 
-struct ReGIRSelectionContext
-{
-    uint lightSlotBase;
-    uint lightsPerCell;
-    uint lightSlotCount;
-    uint valid;
-};
-
-ReGIRSelectionContext initializeReGIRSelectionContext(
-    SceneRtxdiPush push,
-    Surface surface,
-    inout uint seed)
-{
-    ReGIRSelectionContext context;
-    context.lightSlotBase = 0u;
-    context.lightsPerCell = 0u;
-    context.lightSlotCount = 0u;
-    context.valid = 0u;
-    if (!behaviorEnabled(push, kBehaviorReGIR)) {
-        return context;
-    }
-
-    uint4 grid = gReGIRData[0];
-    uint4 centerAndCellSize = gReGIRData[1];
-    uint4 metadata = gReGIRData[2];
-    if (metadata.x != kReGIRMagic ||
-        any(grid.xyz == uint3(0u, 0u, 0u)) ||
-        grid.w == 0u ||
-        metadata.y == 0u) {
-        return context;
-    }
-
-    float3 gridCenter = asfloat(centerAndCellSize.xyz);
-    float cellSize = asfloat(centerAndCellSize.w);
-    float samplingJitter = max(asfloat(metadata.z), 0.0);
-    if (!(cellSize > 0.0) || !isfinite(cellSize) || !isfinite(samplingJitter)) {
-        return context;
-    }
-
-    float3 cellJitter = float3(
-        randomFloat(seed),
-        randomFloat(seed),
-        randomFloat(seed));
-    cellJitter = (cellJitter - 0.5) * (samplingJitter * cellSize * 2.0);
-    float3 samplingPosition = surface.position + cellJitter;
-    float3 gridOrigin = gridCenter - float3(grid.xyz) * (cellSize * 0.5);
-    int3 cellPosition = int3(floor((samplingPosition - gridOrigin) / cellSize));
-    if (any(cellPosition < int3(0, 0, 0)) || any(cellPosition >= int3(grid.xyz))) {
-        return context;
-    }
-
-    uint cellIndex = uint(cellPosition.x) +
-        (uint(cellPosition.y) + uint(cellPosition.z) * grid.y) * grid.x;
-    uint lightSlotBase = cellIndex * grid.w;
-    if (lightSlotBase >= metadata.y || grid.w > metadata.y - lightSlotBase) {
-        return context;
-    }
-
-    context.lightSlotBase = lightSlotBase;
-    context.lightsPerCell = grid.w;
-    context.lightSlotCount = metadata.y;
-    context.valid = 1u;
-    return context;
-}
-
-bool sampleLocalLightFromReGIR(
-    SceneRtxdiPush push,
-    ReGIRSelectionContext context,
-    inout uint seed,
-    out uint lightIndex,
-    out float sourcePdf)
-{
-    lightIndex = 0u;
-    sourcePdf = 0.0;
-    if (context.valid == 0u || context.lightsPerCell == 0u) {
-        return false;
-    }
-
-    uint lightInCell = min(
-        uint(randomFloat(seed) * float(context.lightsPerCell)),
-        context.lightsPerCell - 1u);
-    uint lightSlot = context.lightSlotBase + lightInCell;
-    if (lightSlot >= context.lightSlotCount) {
-        return false;
-    }
-    uint4 lightData = gReGIRData[kReGIRHeaderRecordCount + lightSlot];
-    float inverseSourcePdf = asfloat(lightData.y);
-    if (lightData.x >= push.lightCount ||
-        !(inverseSourcePdf > 0.0) ||
-        !isfinite(inverseSourcePdf)) {
-        return false;
-    }
-
-    lightIndex = lightData.x;
-    sourcePdf = 1.0 / inverseSourcePdf;
-    return sourcePdf > 0.0 && isfinite(sourcePdf);
-}
 
 float3 visualizeReGIRCell(float3 worldPosition)
 {
-    uint4 grid = gReGIRData[0];
-    uint4 centerAndCellSize = gReGIRData[1];
-    uint4 metadata = gReGIRData[2];
+    uint recordCount, stride;
+    gPunctualReGIR.GetDimensions(recordCount, stride);
+    if (recordCount < kPunctualReGIRHeaderRecordCount) {
+        return float3(0.0);
+    }
+    uint4 grid = gPunctualReGIR[0];
+    uint4 centerAndCellSize = gPunctualReGIR[1];
+    uint4 metadata = gPunctualReGIR[2];
     float cellSize = asfloat(centerAndCellSize.w);
-    if (metadata.x != kReGIRMagic ||
+    if (metadata.x != kPunctualReGIRMagic ||
         any(grid.xyz == uint3(0u, 0u, 0u)) ||
-        !(cellSize > 0.0)) {
+        !(cellSize > 0.0) || !isfinite(cellSize)) {
         return float3(0.0, 0.0, 0.0);
     }
 
@@ -512,39 +400,27 @@ float3 visualizeReGIRCell(float3 worldPosition)
 
 bool sampleLocalLight(
     SceneRtxdiPush push,
-    ReGIRSelectionContext reGIRContext,
+    float3 worldPosition,
     inout uint seed,
     out uint lightIndex,
-    out float sourcePdf)
+    out float inverseSourcePdf)
 {
     lightIndex = 0u;
-    sourcePdf = 0.0;
+    inverseSourcePdf = 0.0;
     if (push.lightCount == 0u) {
         return false;
     }
-    if (sampleLocalLightFromReGIR(push, reGIRContext, seed, lightIndex, sourcePdf)) {
-        return true;
+    if (behaviorEnabled(push, kBehaviorReGIR)) {
+        // An empty slot in a valid cell stays a zero candidate. Only the
+        // shared selector's out-of-grid path falls back to the global PDF.
+        return selectPunctualLight(worldPosition, seed, lightIndex, inverseSourcePdf);
     }
-    if (!behaviorEnabled(push, kBehaviorLocalLightImportance)) {
-        lightIndex = min(uint(randomFloat(seed) * float(push.lightCount)), push.lightCount - 1u);
-        sourcePdf = 1.0 / float(push.lightCount);
-        return true;
-    }
-
-    uint2 position;
-    if (sampleImportanceMipmap(
-            gLocalLightPdf,
-            seed,
-            position,
-            sourcePdf)) {
-        lightIndex = zCurveToLinearIndex(position);
-        if (lightIndex < push.lightCount && sourcePdf > 0.0) {
-            return true;
-        }
+    if (behaviorEnabled(push, kBehaviorLocalLightImportance)) {
+        return selectPunctualLightGlobal(seed, lightIndex, inverseSourcePdf);
     }
 
     lightIndex = min(uint(randomFloat(seed) * float(push.lightCount)), push.lightCount - 1u);
-    sourcePdf = 1.0 / float(push.lightCount);
+    inverseSourcePdf = float(push.lightCount);
     return true;
 }
 
@@ -1033,50 +909,19 @@ Surface makeSurface(HitInfo hit, Ray ray, SceneRtxdiPush push)
     return surface;
 }
 
-AnalyticLight getAnalyticLight(uint lightIndex, SceneRtxdiPush push)
-{
-    float radius = max(push.sceneCenterRadius.w, 0.01);
-    uint ringCount = 16u;
-    uint ringIndex = lightIndex % ringCount;
-    uint layerIndex = lightIndex / ringCount;
-    uint layerCount = max((push.lightCount + ringCount - 1u) / ringCount, 1u);
-    float layer = (float(layerIndex) + 0.5) / float(layerCount);
-    float animation = behaviorEnabled(push, kBehaviorAnimateLights)
-        ? float(push.frameIndex) * 0.0125
-        : 0.0;
-    float angle = float(lightIndex) * kGoldenAngle + animation * (0.55 + hashToFloat(lightIndex + 19u));
-    float radialJitter = 0.55 + hashToFloat(lightIndex * 11u + 7u) * 0.5;
-    float radialDistance = radius * radialJitter;
-    float vertical = radius * lerp(-0.2, 1.4, layer);
-    float wobble = behaviorEnabled(push, kBehaviorAnimateLights)
-        ? sin(animation * (0.7 + hashToFloat(lightIndex + 31u)) + float(ringIndex)) * radius * 0.08
-        : 0.0;
-
-    AnalyticLight light;
-    light.position = push.sceneCenterRadius.xyz + float3(
-        cos(angle) * radialDistance,
-        vertical + wobble,
-        sin(angle) * radialDistance);
-    float3 color = hashColor(lightIndex + 1u);
-    color *= 0.65 + hashToFloat(lightIndex * 17u + 3u) * 0.7;
-    // Keep total emitted power stable while the demo varies the light count.
-    light.radiance = color * push.lightIntensity * radius * radius /
-        float(max(push.lightCount, 1u));
-    return light;
-}
 
 LightEvaluation evaluateLight(uint lightIndex, Surface surface, SceneRtxdiPush push)
 {
-    AnalyticLight light = getAnalyticLight(lightIndex, push);
-    float3 toLight = light.position - surface.position;
-    float distanceSquared = max(dot(toLight, toLight), 0.000001);
-    float distance = sqrt(distanceSquared);
-    float3 lightDirection = toLight / distance;
+    if (lightIndex >= punctualLightCount()) {
+        return emptyLightEvaluation();
+    }
+    PunctualLightSample light = samplePunctualLight(lightIndex, surface.position);
+    float3 lightDirection = light.direction;
     float nDotL = saturate(dot(surface.normal, lightDirection));
     float3 halfVector = safeNormalize(lightDirection + surface.viewDirection, surface.normal);
     float nDotH = saturate(dot(surface.normal, halfVector));
     float specularPower = lerp(128.0, 4.0, surface.roughness);
-    float3 incidentRadiance = light.radiance / distanceSquared;
+    float3 incidentRadiance = light.illuminance;
 
     LightEvaluation evaluation;
     evaluation.diffuseRadiance = incidentRadiance * (nDotL / kPi);
@@ -1086,7 +931,7 @@ LightEvaluation evaluateLight(uint lightIndex, Surface surface, SceneRtxdiPush p
     evaluation.contribution = evaluation.diffuseRadiance * surface.diffuseAlbedo +
         evaluation.specularRadiance * surface.specularF0;
     evaluation.direction = lightDirection;
-    evaluation.distance = distance;
+    evaluation.distance = light.distance;
     evaluation.target = max(luminance(evaluation.contribution), 0.0);
     return evaluation;
 }
@@ -1235,7 +1080,9 @@ bool reservoirValid(DIReservoir reservoir, SceneRtxdiPush push)
     return sampleIndexValid &&
         reservoir.M > 0u &&
         reservoir.weightSum > 0.0 &&
-        reservoir.selectedTarget > 0.0;
+        reservoir.selectedTarget > 0.0 &&
+        isfinite(reservoir.weightSum) &&
+        isfinite(reservoir.selectedTarget);
 }
 
 void updateReservoir(
@@ -1250,7 +1097,8 @@ void updateReservoir(
         return;
     }
     reservoir.M += candidateM;
-    if (candidateWeight <= 0.0 || candidateTarget <= 0.0) {
+    if (candidateWeight <= 0.0 || candidateTarget <= 0.0 ||
+        !isfinite(candidateWeight) || !isfinite(candidateTarget)) {
         return;
     }
     reservoir.weightSum += candidateWeight;
@@ -1284,7 +1132,7 @@ void combineReservoir(
     float historyScale = float(candidateM) / float(max(candidate.M, 1u));
     float candidateWeight = currentTarget *
         candidate.weightSum /
-        max(candidate.selectedTarget, 0.000001) *
+        max(candidate.selectedTarget, 1e-30) *
         historyScale;
     updateReservoir(
         reservoir,
@@ -1364,11 +1212,13 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
     ray.direction = rayDirectionFromPixel(samplePixel, push);
     HitInfo hit;
     if (!traceClosest(ray, push, hit)) {
-        float3 sky = behaviorEnabled(push, kBehaviorEnvironmentEnabled)
-            ? (behaviorEnabled(push, kBehaviorEnvironmentVisible)
+        // Background visibility is independent of whether an HDR map has
+        // finished loading. Hidden environments also hide the preview fallback.
+        float3 sky = behaviorEnabled(push, kBehaviorEnvironmentVisible)
+            ? (behaviorEnabled(push, kBehaviorEnvironmentEnabled)
                 ? environmentRadiance(ray.direction, push)
-                : float3(0.0, 0.0, 0.0))
-            : skyColor(ray.direction);
+                : skyColor(ray.direction))
+            : float3(0.0, 0.0, 0.0);
         gReservoirCurrent[pixel] = packReservoir(emptyReservoir());
         gPositionCurrent[pixel] = float4(0.0, 0.0, 0.0, 0.0);
         gNormalCurrent[pixel] = float4(0.0, 0.0, 0.0, 0.0);
@@ -1387,6 +1237,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
             0.0);
         gNrdViewZ[pixel] = max(push.clipOrtho.y, 1.0);
         gBaseColorMetalness[pixel] = float4(0.0, 0.0, 0.0, 0.0);
+        sky *= lightingExposure();
         gEmissive[pixel] = float4(sky, 1.0);
         gOutput[pixel] = float4(toneMap(sky, push.exposure), 1.0);
         return;
@@ -1405,15 +1256,10 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
         0.0);
     gNrdViewZ[pixel] = cameraLinearDepth(surface.position, push);
     gBaseColorMetalness[pixel] = float4(surface.baseColor, surface.metalness);
-    float3 emissiveAndAmbient = surface.emissive + surface.diffuseAlbedo * 0.012;
-    gEmissive[pixel] = float4(emissiveAndAmbient, 1.0);
+    gEmissive[pixel] = float4(surface.emissive * lightingExposure(), 1.0);
 
     DIReservoir reservoir = emptyReservoir();
-    ReGIRSelectionContext reGIRContext = initializeReGIRSelectionContext(
-        push,
-        surface,
-        seed);
-    uint localSampleCount = max(push.initialSampleCount, 1u);
+    uint localSampleCount = push.lightCount > 0u ? max(push.initialSampleCount, 1u) : 0u;
     uint environmentSampleCount = behaviorEnabled(push, kBehaviorEnvironmentEnabled)
         ? push.environmentSampleCount
         : 0u;
@@ -1422,8 +1268,8 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
     float environmentTechniqueProbability = float(environmentSampleCount) / float(max(initialSampleCount, 1u));
     for (uint sampleIndex = 0u; sampleIndex < localSampleCount; ++sampleIndex) {
         uint lightIndex;
-        float sourcePdf;
-        bool sampled = sampleLocalLight(push, reGIRContext, seed, lightIndex, sourcePdf);
+        float inverseSourcePdf;
+        bool sampled = sampleLocalLight(push, surface.position, seed, lightIndex, inverseSourcePdf);
         LightEvaluation evaluation = sampled
             ? evaluateLight(lightIndex, surface, push)
             : emptyLightEvaluation();
@@ -1442,7 +1288,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
         updateReservoir(
             reservoir,
             lightIndex,
-            evaluation.target / max(sourcePdf * localTechniqueProbability, 0.000001),
+            evaluation.target * inverseSourcePdf / max(localTechniqueProbability, 0.000001),
             evaluation.target,
             1u,
             randomFloat(seed));
@@ -1538,11 +1384,11 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
     float3 noisyDiffuse = float3(0.0, 0.0, 0.0);
     float3 noisySpecular = float3(0.0, 0.0, 0.0);
     float lightDistance = 0.0;
-    float3 color = emissiveAndAmbient;
+    float3 color = surface.emissive;
     if (reservoirValid(reservoir, push)) {
         LightEvaluation selected = evaluateLightSample(reservoir.lightIndex, surface, push);
         float reservoirWeight = reservoir.weightSum /
-            max(float(reservoir.M) * reservoir.selectedTarget, 0.000001);
+            max(float(reservoir.M) * reservoir.selectedTarget, 1e-30);
         float3 offsetNormal = dot(selected.direction, surface.geometryNormal) >= 0.0
             ? surface.geometryNormal
             : -surface.geometryNormal;
@@ -1554,10 +1400,19 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
         if (!occluded) {
             noisyDiffuse = selected.diffuseRadiance * reservoirWeight;
             noisySpecular = selected.specularRadiance * reservoirWeight;
-            lightDistance = selected.distance;
+            // Directional light visibility uses an unbounded shadow ray, but
+            // NRD stores hit distance in a finite, half-float-sized channel.
+            lightDistance = min(selected.distance,
+                min(max(push.clipOrtho.y, push.sceneCenterRadius.w * 16.0), 65504.0));
             color += selected.contribution * reservoirWeight;
         }
     }
+    // Pre-expose every linear output consistently. The denoised composite only
+    // needs its existing artistic exposure and must not apply EV100 a second time.
+    float physicalExposure = lightingExposure();
+    noisyDiffuse *= physicalExposure;
+    noisySpecular *= physicalExposure;
+    color *= physicalExposure;
     gNoisyDiffuse[pixel] = RELAX_FrontEnd_PackRadianceAndHitDist(
         noisyDiffuse,
         lightDistance,

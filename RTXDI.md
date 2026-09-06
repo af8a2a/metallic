@@ -11,8 +11,11 @@ SDK-licensed code.
 
 ## What is implemented
 
-`SceneRtxdiPass` generates hundreds of animated analytic lights and evaluates
-their direct contribution against glTF materials. Each pixel performs:
+`SceneRtxdiPass` defaults to `lightSource = "scene"` and evaluates the same
+directional, point and spot virtual lights used by the real-time renderer and
+path tracers, including imported glTF lights. Source-node visibility and native
+light enablement are resolved during collection; converted import metadata
+does not emit a duplicate light. Each pixel performs:
 
 1. ReGIR grid selection for local lights, hierarchical PDF-mipmap importance
    sampling for fallback and the HDR environment, optional initial visibility,
@@ -28,8 +31,12 @@ textures through `HistoryResourceManager`. Authored world-space geometric and
 shading normals remain stable while constructing TBN; face-forwarding is applied
 only after normal-map evaluation.
 
-Following the RTXDI FullSample preprocessing convention, local-light base-level
-weights are proportional to emitted power. Environment texel weights are
+Following the RTXDI FullSample preprocessing convention, finite local-light
+base-level weights are proportional to emitted power: point intensity is
+integrated over the sphere and spot intensity over its actual squared cosine
+falloff. Directional lights use illuminance as a positive importance proxy,
+since an infinite directional source has no finite total power. These proposal
+weights never replace physical lux/candela evaluation. Environment texel weights are
 `luminance * sin(theta)`, which accounts for lat-long texel solid angle. Both
 distributions are padded to power-of-two dimensions and reduced into complete
 R32_FLOAT mip chains with 2x2 averaging. Mirroring FullSample's
@@ -51,13 +58,43 @@ FullSample's `PresampleReGIR.hlsl` flow. `BuildReGIR.slang` covers the scene
 bounds with a configurable 3D grid and constructs a fixed number of RIS light
 slots per cell on the GPU. Each slot draws multiple candidates from the global
 power PDF, evaluates a light target using the fitted average distance to the
-cell volume, and stores the selected light with its estimated inverse source
-PDF. During initial ReSTIR sampling, the surface position (with configurable
-cell jitter) selects a cell and one of its slots. Surfaces outside the grid and
-invalid slots fall back to
-the global power-PDF or uniform selector. The structure is rebuilt every frame
-so animated procedural lights remain synchronized, with an explicit storage
-buffer write-to-read barrier before the screen-space RTXDI dispatch.
+cell volume, and stores the selected light with its RIS inverse source weight.
+Directional targets are distance-independent. Point and spot targets retain
+support throughout the volume: they do not reject a light just because the cell
+center lies outside its cone or finite range. Exact range and cone attenuation
+are evaluated at the receiving surface. During initial ReSTIR sampling, the
+surface position (with configurable cell jitter) selects a cell and one of its
+slots. Surfaces outside the grid, or an unavailable grid, use the global
+power-PDF selector. An empty slot in a valid cell is a **zero-weight sample**;
+it does not trigger another global sample, which would change the estimator.
+The structure is rebuilt every frame, including zero-light scenes, with explicit
+storage write-to-read barriers before transport consumes it.
+
+`SceneLightResources` owns the compact physical records and shared GPU sampling
+resources. Collection is camera-independent and covers the complete resolved
+scene plus its eligible virtual lights. DrawSet and clustered LightGrid lists
+are view-filtered raster candidates and must not be reused for secondary path
+vertices, reflections, or transport outside the current camera view.
+
+The common `PunctualLightSampling.slang` contract uses binding 50 for the
+header-prefixed physical light buffer, binding 52 for the three-record ReGIR
+header followed by RIS slots, and binding 53 for the global power-PDF mip chain.
+These compact indices are not GPUScene's stable source-slot indices. Buffer
+replacement retires old resources for in-flight frames. Resolved light changes
+invalidate RTXDI reservoir history and the path tracer's accumulation/radiance
+caches, preventing deleted or reordered lights from reusing stale indices.
+Cancelled GPU recordings invalidate the sampling allocation; the next build
+recreates the PDF/grid resources rather than assuming cancelled texture-layout
+transitions executed. This keeps first-build and resize retries valid.
+
+Standard and OpenPBR path tracing, NRC/SHARC cache query/update paths, and RTXCR
+hair direct lighting use the same selector with one virtual-light sample per
+eligible path vertex. Its contribution is multiplied by the RIS inverse source
+weight. Directional, point and spot lights are delta distributions: BSDF or
+environment direction sampling cannot hit them, so their MIS weight is one.
+Environment next-event sampling retains its separate solid-angle PDF and MIS;
+there is no second all-lights sum or SH-radiance contribution. Real-time physical
+lighting retains its deterministic full-light evaluation.
 
 The sample graph then runs four passes:
 
@@ -78,7 +115,16 @@ The sample graph then runs four passes:
    `isHistoryConfidenceAvailable` enabled for RELAX.
 4. `RtxdiCompositePass` remodulates the denoised diffuse signal by diffuse
    albedo, remodulates the denoised specular signal by dielectric/metallic F0,
-   adds emissive/ambient radiance, and performs exposure and tone mapping.
+   adds emissive/background radiance, and performs exposure and tone mapping.
+
+All linear RTXDI outputs, including NRD signals and emissive/background, receive
+the same physical EV100 exposure after transport. The composite therefore only
+applies its existing artistic exposure and tone map, not EV100 a second time.
+There is no constant ambient-light term. Directional shadow rays remain
+unbounded, while the exported NRD hit distance is finite for its half-float
+signal format. Environment visibility gates both HDR backgrounds and the
+procedural preview fallback; hiding the environment never leaves a synthetic
+sky in the color or emissive output.
 
 The normal/roughness and radiance/hit-distance encodings use NRD's own front-end
 helpers, so they track the configured NRD build. Motion vectors use the NRD
@@ -90,11 +136,16 @@ outside the current scope.
 
 ## Build and run
 
+For a multi-configuration generator such as Visual Studio:
+
 ```powershell
 cmake -S . -B build -DMETALLIC_BUILD_TESTS=ON
 cmake --build build --target MetallicRtxdiSample --config Debug
 build\Source\Debug\MetallicRtxdiSample.exe
 ```
+
+For a single-configuration Ninja build, the executable is instead
+`build\Source\MetallicRtxdiSample.exe` (without a `Debug` subdirectory).
 
 The standalone executable opens the editor with the `RTXDI / ReSTIR DI` sample
 selected. A non-interactive eight-frame path is also available; multiple frames
@@ -105,8 +156,17 @@ build\Source\Debug\MetallicRtxdiSample.exe --smoke-test
 ```
 
 The sample graph is
-`Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json`. Its inspector exposes
-light count, local-light importance sampling, Grid ReGIR enablement/resolution,
+`Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json`. It explicitly selects
+`lightSource = "bench"` to preserve the animated many-light test bench. This
+mode creates ordinary native point-light records on the host and sends them
+through the same GPU power, ReGIR and transport path; shaders no longer generate
+a separate synthetic light type. Bench lights replace scene lights for that
+pass only and are not inserted into the authored document. Select
+**Scene / Virtual Lights** to render imported lights or lights edited in the
+Physical Lighting panel. Light count, animation and benchmark intensity affect
+only explicit bench mode.
+
+The inspector exposes light source and benchmark light count, local-light importance sampling, Grid ReGIR enablement/resolution,
 lights per cell, build samples, sampling jitter, initial local candidates,
 environment candidates, HDR environment intensity/rotation/visibility,
 environment importance sampling, initial visibility, spatial neighbors, history
@@ -118,17 +178,25 @@ threshold, denoising range, and validation mode. Confidence preprocessing
 exposes the FullSample defaults of four gradient A-trous passes, sensitivity 8,
 darkness bias -12 EV, and a 0.75-frame confidence history. The default sampling budget uses eight initial
 local-light candidates, four environment candidates, and one spatial neighbor.
-The graph's default presentation output is `Composite.color`; `Rtxdi.color`,
-`Confidence.diffuseConfidence`, and `Confidence.specularConfidence` remain
-marked as debug outputs for inspecting the pre-denoise and confidence results.
+The graph presents `Composite.color` through `FinalBlit.color`. `Rtxdi.color`,
+`Confidence.diffuseConfidence`, and `Confidence.specularConfidence` can also be
+selected for inspecting the pre-denoise and confidence results.
 
-The shader and eight-frame GPU preview tests can be run with:
+Build `MetallicRhiTests`, then select the executable path for the configured
+generator. These Google Test wildcard filters include all six
+`regir_virtual_lights_*` tests: GPU power/edit/delete, empty-reservoir probability
+mass, cancelled-recording retry, standard PT, OpenPBR PT and RTXDI temporal
+rendering.
 
 ```powershell
-build\tests\Debug\MetallicRhiTests.exe --filter render_graph_rtxdi_shader_compile
-build\tests\Debug\MetallicRhiTests.exe --filter importance_pdf_mip_chain
-build\tests\Debug\MetallicRhiTests.exe --filter regir_grid_layout
-build\tests\Debug\MetallicRhiTests.exe --rhi-validation --filter render_graph_rtxdi_preview
+cmake --build build --target MetallicRhiTests --config Debug
+# Ninja / single-configuration:
+$rtxdiTestExe = '.\build\tests\MetallicRhiTests.exe'
+# Visual Studio / multi-configuration: use this path instead.
+# $rtxdiTestExe = '.\build\tests\Debug\MetallicRhiTests.exe'
+
+& $rtxdiTestExe --rhi-validation '--gtest_filter=*render_graph_rtxdi_shader_compile:*importance_pdf_size:*regir_grid_layout:*regir_virtual_lights_*'
+& $rtxdiTestExe --rhi-validation '--gtest_filter=*render_graph_rtxdi_preview'
 ```
 
 A Vulkan device with acceleration-structure and ray-query support is required.

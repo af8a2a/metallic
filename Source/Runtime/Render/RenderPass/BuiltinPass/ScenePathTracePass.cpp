@@ -918,6 +918,9 @@ public:
             baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
             });
+        } else {
+            baseBindings.push_back({.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = 53, .kind = ComputeResourceBindingKind::SampledImage});
         }
         if (useOpenPBR) {
             baseBindings.push_back(ComputeProgramBindingDesc{
@@ -1413,6 +1416,23 @@ public:
             nrcSceneRevision_ = 0;
 #endif
         }
+        if (!realtime_) {
+            const auto& bounds = sceneResources_.bounds();
+            const float3 center = bounds.valid ? bounds.center() : float3(0.0f);
+            ReGIRBuildParameters sampling;
+            sampling.lightCount = lights_.lightCount();
+            sampling.frameIndex = static_cast<uint32_t>(context.frameIndex());
+            sampling.sceneCenter[0] = center.x;
+            sampling.sceneCenter[1] = center.y;
+            sampling.sceneCenter[2] = center.z;
+            sampling.sceneRadius = bounds.valid ? std::max(bounds.radius(), 0.01f) : 1.0f;
+            lightResult = lights_.buildSampling(*device_, context.commandBuffer(), *context.subsystems(),
+                *environment.radianceView, sampling, 16, 16, true, syncLog);
+            if (!lightResult) {
+                spdlog::warn("[ScenePathTracePass] Physical light ReGIR build failed: {}", syncLog);
+                return lightResult;
+            }
+        }
         if (environment.resourceRevision != environmentResourceRevision_ ||
             environment.settingsRevision != environmentSettingsRevision_) {
             environmentResourceRevision_ = environment.resourceRevision;
@@ -1426,6 +1446,7 @@ public:
         TextureView* environmentImportancePdfView = environment.pdfView;
         TextureView* const environmentTextureViews[] = {environmentTextureView};
         TextureView* const environmentImportancePdfViews[] = {environmentImportancePdfView};
+        TextureView* const punctualPdfViews[] = {lights_.lightPdfView()};
         const bool useOpenPBR = useOpenPBRBsdf(properties());
         const bool exportGuides = exportDenoiserGuides(properties());
         TextureHandle albedo = exportGuides ? context.outputTexture("albedo") : TextureHandle{};
@@ -1596,6 +1617,9 @@ public:
             bindings.push_back(ComputeDispatchBinding{
                 .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,
             });
+        } else {
+            bindings.push_back({.binding = 52, .buffer = lights_.reGIRBuffer()});
+            bindings.push_back({.binding = 53, .textureViews = punctualPdfViews, .textureViewCount = 1});
         }
         if (useOpenPBR) {
             const auto& lut2DViews = openPBRLuts_.lut2DViews();

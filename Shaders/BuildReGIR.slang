@@ -1,6 +1,9 @@
 // GPU construction of a grid ReGIR light selector. Each grid cell owns a
 // fixed-size set of RIS light slots, matching the selection flow used by RTXDI.
 
+#define METALLIC_PUNCTUAL_SAMPLING_DISABLE_RESOURCES
+#include "PunctualLightSampling.slang"
+
 [[vk::binding(0, 0)]]
 Texture2D<float> gLocalLightPdf;
 
@@ -9,7 +12,6 @@ RWStructuredBuffer<uint4> gReGIRData;
 
 static const uint kReGIRHeaderRecordCount = 3u;
 static const uint kReGIRMagic = 0x52454749u;
-static const float kGoldenAngle = 2.39996322972865332;
 
 struct BuildReGIRPush
 {
@@ -18,87 +20,19 @@ struct BuildReGIRPush
     uint lightsPerCell;
     uint buildSamples;
     uint frameIndex;
-    uint animateLights;
-    uint lightSlotCount;
     uint padding0;
-    float4 sceneCenterRadius;
-    float lightIntensity;
-    float samplingJitter;
+    uint lightSlotCount;
     uint padding1;
+    float4 sceneCenterRadius;
+    float samplingJitter;
     uint padding2;
+    uint padding3;
+    uint padding4;
 };
-
-struct AnalyticLight
-{
-    float3 position;
-    float3 radiance;
-};
-
-uint hash(uint value)
-{
-    value ^= value >> 16u;
-    value *= 0x7feb352du;
-    value ^= value >> 15u;
-    value *= 0x846ca68bu;
-    value ^= value >> 16u;
-    return value;
-}
-
-float hashToFloat(uint value)
-{
-    return float(hash(value) & 0x00ffffffu) / 16777216.0;
-}
 
 float randomFloat(inout uint state)
 {
-    state = hash(state);
-    return float(state & 0x00ffffffu) / 16777216.0;
-}
-
-float luminance(float3 color)
-{
-    return dot(color, float3(0.2126, 0.7152, 0.0722));
-}
-
-float3 hashColor(uint value)
-{
-    float3 color = float3(
-        hashToFloat(value * 3u + 0u),
-        hashToFloat(value * 3u + 1u),
-        hashToFloat(value * 3u + 2u));
-    return 0.2 + color * 0.8;
-}
-
-AnalyticLight getAnalyticLight(uint lightIndex, BuildReGIRPush push)
-{
-    float radius = max(push.sceneCenterRadius.w, 0.01);
-    uint ringCount = 16u;
-    uint ringIndex = lightIndex % ringCount;
-    uint layerIndex = lightIndex / ringCount;
-    uint layerCount = max((push.lightCount + ringCount - 1u) / ringCount, 1u);
-    float layer = (float(layerIndex) + 0.5) / float(layerCount);
-    float animation = push.animateLights != 0u
-        ? float(push.frameIndex) * 0.0125
-        : 0.0;
-    float angle = float(lightIndex) * kGoldenAngle +
-        animation * (0.55 + hashToFloat(lightIndex + 19u));
-    float radialJitter = 0.55 + hashToFloat(lightIndex * 11u + 7u) * 0.5;
-    float radialDistance = radius * radialJitter;
-    float vertical = radius * lerp(-0.2, 1.4, layer);
-    float wobble = push.animateLights != 0u
-        ? sin(animation * (0.7 + hashToFloat(lightIndex + 31u)) + float(ringIndex)) * radius * 0.08
-        : 0.0;
-
-    AnalyticLight light;
-    light.position = push.sceneCenterRadius.xyz + float3(
-        cos(angle) * radialDistance,
-        vertical + wobble,
-        sin(angle) * radialDistance);
-    float3 color = hashColor(lightIndex + 1u);
-    color *= 0.65 + hashToFloat(lightIndex * 17u + 3u) * 0.7;
-    light.radiance = color * max(push.lightIntensity, 0.0) * radius * radius /
-        float(max(push.lightCount, 1u));
-    return light;
+    return punctualSamplingRandom(state);
 }
 
 uint zCurveToLinearIndex(uint2 position)
@@ -120,7 +54,8 @@ float loadImportanceWeight(uint2 position, uint mipLevel)
     if (position.x >= width || position.y >= height) {
         return 0.0;
     }
-    return max(gLocalLightPdf.Load(int3(position, mipLevel)), 0.0);
+    float weight = gLocalLightPdf.Load(int3(position, mipLevel));
+    return isfinite(weight) ? max(weight, 0.0) : 0.0;
 }
 
 bool sampleLocalLightPdf(inout uint seed, uint lightCount, out uint lightIndex, out float sourcePdf)
@@ -132,7 +67,8 @@ bool sampleLocalLightPdf(inout uint seed, uint lightCount, out uint lightIndex, 
     uint2 position = uint2(0u, 0u);
     sourcePdf = 1.0;
 
-    if (width > 0u && height > 0u && mipCount > 1u) {
+    if (width > 0u && height > 0u && mipCount > 0u &&
+        loadImportanceWeight(uint2(0u), mipCount - 1u) > 0.0) {
         for (int mipLevel = int(mipCount) - 2; mipLevel >= 0; --mipLevel) {
             position *= 2u;
             float4 weights = float4(
@@ -140,11 +76,10 @@ bool sampleLocalLightPdf(inout uint seed, uint lightCount, out uint lightIndex, 
                 loadImportanceWeight(position + uint2(0u, 1u), uint(mipLevel)),
                 loadImportanceWeight(position + uint2(1u, 0u), uint(mipLevel)),
                 loadImportanceWeight(position + uint2(1u, 1u), uint(mipLevel)));
+            float largest = max(max(weights.x, weights.y), max(weights.z, weights.w));
+            if (!(largest > 0.0)) { lightIndex = 0u; sourcePdf = 0.0; return false; }
+            weights /= largest;
             float weightSum = weights.x + weights.y + weights.z + weights.w;
-            if (weightSum <= 0.0) {
-                sourcePdf = 0.0;
-                break;
-            }
             weights /= weightSum;
             float randomValue = randomFloat(seed);
             if (randomValue < weights.x) {
@@ -164,24 +99,15 @@ bool sampleLocalLightPdf(inout uint seed, uint lightCount, out uint lightIndex, 
         if (sourcePdf > 0.0 && lightIndex < lightCount) {
             return true;
         }
+        // Preserve a failed selected branch as a zero sample, rather than
+        // changing proposal based on the outcome of its random draw.
+        sourcePdf = 0.0;
+        return false;
     }
 
     lightIndex = min(uint(randomFloat(seed) * float(lightCount)), lightCount - 1u);
     sourcePdf = 1.0 / float(lightCount);
     return true;
-}
-
-float lightTargetForCell(AnalyticLight light, float3 cellCenter, float cellRadius)
-{
-    float distanceToCenter = length(light.position - cellCenter);
-    float nonlinearFactor = 1.1547;
-    float distanceToCell = distanceToCenter + cellRadius * cellRadius * cellRadius /
-        max(
-            (distanceToCenter + cellRadius * nonlinearFactor) *
-                (distanceToCenter + cellRadius * nonlinearFactor),
-            0.000001);
-    return max(luminance(light.radiance), 0.0) /
-        max(distanceToCell * distanceToCell, 0.000001);
 }
 
 [shader("compute")]
@@ -217,23 +143,24 @@ void buildReGIRMain(
     float3 cellCenter = gridOrigin + (float3(cellPosition) + 0.5) * cellSize;
     float cellRadius = cellSize * sqrt(3.0) * (max(push.samplingJitter, 0.0) + 1.0);
 
-    uint seed = hash(
+    uint seed = punctualSamplingHash(
         lightSlot +
         (push.frameIndex + 1u) * 0x9e3779b9u +
         0x68bc21ebu);
     uint selectedLight = 0xffffffffu;
     float selectedTarget = 0.0;
     float weightSum = 0.0;
-    for (uint sampleIndex = 0u; sampleIndex < push.buildSamples; ++sampleIndex) {
+    uint lightCount = min(push.lightCount, punctualLightCount());
+    for (uint sampleIndex = 0u; lightCount > 0u && sampleIndex < push.buildSamples; ++sampleIndex) {
         uint candidateLight;
         float sourcePdf;
-        if (!sampleLocalLightPdf(seed, push.lightCount, candidateLight, sourcePdf)) {
+        if (!sampleLocalLightPdf(seed, lightCount, candidateLight, sourcePdf)) {
             continue;
         }
-        AnalyticLight light = getAnalyticLight(candidateLight, push);
-        float target = lightTargetForCell(light, cellCenter, cellRadius);
-        float candidateWeight = target /
-            max(sourcePdf * float(push.buildSamples), 0.00000001);
+        GpuPunctualLight light = gPunctualLights[candidateLight + 1u];
+        float target = punctualLightTargetForVolume(light, cellCenter, cellRadius);
+        float candidateWeight = target / (sourcePdf * float(push.buildSamples));
+        if (!(candidateWeight > 0.0) || !isfinite(candidateWeight)) { continue; }
         weightSum += candidateWeight;
         if (randomFloat(seed) * weightSum < candidateWeight) {
             selectedLight = candidateLight;

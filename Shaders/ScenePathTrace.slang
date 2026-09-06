@@ -206,7 +206,7 @@ Texture2D<float4> gEnvironmentMap;
 [[vk::binding(13, 0)]]
 Texture2D<float> gEnvironmentImportancePdf;
 
-#include "PhotometricLighting.slang"
+#include "PunctualLightSampling.slang"
 #include "ProceduralEnvironment.slang"
 
 
@@ -1573,6 +1573,25 @@ float3 pathTrace(
                 hit.tangent.xyz,
                 -ray.direction);
 
+            uint hairLightIndex;
+            float hairInverseSourcePdf;
+            if (selectPunctualLight(hit.position, seed, hairLightIndex, hairInverseSourcePdf)) {
+                PunctualLightSample light = samplePunctualLight(hairLightIndex, hit.position);
+                float3 hairBsdf = max(RTXCR_HairChiangBsdfEval(
+                    hairMaterial, hairSurface, light.direction), 0.0);
+                if (luminanceMax(hairBsdf * light.illuminance) > 0.0) {
+                    float3 shadowOrigin = offsetRay(hit.position,
+                        dot(light.direction, hit.geometryNormal) >= 0.0
+                            ? hit.geometryNormal : -hit.geometryNormal);
+                    if (!traceShadow(shadowOrigin, light.direction,
+                            max(light.distance - length(shadowOrigin - hit.position), 0.0), push)) {
+                        // Punctual lights are delta distributions: the BSDF and
+                        // environment samplers cannot hit them, so MIS is one.
+                        radiance += throughput * hairBsdf * light.illuminance * hairInverseSourcePdf;
+                    }
+                }
+            }
+
             EnvironmentLightSample hairLightSample;
             if (sampleEnvironmentLight(push, seed, hairLightSample)) {
                 float approximateHairPdf = fallbackBsdfPdf(
@@ -1727,16 +1746,21 @@ float3 pathTrace(
 #endif
 
         EnvironmentLightSample lightSample;
-        for (uint i = 0u; i < punctualLightCount(); ++i) {
-            PunctualLightSample light = samplePunctualLight(i, hit.position);
+        uint punctualLightIndex;
+        float punctualInverseSourcePdf;
+        if (selectPunctualLight(hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
+            PunctualLightSample light = samplePunctualLight(punctualLightIndex, hit.position);
             float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
                 baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
-            if (luminanceMax(bsdf * light.illuminance) <= 0.0) { continue; }
-            float3 origin = offsetRay(hit.position,
-                dot(light.direction, hit.geometryNormal) >= 0.0 ? hit.geometryNormal : -hit.geometryNormal);
-            if (!traceShadow(origin, light.direction,
-                    max(light.distance - length(origin - hit.position), 0.0), push)) {
-                radiance += throughput * bsdf * light.illuminance;
+            if (luminanceMax(bsdf * light.illuminance) > 0.0) {
+                float3 origin = offsetRay(hit.position,
+                    dot(light.direction, hit.geometryNormal) >= 0.0 ? hit.geometryNormal : -hit.geometryNormal);
+                if (!traceShadow(origin, light.direction,
+                        max(light.distance - length(origin - hit.position), 0.0), push)) {
+                    // This is the ReGIR RIS inverse source weight, not an
+                    // environment solid-angle PDF. Delta-light MIS is one.
+                    radiance += throughput * bsdf * light.illuminance * punctualInverseSourcePdf;
+                }
             }
         }
         if (sampleEnvironmentLight(push, seed, lightSample)) {

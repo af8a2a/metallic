@@ -124,6 +124,7 @@
                 "exposure": 1.0,
                 "initialSamples": 8,
                 "initialVisibility": true,
+                "lightSource": "bench",
                 "lightCount": 256,
                 "lightIntensity": 12.0,
                 "localLightImportanceSampling": true,

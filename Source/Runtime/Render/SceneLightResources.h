@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
+#include "Runtime/Render/ReGIR.h"
 #include "Runtime/Scene/Scene.h"
 #include "Runtime/Scene/SceneLighting.h"
 
@@ -48,10 +49,20 @@ class SceneLightResources {
 public:
     Result update(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
         const scene::Scene* scene, const scene::LightingSettings& settings);
+    // Camera-independent full-scene proposal: never use DrawSet/LightGrid's
+    // camera-filtered candidates for secondary path vertices.
+    Result buildSampling(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
+        TextureView& environment, const ReGIRBuildParameters& parameters,
+        uint32_t gridSize, uint32_t lightsPerCell, bool buildGrid, std::string& log);
     Buffer* buffer() const { return buffer_.get(); }
+    Buffer* reGIRBuffer() const;
+    TextureView* lightPdfView() const;
+    uint32_t lightCount() const { return records_.empty() ? 0u : static_cast<uint32_t>(records_.size() - 1u); }
     uint64_t revision() const { return revision_; }
 
 private:
+    struct SamplingState;
+    std::shared_ptr<SamplingState> sampling_;
     std::vector<GpuPunctualLight> records_;
     std::shared_ptr<Buffer> buffer_;
     uint64_t revision_ = 0;

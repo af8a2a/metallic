@@ -27,10 +27,8 @@ struct ReGIRBuildParameters {
     uint32_t lightCount = 0;
     uint32_t buildSamples = 8;
     uint32_t frameIndex = 0;
-    bool animateLights = true;
     float sceneCenter[3] = {};
     float sceneRadius = 1.0f;
-    float lightIntensity = 1.0f;
     float samplingJitter = 1.0f;
 };
 
@@ -54,6 +52,7 @@ public:
     Result build(
         CommandBuffer& commandBuffer,
         TextureView& localLightPdf,
+        Buffer& punctualLights,
         const ReGIRBuildParameters& parameters);
     void clear();
 

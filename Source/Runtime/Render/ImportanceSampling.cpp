@@ -1,10 +1,12 @@
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstring>
 #include <iterator>
 #include <utility>
 #include <vector>
@@ -61,24 +63,10 @@ struct ImportancePdfTexture::Impl {
     ResourceState state = ResourceState::Undefined;
     uint64_t byteSize = 0;
 
-    void clear()
-    {
-        sourceWidth = 0;
-        sourceHeight = 0;
-        textureWidth = 0;
-        textureHeight = 0;
-        mipCount = 0;
-        mipViews.fill(nullptr);
-        ownedMipViews.clear();
-        view.reset();
-        texture.reset();
-        state = ResourceState::Undefined;
-        byteSize = 0;
-    }
 };
 
 ImportancePdfTexture::ImportancePdfTexture()
-    : impl_(std::make_unique<Impl>())
+    : impl_(std::make_shared<Impl>())
 {
 }
 
@@ -93,10 +81,9 @@ Result ImportancePdfTexture::initialize(
     std::string_view debugName,
     std::string& log)
 {
-    if (impl_ == nullptr) {
-        impl_ = std::make_unique<Impl>();
-    }
-    impl_->clear();
+    // Submitted frames retain the previous allocation if a PDF is resized or
+    // its owner is cleared while that frame is still in flight.
+    impl_ = std::make_shared<Impl>();
     impl_->sourceWidth = sourceWidth;
     impl_->sourceHeight = sourceHeight;
     impl_->textureWidth = paddedDimension(sourceWidth);
@@ -182,6 +169,7 @@ void ImportancePdfTexture::beginGpuBuild(CommandBuffer& commandBuffer)
     if (!valid()) {
         return;
     }
+    if (auto* frame = commandBuffer.frameContext()) { frame->retain(impl_); }
     TextureBarrierDesc toGeneral{
         .texture = impl_->texture.get(),
         .before = impl_->state,
@@ -232,9 +220,7 @@ void ImportancePdfTexture::endGpuBuild(CommandBuffer& commandBuffer)
 
 void ImportancePdfTexture::clear()
 {
-    if (impl_ != nullptr) {
-        impl_->clear();
-    }
+    impl_ = std::make_shared<Impl>();
 }
 
 bool ImportancePdfTexture::valid() const
@@ -311,13 +297,9 @@ struct PrepareLightsPdfPush {
     uint32_t padding0 = 0;
     uint32_t sourceSize[2] = {1, 1};
     uint32_t destinationSize[2] = {1, 1};
-    float localLightIntensity = 0.0f;
-    float sceneRadius = 1.0f;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
 };
 
-static_assert(sizeof(PrepareLightsPdfPush) == 48);
+static_assert(sizeof(PrepareLightsPdfPush) == 32);
 
 uint32_t dimensionAtMip(uint32_t dimension, uint32_t mipLevel)
 {
@@ -328,6 +310,7 @@ uint32_t dimensionAtMip(uint32_t dimension, uint32_t mipLevel)
 
 struct ImportancePdfCompute::Impl {
     ComputeProgram program;
+    std::shared_ptr<Buffer> emptyLights;
 };
 
 ImportancePdfCompute::ImportancePdfCompute()
@@ -365,6 +348,23 @@ Result ImportancePdfCompute::initialize(Device& device, std::string& log)
         return compile;
     }
 
+    std::unique_ptr<Buffer> emptyLights;
+    Result emptyResult = device.createBuffer(BufferDesc{
+        .size = sizeof(float) * 16u,
+        .usage = BufferUsageBits::Storage,
+        .memoryLocation = MemoryLocation::HostUpload,
+    }, emptyLights);
+    if (!emptyResult || emptyLights == nullptr) {
+        log = resultMessage("createBuffer(ImportancePdfCompute empty lights)", emptyResult);
+        return emptyResult ? makeError(Error::Failure) : emptyResult;
+    }
+    void* mapped = emptyLights->map();
+    if (mapped == nullptr) { return makeError(Error::Failure); }
+    std::memset(mapped, 0, sizeof(float) * 16u);
+    emptyLights->flush();
+    emptyLights->unmap();
+    impl_->emptyLights = std::move(emptyLights);
+
     const ComputeProgramBindingDesc bindings[] = {
         {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
         {
@@ -377,6 +377,7 @@ Result ImportancePdfCompute::initialize(Device& device, std::string& log)
             .kind = ComputeResourceBindingKind::StorageImage,
             .descriptorCount = kImportancePdfMaxMipCount,
         },
+        {.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
     };
     return impl_->program.initialize(
         device,
@@ -397,13 +398,19 @@ Result ImportancePdfCompute::buildLocalLights(
     CommandBuffer& commandBuffer,
     TextureView& environmentMap,
     ImportancePdfTexture& localLightPdf,
-    uint32_t lightCount,
-    float localLightIntensity,
-    float sceneRadius)
+    Buffer& punctualLights,
+    uint32_t lightCount)
 {
-    if (!valid() || !localLightPdf.valid() || lightCount == 0) {
+    if (!valid() || !localLightPdf.valid() ||
+        !hasFlag(punctualLights.desc().usage, BufferUsageBits::Storage) ||
+        uint64_t(localLightPdf.textureWidth()) * localLightPdf.textureHeight() < lightCount ||
+        punctualLights.desc().size < (uint64_t(lightCount) + 1u) * sizeof(float) * 16u) {
         return makeError(Error::InvalidArgument);
     }
+    if (auto* frame = commandBuffer.frameContext(); frame != nullptr && !frame->recording()) {
+        return makeError(Error::InvalidArgument);
+    }
+    commandBuffer.hostWriteBarrier();
 
     TextureView* const environmentViews[] = {&environmentMap};
     const ComputeDispatchBinding bindings[] = {
@@ -422,6 +429,7 @@ Result ImportancePdfCompute::buildLocalLights(
             .textureViews = localLightPdf.mipViews(),
             .textureViewCount = localLightPdf.mipViewCount(),
         },
+        {.binding = 50, .buffer = &punctualLights},
     };
     auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t descriptorSetIndex) {
         return impl_->program.dispatch(ComputeDispatchDesc{
@@ -445,8 +453,6 @@ Result ImportancePdfCompute::buildLocalLights(
     push.sourceSize[1] = localLightPdf.textureHeight();
     push.destinationSize[0] = localLightPdf.textureWidth();
     push.destinationSize[1] = localLightPdf.textureHeight();
-    push.localLightIntensity = localLightIntensity;
-    push.sceneRadius = sceneRadius;
     Result result = dispatch(push, 0u);
     if (result) {
         localLightPdf.synchronizeGpuBuild(commandBuffer);
@@ -477,6 +483,11 @@ Result ImportancePdfCompute::buildEnvironment(
     if (!valid() || !environmentPdf.valid()) {
         return makeError(Error::InvalidArgument);
     }
+    if (auto* frame = commandBuffer.frameContext()) {
+        if (!frame->recording()) { return makeError(Error::InvalidArgument); }
+        frame->retain(impl_->emptyLights);
+    }
+    commandBuffer.hostWriteBarrier();
 
     TextureView* const environmentViews[] = {&environmentMap};
     const ComputeDispatchBinding bindings[] = {
@@ -495,6 +506,7 @@ Result ImportancePdfCompute::buildEnvironment(
             .textureViews = environmentPdf.mipViews(),
             .textureViewCount = environmentPdf.mipViewCount(),
         },
+        {.binding = 50, .buffer = impl_->emptyLights.get()},
     };
     auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t descriptorSetIndex) {
         return impl_->program.dispatch(ComputeDispatchDesc{
@@ -543,12 +555,13 @@ void ImportancePdfCompute::clear()
 {
     if (impl_ != nullptr) {
         impl_->program.clear();
+        impl_->emptyLights.reset();
     }
 }
 
 bool ImportancePdfCompute::valid() const
 {
-    return impl_ != nullptr && impl_->program.valid();
+    return impl_ != nullptr && impl_->program.valid() && impl_->emptyLights != nullptr;
 }
 
 } // namespace metallic::render
