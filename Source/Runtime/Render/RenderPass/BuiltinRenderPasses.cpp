@@ -28,6 +28,10 @@ void registerBuiltInRenderGraphPasses()
         "Histogram EV100 exposure, temporal eye adaptation and HDR tone mapping",
         []() { return builtin_pass::createAutoExposurePass(); });
     registerRenderGraphPassType(
+        "SliderDebugPass",
+        "Reveal two pixel-aligned color paths with an interactive divider, preserving HDR",
+        []() { return builtin_pass::createSliderDebugPass(); });
+    registerRenderGraphPassType(
         "FinalBlitPass",
         "Present a color texture; show a UV gradient when no usable source is connected",
         []() { return builtin_pass::createFinalBlitPass(); });

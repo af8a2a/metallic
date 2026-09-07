@@ -49,6 +49,7 @@ private:
     void pollShaderHotReload();
     bool renderFrame();
     bool runMultiViewportSmokeTest();
+    bool runSliderDebugSmokeTest();
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();
@@ -69,6 +70,11 @@ private:
         bool hideCameraSettings,
         bool showEmptyMessage);
     void drawViewportPanel();
+    render::RenderGraphNode* viewportSliderDebugNode();
+    void drawSliderDebugControls();
+    bool drawSliderDebugOverlay(const ImVec2& min, const ImVec2& max);
+    void setSliderDebugProperty(uint32_t nodeId, const char* key, render::RenderGraphProperties value);
+    void syncCameraGroup(const render::RenderGraphNode& source);
     void handleViewportCameraControls(const ImVec2& min, const ImVec2& max);
     void drawViewportObjectHandles(const ImVec2& min, const ImVec2& max);
     void drawViewportGizmo(const ImVec2& min, const ImVec2& max);
@@ -293,6 +299,7 @@ private:
     bool viewportHovered_ = false;
     bool viewportInteractionEnabled_ = false;
     bool viewportGizmoCapturingMouse_ = false;
+    uint32_t sliderDragNodeId_ = 0;
     bool sceneNonTransformDirty_ = false;
     bool inspectorTransformEditing_ = false;
     bool inspectorPropertyEditing_ = false;

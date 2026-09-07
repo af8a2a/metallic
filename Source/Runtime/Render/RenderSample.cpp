@@ -127,6 +127,22 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
+class LookDevShadingCompareSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "lookdev-shading-compare"; }
+    std::string_view name() const override { return "LookDev / Shading Comparison"; }
+    std::string_view category() const override { return "LookDev"; }
+    std::string_view description() const override
+    {
+        return "OpenPBR / Standard BSDF comparison with a draggable divider, linked cameras and shared HDR exposure. "
+            "See Documentation/SliderDebugPass.md.";
+    }
+    std::string scenePath() const override { return "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf"; }
+    std::string graphPath() const override { return "Pipelines/Samples/lookdev_shading_compare.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"OpenPBR", "Standard"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class PathTracingMeetMatSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-meet-mat"; }
@@ -604,10 +620,12 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const RealtimeLightingSample realtimeLighting;
     static const LightGridDebugSample lightGridDebug;
     static const OpenPbrLookDevSample openPbrLookDev;
+    static const LookDevShadingCompareSample lookDevShadingCompare;
     return {
         &realtimeLighting,
         &lightGridDebug,
         &openPbrLookDev,
+        &lookDevShadingCompare,
         &pathTracingMeetMatSample(),
         &pathTracingSharcMeetMatSample(),
         &pathTracingNrcMeetMatSample(),

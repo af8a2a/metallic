@@ -82,6 +82,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/CopyColorPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/FinalBlitPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/AutoExposurePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/SliderDebugPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ImageSamplePass.cpp
@@ -272,6 +273,7 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
 set(METALLIC_EDITOR_SOURCES
     Editor/EditorApplication.cpp
     Editor/EditorApplicationSmokeTests.cpp
+    Editor/EditorSliderDebug.cpp
     Editor/EditorProfiler.cpp
     Editor/NvmlMonitor.cpp
 )

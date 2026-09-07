@@ -2063,6 +2063,11 @@ int EditorApplication::run(
             (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "maxDepth", 1);
             (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "accumulate", false);
         }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_SLIDER")) {
+            const bool passed = runSliderDebugSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_VIEWPORTS")) {
             const bool passed = runMultiViewportSmokeTest();
             shutdown();
@@ -3868,6 +3873,7 @@ bool EditorApplication::drawRuntimeSettingsForNode(
     bool changed = false;
     bool invalidateHistory = false;
     bool rebuildGraph = false;
+    bool cameraChanged = false;
     ImGui::PushID(static_cast<int>(node.id));
     for (const render::RenderGraphRuntimeSetting& setting : settings) {
         if (hideCameraSettings && isCameraRuntimeSetting(setting)) {
@@ -3881,6 +3887,7 @@ bool EditorApplication::drawRuntimeSettingsForNode(
             changed = true;
             invalidateHistory = invalidateHistory || setting.invalidateHistory;
             rebuildGraph = rebuildGraph || setting.rebuildGraph;
+            cameraChanged = cameraChanged || isCameraRuntimeSetting(setting);
         }
         ImGui::PopID();
     }
@@ -3888,6 +3895,9 @@ bool EditorApplication::drawRuntimeSettingsForNode(
 
     if (changed) {
         renderGraph_.setNodeRuntimeProperties(node.id, std::move(runtimeProperties));
+        if (cameraChanged) {
+            syncCameraGroup(node);
+        }
         if (invalidateHistory) {
             historyResources_.invalidateAll();
         }
@@ -4227,6 +4237,21 @@ void EditorApplication::beginEnvironmentEdit()
     environmentEditBaselineFromSample_ = environmentFromSample_;
 }
 
+void EditorApplication::syncCameraGroup(const render::RenderGraphNode& source)
+{
+    const auto properties = effectiveNodeProperties(source);
+    const std::string group = properties.value("cameraSyncGroup", "");
+    if (group.empty() || !properties.contains("camera")) {
+        return;
+    }
+    for (const auto& candidate : renderGraph_.nodes()) {
+        if (candidate.id != source.id && isSceneAwareRenderPassType(candidate.type) &&
+            effectiveNodeProperties(candidate).value("cameraSyncGroup", "") == group) {
+            renderGraph_.setNodeRuntimeProperty(candidate.id, "camera", properties["camera"]);
+        }
+    }
+}
+
 void EditorApplication::applyRuntimeNodeProperties(
     uint32_t nodeId,
     render::RenderGraphProperties properties,
@@ -4246,6 +4271,7 @@ void EditorApplication::applyRuntimeNodeProperties(
         runtimeProperties = std::move(properties);
     }
     renderGraph_.setNodeRuntimeProperties(nodeId, std::move(runtimeProperties));
+    syncCameraGroup(*node);
     historyResources_.invalidateAll();
     if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
         graphExecutor_->syncRuntimeProperties(renderGraph_);
@@ -5882,6 +5908,7 @@ void EditorApplication::drawViewportPanel()
         ? &translateSnap_
         : (gizmoOperation_ == GizmoOperation::Rotate ? &rotateSnap_ : &scaleSnap_);
     ImGui::DragFloat("##SnapStep", snapValue, 0.05f, 0.001f, 1000.0f, "%.3f");
+    drawSliderDebugControls();
 
     ImVec2 available = ImGui::GetContentRegionAvail();
     available.x = std::max(available.x, 1.0f);
@@ -5959,8 +5986,12 @@ void EditorApplication::drawViewportPanel()
     }
 
     drawList->AddRect(min, max, IM_COL32(58, 67, 80, 255));
-    drawViewportObjectHandles(min, max);
-    drawViewportGizmo(min, max);
+    const bool sliderCapturingMouse = hasRhiPreview && drawSliderDebugOverlay(min, max);
+    if (!hasRhiPreview) { sliderDragNodeId_ = 0; }
+    if (!sliderCapturingMouse) {
+        drawViewportObjectHandles(min, max);
+        drawViewportGizmo(min, max);
+    }
 
     if (loadingScene) {
         const scene::SceneLoadProgress progress = pendingSceneResourcePreparation_
@@ -5994,7 +6025,7 @@ void EditorApplication::drawViewportPanel()
     drawList->PopClipRect();
 
     ImGui::Dummy(available);
-    viewportHovered_ = viewportInteractionEnabled_ && mouseInsideImage &&
+    viewportHovered_ = !sliderCapturingMouse && viewportInteractionEnabled_ && mouseInsideImage &&
         ImGui::IsItemHovered();
     const ImGuiIO& io = ImGui::GetIO();
     const bool cameraGestureActive =
@@ -6017,8 +6048,10 @@ void EditorApplication::drawViewportPanel()
             gizmoLocal_ = !gizmoLocal_;
         }
     }
-    selectViewportObject(min, max);
-    handleViewportCameraControls(min, max);
+    if (!sliderCapturingMouse) {
+        selectViewportObject(min, max);
+        handleViewportCameraControls(min, max);
+    }
 
     ImGui::End();
 }

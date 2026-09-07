@@ -6,8 +6,76 @@
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 #include <cstdlib>
+#include <cmath>
 
 namespace metallic {
+
+bool EditorApplication::runSliderDebugSmokeTest()
+{
+    const auto expect = [](bool condition, const char* message) {
+        if (!condition) { spdlog::error("[Smoke Slider] {}", message); }
+        return condition;
+    };
+    if (!renderFrame() || !expect(viewportPreviewValid_, "Comparison viewport renders")) { return false; }
+    auto* slider = viewportSliderDebugNode();
+    auto* cameraNode = viewportCameraRenderGraphNode();
+    if (!expect(slider != nullptr && cameraNode != nullptr, "Find comparison through exposure and presentation")) { return false; }
+    const uint32_t sliderId = slider->id;
+    const uint64_t historyRevision = historyResources_.invalidationRevision();
+    const auto split = [&] { return renderGraph_.findNode(sliderId)->runtimeProperties.value("splitPosition", 0.5f); };
+    // Drive real ImGui input transitions through the overlay without depending on
+    // the desktop's saved docking layout or moving the user's physical cursor.
+    auto overlayFrame = [&](float x, float y, bool down, bool alt = false) {
+        auto& io = ImGui::GetIO();
+        io.AddMousePosEvent(x, y);
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, down);
+        io.AddKeyEvent(ImGuiMod_Alt, alt);
+        ImGui::NewFrame();
+        ImGui::Begin("Slider interaction test");
+        viewportInteractionEnabled_ = true;
+        viewportHovered_ = true;
+        const bool captured = drawSliderDebugOverlay(ImVec2(100, 100), ImVec2(500, 400));
+        ImGui::End();
+        ImGui::Render();
+        ImGui::UpdatePlatformWindows();
+        return captured;
+    };
+    overlayFrame(300, 250, false);
+    if (!expect(overlayFrame(300, 250, true), "Grab vertical divider") ||
+        !expect(overlayFrame(400, 250, true) && std::abs(split() - 0.75f) < 0.001f, "Drag without moving the camera") ||
+        !expect(overlayFrame(650, 250, true) && split() == 1.0f, "Clamp drag outside image") ||
+        !expect(overlayFrame(650, 250, false) && sliderDragNodeId_ == 0, "Release drag without selecting geometry")) {
+        return false;
+    }
+    setSliderDebugProperty(sliderId, "splitPosition", 0.5f);
+    setSliderDebugProperty(sliderId, "orientation", "horizontal");
+    setSliderDebugProperty(sliderId, "swapSides", true);
+    overlayFrame(300, 250, false);
+    if (!expect(overlayFrame(300, 250, true), "Grab horizontal divider") ||
+        !expect(overlayFrame(300, 175, true) && std::abs(split() - 0.25f) < 0.001f, "Drag horizontal divider")) { return false; }
+    overlayFrame(300, 175, false);
+    overlayFrame(300, 175, false, true);
+    if (!expect(!overlayFrame(300, 175, true, true) && sliderDragNodeId_ == 0, "Alt-orbit bypasses divider")) { return false; }
+    overlayFrame(300, 175, false, false);
+    if (!expect(historyResources_.invalidationRevision() == historyRevision && !renderGraph_.dirty(),
+            "Slider controls preserve accumulation and compiled graph")) { return false; }
+
+    auto cameraProperties = cameraNode->properties;
+    cameraProperties.merge_patch(cameraNode->runtimeProperties);
+    cameraProperties["camera"]["eye"][0] = cameraProperties["camera"]["eye"][0].get<float>() + 0.5f;
+    applyBunnyCameraProperties(cameraProperties, "Smoke camera");
+    for (const char* name : {"OpenPBR", "Standard"}) {
+        if (!expect(renderGraph_.findNode(name)->runtimeProperties["camera"] == cameraProperties["camera"],
+                "Viewport camera synchronizes both BSDF paths")) { return false; }
+    }
+    if (!expect(historyResources_.invalidationRevision() > historyRevision, "Camera movement resets accumulation")) { return false; }
+    activePreviewOutput_ = "OpenPBR.color";
+    if (!expect(viewportSliderDebugNode() == nullptr && !overlayFrame(300, 175, true),
+            "Raw producer preview has no comparison interaction")) { return false; }
+    overlayFrame(300, 175, false);
+    spdlog::info("[Smoke Slider] Passed GPU viewport, drag, endpoints, axes, camera gestures, linked cameras and history retention");
+    return true;
+}
 
 bool EditorApplication::runMultiViewportSmokeTest()
 {

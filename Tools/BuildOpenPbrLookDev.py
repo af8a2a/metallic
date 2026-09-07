@@ -132,6 +132,25 @@ def main():
     write_json(output / "OpenPbrDefault.gltf", model)
     write_json(output / "OpenPbrDefault.metallic_scene.json", scene)
     write_json(ROOT / "Pipelines/Samples/openpbr_lookdev.metallic_graph.json", graph)
+    comparison = {"version": 1, "name": "LookDev Shading Comparison", "nodes": [
+        {"id": index + 1, "name": name, "type": "ScenePathTracePass",
+            "position": {"x": 80.0, "y": 80.0 + index * 360.0},
+            "properties": {**graph["nodes"][0]["properties"], "bsdf": bsdf,
+                "cameraSyncGroup": "LookDevComparison"}}
+        for index, (name, bsdf) in enumerate((("OpenPBR", "openpbr"), ("Standard", "standard")))],
+        "edges": [{"id": 1, "src": "OpenPBR.color", "dst": "Slider.sourceA"},
+            {"id": 2, "src": "Standard.color", "dst": "Slider.sourceB"},
+            {"id": 3, "src": "Slider.color", "dst": "AutoExposure.source"},
+            {"id": 4, "src": "AutoExposure.color", "dst": "FinalBlit.source"}], "outputs": []}
+    comparison["nodes"] += [
+        {"id": 3, "name": "Slider", "type": "SliderDebugPass",
+            "position": {"x": 440.0, "y": 220.0},
+            "properties": {"splitPosition": 0.5, "orientation": "vertical", "swapSides": False}},
+        {"id": 4, "name": "AutoExposure", "type": "AutoExposurePass",
+            "position": {"x": 800.0, "y": 220.0}, "properties": {"toneCurve": "none"}},
+        {"id": 5, "name": "FinalBlit", "type": "FinalBlitPass",
+            "position": {"x": 1160.0, "y": 220.0}, "properties": {}}]
+    write_json(ROOT / "Pipelines/Samples/lookdev_shading_compare.metallic_graph.json", comparison)
     write_json(output / "Reference.json", {"materialxRevision": REVISION,
         "viewer": "https://academysoftwarefoundation.github.io/MaterialX/?file=Materials/Examples/OpenPbr/open_pbr_default.mtlx",
         "sources": {name: {"url": BASE_URL + relative,

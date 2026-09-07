@@ -27,6 +27,9 @@ cmake --build cmake-build-debug-visual-studio --target LookDev --parallel 8
 .\cmake-build-debug-visual-studio\Source\LookDev.exe --scene Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf
 ```
 
+另提供 [SliderDebugPass 着色路径比较](SliderDebugPass.md)：
+`LookDev.exe --sample lookdev-shading-compare`，在同一材质上滑动比较 OpenPBR 与 Standard BSDF。
+
 默认示例
 使用 `PathTrace → AutoExposure → FinalBlit`，明确选择 OpenPBR BSDF，
 每帧 4 spp、最大深度 12，在线性 HDR 空间渐进累积，不启用降噪器。
