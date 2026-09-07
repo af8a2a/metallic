@@ -1,7 +1,33 @@
-# OpenPBR 默认材质 LookDev
+# LookDev 材质 Playground
 
-在编辑器 RenderGraph 面板的 **Built-in Sample** 中选择
-**LookDev / OpenPBR Default**。此示例同时加载场景、相机和渲染图。
+独立 CMake 目标 **LookDev** 生成 `LookDev.exe`，无参数启动时默认加载
+**LookDev / OpenPBR Default** 的场景、相机和渲染图。程序复用编辑器外壳，
+可通过 RenderGraph 面板的 **Built-in Sample** 切换示例，或从命令行
+选择其他场景，作为后续测试多种材质的 playground。
+
+```powershell
+cmake --build build --target LookDev --config Debug
+.\build\Source\Debug\LookDev.exe
+```
+
+本地 Ninja 构建目录使用：
+
+```powershell
+cmake --build cmake-build-debug-visual-studio --target LookDev --parallel 8
+.\cmake-build-debug-visual-studio\Source\LookDev.exe
+```
+
+`--list-samples` 列出注册的示例 ID，`--sample <id>` 选择启动示例，
+`--scene <path>` 覆盖所选示例的场景。还支持 `--smoke-test`、
+`--debug-control` 和 `--wait-for-graphics-debugger`。
+
+```powershell
+.\cmake-build-debug-visual-studio\Source\LookDev.exe --list-samples
+.\cmake-build-debug-visual-studio\Source\LookDev.exe --sample openpbr-lookdev
+.\cmake-build-debug-visual-studio\Source\LookDev.exe --scene Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf
+```
+
+默认示例
 使用 `PathTrace → AutoExposure → FinalBlit`，明确选择 OpenPBR BSDF，
 每帧 4 spp、最大深度 12，在线性 HDR 空间渐进累积，不启用降噪器。
 
@@ -59,7 +85,7 @@ scene sidecar 和渲染图。也可用 `--source-dir <已下载的源文件目�
 离线生成。脚本会覆盖此示例的生成文件。
 
 ```powershell
-cmake --build cmake-build-debug-visual-studio --target Metallic MetallicRhiTests --parallel 8
+cmake --build cmake-build-debug-visual-studio --target LookDev MetallicRhiTests --parallel 8
 .\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter openpbr_lookdev --rhi-validation --output-dir rhi-test-output/openpbr-lookdev
 .\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter auto_exposure --rhi-validation
 ```
@@ -71,13 +97,20 @@ LookDev 测试绑定与编辑器相同的 SceneDocument，输出
 独立 world 灯光追加一次。sRGB 测试覆盖暗部线性段、18% 灰、0.8、白色、
 高光裁切及手动曝光补偿。生成图像保留在忽略的测试输出目录中。
 
-编辑器加载冒烟检查：
+独立程序加载冒烟检查：
 
 ```powershell
-$env:METALLIC_SMOKE_TEST_SAMPLE = 'openpbr-lookdev'
-.\cmake-build-debug-visual-studio\Source\Metallic.exe --smoke-test
-Remove-Item Env:METALLIC_SMOKE_TEST_SAMPLE
+.\cmake-build-debug-visual-studio\Source\LookDev.exe --smoke-test
 ```
+
+## 扩展材质测试场景
+
+应用入口位于 `Source/LookDev/LookDevMain.cpp`。仅更换材质/模型时，
+提供新的 glTF 及其 scene sidecar，使用 `--scene` 加载；要复用参考灯光，
+在新 sidecar 中保留此示例的环境与曝光设置。直接 `.mtlx` 导入尚不支持。
+需要独立渲染参数或灯光配置的预设，可以在 `RenderSample.cpp` 注册新的
+`RenderSample`（建议归入 `LookDev` 分类）并添加对应的场景和渲染图。
+它会自动出现在 `--list-samples` 和编辑器选择器中，无需再创建可执行目标。
 
 ## 对照结果与边界
 

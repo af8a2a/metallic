@@ -1,6 +1,7 @@
 # MaterialX OpenPBR default LookDev
 
-Load **LookDev / OpenPBR Default** from the editor's **Built-in Sample** selector.
+Build the **LookDev** target and run `LookDev.exe` to open this scene by default,
+or select **LookDev / OpenPBR Default** from the editor's **Built-in Sample** selector.
 See [the LookDev guide](../../../Documentation/OpenPbrLookDev.md) for framing,
 lighting, display settings, capture commands and comparison limits.
 

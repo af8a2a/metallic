@@ -395,6 +395,15 @@ add_executable(MetallicMaterialVisualizationSample
 )
 configure_metallic_editor_sample(MetallicMaterialVisualizationSample)
 
+add_executable(LookDev
+    LookDev/LookDevMain.cpp
+    ${METALLIC_EDITOR_SOURCES}
+)
+configure_metallic_editor_sample(LookDev)
+if(WIN32)
+    target_compile_options(LookDev PRIVATE /EHsc)
+endif()
+
 add_executable(MetallicPathTracingSample
     Samples/PathTracingSampleMain.cpp
     ${METALLIC_EDITOR_SOURCES}
