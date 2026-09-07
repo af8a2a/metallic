@@ -1252,7 +1252,7 @@ Result GPUSceneSubsystem::beginFrame(
         : (world_ != nullptr ? world_->scene() : nullptr);
     const uint64_t externalRevision = overrideScene != nullptr
         ? sourceOverrideRevision_
-        : (world_ != nullptr ? world_->sceneRevision() : 0);
+        : (world_ != nullptr ? world_->sceneContentRevision() : 0);
     const auto resolvedLighting = resolveSceneLighting(currentScene, world_);
     const auto virtualLights = std::span<const scene::PunctualLight>(resolvedLighting.lights);
     const uint64_t previousLightRevision = scene_.drawSet().lightRevision;

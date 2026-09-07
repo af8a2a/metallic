@@ -2529,5 +2529,44 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(GPUSceneWorldLightSyncTest);
 
+class RenderWorldScopedSceneChangesTest final : public RhiTest {
+public:
+    RenderWorldScopedSceneChangesTest()
+    {
+        type = RhiTestType::Validation;
+        name = "render_world_scoped_scene_changes";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::RenderWorld world;
+        const uint64_t revision = world.sceneRevision();
+        const uint64_t contentRevision = world.sceneContentRevision();
+        const auto lightingChanges = render::RenderChangeBits::Lighting |
+            render::RenderChangeBits::InvalidateTemporalHistory;
+        world.notifySceneChanged(lightingChanges);
+        if (world.sceneRevision() != revision + 1 ||
+            world.sceneContentRevision() != contentRevision || world.consumeChanges() != lightingChanges ||
+            world.consumeChanges() != render::RenderChangeBits::None) {
+            return RhiTestResult::fail("light/camera transform notification dirtied geometry or material");
+        }
+        world.notifySceneChanged(lightingChanges);
+        world.notifySceneChanged(render::RenderChangeBits::Geometry);
+        if (world.sceneContentRevision() != contentRevision + 1 ||
+            world.consumeChanges() != (lightingChanges | render::RenderChangeBits::Geometry)) {
+            return RhiTestResult::fail("scoped notifications did not accumulate changes within a frame");
+        }
+        world.notifySceneChanged();
+        if (world.sceneContentRevision() != contentRevision + 2 ||
+            world.consumeChanges() != (lightingChanges | render::RenderChangeBits::Geometry |
+                render::RenderChangeBits::Material)) {
+            return RhiTestResult::fail("default scene notification lost its full invalidation contract");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(RenderWorldScopedSceneChangesTest);
+
 } // namespace
 } // namespace metallic::tests

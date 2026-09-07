@@ -4739,6 +4739,15 @@ bool Scene::setImageDecodeResult(
     return true;
 }
 
+uint64_t Scene::geometryTransformRevision() const
+{
+    uint64_t revision = 0;
+    for (const RenderNode& renderNode : renderNodes_) {
+        revision = std::max(revision, renderNode.transformRevision);
+    }
+    return revision;
+}
+
 void Scene::refreshTransforms()
 {
     sceneGraph_.updateTransforms();

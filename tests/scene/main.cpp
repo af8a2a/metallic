@@ -1631,6 +1631,7 @@ void testCompositeSceneImport(const std::filesystem::path& baseDirectory)
     std::string error;
     ASSERT_TRUE(scene.compose(sources, error)) << error;
     EXPECT_TRUE(scene.valid());
+    EXPECT_EQ(scene.geometryTransformRevision(), 0u);
     ASSERT_EQ(scene.sources().size(), 2u);
     EXPECT_EQ(scene.sources()[0].id, "source-a");
     EXPECT_EQ(scene.sources()[1].id, "source-b");
@@ -1766,6 +1767,7 @@ void testCompositeSceneImport(const std::filesystem::path& baseDirectory)
     const uint64_t lifetimeRevision = scene.sceneGraph().lifetimeRevision();
     const uint64_t contentRevision = scene.contentRevision();
     const uint64_t transformRevision = scene.transformRevision();
+    const uint64_t geometryTransformRevision = scene.geometryTransformRevision();
     const uint64_t visibilityRevision = scene.visibilityRevision();
     const float4x4 sourceAWorldBeforeEdit = scene.renderNodes()[0].worldMatrix;
     const float4x4 sourceBWorldBeforeEdit = scene.renderNodes()[1].worldMatrix;
@@ -1776,6 +1778,8 @@ void testCompositeSceneImport(const std::filesystem::path& baseDirectory)
         scene.sources()[1].mountMatrix,
         editedSourceBMount));
     EXPECT_GT(scene.transformRevision(), transformRevision);
+    EXPECT_GT(scene.geometryTransformRevision(), geometryTransformRevision);
+    EXPECT_EQ(scene.geometryTransformRevision(), scene.transformRevision());
     EXPECT_EQ(scene.visibilityRevision(), visibilityRevision);
     EXPECT_EQ(scene.contentRevision(), contentRevision);
     EXPECT_EQ(scene.sceneGraph().structuralRevision(), structuralRevision);
@@ -1792,6 +1796,7 @@ void testCompositeSceneImport(const std::filesystem::path& baseDirectory)
     ASSERT_TRUE(scene.setSourceEnabled("source-b", false));
     EXPECT_FALSE(scene.sources()[1].enabled);
     EXPECT_EQ(scene.transformRevision(), transformAfterEdit);
+    EXPECT_EQ(scene.geometryTransformRevision(), transformAfterEdit);
     EXPECT_GT(scene.visibilityRevision(), visibilityRevision);
     EXPECT_EQ(scene.contentRevision(), contentRevision);
     EXPECT_EQ(scene.sceneGraph().structuralRevision(), structuralRevision);
@@ -3482,6 +3487,111 @@ void testMutableSceneTransforms(const std::filesystem::path& directory)
     EXPECT_FALSE(scene.setNodeLocalMatrix(-1, editedRoot));
 }
 
+void testGeometryTransformRevision(const std::filesystem::path& directory)
+{
+    using namespace metallic::scene;
+    const std::filesystem::path gltfPath = writeFullScene(directory);
+    Scene scene;
+    EXPECT_EQ(scene.geometryTransformRevision(), 0u);
+    ASSERT_TRUE(scene.load(gltfPath)) << scene.lastLoadResult().error;
+    ASSERT_EQ(scene.renderNodes().size(), 1u);
+    EXPECT_EQ(scene.geometryTransformRevision(), 0u);
+    const float4x4 meshWorld = scene.renderNodes()[0].worldMatrix;
+    const Bounds originalBounds = scene.bounds();
+
+    // A light or camera transform is still observable by its own consumers,
+    // but neither may invalidate unchanged mesh instances or ray tracing data.
+    for (const int32_t nodeIndex : {4, 2, 3}) {
+        const float4x4 originalLocal = scene.nodes()[nodeIndex].localMatrix;
+        float4x4 editedLocal = originalLocal;
+        editedLocal.a03 += 2.0f;
+        const uint64_t before = scene.transformRevision();
+        ASSERT_TRUE(scene.setNodeLocalMatrix(nodeIndex, editedLocal));
+        EXPECT_GT(scene.transformRevision(), before);
+        EXPECT_EQ(scene.nodes()[nodeIndex].transformRevision, scene.transformRevision());
+        EXPECT_EQ(scene.geometryTransformRevision(), 0u);
+        EXPECT_EQ(scene.renderNodes()[0].transformRevision, 0u);
+        EXPECT_TRUE(matrixNearlyEqual(scene.renderNodes()[0].worldMatrix, meshWorld));
+        expectVec3(scene.bounds().min, originalBounds.min, "non-geometry edit preserves bounds min");
+        expectVec3(scene.bounds().max, originalBounds.max, "non-geometry edit preserves bounds max");
+        if (nodeIndex == 4) {
+            EXPECT_TRUE(matrixNearlyEqual(scene.lights()[0].worldMatrix, scene.nodes()[4].worldMatrix));
+        } else {
+            EXPECT_FLOAT_EQ(scene.cameras()[nodeIndex - 2].eye.x, scene.nodes()[nodeIndex].worldMatrix.a03);
+        }
+        ASSERT_TRUE(scene.setNodeLocalMatrix(nodeIndex, originalLocal));
+        EXPECT_EQ(scene.geometryTransformRevision(), 0u);
+    }
+
+    const float4x4 originalRoot = scene.nodes()[0].localMatrix;
+    float4x4 editedRoot = originalRoot;
+    editedRoot.a13 += 3.0f;
+    ASSERT_TRUE(scene.setNodeLocalMatrix(0, editedRoot));
+    const uint64_t movedRevision = scene.geometryTransformRevision();
+    EXPECT_EQ(movedRevision, scene.transformRevision());
+    EXPECT_GT(movedRevision, 0u);
+    EXPECT_FALSE(matrixNearlyEqual(scene.renderNodes()[0].worldMatrix, meshWorld));
+
+    // Undo changes the actual geometry again even though it restores an older pose.
+    ASSERT_TRUE(scene.setNodeLocalMatrix(0, originalRoot));
+    EXPECT_GT(scene.geometryTransformRevision(), movedRevision);
+    EXPECT_EQ(scene.geometryTransformRevision(), scene.transformRevision());
+    EXPECT_TRUE(matrixNearlyEqual(scene.renderNodes()[0].worldMatrix, meshWorld));
+    const uint64_t restoredRevision = scene.geometryTransformRevision();
+    EXPECT_FALSE(scene.setNodeLocalMatrix(0, originalRoot));
+    EXPECT_EQ(scene.geometryTransformRevision(), restoredRevision);
+    float4x4 editedLight = scene.nodes()[4].localMatrix;
+    editedLight.a23 += 4.0f;
+    ASSERT_TRUE(scene.setNodeLocalMatrix(4, editedLight));
+    EXPECT_GT(scene.transformRevision(), restoredRevision);
+    EXPECT_EQ(scene.geometryTransformRevision(), restoredRevision);
+
+    ASSERT_TRUE(scene.setObjectVisible(scene.objectForNode(1).entity(), false));
+    EXPECT_EQ(scene.geometryTransformRevision(), restoredRevision);
+    EXPECT_GT(scene.visibilityRevision(), 0u);
+    scene.clear();
+    EXPECT_EQ(scene.geometryTransformRevision(), 0u);
+    ASSERT_TRUE(scene.load(gltfPath)) << scene.lastLoadResult().error;
+    EXPECT_EQ(scene.geometryTransformRevision(), 0u);
+}
+
+void testGeometryTransformRevisionWithLightAndCameraAncestors(const std::filesystem::path& directory)
+{
+    using namespace metallic::scene;
+    const std::filesystem::path gltfPath = writeFullScene(directory);
+    nlohmann::json original;
+    {
+        std::ifstream stream(gltfPath, std::ios::binary);
+        ASSERT_TRUE(stream.good());
+        stream >> original;
+    }
+    for (const int32_t parentIndex : {2, 4}) {
+        SCOPED_TRACE(parentIndex);
+        nlohmann::json nested = original;
+        nested["nodes"][0]["children"] = nlohmann::json::array({2, 3, 4});
+        nested["nodes"][parentIndex]["children"] = nlohmann::json::array({1});
+        const auto nestedPath = directory / ("geometry_ancestor_" + std::to_string(parentIndex) + ".gltf");
+        writeTextFile(nestedPath, nested.dump(2));
+
+        Scene scene;
+        ASSERT_TRUE(scene.load(nestedPath)) << scene.lastLoadResult().error;
+        ASSERT_EQ(scene.renderNodes().size(), 1u);
+        EXPECT_EQ(scene.geometryTransformRevision(), 0u);
+        const float4x4 originalWorld = scene.renderNodes()[0].worldMatrix;
+        const float4x4 originalParent = scene.nodes()[parentIndex].localMatrix;
+        float4x4 movedParent = originalParent;
+        movedParent.a03 += 5.0f;
+        ASSERT_TRUE(scene.setNodeLocalMatrix(parentIndex, movedParent));
+        EXPECT_EQ(scene.geometryTransformRevision(), scene.transformRevision());
+        EXPECT_GT(scene.geometryTransformRevision(), 0u);
+        EXPECT_FLOAT_EQ(scene.renderNodes()[0].worldMatrix.a03, originalWorld.a03 + 5.0f);
+        const uint64_t movedRevision = scene.geometryTransformRevision();
+        ASSERT_TRUE(scene.setNodeLocalMatrix(parentIndex, originalParent));
+        EXPECT_GT(scene.geometryTransformRevision(), movedRevision);
+        EXPECT_TRUE(matrixNearlyEqual(scene.renderNodes()[0].worldMatrix, originalWorld));
+    }
+}
+
 void testMutableSceneVisibility(const std::filesystem::path& directory)
 {
     const std::filesystem::path gltfPath = writeFullScene(directory);
@@ -4699,6 +4809,16 @@ TEST(SceneImport, UnsupportedRequiredExtension)
 TEST(SceneEditing, MutableTransforms)
 {
     testMutableSceneTransforms(prepareOutputDirectory());
+}
+
+TEST(SceneEditing, GeometryTransformRevision)
+{
+    testGeometryTransformRevision(prepareOutputDirectory());
+}
+
+TEST(SceneEditing, GeometryTransformRevisionWithLightAndCameraAncestors)
+{
+    testGeometryTransformRevisionWithLightAndCameraAncestors(prepareOutputDirectory());
 }
 
 TEST(SceneEditing, MutableVisibility)

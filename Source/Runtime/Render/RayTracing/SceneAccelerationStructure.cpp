@@ -140,7 +140,7 @@ struct SceneAccelerationStructureBuilder::Impl {
     std::vector<uint64_t> originalBlasSizes;
     std::vector<RayTracingInstanceDesc> pendingInstances;
     std::vector<uint32_t> pendingInstanceBlasIndices;
-    uint64_t sourceTransformRevision = 0;
+    uint64_t sourceGeometryTransformRevision = 0;
     uint64_t scratchOffset = 0;
     uint64_t tlasBytes = 0;
     std::unique_ptr<CommandPool> buildCommandPool;
@@ -193,7 +193,7 @@ struct SceneAccelerationStructureBuilder::Impl {
         pendingInstances.clear();
         pendingInstanceBlasIndices.clear();
         stats = {};
-        sourceTransformRevision = 0;
+        sourceGeometryTransformRevision = 0;
         scratchOffset = 0;
         tlasBytes = 0;
         buildDevice = nullptr;
@@ -899,7 +899,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
     impl_->primitiveToBlas = std::move(primitiveToBlas);
     impl_->pendingInstances = std::move(instances);
     impl_->pendingInstanceBlasIndices = std::move(instanceBlasIndices);
-    impl_->sourceTransformRevision = scene.transformRevision();
+    impl_->sourceGeometryTransformRevision = scene.geometryTransformRevision();
     impl_->buildDevice = &device;
     impl_->buildQueue = &queue;
     impl_->buildCommandPool = std::move(commandPool);
@@ -969,7 +969,11 @@ Result SceneAccelerationStructureBuilder::updateInstanceTransforms(
         log = "Scene acceleration structures are not ready for an instance update.";
         return makeError(Error::InvalidArgument);
     }
-    if (impl_->sourceTransformRevision == scene.transformRevision()) {
+    // Lights and cameras advance the scene transform revision without changing
+    // any ray-traced instance. Do not submit (and synchronously wait for) a TLAS
+    // refit unless a render-node transform actually changed.
+    const uint64_t geometryRevision = scene.geometryTransformRevision();
+    if (impl_->sourceGeometryTransformRevision == geometryRevision) {
         return {};
     }
 
@@ -1000,7 +1004,7 @@ Result SceneAccelerationStructureBuilder::updateInstanceTransforms(
         return makeError(Error::InvalidArgument);
     }
     if (instances.empty()) {
-        impl_->sourceTransformRevision = scene.transformRevision();
+        impl_->sourceGeometryTransformRevision = geometryRevision;
         return {};
     }
 
@@ -1046,7 +1050,7 @@ Result SceneAccelerationStructureBuilder::updateInstanceTransforms(
         log = resultMessage("submit scene TLAS update", result);
         return result;
     }
-    impl_->sourceTransformRevision = scene.transformRevision();
+    impl_->sourceGeometryTransformRevision = geometryRevision;
     log = "Updated scene acceleration-structure instance transforms.";
     return {};
 }

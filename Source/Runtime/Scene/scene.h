@@ -371,6 +371,9 @@ public:
     // this scene independently of the editor's active RenderWorld.
     const LightingSettings& authoredLighting() const { return lighting_; }
     uint64_t transformRevision() const { return sceneGraph_.transformRevision(); }
+    // Only mesh-instance world transforms contribute. Track resource identity
+    // and visibility separately; moving a light or camera alone is not geometry.
+    uint64_t geometryTransformRevision() const;
     uint64_t contentRevision() const { return sceneGraph_.contentRevision(); }
     uint64_t visibilityRevision() const { return sceneGraph_.visibilityRevision(); }
     uint64_t resourceIdentity() const { return resourceIdentity_; }

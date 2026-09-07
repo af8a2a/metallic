@@ -10,7 +10,9 @@
 #include <algorithm>
 #include <cstring>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <span>
 #include <string>
@@ -370,6 +372,116 @@ public:
         return RhiTestResult::pass(log);
     }
 };
+
+class SceneNonGeometryTransformSyncTest final : public RhiTest {
+public:
+    SceneNonGeometryTransformSyncTest()
+    {
+        type = RhiTestType::Resource;
+        name = "scene_path_trace_non_geometry_transform_sync";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        auto result = render::createDevice({
+            .applicationName = "Non-geometry transform sync test",
+            .enableValidation = context.enableValidation,
+            .enableRayTracingAccelerationStructure = true,
+        }, device);
+        if (!result) {
+            return render::hasError(result, render::Error::Unsupported)
+                ? RhiTestResult::skip("ray tracing acceleration structures unavailable")
+                : RhiTestResult::fail(std::string("device creation failed: ") + toString(result));
+        }
+        auto* queue = device->getQueue(render::QueueType::Graphics);
+        auto* accelerationQueue = device->getQueue(render::QueueType::Compute);
+        if (queue == nullptr) { return RhiTestResult::fail("graphics queue unavailable"); }
+        if (accelerationQueue == nullptr) { accelerationQueue = queue; }
+
+        const auto directory = context.outputDirectory / "non-geometry-transform";
+        std::filesystem::create_directories(directory);
+        const auto path = directory / "scene.gltf";
+        {
+            const float triangle[] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+            std::ofstream binary(directory / "triangle.bin", std::ios::binary);
+            binary.write(reinterpret_cast<const char*>(triangle), sizeof(triangle));
+            std::ofstream gltf(path);
+            gltf << R"json({
+                "asset":{"version":"2.0"},"scene":0,
+                "scenes":[{"nodes":[0,1,2]}],
+                "nodes":[
+                    {"name":"Light only","extensions":{"KHR_lights_punctual":{"light":0}}},
+                    {"name":"Camera only","camera":0},
+                    {"name":"Light with geometry child","children":[3],"extensions":{"KHR_lights_punctual":{"light":0}}},
+                    {"name":"Geometry","mesh":0}
+                ],
+                "cameras":[{"type":"perspective","perspective":{"yfov":0.8,"znear":0.1}}],
+                "extensionsUsed":["KHR_lights_punctual"],
+                "extensions":{"KHR_lights_punctual":{"lights":[{"type":"point","intensity":10}]}},
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+                "buffers":[{"uri":"triangle.bin","byteLength":36}],
+                "bufferViews":[{"buffer":0,"byteLength":36}],
+                "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}]
+            })json";
+        }
+        scene::Scene scene;
+        if (!scene.load(path)) { return RhiTestResult::fail(scene.lastLoadResult().error); }
+        render::ScenePathTraceResources resources;
+        std::string log;
+        result = resources.beginPrepareAsync(*device, *queue, {{"path", path.string()}}, scene, log);
+        bool complete = false;
+        scene::SceneLoadProgress progress;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (result && !complete && std::chrono::steady_clock::now() < deadline) {
+            result = resources.pumpPrepareAsync(10.0, complete, progress, log);
+            if (!complete) { std::this_thread::yield(); }
+        }
+        if (!result || !complete || !resources.valid()) {
+            return RhiTestResult::fail("resource preparation failed: " + log);
+        }
+        const uint64_t revision = resources.revision();
+        auto* const instances = resources.instanceBuffer();
+        auto* const vertices = resources.vertexBuffer();
+        auto* const tlas = resources.accelerationStructure().accelerationStructure();
+        // Simulate consecutive drag updates through the same API as the gizmo.
+        for (int step = 0; step < 16; ++step) {
+            for (int node : {0, 1}) {
+                auto moved = scene.nodes()[node].worldMatrix;
+                moved.a03 += 0.1f;
+                if (!scene.setObjectWorldMatrix(scene.objectForNode(node).entity(), moved)) {
+                    return RhiTestResult::fail("non-geometry node edit failed");
+                }
+                result = resources.syncRuntimeScene(&scene, log);
+                if (!result || resources.revision() != revision ||
+                    resources.instanceBuffer() != instances || resources.vertexBuffer() != vertices ||
+                    resources.accelerationStructure().accelerationStructure() != tlas) {
+                    return RhiTestResult::fail("light/camera drag rebuilt geometry resources: " + log);
+                }
+                result = resources.accelerationStructure().updateInstanceTransforms(
+                    *device, *accelerationQueue, scene, log);
+                if (!result || !log.empty()) {
+                    return RhiTestResult::fail("light/camera drag submitted a redundant TLAS refit: " + log);
+                }
+            }
+        }
+        const float oldMinX = resources.bounds().min.x;
+        auto parent = scene.nodes()[2].localMatrix;
+        parent.a03 += 3.0f;
+        if (!scene.setNodeLocalMatrix(2, parent)) {
+            return RhiTestResult::fail("light parent edit failed");
+        }
+        result = resources.syncRuntimeScene(&scene, log);
+        if (!result || resources.revision() <= revision || resources.vertexBuffer() != vertices ||
+            std::abs(resources.bounds().min.x - oldMinX - 3.0f) > 1e-5f ||
+            log.find("Updated scene acceleration-structure instance transforms") == std::string::npos) {
+            return RhiTestResult::fail("light parent failed to update its geometry child: " + log);
+        }
+        return RhiTestResult::pass("32 light/camera drag steps reused geometry; geometry-parent move updated TLAS");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(SceneNonGeometryTransformSyncTest);
 
 class SceneClusterAccelerationStructureBuildTest : public RhiTest {
 public:

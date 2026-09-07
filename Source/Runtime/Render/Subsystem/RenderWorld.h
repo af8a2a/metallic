@@ -48,7 +48,9 @@ using EnvironmentSettings = scene::EnvironmentSettings;
 class RenderWorld {
 public:
     void setScene(const scene::Scene* scene);
-    void notifySceneChanged();
+    void notifySceneChanged(RenderChangeBits changes = RenderChangeBits::Lighting |
+        RenderChangeBits::Geometry | RenderChangeBits::Material |
+        RenderChangeBits::InvalidateTemporalHistory);
     const scene::Scene* scene() const { return scene_; }
 
     void setEnvironment(EnvironmentSettings settings);
@@ -58,6 +60,8 @@ public:
     uint64_t lightingRevision() const { return lightingRevision_; }
 
     uint64_t sceneRevision() const { return sceneRevision_; }
+    // Only geometry/material changes require GPUScene content fingerprints.
+    uint64_t sceneContentRevision() const { return sceneContentRevision_; }
     uint64_t environmentRevision() const { return environmentRevision_; }
     RenderChangeBits consumeChanges();
 
@@ -67,6 +71,7 @@ private:
     scene::LightingSettings lighting_;
     uint64_t lightingRevision_ = 1;
     uint64_t sceneRevision_ = 1;
+    uint64_t sceneContentRevision_ = 1;
     uint64_t environmentRevision_ = 1;
     RenderChangeBits pendingChanges_ = RenderChangeBits::None;
 };

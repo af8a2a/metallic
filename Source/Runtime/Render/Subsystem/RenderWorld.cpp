@@ -11,19 +11,21 @@ void RenderWorld::setScene(const scene::Scene* scene)
     }
     scene_ = scene;
     ++sceneRevision_;
+    ++sceneContentRevision_;
     pendingChanges_ |= RenderChangeBits::Lighting |
         RenderChangeBits::Geometry |
         RenderChangeBits::Material |
         RenderChangeBits::InvalidateTemporalHistory;
 }
 
-void RenderWorld::notifySceneChanged()
+void RenderWorld::notifySceneChanged(RenderChangeBits changes)
 {
     ++sceneRevision_;
-    pendingChanges_ |= RenderChangeBits::Lighting |
-        RenderChangeBits::Geometry |
-        RenderChangeBits::Material |
-        RenderChangeBits::InvalidateTemporalHistory;
+    if (hasRenderChange(changes, RenderChangeBits::Geometry) ||
+        hasRenderChange(changes, RenderChangeBits::Material)) {
+        ++sceneContentRevision_;
+    }
+    pendingChanges_ |= changes;
 }
 
 void RenderWorld::setEnvironment(EnvironmentSettings settings)

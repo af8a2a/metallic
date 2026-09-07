@@ -4377,15 +4377,21 @@ int32_t EditorApplication::selectedNodeIndex() const
         : scene::kInvalidSceneIndex;
 }
 
-void EditorApplication::notifySceneTransformChanged()
+void EditorApplication::notifySceneTransformChanged(bool geometryChanged)
 {
-    renderWorld_.notifySceneChanged();
+    renderWorld_.notifySceneChanged(
+        render::RenderChangeBits::Lighting |
+        render::RenderChangeBits::InvalidateTemporalHistory |
+        (geometryChanged ? render::RenderChangeBits::Geometry : render::RenderChangeBits::None));
     historyResources_.invalidateAll();
     historyFrameIndex_ = 0;
     if (graphExecutor_ == nullptr || !graphExecutor_->compiled()) {
         viewportPreviewValid_ = false;
     }
     viewportPreviewNeedsRender_ = true;
+    if (!geometryChanged) {
+        return;
+    }
     if (sceneAccelerationStructure_ != nullptr && sceneAccelerationStructure_->valid()) {
         sceneAccelerationStructure_->clear();
         sceneAccelerationStructureStatus_ =
@@ -4441,11 +4447,13 @@ bool EditorApplication::setSelectedObjectWorldMatrix(
         return true;
     }
 
+    const uint64_t previousGeometryTransformRevision = scene_.geometryTransformRevision();
     if (!scene_.setObjectWorldMatrix(object.entity(), worldMatrix)) {
         reason = "The world transform could not be converted through the current parent hierarchy.";
         return false;
     }
-    notifySceneTransformChanged();
+    notifySceneTransformChanged(
+        previousGeometryTransformRevision != scene_.geometryTransformRevision());
     return true;
 }
 
@@ -4580,10 +4588,12 @@ bool EditorApplication::applySceneEditValue(
     const SceneEditValue& value)
 {
     if (const float4x4* matrix = std::get_if<float4x4>(&value)) {
+        const uint64_t previousGeometryTransformRevision = scene_.geometryTransformRevision();
         if (!scene_.setObjectLocalMatrix(object, *matrix)) {
             return false;
         }
-        notifySceneTransformChanged();
+        notifySceneTransformChanged(
+            previousGeometryTransformRevision != scene_.geometryTransformRevision());
         return true;
     }
     if (const scene::CameraProperties* camera =
@@ -4975,8 +4985,12 @@ void EditorApplication::drawSelectedNodeTransformInspector()
                     }
                 }
             }
-            if (validEdit && scene_.setObjectLocalMatrix(object.entity(), edited)) {
-                notifySceneTransformChanged();
+            if (validEdit) {
+                const uint64_t previousGeometryTransformRevision = scene_.geometryTransformRevision();
+                if (scene_.setObjectLocalMatrix(object.entity(), edited)) {
+                    notifySceneTransformChanged(
+                        previousGeometryTransformRevision != scene_.geometryTransformRevision());
+                }
             }
         }
         if (ImGui::IsItemDeactivatedAfterEdit() && inspectorTransformEditing_) {

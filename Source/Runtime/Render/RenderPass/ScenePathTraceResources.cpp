@@ -1849,11 +1849,11 @@ struct ScenePathTraceResources::Impl {
         asyncScenePath.clear();
         sourceResourceIdentity = 0;
         sourceStructuralRevision = 0;
-        sourceTransformRevision = 0;
+        sourceGeometryTransformRevision = 0;
         sourceVisibilityRevision = 0;
         asyncSourceResourceIdentity = 0;
         asyncSourceStructuralRevision = 0;
-        asyncSourceTransformRevision = 0;
+        asyncSourceGeometryTransformRevision = 0;
         asyncSourceVisibilityRevision = 0;
         asyncGpuScene = ScenePathTraceGpuScene{};
         asyncReferencedTextures.clear();
@@ -1887,7 +1887,7 @@ struct ScenePathTraceResources::Impl {
         sourceResourceIdentity = sourceScene.resourceIdentity();
         sourceStructuralRevision =
             sourceScene.sceneGraph().structuralRevision();
-        sourceTransformRevision = sourceScene.transformRevision();
+        sourceGeometryTransformRevision = sourceScene.geometryTransformRevision();
         sourceVisibilityRevision = sourceScene.visibilityRevision();
     }
 
@@ -1900,7 +1900,7 @@ struct ScenePathTraceResources::Impl {
     uint64_t revision = 0;
     uint64_t sourceResourceIdentity = 0;
     uint64_t sourceStructuralRevision = 0;
-    uint64_t sourceTransformRevision = 0;
+    uint64_t sourceGeometryTransformRevision = 0;
     uint64_t sourceVisibilityRevision = 0;
     std::unique_ptr<Buffer> vertexBuffer;
     std::unique_ptr<Buffer> indexBuffer;
@@ -1930,7 +1930,7 @@ struct ScenePathTraceResources::Impl {
     std::filesystem::path asyncScenePath;
     uint64_t asyncSourceResourceIdentity = 0;
     uint64_t asyncSourceStructuralRevision = 0;
-    uint64_t asyncSourceTransformRevision = 0;
+    uint64_t asyncSourceGeometryTransformRevision = 0;
     uint64_t asyncSourceVisibilityRevision = 0;
     ScenePathTraceGpuScene asyncGpuScene;
     uint32_t asyncBufferStep = 0;
@@ -1959,13 +1959,13 @@ Result ScenePathTraceResources::prepare(
     const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, path);
     if (impl_->valid() && impl_->scenePath == path &&
         boundScene != nullptr && impl_->sourceTopologyMatches(*boundScene) &&
-        impl_->sourceTransformRevision != boundScene->transformRevision()) {
+        impl_->sourceGeometryTransformRevision != boundScene->geometryTransformRevision()) {
         return syncRuntimeScene(boundScene, log);
     }
     if (impl_->valid() && impl_->scenePath == path &&
         (boundScene == nullptr ||
          (impl_->sourceTopologyMatches(*boundScene) &&
-          impl_->sourceTransformRevision == boundScene->transformRevision()))) {
+          impl_->sourceGeometryTransformRevision == boundScene->geometryTransformRevision()))) {
         spdlog::info("[SceneResources] Reuse prepared scene='{}'", path.string());
         return {};
     }
@@ -2156,7 +2156,7 @@ Result ScenePathTraceResources::beginPrepareAsync(
     }
     if (impl_->valid() && impl_->scenePath == path &&
         impl_->sourceTopologyMatches(*boundScene)) {
-        return impl_->sourceTransformRevision == boundScene->transformRevision()
+        return impl_->sourceGeometryTransformRevision == boundScene->geometryTransformRevision()
             ? Result{}
             : syncRuntimeScene(boundScene, log);
     }
@@ -2169,7 +2169,7 @@ Result ScenePathTraceResources::beginPrepareAsync(
     impl_->asyncSourceResourceIdentity = boundScene->resourceIdentity();
     impl_->asyncSourceStructuralRevision =
         boundScene->sceneGraph().structuralRevision();
-    impl_->asyncSourceTransformRevision = boundScene->transformRevision();
+    impl_->asyncSourceGeometryTransformRevision = boundScene->geometryTransformRevision();
     impl_->asyncSourceVisibilityRevision = boundScene->visibilityRevision();
     Result result = impl_->beginMaterialTextureBuild(device, *boundScene, log);
     if (!result) {
@@ -2432,7 +2432,7 @@ Result ScenePathTraceResources::pumpPrepareAsync(
             impl_->scenePath = impl_->asyncScenePath;
             impl_->sourceResourceIdentity = impl_->asyncSourceResourceIdentity;
             impl_->sourceStructuralRevision = impl_->asyncSourceStructuralRevision;
-            impl_->sourceTransformRevision = impl_->asyncSourceTransformRevision;
+            impl_->sourceGeometryTransformRevision = impl_->asyncSourceGeometryTransformRevision;
             impl_->sourceVisibilityRevision = impl_->asyncSourceVisibilityRevision;
             impl_->prepared = true;
             ++impl_->revision;
@@ -2530,7 +2530,10 @@ Result ScenePathTraceResources::syncRuntimeScene(
         }
         return {};
     }
-    if (impl_->sourceTransformRevision == boundScene->transformRevision()) {
+    // A transform edit on a light/camera must not repack every vertex/index,
+    // recalculate per-triangle ray-cone LOD, replace the instance buffer, or
+    // submit a synchronous TLAS update when no render instance moved.
+    if (impl_->sourceGeometryTransformRevision == boundScene->geometryTransformRevision()) {
         return {};
     }
 

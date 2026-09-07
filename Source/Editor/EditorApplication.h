@@ -79,7 +79,7 @@ private:
     scene::ConstSceneObject selectedSceneObject() const;
     int32_t selectedNodeIndex() const;
     bool setSelectedObjectWorldMatrix(const float4x4& worldMatrix, std::string& reason);
-    void notifySceneTransformChanged();
+    void notifySceneTransformChanged(bool geometryChanged);
     void notifyScenePropertiesChanged();
     using SceneEditValue = std::variant<
         float4x4,
