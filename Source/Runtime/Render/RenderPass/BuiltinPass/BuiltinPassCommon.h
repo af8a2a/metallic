@@ -250,6 +250,13 @@ inline RenderGraphRuntimeSetting runtimeBoolSetting(
     };
 }
 
+inline RenderGraphRuntimeSetting linearOutputSetting()
+{
+    auto setting = runtimeBoolSetting("outputLinear", "HDR Output (Auto Exposure)", false, true);
+    setting.rebuildGraph = true;
+    return setting;
+}
+
 inline RenderGraphRuntimeSetting runtimeIntSetting(
     std::string key,
     std::string label,
@@ -877,7 +884,7 @@ struct SceneRtxdiPush {
     float normalThreshold = 0.6f;
     float depthThreshold = 0.08f;
     uint32_t ntcTextureSetCount = 0;
-    uint32_t padding2 = 0;
+    uint32_t outputLinear = 0;
 };
 
 static_assert(sizeof(SceneRtxdiPush) == 256);
@@ -903,7 +910,7 @@ struct RtxdiCompositePush {
     uint32_t width = 1;
     uint32_t height = 1;
     float exposure = 1.0f;
-    uint32_t padding = 0;
+    uint32_t outputLinear = 0;
 };
 
 static_assert(sizeof(RtxdiCompositePush) == 16);

@@ -18,7 +18,12 @@
         {
             "dst": "FinalBlit.source",
             "id": 4,
-            "src": "DlssSr.color"
+            "src": "AutoExposure.color"
+        },
+        {
+            "id": 5,
+            "src": "DlssSr.color",
+            "dst": "AutoExposure.source"
         }
     ],
     "name": "PathTracingSampleDLSSSR",
@@ -58,7 +63,8 @@
                 "exportDenoiserGuides": true,
                 "maxDepth": 12,
                 "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
-                "samples": 2
+                "samples": 2,
+                "outputLinear": true
             },
             "type": "ScenePathTracePass"
         },
@@ -96,6 +102,16 @@
                 "resetSerial": 0
             },
             "type": "StreamlineDlssSrPass"
+        },
+        {
+            "id": 4,
+            "name": "AutoExposure",
+            "type": "AutoExposurePass",
+            "position": {
+                "x": 900.0,
+                "y": 280.0
+            },
+            "properties": {}
         },
         {
             "id": 3,

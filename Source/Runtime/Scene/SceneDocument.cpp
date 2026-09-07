@@ -1017,6 +1017,37 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     return false;
                 }
                 lighting_.exposureEV100 = lighting.value("exposureEV100", 0.0f);
+                if (lighting.contains("autoExposure")) {
+                    const auto& value = lighting["autoExposure"];
+                    auto& exposure = lighting_.autoExposure;
+                    if (!value.is_object() || (value.contains("enabled") && !value["enabled"].is_boolean())) {
+                        documentWarning_ = "Invalid world.lighting.autoExposure settings.";
+                        return false;
+                    }
+                    exposure.enabled = value.value("enabled", exposure.enabled);
+                    const std::pair<const char*, float*> fields[] = {
+                        {"minEV100", &exposure.minEV100}, {"maxEV100", &exposure.maxEV100},
+                        {"compensation", &exposure.compensation}, {"lowPercent", &exposure.lowPercent},
+                        {"highPercent", &exposure.highPercent}, {"histogramMinEV100", &exposure.histogramMinEV100},
+                        {"histogramMaxEV100", &exposure.histogramMaxEV100}, {"speedUp", &exposure.speedUp},
+                        {"speedDown", &exposure.speedDown}, {"transitionDistance", &exposure.transitionDistance},
+                    };
+                    for (const auto& [key, destination] : fields) {
+                        if (!value.contains(key)) { continue; }
+                        if (!value[key].is_number()) {
+                            documentWarning_ = std::string("Invalid auto exposure field: ") + key;
+                            return false;
+                        }
+                        *destination = value[key].get<float>();
+                    }
+                    if (!validAutoExposureSettings(exposure)) {
+                        documentWarning_ = "Invalid auto exposure range or adaptation speed.";
+                        return false;
+                    }
+                } else {
+                    // Sidecars written before auto exposure preserve their manual appearance.
+                    lighting_.autoExposure.enabled = false;
+                }
                 if (lighting.contains("importedSources")) {
                     if (!lighting["importedSources"].is_array()) {
                         documentWarning_ = "world.lighting.importedSources must be an array.";
@@ -1431,6 +1462,16 @@ bool SceneDocument::save(std::string& message)
     document["world"] = {
         {"lighting", {
             {"exposureEV100", lighting_.exposureEV100},
+            {"autoExposure", {
+                {"enabled", lighting_.autoExposure.enabled},
+                {"minEV100", lighting_.autoExposure.minEV100}, {"maxEV100", lighting_.autoExposure.maxEV100},
+                {"compensation", lighting_.autoExposure.compensation},
+                {"lowPercent", lighting_.autoExposure.lowPercent}, {"highPercent", lighting_.autoExposure.highPercent},
+                {"histogramMinEV100", lighting_.autoExposure.histogramMinEV100},
+                {"histogramMaxEV100", lighting_.autoExposure.histogramMaxEV100},
+                {"speedUp", lighting_.autoExposure.speedUp}, {"speedDown", lighting_.autoExposure.speedDown},
+                {"transitionDistance", lighting_.autoExposure.transitionDistance},
+            }},
             {"lights", std::move(serializedLights)},
             {"importedSources", std::move(serializedImportedSources)},
         }},

@@ -788,7 +788,7 @@ void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
 
     if (debugViewEnabled) {
         color = saturate(color);
-    } else {
+    } else if (push.outputLinear == 0u) {
         color *= lightingExposure();
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);

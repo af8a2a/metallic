@@ -4873,6 +4873,10 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     ASSERT_EQ(lighting.lights.size(), 1u);
     ASSERT_TRUE(lighting.lights[0].imported.has_value());
     lighting.exposureEV100 = 12.0f;
+    lighting.autoExposure = {.enabled = true, .minEV100 = -6.0f, .maxEV100 = 18.0f,
+        .compensation = 1.5f, .lowPercent = 60.0f, .highPercent = 95.0f,
+        .histogramMinEV100 = -12.0f, .histogramMaxEV100 = 22.0f,
+        .speedUp = 4.0f, .speedDown = 0.5f, .transitionDistance = 2.0f};
     for (const char* type : {"directional", "point", "spot"}) {
         PunctualLight light;
         light.name = type;
@@ -4897,6 +4901,18 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     ASSERT_TRUE(restored.load(document.documentPath())) << restored.lastLoadResult().error;
     ASSERT_EQ(restored.lighting().lights.size(), 4u);
     EXPECT_FLOAT_EQ(restored.lighting().exposureEV100, 12.0f);
+    const auto& exposure = restored.lighting().autoExposure;
+    EXPECT_TRUE(exposure.enabled);
+    EXPECT_FLOAT_EQ(exposure.minEV100, -6.0f);
+    EXPECT_FLOAT_EQ(exposure.maxEV100, 18.0f);
+    EXPECT_FLOAT_EQ(exposure.compensation, 1.5f);
+    EXPECT_FLOAT_EQ(exposure.lowPercent, 60.0f);
+    EXPECT_FLOAT_EQ(exposure.highPercent, 95.0f);
+    EXPECT_FLOAT_EQ(exposure.histogramMinEV100, -12.0f);
+    EXPECT_FLOAT_EQ(exposure.histogramMaxEV100, 22.0f);
+    EXPECT_FLOAT_EQ(exposure.speedUp, 4.0f);
+    EXPECT_FLOAT_EQ(exposure.speedDown, 0.5f);
+    EXPECT_FLOAT_EQ(exposure.transitionDistance, 2.0f);
     for (size_t i = 0; i < 3; ++i) {
         const auto& light = restored.lighting().lights[i + 1];
         EXPECT_FALSE(light.imported.has_value());
@@ -4919,6 +4935,59 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     EXPECT_EQ(restored.lighting().lights.size(), 4u);
     restored.clear();
     EXPECT_TRUE(restored.lighting().lights.empty());
+}
+
+TEST(SceneEditing, AutoExposureValidationAndLegacyLoading)
+{
+    using namespace metallic::scene;
+    LightingSettings lighting;
+    EXPECT_TRUE(validLightingSettings(lighting));
+    lighting.autoExposure.lowPercent = lighting.autoExposure.highPercent;
+    EXPECT_FALSE(validLightingSettings(lighting));
+    lighting = {};
+    lighting.autoExposure.minEV100 = lighting.autoExposure.maxEV100 + 1.0f;
+    EXPECT_FALSE(validLightingSettings(lighting));
+    lighting = {};
+    lighting.autoExposure.histogramMaxEV100 = lighting.autoExposure.histogramMinEV100;
+    EXPECT_FALSE(validLightingSettings(lighting));
+    lighting = {};
+    lighting.autoExposure.speedDown = -1.0f;
+    EXPECT_FALSE(validLightingSettings(lighting));
+    lighting = {};
+    lighting.autoExposure.compensation = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(validLightingSettings(lighting));
+    lighting = {};
+    lighting.autoExposure.minEV100 = lighting.autoExposure.maxEV100;
+    lighting.autoExposure.speedDown = 0.0f;
+    EXPECT_TRUE(validLightingSettings(lighting));
+
+    const auto directory = prepareOutputDirectory() / "auto_exposure";
+    std::filesystem::create_directories(directory);
+    const auto source = writeFullScene(directory);
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(source));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(source));
+    EXPECT_TRUE(document.lighting().autoExposure.enabled);
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    const auto path = document.documentPath();
+    nlohmann::json saved;
+    { std::ifstream stream(path); stream >> saved; }
+    saved["world"]["lighting"].erase("autoExposure");
+    saved["world"]["lighting"]["exposureEV100"] = 7.0;
+    writeTextFile(path, saved.dump(2));
+    SceneDocument legacy;
+    ASSERT_TRUE(legacy.load(path));
+    EXPECT_FALSE(legacy.lighting().autoExposure.enabled);
+    EXPECT_FLOAT_EQ(legacy.lighting().exposureEV100, 7.0f);
+    for (const auto& invalid : {nlohmann::json{{"speedUp", -1.0}},
+             nlohmann::json{{"minEV100", 10.0}, {"maxEV100", 2.0}},
+             nlohmann::json{{"enabled", "yes"}}, nlohmann::json{{"compensation", "invalid"}}}) {
+        saved["world"]["lighting"]["autoExposure"] = invalid;
+        writeTextFile(path, saved.dump(2));
+        SceneDocument rejected;
+        EXPECT_FALSE(rejected.load(path));
+    }
 }
 
 TEST(SceneEditing, ImportedGltfLightsBecomeNativeVirtualLights)

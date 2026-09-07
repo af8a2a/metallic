@@ -4076,8 +4076,42 @@ void EditorApplication::drawLightingControls()
     ImGui::BeginDisabled(!scene_.valid());
     ImGui::PushID("WorldLighting");
     scene::LightingSettings lighting = scene_.lighting();
-    bool changed = ImGui::DragFloat("Exposure EV100", &lighting.exposureEV100,
+    auto& exposure = lighting.autoExposure;
+    const bool hasExposurePass = std::any_of(renderGraph_.nodes().begin(), renderGraph_.nodes().end(),
+        [](const auto& node) { return node.type == "AutoExposurePass"; });
+    ImGui::BeginDisabled(!hasExposurePass);
+    bool changed = ImGui::Checkbox("Auto Exposure (Histogram)", &exposure.enabled);
+    ImGui::EndDisabled();
+    if (!hasExposurePass) { ImGui::TextDisabled("Add AutoExposurePass after HDR lighting to enable eye adaptation."); }
+    ImGui::BeginDisabled(hasExposurePass && exposure.enabled);
+    changed |= ImGui::DragFloat("Manual EV100", &lighting.exposureEV100,
         0.1f, -32.0f, 32.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!hasExposurePass);
+    changed |= ImGui::DragFloat("Exposure Compensation (stops)", &exposure.compensation,
+        0.1f, -16.0f, 16.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    if (exposure.enabled && ImGui::TreeNode("Eye Adaptation")) {
+        changed |= ImGui::DragFloat("Min EV100", &exposure.minEV100,
+            0.1f, -32.0f, exposure.maxEV100, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        changed |= ImGui::DragFloat("Max EV100", &exposure.maxEV100,
+            0.1f, exposure.minEV100, 32.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        changed |= ImGui::DragFloat("Speed Up (stops/s)", &exposure.speedUp,
+            0.1f, 0.0f, 64.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        changed |= ImGui::DragFloat("Speed Down (stops/s)", &exposure.speedDown,
+            0.1f, 0.0f, 64.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        changed |= ImGui::DragFloat("Transition Distance (stops)", &exposure.transitionDistance,
+            0.1f, 0.0f, 16.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        changed |= ImGui::DragFloat("Low Percent", &exposure.lowPercent,
+            0.1f, 0.0f, exposure.highPercent - 0.1f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+        changed |= ImGui::DragFloat("High Percent", &exposure.highPercent,
+            0.1f, exposure.lowPercent + 0.1f, 100.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+        changed |= ImGui::DragFloat("Histogram Min EV100", &exposure.histogramMinEV100,
+            0.1f, -32.0f, exposure.histogramMaxEV100 - 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        changed |= ImGui::DragFloat("Histogram Max EV100", &exposure.histogramMaxEV100,
+            0.1f, exposure.histogramMinEV100 + 1.0f, 32.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::TreePop();
+    }
+    ImGui::EndDisabled();
     for (const char* type : {"directional", "point", "spot"}) {
         const std::string label = std::string("Add ") + type;
         if (ImGui::Button(label.c_str())) {

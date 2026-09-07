@@ -6,27 +6,67 @@
             "id": 1,
             "name": "Lighting",
             "type": "SceneRealtimeLightingPass",
-            "position": {"x": 300, "y": 250},
+            "position": {
+                "x": 300,
+                "y": 250
+            },
             "properties": {
                 "path": "Asset/meet_mat.glb",
                 "camera": {
-                    "eye": [0.0, 0.25, 3.0],
-                    "center": [0.0, 0.15, 0.0],
-                    "up": [0.0, 1.0, 0.0],
+                    "eye": [
+                        0.0,
+                        0.25,
+                        3.0
+                    ],
+                    "center": [
+                        0.0,
+                        0.15,
+                        0.0
+                    ],
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
                     "fovDegrees": 50.0,
                     "znear": 0.001,
                     "zfar": 10000.0
-                }
+                },
+                "outputLinear": true
             }
+        },
+        {
+            "id": 3,
+            "name": "AutoExposure",
+            "type": "AutoExposurePass",
+            "position": {
+                "x": 440,
+                "y": 250
+            },
+            "properties": {}
         },
         {
             "id": 2,
             "name": "FinalBlit",
             "type": "FinalBlitPass",
-            "position": {"x": 800, "y": 250},
+            "position": {
+                "x": 800,
+                "y": 250
+            },
             "properties": {}
         }
     ],
-    "edges": [{"id": 1, "src": "Lighting.color", "dst": "FinalBlit.source"}],
+    "edges": [
+        {
+            "id": 1,
+            "src": "AutoExposure.color",
+            "dst": "FinalBlit.source"
+        },
+        {
+            "id": 2,
+            "src": "Lighting.color",
+            "dst": "AutoExposure.source"
+        }
+    ],
     "outputs": []
 }

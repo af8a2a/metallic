@@ -3,7 +3,12 @@
         {
             "dst": "FinalBlit.source",
             "id": 1,
-            "src": "PathTrace.color"
+            "src": "AutoExposure.color"
+        },
+        {
+            "id": 2,
+            "src": "PathTrace.color",
+            "dst": "AutoExposure.source"
         }
     ],
     "name": "PathTracingSample",
@@ -42,9 +47,20 @@
                 },
                 "maxDepth": 12,
                 "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
-                "samples": 2
+                "samples": 2,
+                "outputLinear": true
             },
             "type": "ScenePathTracePass"
+        },
+        {
+            "id": 3,
+            "name": "AutoExposure",
+            "type": "AutoExposurePass",
+            "position": {
+                "x": 695.0,
+                "y": 281.0
+            },
+            "properties": {}
         },
         {
             "id": 2,

@@ -99,7 +99,7 @@ struct ScenePathTraceTonemapPush {
     uint32_t width = 1;
     uint32_t height = 1;
     float exposure = 1.0f;
-    uint32_t padding1 = 0;
+    uint32_t outputLinear = 0;
 };
 
 struct OpenPBRVec3 {
@@ -578,7 +578,8 @@ public:
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene")
             .storageReadWrite()
-            .format = exportGuides ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
+            .format = exportGuides ? Format::Rgba16Sfloat :
+                (boolProperty(properties(), "outputLinear", false) ? Format::Rgba32Sfloat : Format::Rgba8Unorm);
         if (exportGuides) {
             reflection.addTextureOutput("albedo", "DLSS-RR diffuse albedo guide")
                 .storageReadWrite()
@@ -609,6 +610,7 @@ public:
     {
         if (realtime_) {
             std::vector<RenderGraphRuntimeSetting> settings{
+                linearOutputSetting(),
                 runtimeBoolSetting("flipBitangent", "Flip Bitangent", false, true),
                 runtimeBoolSetting("debugDisableShadows", "Disable Shadows", false, true),
             };
@@ -616,6 +618,7 @@ public:
             return settings;
         }
         std::vector<RenderGraphRuntimeSetting> settings{
+            linearOutputSetting(),
             runtimeIntSetting(
                 "maxDepth",
                 "Max Depth",
@@ -1516,7 +1519,8 @@ public:
         push.materialTextureCount = sceneResources_.materialTextureCount();
         push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
         push.cacheMode = cacheMode;
-        push.outputLinear = cacheMode == kScenePathTraceCacheModeNrc ? 1u : 0u;
+        push.outputLinear = cacheMode == kScenePathTraceCacheModeNrc ||
+            boolProperty(context.properties(), "outputLinear", false) ? 1u : 0u;
         push.sampleFrame = static_cast<uint32_t>(context.frameIndex());
         push.temporalJitter = exportGuides ? 1u : 0u;
         if (exportGuides) {
@@ -1785,9 +1789,8 @@ private:
         }
 
         const bool nrcHistory = push.cacheMode == kScenePathTraceCacheModeNrc;
-        const Format historyFormat = exportDenoiserGuides(context.properties()) || nrcHistory
-            ? Format::Rgba16Sfloat
-            : Format::Rgba8Unorm;
+        const Format historyFormat = nrcHistory || exportDenoiserGuides(context.properties()) ? Format::Rgba16Sfloat :
+            (boolProperty(context.properties(), "outputLinear", false) ? Format::Rgba32Sfloat : Format::Rgba8Unorm);
         const TextureDesc historyDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled |
@@ -2401,6 +2404,7 @@ private:
             .width = push.width,
             .height = push.height,
             .exposure = context.world() != nullptr ? std::exp2(-context.world()->lighting().exposureEV100) : 1.0f,
+            .outputLinear = boolProperty(context.properties(), "outputLinear", false) ? 1u : 0u,
         };
         const std::array<ComputeDispatchBinding, 2> tonemapBindings{
             ComputeDispatchBinding{.binding = 0, .textureView = historyCurrentView},

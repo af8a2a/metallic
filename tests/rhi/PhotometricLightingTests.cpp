@@ -216,7 +216,59 @@ public:
                 reinterpret_cast<const uint8_t*>(lit.data()), 64, 64, message)) {
             return RhiTestResult::fail(message);
         }
-        return RhiTestResult::pass("real-time material shading changes on add/remove without accumulation");
+        render::RenderGraph hdrGraph;
+        hdrGraph.addNode("SceneRealtimeLightingPass", "Lighting", {{"path", "Asset/meet_mat.glb"},
+            {"outputLinear", true}, {"camera", {{"eye", {0.0, 0.25, 3.0}}, {"center", {0.0, 0.15, 0.0}}}}});
+        const uint32_t exposureId = hdrGraph.addNode("AutoExposurePass", "Exposure")->id;
+        hdrGraph.addEdge("Lighting.color", "Exposure.source");
+        hdrGraph.markOutput("Exposure.color");
+        auto& hdrLight = settings.lights.emplace_back();
+        hdrLight.properties.type = "directional";
+        hdrLight.properties.intensityUnit = scene::LightUnit::Lux;
+        hdrLight.properties.intensity = 1000;
+        hdrLight.direction = float3(0.0f, -0.2f, -1.0f);
+        settings.exposureEV100 = 8;
+        settings.autoExposure.enabled = false;
+        preview.setLighting(settings);
+        result = preview.render(hdrGraph, 64, 64);
+        if (!result || preview.pixels() != lit) {
+            return RhiTestResult::fail("HDR + manual post exposure differs from inline exposure: " + preview.lastLog());
+        }
+        settings.autoExposure.enabled = true;
+        preview.setLighting(settings);
+        result = preview.render(hdrGraph, 64, 64);
+        if (!result) { return RhiTestResult::fail(preview.lastLog()); }
+        const auto automatic = preview.pixels();
+        double subjectBrightness = 0.0;
+        size_t subjectPixels = 0;
+        for (uint32_t pixel : automatic) {
+            const uint32_t value = pixel & 255u;
+            if (value > 0) { subjectBrightness += value; ++subjectPixels; }
+        }
+        if (subjectPixels == 0 || subjectBrightness / subjectPixels > 190.0 ||
+            subjectBrightness / subjectPixels < 40.0) {
+            return RhiTestResult::fail("black background dominated metering and lost subject detail");
+        }
+        settings.lights[0].properties.intensity *= 1024;
+        preview.setLighting(settings);
+        hdrGraph.findNode(exposureId)->runtimeProperties = {{"resetSerial", 1}};
+        result = preview.render(hdrGraph, 64, 64);
+        if (!result) { return RhiTestResult::fail(preview.lastLog()); }
+        double error = 0.0;
+        for (size_t i = 0; i < automatic.size(); ++i) {
+            for (uint32_t shift : {0u, 8u, 16u}) {
+                error += std::abs(int((automatic[i] >> shift) & 255u) -
+                    int((preview.pixels()[i] >> shift) & 255u));
+            }
+        }
+        if (error / (automatic.size() * 3) > 8.0) {
+            return RhiTestResult::fail("automatic exposure did not compensate a 10-stop physical light increase");
+        }
+        if (!saveRgba8Png(context.outputDirectory / "auto-exposure-realtime.png",
+                reinterpret_cast<const uint8_t*>(preview.pixels().data()), 64, 64, message)) {
+            return RhiTestResult::fail(message);
+        }
+        return RhiTestResult::pass("physical lighting and HDR/manual equivalence; automatic 10-stop compensation");
     }
 };
 

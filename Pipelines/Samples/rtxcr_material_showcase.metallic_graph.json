@@ -3,7 +3,12 @@
         {
             "dst": "FinalBlit.source",
             "id": 1,
-            "src": "PathTrace.color"
+            "src": "AutoExposure.color"
+        },
+        {
+            "id": 2,
+            "src": "PathTrace.color",
+            "dst": "AutoExposure.source"
         }
     ],
     "name": "RTXCRClairePonytail",
@@ -27,9 +32,20 @@
                 },
                 "flipBitangent": false,
                 "maxDepth": 4,
-                "samples": 4
+                "samples": 4,
+                "outputLinear": true
             },
             "type": "ScenePathTracePass"
+        },
+        {
+            "id": 3,
+            "name": "AutoExposure",
+            "type": "AutoExposurePass",
+            "position": {
+                "x": 680.0,
+                "y": 240.0
+            },
+            "properties": {}
         },
         {
             "id": 2,

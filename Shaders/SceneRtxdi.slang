@@ -193,7 +193,7 @@ struct SceneRtxdiPush
     float normalThreshold;
     float depthThreshold;
     uint ntcTextureSetCount;
-    uint padding2;
+    uint outputLinear;
 };
 
 bool behaviorEnabled(SceneRtxdiPush push, uint flag)
@@ -1237,9 +1237,9 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
             0.0);
         gNrdViewZ[pixel] = max(push.clipOrtho.y, 1.0);
         gBaseColorMetalness[pixel] = float4(0.0, 0.0, 0.0, 0.0);
-        sky *= lightingExposure();
+        sky *= push.outputLinear != 0u ? 1.0 : lightingExposure();
         gEmissive[pixel] = float4(sky, 1.0);
-        gOutput[pixel] = float4(toneMap(sky, push.exposure), 1.0);
+        gOutput[pixel] = float4(push.outputLinear != 0u ? sky : toneMap(sky, push.exposure), 1.0);
         return;
     }
 
@@ -1256,7 +1256,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
         0.0);
     gNrdViewZ[pixel] = cameraLinearDepth(surface.position, push);
     gBaseColorMetalness[pixel] = float4(surface.baseColor, surface.metalness);
-    gEmissive[pixel] = float4(surface.emissive * lightingExposure(), 1.0);
+    gEmissive[pixel] = float4(surface.emissive * (push.outputLinear != 0u ? 1.0 : lightingExposure()), 1.0);
 
     DIReservoir reservoir = emptyReservoir();
     uint localSampleCount = push.lightCount > 0u ? max(push.initialSampleCount, 1u) : 0u;
@@ -1407,9 +1407,8 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
             color += selected.contribution * reservoirWeight;
         }
     }
-    // Pre-expose every linear output consistently. The denoised composite only
-    // needs its existing artistic exposure and must not apply EV100 a second time.
-    float physicalExposure = lightingExposure();
+    // HDR mode keeps all NRD inputs in the same physical space for post exposure.
+    float physicalExposure = push.outputLinear != 0u ? 1.0 : lightingExposure();
     noisyDiffuse *= physicalExposure;
     noisySpecular *= physicalExposure;
     color *= physicalExposure;
@@ -1440,5 +1439,5 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
         return;
     }
 
-    gOutput[pixel] = float4(toneMap(color, push.exposure), 1.0);
+    gOutput[pixel] = float4(push.outputLinear != 0u ? color : toneMap(color, push.exposure), 1.0);
 }

@@ -29,17 +29,49 @@ struct PunctualLight {
     std::optional<ImportedLightBinding> imported;
 };
 
+struct AutoExposureSettings {
+    bool enabled = true;
+    float minEV100 = -10.0f;
+    float maxEV100 = 20.0f;
+    float compensation = 0.0f; // Stops; positive values brighten the image.
+    float lowPercent = 70.0f;
+    float highPercent = 90.0f;
+    float histogramMinEV100 = -10.0f;
+    float histogramMaxEV100 = 20.0f;
+    float speedUp = 3.0f; // Stops/second when entering a brighter environment.
+    float speedDown = 1.0f;
+    float transitionDistance = 1.5f;
+};
+
+inline bool validAutoExposureSettings(const AutoExposureSettings& settings)
+{
+    const auto inRange = [](float value, float minimum, float maximum) {
+        return std::isfinite(value) && value >= minimum && value <= maximum;
+    };
+    return inRange(settings.minEV100, -32.0f, 32.0f) &&
+        inRange(settings.maxEV100, settings.minEV100, 32.0f) &&
+        inRange(settings.compensation, -16.0f, 16.0f) &&
+        inRange(settings.lowPercent, 0.0f, 99.0f) &&
+        inRange(settings.highPercent, 1.0f, 100.0f) && settings.lowPercent < settings.highPercent &&
+        inRange(settings.histogramMinEV100, -32.0f, 31.0f) &&
+        inRange(settings.histogramMaxEV100, settings.histogramMinEV100 + 1.0f, 32.0f) &&
+        inRange(settings.speedUp, 0.0f, 64.0f) && inRange(settings.speedDown, 0.0f, 64.0f) &&
+        inRange(settings.transitionDistance, 0.0f, 16.0f);
+}
+
 struct LightingSettings {
     std::vector<PunctualLight> lights;
     // Manual sensor saturation exposure: Lmax=2^EV100 cd/m^2, as in UE
     // RenderUtils::EV100ToLuminance(1, EV100). Applied after light transport.
     float exposureEV100 = 0.0f;
+    AutoExposureSettings autoExposure;
 };
 
 inline bool validLightingSettings(const LightingSettings& settings)
 {
     if (!std::isfinite(settings.exposureEV100) ||
-        settings.exposureEV100 < -32.0f || settings.exposureEV100 > 32.0f) {
+        settings.exposureEV100 < -32.0f || settings.exposureEV100 > 32.0f ||
+        !validAutoExposureSettings(settings.autoExposure)) {
         return false;
     }
     for (const PunctualLight& light : settings.lights) {

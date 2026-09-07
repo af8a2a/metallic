@@ -83,7 +83,12 @@
         {
             "dst": "FinalBlit.source",
             "id": 18,
-            "src": "Composite.color"
+            "src": "AutoExposure.color"
+        },
+        {
+            "id": 19,
+            "src": "Composite.color",
+            "dst": "AutoExposure.source"
         }
     ],
     "name": "RtxdiRelaxSample",
@@ -138,7 +143,8 @@
                 "spatialReuse": true,
                 "spatialSamples": 1,
                 "temporalReuse": true,
-                "visualization": "shaded"
+                "visualization": "shaded",
+                "outputLinear": true
             },
             "type": "SceneRtxdiPass"
         },
@@ -210,12 +216,25 @@
             "name": "Composite",
             "position": {
                 "x": 1198.7313232421875,
-                "y": 233.73342895507813
+                "y": 233.73342895507812
             },
             "properties": {
-                "exposure": 1.0
+                "exposure": 1.0,
+                "outputLinear": true
             },
             "type": "RtxdiCompositePass"
+        },
+        {
+            "id": 6,
+            "name": "AutoExposure",
+            "type": "AutoExposurePass",
+            "position": {
+                "x": 1558.7313232421875,
+                "y": 233.73342895507812
+            },
+            "properties": {
+                "toneCurve": "exponential"
+            }
         },
         {
             "id": 5,

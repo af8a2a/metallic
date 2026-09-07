@@ -182,6 +182,6 @@ void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         gHistoryCurrent[pixel] = float4(color, 1.0);
     }
 
-    gOutput[pixel] = float4(color * lightingExposure(), 1.0);
+    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure()), 1.0);
     writeDlssRrGuides(pixel, guides, push);
 }

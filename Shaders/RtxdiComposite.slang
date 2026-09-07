@@ -18,7 +18,7 @@ struct RtxdiCompositePush
     uint width;
     uint height;
     float exposure;
-    uint padding;
+    uint outputLinear;
 };
 
 float3 toneMap(float3 color, float exposure)
@@ -46,5 +46,5 @@ void rtxdiCompositeMain(
     float3 color = gDenoisedDiffuse[pixel].rgb * diffuseAlbedo;
     color += gDenoisedSpecular[pixel].rgb * specularF0;
     color += gEmissive[pixel].rgb;
-    gOutput[pixel] = float4(toneMap(color, push.exposure), 1.0);
+    gOutput[pixel] = float4(push.outputLinear != 0u ? color : toneMap(color, push.exposure), 1.0);
 }

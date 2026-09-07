@@ -23,13 +23,14 @@ public:
             .format = Format::Rgba16Sfloat;
         reflection.addTextureOutput("color", "Composited RELAX-denoised RTXDI color")
             .storageReadWrite()
-            .format = Format::Rgba8Unorm;
+            .format = properties().value("outputLinear", false) ? Format::Rgba32Sfloat : Format::Rgba8Unorm;
         return reflection;
     }
 
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         return {
+            linearOutputSetting(),
             runtimeFloatSetting("exposure", "Exposure", 1.0f, 0.05f, 8.0f),
         };
     }
@@ -109,6 +110,7 @@ public:
         push.width = context.width();
         push.height = context.height();
         push.exposure = floatProperty(context.properties(), "exposure", 1.0f, 0.05f, 8.0f);
+        push.outputLinear = context.properties().value("outputLinear", false) ? 1u : 0u;
         const ComputeDispatchBinding bindings[] = {
             {.binding = 0, .textureView = denoisedDiffuse.view()},
             {.binding = 1, .textureView = denoisedSpecular.view()},

@@ -67,6 +67,10 @@ void sceneRealtimeLightingMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         radiance += surface.inputs.base_color * diffuseWeight * surface.occlusion *
             environmentDiffuseIrradiance(normal, push) / kPi;
     }
+    if (push.outputLinear != 0u) {
+        gOutput[pixel] = float4(max(radiance, float3(0.0)), 1.0);
+        return;
+    }
     float3 exposed = max(radiance * lightingExposure(), float3(0.0));
     float3 color = pow(exposed / (exposed + 1.0), 1.0 / 2.2);
     gOutput[pixel] = float4(saturate(color), 1.0);

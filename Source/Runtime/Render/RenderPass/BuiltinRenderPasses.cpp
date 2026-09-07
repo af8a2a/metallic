@@ -24,6 +24,10 @@ void registerBuiltInRenderGraphPasses()
         "Copy a color texture",
         []() { return builtin_pass::createCopyColorPass(); });
     registerRenderGraphPassType(
+        "AutoExposurePass",
+        "Histogram EV100 exposure, temporal eye adaptation and HDR tone mapping",
+        []() { return builtin_pass::createAutoExposurePass(); });
+    registerRenderGraphPassType(
         "FinalBlitPass",
         "Present a color texture; show a UV gradient when no usable source is connected",
         []() { return builtin_pass::createFinalBlitPass(); });

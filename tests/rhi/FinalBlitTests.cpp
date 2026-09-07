@@ -277,6 +277,28 @@ public:
 private:
     static bool hasFinalOutput(const render::RenderGraph& graph, std::string_view sourceOutput)
     {
+        const auto* exposure = graph.findNode("AutoExposure");
+        bool physical = false;
+        for (const auto& node : graph.nodes()) {
+            if (node.type == "ScenePathTracePass" || node.type == "SceneRealtimeLightingPass" ||
+                node.type == "SceneRtxdiPass" || node.type == "RtxdiCompositePass") {
+                physical = true;
+                if (!node.properties.value("outputLinear", false)) { return false; }
+            }
+        }
+        if (physical != (exposure != nullptr)) { return false; }
+        if (exposure != nullptr) {
+            if (exposure->type != "AutoExposurePass") { return false; }
+            size_t hdrConnections = 0;
+            for (const auto& edge : graph.edges()) {
+                if (edge.dstPass == exposure->name && edge.dstField == "source") {
+                    if (render::makeRenderGraphFieldName(edge.srcPass, edge.srcField) != sourceOutput) { return false; }
+                    ++hdrConnections;
+                }
+            }
+            if (hdrConnections != 1) { return false; }
+            sourceOutput = "AutoExposure.color";
+        }
         const render::RenderGraphNode* final = graph.findNode("FinalBlit");
         if (final == nullptr || final->type != "FinalBlitPass" || !graph.outputs().empty() ||
             graph.firstOutputName() != "FinalBlit.color") {

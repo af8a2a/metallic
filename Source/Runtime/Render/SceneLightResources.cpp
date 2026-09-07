@@ -70,6 +70,7 @@ scene::LightingSettings resolveSceneLighting(const scene::Scene* actualScene, co
         ? actualScene->authoredLighting() : scene::LightingSettings{};
     if (world != nullptr) {
         settings.exposureEV100 = world->lighting().exposureEV100;
+        settings.autoExposure = world->lighting().autoExposure;
         for (const auto& light : world->lighting().lights) {
             if (!light.imported) { settings.lights.push_back(light); }
         }
