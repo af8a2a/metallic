@@ -45,7 +45,8 @@ public:
     {
         return {
             runtimeEnumSetting("toneCurve", "Tone Curve", "reinhard",
-                {{"Reinhard", "reinhard"}, {"Exponential (RTXDI)", "exponential"}}),
+                {{"Reinhard", "reinhard"}, {"Exponential (RTXDI)", "exponential"},
+                    {"None (sRGB)", "none"}}),
             runtimeFloatSetting("artisticExposure", "Output Multiplier", 1.0f, 0.001f, 16.0f),
             runtimeFloatSetting("sourceExposure", "Input Pre-exposure", 1.0f, 0.000001f, 65536.0f),
             RenderGraphRuntimeSetting{.key = "resetSerial", .label = "Reset Adaptation",
@@ -114,13 +115,14 @@ public:
         // A fixed timestep is useful for offline rendering and deterministic GPU tests.
         const float fixedDelta = context.properties().value("adaptationDeltaSeconds", 0.0f);
         const float delta = std::isfinite(fixedDelta) && fixedDelta > 0.0f ? fixedDelta : elapsed;
+        const std::string toneCurve = context.properties().value("toneCurve", "reinhard");
         AutoExposurePush push{
             context.width(), context.height(), ((context.width() + 15) / 16) * ((context.height() + 15) / 16),
             reset ? 1u : 0u, settings.minEV100, settings.maxEV100, settings.compensation, lighting.exposureEV100,
             settings.lowPercent * 0.01f, settings.highPercent * 0.01f,
             settings.histogramMinEV100, settings.histogramMaxEV100,
             settings.speedUp, settings.speedDown, settings.transitionDistance, std::clamp(delta, 0.0f, 1.0f),
-            settings.enabled ? 1u : 0u, context.properties().value("toneCurve", "reinhard") == "exponential" ? 1u : 0u,
+            settings.enabled ? 1u : 0u, toneCurve == "none" ? 2u : (toneCurve == "exponential" ? 1u : 0u),
             finiteProperty(context.properties(), "sourceExposure", 1.0f, 0.000001f, 65536.0f),
             finiteProperty(context.properties(), "artisticExposure", 1.0f, 0.001f, 16.0f),
         };

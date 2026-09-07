@@ -105,6 +105,28 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
+class OpenPbrLookDevSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "openpbr-lookdev"; }
+    std::string_view name() const override { return "LookDev / OpenPBR Default"; }
+    std::string_view category() const override { return "LookDev"; }
+    std::string_view description() const override
+    {
+        return "MaterialX reference shaderball, split HDRI and sun, fixed exposure and sRGB display. "
+            "Progressive OpenPBR path tracing; see Documentation/OpenPbrLookDev.md.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf";
+    }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/openpbr_lookdev.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class PathTracingMeetMatSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-meet-mat"; }
@@ -581,9 +603,11 @@ std::vector<const RenderSample*> builtInRenderSamples()
 {
     static const RealtimeLightingSample realtimeLighting;
     static const LightGridDebugSample lightGridDebug;
+    static const OpenPbrLookDevSample openPbrLookDev;
     return {
         &realtimeLighting,
         &lightGridDebug,
+        &openPbrLookDev,
         &pathTracingMeetMatSample(),
         &pathTracingSharcMeetMatSample(),
         &pathTracingNrcMeetMatSample(),

@@ -142,6 +142,15 @@ void autoExposureApplyMain(uint3 pixel : SV_DispatchThreadID, uniform AutoExposu
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float3 color = physicalColor(pixel.xy, push) * gExposure[0].x * push.artisticExposure;
     color = min(color, float3(1e30));
+    if (push.toneCurve == 2u) {
+        // Reference LookDev: preserve scene-linear values, then encode sRGB.
+        // Values above display white clip; the upstream HDR output remains available.
+        color = saturate(color);
+        float3 srgb = select(color <= 0.0031308, color * 12.92,
+            1.055 * pow(color, 1.0 / 2.4) - 0.055);
+        gOutput[pixel.xy] = float4(srgb, 1.0);
+        return;
+    }
     color = push.toneCurve == 1u ? 1.0 - exp(-color) : color / (color + 1.0);
     gOutput[pixel.xy] = float4(pow(saturate(color), 1.0 / 2.2), 1.0);
 }

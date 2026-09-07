@@ -1,0 +1,95 @@
+{
+    "materialxRevision": "0a6f5bde987a4ff7cbee08aa0f6fe64c3a5c3deb",
+    "viewer": "https://academysoftwarefoundation.github.io/MaterialX/?file=Materials/Examples/OpenPbr/open_pbr_default.mtlx",
+    "sources": {
+        "shaderball.glb": {
+            "url": "https://raw.githubusercontent.com/AcademySoftwareFoundation/MaterialX/0a6f5bde987a4ff7cbee08aa0f6fe64c3a5c3deb/resources/Geometry/shaderball.glb",
+            "sha256": "a47a52c37f6be60c963c766a6279d302d9940456b9d02972cc8a1bf9026a859a"
+        },
+        "san_giuseppe_bridge_split.hdr": {
+            "url": "https://raw.githubusercontent.com/AcademySoftwareFoundation/MaterialX/0a6f5bde987a4ff7cbee08aa0f6fe64c3a5c3deb/resources/Lights/san_giuseppe_bridge_split.hdr",
+            "sha256": "72f55f98ed32d060e4a32d5f0e9c59c0297c9c669ee4e8a62a0b09154cc5ac0a"
+        },
+        "open_pbr_default.mtlx": {
+            "url": "https://raw.githubusercontent.com/AcademySoftwareFoundation/MaterialX/0a6f5bde987a4ff7cbee08aa0f6fe64c3a5c3deb/resources/Materials/Examples/OpenPbr/open_pbr_default.mtlx",
+            "sha256": "0b111f05685d2c82e17d63713c6d3dbdb729b6f68a015ecb5cc828811d765b76"
+        },
+        "san_giuseppe_bridge_split.mtlx": {
+            "url": "https://raw.githubusercontent.com/AcademySoftwareFoundation/MaterialX/0a6f5bde987a4ff7cbee08aa0f6fe64c3a5c3deb/resources/Lights/san_giuseppe_bridge_split.mtlx",
+            "sha256": "5f63a6fc71ccddfb6a8788523320ce80599f60164e6012a7113041024847c95b"
+        },
+        "LICENSE": {
+            "url": "https://raw.githubusercontent.com/AcademySoftwareFoundation/MaterialX/0a6f5bde987a4ff7cbee08aa0f6fe64c3a5c3deb/LICENSE",
+            "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+        }
+    },
+    "camera": {
+        "eye": [
+            0.0,
+            1.0478609688580036,
+            3.6447348222404337
+        ],
+        "center": [
+            -0.05485051870346069,
+            1.0478609688580036,
+            -0.06448951363563538
+        ],
+        "up": [
+            0.0,
+            1.0,
+            0.0
+        ],
+        "fovDegrees": 60.0,
+        "projection": "perspective",
+        "znear": 0.05,
+        "zfar": 100.0,
+        "reversedZ": true
+    },
+    "materialInputs": {
+        "base_weight": "1.0",
+        "base_color": "0.8, 0.8, 0.8",
+        "base_diffuse_roughness": "0.0",
+        "base_metalness": "0.0",
+        "specular_weight": "1.0",
+        "specular_color": "1, 1, 1",
+        "specular_roughness": "0.3",
+        "specular_ior": "1.5",
+        "specular_roughness_anisotropy": "0.0",
+        "transmission_weight": "0.0",
+        "transmission_color": "1, 1, 1",
+        "transmission_depth": "0.0",
+        "transmission_scatter": "0, 0, 0",
+        "transmission_scatter_anisotropy": "0.0",
+        "transmission_dispersion_scale": "0.0",
+        "transmission_dispersion_abbe_number": "20.0",
+        "subsurface_weight": "0",
+        "subsurface_color": "0.8, 0.8, 0.8",
+        "subsurface_radius": "1.0",
+        "subsurface_radius_scale": "1.0, 0.5, 0.25",
+        "subsurface_scatter_anisotropy": "0.0",
+        "fuzz_weight": "0.0",
+        "fuzz_color": "1, 1, 1",
+        "fuzz_roughness": "0.5",
+        "coat_weight": "0.0",
+        "coat_color": "1, 1, 1",
+        "coat_roughness": "0.0",
+        "coat_roughness_anisotropy": "0.0",
+        "coat_ior": "1.6",
+        "coat_darkening": "1.0",
+        "thin_film_weight": "0",
+        "thin_film_thickness": "0.5",
+        "thin_film_ior": "1.4",
+        "emission_luminance": "0.0",
+        "emission_color": "1, 1, 1",
+        "geometry_opacity": "1",
+        "geometry_thin_walled": "false"
+    },
+    "environmentRotationDegrees": 0.0,
+    "display": "scene-linear Rec.709 -> fixed EV100 0 -> sRGB (no tone curve)",
+    "capture": {
+        "width": 768,
+        "height": 768,
+        "samplesPerPixel": 1024,
+        "maxDepth": 12
+    }
+}

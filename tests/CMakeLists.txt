@@ -98,6 +98,7 @@ add_executable(MetallicRhiTests
     rhi/RhiTest.h
     rhi/BindlessBufferTests.cpp
     rhi/AutoExposureTests.cpp
+    rhi/OpenPbrLookDevTests.cpp
     rhi/ClusterLightGridTests.cpp
     rhi/CommandSubmissionTests.cpp
     rhi/FrameContextTests.cpp

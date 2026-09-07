@@ -125,6 +125,9 @@ public:
     Result initialize(bool enableValidation = false, bool enableRayQuery = false);
     Result render(RenderGraph& graph, uint32_t width, uint32_t height);
     Result render(RenderGraph& graph, uint32_t width, uint32_t height, std::string_view outputName);
+    // Bind before rendering; the scene must outlive the preview renderer.
+    // This keeps scene-owned lighting and world overrides in the same scene.
+    void bindRuntimeScene(const scene::Scene* scene);
     void setEnvironment(EnvironmentSettings environment);
     bool setLighting(scene::LightingSettings lighting);
     RenderSubsystemHost* subsystemHost();

@@ -2679,6 +2679,11 @@ bool RenderGraphPreviewRenderer::setLighting(scene::LightingSettings lighting)
     return impl_->world.setLighting(std::move(lighting));
 }
 
+void RenderGraphPreviewRenderer::bindRuntimeScene(const scene::Scene* scene)
+{
+    impl_->executor.bindRuntimeScene(scene);
+}
+
 RenderSubsystemHost* RenderGraphPreviewRenderer::subsystemHost()
 {
     return &impl_->subsystemHost;

@@ -1030,7 +1030,8 @@ uint shadeDeferredSurface(
     OpenPBR_ResolvedInputs inputs = openpbr_make_default_resolved_inputs();
     inputs.base_weight = 1.0;
     inputs.base_color = baseColor;
-    inputs.base_diffuse_roughness = roughness;
+    // glTF specifies a Lambertian diffuse lobe, independently of GGX roughness.
+    inputs.base_diffuse_roughness = 0.0;
     inputs.base_metalness = metallic;
     inputs.specular_weight = 1.0;
     inputs.specular_color = float3(1.0);

@@ -229,6 +229,7 @@ public:
             {"gpu_driven_terrain_p0_streamasset.metallic_graph.json", "GPUDriven.color"},
             {"gpu_driven_terrain_p1_unified.metallic_graph.json", "GPUDriven.color"},
             {"light_grid_debug.metallic_graph.json", "LightGridDebug.color"},
+            {"openpbr_lookdev.metallic_graph.json", "PathTrace.color"},
             {"material_visualization_abeautiful_game.metallic_graph.json", "MaterialViz.color"},
             {"pathtracing_abeautiful_game_openpbr.metallic_graph.json", "PathTrace.color"},
             {"pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json", "DlssRr.color"},

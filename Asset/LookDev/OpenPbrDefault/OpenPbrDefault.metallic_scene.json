@@ -1,0 +1,40 @@
+{
+    "version": 3,
+    "source": "OpenPbrDefault.gltf",
+    "sceneIndex": 0,
+    "nodes": [],
+    "world": {
+        "environment": {
+            "enabled": true,
+            "path": "san_giuseppe_bridge_split.hdr",
+            "intensity": 1.0,
+            "rotationDegrees": 0.0,
+            "visible": true
+        },
+        "lighting": {
+            "exposureEV100": 0.0,
+            "autoExposure": {
+                "enabled": false,
+                "compensation": 0.0
+            },
+            "lights": [
+                {
+                    "name": "MaterialX Split Sun",
+                    "type": "directional",
+                    "enabled": true,
+                    "direction": [
+                        -0.711269,
+                        -0.479014,
+                        -0.514434
+                    ],
+                    "color": [
+                        1.0,
+                        0.894474,
+                        0.567234
+                    ],
+                    "intensity": 2.52776
+                }
+            ]
+        }
+    }
+}

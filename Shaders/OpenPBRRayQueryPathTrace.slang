@@ -335,7 +335,8 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
 
     result.inputs.base_weight = 1.0;
     result.inputs.base_color = baseColor;
-    result.inputs.base_diffuse_roughness = roughness;
+    // glTF specifies a Lambertian diffuse lobe, independently of GGX roughness.
+    result.inputs.base_diffuse_roughness = 0.0;
     result.inputs.base_metalness = metallic;
 
     result.inputs.specular_weight = 1.0;

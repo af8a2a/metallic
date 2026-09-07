@@ -50,6 +50,12 @@ The GPU builds a 64-bin histogram per 16×16 tile, reduces it, then applies expo
 
 `exposure` is a 16-byte buffer containing four floats: display multiplier, adapted EV100, target EV100 and metered luminance. `histogram` exposes the per-tile counts for GPU inspection. `color` is opaque, gamma-encoded RGBA8 for the existing final blit.
 
+For reference LookDev, `toneCurve: "none"` (**None (sRGB)**) applies exposure and
+the exact piecewise linear-to-sRGB transfer without highlight compression.
+Display values above one clip, while the upstream HDR output remains available.
+The existing Reinhard and Exponential options retain their original gamma-2.2
+encoding. See [OpenPBR LookDev](OpenPbrLookDev.md) for a calibrated example.
+
 Ordinary HDR lighting and path-trace accumulation use RGBA32F. The existing NRC/DLSS/NRD paths retain their FP16 resource contracts; inputs exceeding their representable range require pre-exposure before entering those integrations. This change does not implement feedback pre-exposure, metering masks, exposure compensation curves or local exposure.
 
 ## Validation

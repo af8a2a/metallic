@@ -1,0 +1,80 @@
+{
+    "version": 1,
+    "name": "OpenPBR Default LookDev",
+    "nodes": [
+        {
+            "id": 1,
+            "name": "PathTrace",
+            "type": "ScenePathTracePass",
+            "position": {
+                "x": 80.0,
+                "y": 120.0
+            },
+            "properties": {
+                "path": "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf",
+                "camera": {
+                    "eye": [
+                        0.0,
+                        1.0478609688580036,
+                        3.6447348222404337
+                    ],
+                    "center": [
+                        -0.05485051870346069,
+                        1.0478609688580036,
+                        -0.06448951363563538
+                    ],
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "fovDegrees": 60.0,
+                    "projection": "perspective",
+                    "znear": 0.05,
+                    "zfar": 100.0,
+                    "reversedZ": true
+                },
+                "samples": 4,
+                "bsdf": "openpbr",
+                "maxDepth": 12,
+                "accumulate": true,
+                "outputLinear": true
+            }
+        },
+        {
+            "id": 2,
+            "name": "AutoExposure",
+            "type": "AutoExposurePass",
+            "position": {
+                "x": 440.0,
+                "y": 120.0
+            },
+            "properties": {
+                "toneCurve": "none"
+            }
+        },
+        {
+            "id": 3,
+            "name": "FinalBlit",
+            "type": "FinalBlitPass",
+            "position": {
+                "x": 800.0,
+                "y": 120.0
+            },
+            "properties": {}
+        }
+    ],
+    "edges": [
+        {
+            "id": 1,
+            "src": "PathTrace.color",
+            "dst": "AutoExposure.source"
+        },
+        {
+            "id": 2,
+            "src": "AutoExposure.color",
+            "dst": "FinalBlit.source"
+        }
+    ],
+    "outputs": []
+}

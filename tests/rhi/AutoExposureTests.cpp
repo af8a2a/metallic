@@ -184,6 +184,51 @@ public:
     }
 };
 
+class AutoExposureSrgbTest final : public RhiTest {
+public:
+    AutoExposureSrgbTest() { type = RhiTestType::Rendering; name = "auto_exposure_reference_srgb"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::registerRenderGraphPassType("AutoExposureFixturePass", "HDR test fixture",
+            [] { return std::make_unique<AutoExposureFixturePass>(); });
+        render::RenderGraph graph;
+        const uint32_t sourceId = graph.addNode("AutoExposureFixturePass", "Source")->id;
+        graph.addNode("AutoExposurePass", "Exposure", {{"toneCurve", "none"}});
+        graph.addEdge("Source.color", "Exposure.source");
+        graph.markOutput("Exposure.color");
+        render::RenderGraphPreviewRenderer preview;
+        scene::LightingSettings lighting;
+        lighting.autoExposure.enabled = false;
+        // Verify that the display option still applies the physical exposure once.
+        lighting.exposureEV100 = 2.0f;
+        lighting.autoExposure.compensation = 1.0f;
+        preview.setLighting(lighting);
+        const auto result = preview.initialize(context.enableValidation);
+        if (render::hasError(result, render::Error::Unsupported)) {
+            return RhiTestResult::skip("sRGB test requires bindless descriptors");
+        }
+        if (!result) { return RhiTestResult::fail("sRGB renderer initialization failed"); }
+        for (float linear : {0.0f, 0.001f, 0.0031308f, 0.18f, 0.8f, 1.0f, 16.0f}) {
+            graph.findNode(sourceId)->runtimeProperties = {{"luminance", linear * 2.0f}};
+            if (!preview.render(graph, 17, 9, "Exposure.color")) {
+                return RhiTestResult::fail(preview.lastLog());
+            }
+            const float srgb = linear <= 0.0031308f ? linear * 12.92f
+                : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+            const int expected = static_cast<int>(std::lround(std::min(srgb, 1.0f) * 255.0f));
+            for (uint32_t pixel : preview.pixels()) {
+                for (uint32_t shift : {0u, 8u, 16u}) {
+                    if (std::abs(static_cast<int>((pixel >> shift) & 255u) - expected) > 1) {
+                        return RhiTestResult::fail("sRGB display applied an unexpected tone curve or exposure");
+                    }
+                }
+            }
+        }
+        return RhiTestResult::pass("sRGB toe, middle gray, display white and clipping with manual exposure");
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(AutoExposureGpuTest);
+METALLIC_REGISTER_RHI_TEST(AutoExposureSrgbTest);
 } // namespace
 } // namespace metallic::tests
