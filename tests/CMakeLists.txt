@@ -116,6 +116,7 @@ add_executable(MetallicRhiTests
     rhi/Main.cpp
     rhi/RhiTest.h
     rhi/BindlessBufferTests.cpp
+    rhi/DescriptorHeapCodePatternTests.cpp
     rhi/AutoExposureTests.cpp
     rhi/OpenPbrLookDevTests.cpp
     rhi/SliderDebugTests.cpp

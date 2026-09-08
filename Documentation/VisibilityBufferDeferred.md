@@ -91,6 +91,11 @@ GPU 测试先用相同的 OpenPBR 直接光照比较光线／VBuffer 主可见�
 
 ## Aftermath 排查
 
+后续代码模式隔离已缩小到 descriptor heap compute pipeline 与设备启用 Shader Object
+的组合；原始 shader 的独立用例只改变 `enableShaderObject` 就从通过变为 DeviceLost。
+结构体复制消融被 generator / OpNop 阴性对照推翻，不能作为根因。
+详见 [DescriptorHeapGpuFault.md](DescriptorHeapGpuFault.md)。以下保留最初捕获记录。
+
 2026-09-08，本机 GB203-A / NVIDIA 616.64 上，未插桩的完整 GPU 回归仍然失败。
 已撤回尝试过但未同时通过回归的 shader 改写、SPIR-V 优化和 robustness 配置，
 保留原有着色器编译和 RHI 资源生命周期逻辑。
