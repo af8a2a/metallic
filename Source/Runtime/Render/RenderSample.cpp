@@ -143,6 +143,22 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
+class LookDevVisibilityBufferSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "lookdev-vbuffer"; }
+    std::string_view name() const override { return "LookDev / VBuffer vs Path Tracing"; }
+    std::string_view category() const override { return "LookDev"; }
+    std::string_view description() const override
+    {
+        return "OpenPBR on both paths: GPUDriven visibility and deferred lighting versus progressive path tracing, "
+            "with linked cameras and shared exposure. See Documentation/VisibilityBufferDeferred.md.";
+    }
+    std::string scenePath() const override { return "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf"; }
+    std::string graphPath() const override { return "Pipelines/Samples/lookdev_vbuffer.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"Reference", "VBuffer", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class PathTracingMeetMatSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-meet-mat"; }
@@ -621,11 +637,13 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const LightGridDebugSample lightGridDebug;
     static const OpenPbrLookDevSample openPbrLookDev;
     static const LookDevShadingCompareSample lookDevShadingCompare;
+    static const LookDevVisibilityBufferSample lookDevVisibilityBuffer;
     return {
         &realtimeLighting,
         &lightGridDebug,
         &openPbrLookDev,
         &lookDevShadingCompare,
+        &lookDevVisibilityBuffer,
         &pathTracingMeetMatSample(),
         &pathTracingSharcMeetMatSample(),
         &pathTracingNrcMeetMatSample(),

@@ -122,7 +122,7 @@ public:
     RenderGraphPreviewRenderer(const RenderGraphPreviewRenderer&) = delete;
     RenderGraphPreviewRenderer& operator=(const RenderGraphPreviewRenderer&) = delete;
 
-    Result initialize(bool enableValidation = false, bool enableRayQuery = false);
+    Result initialize(bool enableValidation = false, bool enableRayQuery = false, bool enableAftermath = true);
     Result render(RenderGraph& graph, uint32_t width, uint32_t height);
     Result render(RenderGraph& graph, uint32_t width, uint32_t height, std::string_view outputName);
     // Bind before rendering; the scene must outlive the preview renderer.

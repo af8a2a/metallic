@@ -5,6 +5,7 @@
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include "openpbr_data_constants.h"
 
@@ -558,7 +559,8 @@ struct ScenePathTraceCameraSnapshot {
 
 class ScenePathTracePass final : public ComputePass {
 public:
-    explicit ScenePathTracePass(bool realtime = false) : realtime_(realtime) {}
+    explicit ScenePathTracePass(bool realtime = false, bool visibilityDeferred = false)
+        : realtime_(realtime), visibilityDeferred_(visibilityDeferred) {}
 
     bool supportsFrameOverlap() const override { return cacheMode_ == kScenePathTraceCacheModeOff; }
 
@@ -566,6 +568,10 @@ public:
 
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {
+        static constexpr std::array deferredRequired{
+            EnvironmentLightingSubsystem::kSubsystemId, GPUSceneSubsystem::kSubsystemId,
+        };
+        if (visibilityDeferred_) { return deferredRequired; }
         static constexpr std::array required{
             EnvironmentLightingSubsystem::kSubsystemId,
         };
@@ -576,10 +582,17 @@ public:
     {
         const bool exportGuides = exportDenoiserGuides(properties());
         RenderPassReflection reflection;
-        reflection.addTextureOutput("color", realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene")
+        if (visibilityDeferred_) {
+            reflection.addTextureInput("visibility", "Resident GPUScene visibility IDs").sampledRead().format = Format::R32Uint;
+            reflection.addTextureInput("depth", "Depth from the same visibility raster").sampledRead().format = Format::D32Sfloat;
+            reflection.addBufferInput("rasterInfo", "CPU-authored raster camera and scene identity")
+                .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
+        }
+        reflection.addTextureOutput("color", visibilityDeferred_ ? "OpenPBR deferred physical HDR" :
+            (realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene"))
             .storageReadWrite()
             .format = exportGuides ? Format::Rgba16Sfloat :
-                (boolProperty(properties(), "outputLinear", false) ? Format::Rgba32Sfloat : Format::Rgba8Unorm);
+                ((visibilityDeferred_ || boolProperty(properties(), "outputLinear", false)) ? Format::Rgba32Sfloat : Format::Rgba8Unorm);
         if (exportGuides) {
             reflection.addTextureOutput("albedo", "DLSS-RR diffuse albedo guide")
                 .storageReadWrite()
@@ -614,6 +627,15 @@ public:
                 runtimeBoolSetting("flipBitangent", "Flip Bitangent", false, true),
                 runtimeBoolSetting("debugDisableShadows", "Disable Shadows", false, true),
             };
+            if (visibilityDeferred_) {
+                settings.erase(settings.begin()); // Deferred resolve always exports physical HDR.
+                settings.push_back(runtimeIntSetting("environmentSamples", "OpenPBR Environment Samples", 64, 1, 256));
+                settings.push_back(runtimeBoolSetting("accumulate", "Accumulate Environment", true, true));
+                settings.push_back(runtimeEnumSetting("debugView", "Surface Debug", "final",
+                    {{"Final", "final"}, {"Base Color", "baseColor"}, {"Geometry Normal", "geometryNormal"},
+                        {"Shading Normal", "shadingNormal"}, {"Tangent", "tangent"}}));
+                return settings; // Camera is supplied by rasterInfo, not a second editable camera.
+            }
             appendCameraRuntimeSettings(settings, {0.0f, 0.2f, 2.5f}, {0.0f, 0.0f, 0.0f}, 50.0f, true);
             return settings;
         }
@@ -779,7 +801,10 @@ public:
             sceneResources_.neuralTextures().cooperativeVectorActive();
         const char* moduleName = nullptr;
         const char* entryPointName = nullptr;
-        if (realtime_) {
+        if (visibilityDeferred_) {
+            moduleName = "VisibilityBufferDeferred";
+            entryPointName = "visibilityBufferDeferredMain";
+        } else if (realtime_) {
             moduleName = "SceneRealtimeLighting";
             entryPointName = "sceneRealtimeLightingMain";
         } else if (useOpenPBR) {
@@ -924,6 +949,13 @@ public:
         } else {
             baseBindings.push_back({.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = 53, .kind = ComputeResourceBindingKind::SampledImage});
+        }
+        if (visibilityDeferred_) {
+            baseBindings.push_back({.binding = 60, .kind = ComputeResourceBindingKind::SampledImage});
+            baseBindings.push_back({.binding = 61, .kind = ComputeResourceBindingKind::SampledImage});
+            for (uint32_t binding = 62; binding <= 69; ++binding) {
+                baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
+            }
         }
         if (useOpenPBR) {
             baseBindings.push_back(ComputeProgramBindingDesc{
@@ -1519,8 +1551,47 @@ public:
         push.materialTextureCount = sceneResources_.materialTextureCount();
         push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
         push.cacheMode = cacheMode;
-        push.outputLinear = cacheMode == kScenePathTraceCacheModeNrc ||
+        push.outputLinear = visibilityDeferred_ || cacheMode == kScenePathTraceCacheModeNrc ||
             boolProperty(context.properties(), "outputLinear", false) ? 1u : 0u;
+        TextureView* visibilityView = nullptr;
+        TextureView* visibilityDepthView = nullptr;
+        const GPUSceneGlobalBufferViews* deferredViews = nullptr;
+        if (visibilityDeferred_) {
+            const auto visibility = context.inputTexture("visibility");
+            const auto visibilityDepth = context.inputTexture("depth");
+            const auto rasterInfo = context.inputBuffer("rasterInfo");
+            auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
+            if (!visibility.valid() || !visibilityDepth.valid() || !rasterInfo.valid() || gpuScene == nullptr ||
+                rasterInfo.desc().size != sizeof(VisibilityBufferFrameInfo) ||
+                rasterInfo.desc().memoryLocation != MemoryLocation::HostUpload) {
+                return makeError(Error::InvalidArgument);
+            }
+            VisibilityBufferFrameInfo info;
+            const void* mapped = rasterInfo.buffer()->map();
+            if (mapped == nullptr) { return makeError(Error::Failure); }
+            std::memcpy(&info, mapped, sizeof(info));
+            rasterInfo.buffer()->unmap();
+            if (info.hasStreamGeometry != 0u) {
+                spdlog::error("VisibilityBufferDeferredPass currently requires resident GPUScene geometry");
+                return makeError(Error::Unsupported);
+            }
+            if (info.width != context.width() || info.height != context.height() ||
+                lightScene == nullptr || info.sceneIdentity != lightScene->resourceIdentity()) {
+                return makeError(Error::InvalidArgument);
+            }
+            deferredViews = &gpuScene->globalBufferViews();
+            if (!deferredViews->validFor(gpuScene->drawSet().generation, gpuScene->drawSet().revision)) {
+                return makeError(Error::InvalidArgument);
+            }
+            std::memcpy(push.eye, info.eye, sizeof(info.eye));
+            std::memcpy(push.center, info.center, sizeof(info.center));
+            std::memcpy(push.upProjection, info.upProjection, sizeof(info.upProjection));
+            std::memcpy(push.viewport, info.viewport, sizeof(info.viewport));
+            std::memcpy(push.clipOrtho, info.clipOrtho, sizeof(info.clipOrtho));
+            push.samples = uintProperty(context.properties(), "environmentSamples", 64, 1, 256);
+            visibilityView = visibility.view();
+            visibilityDepthView = visibilityDepth.view();
+        }
         push.sampleFrame = static_cast<uint32_t>(context.frameIndex());
         push.temporalJitter = exportGuides ? 1u : 0u;
         if (exportGuides) {
@@ -1529,6 +1600,12 @@ public:
             push.jitterOffsetY = jitter[1];
         }
         const ScenePathTraceCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
+        if (visibilityDeferred_ && (!hasPreviousCamera_ ||
+            std::memcmp(&currentCamera, &previousCamera_, sizeof(currentCamera)) != 0 ||
+            deferredHistoryProperties_ != context.properties())) {
+            resetAccumulation_ = true;
+            deferredHistoryProperties_ = context.properties();
+        }
         const bool previousCameraValid =
             hasPreviousCamera_ &&
             previousCameraWidth_ == context.width() &&
@@ -1624,6 +1701,17 @@ public:
         } else {
             bindings.push_back({.binding = 52, .buffer = lights_.reGIRBuffer()});
             bindings.push_back({.binding = 53, .textureViews = punctualPdfViews, .textureViewCount = 1});
+        }
+        if (visibilityDeferred_) {
+            bindings.push_back({.binding = 60, .textureViews = &visibilityView, .textureViewCount = 1});
+            bindings.push_back({.binding = 61, .textureViews = &visibilityDepthView, .textureViewCount = 1});
+            const GPUSceneBufferView* views[] = {&deferredViews->vertices, &deferredViews->meshlets,
+                &deferredViews->meshletDraws, &deferredViews->meshletVertices, &deferredViews->meshletTriangleWords,
+                &deferredViews->geometries, &deferredViews->instances, &deferredViews->materials};
+            for (uint32_t i = 0; i < std::size(views); ++i) {
+                bindings.push_back({.binding = 62 + i, .buffer = views[i]->buffer,
+                    .offset = views[i]->offset, .size = views[i]->size});
+            }
         }
         if (useOpenPBR) {
             const auto& lut2DViews = openPBRLuts_.lut2DViews();
@@ -1774,7 +1862,7 @@ private:
         // resolve pass adds predicted radiance before a separate tonemap pass.
         const bool debugViewEnabled =
             useOpenPBRBsdf(context.properties()) && push.debugView != kScenePathTraceDebugViewFinal;
-        const bool accumulationEnabled = !realtime_ && !debugViewEnabled &&
+        const bool accumulationEnabled = (!realtime_ || visibilityDeferred_) && !debugViewEnabled &&
             (push.cacheMode == kScenePathTraceCacheModeNrc ||
                 boolProperty(context.properties(), "accumulate", true));
         push.enableAccumulation = accumulationEnabled && history != nullptr ? 1u : 0u;
@@ -1790,7 +1878,7 @@ private:
 
         const bool nrcHistory = push.cacheMode == kScenePathTraceCacheModeNrc;
         const Format historyFormat = nrcHistory || exportDenoiserGuides(context.properties()) ? Format::Rgba16Sfloat :
-            (boolProperty(context.properties(), "outputLinear", false) ? Format::Rgba32Sfloat : Format::Rgba8Unorm);
+            ((visibilityDeferred_ || boolProperty(context.properties(), "outputLinear", false)) ? Format::Rgba32Sfloat : Format::Rgba8Unorm);
         const TextureDesc historyDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled |
@@ -2750,6 +2838,8 @@ private:
     }
 
     bool realtime_ = false;
+    bool visibilityDeferred_ = false;
+    RenderGraphProperties deferredHistoryProperties_;
     SceneLightResources lights_;
     SceneResourceManager fallbackSceneResourceManager_;
     ScenePathTraceResources sceneResources_;
@@ -2805,6 +2895,13 @@ std::unique_ptr<RenderGraphPass> createScenePathTracePass()
 std::unique_ptr<RenderGraphPass> createSceneRealtimeLightingPass()
 {
     return std::make_unique<ScenePathTracePass>(true);
+}
+
+std::unique_ptr<RenderGraphPass> createVisibilityBufferDeferredPass()
+{
+    // Share material textures, OpenPBR LUTs, RT shadows and lighting with the
+    // reference renderer; only the primary surface comes from raster visibility.
+    return std::make_unique<ScenePathTracePass>(true, true);
 }
 
 } // namespace metallic::render::builtin_pass

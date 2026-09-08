@@ -72,6 +72,10 @@ void registerBuiltInRenderGraphPasses()
         "Real-time photometric punctual lights, ray-query shadows and SH environment GI",
         []() { return builtin_pass::createSceneRealtimeLightingPass(); });
     registerRenderGraphPassType(
+        "VisibilityBufferDeferredPass",
+        "Resolve resident VBuffer surfaces with OpenPBR, physical lights, environment reflection and ray-query shadows",
+        []() { return builtin_pass::createVisibilityBufferDeferredPass(); });
+    registerRenderGraphPassType(
         "ScenePathTracePass",
         "Path trace a glTF scene with RayQuery",
         []() { return builtin_pass::createScenePathTracePass(); });

@@ -231,6 +231,7 @@ public:
             {"light_grid_debug.metallic_graph.json", "LightGridDebug.color"},
             {"openpbr_lookdev.metallic_graph.json", "PathTrace.color"},
             {"lookdev_shading_compare.metallic_graph.json", "Slider.color"},
+            {"lookdev_vbuffer.metallic_graph.json", "Slider.color"},
             {"material_visualization_abeautiful_game.metallic_graph.json", "MaterialViz.color"},
             {"pathtracing_abeautiful_game_openpbr.metallic_graph.json", "PathTrace.color"},
             {"pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json", "DlssRr.color"},
@@ -283,6 +284,7 @@ private:
         bool physical = false;
         for (const auto& node : graph.nodes()) {
             if (node.type == "ScenePathTracePass" || node.type == "SceneRealtimeLightingPass" ||
+                node.type == "VisibilityBufferDeferredPass" ||
                 node.type == "SceneRtxdiPass" || node.type == "RtxdiCompositePass") {
                 physical = true;
                 if (!node.properties.value("outputLinear", false)) { return false; }

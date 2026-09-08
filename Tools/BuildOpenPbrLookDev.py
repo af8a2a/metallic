@@ -151,6 +151,30 @@ def main():
         {"id": 5, "name": "FinalBlit", "type": "FinalBlitPass",
             "position": {"x": 1160.0, "y": 220.0}, "properties": {}}]
     write_json(ROOT / "Pipelines/Samples/lookdev_shading_compare.metallic_graph.json", comparison)
+    vbuffer = {"version": 1, "name": "LookDev VBuffer vs OpenPBR Path Tracing", "nodes": [
+        {"id": 1, "name": "Reference", "type": "ScenePathTracePass",
+            "position": {"x": 80.0, "y": 80.0},
+            "properties": {**graph["nodes"][0]["properties"], "cameraSyncGroup": "LookDevComparison"}},
+        {"id": 2, "name": "VBuffer", "type": "VisibilityBufferPass",
+            "position": {"x": 80.0, "y": 440.0},
+            "properties": {"path": scene_path, "camera": camera, "cameraSyncGroup": "LookDevComparison",
+                "visualization": "none", "lodLevel": 0}},
+        {"id": 3, "name": "Deferred", "type": "VisibilityBufferDeferredPass",
+            "position": {"x": 440.0, "y": 440.0},
+            "properties": {"path": scene_path, "bsdf": "openpbr", "outputLinear": True,
+                "environmentSamples": 64, "accumulate": True}},
+        {"id": 4, "name": "Slider", "type": "SliderDebugPass",
+            "position": {"x": 800.0, "y": 220.0}, "properties": {"splitPosition": 0.5}},
+        {"id": 5, "name": "AutoExposure", "type": "AutoExposurePass",
+            "position": {"x": 1160.0, "y": 220.0}, "properties": {"toneCurve": "none"}},
+        {"id": 6, "name": "FinalBlit", "type": "FinalBlitPass",
+            "position": {"x": 1520.0, "y": 220.0}, "properties": {}}],
+        "edges": [{"id": i + 1, "src": src, "dst": dst} for i, (src, dst) in enumerate([
+            ("VBuffer.visibility", "Deferred.visibility"), ("VBuffer.depth", "Deferred.depth"),
+            ("VBuffer.rasterInfo", "Deferred.rasterInfo"), ("Reference.color", "Slider.sourceA"),
+            ("Deferred.color", "Slider.sourceB"), ("Slider.color", "AutoExposure.source"),
+            ("AutoExposure.color", "FinalBlit.source")])], "outputs": []}
+    write_json(ROOT / "Pipelines/Samples/lookdev_vbuffer.metallic_graph.json", vbuffer)
     write_json(output / "Reference.json", {"materialxRevision": REVISION,
         "viewer": "https://academysoftwarefoundation.github.io/MaterialX/?file=Materials/Examples/OpenPbr/open_pbr_default.mtlx",
         "sources": {name: {"url": BASE_URL + relative,

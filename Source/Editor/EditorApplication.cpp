@@ -3897,6 +3897,9 @@ bool EditorApplication::drawRuntimeSettingsForNode(
         renderGraph_.setNodeRuntimeProperties(node.id, std::move(runtimeProperties));
         if (cameraChanged) {
             syncCameraGroup(node);
+            // A raster camera may also drive an accumulating reference pass.
+            // Its own runtime setting need not request history invalidation.
+            invalidateHistory = true;
         }
         if (invalidateHistory) {
             historyResources_.invalidateAll();
@@ -8029,6 +8032,7 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         node->type == "SceneRayQueryVisualizationPass" ||
         node->type == "SceneMaterialVisualizationPass" ||
         node->type == "ScenePathTracePass" ||
+        node->type == "VisibilityBufferDeferredPass" ||
         node->type == "SceneRealtimeLightingPass";
     if (hasStaticScenePath) {
         static int editingScenePathNodeId = -1;

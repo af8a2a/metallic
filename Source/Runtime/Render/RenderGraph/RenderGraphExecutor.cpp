@@ -2694,7 +2694,7 @@ const RenderSubsystemHost* RenderGraphPreviewRenderer::subsystemHost() const
     return &impl_->subsystemHost;
 }
 
-Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enableRayQuery)
+Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enableRayQuery, bool enableAftermath)
 {
     Result result = createDevice(
         DeviceDesc{
@@ -2713,7 +2713,7 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
             .enableRayQuery = enableRayQuery,
             .enablePushDescriptor = enableRayQuery,
             .enableClusterAccelerationStructure = enableRayQuery,
-            .enableAftermath = true,
+            .enableAftermath = enableAftermath,
         },
         impl_->device);
     if (!result) {

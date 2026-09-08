@@ -6,6 +6,23 @@
 
 namespace metallic::render {
 
+// CPU-authored metadata accompanying visibility/depth. Consumers reconstruct
+// from the actual raster camera, including when the culling camera is frozen.
+struct alignas(16) VisibilityBufferFrameInfo {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t residentRecordCount = 0;
+    uint32_t hasStreamGeometry = 0;
+    uint64_t sceneIdentity = 0;
+    uint64_t reserved = 0;
+};
+static_assert(sizeof(VisibilityBufferFrameInfo) == 112);
+
 inline constexpr uint32_t kVisibilityTriangleBits = 7u;
 inline constexpr uint32_t kVisibilityTriangleMask =
     (1u << kVisibilityTriangleBits) - 1u;

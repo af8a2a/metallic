@@ -31,6 +31,11 @@ GPUScene → instance cull → Wave32 AS meshlet cull → MS + visibility PS
 
 本 Pass 不再创建 OpenPBR compute 管线、LUT 或 deferred color buffer，也不依赖环境光子系统。材质贴图只上传 MASK 几何所需的 base-color alpha 贴图；这属于可见性判定，不是着色。`VisibilityBufferShading.slang` 暂保留源码供后续独立着色阶段使用，当前 Pass 不编译、不调度它。
 
+独立着色阶段现由 [VisibilityBufferDeferredPass](VisibilityBufferDeferred.md) 提供，
+使用新的 `VisibilityBufferDeferred.slang` 和共享 OpenPBR 光照函数。
+本 Pass 另发布 `rasterInfo` buffer，供延迟节点读取实际观察相机及 scene identity；
+resident LookDev 比较通过 `LookDev.exe --sample lookdev-vbuffer` 启动。
+
 RenderGraph 类型为 `VisibilityBufferPass`，内置图节点仍名为 `GPUDriven`。加载旧 JSON 时自动将 `GPUDrivenPreviewPass` 迁移到新类型；下次保存时写入新名称。
 
 当前路径不创建 RTAS、不发起 ray query，也不计算几何阴影或几何环境遮挡。双面材质跳过 normal-cone backface 剔除。

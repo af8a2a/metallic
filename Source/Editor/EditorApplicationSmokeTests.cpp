@@ -64,12 +64,16 @@ bool EditorApplication::runSliderDebugSmokeTest()
     cameraProperties.merge_patch(cameraNode->runtimeProperties);
     cameraProperties["camera"]["eye"][0] = cameraProperties["camera"]["eye"][0].get<float>() + 0.5f;
     applyBunnyCameraProperties(cameraProperties, "Smoke camera");
-    for (const char* name : {"OpenPBR", "Standard"}) {
-        if (!expect(renderGraph_.findNode(name)->runtimeProperties["camera"] == cameraProperties["camera"],
+    uint32_t linkedCameras = 0;
+    for (const auto& candidate : renderGraph_.nodes()) {
+        if (candidate.properties.value("cameraSyncGroup", "") != "LookDevComparison") { continue; }
+        ++linkedCameras;
+        if (!expect(candidate.runtimeProperties["camera"] == cameraProperties["camera"],
                 "Viewport camera synchronizes both BSDF paths")) { return false; }
     }
+    if (!expect(linkedCameras >= 2, "Comparison contains linked cameras")) { return false; }
     if (!expect(historyResources_.invalidationRevision() > historyRevision, "Camera movement resets accumulation")) { return false; }
-    activePreviewOutput_ = "OpenPBR.color";
+    activePreviewOutput_ = cameraNode->name + ".color";
     if (!expect(viewportSliderDebugNode() == nullptr && !overlayFrame(300, 175, true),
             "Raw producer preview has no comparison interaction")) { return false; }
     overlayFrame(300, 175, false);

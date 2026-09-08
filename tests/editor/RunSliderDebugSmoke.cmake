@@ -4,8 +4,11 @@ endif()
 file(MAKE_DIRECTORY "${TEST_DIRECTORY}")
 set(ENV{METALLIC_SMOKE_TEST_SLIDER} 1)
 set(ENV{METALLIC_DEBUG_VALIDATION} 1)
+if(NOT DEFINED SAMPLE_ID)
+    set(SAMPLE_ID lookdev-shading-compare)
+endif()
 execute_process(
-    COMMAND "${LOOKDEV_EXECUTABLE}" --sample lookdev-shading-compare --smoke-test --debug-control
+    COMMAND "${LOOKDEV_EXECUTABLE}" --sample "${SAMPLE_ID}" --smoke-test --debug-control
     WORKING_DIRECTORY "${TEST_DIRECTORY}"
     RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors TIMEOUT 75
 )

@@ -23,6 +23,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -1992,6 +1993,12 @@ struct VulkanEnabledFeatureChain {
 
     explicit VulkanEnabledFeatureChain(const VulkanDeviceFeatureSelection& selection)
     {
+#if defined(VK_NV_device_diagnostics_config)
+        if (const char* shaderDebugInfo = std::getenv("METALLIC_AFTERMATH_SHADER_DEBUG_INFO");
+            shaderDebugInfo != nullptr && std::strcmp(shaderDebugInfo, "0") == 0) {
+            diagnosticsConfigCreateInfo.flags &= ~VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV;
+        }
+#endif
         vulkan11Features.shaderDrawParameters = VK_TRUE;
         vulkan12Features.descriptorIndexing = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         vulkan12Features.shaderSampledImageArrayNonUniformIndexing =

@@ -608,6 +608,9 @@ public:
             "Visibility pass depth and HZB source");
         depth.depthStencilWrite();
         depth.usage = depth.usage | TextureUsageBits::Sampled;
+        auto& rasterInfo = reflection.addBufferOutput("rasterInfo", "Raster camera and resident GPUScene identity")
+            .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
+        rasterInfo.memoryLocation = MemoryLocation::HostUpload;
         return reflection;
     }
 
@@ -1136,6 +1139,24 @@ public:
         if (!result) {
             return result;
         }
+        const auto rasterInfo = context.outputBuffer("rasterInfo");
+        if (!rasterInfo.valid()) { return makeError(Error::InvalidArgument); }
+        VisibilityBufferFrameInfo info;
+        std::memcpy(info.eye, previousParams_.renderEye, sizeof(info.eye));
+        std::memcpy(info.center, previousParams_.renderCenter, sizeof(info.center));
+        std::memcpy(info.upProjection, previousParams_.renderUpProjection, sizeof(info.upProjection));
+        std::memcpy(info.viewport, previousParams_.renderViewport, sizeof(info.viewport));
+        std::memcpy(info.clipOrtho, previousParams_.renderClipOrtho, sizeof(info.clipOrtho));
+        info.width = context.width();
+        info.height = context.height();
+        info.residentRecordCount = residentRecordCapacity_;
+        info.hasStreamGeometry = streamEnabled_ ? 1u : 0u;
+        info.sceneIdentity = compiledScene_->resourceIdentity();
+        void* mappedInfo = rasterInfo.buffer()->map();
+        if (mappedInfo == nullptr) { return makeError(Error::Failure); }
+        std::memcpy(mappedInfo, &info, sizeof(info));
+        rasterInfo.buffer()->flush(0, sizeof(info));
+        rasterInfo.buffer()->unmap();
         result = bindlessHeap_->writeSampledImage(
             depthImageHandle_,
             *depth.view(),

@@ -30,6 +30,9 @@ cmake --build cmake-build-debug-visual-studio --target LookDev --parallel 8
 另提供 [SliderDebugPass 着色路径比较](SliderDebugPass.md)：
 `LookDev.exe --sample lookdev-shading-compare`，在同一材质上滑动比较 OpenPBR 与 Standard BSDF。
 
+[VBuffer 延迟渲染比较](VisibilityBufferDeferred.md) 使用
+`LookDev.exe --sample lookdev-vbuffer`，在相同 OpenPBR BSDF 下比较 GPUDriven 延迟着色与路径追踪。
+
 默认示例
 使用 `PathTrace → AutoExposure → FinalBlit`，明确选择 OpenPBR BSDF，
 每帧 4 spp、最大深度 12，在线性 HDR 空间渐进累积，不启用降噪器。

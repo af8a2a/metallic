@@ -1,6 +1,16 @@
 include(GoogleTest)
 
 if(WIN32)
+    add_test(NAME MetallicLookDevVBufferSmoke
+        COMMAND ${CMAKE_COMMAND}
+            "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/lookdev-vbuffer"
+            -DSAMPLE_ID=lookdev-vbuffer
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunSliderDebugSmoke.cmake"
+    )
+    set_tests_properties(MetallicLookDevVBufferSmoke PROPERTIES
+        LABELS "editor" TIMEOUT 90 RESOURCE_LOCK MetallicEditor
+    )
     add_test(NAME MetallicLookDevSliderSmoke
         COMMAND ${CMAKE_COMMAND}
             "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
@@ -109,6 +119,7 @@ add_executable(MetallicRhiTests
     rhi/AutoExposureTests.cpp
     rhi/OpenPbrLookDevTests.cpp
     rhi/SliderDebugTests.cpp
+    rhi/VisibilityBufferDeferredTests.cpp
     rhi/ClusterLightGridTests.cpp
     rhi/CommandSubmissionTests.cpp
     rhi/FrameContextTests.cpp
