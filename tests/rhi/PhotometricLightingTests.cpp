@@ -166,7 +166,63 @@ public:
                 return RhiTestResult::fail("light edit did not update GPU snapshot");
             }
         }
-        return RhiTestResult::pass("GPU: SI/EV/lumen equivalence, inverse square, spot cutoff, exposure, SH and live edits");
+        // A constant environment cannot detect coefficient order/sign mistakes.
+        // Project a positive analytic l<=2 field and compare its irradiance in
+        // all six axis directions after the actual lat-long GPU precompute.
+        constexpr double pi = 3.14159265358979323846;
+        for (uint32_t y = 0; y < 32; ++y) {
+            for (uint32_t x = 0; x < 64; ++x) {
+                const double theta = (y + 0.5) * pi / 32.0;
+                const double phi = ((x + 0.5) / 64.0 - 0.5) * 2.0 * pi;
+                const double dx = std::cos(phi) * std::sin(theta);
+                const double dy = std::cos(theta);
+                const double dz = std::sin(phi) * std::sin(theta);
+                const size_t offset = (y * 64 + x) * 3;
+                pixels[offset] = static_cast<float>(2.0 + 0.7 * dx);
+                pixels[offset + 1] = static_cast<float>(1.0 + 0.4 * dy);
+                pixels[offset + 2] = static_cast<float>(0.5 + 0.25 * (3.0 * dz * dz - 1.0));
+            }
+        }
+        const auto directionalPath = std::filesystem::absolute(context.outputDirectory / "directional-photometric.hdr");
+        if (!stbi_write_hdr(directionalPath.string().c_str(), 64, 32, 3, pixels.data())) {
+            return RhiTestResult::fail("cannot create directional HDR fixture");
+        }
+        world.setEnvironment({.enabled = true, .path = directionalPath});
+        bool directionalReady = false;
+        for (int attempt = 0; attempt < 200; ++attempt) {
+            result = executor.execute({.graphicsQueue = queue});
+            if (!result || !executor.waitForSubmittedWork(5'000'000'000ull)) {
+                return RhiTestResult::fail("directional SH probe execution failed");
+            }
+            const auto& snapshot = executor.subsystemHost()->get<render::EnvironmentLightingSubsystem>()->snapshot();
+            directionalReady = snapshot.mapAvailable && snapshot.status == render::EnvironmentLightingStatus::Ready &&
+                snapshot.settings.path == directionalPath;
+            if (directionalReady) { break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        if (!directionalReady) { return RhiTestResult::fail("directional HDR did not finish GPU publication"); }
+        auto* directionalBuffer = executor.outputResource("Probe.data")->buffer;
+        directionalBuffer->invalidate();
+        void* directionalMapped = directionalBuffer->map();
+        if (directionalMapped == nullptr) { return RhiTestResult::fail("directional SH readback failed"); }
+        std::array<float, 48> directionalValues;
+        std::memcpy(directionalValues.data(), directionalMapped, sizeof(directionalValues));
+        directionalBuffer->unmap();
+        const std::array<std::array<double, 3>, 6> normals{{{1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1}}};
+        for (size_t i = 0; i < normals.size(); ++i) {
+            const auto& n = normals[i];
+            const std::array expected{2.0 * pi + 0.7 * (2.0 * pi / 3.0) * n[0],
+                pi + 0.4 * (2.0 * pi / 3.0) * n[1],
+                0.5 * pi + 0.25 * (pi / 4.0) * (3.0 * n[2] * n[2] - 1.0)};
+            for (size_t c = 0; c < 3; ++c) {
+                // Includes RGBE fixture quantization and 64x32 texel quadrature.
+                if (!std::isfinite(directionalValues[(6 + i) * 4 + c]) ||
+                    std::abs(directionalValues[(6 + i) * 4 + c] - expected[c]) > 0.04) {
+                    return RhiTestResult::fail("directional irradiance SH basis or cosine normalization changed");
+                }
+            }
+        }
+        return RhiTestResult::pass("GPU: SI/EV/lumen equivalence, inverse square, spot cutoff, exposure, constant/directional SH and live edits");
     }
 };
 

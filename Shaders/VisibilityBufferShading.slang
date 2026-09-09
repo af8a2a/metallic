@@ -888,11 +888,8 @@ float3 environmentSHIrradiance(
             push.bufferShaderIndexBase + push.environmentSHBuffer,
             0));
     StructuredBuffer<float4> coefficients = coefficientsHandle;
-    float3 radiance = float3(0.0);
-    for (uint coefficientIndex = 0u; coefficientIndex < 9u; ++coefficientIndex) {
-        radiance += coefficients[coefficientIndex].xyz * shBasis(coefficientIndex, rotatedDirection);
-    }
-    return max(radiance, float3(0.0)) * params.environmentIntensity;
+    SH::IrradianceL2RGB environment = SH::loadIrradianceL2RGB(coefficients);
+    return max(environment.evaluate(rotatedDirection), float3(0.0)) * params.environmentIntensity;
 }
 
 float3 hashColor(uint seed)

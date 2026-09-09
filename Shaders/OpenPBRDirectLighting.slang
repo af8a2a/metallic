@@ -7,10 +7,8 @@ float3 environmentDiffuseIrradiance(float3 normal, ScenePathTracePush push)
 {
     if (push.environmentMode == kEnvironmentModeDisabled || push.environmentIntensity <= 0.0) { return float3(0.0); }
     float3 localNormal = environmentLocalDirectionToWorld(normal, -push.environmentRotationRadians);
-    float3 irradiance = float3(0.0);
-    for (uint i = 0u; i < 9u; ++i) {
-        irradiance += gEnvironmentIrradianceSH[i].rgb * shBasis(i, localNormal);
-    }
+    SH::IrradianceL2RGB environment = SH::loadIrradianceL2RGB(gEnvironmentIrradianceSH);
+    float3 irradiance = environment.evaluate(localNormal);
     return max(irradiance, float3(0.0)) * push.environmentIntensity;
 }
 

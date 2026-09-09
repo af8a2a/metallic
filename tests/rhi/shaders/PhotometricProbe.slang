@@ -15,9 +15,8 @@ void photometricProbeMain()
     gOutput[5] = float4(samplePunctualLight(2u, float3(1, 0, 0)).illuminance, 0);
     float3 normals[6] = {float3(1,0,0), float3(-1,0,0), float3(0,1,0),
         float3(0,-1,0), float3(0,0,1), float3(0,0,-1)};
+    SH::IrradianceL2RGB environment = SH::loadIrradianceL2RGB(gSH);
     for (uint n = 0; n < 6; ++n) {
-        float3 irradiance = 0;
-        for (uint i = 0; i < 9; ++i) { irradiance += gSH[i].rgb * shBasis(i, normals[n]); }
-        gOutput[6 + n] = float4(irradiance, 0);
+        gOutput[6 + n] = float4(environment.evaluate(normals[n]), 0);
     }
 }

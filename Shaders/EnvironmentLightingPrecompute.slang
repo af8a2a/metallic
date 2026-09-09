@@ -5,7 +5,7 @@
 static const uint kIntegratePartials = 0u;
 static const uint kFinalizeCoefficients = 1u;
 static const uint kThreadCount = 128u;
-static const uint kCoefficientCount = 9u;
+static const uint kCoefficientCount = SH::L2RGB::kCoefficientCount;
 static const float kPi = 3.14159265358979323846;
 
 [[vk::binding(0, 0)]]
@@ -38,7 +38,7 @@ void integratePartials(
 {
     uint partialIndex = groupId.y * push.dispatchWidth + groupId.x;
     uint texelIndex = partialIndex * kThreadCount + groupThreadIndex;
-    float4 weightedRadiance = float4(0.0);
+    float3 weightedRadiance = float3(0.0);
     float3 direction = float3(0.0, 1.0, 0.0);
     uint texelCount = push.width * push.height;
     if (partialIndex < push.partialCount && texelIndex < texelCount) {
@@ -54,12 +54,13 @@ void integratePartials(
         float3 radiance = push.procedural != 0u ? proceduralEnvironmentLocalRadiance(direction)
             : gEnvironmentMap.Load(int3(texel, 0)).rgb;
         radiance = all(isfinite(radiance)) ? max(radiance, 0.0) : float3(0.0);
-        weightedRadiance = float4(radiance * solidAngle, 0.0);
+        weightedRadiance = radiance * solidAngle;
     }
 
+    SH::L2RGB projected = SH::projectOntoL2(direction, weightedRadiance);
     for (uint coefficientIndex = 0u; coefficientIndex < kCoefficientCount; ++coefficientIndex) {
         gShared[coefficientIndex * kThreadCount + groupThreadIndex] =
-            weightedRadiance * shBasis(coefficientIndex, direction);
+            float4(projected.c[coefficientIndex], 0.0);
     }
     GroupMemoryBarrierWithGroupSync();
 
@@ -97,7 +98,9 @@ void finalizeCoefficient(
         GroupMemoryBarrierWithGroupSync();
     }
     if (groupThreadIndex == 0u && coefficientIndex < kCoefficientCount) {
-        gCoefficients[coefficientIndex] = gShared[0] * shCosineConvolution(coefficientIndex);
+        // Each workgroup owns one coefficient; retain the parallel reduction
+        // and pack the same cosine-convolved irradiance ABI consumed by SH.
+        gCoefficients[coefficientIndex] = gShared[0] * SH::cosineConvolutionWeight(coefficientIndex);
     }
 }
 
