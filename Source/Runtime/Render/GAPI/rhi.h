@@ -325,7 +325,9 @@ struct DeviceDesc {
     const char* applicationName = "Metallic";
     bool enableValidation = false;
     bool enableBindlessDescriptorHeap = false;
-    bool enableShaderObject = false;
+    // Required for every device, including tests and pipeline-only workloads.
+    // createDevice rejects false to prevent cross-feature pipeline-cache reuse.
+    bool enableShaderObject = true;
     bool enableMeshShader = false;
     bool enableTaskShader = false;
     bool enableTaskShaderSubgroupBallot = false;

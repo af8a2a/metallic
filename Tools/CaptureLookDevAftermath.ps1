@@ -20,8 +20,14 @@ $metadata = [ordered]@{
     executable = $executable
     executableSha256 = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
     shaderDebugInfo = [bool]$ShaderDebugInfo
+    internalPipelineCache = $env:METALLIC_VK_INTERNAL_PIPELINE_CACHE
+    logPipelineKeys = $env:METALLIC_VK_LOG_PIPELINE_KEYS
     arguments = @('--filter', 'visibility_buffer_deferred_openpbr', '--rhi-validation', '--output-dir', $captureDirectory)
     startedAt = (Get-Date).ToUniversalTime().ToString('o')
+}
+$applicationCache = Join-Path $repoRoot '.cache/pso/VisibilityBufferPass.pso'
+if (Test-Path -LiteralPath $applicationCache) {
+    $metadata.applicationPipelineCacheSha256 = (Get-FileHash -LiteralPath $applicationCache -Algorithm SHA256).Hash
 }
 $pdb = [IO.Path]::ChangeExtension($executable, '.pdb')
 if (Test-Path -LiteralPath $pdb) { $metadata.pdbSha256 = (Get-FileHash -LiteralPath $pdb -Algorithm SHA256).Hash }

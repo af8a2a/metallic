@@ -1182,6 +1182,49 @@ public:
         firstPipeline.reset();
         firstCache.reset();
 
+        // The old Vulkan backend tag did not identify the Shader Object device
+        // contract. Reuse current, valid native data and change only that tag so
+        // rejection must happen in the .pso container before native cache load.
+        const std::filesystem::path legacyCachePath =
+            context.outputDirectory / "pipeline_cache_pre_shader_object.pso";
+        std::filesystem::copy_file(
+            cachePath, legacyCachePath, std::filesystem::copy_options::overwrite_existing, fileError);
+        if (fileError) {
+            return RhiTestResult::fail(
+                "failed to create a legacy .pso test file: " + fileError.message());
+        }
+        {
+            constexpr uint32_t kLegacyVulkanBackendTag = 0x4b56544du;
+            // The container begins with an 8-byte magic and a uint32 version.
+            constexpr std::streamoff kBackendTagOffset = 8 + sizeof(uint32_t);
+            std::fstream legacyStream(legacyCachePath, std::ios::binary | std::ios::in | std::ios::out);
+            legacyStream.seekp(kBackendTagOffset);
+            legacyStream.write(
+                reinterpret_cast<const char*>(&kLegacyVulkanBackendTag), sizeof(kLegacyVulkanBackendTag));
+            legacyStream.flush();
+            if (!legacyStream) {
+                return RhiTestResult::fail("failed to set the legacy Vulkan .pso backend tag");
+            }
+        }
+        const std::string legacyCachePathString = legacyCachePath.string();
+        std::unique_ptr<render::PipelineCache> legacyCache;
+        result = context.device.createPipelineCache(
+            render::PipelineCacheDesc{
+                .filePath = legacyCachePathString.c_str(),
+                .saveOnDestroy = false,
+            },
+            legacyCache);
+        if (!result || legacyCache == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createPipelineCache(legacy Vulkan backend) returned ") + toString(result));
+        }
+        const render::PipelineCacheStats legacyStats = legacyCache->stats();
+        if (legacyStats.loadStatus != render::PipelineCacheLoadStatus::Incompatible ||
+            legacyStats.storedPsoCount != 0 || legacyStats.backendDataSize != 0) {
+            return RhiTestResult::fail("pre-Shader-Object Vulkan .pso data was not rejected before native cache load");
+        }
+        legacyCache.reset();
+
         std::unique_ptr<render::PipelineCache> loadedCache;
         result = context.device.createPipelineCache(
             render::PipelineCacheDesc{
@@ -1349,7 +1392,7 @@ public:
         }
 
         return RhiTestResult::pass(
-            "validated raster state hashing, cold miss, warm hit, shader invalidation, corruption recovery, and .pso persistence");
+            "validated raster state hashing, cold miss, warm hit, shader invalidation, legacy device-contract rejection, corruption recovery, and .pso persistence");
     }
 };
 

@@ -501,7 +501,8 @@ RHI 测试支持原有便捷参数 `--list`/`--filter`，并会转换到 GoogleT
 - **RenderGraph 的并发调度有限**：已有多队列提交接口，但跨队列资源边尚不支持。
 - **资源生命周期以整次编译为主**：图输出独立分配，尚无 transient aliasing 或通用资源池。
 - **历史资源显式管理**：跨帧数据不属于普通图边，Pass 必须通过 `HistoryResourceManager` 约定名字和有效性。
-- **高级功能按能力降级**：Mesh Shader、Ray Query、CLAS/PTLAS、NRD、Streamline、Shader Object 都不能作为基础设备必有能力。
+- **Shader Object 是基础设备要求**：运行时和 RHI 测试均启用 `VK_EXT_shader_object`；显式关闭会被拒绝，硬件不支持时返回 `Unsupported`，不降级为关闭该特性的设备。
+- **其他高级功能按能力降级**：Mesh Shader、Ray Query、CLAS/PTLAS、NRD、Streamline 不作为基础设备必有能力。
 - **StreamAsset 是独立运行路径**：普通 Scene 全量驻留与分页 meshlet runtime 不应混为同一资源所有权模型。
 - **法线空间必须稳定**：Ray Query shader 在构建 TBN 和应用 normal map 前，不得在 `traceClosest()` 内按当前 ray 翻转 authored/world-space `normal` 或 `geometryNormal`；如 BSDF 需要同半球法线，只对最终 shading normal 做 face-forward。
 

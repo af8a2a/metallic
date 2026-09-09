@@ -102,6 +102,43 @@ public:
     }
 };
 
+class ShaderObjectRequiredTest : public RhiTest {
+public:
+    ShaderObjectRequiredTest()
+    {
+        type = RhiTestType::Validation;
+        name = "shader_object_required";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        if (!render::DeviceDesc{}.enableShaderObject) {
+            return RhiTestResult::fail("DeviceDesc must enable required shader objects by default");
+        }
+        if (!context.device.capabilities().shaderObject) {
+            return RhiTestResult::fail("A successfully created device must expose shader object support");
+        }
+
+        // Reject this invalid request before creating another Vulkan device.
+        // Feature-off driver-cache reproductions belong to the standalone app.
+        std::unique_ptr<render::Device> rejectedDevice;
+        const render::Result result = render::createDevice(
+            render::DeviceDesc{
+                .applicationName = "Metallic RHI Required Shader Object Test",
+                .enableValidation = context.enableValidation,
+                .enableShaderObject = false,
+            },
+            rejectedDevice);
+        if (!render::hasError(result, render::Error::InvalidArgument) || rejectedDevice != nullptr) {
+            return RhiTestResult::fail(
+                std::string("createDevice(enableShaderObject=false) must reject the request without a device, got ") +
+                toString(result));
+        }
+
+        return RhiTestResult::pass("Shader objects are enabled by default and cannot be disabled");
+    }
+};
+
 class ScenePathNormalizationTest : public RhiTest {
 public:
     ScenePathNormalizationTest()
@@ -285,6 +322,7 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(ValidateDeviceTest);
+METALLIC_REGISTER_RHI_TEST(ShaderObjectRequiredTest);
 METALLIC_REGISTER_RHI_TEST(ScenePathNormalizationTest);
 METALLIC_REGISTER_RHI_TEST(OptionalFeatureSoftRequestTest);
 METALLIC_REGISTER_RHI_TEST(ClusterAccelerationStructureSupportTest);

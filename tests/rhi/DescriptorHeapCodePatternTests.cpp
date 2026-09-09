@@ -35,14 +35,14 @@ uint32_t weightedSum(const PatternValues& value)
         5 * value.e + 6 * value.f + 7 * value.g + 8 * value.h;
 }
 
-bool parseNumber(std::string_view text, uint32_t& value)
+bool parseNumber(std::string_view text, uint32_t& value, int base = 10)
 {
-    const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), value, base);
     return result.ec == std::errc{} && result.ptr == text.data() + text.size();
 }
 
 RhiTestResult verifyEnvironmentPartials(render::Buffer& buffer, render::Buffer& coefficients, uint32_t groups,
-    bool procedural, const std::string& description)
+    bool procedural, bool integrateOnly, const std::string& description)
 {
     buffer.invalidate();
     const auto* actual = static_cast<const std::array<float, 4>*>(buffer.map());
@@ -75,6 +75,10 @@ RhiTestResult verifyEnvironmentPartials(render::Buffer& buffer, render::Buffer& 
     }
     buffer.unmap();
     if (procedural && !(dcSum > 0.0)) { return RhiTestResult::fail(description + ": nonpositive SH DC sum"); }
+    if (integrateOnly) {
+        return RhiTestResult::pass(description + ", verified " + std::to_string(groups * 9) +
+            " SH partial float4 values");
+    }
     coefficients.invalidate();
     const auto* finalized = static_cast<const std::array<float, 4>*>(coefficients.map());
     if (finalized == nullptr) { return RhiTestResult::fail("SH coefficients mapping failed"); }
@@ -129,8 +133,8 @@ public:
 
     RhiTestResult run(RhiTestContext& context) override
     {
-        // Default regression: the passing scalar-field shader on the minimal
-        // bindless device. Driver-reset reproductions below require explicit env.
+        // Shader objects are mandatory even for this ordinary compute pipeline.
+        // GPU execution using an existing driver cache requires explicit opt-in.
         uint32_t pattern = 0;
         uint32_t groups = 1;
         if (const char* requested = std::getenv("METALLIC_GPU_PATTERN")) {
@@ -163,32 +167,60 @@ public:
         const uint32_t finalizeTable = tableMode == "shared" ? 1u : 0u;
         const char* pdfValue = std::getenv("METALLIC_GPU_PATTERN_PREFIX_PDF");
         const bool prefixPdf = environment && pdfValue != nullptr && std::strcmp(pdfValue, "1") == 0;
+        const char* integrateOnlyValue = std::getenv("METALLIC_GPU_PATTERN_INTEGRATE_ONLY");
+        const bool integrateOnly = environment && integrateOnlyValue != nullptr && std::strcmp(integrateOnlyValue, "1") == 0;
+        const char* compileOnlyValue = std::getenv("METALLIC_GPU_PATTERN_COMPILE_ONLY");
+        const bool compileOnly = compileOnlyValue != nullptr && std::strcmp(compileOnlyValue, "1") == 0;
+        uint32_t generatorOverride = 0;
+        const char* generatorValue = std::getenv("METALLIC_GPU_PATTERN_SPIRV_GENERATOR");
+        if (generatorValue != nullptr) {
+            std::string_view text(generatorValue);
+            const bool hexadecimal = text.starts_with("0x") || text.starts_with("0X");
+            if (hexadecimal) { text.remove_prefix(2); }
+            if (!parseNumber(text, generatorOverride, hexadecimal ? 16 : 10)) {
+                return RhiTestResult::fail("METALLIC_GPU_PATTERN_SPIRV_GENERATOR must be a uint32 decimal or 0x hexadecimal integer");
+            }
+        }
         const char* aftermathValue = std::getenv("METALLIC_TEST_AFTERMATH");
         const bool aftermath = aftermathValue != nullptr && std::strcmp(aftermathValue, "1") == 0;
         const char* previewValue = std::getenv("METALLIC_GPU_PATTERN_PREVIEW_DEVICE");
         const bool previewDevice = previewValue != nullptr && std::strcmp(previewValue, "1") == 0;
-        const char* shaderObjectValue = std::getenv("METALLIC_GPU_PATTERN_SHADER_OBJECT");
-        const bool shaderObject = shaderObjectValue != nullptr && std::strcmp(shaderObjectValue, "1") == 0;
+        // Accept old explicit-on commands, but never silently reinterpret an
+        // old feature-off experiment as a required-feature device.
+        if (const char* legacyShaderObject = std::getenv("METALLIC_GPU_PATTERN_SHADER_OBJECT");
+            legacyShaderObject != nullptr && std::strcmp(legacyShaderObject, "1") != 0) {
+            return RhiTestResult::fail("ShaderObject is required; METALLIC_GPU_PATTERN_SHADER_OBJECT may only be 1. "
+                "Use the standalone Vulkan reproducer for feature-off cache experiments");
+        }
+        const char* internalCacheValue = std::getenv("METALLIC_VK_INTERNAL_PIPELINE_CACHE");
+        const bool internalCacheDisabled = internalCacheValue != nullptr && std::strcmp(internalCacheValue, "disabled") == 0;
+        const char* allowDeviceLostValue = std::getenv("METALLIC_GPU_PATTERN_ALLOW_DEVICE_LOST");
+        const bool allowDeviceLost = allowDeviceLostValue != nullptr && std::strcmp(allowDeviceLostValue, "1") == 0;
         const std::string description = std::string(kPatternNames[pattern]) +
             ", groups=" + std::to_string(groups) + ", Aftermath=" + (aftermath ? "on" : "off") +
-            ", device=" + (previewDevice ? "preview" : shaderObject ? "shader object" : "minimal") +
-            (environment ? ", tables=" + std::string(tableMode) + ", prefix PDF=" + (prefixPdf ? "on" : "off") : "");
+            ", device=" + (previewDevice ? "preview" : "required shader object") +
+            ", compile only=" + (compileOnly ? "on" : "off") +
+            (environment ? ", tables=" + std::string(tableMode) + ", prefix PDF=" + (prefixPdf ? "on" : "off") +
+                ", SH=" + (integrateOnly ? "integrate only" : "integrate + finalize") : "");
         std::cout << "Descriptor heap pattern: " << description << std::endl;
-        // On the investigated device the otherwise identical SH fixture passes
-        // with minimal flags, but enableShaderObject alone causes DeviceLost.
-        // This isolates a device-feature boundary, not a specific Slang copy op.
-        if (previewDevice || shaderObject) {
-            std::cout << "[expected-driver-reset experiment] Explicit shader-object/preview device flags enabled; "
-                "this configuration reproduced DeviceLost and may temporarily hang or reset the desktop driver."
+        // Old shaderObject=false cache entries can produce DeviceLost when reused
+        // by a shaderObject=true device. Keep those experiments outside ordinary
+        // regression runs; feature-off controls now live in the standalone repro.
+        if (!compileOnly && !internalCacheDisabled && !allowDeviceLost) {
+            return RhiTestResult::skip("GPU cache experiment requires METALLIC_VK_INTERNAL_PIPELINE_CACHE=disabled "
+                "or explicit METALLIC_GPU_PATTERN_ALLOW_DEVICE_LOST=1; compile-only needs neither");
+        }
+        if (!compileOnly && !internalCacheDisabled) {
+            std::cout << "[expected-driver-reset experiment] Explicit reuse of a potentially incompatible driver cache; "
+                "this may cause DeviceLost and temporarily hang or reset the desktop driver."
                 << std::endl;
         }
 
         std::unique_ptr<render::Device> device;
         auto result = render::createDevice({.applicationName = "DescriptorHeap Code Pattern",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
-            // Match RenderGraphPreviewRenderer::initialize(..., true, aftermath)
-            // when requested, or enable only shader objects for a single flag test.
-            .enableShaderObject = previewDevice || shaderObject,
+            // Preview mode adds its other features to the mandatory baseline.
+            .enableShaderObject = true,
             .enableMeshShader = previewDevice,
             .enableTaskShader = previewDevice,
             .enableTaskShaderSubgroupBallot = previewDevice,
@@ -217,6 +249,23 @@ public:
             .searchPath = environment ? PROJECT_SOURCE_DIR "/Shaders" : PROJECT_SOURCE_DIR "/tests/rhi/shaders",
             .macroDefines = environment ? nullptr : &macro, .macroDefineCount = environment ? 0u : 1u}, shader);
         if (!result) { return RhiTestResult::fail(shader.diagnostics); }
+        if (shader.spirv.size() < 5 || shader.spirv[0] != 0x07230203u) {
+            return RhiTestResult::fail("Pattern shader has an invalid SPIR-V header");
+        }
+        // Match the compiler cache's FNV-1a byte hash without changing its
+        // contents. The experimental generator edit applies only to this copy.
+        uint64_t originalHash = 14695981039346656037ull;
+        const auto* originalBytes = reinterpret_cast<const unsigned char*>(shader.spirv.data());
+        for (size_t i = 0; i < shader.spirv.size() * sizeof(uint32_t); ++i) {
+            originalHash ^= originalBytes[i];
+            originalHash *= 1099511628211ull;
+        }
+        const uint32_t originalGenerator = shader.spirv[2];
+        if (generatorValue != nullptr) { shader.spirv[2] = generatorOverride; }
+        std::cout << "Pattern SPIR-V: original generator=0x" << std::hex << originalGenerator <<
+            ", effective generator=0x" << shader.spirv[2] << ", original FNV-1a64=0x" << originalHash <<
+            std::dec << ", words=" << shader.spirv.size() <<
+            ", generator override=" << (generatorValue != nullptr ? "on (memory only)" : "off") << std::endl;
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
@@ -228,6 +277,11 @@ public:
             .bindings = bindings, .bindingCount = 3, .debugName = "DescriptorHeap Code Pattern",
             .descriptorSetCount = descriptorSetCount, .requiresRayQuery = false}, log);
         if (!result) { return RhiTestResult::fail(log); }
+        if (compileOnly) {
+            std::cout << "Pattern compile only: ComputeProgram initialized; no fixture resources, commands or submissions; "
+                "PDF prefix skipped." << std::endl;
+            return RhiTestResult::pass(description + ", pipeline initialization completed without GPU submission");
+        }
 
         const PatternValues push = environment ?
             PatternValues{0, procedural ? 256u : 1u, procedural ? 128u : 1u, groups, groups, procedural ? 1u : 0u, 0, 0} :
@@ -302,7 +356,7 @@ public:
         PATTERN_REQUIRE(program.dispatch({.commandBuffer = commands.buffer.get(),
             .bindings = resources, .bindingCount = 3, .pushData = &push, .pushDataSize = sizeof(push),
             .groupCountX = groups}));
-        if (environment) {
+        if (environment && !integrateOnly) {
             const render::BufferBarrierDesc partialsBarrier{.buffer = input.get(),
                 .before = render::ResourceState::General, .after = render::ResourceState::General,
                 .size = inputBytes};
@@ -319,7 +373,7 @@ public:
         PATTERN_REQUIRE(commands.tracker.submit({.commandBuffers = submitted, .commandBufferCount = 1}, commands.frame));
         PATTERN_REQUIRE(commands.frame.wait(kWaitTimeout));
 
-        if (environment) { return verifyEnvironmentPartials(*input, *output, groups, procedural, description); }
+        if (environment) { return verifyEnvironmentPartials(*input, *output, groups, procedural, integrateOnly, description); }
 
         output->invalidate();
         const auto* actual = static_cast<const uint32_t*>(output->map());

@@ -43,7 +43,9 @@ namespace {
 
 constexpr uint32_t kVulkanApiVersion = VK_API_VERSION_1_4;
 constexpr uint64_t kAcquireTimeoutNanoseconds = std::numeric_limits<uint64_t>::max();
-constexpr uint32_t kVulkanPipelineCacheBackendTag = 0x4b56544du;
+// MTV2: Shader Object is mandatory. Pre-policy caches did not identify the
+// enabled feature state, so reject their backend blobs instead of reusing them.
+constexpr uint32_t kVulkanPipelineCacheBackendTag = 0x3256544du;
 
 struct StateInfo {
     VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
@@ -2921,6 +2923,7 @@ struct DeviceImpl {
     bool debugUtilsEnabled = false;
     bool bindlessDescriptorHeapEnabled = false;
     bool shaderObjectEnabled = false;
+    bool logPipelineKeys = false;
     bool bufferDeviceAddressEnabled = false;
     bool rayTracingAccelerationStructureEnabled = false;
     bool rayQueryEnabled = false;
@@ -8556,6 +8559,46 @@ Result Device::createComputePipeline(
         .layout = layout,
     };
 
+#if defined(VK_KHR_pipeline_binary)
+    if (impl_->logPipelineKeys) {
+        VkPipelineBinaryKeyKHR globalKey{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+        VkPipelineBinaryKeyKHR pipelineKey{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+        VkPipelineCreateInfoKHR keyInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_INFO_KHR,
+            .pNext = &pipelineInfo,
+        };
+        VkResult keyResult = vkGetPipelineKeyKHR != nullptr
+            ? vkGetPipelineKeyKHR(impl_->device, nullptr, &globalKey)
+            : VK_ERROR_EXTENSION_NOT_PRESENT;
+        if (keyResult == VK_SUCCESS) {
+            keyResult = vkGetPipelineKeyKHR(impl_->device, &keyInfo, &pipelineKey);
+        }
+        if (keyResult != VK_SUCCESS || globalKey.keySize == 0 || pipelineKey.keySize == 0 ||
+            globalKey.keySize > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR ||
+            pipelineKey.keySize > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR) {
+            spdlog::error("Pipeline key diagnostic failed: VkResult={}, globalSize={}, pipelineSize={}.",
+                static_cast<int>(keyResult), globalKey.keySize, pipelineKey.keySize);
+            if (layout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(impl_->device, layout, nullptr);
+            }
+            return keyResult != VK_SUCCESS ? resultFromVk(keyResult) : makeError(Error::Failure);
+        }
+        const auto keyHex = [](const VkPipelineBinaryKeyKHR& key) {
+            constexpr char digits[] = "0123456789abcdef";
+            std::string text;
+            text.reserve(key.keySize * 2);
+            for (uint32_t index = 0; index < key.keySize; ++index) {
+                text.push_back(digits[key.key[index] >> 4]);
+                text.push_back(digits[key.key[index] & 0xf]);
+            }
+            return text;
+        };
+        spdlog::info("Vulkan pipeline keys: SPIRV=0x{:016x}, PSO=0x{:016x}, SO={}, global={}, pipeline={}.",
+            desc.computeShader->impl_->contentHash, psoHash, impl_->shaderObjectEnabled,
+            keyHex(globalKey), keyHex(pipelineKey));
+    }
+#endif
+
     VkPipeline pipeline = VK_NULL_HANDLE;
     result = vkCreateComputePipelines(
         impl_->device,
@@ -8739,7 +8782,29 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 {
     outDevice.reset();
 
+    if (!desc.enableShaderObject) {
+        spdlog::error("Shader Object is required: DeviceDesc::enableShaderObject must be true.");
+        return makeError(Error::InvalidArgument);
+    }
+
+    const char* internalPipelineCacheMode = std::getenv("METALLIC_VK_INTERNAL_PIPELINE_CACHE");
+    const bool diagnoseInternalPipelineCache = internalPipelineCacheMode != nullptr;
+    const bool disableInternalPipelineCache = diagnoseInternalPipelineCache &&
+        std::strcmp(internalPipelineCacheMode, "disabled") == 0;
+    if (diagnoseInternalPipelineCache && !disableInternalPipelineCache &&
+        std::strcmp(internalPipelineCacheMode, "enabled") != 0) {
+        spdlog::error("METALLIC_VK_INTERNAL_PIPELINE_CACHE must be enabled or disabled.");
+        return makeError(Error::InvalidArgument);
+    }
+    const char* logPipelineKeysValue = std::getenv("METALLIC_VK_LOG_PIPELINE_KEYS");
+    const bool logPipelineKeys = logPipelineKeysValue != nullptr && std::strcmp(logPipelineKeysValue, "1") == 0;
+    if (logPipelineKeys && !diagnoseInternalPipelineCache) {
+        spdlog::error("METALLIC_VK_LOG_PIPELINE_KEYS requires METALLIC_VK_INTERNAL_PIPELINE_CACHE=enabled or disabled.");
+        return makeError(Error::InvalidArgument);
+    }
+
     auto deviceImpl = std::make_unique<detail::DeviceImpl>();
+    deviceImpl->logPipelineKeys = logPipelineKeys;
     if (desc.enableAftermath && profiling::nsightAftermathSdkAvailable()) {
         profiling::initializeNsightAftermath(desc.applicationName);
     }
@@ -8876,13 +8941,14 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         }
 
         const VulkanExtensionSet extensions = VulkanExtensionSet::query(physicalDevice);
-        if (!extensions.swapchain) {
+        if (!extensions.swapchain || !extensions.shaderObject) {
             continue;
         }
 
         VulkanDeviceFeatureProbe probe;
         probe.query(physicalDevice, extensions);
-        if (!probe.supportsRequiredCoreFeatures()) {
+        if (!probe.supportsRequiredCoreFeatures() ||
+            probe.shaderObjectFeatures.shaderObject != VK_TRUE) {
             continue;
         }
 
@@ -8983,6 +9049,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     }
 
     if (deviceImpl->physicalDevice == VK_NULL_HANDLE) {
+        spdlog::error(
+            "No suitable Vulkan device: required core features, graphics/compute queues, "
+            "VK_KHR_swapchain and VK_EXT_shader_object with shaderObject=true are required.");
         return makeError(Error::Unsupported);
     }
 
@@ -9045,9 +9114,65 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 
     VulkanEnabledFeatureChain enabledFeatureChain(selectedFeatures);
     std::vector<const char*> deviceExtensions = enabledDeviceExtensions(selectedFeatures);
+    const void* deviceCreateNext = &enabledFeatureChain.features;
+#if defined(VK_KHR_pipeline_binary)
+    VkPhysicalDevicePipelineBinaryFeaturesKHR pipelineBinaryFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_FEATURES_KHR,
+    };
+    VkDevicePipelineBinaryInternalCacheControlKHR internalCacheControl{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_PIPELINE_BINARY_INTERNAL_CACHE_CONTROL_KHR,
+    };
+    if (diagnoseInternalPipelineCache) {
+        const VulkanExtensionSet extensions = VulkanExtensionSet::query(deviceImpl->physicalDevice);
+        if (!extensions.has(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME)) {
+            spdlog::error("Internal pipeline cache diagnostic requires VK_KHR_pipeline_binary.");
+            return makeError(Error::Unsupported);
+        }
+
+        VkPhysicalDeviceFeatures2 binaryFeatureProbe{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+            .pNext = &pipelineBinaryFeatures,
+        };
+        vkGetPhysicalDeviceFeatures2(deviceImpl->physicalDevice, &binaryFeatureProbe);
+        VkPhysicalDevicePipelineBinaryPropertiesKHR pipelineBinaryProperties{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_PROPERTIES_KHR,
+        };
+        VkPhysicalDeviceProperties2 binaryPropertyProbe{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+            .pNext = &pipelineBinaryProperties,
+        };
+        vkGetPhysicalDeviceProperties2(deviceImpl->physicalDevice, &binaryPropertyProbe);
+        if (pipelineBinaryFeatures.pipelineBinaries != VK_TRUE ||
+            pipelineBinaryProperties.pipelineBinaryInternalCacheControl != VK_TRUE) {
+            spdlog::error(
+                "Internal pipeline cache diagnostic unsupported: pipelineBinaries={}, cacheControl={}.",
+                pipelineBinaryFeatures.pipelineBinaries,
+                pipelineBinaryProperties.pipelineBinaryInternalCacheControl);
+            return makeError(Error::Unsupported);
+        }
+
+        // Keep the extension and feature chain identical in both diagnostic modes.
+        // Only the cache-control value changes; an unset environment keeps the default path.
+        deviceExtensions.push_back(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
+        pipelineBinaryFeatures.pNext = &enabledFeatureChain.features;
+        internalCacheControl.pNext = &pipelineBinaryFeatures;
+        internalCacheControl.disableInternalCache = disableInternalPipelineCache ? VK_TRUE : VK_FALSE;
+        deviceCreateNext = &internalCacheControl;
+        spdlog::info(
+            "Internal pipeline cache diagnostic: mode={}, internalCache={}, cacheControl={}.",
+            internalPipelineCacheMode,
+            pipelineBinaryProperties.pipelineBinaryInternalCache,
+            pipelineBinaryProperties.pipelineBinaryInternalCacheControl);
+    }
+#else
+    if (diagnoseInternalPipelineCache) {
+        spdlog::error("Internal pipeline cache diagnostic requires headers with VK_KHR_pipeline_binary.");
+        return makeError(Error::Unsupported);
+    }
+#endif
     VkDeviceCreateInfo deviceInfo{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = &enabledFeatureChain.features,
+        .pNext = deviceCreateNext,
         .queueCreateInfoCount = static_cast<uint32_t>(queueInfos.size()),
         .pQueueCreateInfos = queueInfos.data(),
         .enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size()),
