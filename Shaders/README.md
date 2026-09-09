@@ -18,13 +18,15 @@ Shader 按公共库与渲染功能组织。`Shaders/` 是运行时唯一的项�
 | `Features/GPUDriven/` | GPU 剔除、meshlet 流式渲染 |
 | `Features/VisibilityBuffer/` | Visibility Buffer 生成、延迟着色与合成 |
 | `Features/PostProcess/` | 自动曝光、色调映射、最终输出与 DLSS 辅助处理 |
-| `Features/Debug/` | 材质/射线/光照网格可视化、SliderDebug、GPU Probe |
+| `Features/Debug/` | 材质/射线/光照网格可视化、SliderDebug、GPU Probe、[ShaderToHuman](Features/Debug/ShaderToHuman/README.md) |
 | `Features/Samples/` | 三角形、线框、材质 Shader Object、图像与 RTXCR 示例 |
 | `Features/SmokeTests/` | 运行时/RHI 共用的 bindless 与 RenderGraph 冒烟 Shader |
 | `Licenses/` | Shader 库的第三方许可证 |
 
 测试专用探针继续放在 `tests/rhi/shaders/`，通过相对路径引用这里的库。
 `External/` 下的 OpenPBR、RTXCR、NTC 等依赖保持各自的目录。
+ShaderToHuman 的固定版本核心头文件随调试功能保存在 `Features/Debug/ShaderToHuman/`，
+该目录保留上游文件名、LICENSE 和 NOTICE。
 
 ## 模块加载与依赖
 

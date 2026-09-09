@@ -1,0 +1,32 @@
+{
+  "repository": "https://github.com/electronicarts/ShaderToHuman",
+  "revision": "70ea227f3d504a19d9dd0539a832b68999426cca",
+  "version": 14,
+  "localModifications": [],
+  "files": [
+    {
+      "path": "include/s2h.hlsl",
+      "sha256": "d61e900f04ace533e1b45ddb9ada951ed7b2798c51601991d58e91a652439b53"
+    },
+    {
+      "path": "include/s2h_3d.hlsl",
+      "sha256": "0da6e37f0f4798dff19f1dc34f0b9a5325b634da7d8d2dd843572494a70ca55d"
+    },
+    {
+      "path": "include/s2h_glsl.hlsl",
+      "sha256": "8957882960ab62fb94d9c29081b26cfb35bb4821fec32f2101bcdd9ecb77f82b"
+    },
+    {
+      "path": "include/s2h_scatter.hlsl",
+      "sha256": "2f68bce8dc6dcb2f24ad07eef0a1a2dc3f5596b2042b798fe1609dd6517001d7"
+    },
+    {
+      "path": "LICENSE.txt",
+      "sha256": "b7fccbb4c6004e14c6dc925f21404415a6f5edd1469aa4815af908ab3fa2372e"
+    },
+    {
+      "path": "NOTICE.txt",
+      "sha256": "a29ee48e36c78adcb6bb94776c641f182624594e8ac9b205b9d393ab5ecf9e26"
+    }
+  ]
+}

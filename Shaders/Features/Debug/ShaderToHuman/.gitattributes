@@ -1,0 +1,4 @@
+# Preserve upstream bytes and Upstream.json hashes on every platform.
+include/*.hlsl -text
+LICENSE.txt -text
+NOTICE.txt -text
