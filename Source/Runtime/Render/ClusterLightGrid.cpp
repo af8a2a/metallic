@@ -26,7 +26,7 @@ float3 safeNormalize(const float3& value, const float3& fallback)
 Result compileClusterLightGridProgram(std::vector<uint32_t>& spirv, std::string& log)
 {
     ShaderCompileResult shader;
-    Result result = compileSlangShaderToSpirv({.moduleName = "ClusterLightGrid",
+    Result result = compileSlangShaderToSpirv({.moduleName = "Features/Lighting/ClusterLightGrid",
         .entryPointName = "clusterLightGridMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
     if (!result) { log = shader.diagnostics; return result; }
     spirv = std::move(shader.spirv);

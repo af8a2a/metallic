@@ -7,7 +7,7 @@
 //                    temporal accumulation, stale eviction and adjacent-level
 //                    blending, then clears the accumulation buffer.
 
-#include "Sharc/SharcCommon.h"
+#include "../../Libraries/RadianceCache/Sharc/SharcCommon.h"
 
 #ifndef SHARC_MAINTENANCE_BLOCK_SIZE
 #define SHARC_MAINTENANCE_BLOCK_SIZE 256

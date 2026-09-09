@@ -1,4 +1,4 @@
-#include "ClusterLightGridCommon.slang"
+#include "../../Libraries/Lighting/ClusterLightGridCommon.slang"
 
 [[vk::binding(0, 0)]]
 StructuredBuffer<ClusterLightGridParams> gClusterParams;

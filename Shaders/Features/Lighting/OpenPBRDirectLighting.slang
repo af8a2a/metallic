@@ -1,5 +1,5 @@
-#include "OpenPBRRayQueryPathTrace.slang"
-#include "SphericalHarmonics.slang"
+#include "../PathTracing/OpenPBRRayQueryPathTrace.slang"
+#include "../../Libraries/Math/SphericalHarmonics.slang"
 
 [[vk::binding(51, 0)]] StructuredBuffer<float4> gEnvironmentIrradianceSH;
 

@@ -21,6 +21,8 @@ struct SlangMacroDefine {
 };
 
 struct SlangShaderDesc {
+    // Module path relative to searchPath, without .slang, e.g.
+    // "Features/Environment/EnvironmentLightingPrecompute".
     const char* moduleName = nullptr;
     const char* entryPointName = nullptr;
     const char* searchPath = nullptr;

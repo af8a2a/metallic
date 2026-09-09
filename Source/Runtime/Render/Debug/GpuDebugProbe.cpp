@@ -120,8 +120,8 @@ Result initializeDebugProbe(Device& device, ComputeProgram& program, std::string
 {
     if (program.valid()) { return {}; }
     ShaderCompileResult shader;
-    auto result = compileSlangShaderToSpirv({.moduleName = "GpuProbe", .entryPointName = "probe",
-        .searchPath = PROJECT_SOURCE_DIR "/Shaders/Debug"}, shader);
+    auto result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/GpuProbe", .entryPointName = "probe",
+        .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
     if (!result) { log = shader.diagnostics; return result; }
     const ComputeProgramBindingDesc bindings[] = {{0}, {1}};
     return program.initialize(device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,

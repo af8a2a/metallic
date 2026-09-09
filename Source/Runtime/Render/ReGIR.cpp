@@ -18,7 +18,7 @@
 namespace metallic::render {
 namespace {
 
-inline constexpr const char* kBuildReGIRShaderModuleName = "BuildReGIR";
+inline constexpr const char* kBuildReGIRShaderModuleName = "Features/Lighting/BuildReGIR";
 inline constexpr const char* kBuildReGIREntryPoint = "buildReGIRMain";
 inline constexpr uint32_t kReGIRBuildGroupSize = 256;
 

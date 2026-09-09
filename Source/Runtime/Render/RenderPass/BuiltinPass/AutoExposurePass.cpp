@@ -68,7 +68,7 @@ public:
         for (size_t i = 0; i < programs_.size(); ++i) {
             if (programs_[i].valid()) { continue; }
             ShaderCompileResult shader;
-            Result result = compileSlangShaderToSpirv({.moduleName = "AutoExposure",
+            Result result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/AutoExposure",
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
             if (!result) { log += shader.diagnostics; return result; }
             result = programs_[i].initialize(*context.device, {.spirv = shader.spirv.data(),

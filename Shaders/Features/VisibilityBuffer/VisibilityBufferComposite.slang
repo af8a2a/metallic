@@ -1,4 +1,4 @@
-#include "GPUDrivenSceneCommon.slang"
+#include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
 
 struct FullscreenVertexOutput
 {

@@ -3,8 +3,8 @@
 > 目标：地形不建独立 tile 渲染路径，而是以 **cluster（meshlet）为单元进入 Metallic 现有 GPU-Driven mesh shader 管线**，
 > 与普通场景共用剔除 + 光栅 + 延迟着色 + 流式 + RT，实现 Nanite-like 地形。
 > 前提阅读：`Documentation/UnrealLandscapeResearch.md`（UE 5.6 地形调研）。本文件所有 `file:line` 引用基于
-> `E:\metallic` 当前源码（`Shaders/VisibilityBuffer.slang`、`Shaders/VisibilityBufferShading.slang`、
-> `Shaders/GPUDrivenStreamAsset.slang`、`Source/Runtime/Render/MeshletStream*.{h,cpp}`、
+> `E:\metallic` 当前源码（`Shaders/Features/VisibilityBuffer/VisibilityBuffer.slang`、`Shaders/Features/VisibilityBuffer/VisibilityBufferShading.slang`、
+> `Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang`、`Source/Runtime/Render/MeshletStream*.{h,cpp}`、
 > `Source/Runtime/Scene/MeshletStreamAsset.h`）。
 
 ## 1. 结论先行
@@ -32,7 +32,7 @@
 
 ### 2.1 GPUDrivenDeferred 路径（完整着色，无流式/LOD 选择）
 
-帧流程（`Shaders/GPUDrivenCulling.slang` + `VisibilityBuffer.slang` + `VisibilityBufferShading.slang`，CPU 侧 `VisibilityBufferPass.cpp`；
+帧流程（`Shaders/Features/GPUDriven/GPUDrivenCulling.slang` + `VisibilityBuffer.slang` + `VisibilityBufferShading.slang`，CPU 侧 `VisibilityBufferPass.cpp`；
 pass 注册 `VisibilityBufferPass.cpp:613` + `BuiltinRenderPasses.cpp:47-49`，图 `Pipelines/Samples/gpu_driven_sponza.metallic_graph.json:43`；
 `execute()` 帧序 `VisibilityBufferPass.cpp:1002-1225`：sync → early cull(reset→instanceCull→compact) → drawVisibility(0) → buildHzb →
 late cull → drawVisibility(1) → buildHzb → dispatchDeferred → composite）：

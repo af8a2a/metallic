@@ -1,5 +1,5 @@
-#include "../../../Shaders/PhotometricLighting.slang"
-#include "../../../Shaders/SphericalHarmonics.slang"
+#include "../../../Shaders/Libraries/Lighting/PhotometricLighting.slang"
+#include "../../../Shaders/Libraries/Math/SphericalHarmonics.slang"
 [[vk::binding(0, 0)]] RWStructuredBuffer<float4> gOutput;
 [[vk::binding(1, 0)]] StructuredBuffer<float4> gSH;
 

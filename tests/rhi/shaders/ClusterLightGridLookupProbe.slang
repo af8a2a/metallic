@@ -1,4 +1,4 @@
-#include "../../../Shaders/ClusterLightGridCommon.slang"
+#include "../../../Shaders/Libraries/Lighting/ClusterLightGridCommon.slang"
 
 [[vk::binding(0, 0)]] StructuredBuffer<ClusterLightGridParams> gParams;
 [[vk::binding(1, 0)]] StructuredBuffer<ClusterLightData> gLights;

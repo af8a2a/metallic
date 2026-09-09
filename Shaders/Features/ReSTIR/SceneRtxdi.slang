@@ -2,9 +2,9 @@
 // spatiotemporal flow demonstrated by RTXDI while using Metallic-native data.
 
 #define NRD_HEADER_ONLY
-#include "NRD.hlsli"
-#include "NeuralTextureSampling.slang"
-#include "PunctualLightSampling.slang"
+#include "../../Libraries/Denoising/NRD.hlsli"
+#include "../../Libraries/Texturing/NeuralTextureSampling.slang"
+#include "../../Libraries/Lighting/PunctualLightSampling.slang"
 
 [[vk::binding(0, 0)]]
 RaytracingAccelerationStructure gScene;

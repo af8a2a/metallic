@@ -109,7 +109,7 @@ private:
         }
         ShaderCompileResult shader;
         Result result = compileSlangShaderToSpirv(SlangShaderDesc{
-            .moduleName = "FinalBlit",
+            .moduleName = "Features/PostProcess/FinalBlit",
             .entryPointName = entryPoint,
             .searchPath = PROJECT_SOURCE_DIR "/Shaders",
         }, shader);

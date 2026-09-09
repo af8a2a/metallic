@@ -18,7 +18,7 @@ namespace metallic::tests {
 namespace {
 
 constexpr const char* kShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
-constexpr const char* kBindlessBufferShaderModuleName = "BindlessBuffer";
+constexpr const char* kBindlessBufferShaderModuleName = "Features/SmokeTests/BindlessBuffer";
 
 struct BindlessBufferUserPush {
     uint32_t inputBuffer = 0;

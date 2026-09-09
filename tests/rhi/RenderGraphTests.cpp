@@ -39,7 +39,7 @@ namespace metallic::tests {
 namespace {
 
 constexpr const char* kShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
-constexpr const char* kBindlessSmokeShaderModuleName = "BindlessSmoke";
+constexpr const char* kBindlessSmokeShaderModuleName = "Features/SmokeTests/BindlessSmoke";
 constexpr const char* kBindlessSmokeVertexEntryPoint = "bindlessSmokeVertexMain";
 constexpr const char* kBindlessSmokeFragmentEntryPoint = "bindlessSmokeFragmentMain";
 constexpr uint32_t kSpirvMagic = 0x07230203u;
@@ -2951,21 +2951,27 @@ public:
         }
         const std::filesystem::path sourceDirectory = testRoot / "source";
         const std::filesystem::path cacheDirectory = testRoot / "cache";
-        std::filesystem::create_directories(sourceDirectory, fileError);
+        const std::filesystem::path sourcePath =
+            sourceDirectory / "Features/Cache/ShaderCacheTest.slang";
+        const std::filesystem::path dependencyPath =
+            sourceDirectory / "Libraries/Math/ShaderCacheValue.slang";
+        std::filesystem::create_directories(sourcePath.parent_path(), fileError);
         if (fileError) {
             return RhiTestResult::fail(
                 "failed to create shader cache test directory: " + fileError.message());
         }
-        const std::filesystem::path sourcePath = sourceDirectory / "ShaderCacheTest.slang";
-        const std::filesystem::path dependencyPath =
-            sourceDirectory / "ShaderCacheValue.slang";
+        std::filesystem::create_directories(dependencyPath.parent_path(), fileError);
+        if (fileError) {
+            return RhiTestResult::fail(
+                "failed to create shader library test directory: " + fileError.message());
+        }
         const std::string normalizedSourcePath =
             std::filesystem::absolute(sourcePath).lexically_normal().generic_string();
         const std::string normalizedDependencyPath =
             std::filesystem::absolute(dependencyPath).lexically_normal().generic_string();
         const auto writeShader = [&]() {
             std::ofstream stream(sourcePath, std::ios::binary | std::ios::trunc);
-            stream << "#include \"ShaderCacheValue.slang\"\n"
+            stream << "#include \"../../Libraries/Math/ShaderCacheValue.slang\"\n"
                    << "RWStructuredBuffer<uint> outputBuffer;\n"
                    << "[shader(\"compute\")]\n"
                    << "[numthreads(1, 1, 1)]\n"
@@ -2987,7 +2993,7 @@ public:
         const std::string sourceDirectoryString = sourceDirectory.string();
         const std::string cacheDirectoryString = cacheDirectory.string();
         const render::SlangShaderDesc shaderDesc{
-            .moduleName = "ShaderCacheTest",
+            .moduleName = "Features/Cache/ShaderCacheTest",
             .entryPointName = "shaderCacheMain",
             .searchPath = sourceDirectoryString.c_str(),
         };
@@ -3185,7 +3191,7 @@ public:
         const char* capabilities[] = {"spvRayQueryKHR"};
         render::Result result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "OpenPBRRayQueryPathTrace",
+                .moduleName = "Features/PathTracing/OpenPBRRayQueryPathTrace",
                 .entryPointName = "openPbrRayQueryPathTraceMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,
@@ -3279,7 +3285,7 @@ public:
         };
         render::Result result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "VisibilityBuffer",
+                .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
                 .entryPointName = "visibilityBufferAmplificationMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,
@@ -3308,7 +3314,7 @@ public:
         render::ShaderCompileResult atomicFallbackCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "VisibilityBuffer",
+                .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
                 .entryPointName = "visibilityBufferAmplificationMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = atomicFallbackCapabilities,
@@ -3333,7 +3339,7 @@ public:
         render::ShaderCompileResult meshCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "VisibilityBuffer",
+                .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
                 .entryPointName = "visibilityBufferMeshMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,
@@ -3357,7 +3363,7 @@ public:
         render::ShaderCompileResult maskedMeshCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "VisibilityBuffer",
+                .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
                 .entryPointName = "visibilityBufferMeshMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = atomicFallbackCapabilities,
@@ -3405,7 +3411,7 @@ public:
         render::ShaderCompileResult fragmentCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "VisibilityBuffer",
+                .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
                 .entryPointName = "visibilityBufferFragmentMain",
                 .searchPath = kShaderSearchPath,
             },
@@ -3426,12 +3432,12 @@ public:
             const char* entry;
         };
         constexpr std::array<ShaderEntry, 6> additionalEntryPoints{
-            ShaderEntry{"VisibilityBuffer", "visibilityBufferMaskedFragmentMain"},
-            ShaderEntry{"GPUDrivenCulling", "gpuDrivenPreviewResetMain"},
-            ShaderEntry{"GPUDrivenCulling", "gpuDrivenPreviewInstanceCullMain"},
-            ShaderEntry{"GPUDrivenCulling", "gpuDrivenPreviewHzbMain"},
-            ShaderEntry{"VisibilityBufferComposite", "visibilityBufferCompositeVertexMain"},
-            ShaderEntry{"VisibilityBufferComposite", "visibilityBufferCompositeFragmentMain"},
+            ShaderEntry{"Features/VisibilityBuffer/VisibilityBuffer", "visibilityBufferMaskedFragmentMain"},
+            ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewResetMain"},
+            ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewInstanceCullMain"},
+            ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewHzbMain"},
+            ShaderEntry{"Features/VisibilityBuffer/VisibilityBufferComposite", "visibilityBufferCompositeVertexMain"},
+            ShaderEntry{"Features/VisibilityBuffer/VisibilityBufferComposite", "visibilityBufferCompositeFragmentMain"},
         };
         size_t additionalWordCount = maskedMeshCompile.spirv.size();
         for (const ShaderEntry& shaderEntry : additionalEntryPoints) {
@@ -3486,7 +3492,7 @@ public:
         const char* capabilities[] = {"spvMeshShadingEXT"};
         render::Result result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "GPUDrivenStreamAsset",
+                .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetMeshMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,
@@ -3507,7 +3513,7 @@ public:
         render::ShaderCompileResult fragmentCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "GPUDrivenStreamAsset",
+                .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetFragmentMain",
                 .searchPath = kShaderSearchPath,
             },
@@ -3535,7 +3541,7 @@ public:
             render::ShaderCompileResult rasterCompile;
             result = render::compileSlangShaderToSpirv(
                 render::SlangShaderDesc{
-                    .moduleName = "GPUDrivenStreamAsset",
+                    .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                     .entryPointName = entryPoint,
                     .searchPath = kShaderSearchPath,
                 },
@@ -3559,7 +3565,7 @@ public:
         render::ShaderCompileResult updateCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "GPUDrivenStreamAsset",
+                .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetApplyUpdatesMain",
                 .searchPath = kShaderSearchPath,
             },
@@ -3578,7 +3584,7 @@ public:
         render::ShaderCompileResult traversalCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "GPUDrivenStreamAsset",
+                .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetTraversalMain",
                 .searchPath = kShaderSearchPath,
             },
@@ -3597,7 +3603,7 @@ public:
         render::ShaderCompileResult activeBuildCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "GPUDrivenStreamAsset",
+                .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetBuildActiveMain",
                 .searchPath = kShaderSearchPath,
             },
@@ -4332,7 +4338,7 @@ public:
         render::ShaderCompileResult compileResult;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "GPUDrivenStreamAsset",
+                .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetTraversalMain",
                 .searchPath = kShaderSearchPath,
             },
@@ -4371,7 +4377,7 @@ public:
         render::ShaderCompileResult activeBuildCompileResult;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "GPUDrivenStreamAsset",
+                .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetBuildActiveMain",
                 .searchPath = kShaderSearchPath,
             },
@@ -4946,7 +4952,7 @@ public:
         render::ShaderCompileResult compileResult;
         render::Result result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "RtxcrMaterialSample",
+                .moduleName = "Features/Samples/RtxcrMaterialSample",
                 .entryPointName = "rtxcrMaterialSampleMain",
                 .searchPath = kShaderSearchPath,
                 .additionalSearchPaths = additionalSearchPaths,
@@ -5038,11 +5044,11 @@ public:
             const char* entryPointName;
             bool rayQuery;
         } entries[] = {
-            {"BuildReGIR", "buildReGIRMain", false},
-            {"PrepareLightsPdf", "prepareLightsPdfMain", false},
-            {"SceneRtxdi", "sceneRtxdiMain", true},
-            {"RtxdiConfidence", "rtxdiConfidenceMain", false},
-            {"RtxdiComposite", "rtxdiCompositeMain", false},
+            {"Features/Lighting/BuildReGIR", "buildReGIRMain", false},
+            {"Features/Lighting/PrepareLightsPdf", "prepareLightsPdfMain", false},
+            {"Features/ReSTIR/SceneRtxdi", "sceneRtxdiMain", true},
+            {"Features/ReSTIR/RtxdiConfidence", "rtxdiConfidenceMain", false},
+            {"Features/ReSTIR/RtxdiComposite", "rtxdiCompositeMain", false},
         };
         for (const ShaderEntry& entry : entries) {
             render::ShaderCompileResult compileResult;
@@ -5087,8 +5093,8 @@ public:
             const char* moduleName;
             const char* entryPointName;
         } entries[] = {
-            {"ScenePathTraceGuides", "scenePathTraceGuidesMain"},
-            {"OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain"},
+            {"Features/PathTracing/ScenePathTraceGuides", "scenePathTraceGuidesMain"},
+            {"Features/PathTracing/OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain"},
         };
 
         for (const ShaderEntry& entry : entries) {
@@ -5145,7 +5151,7 @@ public:
             render::ShaderCompileResult compileResult;
             render::Result result = render::compileSlangShaderToSpirv(
                 render::SlangShaderDesc{
-                    .moduleName = "StreamlineDlssSupport",
+                    .moduleName = "Features/PostProcess/StreamlineDlssSupport",
                     .entryPointName = entryPoint,
                     .searchPath = kShaderSearchPath,
                 },
@@ -5193,7 +5199,7 @@ public:
         render::ShaderCompileResult compileResult;
         render::Result result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "SceneRayQueryVisualize",
+                .moduleName = "Features/Debug/SceneRayQueryVisualize",
                 .entryPointName = "sceneRayQueryVisualizeMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,

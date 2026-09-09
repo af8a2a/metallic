@@ -62,7 +62,7 @@ public:
         if (context.device == nullptr) { return makeError(Error::InvalidArgument); }
         if (program_.valid()) { return {}; }
         ShaderCompileResult shader;
-        Result result = compileSlangShaderToSpirv({.moduleName = "SliderDebug",
+        Result result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/SliderDebug",
             .entryPointName = "sliderDebugMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
         if (!result) { log += shader.diagnostics; return result; }
         const ComputeProgramBindingDesc bindings[] = {

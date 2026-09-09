@@ -58,25 +58,25 @@ inline std::array<float, 2> dlssTemporalJitter(uint64_t frameIndex)
 }
 
 inline constexpr const char* kTriangleShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
-inline constexpr const char* kTriangleShaderModuleName = "Triangle";
+inline constexpr const char* kTriangleShaderModuleName = "Features/Samples/Triangle";
 inline constexpr const char* kTriangleVertexEntryPoint = "triangleVertexMain";
 inline constexpr const char* kTriangleFragmentEntryPoint = "triangleFragmentMain";
-inline constexpr const char* kImageSampleShaderModuleName = "ImageSample";
+inline constexpr const char* kImageSampleShaderModuleName = "Features/Samples/ImageSample";
 inline constexpr const char* kImageSampleVertexEntryPoint = "imageSampleVertexMain";
 inline constexpr const char* kImageSampleFragmentEntryPoint = "imageSampleFragmentMain";
-inline constexpr const char* kBunnyWireframeShaderModuleName = "BunnyWireframe";
+inline constexpr const char* kBunnyWireframeShaderModuleName = "Features/Samples/BunnyWireframe";
 inline constexpr const char* kBunnyWireframeVertexEntryPoint = "bunnyWireframeVertexMain";
 inline constexpr const char* kBunnyWireframeFragmentEntryPoint = "bunnyWireframeFragmentMain";
-inline constexpr const char* kMaterialShaderObjectShaderModuleName = "MaterialShaderObject";
+inline constexpr const char* kMaterialShaderObjectShaderModuleName = "Features/Samples/MaterialShaderObject";
 inline constexpr const char* kMaterialShaderObjectVertexEntryPoint = "materialShaderObjectVertexMain";
 inline constexpr const char* kMaterialShaderObjectFragmentEntryPoint = "materialShaderObjectFragmentMain";
 inline constexpr const char* kMaterialShaderObjectAlternateFragmentEntryPoint =
     "materialShaderObjectAlternateFragmentMain";
-inline constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "SceneRayQueryVisualize";
+inline constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "Features/Debug/SceneRayQueryVisualize";
 inline constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQueryVisualizeMain";
-inline constexpr const char* kVisibilityBufferShaderModuleName = "VisibilityBuffer";
-inline constexpr const char* kGPUDrivenCullingShaderModuleName = "GPUDrivenCulling";
-inline constexpr const char* kVisibilityBufferCompositeShaderModuleName = "VisibilityBufferComposite";
+inline constexpr const char* kVisibilityBufferShaderModuleName = "Features/VisibilityBuffer/VisibilityBuffer";
+inline constexpr const char* kGPUDrivenCullingShaderModuleName = "Features/GPUDriven/GPUDrivenCulling";
+inline constexpr const char* kVisibilityBufferCompositeShaderModuleName = "Features/VisibilityBuffer/VisibilityBufferComposite";
 inline constexpr const char* kVisibilityBufferAmplificationEntryPoint =
     "visibilityBufferAmplificationMain";
 inline constexpr const char* kVisibilityBufferMeshEntryPoint = "visibilityBufferMeshMain";
@@ -90,30 +90,30 @@ inline constexpr const char* kVisibilityBufferCompositeVertexEntryPoint =
     "visibilityBufferCompositeVertexMain";
 inline constexpr const char* kVisibilityBufferCompositeFragmentEntryPoint =
     "visibilityBufferCompositeFragmentMain";
-inline constexpr const char* kGPUDrivenStreamAssetShaderModuleName = "GPUDrivenStreamAsset";
+inline constexpr const char* kGPUDrivenStreamAssetShaderModuleName = "Features/GPUDriven/GPUDrivenStreamAsset";
 inline constexpr const char* kGPUDrivenStreamAssetMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
 inline constexpr const char* kGPUDrivenStreamAssetFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";
 inline constexpr const char* kGPUDrivenStreamAssetUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
-inline constexpr const char* kSceneMaterialVisualizationShaderModuleName = "SceneMaterialVisualize";
+inline constexpr const char* kSceneMaterialVisualizationShaderModuleName = "Features/Debug/SceneMaterialVisualize";
 inline constexpr const char* kSceneMaterialVisualizationEntryPoint = "sceneMaterialVisualizeMain";
-inline constexpr const char* kScenePathTraceShaderModuleName = "ScenePathTrace";
+inline constexpr const char* kScenePathTraceShaderModuleName = "Features/PathTracing/ScenePathTrace";
 inline constexpr const char* kScenePathTraceEntryPoint = "scenePathTraceMain";
-inline constexpr const char* kSceneRtxdiShaderModuleName = "SceneRtxdi";
+inline constexpr const char* kSceneRtxdiShaderModuleName = "Features/ReSTIR/SceneRtxdi";
 inline constexpr const char* kSceneRtxdiEntryPoint = "sceneRtxdiMain";
-inline constexpr const char* kRtxdiConfidenceShaderModuleName = "RtxdiConfidence";
+inline constexpr const char* kRtxdiConfidenceShaderModuleName = "Features/ReSTIR/RtxdiConfidence";
 inline constexpr const char* kRtxdiConfidenceEntryPoint = "rtxdiConfidenceMain";
-inline constexpr const char* kRtxdiCompositeShaderModuleName = "RtxdiComposite";
+inline constexpr const char* kRtxdiCompositeShaderModuleName = "Features/ReSTIR/RtxdiComposite";
 inline constexpr const char* kRtxdiCompositeEntryPoint = "rtxdiCompositeMain";
-inline constexpr const char* kScenePathTraceGuidesShaderModuleName = "ScenePathTraceGuides";
+inline constexpr const char* kScenePathTraceGuidesShaderModuleName = "Features/PathTracing/ScenePathTraceGuides";
 inline constexpr const char* kScenePathTraceGuidesEntryPoint = "scenePathTraceGuidesMain";
-inline constexpr const char* kSceneSharcMaintenanceShaderModuleName = "SceneSharcMaintenance";
-inline constexpr const char* kScenePathTraceTonemapShaderModuleName = "ScenePathTraceTonemap";
+inline constexpr const char* kSceneSharcMaintenanceShaderModuleName = "Features/PathTracing/SceneSharcMaintenance";
+inline constexpr const char* kScenePathTraceTonemapShaderModuleName = "Features/PostProcess/ScenePathTraceTonemap";
 inline constexpr const char* kScenePathTraceTonemapEntryPointName = "scenePathTraceTonemapMain";
-inline constexpr const char* kOpenPBRRayQueryPathTraceShaderModuleName = "OpenPBRRayQueryPathTrace";
+inline constexpr const char* kOpenPBRRayQueryPathTraceShaderModuleName = "Features/PathTracing/OpenPBRRayQueryPathTrace";
 inline constexpr const char* kOpenPBRRayQueryPathTraceEntryPoint = "openPbrRayQueryPathTraceMain";
-inline constexpr const char* kOpenPBRRayQueryPathTraceGuidesShaderModuleName = "OpenPBRRayQueryPathTraceGuides";
+inline constexpr const char* kOpenPBRRayQueryPathTraceGuidesShaderModuleName = "Features/PathTracing/OpenPBRRayQueryPathTraceGuides";
 inline constexpr const char* kOpenPBRRayQueryPathTraceGuidesEntryPoint = "openPbrRayQueryPathTraceGuidesMain";
-inline constexpr const char* kRenderGraphBufferShaderModuleName = "RenderGraphBuffer";
+inline constexpr const char* kRenderGraphBufferShaderModuleName = "Features/SmokeTests/RenderGraphBuffer";
 inline constexpr const char* kRenderGraphBufferWriteEntryPoint = "renderGraphBufferWriteMain";
 inline constexpr const char* kRenderGraphBufferCopyEntryPoint = "renderGraphBufferCopyMain";
 inline constexpr const char* kDefaultImageSamplePath = PROJECT_SOURCE_DIR "/Asset/statue-1275469_1280.jpg";

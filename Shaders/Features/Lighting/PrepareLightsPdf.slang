@@ -1,7 +1,7 @@
 // GPU PDF preparation for RTXDI-style local-light and environment importance sampling.
 
 #define METALLIC_PUNCTUAL_SAMPLING_DISABLE_RESOURCES
-#include "PunctualLightSampling.slang"
+#include "../../Libraries/Lighting/PunctualLightSampling.slang"
 
 static const uint kMaxPdfMipCount = 16u;
 static const uint kPrepareLocalLights = 0u;

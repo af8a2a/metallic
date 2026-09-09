@@ -1,5 +1,5 @@
-#include "OpenPBRDirectLighting.slang"
-#include "GPUDrivenSceneCommon.slang"
+#include "../Lighting/OpenPBRDirectLighting.slang"
+#include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
 
 [[vk::binding(60, 0)]] Texture2D<uint> gVisibility;
 [[vk::binding(61, 0)]] Texture2D<float> gVisibilityDepth;

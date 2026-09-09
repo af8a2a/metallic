@@ -488,7 +488,7 @@ public:
         rendered = renderFrame();
         if (!rendered.passed) { return rendered; }
 
-        ScopedLightGridShaderFailure shaderFailure(PROJECT_SOURCE_DIR "/Shaders/ClusterLightGrid.slang");
+        ScopedLightGridShaderFailure shaderFailure(PROJECT_SOURCE_DIR "/Shaders/Features/Lighting/ClusterLightGrid.slang");
         LIGHT_DEBUG_CHECK(shaderFailure.inject());
         result = executor.reloadShaders(log);
         LIGHT_DEBUG_CHECK(!result);

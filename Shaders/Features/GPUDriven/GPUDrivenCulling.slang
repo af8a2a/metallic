@@ -1,4 +1,4 @@
-#include "GPUDrivenCullingCommon.slang"
+#include "../../Libraries/GPUDriven/GPUDrivenCullingCommon.slang"
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

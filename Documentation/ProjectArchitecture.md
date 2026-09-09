@@ -78,7 +78,7 @@ flowchart TB
 | `Source/Runtime/Render/GAPI/` | RHI 公共接口、Streamer、场景光追接口 |
 | `Source/Runtime/Render/GAPI/Vulkan/` | Vulkan RHI、场景光追、NRD、Streamline、CLAS 的具体实现 |
 | `Source/Runtime/Render/Profiling/` | Nsight/NVTX 标记与 Aftermath GPU 崩溃转储 |
-| `Shaders/` | Slang shader 模块和 NRD 配置头 |
+| `Shaders/` | `Libraries/` 公共库与 `Features/` 功能 Shader，见 [目录说明](../Shaders/README.md) |
 | `Pipelines/` | `.metallic_graph.json` RenderGraph 资产及样例图 |
 | `Asset/` | glTF/GLB、USD、纹理、HDR 环境和预生成 meshlet 数据 |
 | `tests/task/` | TaskGraph 生命周期、依赖、并发、取消和观察者测试 |
@@ -381,7 +381,7 @@ PSO 缓存不替代 Slang 源码到 SPIR-V 的编译缓存；它优化的是驱�
 ```text
 Asset/*.gltf|*.glb|*.hdr  <- 节点 properties 中的路径
 Pipelines/*.metallic_graph.json <- Pass 节点、边、输出和参数
-Shaders/*.slang          <- Pass compile() 中选择的 shader 模块
+Shaders/Features/**/*.slang <- Pass compile() 中选择的功能模块，复用 Shaders/Libraries/
 ```
 
 `RenderSample` 是三者之间的装配描述：它给出样例 ID、场景路径、图路径、需要覆盖场景/环境的节点名，以及默认视口输出。当前内置样例覆盖 OpenPBR 路径追踪、DLSS-RR、RTXDI、材质可视化和三种 GPU-driven 变体。

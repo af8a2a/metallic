@@ -17,7 +17,7 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr const char* kRtxcrMaterialSampleShaderModuleName = "RtxcrMaterialSample";
+constexpr const char* kRtxcrMaterialSampleShaderModuleName = "Features/Samples/RtxcrMaterialSample";
 constexpr const char* kRtxcrMaterialSampleEntryPoint = "rtxcrMaterialSampleMain";
 
 struct RtxcrMaterialSamplePush {

@@ -7,8 +7,8 @@
 #define OPENPBR_FEATURE_EnableMetallic true
 #define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
 
-#include "GPUDrivenSceneCommon.slang"
-#include "SphericalHarmonics.slang"
+#include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
+#include "../../Libraries/Math/SphericalHarmonics.slang"
 
 #ifndef GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE
 #define GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE 0
@@ -96,7 +96,7 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 #define OPENPBR_SAMPLE_2D_TEXTURE(lut_id, uv) sampleOpenPBRLut2D(lut_id, uv)
 #define OPENPBR_SAMPLE_3D_TEXTURE(lut_id, uvw) sampleOpenPBRLut3D(lut_id, uvw)
 
-#include "../External/openpbr-bsdf/openpbr.h"
+#include "../../../External/openpbr-bsdf/openpbr.h"
 
 static const uint kModeMeshlet = 0u;
 static const uint kModePrimitive = 1u;

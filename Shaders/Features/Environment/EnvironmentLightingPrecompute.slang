@@ -1,6 +1,6 @@
 // GPU projection and cosine convolution: irradiance SH through l=2.
-#include "SphericalHarmonics.slang"
-#include "ProceduralEnvironment.slang"
+#include "../../Libraries/Math/SphericalHarmonics.slang"
+#include "../../Libraries/Lighting/ProceduralEnvironment.slang"
 
 static const uint kIntegratePartials = 0u;
 static const uint kFinalizeCoefficients = 1u;

@@ -3,7 +3,7 @@
 
 // Low-order SH API inspired by/adapted from MJP's SHforHLSL (MIT).
 // https://github.com/TheRealMJP/SHforHLSL
-// See Licenses/SHforHLSL.txt. Slang generics and free operators provide the
+// See ../../Licenses/SHforHLSL.txt. Slang generics and free operators provide the
 // HLSL 2021-style call sites without requiring a second shader compiler.
 namespace SH {
 

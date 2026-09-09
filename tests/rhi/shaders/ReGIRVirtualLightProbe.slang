@@ -1,4 +1,4 @@
-#include "../../../Shaders/PunctualLightSampling.slang"
+#include "../../../Shaders/Libraries/Lighting/PunctualLightSampling.slang"
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<float4> gProbeOutput;
 

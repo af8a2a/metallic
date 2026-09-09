@@ -9581,10 +9581,10 @@ bool checkResult(Result result, const char* label)
 }
 
 constexpr const char* kTriangleShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
-constexpr const char* kTriangleShaderModuleName = "Triangle";
+constexpr const char* kTriangleShaderModuleName = "Features/Samples/Triangle";
 constexpr const char* kTriangleVertexEntryPoint = "triangleVertexMain";
 constexpr const char* kTriangleFragmentEntryPoint = "triangleFragmentMain";
-constexpr const char* kBindlessSmokeShaderModuleName = "BindlessSmoke";
+constexpr const char* kBindlessSmokeShaderModuleName = "Features/SmokeTests/BindlessSmoke";
 constexpr const char* kBindlessSmokeVertexEntryPoint = "bindlessSmokeVertexMain";
 constexpr const char* kBindlessSmokeFragmentEntryPoint = "bindlessSmokeFragmentMain";
 

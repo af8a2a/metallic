@@ -10,8 +10,8 @@
 #ifndef STF_ALLOW_WAVE_READ
 #define STF_ALLOW_WAVE_READ 0
 #endif
-#include "../External/Rtxtf/STFSamplerState.hlsli"
-#include "NeuralTextureSampling.slang"
+#include "../../../External/Rtxtf/STFSamplerState.hlsli"
+#include "../../Libraries/Texturing/NeuralTextureSampling.slang"
 
 #ifndef METALLIC_HAS_RTXCR
 #define METALLIC_HAS_RTXCR 0
@@ -46,10 +46,10 @@
 #endif
 
 #if METALLIC_PT_SHARC
-#include "Sharc/SharcCommon.h"
+#include "../../Libraries/RadianceCache/Sharc/SharcCommon.h"
 #endif
 
-#include "Nrc/Nrc.hlsli"
+#include "../../Libraries/RadianceCache/Nrc/Nrc.hlsli"
 
 // Cache mode pushed through the per-frame parameter buffer.
 #define METALLIC_CACHE_MODE_OFF 0
@@ -206,8 +206,8 @@ Texture2D<float4> gEnvironmentMap;
 [[vk::binding(13, 0)]]
 Texture2D<float> gEnvironmentImportancePdf;
 
-#include "PunctualLightSampling.slang"
-#include "ProceduralEnvironment.slang"
+#include "../../Libraries/Lighting/PunctualLightSampling.slang"
+#include "../../Libraries/Lighting/ProceduralEnvironment.slang"
 
 
 static const uint kMaxMaterialTextures = 256u;

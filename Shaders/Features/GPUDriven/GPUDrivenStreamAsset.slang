@@ -1,4 +1,4 @@
-#include "GPUDrivenRasterCommon.slang"
+#include "../../Libraries/GPUDriven/GPUDrivenRasterCommon.slang"
 
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;

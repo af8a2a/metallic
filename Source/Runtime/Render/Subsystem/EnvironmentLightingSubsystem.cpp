@@ -74,7 +74,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
         ShaderCompileResult compileResult;
         Result result = compileSlangShaderToSpirv(
             SlangShaderDesc{
-                .moduleName = "EnvironmentLightingPrecompute",
+                .moduleName = "Features/Environment/EnvironmentLightingPrecompute",
                 .entryPointName = "environmentLightingPrecomputeMain",
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders",
             },

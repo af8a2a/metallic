@@ -1,4 +1,4 @@
-#include "GPUDrivenCullingCommon.slang"
+#include "../../Libraries/GPUDriven/GPUDrivenCullingCommon.slang"
 
 #ifndef GPU_DRIVEN_AMPLIFICATION_WAVE_OPS
 #define GPU_DRIVEN_AMPLIFICATION_WAVE_OPS 1

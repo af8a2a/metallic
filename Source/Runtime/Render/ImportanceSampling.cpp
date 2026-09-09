@@ -283,7 +283,7 @@ uint64_t ImportancePdfTexture::byteSize() const
 
 namespace {
 
-inline constexpr const char* kPrepareLightsPdfShaderModuleName = "PrepareLightsPdf";
+inline constexpr const char* kPrepareLightsPdfShaderModuleName = "Features/Lighting/PrepareLightsPdf";
 inline constexpr const char* kPrepareLightsPdfEntryPoint = "prepareLightsPdfMain";
 inline constexpr uint32_t kPrepareLocalLightsMode = 0;
 inline constexpr uint32_t kPrepareEnvironmentMode = 1;

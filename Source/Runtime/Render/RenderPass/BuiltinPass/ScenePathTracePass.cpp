@@ -802,10 +802,10 @@ public:
         const char* moduleName = nullptr;
         const char* entryPointName = nullptr;
         if (visibilityDeferred_) {
-            moduleName = "VisibilityBufferDeferred";
+            moduleName = "Features/VisibilityBuffer/VisibilityBufferDeferred";
             entryPointName = "visibilityBufferDeferredMain";
         } else if (realtime_) {
-            moduleName = "SceneRealtimeLighting";
+            moduleName = "Features/Lighting/SceneRealtimeLighting";
             entryPointName = "sceneRealtimeLightingMain";
         } else if (useOpenPBR) {
             moduleName = exportGuides

@@ -135,7 +135,7 @@ public:
         }
         if (program_.valid()) { return {}; }
         ShaderCompileResult shader;
-        Result result = compileSlangShaderToSpirv({.moduleName = "LightGridDebug",
+        Result result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/LightGridDebug",
             .entryPointName = "lightGridDebugMain", .searchPath = kTriangleShaderSearchPath}, shader);
         if (!result) {
             log = "LightGridDebug shader compilation failed: " + shader.diagnostics;

@@ -2,7 +2,7 @@
 // fixed-size set of RIS light slots, matching the selection flow used by RTXDI.
 
 #define METALLIC_PUNCTUAL_SAMPLING_DISABLE_RESOURCES
-#include "PunctualLightSampling.slang"
+#include "../../Libraries/Lighting/PunctualLightSampling.slang"
 
 [[vk::binding(0, 0)]]
 Texture2D<float> gLocalLightPdf;

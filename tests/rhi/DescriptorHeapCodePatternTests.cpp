@@ -244,7 +244,7 @@ public:
         const render::SlangMacroDefine macro{"METALLIC_GPU_PATTERN", patternMacro.c_str()};
         render::ShaderCompileResult shader;
         result = render::compileSlangShaderToSpirv({
-            .moduleName = environment ? "EnvironmentLightingPrecompute" : "DescriptorHeapCodePattern",
+            .moduleName = environment ? "Features/Environment/EnvironmentLightingPrecompute" : "DescriptorHeapCodePattern",
             .entryPointName = environment ? "environmentLightingPrecomputeMain" : "descriptorHeapCodePatternMain",
             .searchPath = environment ? PROJECT_SOURCE_DIR "/Shaders" : PROJECT_SOURCE_DIR "/tests/rhi/shaders",
             .macroDefines = environment ? nullptr : &macro, .macroDefineCount = environment ? 0u : 1u}, shader);

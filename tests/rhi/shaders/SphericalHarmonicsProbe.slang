@@ -1,4 +1,4 @@
-#include "../../../Shaders/SphericalHarmonics.slang"
+#include "../../../Shaders/Libraries/Math/SphericalHarmonics.slang"
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<float4> gOutput;
 [[vk::binding(1, 0)]] StructuredBuffer<float4> gInput;

@@ -24,7 +24,7 @@ class MeshletStreamClasPool;
 struct DebugResourceBinding;
 
 inline constexpr const char* kMeshletStreamShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
-inline constexpr const char* kMeshletStreamShaderModuleName = "GPUDrivenStreamAsset";
+inline constexpr const char* kMeshletStreamShaderModuleName = "Features/GPUDriven/GPUDrivenStreamAsset";
 inline constexpr const char* kMeshletStreamMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
 inline constexpr const char* kMeshletStreamFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";
 inline constexpr const char* kMeshletStreamDeferredEntryPoint = "gpuDrivenStreamAssetDeferredMain";

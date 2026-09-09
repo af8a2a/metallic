@@ -25,7 +25,7 @@ enum class DlssVariant : uint8_t {
 };
 
 inline constexpr const char* kStreamlineDlssSupportShaderModuleName =
-    "StreamlineDlssSupport";
+    "Features/PostProcess/StreamlineDlssSupport";
 inline constexpr const char* kStreamlineDlssDepthVertexEntryPoint =
     "streamlineDlssDepthVertexMain";
 inline constexpr const char* kStreamlineDlssDepthFragmentEntryPoint =

@@ -1,5 +1,5 @@
 // NTC resources are shared with the path tracer and occupy bindings 29-33.
-#include "NeuralTextureSampling.slang"
+#include "../../Libraries/Texturing/NeuralTextureSampling.slang"
 
 [[vk::binding(0, 0)]]
 RaytracingAccelerationStructure gScene;
