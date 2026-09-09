@@ -363,6 +363,7 @@ Result MeshletStreamClasPool::initialize(
             device,
             static_cast<uint64_t>(desc.maxBuildClusters) * sizeof(uint64_t),
             BufferUsageBits::Storage |
+                BufferUsageBits::AccelerationStructureStorage |
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
             MemoryLocation::HostUpload,

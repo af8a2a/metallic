@@ -1287,14 +1287,17 @@ public:
         VkDeviceSize accelerationStructureSize,
         void* dst) const
     {
-        if (!initialized() || dst == nullptr || accelerationStructureAddress == 0 ||
-            accelerationStructureSize == 0) {
+        if (!initialized() || dst == nullptr || accelerationStructureAddress == 0) {
             return VK_ERROR_INITIALIZATION_FAILED;
         }
 
+        // Size is unused for acceleration-structure descriptors. A non-zero range
+        // is extra-validated as a buffer span and trips VUID-11483 when it is not
+        // an address from vkGetAccelerationStructureDeviceAddressKHR.
+        (void)accelerationStructureSize;
         VkDeviceAddressRangeEXT addressRange{
             .address = accelerationStructureAddress,
-            .size = accelerationStructureSize,
+            .size = 0,
         };
         VkResourceDescriptorInfoEXT resourceInfo{
             .sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
@@ -1313,13 +1316,13 @@ public:
         VkDeviceSize accelerationStructureSize,
         void* dst) const
     {
-        if (!initialized() || dst == nullptr || accelerationStructureAddress == 0 ||
-            accelerationStructureSize == 0) {
+        if (!initialized() || dst == nullptr || accelerationStructureAddress == 0) {
             return VK_ERROR_INITIALIZATION_FAILED;
         }
+        (void)accelerationStructureSize;
         VkDeviceAddressRangeEXT addressRange{
             .address = accelerationStructureAddress,
-            .size = accelerationStructureSize,
+            .size = 0,
         };
         VkResourceDescriptorInfoEXT resourceInfo{
             .sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
@@ -4632,14 +4635,27 @@ Result BindlessHeap::writeAccelerationStructure(
 {
     if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr ||
         accelerationStructure.impl_ == nullptr || !accelerationStructure.valid() ||
-        accelerationStructure.impl_->device != impl_->device) {
+        accelerationStructure.impl_->device != impl_->device ||
+        accelerationStructure.impl_->accelerationStructure == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
+    }
+
+    activateVolkDevice(impl_->device->device);
+    const VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
+        .accelerationStructure = accelerationStructure.impl_->accelerationStructure,
+    };
+    const VkDeviceAddress address = vkGetAccelerationStructureDeviceAddressKHR(
+        impl_->device->device,
+        &addressInfo);
+    if (address == 0) {
+        return makeError(Error::Failure);
     }
 
     const VkResult result = impl_->heap.writeAccelerationStructureDescriptor(
         handle,
-        accelerationStructure.impl_->address,
-        accelerationStructure.impl_->desc.size,
+        address,
+        0,
         impl_->resourceHeap.mapped);
     if (result != VK_SUCCESS) {
         return resultFromVk(result);
@@ -4660,7 +4676,7 @@ Result BindlessHeap::writePartitionedAccelerationStructure(
     const VkResult result = impl_->heap.writePartitionedAccelerationStructureDescriptor(
         handle,
         accelerationStructure.impl_->address,
-        accelerationStructure.impl_->desc.sizes.accelerationStructureSize,
+        0,
         impl_->resourceHeap.mapped);
     if (result != VK_SUCCESS) {
         return resultFromVk(result);
@@ -5970,10 +5986,10 @@ Result CommandBuffer::buildRayTracingAccelerationStructure(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            (impl_->device->rayQueryEnabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
             VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
-            VK_ACCESS_2_SHADER_READ_BIT,
+            (impl_->device->rayQueryEnabled ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -6033,9 +6049,9 @@ Result CommandBuffer::compactRayTracingAccelerationStructure(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            (impl_->device->rayQueryEnabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            VK_ACCESS_2_SHADER_READ_BIT,
+            (impl_->device->rayQueryEnabled ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo afterCopyDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -6083,7 +6099,7 @@ Result CommandBuffer::buildClusterAccelerationStructureTriangles(
         !hasFlag(scratchBuffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) ||
         !hasFlag(buildInfoBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
         !hasFlag(buildInfoBuffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) ||
-        !hasFlag(destinationAddressBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
+        !hasFlag(destinationAddressBuffer->desc().usage, BufferUsageBits::AccelerationStructureStorage) ||
         !hasFlag(destinationAddressBuffer->desc().usage, BufferUsageBits::ShaderDeviceAddress)) {
         return makeError(Error::InvalidArgument);
     }
@@ -6284,9 +6300,9 @@ Result CommandBuffer::buildClusterAccelerationStructureTriangles(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            (impl_->device->rayQueryEnabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            VK_ACCESS_2_SHADER_READ_BIT,
+            (impl_->device->rayQueryEnabled ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo outputDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -6330,7 +6346,9 @@ Result CommandBuffer::buildClusterAccelerationStructureBottomLevels(
     if (!validateBuffer(
             desc.buildInfoBuffer,
             BufferUsageBits::AccelerationStructureBuildInput) ||
-        !validateBuffer(desc.destinationAddressBuffer, BufferUsageBits::Storage) ||
+        !validateBuffer(
+            desc.destinationAddressBuffer,
+            BufferUsageBits::AccelerationStructureStorage) ||
         !validateBuffer(desc.scratchBuffer, BufferUsageBits::Storage) ||
         (desc.buildInfoCountBuffer != nullptr &&
          !validateBuffer(desc.buildInfoCountBuffer, BufferUsageBits::Storage)) ||
@@ -6346,7 +6364,7 @@ Result CommandBuffer::buildClusterAccelerationStructureBottomLevels(
         }
     } else if (!hasFlag(
                    desc.destinationAddressBuffer->desc().usage,
-                   BufferUsageBits::AccelerationStructureBuildInput)) {
+                   BufferUsageBits::AccelerationStructureStorage)) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -6497,10 +6515,10 @@ Result CommandBuffer::buildClusterAccelerationStructureBottomLevels(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            (impl_->device->rayQueryEnabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
             VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
-            VK_ACCESS_2_SHADER_READ_BIT,
+            (impl_->device->rayQueryEnabled ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo outputDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -6645,10 +6663,10 @@ Result CommandBuffer::buildPartitionedAccelerationStructure(
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT |
-            VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+            (impl_->device->rayQueryEnabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            (impl_->device->rayQueryEnabled ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo outputDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,

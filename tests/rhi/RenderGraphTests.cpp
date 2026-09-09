@@ -5001,11 +5001,13 @@ public:
                 ": " +
                 preview.lastLog());
         }
-        const uint32_t brightPixelCount = countBrightPixels(preview.pixels());
-        if (brightPixelCount < 1024) {
+        // AutoExposure meters the HDRI-dominated frame to middle gray, so the
+        // old >120 bright-pixel check no longer matches the sample graph.
+        const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
+        if (visiblePixelCount < 1024) {
             return RhiTestResult::fail(
-                std::string("RTXCR material preview produced too few bright pixels: ") +
-                std::to_string(brightPixelCount));
+                std::string("RTXCR material preview produced too few visible pixels: ") +
+                std::to_string(visiblePixelCount));
         }
 
         const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
@@ -5342,6 +5344,15 @@ public:
         render::Result result = preview.initialize(false, true);
         if (!result) {
             return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+        // Debug views are display-referred. Histogram auto-exposure remeters
+        // each view and makes otherwise-identical diagnostics incomparable.
+        render::RenderGraphNode* autoExposure = sample.graph.findNode("AutoExposure");
+        if (autoExposure == nullptr || !sample.graph.removeNode(autoExposure->id)) {
+            return RhiTestResult::fail("failed to remove AutoExposure from OpenPBR debug views");
+        }
+        if (sample.graph.addEdge("PathTrace.color", "FinalBlit.source") == nullptr) {
+            return RhiTestResult::fail("failed to connect PathTrace.color to FinalBlit for OpenPBR debug views");
         }
 
         struct DebugCase {
@@ -8973,6 +8984,13 @@ public:
 
     RhiTestResult run(RhiTestContext& context) override
     {
+        const std::filesystem::path sponzaPath =
+            std::filesystem::path(PROJECT_SOURCE_DIR) /
+            "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf";
+        if (!std::filesystem::is_regular_file(sponzaPath)) {
+            return RhiTestResult::skip("SuperSponza glTF is not present");
+        }
+
         render::RenderGraphPreviewRenderer preview;
         render::EnvironmentSettings environment{
             .enabled = true,
