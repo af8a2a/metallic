@@ -1355,7 +1355,9 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             BufferDesc{
                 .size = static_cast<uint64_t>(blasBuildCapacity_) * sizeof(uint64_t),
                 .structureStride = sizeof(uint64_t),
-                .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
+                .usage = BufferUsageBits::Storage |
+                    BufferUsageBits::AccelerationStructureStorage |
+                    BufferUsageBits::ShaderDeviceAddress,
                 .memoryLocation = MemoryLocation::Device,
             },
             blasAddressBuffer_,
@@ -1583,6 +1585,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         result = createFallbackHostBuffer(
             fallbackDestinationBytes,
             BufferUsageBits::Storage |
+                BufferUsageBits::AccelerationStructureStorage |
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
             fallbackBlasDestinationBuffer_,

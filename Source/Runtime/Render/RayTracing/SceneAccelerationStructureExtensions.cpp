@@ -1209,6 +1209,7 @@ Result SceneClusterAccelerationStructureBuilder::build(
         "createBuffer(CLAS addresses)",
         checkedByteSize(clusterCount, sizeof(uint64_t)),
         BufferUsageBits::Storage |
+            BufferUsageBits::AccelerationStructureStorage |
             BufferUsageBits::AccelerationStructureBuildInput |
             BufferUsageBits::ShaderDeviceAddress,
         MemoryLocation::HostUpload,
@@ -1369,6 +1370,7 @@ Result SceneClusterAccelerationStructureBuilder::build(
         "createBuffer(cluster BLAS addresses)",
         checkedByteSize(instanceCount, sizeof(uint64_t)),
         BufferUsageBits::Storage |
+            BufferUsageBits::AccelerationStructureStorage |
             BufferUsageBits::AccelerationStructureBuildInput |
             BufferUsageBits::ShaderDeviceAddress,
         MemoryLocation::HostUpload,
