@@ -26,6 +26,7 @@ public:
     bool setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix);
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
+    bool setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties);
     bool setSourceMountMatrix(std::string_view sourceId, const float4x4& mountMatrix);
     bool setSourceEnabled(std::string_view sourceId, bool enabled);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
@@ -63,6 +64,7 @@ private:
     // Remembers imported nodes even after their native light is deleted, so a
     // reload does not recreate it. New source nodes can still be imported.
     std::vector<ImportedLightBinding> importedLightSources_;
+    std::vector<RenderMaterial> importedMaterials_;
     bool sidecarLoaded_ = false;
     bool hasEnvironmentSettings_ = false;
     bool compositionDocument_ = false;

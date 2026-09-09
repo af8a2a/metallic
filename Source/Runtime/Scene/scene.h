@@ -290,6 +290,16 @@ struct RenderLight {
     uint64_t virtualLightSceneIdentity = 0;
 };
 
+// Compare/validate only editable factors. Imported names, texture bindings and
+// hair model parameters are preserved by setMaterialProperties().
+bool materialPropertiesEqual(const RenderMaterial& lhs, const RenderMaterial& rhs);
+bool validMaterialProperties(const RenderMaterial& properties);
+
+struct SceneMaterialSource {
+    std::string sourceId;
+    int32_t materialIndex = kInvalidSceneIndex;
+};
+
 // Stable description of one 3D asset mounted into a composed scene. The id,
 // not its vector position or an EnTT entity value, is the serialized identity.
 struct SceneSourceDesc {
@@ -329,6 +339,7 @@ public:
     bool setObjectVisible(SceneEntity object, bool visible);
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
+    bool setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties);
     // SceneDocument import transfers emission ownership while preserving source
     // nodes, transform inheritance and editable LightComponent metadata.
     bool virtualizeImportedLight(SceneEntity object);
@@ -356,6 +367,8 @@ public:
     int32_t renderNodeIndexForSource(
         std::string_view sourceId,
         int32_t sourceRenderNodeIndex) const;
+    SceneMaterialSource materialSource(int32_t materialIndex) const;
+    int32_t materialIndexForSource(std::string_view sourceId, int32_t sourceMaterialIndex) const;
     const std::vector<SceneSourceDesc>& sources() const { return sources_; }
     const std::vector<int32_t>& rootNodeIndices() const { return rootNodeIndices_; }
     const std::vector<SceneNode>& nodes() const { return nodes_; }
@@ -374,7 +387,8 @@ public:
     // Only mesh-instance world transforms contribute. Track resource identity
     // and visibility separately; moving a light or camera alone is not geometry.
     uint64_t geometryTransformRevision() const;
-    uint64_t contentRevision() const { return sceneGraph_.contentRevision(); }
+    uint64_t contentRevision() const { return sceneGraph_.contentRevision() + materialRevision_; }
+    uint64_t materialRevision() const { return materialRevision_; }
     uint64_t visibilityRevision() const { return sceneGraph_.visibilityRevision(); }
     uint64_t resourceIdentity() const { return resourceIdentity_; }
 
@@ -393,6 +407,12 @@ private:
     };
 
     struct SourceRenderNodeRange {
+        std::string sourceId;
+        size_t offset = 0;
+        size_t count = 0;
+    };
+
+    struct SourceMaterialRange {
         std::string sourceId;
         size_t offset = 0;
         size_t count = 0;
@@ -432,10 +452,12 @@ private:
     std::vector<SceneSourceDesc> sources_;
     std::vector<SceneEntity> sourceMountObjects_;
     std::vector<SourceRenderNodeRange> sourceRenderNodeRanges_;
+    std::vector<SourceMaterialRange> sourceMaterialRanges_;
     std::vector<DeferredMeshletCacheTarget> deferredMeshletCacheTargets_;
     std::vector<uint8_t> deferredMeshletBuildMask_;
     bool deferredMeshletBuild_ = false;
     uint64_t resourceIdentity_ = 0;
+    uint64_t materialRevision_ = 0;
 };
 
 bool matrixNearlyEqual(const float4x4& lhs, const float4x4& rhs, float epsilon = 0.000001f);

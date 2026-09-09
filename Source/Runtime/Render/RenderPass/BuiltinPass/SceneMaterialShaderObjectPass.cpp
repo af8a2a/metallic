@@ -43,11 +43,13 @@ public:
             : 0;
         const uint64_t transformRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
         const uint64_t visibilityRevision = runtimeScene != nullptr ? runtimeScene->visibilityRevision() : 0;
+        const uint64_t materialRevision = runtimeScene != nullptr ? runtimeScene->materialRevision() : 0;
         if (defaultProgram_ != nullptr &&
             resourceIdentity_ == resourceIdentity &&
             structuralRevision_ == structuralRevision &&
             transformRevision_ == transformRevision &&
-            visibilityRevision_ == visibilityRevision) {
+            visibilityRevision_ == visibilityRevision &&
+            materialRevision_ == materialRevision) {
             return {};
         }
 
@@ -206,6 +208,7 @@ public:
         structuralRevision_ = structuralRevision;
         transformRevision_ = transformRevision;
         visibilityRevision_ = visibilityRevision;
+        materialRevision_ = materialRevision;
         return {};
     }
 
@@ -321,7 +324,8 @@ private:
         const bool geometryChanged =
             runtimeScene->resourceIdentity() != resourceIdentity_ ||
             runtimeScene->sceneGraph().structuralRevision() != structuralRevision_ ||
-            runtimeScene->visibilityRevision() != visibilityRevision_;
+            runtimeScene->visibilityRevision() != visibilityRevision_ ||
+            runtimeScene->materialRevision() != materialRevision_;
         if (geometryChanged) {
             return rebuildRuntimeGeometry(*runtimeScene);
         }
@@ -452,6 +456,7 @@ private:
         structuralRevision_ = runtimeScene.sceneGraph().structuralRevision();
         transformRevision_ = runtimeScene.transformRevision();
         visibilityRevision_ = runtimeScene.visibilityRevision();
+        materialRevision_ = runtimeScene.materialRevision();
         return {};
     }
 
@@ -771,6 +776,7 @@ private:
     uint64_t structuralRevision_ = 0;
     uint64_t transformRevision_ = 0;
     uint64_t visibilityRevision_ = 0;
+    uint64_t materialRevision_ = 0;
 };
 
 } // namespace

@@ -4831,6 +4831,206 @@ TEST(SceneEditing, DocumentRoundTrip)
     testSceneDocumentRoundTrip(prepareOutputDirectory());
 }
 
+TEST(SceneEditing, MaterialProperties)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "editable_material_properties";
+    std::filesystem::create_directories(directory);
+    Scene scene;
+    ASSERT_TRUE(scene.load(writeMaterialFeatureScene(directory))) << scene.lastLoadResult().error;
+    ASSERT_GE(scene.materials().size(), 2u);
+    const RenderMaterial original = scene.materials()[1];
+    ASSERT_TRUE(validMaterialProperties(original));
+    const uint64_t revision = scene.contentRevision();
+    const uint64_t materialRevision = scene.materialRevision();
+    const uint64_t geometryRevision = scene.geometryTransformRevision();
+    const uint64_t resourceIdentity = scene.resourceIdentity();
+    EXPECT_FALSE(scene.setMaterialProperties(-1, original));
+    EXPECT_FALSE(scene.setMaterialProperties(static_cast<int32_t>(scene.materials().size()), original));
+    EXPECT_FALSE(scene.setMaterialProperties(1, original));
+
+    RenderMaterial changed = original;
+    changed.baseColorFactor = float4(0.4f, 0.6f, 0.8f, 0.3f);
+    changed.metallicFactor = 0.8f;
+    changed.roughnessFactor = 0.2f;
+    changed.emissiveFactor = float3(2.0f, 4.0f, 6.0f);
+    changed.normalTextureScale = -0.2f;
+    changed.occlusionTextureStrength = 0.3f;
+    changed.transmissionFactor = 0.4f;
+    changed.ior = 1.7f;
+    changed.thicknessFactor = 0.6f;
+    changed.attenuationDistance = 12.0f;
+    changed.attenuationColor = float3(0.2f, 0.4f, 0.6f);
+    changed.diffuseTransmissionFactor = 0.7f;
+    changed.diffuseTransmissionColor = float3(0.8f, 0.6f, 0.4f);
+    changed.alphaMode = "BLEND";
+    changed.alphaCutoff = 0.2f;
+    changed.doubleSided = !original.doubleSided;
+    changed.name = "Ignored rename";
+    changed.baseColorTexture = {};
+    changed.normalTexture = {};
+    changed.rtxcrHair = !original.rtxcrHair;
+    changed.rtxcrHairMelanin = 0.123f;
+    ASSERT_TRUE(scene.setMaterialProperties(1, changed));
+    EXPECT_TRUE(materialPropertiesEqual(scene.materials()[1], changed));
+    EXPECT_EQ(scene.materials()[1].name, original.name);
+    EXPECT_EQ(scene.materials()[1].baseColorTexture.textureIndex, original.baseColorTexture.textureIndex);
+    EXPECT_EQ(scene.materials()[1].baseColorTexture.texCoord, original.baseColorTexture.texCoord);
+    EXPECT_EQ(scene.materials()[1].baseColorTexture.uvTransform, original.baseColorTexture.uvTransform);
+    EXPECT_EQ(scene.materials()[1].normalTexture.textureIndex, original.normalTexture.textureIndex);
+    EXPECT_EQ(scene.materials()[1].rtxcrHair, original.rtxcrHair);
+    EXPECT_EQ(scene.materials()[1].rtxcrHairMelanin, original.rtxcrHairMelanin);
+    EXPECT_EQ(scene.contentRevision(), revision + 1);
+    EXPECT_EQ(scene.materialRevision(), materialRevision + 1);
+    EXPECT_EQ(scene.geometryTransformRevision(), geometryRevision);
+    EXPECT_EQ(scene.resourceIdentity(), resourceIdentity);
+    EXPECT_FALSE(scene.setMaterialProperties(1, changed));
+    EXPECT_EQ(scene.contentRevision(), revision + 1);
+    const auto source = scene.materialSource(1);
+    EXPECT_EQ(source.sourceId, "main");
+    EXPECT_EQ(source.materialIndex, 1);
+    EXPECT_EQ(scene.materialIndexForSource(source.sourceId, source.materialIndex), 1);
+    EXPECT_EQ(scene.materialIndexForSource("unknown", 1), kInvalidSceneIndex);
+
+    const auto reject = [&](const RenderMaterial& invalid) {
+        EXPECT_FALSE(validMaterialProperties(invalid));
+        EXPECT_FALSE(scene.setMaterialProperties(1, invalid));
+        EXPECT_TRUE(materialPropertiesEqual(scene.materials()[1], changed));
+        EXPECT_EQ(scene.materialRevision(), materialRevision + 1);
+    };
+    auto invalid = changed;
+    invalid.roughnessFactor = std::numeric_limits<float>::quiet_NaN();
+    reject(invalid);
+    invalid = changed; invalid.metallicFactor = 1.01f; reject(invalid);
+    invalid = changed; invalid.emissiveFactor.x = -1.0f; reject(invalid);
+    invalid = changed; invalid.ior = 0.9f; reject(invalid);
+    invalid = changed; invalid.thicknessFactor = -1.0f; reject(invalid);
+    invalid = changed; invalid.attenuationDistance = std::numeric_limits<float>::infinity(); reject(invalid);
+    invalid = changed; invalid.alphaMode = "invalid"; reject(invalid);
+    invalid = changed; invalid.baseColorFactor.w = -0.1f; reject(invalid);
+    invalid = changed; invalid.diffuseTransmissionColor.y = 1.1f; reject(invalid);
+}
+
+TEST(SceneEditing, MaterialDocumentRoundTrip)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "material_document_round_trip";
+    std::filesystem::create_directories(directory);
+    const auto path = writeMaterialFeatureScene(directory);
+    const auto sidecar = SceneDocument::sidecarPathForSource(path);
+    std::filesystem::remove(sidecar);
+    SceneDocument document;
+    ASSERT_TRUE(document.load(path)) << document.lastLoadResult().error;
+    const RenderMaterial imported = document.materials()[1];
+    EXPECT_FALSE(document.setMaterialProperties(1, imported));
+    EXPECT_FALSE(document.dirty());
+    RenderMaterial changed = imported;
+    changed.baseColorFactor = float4(0.15f, 0.25f, 0.35f, 0.45f);
+    changed.metallicFactor = 0.35f;
+    changed.roughnessFactor = 0.25f;
+    changed.emissiveFactor = float3(2.0f, 4.0f, 8.0f);
+    changed.normalTextureScale = 0.75f;
+    changed.occlusionTextureStrength = 0.45f;
+    changed.transmissionFactor = 0.35f;
+    changed.ior = 1.8f;
+    changed.thicknessFactor = 0.85f;
+    changed.attenuationDistance = 15.0f;
+    changed.attenuationColor = float3(0.6f, 0.5f, 0.4f);
+    changed.diffuseTransmissionFactor = 0.55f;
+    changed.diffuseTransmissionColor = float3(0.3f, 0.5f, 0.7f);
+    changed.alphaMode = "MASK";
+    changed.alphaCutoff = 0.65f;
+    changed.doubleSided = !imported.doubleSided;
+    ASSERT_TRUE(document.setMaterialProperties(1, changed));
+    EXPECT_TRUE(document.dirty());
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    EXPECT_FALSE(document.dirty());
+    nlohmann::json saved;
+    { std::ifstream stream(sidecar); stream >> saved; }
+    ASSERT_EQ(saved["materials"].size(), 1u);
+    EXPECT_EQ(saved["materials"][0]["sourceId"], "main");
+    EXPECT_EQ(saved["materials"][0]["materialIndex"], 1);
+    EXPECT_EQ(saved["materials"][0]["sourceName"], imported.name);
+    EXPECT_FALSE(saved["materials"][0]["properties"].contains("baseColorTexture"));
+
+    SceneDocument loaded;
+    ASSERT_TRUE(loaded.load(path)) << loaded.documentWarning();
+    EXPECT_TRUE(materialPropertiesEqual(loaded.materials()[1], changed));
+    EXPECT_EQ(loaded.materials()[1].baseColorTexture.uvTransform, imported.baseColorTexture.uvTransform);
+    EXPECT_FALSE(loaded.dirty());
+    EXPECT_FALSE(loaded.setMaterialProperties(1, changed));
+    EXPECT_FALSE(loaded.dirty());
+    RenderMaterial invalid = changed;
+    invalid.transmissionFactor = -0.2f;
+    EXPECT_FALSE(loaded.setMaterialProperties(1, invalid));
+    EXPECT_FALSE(loaded.dirty());
+    RenderMaterial unsaved = changed;
+    unsaved.roughnessFactor = 0.99f;
+    ASSERT_TRUE(loaded.setMaterialProperties(1, unsaved));
+    ASSERT_TRUE(loaded.revert(message)) << message;
+    EXPECT_FALSE(loaded.dirty());
+    EXPECT_TRUE(materialPropertiesEqual(loaded.materials()[1], changed));
+    ASSERT_TRUE(loaded.setMaterialProperties(1, imported));
+    ASSERT_TRUE(loaded.save(message)) << message;
+    { std::ifstream stream(sidecar); stream >> saved; }
+    EXPECT_TRUE(saved["materials"].empty());
+    ASSERT_TRUE(loaded.load(sidecar)) << loaded.documentWarning();
+    EXPECT_TRUE(materialPropertiesEqual(loaded.materials()[1], imported));
+}
+
+TEST(SceneEditing, CompositeMaterialOverrides)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "composite_material_overrides";
+    std::filesystem::create_directories(directory / "a");
+    std::filesystem::create_directories(directory / "b");
+    (void)writeFullScene(directory / "a");
+    (void)writeFullScene(directory / "b");
+    const auto path = directory / "world.metallic_scene.json";
+    nlohmann::json manifest{{"version", 4}, {"sources", {
+        {{"id", "a"}, {"path", "a/scene.gltf"}},
+        {{"id", "b"}, {"path", "b/scene.gltf"}},
+    }}};
+    writeTextFile(path, manifest.dump(2));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(path)) << document.documentWarning();
+    const int32_t a = document.materialIndexForSource("a", 0);
+    const int32_t b = document.materialIndexForSource("b", 0);
+    ASSERT_GE(a, 0); ASSERT_GE(b, 0); ASSERT_NE(a, b);
+    const RenderMaterial imported = document.materials()[static_cast<size_t>(b)];
+    RenderMaterial changed = imported;
+    changed.roughnessFactor = 0.123f;
+    ASSERT_TRUE(document.setMaterialProperties(b, changed));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    { std::ifstream stream(path); stream >> manifest; }
+    ASSERT_EQ(manifest["materials"].size(), 1u);
+    EXPECT_EQ(manifest["materials"][0]["sourceId"], "b");
+    EXPECT_EQ(manifest["materials"][0]["materialIndex"], 0);
+    std::swap(manifest["sources"][0], manifest["sources"][1]);
+    writeTextFile(path, manifest.dump(2));
+    ASSERT_TRUE(document.load(path)) << document.documentWarning();
+    EXPECT_EQ(document.materialIndexForSource("b", 0), 0);
+    EXPECT_TRUE(materialPropertiesEqual(document.materials()[0], changed));
+    EXPECT_TRUE(materialPropertiesEqual(document.materials()[static_cast<size_t>(document.materialIndexForSource("a", 0))], imported));
+    EXPECT_FALSE(document.dirty());
+
+    const auto originalOverride = manifest["materials"][0];
+    for (const char* invalidCase : {"sourceId", "materialIndex", "sourceName", "properties"}) {
+        manifest["materials"][0] = originalOverride;
+        if (std::string_view(invalidCase) == "sourceId") { manifest["materials"][0][invalidCase] = "missing"; }
+        else if (std::string_view(invalidCase) == "materialIndex") { manifest["materials"][0][invalidCase] = UINT64_MAX; }
+        else if (std::string_view(invalidCase) == "sourceName") { manifest["materials"][0][invalidCase] = "renamed source"; }
+        else { manifest["materials"][0][invalidCase]["roughnessFactor"] = -1.0f; }
+        writeTextFile(path, manifest.dump(2));
+        ASSERT_TRUE(document.load(path)) << document.documentWarning();
+        EXPECT_FALSE(document.documentWarning().empty());
+        EXPECT_TRUE(materialPropertiesEqual(document.materials()[0], imported));
+        EXPECT_FALSE(document.dirty());
+    }
+}
+
 TEST(Photometry, UnitsAndValidation)
 {
     using namespace metallic::scene;

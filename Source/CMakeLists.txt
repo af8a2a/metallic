@@ -273,6 +273,8 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
 set(METALLIC_EDITOR_SOURCES
     Editor/EditorApplication.cpp
     Editor/EditorApplicationSmokeTests.cpp
+    Editor/EditorMaterialInspector.cpp
+    Editor/EditorMaterialInspectorSmoke.cpp
     Editor/EditorSliderDebug.cpp
     Editor/EditorProfiler.cpp
     Editor/NvmlMonitor.cpp

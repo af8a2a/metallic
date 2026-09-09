@@ -50,6 +50,7 @@ private:
     bool renderFrame();
     bool runMultiViewportSmokeTest();
     bool runSliderDebugSmokeTest();
+    bool runMaterialInspectorSmokeTest();
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();
@@ -82,15 +83,24 @@ private:
     void drawSelectedNodeTransformInspector();
     void drawSelectedCameraComponentInspector();
     void drawSelectedLightComponentInspector();
+    std::vector<int32_t> selectedMaterialIndices() const;
+    void drawSelectedMaterialInspector();
+    void drawMaterialInspector(int32_t materialIndex);
     scene::ConstSceneObject selectedSceneObject() const;
     int32_t selectedNodeIndex() const;
     bool setSelectedObjectWorldMatrix(const float4x4& worldMatrix, std::string& reason);
     void notifySceneTransformChanged(bool geometryChanged);
     void notifyScenePropertiesChanged();
+    void notifySceneMaterialsChanged(bool invalidateAccelerationStructure = false);
+    struct MaterialEditValue {
+        int32_t materialIndex = scene::kInvalidSceneIndex;
+        scene::RenderMaterial properties;
+    };
     using SceneEditValue = std::variant<
         float4x4,
         scene::CameraProperties,
-        scene::LightProperties>;
+        scene::LightProperties,
+        MaterialEditValue>;
     void pushSceneEditCommand(
         scene::SceneEntity object,
         uint64_t sceneLifetimeRevision,

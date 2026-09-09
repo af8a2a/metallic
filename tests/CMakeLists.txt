@@ -1,6 +1,16 @@
 include(GoogleTest)
 
 if(WIN32)
+    add_test(NAME MetallicLookDevMaterialInspectorSmoke
+        COMMAND ${CMAKE_COMMAND}
+            "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/lookdev-material-inspector"
+            "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunMaterialInspectorSmoke.cmake"
+    )
+    set_tests_properties(MetallicLookDevMaterialInspectorSmoke PROPERTIES
+        LABELS "editor" TIMEOUT 90 RESOURCE_LOCK MetallicEditor
+    )
     add_test(NAME MetallicLookDevVBufferSmoke
         COMMAND ${CMAKE_COMMAND}
             "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"

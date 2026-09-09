@@ -2927,6 +2927,11 @@ bool Scene::compose(
             .offset = renderNodeBase,
             .count = source.renderNodes().size(),
         });
+        composed.sourceMaterialRanges_.push_back(SourceMaterialRange{
+            .sourceId = sourceDesc.id,
+            .offset = materialBase,
+            .count = source.materials().size(),
+        });
 
         int32_t sourceCameraResourceCount = 0;
         int32_t sourceLightResourceCount = 0;
@@ -4570,6 +4575,98 @@ int32_t Scene::renderNodeIndexForSource(
     return kInvalidSceneIndex;
 }
 
+SceneMaterialSource Scene::materialSource(int32_t materialIndex) const
+{
+    if (materialIndex < 0 || static_cast<size_t>(materialIndex) >= materials_.size()) { return {}; }
+    if (sourceMaterialRanges_.empty() && sources_.size() == 1u) {
+        return {sources_.front().id, materialIndex};
+    }
+    for (const SourceMaterialRange& range : sourceMaterialRanges_) {
+        const size_t index = static_cast<size_t>(materialIndex);
+        if (index >= range.offset && index - range.offset < range.count) {
+            return {range.sourceId, static_cast<int32_t>(index - range.offset)};
+        }
+    }
+    return {};
+}
+
+int32_t Scene::materialIndexForSource(std::string_view sourceId, int32_t sourceMaterialIndex) const
+{
+    if (sourceMaterialIndex < 0) { return kInvalidSceneIndex; }
+    if (sourceMaterialRanges_.empty() && sources_.size() == 1u && sources_.front().id == sourceId) {
+        return static_cast<size_t>(sourceMaterialIndex) < materials_.size() ? sourceMaterialIndex : kInvalidSceneIndex;
+    }
+    for (const SourceMaterialRange& range : sourceMaterialRanges_) {
+        if (range.sourceId == sourceId && static_cast<size_t>(sourceMaterialIndex) < range.count) {
+            return static_cast<int32_t>(range.offset + static_cast<size_t>(sourceMaterialIndex));
+        }
+    }
+    return kInvalidSceneIndex;
+}
+
+bool materialPropertiesEqual(const RenderMaterial& lhs, const RenderMaterial& rhs)
+{
+    const auto sameColor = [](const float3& a, const float3& b) {
+        return a.x == b.x && a.y == b.y && a.z == b.z;
+    };
+    return lhs.baseColorFactor.x == rhs.baseColorFactor.x && lhs.baseColorFactor.y == rhs.baseColorFactor.y &&
+        lhs.baseColorFactor.z == rhs.baseColorFactor.z && lhs.baseColorFactor.w == rhs.baseColorFactor.w &&
+        lhs.metallicFactor == rhs.metallicFactor && lhs.roughnessFactor == rhs.roughnessFactor &&
+        sameColor(lhs.emissiveFactor, rhs.emissiveFactor) && lhs.alphaCutoff == rhs.alphaCutoff &&
+        lhs.alphaMode == rhs.alphaMode && lhs.doubleSided == rhs.doubleSided &&
+        lhs.normalTextureScale == rhs.normalTextureScale && lhs.occlusionTextureStrength == rhs.occlusionTextureStrength &&
+        lhs.transmissionFactor == rhs.transmissionFactor && lhs.ior == rhs.ior &&
+        lhs.thicknessFactor == rhs.thicknessFactor && lhs.attenuationDistance == rhs.attenuationDistance &&
+        sameColor(lhs.attenuationColor, rhs.attenuationColor) &&
+        lhs.diffuseTransmissionFactor == rhs.diffuseTransmissionFactor &&
+        sameColor(lhs.diffuseTransmissionColor, rhs.diffuseTransmissionColor);
+}
+
+bool validMaterialProperties(const RenderMaterial& properties)
+{
+    const auto unit = [](float value) { return std::isfinite(value) && value >= 0.0f && value <= 1.0f; };
+    const auto positive = [](float value) { return std::isfinite(value) && value >= 0.0f; };
+    const auto color = [&](const float3& value) { return unit(value.x) && unit(value.y) && unit(value.z); };
+    return unit(properties.baseColorFactor.x) && unit(properties.baseColorFactor.y) &&
+        unit(properties.baseColorFactor.z) && unit(properties.baseColorFactor.w) &&
+        unit(properties.metallicFactor) && unit(properties.roughnessFactor) &&
+        positive(properties.emissiveFactor.x) && positive(properties.emissiveFactor.y) && positive(properties.emissiveFactor.z) &&
+        unit(properties.alphaCutoff) &&
+        (properties.alphaMode == "OPAQUE" || properties.alphaMode == "MASK" || properties.alphaMode == "BLEND") &&
+        std::isfinite(properties.normalTextureScale) && unit(properties.occlusionTextureStrength) &&
+        unit(properties.transmissionFactor) && std::isfinite(properties.ior) && properties.ior >= 1.0f &&
+        positive(properties.thicknessFactor) && positive(properties.attenuationDistance) &&
+        color(properties.attenuationColor) && unit(properties.diffuseTransmissionFactor) &&
+        color(properties.diffuseTransmissionColor);
+}
+
+bool Scene::setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties)
+{
+    if (!valid() || materialIndex < 0 || static_cast<size_t>(materialIndex) >= materials_.size() ||
+        !validMaterialProperties(properties)) { return false; }
+    RenderMaterial& current = materials_[static_cast<size_t>(materialIndex)];
+    if (materialPropertiesEqual(current, properties)) { return false; }
+    current.baseColorFactor = properties.baseColorFactor;
+    current.metallicFactor = properties.metallicFactor;
+    current.roughnessFactor = properties.roughnessFactor;
+    current.emissiveFactor = properties.emissiveFactor;
+    current.alphaCutoff = properties.alphaCutoff;
+    current.alphaMode = properties.alphaMode;
+    current.doubleSided = properties.doubleSided;
+    current.normalTextureScale = properties.normalTextureScale;
+    current.occlusionTextureStrength = properties.occlusionTextureStrength;
+    current.transmissionFactor = properties.transmissionFactor;
+    current.ior = properties.ior;
+    current.thicknessFactor = properties.thicknessFactor;
+    current.attenuationDistance = properties.attenuationDistance;
+    current.attenuationColor = properties.attenuationColor;
+    current.diffuseTransmissionFactor = properties.diffuseTransmissionFactor;
+    current.diffuseTransmissionColor = properties.diffuseTransmissionColor;
+    ++materialRevision_;
+    if (materialRevision_ == 0) { ++materialRevision_; }
+    return true;
+}
+
 bool Scene::setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix)
 {
     if (!valid()) {
@@ -4912,6 +5009,8 @@ void Scene::clearParsedData()
     sources_.clear();
     sourceMountObjects_.clear();
     sourceRenderNodeRanges_.clear();
+    sourceMaterialRanges_.clear();
+    materialRevision_ = 0;
     deferredMeshletCacheTargets_.clear();
     deferredMeshletBuildMask_.clear();
     deferredMeshletBuild_ = false;

@@ -1044,6 +1044,30 @@ bool appendPrimitiveGeometry(
     return true;
 }
 
+std::vector<ScenePathTraceGpuMaterial> buildGpuMaterials(
+    const scene::Scene& loadedScene,
+    const std::vector<uint32_t>& textureIndexMap,
+    const std::vector<uint32_t>& neuralTextureSetIndexMap,
+    std::string& log)
+{
+    std::vector<ScenePathTraceGpuMaterial> materials;
+    materials.reserve(std::max<size_t>(loadedScene.materials().size(), 1));
+    if (loadedScene.materials().empty()) {
+        materials.push_back(ScenePathTraceGpuMaterial{});
+    } else {
+        for (const scene::RenderMaterial& material : loadedScene.materials()) {
+            materials.push_back(makeMaterial(
+                material,
+                loadedScene,
+                textureIndexMap,
+                neuralTextureSetIndexMap,
+                log));
+        }
+    }
+
+    return materials;
+}
+
 bool buildGpuScene(
     const scene::Scene& loadedScene,
     const std::vector<uint32_t>& textureIndexMap,
@@ -1052,19 +1076,8 @@ bool buildGpuScene(
     std::string& log)
 {
     outScene = ScenePathTraceGpuScene{};
-    outScene.materials.reserve(std::max<size_t>(loadedScene.materials().size(), 1));
-    if (loadedScene.materials().empty()) {
-        outScene.materials.push_back(ScenePathTraceGpuMaterial{});
-    } else {
-        for (const scene::RenderMaterial& material : loadedScene.materials()) {
-            outScene.materials.push_back(makeMaterial(
-                material,
-                loadedScene,
-                textureIndexMap,
-                neuralTextureSetIndexMap,
-                log));
-        }
-    }
+    outScene.materials = buildGpuMaterials(
+        loadedScene, textureIndexMap, neuralTextureSetIndexMap, log);
 
     constexpr uint32_t kInvalidPrimitiveIndex = std::numeric_limits<uint32_t>::max();
     std::vector<uint32_t> primitiveToGpuPrimitive(
@@ -1139,6 +1152,30 @@ std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
         mark(material.diffuseTransmissionColorTexture);
     }
     return referenced;
+}
+
+std::vector<std::array<int32_t, 10>> materialResourceLayout(const scene::Scene& loadedScene)
+{
+    std::vector<std::array<int32_t, 10>> layout;
+    layout.reserve(loadedScene.materials().size());
+    for (const scene::RenderMaterial& material : loadedScene.materials()) {
+        // Texture bindings determine residency/neural texture payloads. MASK
+        // determines BLAS geometry opacity; other properties only need a
+        // material buffer update.
+        layout.push_back({
+            material.baseColorTexture.textureIndex,
+            material.metallicRoughnessTexture.textureIndex,
+            material.normalTexture.textureIndex,
+            material.occlusionTexture.textureIndex,
+            material.emissiveTexture.textureIndex,
+            material.transmissionTexture.textureIndex,
+            material.thicknessTexture.textureIndex,
+            material.diffuseTransmissionTexture.textureIndex,
+            material.diffuseTransmissionColorTexture.textureIndex,
+            material.alphaMode == "MASK" ? 1 : 0,
+        });
+    }
+    return layout;
 }
 
 } // namespace
@@ -1851,10 +1888,13 @@ struct ScenePathTraceResources::Impl {
         sourceStructuralRevision = 0;
         sourceGeometryTransformRevision = 0;
         sourceVisibilityRevision = 0;
+        sourceMaterialRevision = 0;
+        sourceMaterialResourceLayout.clear();
         asyncSourceResourceIdentity = 0;
         asyncSourceStructuralRevision = 0;
         asyncSourceGeometryTransformRevision = 0;
         asyncSourceVisibilityRevision = 0;
+        asyncSourceMaterialRevision = 0;
         asyncGpuScene = ScenePathTraceGpuScene{};
         asyncReferencedTextures.clear();
         asyncBufferStep = 0;
@@ -1879,7 +1919,9 @@ struct ScenePathTraceResources::Impl {
         return sourceResourceIdentity == sourceScene.resourceIdentity() &&
             sourceStructuralRevision ==
                 sourceScene.sceneGraph().structuralRevision() &&
-            sourceVisibilityRevision == sourceScene.visibilityRevision();
+            sourceVisibilityRevision == sourceScene.visibilityRevision() &&
+            (sourceMaterialRevision == sourceScene.materialRevision() ||
+             sourceMaterialResourceLayout == materialResourceLayout(sourceScene));
     }
 
     void stampSource(const scene::Scene& sourceScene)
@@ -1889,6 +1931,8 @@ struct ScenePathTraceResources::Impl {
             sourceScene.sceneGraph().structuralRevision();
         sourceGeometryTransformRevision = sourceScene.geometryTransformRevision();
         sourceVisibilityRevision = sourceScene.visibilityRevision();
+        sourceMaterialRevision = sourceScene.materialRevision();
+        sourceMaterialResourceLayout = materialResourceLayout(sourceScene);
     }
 
     SceneAccelerationStructureBuilder rtxBuilder;
@@ -1902,6 +1946,8 @@ struct ScenePathTraceResources::Impl {
     uint64_t sourceStructuralRevision = 0;
     uint64_t sourceGeometryTransformRevision = 0;
     uint64_t sourceVisibilityRevision = 0;
+    uint64_t sourceMaterialRevision = 0;
+    std::vector<std::array<int32_t, 10>> sourceMaterialResourceLayout;
     std::unique_ptr<Buffer> vertexBuffer;
     std::unique_ptr<Buffer> indexBuffer;
     std::unique_ptr<Buffer> primitiveBuffer;
@@ -1932,6 +1978,7 @@ struct ScenePathTraceResources::Impl {
     uint64_t asyncSourceStructuralRevision = 0;
     uint64_t asyncSourceGeometryTransformRevision = 0;
     uint64_t asyncSourceVisibilityRevision = 0;
+    uint64_t asyncSourceMaterialRevision = 0;
     ScenePathTraceGpuScene asyncGpuScene;
     uint32_t asyncBufferStep = 0;
 };
@@ -1959,13 +2006,15 @@ Result ScenePathTraceResources::prepare(
     const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, path);
     if (impl_->valid() && impl_->scenePath == path &&
         boundScene != nullptr && impl_->sourceTopologyMatches(*boundScene) &&
-        impl_->sourceGeometryTransformRevision != boundScene->geometryTransformRevision()) {
+        (impl_->sourceGeometryTransformRevision != boundScene->geometryTransformRevision() ||
+         impl_->sourceMaterialRevision != boundScene->materialRevision())) {
         return syncRuntimeScene(boundScene, log);
     }
     if (impl_->valid() && impl_->scenePath == path &&
         (boundScene == nullptr ||
          (impl_->sourceTopologyMatches(*boundScene) &&
-          impl_->sourceGeometryTransformRevision == boundScene->geometryTransformRevision()))) {
+          impl_->sourceGeometryTransformRevision == boundScene->geometryTransformRevision() &&
+          impl_->sourceMaterialRevision == boundScene->materialRevision()))) {
         spdlog::info("[SceneResources] Reuse prepared scene='{}'", path.string());
         return {};
     }
@@ -2156,9 +2205,7 @@ Result ScenePathTraceResources::beginPrepareAsync(
     }
     if (impl_->valid() && impl_->scenePath == path &&
         impl_->sourceTopologyMatches(*boundScene)) {
-        return impl_->sourceGeometryTransformRevision == boundScene->geometryTransformRevision()
-            ? Result{}
-            : syncRuntimeScene(boundScene, log);
+        return syncRuntimeScene(boundScene, log);
     }
 
     impl_->clear();
@@ -2171,6 +2218,8 @@ Result ScenePathTraceResources::beginPrepareAsync(
         boundScene->sceneGraph().structuralRevision();
     impl_->asyncSourceGeometryTransformRevision = boundScene->geometryTransformRevision();
     impl_->asyncSourceVisibilityRevision = boundScene->visibilityRevision();
+    impl_->asyncSourceMaterialRevision = boundScene->materialRevision();
+    impl_->sourceMaterialResourceLayout = materialResourceLayout(*boundScene);
     Result result = impl_->beginMaterialTextureBuild(device, *boundScene, log);
     if (!result) {
         impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
@@ -2210,8 +2259,9 @@ Result ScenePathTraceResources::pumpPrepareAsync(
         impl_->asyncScene->sceneGraph().structuralRevision() !=
             impl_->asyncSourceStructuralRevision ||
         impl_->asyncScene->visibilityRevision() !=
-            impl_->asyncSourceVisibilityRevision) {
-        log = "Scene topology changed during asynchronous resource preparation.";
+            impl_->asyncSourceVisibilityRevision ||
+        impl_->asyncScene->materialRevision() != impl_->asyncSourceMaterialRevision) {
+        log = "Scene topology or materials changed during asynchronous resource preparation.";
         impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
         progress.status = scene::SceneLoadStatus::Failed;
         progress.phase = scene::SceneLoadPhase::Failed;
@@ -2434,6 +2484,7 @@ Result ScenePathTraceResources::pumpPrepareAsync(
             impl_->sourceStructuralRevision = impl_->asyncSourceStructuralRevision;
             impl_->sourceGeometryTransformRevision = impl_->asyncSourceGeometryTransformRevision;
             impl_->sourceVisibilityRevision = impl_->asyncSourceVisibilityRevision;
+            impl_->sourceMaterialRevision = impl_->asyncSourceMaterialRevision;
             impl_->prepared = true;
             ++impl_->revision;
             impl_->asyncScene = nullptr;
@@ -2472,7 +2523,7 @@ Result ScenePathTraceResources::syncRuntimeScene(
         return {};
     }
     if (impl_->device == nullptr || impl_->graphicsQueue == nullptr) {
-        log = "Scene resources have no device or graphics queue for a runtime transform update.";
+        log = "Scene resources have no device or graphics queue for a runtime scene update.";
         return makeError(Error::InvalidArgument);
     }
     if (!impl_->sourceTopologyMatches(*boundScene)) {
@@ -2529,6 +2580,28 @@ Result ScenePathTraceResources::syncRuntimeScene(
             return makeError(Error::Failure);
         }
         return {};
+    }
+    if (impl_->sourceMaterialRevision != boundScene->materialRevision()) {
+        const std::vector<ScenePathTraceGpuMaterial> materials = buildGpuMaterials(
+            *boundScene,
+            impl_->textureIndexMap,
+            impl_->neuralTextures.logicalTextureSetIndices(),
+            log);
+        const Result result = uploadStorageBuffer(
+            *impl_->device,
+            materials.data(),
+            static_cast<uint64_t>(materials.size() * sizeof(ScenePathTraceGpuMaterial)),
+            sizeof(ScenePathTraceGpuMaterial),
+            impl_->materialBuffer,
+            log,
+            "ScenePathTracePass updated materials");
+        if (!result) {
+            return result;
+        }
+        // Do not stamp geometry revisions here: a simultaneous transform edit
+        // still needs the instance upload and TLAS refit below.
+        impl_->sourceMaterialRevision = boundScene->materialRevision();
+        ++impl_->revision;
     }
     // A transform edit on a light/camera must not repack every vertex/index,
     // recalculate per-triangle ray-cone LOD, replace the instance buffer, or

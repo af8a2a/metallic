@@ -37,6 +37,7 @@ void stampSnapshot(
     snapshot.sourceStructuralRevision = sourceScene.sceneGraph().structuralRevision();
     snapshot.sourceTransformRevision = sourceScene.transformRevision();
     snapshot.sourceVisibilityRevision = sourceScene.visibilityRevision();
+    snapshot.sourceMaterialRevision = sourceScene.materialRevision();
 }
 
 bool snapshotMatchesScene(
@@ -160,7 +161,11 @@ Result SceneResourceManager::acquire(
         outSnapshot->features = outSnapshot->features | features;
         if (outSnapshot->pathTraceResources != nullptr &&
             outSnapshot->pathTraceResources->valid()) {
-            return {};
+            const Result result = outSnapshot->pathTraceResources->syncRuntimeScene(resolvedScene, log);
+            if (result) {
+                stampSnapshot(*outSnapshot, *resolvedScene);
+            }
+            return result;
         }
     }
 
@@ -215,8 +220,14 @@ Result SceneResourceManager::beginAcquireAsync(
             snapshotMatchesScene(*found->second, runtimeScene)) {
             outSnapshot = found->second;
             outSnapshot->features = outSnapshot->features | features;
-            if (outSnapshot->pathTraceResources->valid() ||
-                outSnapshot->pathTraceResources->preparing()) {
+            if (outSnapshot->pathTraceResources->valid()) {
+                const Result result = outSnapshot->pathTraceResources->syncRuntimeScene(&runtimeScene, log);
+                if (result) {
+                    stampSnapshot(*outSnapshot, runtimeScene);
+                }
+                return result;
+            }
+            if (outSnapshot->pathTraceResources->preparing()) {
                 return {};
             }
         } else {
@@ -277,14 +288,13 @@ Result SceneResourceManager::pumpAsync(
         progress,
         log);
     if (result && complete && snapshot->pathTraceResources->valid() &&
-        snapshot->sourceTransformRevision !=
-            runtimeScene.transformRevision()) {
+        (snapshot->sourceTransformRevision != runtimeScene.transformRevision() ||
+         snapshot->sourceMaterialRevision != runtimeScene.materialRevision())) {
         result = snapshot->pathTraceResources->syncRuntimeScene(
             &runtimeScene,
             log);
         if (result) {
-            snapshot->sourceTransformRevision =
-                runtimeScene.transformRevision();
+            stampSnapshot(*snapshot, runtimeScene);
         }
     }
     return result;

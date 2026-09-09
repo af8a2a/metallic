@@ -1422,6 +1422,10 @@ public:
             sceneResourceRevision_ = sceneResources_.revision();
             resetAccumulation_ = true;
             hasPreviousCamera_ = false;
+            sharcClearPending_ = true;
+#if METALLIC_HAS_NRC
+            nrcSceneRevision_ = 0;
+#endif
         }
         EnvironmentLightingSubsystem* environmentSubsystem =
             context.subsystem<EnvironmentLightingSubsystem>();

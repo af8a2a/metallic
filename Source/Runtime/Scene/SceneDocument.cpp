@@ -208,6 +208,75 @@ bool parseLightProperties(
     return true;
 }
 
+constexpr std::array kMaterialScalarFields{
+    std::pair{"metallicFactor", &RenderMaterial::metallicFactor},
+    std::pair{"roughnessFactor", &RenderMaterial::roughnessFactor},
+    std::pair{"alphaCutoff", &RenderMaterial::alphaCutoff},
+    std::pair{"normalTextureScale", &RenderMaterial::normalTextureScale},
+    std::pair{"occlusionTextureStrength", &RenderMaterial::occlusionTextureStrength},
+    std::pair{"transmissionFactor", &RenderMaterial::transmissionFactor},
+    std::pair{"ior", &RenderMaterial::ior},
+    std::pair{"thicknessFactor", &RenderMaterial::thicknessFactor},
+    std::pair{"attenuationDistance", &RenderMaterial::attenuationDistance},
+    std::pair{"diffuseTransmissionFactor", &RenderMaterial::diffuseTransmissionFactor},
+};
+
+constexpr std::array kMaterialColorFields{
+    std::pair{"emissiveFactor", &RenderMaterial::emissiveFactor},
+    std::pair{"attenuationColor", &RenderMaterial::attenuationColor},
+    std::pair{"diffuseTransmissionColor", &RenderMaterial::diffuseTransmissionColor},
+};
+
+nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
+{
+    nlohmann::json value{
+        {"baseColorFactor", {properties.baseColorFactor.x, properties.baseColorFactor.y,
+            properties.baseColorFactor.z, properties.baseColorFactor.w}},
+        {"alphaMode", properties.alphaMode},
+        {"doubleSided", properties.doubleSided},
+    };
+    for (const auto& [name, member] : kMaterialScalarFields) { value[name] = properties.*member; }
+    for (const auto& [name, member] : kMaterialColorFields) {
+        const float3& color = properties.*member;
+        value[name] = {color.x, color.y, color.z};
+    }
+    return value;
+}
+
+bool parseMaterialProperties(const nlohmann::json& value, RenderMaterial& properties, std::string& reason)
+{
+    if (!value.is_object()) { reason = "properties must be an object"; return false; }
+    for (const auto& [name, member] : kMaterialScalarFields) {
+        double number = properties.*member;
+        if (!readOptionalFiniteNumber(value, name, number, reason)) { return false; }
+        properties.*member = static_cast<float>(number);
+    }
+    for (const auto& [name, member] : kMaterialColorFields) {
+        if (value.contains(name) && !readOptionalColor(nlohmann::json{{"color", value[name]}},
+                properties.*member, reason)) { return false; }
+    }
+    if (value.contains("baseColorFactor")) {
+        const auto& color = value["baseColorFactor"];
+        if (!color.is_array() || color.size() != 4u ||
+            !std::all_of(color.begin(), color.end(), [](const auto& component) { return component.is_number(); })) {
+            reason = "baseColorFactor must be a four-number array";
+            return false;
+        }
+        properties.baseColorFactor = float4(color[0].get<float>(), color[1].get<float>(),
+            color[2].get<float>(), color[3].get<float>());
+    }
+    if (value.contains("alphaMode")) {
+        if (!value["alphaMode"].is_string()) { reason = "alphaMode must be a string"; return false; }
+        properties.alphaMode = value["alphaMode"].get<std::string>();
+    }
+    if (value.contains("doubleSided")) {
+        if (!value["doubleSided"].is_boolean()) { reason = "doubleSided must be a boolean"; return false; }
+        properties.doubleSided = value["doubleSided"].get<bool>();
+    }
+    if (!validMaterialProperties(properties)) { reason = "material factors are outside their supported range"; return false; }
+    return true;
+}
+
 nlohmann::json serializeCameraProperties(const CameraProperties& properties)
 {
     nlohmann::json value{
@@ -649,6 +718,7 @@ bool SceneDocument::loadInternalInPlace(
         ? sidecarPathForSource(sourcePath_)
         : normalizedPath(documentPath);
     compositionDocument_ = compositionDocument;
+    importedMaterials_ = materials();
 
     std::error_code existsError;
     if (std::filesystem::exists(documentPath_, existsError) &&
@@ -698,6 +768,7 @@ void SceneDocument::clear()
     environment_ = EnvironmentSettings{};
     lighting_ = LightingSettings{};
     importedLightSources_.clear();
+    importedMaterials_.clear();
     sidecarLoaded_ = false;
     hasEnvironmentSettings_ = false;
     compositionDocument_ = false;
@@ -731,6 +802,13 @@ bool SceneDocument::setObjectWorldMatrix(SceneEntity object, const float4x4& wor
         !Scene::setObjectWorldMatrix(object, worldMatrix)) {
         return false;
     }
+    dirty_ = true;
+    return true;
+}
+
+bool SceneDocument::setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties)
+{
+    if (!Scene::setMaterialProperties(materialIndex, properties)) { return false; }
     dirty_ = true;
     return true;
 }
@@ -1321,6 +1399,47 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     " override because it has no supported properties.");
         }
     }
+    if (document.contains("materials")) {
+        if (!document["materials"].is_array()) {
+            appendWarning(documentWarning_, "Ignored a non-array materials field.");
+        } else {
+            std::unordered_set<int32_t> overriddenMaterials;
+            for (const auto& overrideValue : document["materials"]) {
+                if (!overrideValue.is_object() || !overrideValue.contains("sourceId") ||
+                    !overrideValue["sourceId"].is_string() || !overrideValue.contains("materialIndex") ||
+                    !overrideValue["materialIndex"].is_number_integer() ||
+                    !overrideValue.contains("sourceName") || !overrideValue["sourceName"].is_string() ||
+                    !overrideValue.contains("properties")) {
+                    appendWarning(documentWarning_, "Skipped a material override with incomplete source identity or properties.");
+                    continue;
+                }
+                const auto& indexValue = overrideValue["materialIndex"];
+                const uint64_t sourceIndex = indexValue.is_number_unsigned()
+                    ? indexValue.get<uint64_t>()
+                    : (indexValue.get<int64_t>() < 0 ? UINT64_MAX : static_cast<uint64_t>(indexValue.get<int64_t>()));
+                const int32_t index = sourceIndex <= INT32_MAX
+                    ? materialIndexForSource(overrideValue["sourceId"].get<std::string>(), static_cast<int32_t>(sourceIndex))
+                    : kInvalidSceneIndex;
+                if (index < 0 || materials()[static_cast<size_t>(index)].name !=
+                        overrideValue["sourceName"].get<std::string>()) {
+                    appendWarning(documentWarning_, "Skipped a material override because its source identity or sourceName changed.");
+                    continue;
+                }
+                if (overriddenMaterials.contains(index)) {
+                    appendWarning(documentWarning_, "Skipped a duplicate material override.");
+                    continue;
+                }
+                RenderMaterial properties = materials()[static_cast<size_t>(index)];
+                std::string reason;
+                if (!parseMaterialProperties(overrideValue["properties"], properties, reason)) {
+                    appendWarning(documentWarning_, "Skipped material '" + properties.name + "': " + reason + '.');
+                    continue;
+                }
+                (void)Scene::setMaterialProperties(index, properties);
+                overriddenMaterials.insert(index);
+            }
+        }
+    }
     sidecarLoaded_ = true;
     return true;
 }
@@ -1445,6 +1564,25 @@ bool SceneDocument::save(std::string& message)
         document["sceneIndex"] = sceneIndex();
     }
     document["nodes"] = std::move(nodeOverrides);
+    nlohmann::json materialOverrides = nlohmann::json::array();
+    if (importedMaterials_.size() != materials().size()) {
+        message = "Scene material source snapshot is unavailable.";
+        return false;
+    }
+    for (size_t index = 0; index < materials().size(); ++index) {
+        const RenderMaterial& material = materials()[index];
+        if (materialPropertiesEqual(material, importedMaterials_[index])) { continue; }
+        const SceneMaterialSource source = materialSource(static_cast<int32_t>(index));
+        if (source.sourceId.empty() || source.materialIndex < 0) {
+            message = "Scene material has no stable source identity: " + material.name;
+            return false;
+        }
+        materialOverrides.push_back(nlohmann::json{
+            {"sourceId", source.sourceId}, {"materialIndex", source.materialIndex},
+            {"sourceName", material.name}, {"properties", serializeMaterialProperties(material)},
+        });
+    }
+    document["materials"] = std::move(materialOverrides);
     nlohmann::json serializedLights = nlohmann::json::array();
     for (const PunctualLight& light : lighting().lights) {
         nlohmann::json value = serializeLightProperties(light.properties);

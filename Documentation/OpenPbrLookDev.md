@@ -33,8 +33,30 @@ cmake --build cmake-build-debug-visual-studio --target LookDev --parallel 8
 [VBuffer 延迟渲染比较](VisibilityBufferDeferred.md) 使用
 `LookDev.exe --sample lookdev-vbuffer`，在相同 OpenPBR BSDF 下比较 GPUDriven 延迟着色与路径追踪。
 
-默认示例
-使用 `PathTrace → AutoExposure → FinalBlit`，明确选择 OpenPBR BSDF，
+## Inspector 材质编辑
+
+在视口或 Scene Browser 选中模型、Mesh、Primitive，或在 Scene List 中直接选中
+Material，即可在 Inspector 的 **Material** 区域编辑关联材质。一个网格使用多个
+材质时分别显示；共享同一材质的实例会一起更新。
+
+- 基础参数：线性 RGB 基础颜色与透明度、Metallic、Roughness、HDR Emission。
+- **Surface details**：法线强度、Occlusion、Alpha mode/cutoff、Double sided。
+- **Transmission and volume**：Transmission、IOR、Thickness、Attenuation
+  distance/color、Diffuse transmission/tint。
+- **Texture inputs** 显示现有贴图输入；因子与贴图相乘。
+
+拖动实时更新材质并重置渐进累积，一次连续拖动对应一次撤销。
+`Ctrl+Z` / `Ctrl+Y` 撤销、重做；`Ctrl+S` 将覆盖参数保存在场景
+`.metallic_scene.json` 中，重新打开时自动恢复。覆盖项按 source id、本地材质索引和
+导入名称校验，支持组合场景源重排。原始模型、材质贴图和纹理绑定保持原样。
+
+编辑参数同步至 LookDev 的参考路径与 VBuffer 延迟着色路径；纯着色参数修改
+保持场景和几何身份，切换 Alpha MASK 分类会重建相关光追资源。
+VBuffer 当前跳过 BLEND 表面；Double sided 控制光栅背面剔除，光追路径当前追踪双面。
+
+## 默认示例
+
+默认使用 `PathTrace → AutoExposure → FinalBlit`，明确选择 OpenPBR BSDF，
 每帧 4 spp、最大深度 12，在线性 HDR 空间渐进累积，不启用降噪器。
 
 参考为用户指定的

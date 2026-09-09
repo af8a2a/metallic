@@ -2063,6 +2063,11 @@ int EditorApplication::run(
             (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "maxDepth", 1);
             (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "accumulate", false);
         }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_MATERIAL_INSPECTOR")) {
+            const bool passed = runMaterialInspectorSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_SLIDER")) {
             const bool passed = runSliderDebugSmokeTest();
             shutdown();
@@ -3458,9 +3463,13 @@ void EditorApplication::drawSceneListTab()
 void EditorApplication::drawInspectorPanel()
 {
     const scene::ConstSceneObject currentObject = selectedSceneObject();
+    const auto* materialEdit = std::get_if<MaterialEditValue>(&inspectorPropertyStartValue_);
+    const auto selectedMaterials = selectedMaterialIndices();
+    const bool editedTargetSelected = materialEdit != nullptr
+        ? std::find(selectedMaterials.begin(), selectedMaterials.end(), materialEdit->materialIndex) != selectedMaterials.end()
+        : currentObject && inspectorPropertyEditingObject_ == currentObject.entity();
     if (inspectorPropertyEditing_ &&
-        (!inspectorOpen_ || !currentObject ||
-            inspectorPropertyEditingObject_ != currentObject.entity() ||
+        (!inspectorOpen_ || !editedTargetSelected ||
             inspectorPropertyEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision())) {
         finishActiveInspectorPropertyTransaction();
     }
@@ -3539,6 +3548,8 @@ void EditorApplication::drawInspectorPanel()
         ImGui::End();
         return;
     }
+
+    drawSelectedMaterialInspector();
 
     if (selectedObject) {
         drawSelectedNodeTransformInspector();
@@ -3626,22 +3637,7 @@ void EditorApplication::drawInspectorPanel()
         break;
     }
     case SceneSelectionType::Material: {
-        if (static_cast<size_t>(sceneSelection_.index) >= scene_.materials().size()) {
-            break;
-        }
-        const scene::RenderMaterial& material = scene_.materials()[static_cast<size_t>(sceneSelection_.index)];
-        ImGui::Text("Material: %s", material.name.c_str());
-        ImGui::Separator();
-        ImGui::Text("Base Color: %.3f, %.3f, %.3f, %.3f",
-            material.baseColorFactor.x,
-            material.baseColorFactor.y,
-            material.baseColorFactor.z,
-            material.baseColorFactor.w);
-        ImGui::Text("Metallic: %.3f", material.metallicFactor);
-        ImGui::Text("Roughness: %.3f", material.roughnessFactor);
-        ImGui::Text("Emissive: %s", scene::formatVec3(material.emissiveFactor).c_str());
-        ImGui::Text("Alpha Mode: %s", material.alphaMode.c_str());
-        ImGui::Text("Double Sided: %s", material.doubleSided ? "true" : "false");
+        // The editable material section is shared with node/mesh selection above.
         break;
     }
     case SceneSelectionType::Camera: {
@@ -4542,10 +4538,20 @@ void EditorApplication::pushSceneEditCommand(
             std::get_if<scene::LightProperties>(&after);
         valuesEqual = afterLight != nullptr &&
             scene::lightPropertiesNearlyEqual(*beforeLight, *afterLight);
+    } else if (const MaterialEditValue* beforeMaterial = std::get_if<MaterialEditValue>(&before)) {
+        const auto* afterMaterial = std::get_if<MaterialEditValue>(&after);
+        valuesEqual = afterMaterial != nullptr && beforeMaterial->materialIndex == afterMaterial->materialIndex &&
+            scene::materialPropertiesEqual(beforeMaterial->properties, afterMaterial->properties);
     }
-    if (object == scene::kNullSceneEntity ||
+    const auto* beforeMaterial = std::get_if<MaterialEditValue>(&before);
+    const auto* afterMaterial = std::get_if<MaterialEditValue>(&after);
+    const bool validTarget = beforeMaterial != nullptr
+        ? afterMaterial != nullptr && beforeMaterial->materialIndex == afterMaterial->materialIndex &&
+            beforeMaterial->materialIndex >= 0 &&
+            static_cast<size_t>(beforeMaterial->materialIndex) < scene_.materials().size()
+        : object != scene::kNullSceneEntity && scene_.sceneGraph().object(object);
+    if (!validTarget ||
         sceneLifetimeRevision != scene_.sceneGraph().lifetimeRevision() ||
-        !scene_.sceneGraph().object(object) ||
         valuesEqual) {
         updateSceneDirtyState();
         return;
@@ -4592,10 +4598,14 @@ void EditorApplication::beginInspectorPropertyEdit(
     uint64_t sceneLifetimeRevision,
     SceneEditValue before)
 {
+    const auto* previousMaterial = std::get_if<MaterialEditValue>(&inspectorPropertyStartValue_);
+    const auto* nextMaterial = std::get_if<MaterialEditValue>(&before);
+    const bool materialTargetChanged = previousMaterial != nullptr && nextMaterial != nullptr &&
+        previousMaterial->materialIndex != nextMaterial->materialIndex;
     if (inspectorPropertyEditing_ &&
         (inspectorPropertyEditingObject_ != object ||
             inspectorPropertyEditingSceneLifetime_ != sceneLifetimeRevision ||
-            inspectorPropertyStartValue_.index() != before.index())) {
+            inspectorPropertyStartValue_.index() != before.index() || materialTargetChanged)) {
         finishActiveInspectorPropertyTransaction();
     }
     if (inspectorPropertyEditing_) {
@@ -4619,7 +4629,14 @@ void EditorApplication::finishActiveInspectorPropertyTransaction()
         ? scene_.sceneGraph().object(inspectorPropertyEditingObject_)
         : scene::ConstSceneObject{};
     bool hasAfter = false;
-    if (std::holds_alternative<scene::CameraProperties>(inspectorPropertyStartValue_)) {
+    if (const auto* material = std::get_if<MaterialEditValue>(&inspectorPropertyStartValue_)) {
+        if (inspectorPropertyEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision() &&
+            material->materialIndex >= 0 &&
+            static_cast<size_t>(material->materialIndex) < scene_.materials().size()) {
+            after = MaterialEditValue{material->materialIndex, scene_.materials()[material->materialIndex]};
+            hasAfter = true;
+        }
+    } else if (std::holds_alternative<scene::CameraProperties>(inspectorPropertyStartValue_)) {
         if (const scene::CameraComponent* camera =
                 object.tryGetComponent<scene::CameraComponent>()) {
             after = camera->properties;
@@ -4650,6 +4667,22 @@ bool EditorApplication::applySceneEditValue(
     scene::SceneEntity object,
     const SceneEditValue& value)
 {
+    if (const auto* material = std::get_if<MaterialEditValue>(&value)) {
+        if (material->materialIndex < 0 ||
+            static_cast<size_t>(material->materialIndex) >= scene_.materials().size()) {
+            return false;
+        }
+        const auto& current = scene_.materials()[material->materialIndex];
+        const bool alphaMaskChanged = (current.alphaMode == "MASK") != (material->properties.alphaMode == "MASK");
+        if (scene::materialPropertiesEqual(current, material->properties)) {
+            return true;
+        }
+        if (!scene_.setMaterialProperties(material->materialIndex, material->properties)) {
+            return false;
+        }
+        notifySceneMaterialsChanged(alphaMaskChanged);
+        return true;
+    }
     if (const float4x4* matrix = std::get_if<float4x4>(&value)) {
         const uint64_t previousGeometryTransformRevision = scene_.geometryTransformRevision();
         if (!scene_.setObjectLocalMatrix(object, *matrix)) {

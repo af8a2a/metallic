@@ -32,6 +32,7 @@ struct SceneResourceSnapshot {
     uint64_t sourceStructuralRevision = 0;
     uint64_t sourceTransformRevision = 0;
     uint64_t sourceVisibilityRevision = 0;
+    uint64_t sourceMaterialRevision = 0;
     std::shared_ptr<ScenePathTraceResources> pathTraceResources;
 };
 

@@ -1026,6 +1026,7 @@ public:
         sceneLifetimeRevision_ = runtimeLifetimeRevision;
         sceneStructuralRevision_ = runtimeStructuralRevision;
         sceneContentRevision_ = runtimeContentRevision;
+        sceneMaterialRevision_ = runtimeScene != nullptr ? runtimeScene->materialRevision() : 0;
         compiledScene_ = runtimeScene;
         observedHistoryInvalidationRevision_ = 0;
         previousParams_ = params;
@@ -2519,6 +2520,25 @@ private:
         if (runtimeScene == nullptr) {
             return {};
         }
+        if (runtimeScene->materialRevision() != sceneMaterialRevision_) {
+            const std::vector<uint32_t> alphaTextures = alphaTestTextureIndices(*runtimeScene);
+            if (alphaTextures != alphaTestTextureIndices_) {
+                // The graph waits for all prior submissions when contentRevision
+                // changes, before any pass records commands using these resources.
+                if (device_ == nullptr) { return makeError(Error::InvalidArgument); }
+                std::string log;
+                Result result = prepareAlphaTestResources(*device_, *runtimeScene, log);
+                if (!result) {
+                    spdlog::error("[VisibilityBufferPass] Runtime alpha texture update failed: {}", log);
+                    return result;
+                }
+                // Rebuild the descriptor remap/heap before the next raster draw,
+                // including when the view allocation itself remains unchanged.
+                bindingViewAllocationId_ = 0;
+            }
+            sceneMaterialRevision_ = runtimeScene->materialRevision();
+            invalidateHzbHistory();
+        }
         const bool transformsChanged = runtimeScene->transformRevision() != sceneRevision_;
         const bool visibilityChanged =
             runtimeScene->visibilityRevision() != sceneVisibilityRevision_;
@@ -2879,6 +2899,21 @@ private:
         return {};
     }
 
+    static std::vector<uint32_t> alphaTestTextureIndices(const scene::Scene& loadedScene)
+    {
+        std::vector<uint32_t> indices;
+        for (const scene::RenderMaterial& material : loadedScene.materials()) {
+            const int32_t textureIndex = material.baseColorTexture.textureIndex;
+            if (material.alphaMode == "MASK" && textureIndex >= 0 &&
+                static_cast<size_t>(textureIndex) < loadedScene.textures().size()) {
+                indices.push_back(static_cast<uint32_t>(textureIndex));
+            }
+        }
+        std::sort(indices.begin(), indices.end());
+        indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+        return indices;
+    }
+
     Result prepareAlphaTestResources(
         Device& device,
         const scene::Scene& loadedScene,
@@ -2916,18 +2951,7 @@ private:
         };
         // Opaque rasterization does not sample material textures. Retain only
         // the base-color alpha images needed to preserve MASK coverage.
-        std::vector<uint32_t> alphaTextureIndices;
-        for (const scene::RenderMaterial& material : loadedScene.materials()) {
-            const int32_t textureIndex = material.baseColorTexture.textureIndex;
-            if (material.alphaMode == "MASK" && textureIndex >= 0 &&
-                static_cast<size_t>(textureIndex) < loadedScene.textures().size()) {
-                alphaTextureIndices.push_back(static_cast<uint32_t>(textureIndex));
-            }
-        }
-        std::sort(alphaTextureIndices.begin(), alphaTextureIndices.end());
-        alphaTextureIndices.erase(
-            std::unique(alphaTextureIndices.begin(), alphaTextureIndices.end()),
-            alphaTextureIndices.end());
+        const std::vector<uint32_t> alphaTextureIndices = alphaTestTextureIndices(loadedScene);
         const size_t textureCount = alphaTextureIndices.size();
         const size_t hardwareThreads =
             std::max<size_t>(std::thread::hardware_concurrency(), 1u);
@@ -3009,6 +3033,7 @@ private:
             materialDecodeWallMilliseconds,
             materialTextureCreateMilliseconds);
         logicalTextureToMaterialTexture_ = textureIndexMap;
+        alphaTestTextureIndices_ = alphaTextureIndices;
 
         return {};
     }
@@ -4330,6 +4355,7 @@ private:
     uint64_t sceneLifetimeRevision_ = 0;
     uint64_t sceneStructuralRevision_ = 0;
     uint64_t sceneContentRevision_ = 0;
+    uint64_t sceneMaterialRevision_ = 0;
     uint64_t observedHistoryInvalidationRevision_ = 0;
     uint64_t gpuSceneDrawSetRevision_ = 0;
     uint64_t gpuSceneViewAllocationId_ = 0;
@@ -4338,6 +4364,7 @@ private:
     GPUDrivenPreviewMeshletRange baseMeshletRange_;
     std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges_;
     std::vector<uint32_t> logicalTextureToMaterialTexture_;
+    std::vector<uint32_t> alphaTestTextureIndices_;
     std::vector<uint32_t> streamOwnerMask_;
     std::filesystem::path compiledStreamAssetPath_;
     std::string compiledStreamSourceId_;

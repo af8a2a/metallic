@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 
 namespace metallic::tests {
 namespace {
@@ -160,6 +161,253 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VisibilityBufferDeferredTest);
+
+class VisibilityBufferMaterialEditTest final : public RhiTest {
+public:
+    VisibilityBufferMaterialEditTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "visibility_buffer_material_edit_refresh";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string log;
+        if (!render::loadBuiltInRenderSample("lookdev-vbuffer", sample, log)) {
+            return RhiTestResult::fail(log);
+        }
+        scene::SceneDocument scene;
+        if (!scene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath) ||
+            scene.materials().size() != 1) {
+            return RhiTestResult::fail("Expected the single-material LookDev shader ball");
+        }
+        auto baseline = scene.materials().front();
+        baseline.baseColorFactor = float4(0.65f, 0.25f, 0.12f, 1.0f);
+        baseline.metallicFactor = 0.65f;
+        baseline.roughnessFactor = 0.12f;
+        if (!scene.setMaterialProperties(0, baseline)) {
+            return RhiTestResult::fail("Could not configure the material fixture");
+        }
+        const uint64_t geometryRevision = scene.geometryTransformRevision();
+        const uint64_t structuralRevision = scene.sceneGraph().structuralRevision();
+        const uint64_t resourceIdentity = scene.resourceIdentity();
+
+        render::RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&scene);
+        const char* aftermath = std::getenv("METALLIC_TEST_AFTERMATH");
+        const bool enableAftermath = aftermath != nullptr && aftermath[0] == '1' && aftermath[1] == '\0';
+        const auto initialized = preview.initialize(context.enableValidation, true, enableAftermath);
+        if (render::hasError(initialized, render::Error::Unsupported)) {
+            return RhiTestResult::skip("Requires mesh shaders and ray queries");
+        }
+        if (!initialized) { return RhiTestResult::fail("Preview initialization failed"); }
+        preview.setEnvironment({.enabled = false});
+        auto lighting = scene.lighting();
+        lighting.autoExposure.enabled = false;
+        lighting.exposureEV100 = 0;
+        preview.setLighting(lighting);
+        const uint32_t reference = sample.graph.findNode("Reference")->id;
+        const uint32_t deferred = sample.graph.findNode("Deferred")->id;
+        const uint32_t slider = sample.graph.findNode("Slider")->id;
+        sample.graph.findNode("Reference")->type = "SceneRealtimeLightingPass";
+        sample.graph.markDirty();
+        sample.graph.setNodeRuntimeProperty(deferred, "accumulate", false);
+
+        constexpr uint32_t width = 193;
+        constexpr uint32_t height = 157;
+        const auto changedPixels = [](const std::vector<uint32_t>& lhs, const std::vector<uint32_t>& rhs) {
+            size_t changed = 0;
+            for (size_t i = 0; i < lhs.size(); ++i) {
+                for (uint32_t shift : {0u, 8u, 16u}) {
+                    if (std::abs(int((lhs[i] >> shift) & 255u) - int((rhs[i] >> shift) & 255u)) > 3) {
+                        ++changed;
+                        break;
+                    }
+                }
+            }
+            return changed;
+        };
+        const auto renderPair = [&](const char* debug, std::vector<uint32_t>& rayImage) {
+            sample.graph.setNodeRuntimeProperty(reference, "debugView", debug);
+            sample.graph.setNodeRuntimeProperty(deferred, "debugView", debug);
+            sample.graph.setNodeRuntimeProperty(slider, "splitPosition", 1.0f);
+            if (!preview.render(sample.graph, width, height)) { log = preview.lastLog(); return false; }
+            rayImage = preview.pixels();
+            sample.graph.setNodeRuntimeProperty(slider, "splitPosition", 0.0f);
+            if (!preview.render(sample.graph, width, height)) { log = preview.lastLog(); return false; }
+            size_t subject = 0;
+            size_t outliers = 0;
+            double error = 0.0;
+            for (uint32_t y = 1; y + 1 < height; ++y) {
+                for (uint32_t x = 1; x + 1 < width; ++x) {
+                    const size_t i = y * width + x;
+                    if ((rayImage[i] & 0xffffffu) == 0 || (preview.pixels()[i] & 0xffffffu) == 0 ||
+                        (rayImage[i - 1] & 0xffffffu) == 0 || (rayImage[i + 1] & 0xffffffu) == 0 ||
+                        (rayImage[i - width] & 0xffffffu) == 0 || (rayImage[i + width] & 0xffffffu) == 0) { continue; }
+                    ++subject;
+                    int maximum = 0;
+                    for (uint32_t shift : {0u, 8u, 16u}) {
+                        const int delta = std::abs(int((rayImage[i] >> shift) & 255u) -
+                            int((preview.pixels()[i] >> shift) & 255u));
+                        maximum = std::max(maximum, delta);
+                        error += delta;
+                    }
+                    outliers += maximum > 3;
+                }
+            }
+            if (subject < 1000 || double(outliers) / subject > 0.02 || error / (subject * 3) > 0.5) {
+                savePreview(preview, context.outputDirectory / "MaterialEditVBufferMismatch.png", log);
+                log = std::string(debug) + " material edit differs between ray and VBuffer paths";
+                return false;
+            }
+            return true;
+        };
+
+        // Keep the graph and scene identity unchanged: a setter revision must
+        // refresh both material buffers without requiring a scene reload.
+        std::vector<uint32_t> baseColorBefore, baseColorAfter, restored;
+        if (!renderPair("baseColor", baseColorBefore)) { return RhiTestResult::fail(log); }
+        auto edited = baseline;
+        edited.baseColorFactor = float4(0.08f, 0.55f, 0.3f, 1.0f);
+        if (!scene.setMaterialProperties(0, edited) || !renderPair("baseColor", baseColorAfter)) {
+            return RhiTestResult::fail("Base color edit failed: " + log);
+        }
+        if (changedPixels(baseColorBefore, baseColorAfter) < 1000) {
+            return RhiTestResult::fail("Material base color remained stale");
+        }
+        if (!scene.setMaterialProperties(0, baseline) || !renderPair("baseColor", restored) || restored != baseColorBefore) {
+            return RhiTestResult::fail("Restoring base color did not restore both shading paths: " + log);
+        }
+        std::vector<uint32_t> roughnessBefore, roughnessAfter;
+        if (!renderPair("final", roughnessBefore)) { return RhiTestResult::fail(log); }
+        edited = baseline;
+        edited.roughnessFactor = 0.85f;
+        if (!scene.setMaterialProperties(0, edited) || !renderPair("final", roughnessAfter)) {
+            return RhiTestResult::fail("Roughness edit failed: " + log);
+        }
+        if (changedPixels(roughnessBefore, roughnessAfter) < 100) {
+            return RhiTestResult::fail("Material roughness remained stale");
+        }
+        if (!scene.setMaterialProperties(0, baseline) || !renderPair("final", restored) || restored != roughnessBefore) {
+            return RhiTestResult::fail("Restoring roughness did not restore both shading paths: " + log);
+        }
+        if (scene.resourceIdentity() != resourceIdentity || scene.geometryTransformRevision() != geometryRevision ||
+            scene.sceneGraph().structuralRevision() != structuralRevision) {
+            return RhiTestResult::fail("Material edits changed scene geometry identity or revision");
+        }
+
+        // Emission with no incident light gives a deterministic final color.
+        // A first frame after editing must equal the next frame, and undo must
+        // immediately restore the original color, with no old history mixed in.
+        lighting.lights.clear();
+        preview.setLighting(lighting);
+        sample.graph.findNode("Reference")->type = "ScenePathTracePass";
+        sample.graph.markDirty();
+        for (uint32_t node : {reference, deferred}) {
+            sample.graph.setNodeRuntimeProperty(node, "accumulate", true);
+            sample.graph.setNodeRuntimeProperty(node, "cacheMode", "off");
+        }
+        sample.graph.setNodeRuntimeProperty(reference, "samples", 1);
+        sample.graph.setNodeRuntimeProperty(reference, "maxDepth", 1);
+        baseline.emissiveFactor = float3(0.2f, 0.04f, 0.01f);
+        edited = baseline;
+        edited.emissiveFactor = float3(0.01f, 0.25f, 0.07f);
+        for (float split : {1.0f, 0.0f}) {
+            sample.graph.setNodeRuntimeProperty(slider, "splitPosition", split);
+            scene.setMaterialProperties(0, baseline);
+            if (!preview.render(sample.graph, width, height)) { return RhiTestResult::fail(preview.lastLog()); }
+            const auto initial = preview.pixels();
+            for (uint32_t frame = 0; frame < 3; ++frame) {
+                if (!preview.render(sample.graph, width, height)) { return RhiTestResult::fail(preview.lastLog()); }
+            }
+            if (!scene.setMaterialProperties(0, edited) || !preview.render(sample.graph, width, height)) {
+                return RhiTestResult::fail("Emissive edit failed: " + preview.lastLog());
+            }
+            const auto firstEdited = preview.pixels();
+            if (!preview.render(sample.graph, width, height) || firstEdited != preview.pixels() ||
+                changedPixels(initial, firstEdited) < 1000) {
+                return RhiTestResult::fail("Material edit retained accumulated radiance");
+            }
+            if (!scene.setMaterialProperties(0, baseline) || !preview.render(sample.graph, width, height) ||
+                preview.pixels() != initial) {
+                return RhiTestResult::fail("Undo retained accumulated radiance from the edited material");
+            }
+        }
+        // Start with a textured OPAQUE material so the raster path initially
+        // has no resident alpha image. Switching to MASK must load the image
+        // and rebuild ray geometry opacity; changing cutoff needs neither.
+        const std::filesystem::path sourcePath = std::filesystem::path(PROJECT_SOURCE_DIR) /
+            "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf";
+        const std::filesystem::path fixtureDirectory = context.outputDirectory / "material-edit-alpha";
+        std::error_code filesystemError;
+        std::filesystem::create_directories(fixtureDirectory, filesystemError);
+        if (filesystemError) { return RhiTestResult::fail(filesystemError.message()); }
+        std::ifstream sourceFile(sourcePath);
+        auto fixture = render::RenderGraphProperties::parse(sourceFile, nullptr, false);
+        if (fixture.is_discarded()) { return RhiTestResult::fail("Could not read the LookDev alpha fixture source"); }
+        for (const auto& buffer : fixture["buffers"]) {
+            const auto uri = buffer["uri"].get<std::string>();
+            std::filesystem::copy_file(sourcePath.parent_path() / uri, fixtureDirectory / uri,
+                std::filesystem::copy_options::overwrite_existing, filesystemError);
+            if (filesystemError) { return RhiTestResult::fail(filesystemError.message()); }
+        }
+        const uint8_t alphaPixel[4] = {255, 255, 255, 64};
+        if (!saveRgba8Png(fixtureDirectory / "MaterialEditAlpha.png", alphaPixel, 1, 1, log)) {
+            return RhiTestResult::fail(log);
+        }
+        fixture["images"] = render::RenderGraphProperties::array({{{"uri", "MaterialEditAlpha.png"}}});
+        fixture["textures"] = render::RenderGraphProperties::array({{{"source", 0}}});
+        fixture["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] = {{"index", 0}};
+        const std::filesystem::path fixturePath = fixtureDirectory / "MaterialEdit.gltf";
+        {
+            std::ofstream fixtureFile(fixturePath, std::ios::binary);
+            fixtureFile << fixture.dump(2);
+            fixtureFile.flush();
+            if (!fixtureFile) { return RhiTestResult::fail("Could not write the LookDev alpha fixture"); }
+        }
+        if (!render::setRenderSampleScenePath(sample, fixturePath.generic_string(), log) || !scene.load(fixturePath)) {
+            return RhiTestResult::fail("Could not load the LookDev alpha fixture: " + log);
+        }
+        sample.graph.findNode("Reference")->type = "SceneRealtimeLightingPass";
+        sample.graph.markDirty();
+        std::vector<uint32_t> opaqueImage;
+        if (!renderPair("baseColor", opaqueImage)) { return RhiTestResult::fail(log); }
+        auto maskedMaterial = scene.materials().front();
+        maskedMaterial.alphaMode = "MASK";
+        maskedMaterial.alphaCutoff = 0.5f;
+        if (!scene.setMaterialProperties(0, maskedMaterial)) { return RhiTestResult::fail("MASK edit failed"); }
+        const auto expectEmptyMask = [&]() {
+            for (float split : {1.0f, 0.0f}) {
+                sample.graph.setNodeRuntimeProperty(slider, "splitPosition", split);
+                if (!preview.render(sample.graph, width, height)) { log = preview.lastLog(); return false; }
+                if (std::any_of(preview.pixels().begin(), preview.pixels().end(),
+                        [](uint32_t pixel) { return (pixel & 0xffffffu) != 0; })) {
+                    log = split == 1.0f ? "Ray AS/material alpha state remained stale" :
+                        "VBuffer alpha texture residency/cutoff remained stale";
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (!expectEmptyMask()) { return RhiTestResult::fail(log); }
+        maskedMaterial.alphaCutoff = 0.1f;
+        if (!scene.setMaterialProperties(0, maskedMaterial) || !renderPair("baseColor", restored) || restored != opaqueImage) {
+            return RhiTestResult::fail("Lowering alpha cutoff did not restore raster/ray coverage: " + log);
+        }
+        maskedMaterial.alphaCutoff = 0.5f;
+        if (!scene.setMaterialProperties(0, maskedMaterial) || !expectEmptyMask()) {
+            return RhiTestResult::fail("Restoring alpha cutoff did not restore raster/ray coverage: " + log);
+        }
+        maskedMaterial.alphaMode = "OPAQUE";
+        if (!scene.setMaterialProperties(0, maskedMaterial) || !renderPair("baseColor", restored) || restored != opaqueImage) {
+            return RhiTestResult::fail("Restoring OPAQUE did not restore raster/ray coverage: " + log);
+        }
+        return RhiTestResult::pass("Material factors, textured alpha masks and undo refresh ray/VBuffer shading and history");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VisibilityBufferMaterialEditTest);
 
 } // namespace
 } // namespace metallic::tests
