@@ -78,6 +78,8 @@ bool EditorApplication::runSliderDebugSmokeTest()
     const uint32_t sliderId = slider->id;
     const uint64_t historyRevision = historyResources_.invalidationRevision();
     const auto split = [&] { return renderGraph_.findNode(sliderId)->runtimeProperties.value("splitPosition", 0.5f); };
+    const bool nrComparison = slider->type == "DlssNrPass";
+    if (nrComparison) { setSliderDebugProperty(sliderId, "sliderDebug", true); }
     // Drive real ImGui input transitions through the overlay without depending on
     // the desktop's saved docking layout or moving the user's physical cursor.
     auto overlayFrame = [&](float x, float y, bool down, bool alt = false) {
@@ -114,6 +116,20 @@ bool EditorApplication::runSliderDebugSmokeTest()
     overlayFrame(300, 175, false, false);
     if (!expect(historyResources_.invalidationRevision() == historyRevision && !renderGraph_.dirty(),
             "Slider controls preserve accumulation and compiled graph")) { return false; }
+
+    if (nrComparison) {
+        if (!expect(renderFrame(), "NR comparison renders after dragging")) { return false; }
+        setSliderDebugProperty(sliderId, "sliderDebug", false);
+        if (!expect(!overlayFrame(300, 175, true) && sliderDragNodeId_ == 0,
+                "Disabled NR comparison does not capture the mouse") ||
+            !expect(historyResources_.invalidationRevision() == historyRevision && !renderGraph_.dirty(),
+                "NR comparison toggles preserve history")) { return false; }
+        overlayFrame(300, 175, false);
+        activePreviewOutput_ = cameraNode->name + ".color";
+        if (!expect(viewportSliderDebugNode() == nullptr, "NR input preview has no comparison controls")) { return false; }
+        spdlog::info("[Smoke Slider] Passed DLSS-NR toggle, GPU viewport, drag, axes, camera gestures and history retention");
+        return true;
+    }
 
     auto cameraProperties = cameraNode->properties;
     cameraProperties.merge_patch(cameraNode->runtimeProperties);

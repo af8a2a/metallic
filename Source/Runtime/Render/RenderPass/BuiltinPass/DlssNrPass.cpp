@@ -5,6 +5,13 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
+struct SliderDebugPush {
+    float splitPosition;
+    uint32_t horizontal;
+    uint32_t swapSides;
+};
+static_assert(sizeof(SliderDebugPush) == 12);
+
 class DlssNrPass final : public UnsafePass {
 public:
     bool supportsFrameOverlap() const override { return false; }
@@ -51,12 +58,19 @@ public:
             runtimeBoolSetting("useAutoMask", "Auto Mask", false, true),
             runtimeBoolSetting("uiCorrection", "UI Correction", false, true),
             runtimeActionCounterSetting("resetSerial", "Reset NR History", true),
+            runtimeBoolSetting("sliderDebug", "Slider Debug (Before / After)", false),
+            runtimeFloatSetting("splitPosition", "Split Position", 0.5f, 0.0f, 1.0f),
+            runtimeEnumSetting("orientation", "Divider", "vertical",
+                {{"Vertical (left / right)", "vertical"}, {"Horizontal (top / bottom)", "horizontal"}}),
+            runtimeBoolSetting("swapSides", "Swap Before / After", false),
         };
     }
 
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         runtime_.reset();
+        sliderProgram_.clear();
+        device_ = context.device;
         hasHistory_ = false;
         failed_ = false;
         if (context.device == nullptr || context.graphicsQueue == nullptr ||
@@ -115,8 +129,19 @@ public:
         const uint64_t revision = context.historyResources() != nullptr
             ? context.historyResources()->invalidationRevision() : 0;
         const uint64_t scene = context.runtimeScene() != nullptr ? context.runtimeScene()->resourceIdentity() : 0;
+        auto historyProperties = properties;
+        // These controls only reveal the original pixels after NR evaluation;
+        // moving the divider must not reset the neural temporal history.
+        for (const char* key : {"sliderDebug", "splitPosition", "orientation", "swapSides"}) {
+            historyProperties.erase(key);
+        }
         settings.reset = !hasHistory_ || lastFrame_ + 1 != context.frameIndex() ||
-            lastRevision_ != revision || lastScene_ != scene || lastProperties_ != properties;
+            lastRevision_ != revision || lastScene_ != scene || lastProperties_ != historyProperties;
+        const bool sliderDebug = properties.value("sliderDebug", false);
+        if (sliderDebug) {
+            result = initializeSliderDebug(log);
+            if (!result) { spdlog::error("[DLSS-NR] Slider debug: {}", log); return result; }
+        }
         // Metallic guides are already current-to-previous UV displacements.
         // NGX feature 18 takes pixels: unlike Unity, do not negate them.
         settings.motionVectorScaleX = static_cast<float>(input.desc().width);
@@ -140,11 +165,56 @@ public:
         lastFrame_ = context.frameIndex();
         lastRevision_ = revision;
         lastScene_ = scene;
-        lastProperties_ = properties;
-        return {};
+        lastProperties_ = std::move(historyProperties);
+        return sliderDebug ? drawSliderDebug(context, input, output) : Result{};
     }
 
 private:
+    Result initializeSliderDebug(std::string& log)
+    {
+        if (sliderProgram_.valid()) { return {}; }
+        ShaderCompileResult shader;
+        auto result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/SliderDebug",
+            .entryPointName = "sliderDebugOverlayMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
+        if (!result) { log = shader.diagnostics; return result; }
+        const ComputeProgramBindingDesc bindings[] = {
+            {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
+            {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
+        };
+        return sliderProgram_.initialize(*device_, {.spirv = shader.spirv.data(),
+            .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = sizeof(SliderDebugPush),
+            .bindings = bindings, .bindingCount = 2, .debugName = "DlssNrSliderDebug", .requiresRayQuery = false}, log);
+    }
+
+    Result drawSliderDebug(RenderGraphExecutionContext& context, TextureHandle input, TextureHandle output)
+    {
+        const auto& properties = context.properties();
+        const float split = properties.value("splitPosition", 0.5f);
+        const SliderDebugPush push{
+            std::isfinite(split) ? std::clamp(split, 0.0f, 1.0f) : 0.5f,
+            properties.value("orientation", "vertical") == "horizontal" ? 1u : 0u,
+            properties.value("swapSides", false) ? 1u : 0u,
+        };
+        auto& command = context.commandBuffer();
+        const TextureBarrierDesc barriers[] = {
+            {.texture = input.texture(), .before = ResourceState::General, .after = ResourceState::ShaderRead},
+            {.texture = output.texture(), .before = ResourceState::General, .after = ResourceState::General},
+        };
+        command.barrier({.textures = barriers, .textureCount = 2});
+        auto* source = input.view();
+        const ComputeDispatchBinding bindings[] = {
+            {.binding = 0, .textureViews = &source, .textureViewCount = 1},
+            {.binding = 2, .textureView = output.view()},
+        };
+        auto result = sliderProgram_.dispatch({.commandBuffer = &command,
+            .bindings = bindings, .bindingCount = 2, .pushData = &push, .pushDataSize = sizeof(push),
+            .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
+        const TextureBarrierDesc restore{
+            .texture = input.texture(), .before = ResourceState::ShaderRead, .after = ResourceState::General};
+        command.barrier({.textures = &restore, .textureCount = 1});
+        return result;
+    }
+
     static void copyColor(CommandBuffer& command, TextureHandle input, TextureHandle output)
     {
         TextureBarrierDesc barriers[] = {
@@ -158,6 +228,8 @@ private:
         command.barrier({.textures = barriers, .textureCount = 2});
     }
 
+    Device* device_ = nullptr;
+    ComputeProgram sliderProgram_;
     std::unique_ptr<vulkan::DlssNrContext> runtime_;
     bool hasHistory_ = false;
     bool failed_ = false;

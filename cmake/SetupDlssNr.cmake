@@ -32,6 +32,8 @@ if(METALLIC_ENABLE_DLSS_NR)
     set(METALLIC_HAS_DLSS_NR 1)
     target_include_directories(metallic_dlss_nr INTERFACE "${METALLIC_DLSS_NR_NGX_ROOT}/include")
     message(STATUS "Experimental DLSS-NR enabled: ${METALLIC_DLSS_NR_RUNTIME}")
+else()
+    message(STATUS "Experimental DLSS-NR disabled (METALLIC_ENABLE_DLSS_NR=OFF, METALLIC_HAS_DLSS_NR=0) in ${CMAKE_BINARY_DIR}")
 endif()
 target_compile_definitions(metallic_dlss_nr INTERFACE METALLIC_HAS_DLSS_NR=${METALLIC_HAS_DLSS_NR})
 

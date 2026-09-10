@@ -80,6 +80,17 @@ public:
             pass->kind() != render::RenderGraphPassKind::Unsafe || pass->queueType() != render::QueueType::Graphics) {
             return RhiTestResult::fail("NR must serialize feature history on graphics");
         }
+        const auto settings = pass->runtimeSettings();
+        for (const char* key : {"sliderDebug", "splitPosition", "orientation", "swapSides"}) {
+            const auto found = std::find_if(settings.begin(), settings.end(),
+                [&](const auto& setting) { return setting.key == key; });
+            if (found == settings.end() || found->invalidateHistory || found->rebuildGraph) {
+                return RhiTestResult::fail("NR slider controls must preserve history and the compiled graph");
+            }
+            if (found->key == "sliderDebug" && found->defaultValue != false) {
+                return RhiTestResult::fail("NR slider debug must default off");
+            }
+        }
         std::array<std::unique_ptr<render::Texture>, 4> textures;
         std::array<std::unique_ptr<render::TextureView>, 4> views;
         const std::array formats{render::Format::Rgba16Sfloat, render::Format::Rgba16Sfloat,
@@ -153,6 +164,7 @@ public:
         auto result = preview.initialize(context.enableValidation);
         if (!result) { return RhiTestResult::skip("Preview device unavailable"); }
         auto graph = fixtureGraph(false, false);
+        graph.setNodeRuntimeProperty(graph.findNode("Nr")->id, "sliderDebug", true);
         for (auto extent : {std::array{63u, 37u}, std::array{29u, 19u}}) {
             if (!preview.render(graph, extent[0], extent[1]) || preview.pixels().empty()) {
                 return RhiTestResult::fail(preview.lastLog());
@@ -175,6 +187,7 @@ public:
         if (context.device.capabilities().streamline) { return RhiTestResult::pass(); }
         render::RenderGraphExecutor executor;
         graph = fixtureGraph(true, true);
+        graph.setNodeRuntimeProperty(graph.findNode("Nr")->id, "sliderDebug", true);
         if (!executor.compile(context.device, graph, 32, 24, log) ||
             !executor.execute({.graphicsQueue = &context.graphicsQueue}) || !executor.waitForSubmittedWork()) {
             return RhiTestResult::fail("Unavailable NR did not pass through: " + log);
@@ -267,6 +280,100 @@ public:
     }
 };
 
+class DlssNrSliderTest final : public RhiTest {
+public:
+    DlssNrSliderTest() { type = RhiTestType::Rendering; name = "dlss_nr_runtime_slider"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        if (!render::vulkan::dlssNrSdkAvailable() || !context.device.capabilities().streamline ||
+            !context.device.capabilities().bindlessDescriptorHeap) {
+            return RhiTestResult::skip("Requires the NR build and --rhi-streamline");
+        }
+        auto graph = fixtureGraph(true, false);
+        render::registerRenderGraphPassType("DlssNrReadbackPass", "NR GPU readback",
+            [] { return std::make_unique<DlssNrReadbackPass>(); });
+        const std::array sources{"Source", "Nr"};
+        for (const char* source : sources) {
+            const auto name = std::string(source) + "Readback";
+            graph.addNode("DlssNrReadbackPass", name);
+            graph.addEdge(std::string(source) + ".color", name + ".color");
+            graph.markOutput(name + ".pixels");
+        }
+        render::RenderGraphExecutor executor;
+        std::string log;
+        constexpr uint32_t width = 255, height = 143;
+        // Capture an uninterrupted reference sequence before replaying it with
+        // the slider. Separate runs avoid relying on concurrent snippet features.
+        constexpr size_t frameCount = 3 * 2 * 2 * 4;
+        std::array<std::vector<uint8_t>, frameCount> reference;
+        {
+            render::RenderGraphExecutor referenceExecutor;
+            auto result = referenceExecutor.compile(context.device, graph, width, height, log);
+            if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip(log); }
+            if (!result) { return RhiTestResult::fail(log); }
+            for (auto& image : reference) {
+                result = referenceExecutor.execute({.graphicsQueue = &context.graphicsQueue});
+                if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("NR evaluation unsupported"); }
+                if (!result || !referenceExecutor.waitForSubmittedWork()) { return RhiTestResult::fail("NR reference dispatch failed"); }
+                auto* buffer = referenceExecutor.outputResource("NrReadback.pixels")->buffer;
+                buffer->invalidate();
+                const auto* pixels = static_cast<const uint8_t*>(buffer->map());
+                if (!pixels) { return RhiTestResult::fail("NR reference readback failed"); }
+                image.assign(pixels, pixels + width * height * 4);
+                buffer->unmap();
+            }
+        }
+        auto result = executor.compile(context.device, graph, width, height, log);
+        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip(log); }
+        if (!result) { return RhiTestResult::fail(log); }
+        graph.clearDirty();
+        const uint32_t nr = graph.findNode("Nr")->id;
+        size_t frame = 0;
+        for (bool enabled : {false, true, false}) {
+            for (bool horizontal : {false, true}) {
+                for (bool swap : {false, true}) {
+                    for (float split : {0.0f, 0.31f, 0.5f, 1.0f}) {
+                        graph.setNodeRuntimeProperties(nr, {{"sliderDebug", enabled}, {"splitPosition", split},
+                            {"orientation", horizontal ? "horizontal" : "vertical"}, {"swapSides", swap}});
+                        if (graph.dirty()) { return RhiTestResult::fail("NR slider rebuilt the graph"); }
+                        executor.syncRuntimeProperties(graph);
+                        result = executor.execute({.graphicsQueue = &context.graphicsQueue});
+                        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("NR evaluation unsupported"); }
+                        if (!result || !executor.waitForSubmittedWork()) { return RhiTestResult::fail("NR slider dispatch failed"); }
+                        std::array<std::vector<uint8_t>, 2> images;
+                        for (size_t i = 0; i < sources.size(); ++i) {
+                            auto* buffer = executor.outputResource(std::string(sources[i]) + "Readback.pixels")->buffer;
+                            buffer->invalidate();
+                            const auto* pixels = static_cast<const uint8_t*>(buffer->map());
+                            if (!pixels) { return RhiTestResult::fail("NR slider readback failed"); }
+                            images[i].assign(pixels, pixels + width * height * 4);
+                            buffer->unmap();
+                        }
+                        for (uint32_t y = 0; y < height; ++y) {
+                            for (uint32_t x = 0; x < width; ++x) {
+                                bool before = ((horizontal ? y : x) + 0.5f) < split * (horizontal ? height : width);
+                                if (swap) { before = !before; }
+                                const auto& expected = enabled && before ? images[0] : reference[frame];
+                                const size_t pixel = (y * width + x) * 4;
+                                for (size_t channel = 0; channel < 4; ++channel) {
+                                    if (images[1][pixel + channel] != expected[pixel + channel]) {
+                                        return RhiTestResult::fail(fmt::format(
+                                            "NR slider mismatch enabled={} horizontal={} swap={} split={} pixel=({}, {}) channel={} actual={} expected={}",
+                                            enabled, horizontal, swap, split, x, y, channel,
+                                            images[1][pixel + channel], expected[pixel + channel]));
+                                    }
+                                }
+                            }
+                        }
+                        ++frame;
+                    }
+                }
+            }
+        }
+        return RhiTestResult::pass("NR before/after pixels, axes, swap, odd extents, endpoints and history retention");
+    }
+};
+
 class DlssNrSceneTest final : public RhiTest {
 public:
     DlssNrSceneTest() { type = RhiTestType::Rendering; name = "dlss_nr_runtime_scene"; }
@@ -332,6 +439,18 @@ public:
         if (difference == 0 || energy < uint64_t(width) * height * 3 * 4) {
             return RhiTestResult::fail("NR scene output is unchanged or unexpectedly black");
         }
+        graph.setNodeRuntimeProperty(graph.findNode("DlssNr")->id, "sliderDebug", true);
+        executor.syncRuntimeProperties(graph);
+        if (!executor.execute({.graphicsQueue = &context.graphicsQueue}) || !executor.waitForSubmittedWork()) {
+            return RhiTestResult::fail("NR scene slider dispatch failed");
+        }
+        auto* slider = executor.outputResource("AfterNr.pixels")->buffer;
+        slider->invalidate();
+        const auto* pixels = static_cast<const uint8_t*>(slider->map());
+        if (!pixels) { return RhiTestResult::fail("NR scene slider readback failed"); }
+        const bool saved = saveRgba8Png(context.outputDirectory / "dlss_nr_scene_slider.png", pixels, width, height, log);
+        slider->unmap();
+        if (!saved) { return RhiTestResult::fail(log); }
         return RhiTestResult::pass("Captured RR + exposure before/after native NR over eight scene frames");
     }
 };
@@ -339,6 +458,7 @@ public:
 METALLIC_REGISTER_RHI_TEST(DlssNrContractTest);
 METALLIC_REGISTER_RHI_TEST(DlssNrBypassTest);
 METALLIC_REGISTER_RHI_TEST(DlssNrRuntimeTest);
+METALLIC_REGISTER_RHI_TEST(DlssNrSliderTest);
 METALLIC_REGISTER_RHI_TEST(DlssNrSceneTest);
 
 } // namespace

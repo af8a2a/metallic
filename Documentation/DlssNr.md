@@ -23,6 +23,26 @@ required. Override `METALLIC_DLSS_NR_NGX_ROOT` if that SDK lives elsewhere.
 The DLL is copied next to the executable. Missing build dependencies produce
 a configure error only when the experimental option is explicitly enabled.
 
+`METALLIC_HAS_DLSS_NR` is derived by CMake; do not define it manually. The
+`METALLIC_ENABLE_DLSS_NR` option is cached **per build directory** and defaults
+to `OFF`. Enabling `build-dlss-nr` does not enable the IDE's `metallic-release`
+or Debug profile. Configure the profile you actually build and run, for example:
+
+```powershell
+cmake --preset metallic-release -DMETALLIC_ENABLE_DLSS_NR=ON `
+    -DMETALLIC_DLSS_NR_NGX_ROOT=E:/metallic/External/streamline/_sdk/external/ngx-sdk `
+    -DMETALLIC_DLSS_NR_RUNTIME=E:/Unity-DLSS-RR/External/NVIDIA-DLSS/lib/nvngx_dlssnr.dll
+cmake --build --preset metallic-release
+```
+
+An older cache can retain the unpackaged NGX header path, so update
+`METALLIC_DLSS_NR_NGX_ROOT` as above when switching to the packaged SDK.
+After configuring externally, reload the IDE's CMake project to refresh its
+code model. For a custom IDE profile, also save these `-D` arguments in that
+profile's CMake options so resetting its cache retains the opt-in.
+Successful configuration emits `Experimental DLSS-NR enabled`
+and the runtime target's compiler command contains `METALLIC_HAS_DLSS_NR=1`.
+
 ## Editor and render graph
 
 Select **PathTracingSample / DLSS-NR (Experimental)**. Its pipeline is:
@@ -64,6 +84,27 @@ resets after graph compilation, configuration/extent changes, history
 invalidation, scene changes, frame discontinuities, and `resetSerial` changes.
 Signal camera cuts through graph history invalidation or `resetSerial`.
 
+### Slider debug comparison
+
+Enable **DLSS-NR Slider Debug** in the viewport toolbar, or **Slider Debug
+(Before / After)** in the `DlssNr` node's runtime settings. It defaults off.
+The left side shows `inputColor` before NR and the right side shows the NR
+result from the same frame. Both use the same exposure and display color space.
+
+Drag the viewport divider, or use **Split Position**, **Top / bottom**, and
+**Swap A/B**, just as with `SliderDebugPass`. The properties are `sliderDebug`,
+`splitPosition` (default 0.5), `orientation` (`vertical` or `horizontal`), and
+`swapSides`. Position 0 shows all after-NR, position 1 all before-NR; swapping
+reverses them. Disabling comparison restores the complete NR result.
+
+NR still evaluates the whole image. The comparison shares SliderDebug's
+pixel-center selection shader and only reveals original pixels over the NR
+output, without scaling, blending or another full-size texture. Divider and
+labels are editor overlays and are excluded from image captures. Comparison
+controls do not rebuild the graph or reset NR history. When NR is disabled or
+falls back, both sides show the original image. The comparison shader uses the
+editor's bindless descriptor heap and is initialized on first use.
+
 `fallbackToInput=true` logs initialization/evaluation failures and copies the
 input color. An evaluation failure latches bypass until graph recompilation;
 it does not retry or spam the log every frame. Set `fallbackToInput=false`
@@ -90,7 +131,8 @@ modifies the DLL on disk. This behavior is confined to the opt-in backend.
 
 The device must have been created with `enableStreamline=true`; this initializes
 the NGX core and enables Metallic's NVIDIA Vulkan extension set. Contexts share
-one snippet initialization per device and maintain independent histories. The
+one snippet initialization per device; each stores its feature handle and
+parameter map. The
 parameter allocator is resolved from Streamline's already loaded NGX core;
 Metallic does not link a second NGX loader or initialize/shut down that core.
 Destroy contexts before their device. Feature replacement/destruction waits
@@ -121,6 +163,16 @@ to executable paths. Runtime tests skip when the build or runtime reports
 unsupported, and never enable
 fallback. A passing bypass test or editor smoke test by itself does not prove
 that neural rendering ran.
+
+`dlss_nr_runtime_slider` compares every RGBA byte against the original input
+and an uninterrupted reference sequence across both axes, swapped sides,
+endpoints, odd dimensions, and enable/disable transitions. The reference is
+captured in a separate feature lifetime: concurrently evaluated identical
+features did not produce identical histories with the tested snippet. The scene
+test also saves `dlss_nr_scene_slider.png`. Run the existing editor interaction
+smoke test on the NR sample with both `METALLIC_SMOKE_TEST_SLIDER=1` and
+`METALLIC_SMOKE_TEST_SAMPLE=pathtracing-sample-dlss-nr` set for
+`Metallic.exe --smoke-test`.
 
 The upstream SR/RR pass also declares Sampled usage on all NGX inputs; otherwise
 its sampled reads can yield black color and invalid shader-read transitions.
