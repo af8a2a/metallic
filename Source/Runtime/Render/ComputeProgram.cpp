@@ -109,6 +109,29 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
     std::string debugName = "ComputeProgram";
     std::vector<std::shared_ptr<ComputeDescriptorTables>> frameTables;
 
+    bool hasCompatibleBindings(const Impl& other) const
+    {
+        if (device != other.device || pushConstantSize != other.pushConstantSize ||
+            descriptorSetCount != other.descriptorSetCount || bindlessPushDataSize != other.bindlessPushDataSize ||
+            samplerBasePushDataOffset != other.samplerBasePushDataOffset ||
+            imageBasePushDataOffset != other.imageBasePushDataOffset || bufferBasePushDataOffset != other.bufferBasePushDataOffset ||
+            samplerBaseShaderIndices != other.samplerBaseShaderIndices ||
+            imageBaseShaderIndices != other.imageBaseShaderIndices || bufferBaseShaderIndices != other.bufferBaseShaderIndices ||
+            bindings.size() != other.bindings.size()) { return false; }
+        // Constant heap indices are baked into SPIR-V; matching descriptor types
+        // alone is insufficient. Require identical allocation order and indices.
+        for (size_t i = 0; i < bindings.size(); ++i) {
+            const auto& a = bindings[i];
+            const auto& b = other.bindings[i];
+            if (a.desc.binding != b.desc.binding || a.desc.kind != b.desc.kind ||
+                a.desc.descriptorCount != b.desc.descriptorCount || a.heapIndexOffset != b.heapIndexOffset ||
+                a.handles.size() != b.handles.size()) { return false; }
+            for (size_t j = 0; j < a.handles.size(); ++j) {
+                if (a.handles[j].shaderIndex != b.handles[j].shaderIndex) { return false; }
+            }
+        }
+        return true;
+    }
     Result acquireTables(RenderFrameContext& frame, uint32_t tableIndex,
         std::shared_ptr<ComputeDescriptorTables>& outTables)
     {
@@ -525,6 +548,10 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
     }
     ComputeDescriptorTables* tables = impl_.get();
     for (const auto& item : dispatches) {
+        if (item.program != nullptr &&
+            (!item.program->valid() || !impl_->hasCompatibleBindings(*item.program->impl_))) {
+            return makeError(Error::InvalidArgument);
+        }
         if ((impl_->pushConstantSize > 0 && item.pushData == nullptr) ||
             (item.argumentOffset & 3u) != 0 || item.argumentOffset > desc.indirectArguments->desc().size ||
             3 * sizeof(uint32_t) > desc.indirectArguments->desc().size - item.argumentOffset) {
@@ -542,6 +569,9 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         tables = retainedTables.get();
         frame->retain(retainedTables);
         frame->retain(impl_);
+        for (const auto& item : dispatches) {
+            if (item.program != nullptr && item.program != this) { frame->retain(item.program->impl_); }
+        }
     }
 
     std::vector<uint8_t> pushData(impl_->bindlessPushDataSize, 0);
@@ -734,7 +764,13 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
     desc.commandBuffer->bindBindlessHeap(*tables->heap);
     desc.commandBuffer->bindComputePipeline(*impl_->pipeline);
     if (!dispatches.empty()) {
+        const Impl* boundProgram = impl_.get();
         for (size_t index = 0; index < dispatches.size(); ++index) {
+            const Impl* program = dispatches[index].program != nullptr ? dispatches[index].program->impl_.get() : impl_.get();
+            if (program != boundProgram) {
+                desc.commandBuffer->bindComputePipeline(*program->pipeline);
+                boundProgram = program;
+            }
             if (impl_->pushConstantSize > 0) {
                 std::memcpy(pushData.data(), dispatches[index].pushData, impl_->pushConstantSize);
             }

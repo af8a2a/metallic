@@ -310,23 +310,17 @@ bool isRenderGraphFilePath(const std::filesystem::path& path)
         path.filename().string().find(".metallic_graph") != std::string::npos;
 }
 
-bool isSceneAwareRenderPassType(const std::string& type)
+bool isSceneAwareRenderPass(const render::RenderGraphNode& node)
 {
-    return type == "BunnyWireframePass" ||
-        type == "VisibilityBufferPass" ||
-        type == "GPUDrivenStreamAssetPass" ||
-        type == "SceneRayQueryVisualizationPass" ||
-        type == "SceneMaterialShaderObjectPass" ||
-        type == "SceneMaterialVisualizationPass" ||
-        type == "ScenePathTracePass" ||
-        type == "SceneRealtimeLightingPass" ||
-        type == "SceneRtxdiPass";
+    auto properties = node.properties;
+    properties.merge_patch(node.runtimeProperties);
+    return render::renderGraphPassSceneDependency(node.type).source != render::RenderGraphSceneSource::None &&
+        properties.value("sceneBinding", "world") != "asset";
 }
-
 std::string firstScenePathFromGraph(const render::RenderGraph& graph)
 {
     for (const render::RenderGraphNode& node : graph.nodes()) {
-        if (!isSceneAwareRenderPassType(node.type) || !node.properties.is_object()) {
+        if (!isSceneAwareRenderPass(node) || !node.properties.is_object()) {
             continue;
         }
         auto pathIter = node.properties.find("path");
@@ -736,7 +730,7 @@ render::RenderGraphNode* findSceneCameraNode(
     for (size_t pendingIndex = 0; pendingIndex < pendingNodes.size(); ++pendingIndex) {
         const std::string nodeName = pendingNodes[pendingIndex];
         render::RenderGraphNode* node = graph.findNode(nodeName);
-        if (node != nullptr && isSceneAwareRenderPassType(node->type)) {
+        if (node != nullptr && isSceneAwareRenderPass(*node)) {
             return node;
         }
         for (const render::RenderGraphEdge& edge : graph.edges()) {
@@ -749,7 +743,7 @@ render::RenderGraphNode* findSceneCameraNode(
     }
 
     for (const render::RenderGraphNode& node : graph.nodes()) {
-        if (isSceneAwareRenderPassType(node.type)) {
+        if (isSceneAwareRenderPass(node)) {
             return graph.findNode(node.id);
         }
     }
@@ -2066,6 +2060,11 @@ int EditorApplication::run(
         }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_MATERIAL_INSPECTOR")) {
             const bool passed = runMaterialInspectorSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_SCENE_SWITCH")) {
+            const bool passed = runSceneSwitchSmokeTest();
             shutdown();
             return passed ? 0 : 1;
         }
@@ -4315,7 +4314,7 @@ void EditorApplication::syncCameraGroup(const render::RenderGraphNode& source)
         return;
     }
     for (const auto& candidate : renderGraph_.nodes()) {
-        if (candidate.id != source.id && isSceneAwareRenderPassType(candidate.type) &&
+        if (candidate.id != source.id && isSceneAwareRenderPass(candidate) &&
             effectiveNodeProperties(candidate).value("cameraSyncGroup", "") == group) {
             renderGraph_.setNodeRuntimeProperty(candidate.id, "camera", properties["camera"]);
         }
@@ -6960,7 +6959,7 @@ void EditorApplication::applyLoadedSceneToRenderGraph(const std::filesystem::pat
 
     std::vector<uint32_t> sceneNodeIds;
     for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
-        if (isSceneAwareRenderPassType(node.type)) {
+        if (isSceneAwareRenderPass(node)) {
             sceneNodeIds.push_back(node.id);
         }
     }
@@ -7021,7 +7020,7 @@ void EditorApplication::applyLoadedSceneCamera()
 
     std::vector<uint32_t> sceneNodeIds;
     for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
-        if (isSceneAwareRenderPassType(node.type)) {
+        if (isSceneAwareRenderPass(node)) {
             sceneNodeIds.push_back(node.id);
         }
     }

@@ -65,6 +65,59 @@ bool EditorApplication::runDlssCameraSmokeTest()
     return true;
 }
 
+bool EditorApplication::runSceneSwitchSmokeTest()
+{
+    const auto expect = [](bool condition, const std::string& message) {
+        if (!condition) { spdlog::error("[Smoke Scene Switch] {}", message); }
+        return condition;
+    };
+    const auto renderFrames = [&]() {
+        for (int frame = 0; frame < 3; ++frame) {
+            auto profileFrame = profiler_.beginFrame();
+            if (!waitForFrameSlotBeforeInput() || !renderFrame() ||
+                !expect(viewportPreviewValid_, "Switched scene renders")) { return false; }
+        }
+        return true;
+    };
+    if (!renderFrames()) { return false; }
+    const auto originalPath = scene_.sourcePath();
+    auto* deferred = renderGraph_.findNode("Deferred");
+    if (!expect(deferred != nullptr, "Comparison has a Deferred pass")) { return false; }
+    const uint32_t deferredId = deferred->id;
+    const std::filesystem::path meetMat = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/meet_mat.glb";
+    for (const auto& target : {meetMat, meetMat, originalPath}) {
+        const uint64_t previousIdentity = scene_.resourceIdentity();
+        // Use the same asynchronous request, resource preparation and commit path
+        // as the file picker. Never rewrite the graph directly in this test.
+        SDL_strlcpy(sceneFilePath_, target.string().c_str(), sizeof(sceneFilePath_));
+        loadScene();
+        if (!expect(waitForPendingSceneLoad(30000), "Scene load completes: " + sceneStatus_) ||
+            !expect(scene_.resourceIdentity() != previousIdentity &&
+                std::filesystem::equivalent(scene_.sourcePath(), target), "New document becomes the runtime scene")) {
+            return false;
+        }
+        for (const char* name : {"Reference", "VBuffer", "Deferred"}) {
+            const auto* node = renderGraph_.findNode(name);
+            if (!expect(node != nullptr, std::string("Scene consumer exists: ") + name)) { return false; }
+            auto properties = node->properties;
+            properties.merge_patch(node->runtimeProperties);
+            std::filesystem::path actual = properties.value("path", "");
+            if (actual.is_relative()) { actual = std::filesystem::path(PROJECT_SOURCE_DIR) / actual; }
+            if (!expect(!actual.empty() && std::filesystem::equivalent(actual, target),
+                    std::string(name) + " retained scene path '" + actual.string() + "' instead of '" + target.string() + "'")) {
+                return false;
+            }
+        }
+        if (!renderFrames()) { return false; }
+    }
+    for (bool classified : {false, true}) {
+        renderGraph_.setNodeRuntimeProperty(deferredId, "materialBinning", classified);
+        if (!renderFrames()) { return false; }
+    }
+    spdlog::info("[Smoke Scene Switch] Passed meet_mat switch, same-path reload, return to original scene and classification toggle");
+    return true;
+}
+
 bool EditorApplication::runSliderDebugSmokeTest()
 {
     const auto expect = [](bool condition, const char* message) {

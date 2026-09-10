@@ -324,6 +324,8 @@ struct GPUDrivenStreamAssetRetiredFrameResources {
 
 class GPUDrivenStreamAssetPass final : public UnsafePass {
 public:
+    RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
+
     ~GPUDrivenStreamAssetPass() override
     {
         releaseGPUSceneSourceLease();

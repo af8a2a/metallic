@@ -4,10 +4,9 @@
 namespace metallic::render {
 
 struct MaterialBinning::Allocation {
-    std::array<std::unique_ptr<Buffer>, 4> buffers; // counters, bins, pixels, arguments
+    std::array<std::unique_ptr<Buffer>, 3> buffers; // bins, tile tasks, arguments
     GpuCompletionPoint completion;
-    uint32_t pixelCount = 0;
-    uint32_t binCount = 0;
+    uint32_t tileCount = 0;
     bool initialized = false;
 };
 
@@ -21,27 +20,30 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
     const MaterialBinningDesc& desc, MaterialBinningResult& output, std::string& log)
 {
     output = {};
-    if (!device.capabilities().computeSubgroupBallotArithmetic) {
-        log = "MaterialBinning requires compute subgroup ballot and arithmetic operations; disable materialBinning on this device";
+    // RHI compute stages do not enable ALLOW_VARYING_SUBGROUP_SIZE. Their native
+    // subgroupSize is fixed; one 32-thread workgroup is exactly one NVIDIA warp.
+    if (!device.capabilities().computeSubgroupBallotArithmetic || device.capabilities().subgroupSize != 32) {
+        log = "Material classification requires native wave32 with subgroup ballot/arithmetic; disable materialBinning on this device";
         return makeError(Error::Unsupported);
     }
     auto* frame = commands.frameContext();
-    const uint64_t pixelCount = uint64_t(desc.width) * desc.height;
+    const uint64_t columns = (uint64_t(desc.width) + kMaterialTileWidth - 1) / kMaterialTileWidth;
+    const uint64_t rows = (uint64_t(desc.height) + kMaterialTileHeight - 1) / kMaterialTileHeight;
+    const uint64_t tileCount = columns * rows;
     if (frame == nullptr || !frame->recording() || desc.visibility == nullptr ||
         desc.records == nullptr || desc.instances == nullptr || desc.materials == nullptr ||
-        pixelCount == 0 || pixelCount > UINT32_MAX || desc.width > 65535u * 8u ||
-        desc.height > 65535u * 8u || desc.materialCount == 0 || desc.materialCount >= 65536u) {
-        log = "MaterialBinning requires a recording frame, valid inputs and at most 65535 materials";
+        desc.shadingMaterials == nullptr || desc.shadingMaterials->desc().size == 0 ||
+        tileCount == 0 || tileCount > UINT32_MAX / kMaterialClassCount ||
+        uint64_t(desc.width) * desc.height > UINT32_MAX || columns > 65535 || rows > 65535) {
+        log = "Material classification requires a recording frame, valid scene materials and bounded non-empty tile dimensions";
         return makeError(Error::InvalidArgument);
     }
-    const uint32_t binCount = desc.materialCount + 1u;
     const ComputeProgramBindingDesc layout[] = {
         {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
         {.binding = 1}, {.binding = 2}, {.binding = 3}, {.binding = 4},
         {.binding = 5}, {.binding = 6}, {.binding = 7},
     };
-    const char* entries[] = {"materialBinningResetMain", "materialBinningCountMain",
-        "materialBinningAllocateMain", "materialBinningScatterMain"};
+    const char* entries[] = {"materialBinningResetMain", "materialBinningClassifyMain", "materialBinningArgumentsMain"};
     const char* capabilities[] = {"spvGroupNonUniformBallot", "spvGroupNonUniformArithmetic"};
     for (size_t i = 0; i < programs_.size(); ++i) {
         if (programs_[i].valid()) { continue; }
@@ -65,60 +67,55 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
         allocation = std::make_shared<Allocation>();
         allocations_.push_back(allocation);
     }
-    if (allocation->pixelCount != pixelCount || allocation->binCount != binCount) {
-        allocation->pixelCount = 0;
+    if (allocation->tileCount != tileCount) {
+        allocation->tileCount = 0;
         allocation->initialized = false;
-        const uint64_t sizes[] = {uint64_t(binCount) * 4, uint64_t(binCount) * 8,
-            pixelCount * 4, uint64_t(binCount) * 12};
-        const uint32_t strides[] = {4, 8, 4, 4};
+        const uint64_t sizes[] = {kMaterialClassCount * 8, tileCount * kMaterialClassCount * 8, kMaterialClassCount * 12};
+        const uint32_t strides[] = {8, 8, 4};
         for (size_t i = 0; i < allocation->buffers.size(); ++i) {
             auto result = device.createBuffer({.size = sizes[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource |
-                    (i == 3 ? BufferUsageBits::Indirect : BufferUsageBits::None),
+                    (i == 2 ? BufferUsageBits::Indirect : BufferUsageBits::None),
                 .memoryLocation = MemoryLocation::Device}, allocation->buffers[i]);
             if (!result) { return result; }
         }
-        allocation->pixelCount = static_cast<uint32_t>(pixelCount);
-        allocation->binCount = binCount;
+        allocation->tileCount = static_cast<uint32_t>(tileCount);
     }
     allocation->completion = frame->completion();
     frame->retain(allocation);
     const auto& buffers = allocation->buffers;
-    const ResourceState finalStates[] = {ResourceState::General, ResourceState::ShaderRead,
-        ResourceState::ShaderRead, ResourceState::IndirectArgument};
-    BufferBarrierDesc barriers[4];
-    for (size_t i = 0; i < 4; ++i) {
+    const ResourceState finalStates[] = {ResourceState::ShaderRead, ResourceState::ShaderRead, ResourceState::IndirectArgument};
+    BufferBarrierDesc barriers[3];
+    for (size_t i = 0; i < 3; ++i) {
         barriers[i] = {.buffer = buffers[i].get(),
             .before = allocation->initialized ? finalStates[i] : ResourceState::Undefined,
             .after = ResourceState::General};
     }
-    commands.barrier({.buffers = barriers, .bufferCount = 4});
+    commands.barrier({.buffers = barriers, .bufferCount = 3});
     TextureView* visibility = desc.visibility;
     const ComputeDispatchBinding bindings[] = {
         {.binding = 0, .textureViews = &visibility, .textureViewCount = 1},
         {.binding = 1, .buffer = desc.records}, {.binding = 2, .buffer = desc.instances},
-        {.binding = 3, .buffer = desc.materials}, {.binding = 4, .buffer = buffers[0].get()},
-        {.binding = 5, .buffer = buffers[1].get()}, {.binding = 6, .buffer = buffers[2].get()},
-        {.binding = 7, .buffer = buffers[3].get()},
+        {.binding = 3, .buffer = desc.materials}, {.binding = 4, .buffer = desc.shadingMaterials},
+        {.binding = 5, .buffer = buffers[0].get()}, {.binding = 6, .buffer = buffers[1].get()},
+        {.binding = 7, .buffer = buffers[2].get()},
     };
-    const uint32_t push[] = {desc.width, desc.height, binCount, 0};
+    const uint32_t push[] = {desc.width, desc.height, static_cast<uint32_t>(tileCount), 0};
     for (size_t i = 0; i < programs_.size(); ++i) {
         auto result = programs_[i].dispatch({.commandBuffer = &commands, .bindings = bindings,
             .bindingCount = 8, .pushData = push, .pushDataSize = sizeof(push),
-            .groupCountX = i == 0 ? (binCount + 127) / 128 : (i == 2 ? 1 : (desc.width + 7) / 8),
-            .groupCountY = i == 0 || i == 2 ? 1 : (desc.height + 7) / 8});
+            .groupCountX = i == 1 ? static_cast<uint32_t>(columns) : 1,
+            .groupCountY = i == 1 ? static_cast<uint32_t>(rows) : 1});
         if (!result) { return result; }
-        for (size_t b = 0; b < 4; ++b) {
+        for (size_t b = 0; b < 3; ++b) {
             barriers[b] = {.buffer = buffers[b].get(), .before = ResourceState::General,
-                .after = i == 3 ? finalStates[b] : ResourceState::General};
+                .after = i == 2 ? finalStates[b] : ResourceState::General};
         }
-        // Includes COMPUTE_SHADER -> DRAW_INDIRECT for arguments, and shader
-        // writes -> shader reads for bins/pixels before the deferred dispatches.
-        commands.barrier({.buffers = barriers, .bufferCount = 4});
+        commands.barrier({.buffers = barriers, .bufferCount = 3});
     }
     allocation->initialized = true;
-    output = {.bins = buffers[1].get(), .pixels = buffers[2].get(),
-        .arguments = buffers[3].get(), .binCount = binCount};
+    output = {.bins = buffers[0].get(), .tiles = buffers[1].get(),
+        .arguments = buffers[2].get(), .binCount = kMaterialClassCount};
     return {};
 }
 

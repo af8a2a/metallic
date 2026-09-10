@@ -16,6 +16,7 @@ namespace {
 struct RenderGraphPassRegistryEntry {
     std::string description;
     RenderGraphPassFactory factory;
+    RenderGraphSceneDependency sceneDependency;
 };
 
 std::unordered_map<std::string, RenderGraphPassRegistryEntry>& passRegistry()
@@ -693,9 +694,12 @@ bool registerRenderGraphPassType(
     if (type.empty() || !factory) {
         return false;
     }
+    const auto pass = factory();
+    const auto sceneDependency = pass != nullptr ? pass->sceneDependency() : RenderGraphSceneDependency{};
     passRegistry()[std::move(type)] = RenderGraphPassRegistryEntry{
         .description = std::move(description),
         .factory = std::move(factory),
+        .sceneDependency = sceneDependency,
     };
     return true;
 }
@@ -708,6 +712,13 @@ std::unique_ptr<RenderGraphPass> createRenderGraphPass(std::string_view type)
         return {};
     }
     return iter->second.factory();
+}
+
+RenderGraphSceneDependency renderGraphPassSceneDependency(std::string_view type)
+{
+    registerBuiltInRenderGraphPasses();
+    const auto iter = passRegistry().find(std::string(type));
+    return iter != passRegistry().end() ? iter->second.sceneDependency : RenderGraphSceneDependency{};
 }
 
 std::vector<RenderGraphPassInfo> listRenderGraphPassTypes()

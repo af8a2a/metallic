@@ -1,3 +1,7 @@
+#ifndef MATERIAL_CLASS
+#define MATERIAL_CLASS -1
+#endif
+
 #include "../Lighting/OpenPBRDirectLighting.slang"
 #include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
 #include "../../Libraries/GPUDriven/MaterialBinningCommon.slang"
@@ -13,7 +17,7 @@
 [[vk::binding(68, 0)]] StructuredBuffer<GPUDrivenPreviewInstance> gRasterInstances;
 [[vk::binding(69, 0)]] StructuredBuffer<GPUDrivenPreviewMaterial> gRasterMaterials;
 [[vk::binding(70, 0)]] StructuredBuffer<MaterialBin> gMaterialBins;
-[[vk::binding(71, 0)]] StructuredBuffer<uint> gMaterialPixels;
+[[vk::binding(71, 0)]] StructuredBuffer<MaterialTile> gMaterialTiles;
 
 float3 rasterWorldPosition(GPUDrivenPreviewInstance instance, float3 position)
 {
@@ -136,9 +140,14 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
         (push.enableAccumulation != 0u ? push.accumulationFrame * 0x9e3779b9u : 0u));
     HitInfo hit;
     float3 radiance;
+#if MATERIAL_CLASS == 0
+    radiance = environmentRadiance(ray.direction, push, true);
+#else
     if (!reconstructVisibilitySurface(pixel, ray, push, hit)) {
         radiance = environmentRadiance(ray.direction, push, true);
-    } else if (gMaterials[hit.materialIndex].glassParams.x > 0.0 &&
+    }
+#if MATERIAL_CLASS < 0 || MATERIAL_CLASS == 4
+    else if (gMaterials[hit.materialIndex].glassParams.x > 0.0 &&
         !openPbrDebugFlag(push, kOpenPBRDebugDisableTransmission) &&
         push.debugView == kOpenPBRDebugViewFinal) {
         // Ray continuation is isolated to transmissive materials. Reusing the
@@ -155,9 +164,14 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
                 seed, ignoredDistance, true, hit);
         }
         radiance /= float(samples);
-    } else {
-        radiance = shadeOpenPBRDirectSurface(ray, hit, samplePixel, push, seed, true);
     }
+#endif
+    else {
+        radiance = shadeOpenPBRDirectSurface(ray, hit, samplePixel, push, seed, true,
+            MATERIAL_CLASS == 1 ? 0 : (MATERIAL_CLASS == 2 ? 1 : -1),
+            MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3);
+    }
+#endif
     if (push.enableAccumulation != 0u) {
         if (push.hasHistory != 0u) {
             radiance = lerp(gHistoryPrevious[pixel].rgb, radiance, 1.0 / float(push.accumulationFrame + 1u));
@@ -176,15 +190,15 @@ void visibilityBufferDeferredMain(uint3 dispatchId : SV_DispatchThreadID,
 }
 
 [shader("compute")]
-[numthreads(64, 1, 1)]
-void visibilityBufferDeferredBinnedMain(uint3 dispatchId : SV_DispatchThreadID,
+[numthreads(32, 1, 1)]
+void visibilityBufferDeferredBinnedMain(uint3 group : SV_GroupID,
     uniform ScenePathTracePush push)
 {
     MaterialBin bin = gMaterialBins[push.deferredSettings & 0xffffu];
-    uint rowBase = dispatchId.y * kMaterialBinMaxGroupsX * kMaterialBinGroupSize;
-    // Check the padded final row before adding X, even near UINT32_MAX pixels.
-    if (rowBase >= bin.count || dispatchId.x >= bin.count - rowBase) { return; }
-    uint index = rowBase + dispatchId.x;
-    uint pixel = gMaterialPixels[bin.offset + index];
-    shadeVisibilityPixel(uint2(pixel % push.width, pixel / push.width), push);
+    uint index = group.y * kMaterialBinMaxGroupsX + group.x;
+    if (index >= bin.count) { return; }
+    MaterialTile tile = gMaterialTiles[bin.offset + index];
+    uint lane = WaveGetLaneIndex();
+    if ((tile.laneMask & (1u << lane)) == 0u) { return; }
+    shadeVisibilityPixel(materialTilePixel(tile, lane, push.width), push);
 }

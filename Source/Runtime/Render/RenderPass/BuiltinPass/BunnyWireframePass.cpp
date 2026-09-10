@@ -7,6 +7,8 @@ namespace {
 
 class BunnyWireframePass final : public RasterPass {
 public:
+    RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
+
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;

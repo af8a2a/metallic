@@ -16,7 +16,7 @@ Shader 按公共库与渲染功能组织。`Shaders/` 是运行时唯一的项�
 | `Features/PathTracing/` | 路径追踪、OpenPBR 路径追踪、降噪引导数据、SHARC 维护 |
 | `Features/ReSTIR/` | RTXDI 重采样、置信度与合成 |
 | `Features/GPUDriven/` | GPU 剔除、meshlet 流式渲染 |
-| `Features/VisibilityBuffer/` | Visibility Buffer 生成、wave 材质分箱、间接延迟着色与合成 |
+| `Features/VisibilityBuffer/` | Visibility Buffer 生成、wave32 tile 材质分类、特化间接延迟着色与合成 |
 | `Features/PostProcess/` | 自动曝光、色调映射、最终输出与 DLSS 辅助处理 |
 | `Features/Debug/` | 材质/射线/光照网格可视化、SliderDebug、GPU Probe、[ShaderToHuman](Features/Debug/ShaderToHuman/README.md) |
 | `Features/Samples/` | 三角形、线框、材质 Shader Object、图像与 RTXCR 示例 |

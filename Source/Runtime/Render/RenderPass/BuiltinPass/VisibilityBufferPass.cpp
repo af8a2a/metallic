@@ -569,6 +569,8 @@ struct GPUDrivenPreviewRetiredViewResources {
 
 class VisibilityBufferPass final : public UnsafePass {
 public:
+    RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
+
     ~VisibilityBufferPass() override
     {
         releaseGPUSceneSourceLease();
@@ -641,6 +643,14 @@ public:
         return settings;
     }
 
+    Result prepare(const RenderGraphCompileContext& context, std::string& log) override
+    {
+        // Resource-only graph rebuilds may hand off a path-resolved fallback
+        // scene to the asynchronously loaded editor document. Recheck the source
+        // lease, identity and geometry revisions before publishing rasterInfo.
+        // compile() keeps existing resources when its scene/view key still matches.
+        return visibilityPipelines_[0] != nullptr ? compile(context, log) : Result{};
+    }
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) {
@@ -1152,7 +1162,7 @@ public:
         info.height = context.height();
         info.residentRecordCount = residentRecordCapacity_;
         info.hasStreamGeometry = streamEnabled_ ? 1u : 0u;
-        info.sceneIdentity = compiledScene_->resourceIdentity();
+        info.sceneIdentity = sceneResourceIdentity_;
         void* mappedInfo = rasterInfo.buffer()->map();
         if (mappedInfo == nullptr) { return makeError(Error::Failure); }
         std::memcpy(mappedInfo, &info, sizeof(info));

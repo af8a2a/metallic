@@ -32,6 +32,8 @@ struct SceneRtxdiHistoryViews {
 
 class SceneRtxdiPass final : public ComputePass {
 public:
+    RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
+
     ~SceneRtxdiPass() override = default;
 
     std::span<const RenderSubsystemId> requiredSubsystems() const override

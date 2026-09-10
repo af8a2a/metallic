@@ -34,7 +34,8 @@ float3 openPbrDirectVisibility(float3 origin, float3 direction, float distance, 
 }
 
 float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
-    ScenePathTracePush push, inout uint seed, bool sampledEnvironment)
+    ScenePathTracePush push, inout uint seed, bool sampledEnvironment,
+    int fixedMetalness = -1, bool opaquePrimary = false)
 {
     RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
     PathTraceMaterial material = gMaterials[hit.materialIndex];
@@ -46,6 +47,11 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
     // TBN and geometric normal remain authored; face-forward only the evaluated normal.
     hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
     OpenPBRMaterialEval surface = evaluateOpenPBRMaterial(hit, material, push, cone, ray.direction, seed);
+    // Conservative tile classification supplies compile-time constants only
+    // when the source factors/textures guarantee these exact values. Secondary
+    // hits and shadow transmittance retain the unrestricted OpenPBR evaluator.
+    if (fixedMetalness >= 0) { surface.inputs.base_metalness = float(fixedMetalness); }
+    if (opaquePrimary) { surface.inputs.transmission_weight = 0.0; }
     if (push.debugView != kOpenPBRDebugViewFinal) {
         return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, surface, ray.direction);
     }

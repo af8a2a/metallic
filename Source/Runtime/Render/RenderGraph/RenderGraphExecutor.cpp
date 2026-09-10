@@ -6,6 +6,7 @@
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Render/Subsystem/BuiltinRenderSubsystems.h"
 
 #include <spdlog/spdlog.h>
@@ -237,6 +238,23 @@ struct RenderGraphExecutor::Impl {
         RenderGraphResource resource;
     };
 
+    struct SceneBinding {
+        const scene::Scene* source = nullptr;
+        // Capture values, not a pointer dereference during execute: a SceneDocument
+        // can be replaced in-place while retaining its C++ address.
+        std::array<uint64_t, 7> version{};
+        std::string path;
+        bool operator==(const SceneBinding&) const = default;
+    };
+
+    static SceneBinding captureSceneBinding(const scene::Scene* source)
+    {
+        if (source == nullptr) { return {}; }
+        return {source, {source->resourceIdentity(), source->sceneGraph().lifetimeRevision(),
+            source->sceneGraph().structuralRevision(), source->contentRevision(),
+            source->transformRevision(), source->visibilityRevision(), source->materialRevision()}, source->filename().generic_string()};
+    }
+
     struct CompiledNode {
         uint32_t id = 0;
         std::string name;
@@ -248,6 +266,8 @@ struct RenderGraphExecutor::Impl {
         RenderGraphProperties effectiveProperties = RenderGraphProperties::object();
         std::unique_ptr<RenderGraphPass> pass;
         RenderPassReflection reflection;
+        RenderGraphSceneDependency sceneDependency;
+        SceneBinding sceneBinding;
         uint32_t executionWidth = 0;
         uint32_t executionHeight = 0;
     };
@@ -331,6 +351,7 @@ struct RenderGraphExecutor::Impl {
     std::array<uint64_t, 5> recordedSceneStamp{};
     bool hasSubmittedWork = false;
     bool isCompiled = false;
+    bool sceneBindingsReady = true;
     IRenderDebugObserver* debugObserver = nullptr;
     uint64_t debugGraphId = nextDebugGraphId++;
     uint64_t debugGeneration = 0;
@@ -350,6 +371,9 @@ struct RenderGraphExecutor::Impl {
             debug::DebugValue value{{"id", node.id}, {"name", node.name}, {"type", node.type}, {"active", found != executionList.end()},
                 {"properties", node.properties}, {"runtimeProperties", node.runtimeProperties}};
             if (found != executionList.end()) {
+                value["sceneBinding"] = {{"source", static_cast<uint32_t>(found->sceneDependency.source)},
+                    {"inputs", found->sceneDependency.inputs}, {"path", found->sceneBinding.path},
+                    {"identity", found->sceneBinding.version[0]}, {"version", found->sceneBinding.version}};
                 value["checkpoints"] = found->pass->debugCheckpoints();
                 value["declaredQueue"] = static_cast<uint32_t>(found->queueType);
                 value["runtimeSettings"] = debug::DebugValue::array();
@@ -378,6 +402,15 @@ struct RenderGraphExecutor::Impl {
     void beginDebugExecution(uint64_t frameIndex, uint32_t slotIndex)
     {
         if (!debugObserver) { return; }
+        for (auto& description : debugGraph["passes"]) {
+            const auto found = std::find_if(executionList.begin(), executionList.end(),
+                [&](const auto& node) { return description.at("id") == node.id; });
+            if (found != executionList.end()) {
+                description["sceneBinding"] = {{"source", static_cast<uint32_t>(found->sceneDependency.source)},
+                    {"inputs", found->sceneDependency.inputs}, {"path", found->sceneBinding.path},
+                    {"identity", found->sceneBinding.version[0]}, {"version", found->sceneBinding.version}};
+            }
+        }
         const auto identity = runtimeScene ? std::array<uint64_t, 2>{runtimeScene->resourceIdentity(), runtimeScene->contentRevision()} : std::array<uint64_t, 2>{};
         if (identity != debugSceneIdentity) {
             debugSceneIdentity = identity;
@@ -504,6 +537,120 @@ struct RenderGraphExecutor::Impl {
         }
     }
 
+    RenderGraphCompileContext contextForScene(
+        const RenderGraphCompileContext& context, const SceneBinding& binding) const
+    {
+        auto result = context;
+        if (binding.source != nullptr) { result.runtimeScene = binding.source; }
+        return result;
+    }
+
+    void applySceneProperties(CompiledNode& node, const SceneBinding& binding)
+    {
+        node.effectiveProperties = mergeRenderGraphProperties(node.staticProperties, node.runtimeProperties);
+        if (binding.source != nullptr) {
+            node.effectiveProperties["path"] = binding.path;
+        }
+        node.pass->setProperties(node.effectiveProperties);
+    }
+
+    Result resolveSceneBindings(std::vector<SceneBinding>& bindings, std::string& log)
+    {
+        bindings.assign(executionList.size(), {});
+        auto* resources = sceneResourcesSubsystem();
+        if (resources == nullptr) { return makeError(Error::InvalidArgument); }
+        for (size_t index = 0; index < executionList.size(); ++index) {
+            const auto& node = executionList[index];
+            const auto& dependency = node.sceneDependency;
+            if (dependency.source == RenderGraphSceneSource::None) { continue; }
+            auto properties = mergeRenderGraphProperties(node.staticProperties, node.runtimeProperties);
+            const std::string mode = properties.value("sceneBinding", "world");
+            if (mode != "world" && mode != "asset") {
+                log = "Pass '" + node.name + "' has invalid sceneBinding '" + mode + "'";
+                return makeError(Error::InvalidArgument);
+            }
+            if (dependency.source == RenderGraphSceneSource::Input) {
+                const CompiledNode* producer = nullptr;
+                for (const auto& input : dependency.inputs) {
+                    const auto alias = inputAliases.find(makeRenderGraphFieldName(node.name, input));
+                    std::string sourceName, sourceField;
+                    if (alias == inputAliases.end() ||
+                        !splitRenderGraphFieldName(alias->second, sourceName, sourceField)) {
+                        log = "Pass '" + node.name + "' scene input '" + input + "' is not connected";
+                        return makeError(Error::InvalidArgument);
+                    }
+                    const auto source = std::find_if(executionList.begin(), executionList.begin() + index,
+                        [&](const auto& candidate) { return candidate.name == sourceName; });
+                    if (source == executionList.begin() + index ||
+                        (producer != nullptr && producer != &*source) ||
+                        bindings[static_cast<size_t>(source - executionList.begin())].source == nullptr) {
+                        log = "Pass '" + node.name + "' scene inputs must come from the same scene producer";
+                        return makeError(Error::InvalidArgument);
+                    }
+                    producer = &*source;
+                    bindings[index] = bindings[static_cast<size_t>(source - executionList.begin())];
+                }
+                if (producer == nullptr) {
+                    log = "Pass '" + node.name + "' declares no scene inputs";
+                    return makeError(Error::InvalidArgument);
+                }
+            } else if (mode == "world" && runtimeScene != nullptr && runtimeScene->valid()) {
+                bindings[index] = captureSceneBinding(runtimeScene);
+            } else {
+                const scene::Scene* source = nullptr;
+                // Only an explicit asset binding or an absent world may resolve path.
+                Result result = resources->manager().resolveScene(properties, nullptr, source, log);
+                if (!result) { log = "Pass '" + node.name + "' scene resolution failed: " + log; return result; }
+                bindings[index] = captureSceneBinding(source);
+            }
+        }
+        return {};
+    }
+
+    Result refreshFrameSceneBindings(HistoryResourceManager* history, std::string& log)
+    {
+        std::vector<SceneBinding> bindings;
+        Result result = resolveSceneBindings(bindings, log);
+        if (!result) { return result; }
+        const bool forceRefresh = !sceneBindingsReady;
+        bool changed = forceRefresh;
+        for (size_t index = 0; index < executionList.size(); ++index) {
+            changed |= bindings[index] != executionList[index].sceneBinding;
+        }
+        if (!changed) { return {}; }
+        // Prepare the entire scene dependency set before recording any pass. Old
+        // GPU resources remain valid until their submitted work has completed.
+        result = waitForSubmittedWork(UINT64_MAX);
+        if (!result) { return result; }
+        sceneBindingsReady = false;
+        if (history != nullptr) { history->invalidateAll(); }
+        const RenderGraphCompileContext context{
+            .device = device, .graphicsQueue = device->getQueue(QueueType::Graphics),
+            .runtimeScene = runtimeScene, .sceneResourceManager = &sceneResourcesSubsystem()->manager(),
+            .renderWorld = world, .subsystemHost = subsystemHost, .width = width, .height = height,
+            .defaultFormat = defaultFormat, .debugReadback = debugObserver != nullptr,
+        };
+        for (size_t index = 0; index < executionList.size(); ++index) {
+            auto& node = executionList[index];
+            if (node.sceneDependency.source == RenderGraphSceneSource::None || (!forceRefresh && bindings[index] == node.sceneBinding)) { continue; }
+            applySceneProperties(node, bindings[index]);
+            const auto nodeContext = contextForScene(context, bindings[index]);
+            result = node.pass->prepare(nodeContext, log);
+            if (result) { result = node.pass->compile(nodeContext, log); }
+            if (!result) { log = "Scene refresh failed for pass '" + node.name + "': " + log; return result; }
+            // Scene refresh keeps exported graph handles stable for external users.
+            if (node.pass->reflect(nodeContext) != node.reflection) {
+                log = "Scene refresh changed the resource contract of pass '" + node.name + "'; rebuild the graph";
+                return makeError(Error::InvalidArgument);
+            }
+        }
+        for (size_t index = 0; index < executionList.size(); ++index) {
+            executionList[index].sceneBinding = bindings[index];
+        }
+        sceneBindingsReady = true;
+        return {};
+    }
+
     Result refreshReusablePasses(
         const RenderGraph& graph,
         const ActiveGraph& activeGraph,
@@ -515,6 +662,15 @@ struct RenderGraphExecutor::Impl {
             return makeError(Error::InvalidArgument);
         }
 
+        rebuildInputAliases(graph, activeGraph);
+        for (auto& node : executionList) {
+            const auto* graphNode = graph.findNode(node.id);
+            if (graphNode == nullptr) { return makeError(Error::InvalidArgument); }
+            node.runtimeProperties = graphNode->runtimeProperties;
+        }
+        std::vector<SceneBinding> sceneBindings;
+        Result bindingResult = resolveSceneBindings(sceneBindings, log);
+        if (!bindingResult) { return bindingResult; }
         for (size_t index = 0; index < activeGraph.executionOrder.size(); ++index) {
             const std::string& passName = activeGraph.executionOrder[index];
             const RenderGraphNode* graphNode = graph.findNode(passName);
@@ -533,14 +689,13 @@ struct RenderGraphExecutor::Impl {
                 return makeError(Error::InvalidArgument);
             }
 
-            compiledNode.runtimeProperties = graphNode->runtimeProperties;
-            compiledNode.effectiveProperties = mergeRenderGraphProperties(
-                compiledNode.staticProperties,
-                compiledNode.runtimeProperties);
-
-            compiledNode.pass->setProperties(compiledNode.effectiveProperties);
+            applySceneProperties(compiledNode, sceneBindings[index]);
+            const auto nodeContext = contextForScene(compileContext, sceneBindings[index]);
             std::string prepareLog;
-            Result prepareResult = compiledNode.pass->prepare(compileContext, prepareLog);
+            Result prepareResult = compiledNode.pass->prepare(nodeContext, prepareLog);
+            if (prepareResult && sceneBindings[index] != compiledNode.sceneBinding) {
+                prepareResult = compiledNode.pass->compile(nodeContext, prepareLog);
+            }
             if (!prepareResult) {
                 log = "RenderGraph prepare failed for pass '" + compiledNode.name + "' (" +
                     compiledNode.type + ")";
@@ -551,7 +706,8 @@ struct RenderGraphExecutor::Impl {
             }
             compiledNode.kind = compiledNode.pass->kind();
             compiledNode.queueType = compiledNode.pass->queueType();
-            compiledNode.reflection = compiledNode.pass->reflect(compileContext);
+            compiledNode.reflection = compiledNode.pass->reflect(nodeContext);
+            compiledNode.sceneBinding = sceneBindings[index];
         }
 
         return {};
@@ -676,7 +832,8 @@ struct RenderGraphExecutor::Impl {
 
         const size_t maximumIterations = resolvedExtents.size() * 2u + 2u;
         for (size_t iteration = 0; iteration < maximumIterations; ++iteration) {
-            bool changed = false;
+            const bool forceRefresh = !sceneBindingsReady;
+        bool changed = forceRefresh;
 
             for (const auto& [nodeName, outputNames] : nodeTextureOutputs) {
                 if (outputNames.size() < 2) {
@@ -1487,7 +1644,7 @@ struct RenderGraphExecutor::Impl {
             std::move(bindings),
             historyResources,
             upload != nullptr ? upload->streamer() : nullptr,
-            runtimeScene,
+            node.sceneBinding.source != nullptr ? node.sceneBinding.source : runtimeScene,
             world,
             subsystemHost);
         context.debugObserver_ = debugObserver;
@@ -1745,6 +1902,7 @@ Result RenderGraphExecutor::compile(
             return resourceResult;
         }
 
+        impl_->sceneBindingsReady = true;
         impl_->isCompiled = true;
         log = dimensionsChanged ? "RenderGraph resized" : "RenderGraph resources rebuilt";
         impl_->publishDebugGraph(graph);
@@ -1772,34 +1930,29 @@ Result RenderGraphExecutor::compile(
         const RenderGraphProperties effectiveProperties =
             mergeRenderGraphProperties(node->properties, node->runtimeProperties);
         pass->setProperties(effectiveProperties);
-        std::string prepareLog;
-        Result prepareResult = pass->prepare(compileContext, prepareLog);
-        if (!prepareResult) {
-            log = "RenderGraph prepare failed for pass '" + node->name + "' (" + node->type + ")";
-            if (!prepareLog.empty()) {
-                log += ": " + prepareLog;
-            }
-            return prepareResult;
-        }
-        const RenderGraphPassKind kind = pass->kind();
-        const QueueType queueType = pass->queueType();
-        RenderPassReflection reflection = pass->reflect(compileContext);
         impl_->executionList.push_back(Impl::CompiledNode{
-            .id = node->id,
-            .name = node->name,
-            .type = node->type,
-            .kind = kind,
-            .queueType = queueType,
-            .staticProperties = node->properties,
-            .runtimeProperties = node->runtimeProperties,
-            .effectiveProperties = effectiveProperties,
-            .pass = std::move(pass),
-            .reflection = std::move(reflection),
+            .id = node->id, .name = node->name, .type = node->type,
+            .staticProperties = node->properties, .runtimeProperties = node->runtimeProperties,
+            .effectiveProperties = effectiveProperties, .pass = std::move(pass),
         });
+        impl_->executionList.back().sceneDependency = impl_->executionList.back().pass->sceneDependency();
     }
     spdlog::info("[RenderGraph] Created {} compiled pass objects", impl_->executionList.size());
-
     impl_->rebuildInputAliases(graph, activeGraph);
+    std::vector<Impl::SceneBinding> sceneBindings;
+    Result bindingResult = impl_->resolveSceneBindings(sceneBindings, log);
+    if (!bindingResult) { return bindingResult; }
+    for (size_t index = 0; index < impl_->executionList.size(); ++index) {
+        auto& node = impl_->executionList[index];
+        node.sceneBinding = sceneBindings[index];
+        impl_->applySceneProperties(node, node.sceneBinding);
+        const auto nodeContext = impl_->contextForScene(compileContext, node.sceneBinding);
+        Result result = node.pass->prepare(nodeContext, log);
+        if (!result) { log = "RenderGraph prepare failed for pass '" + node.name + "': " + log; return result; }
+        node.kind = node.pass->kind();
+        node.queueType = node.pass->queueType();
+        node.reflection = node.pass->reflect(nodeContext);
+    }
     Impl::BindlessResourcePlan bindlessPlan = impl_->collectBindlessResourcePlan();
     if ((!bindlessPlan.sampledImageResources.empty() || !bindlessPlan.bufferResources.empty()) &&
         !device.capabilities().bindlessDescriptorHeap) {
@@ -1813,7 +1966,7 @@ Result RenderGraphExecutor::compile(
         {
             RenderGraphLogScope scope(
                 "compile pass '" + node.name + "' (" + node.type + ")");
-            result = node.pass->compile(compileContext, log);
+            result = node.pass->compile(impl_->contextForScene(compileContext, node.sceneBinding), log);
         }
         if (!result) {
             impl_->isCompiled = false;
@@ -1839,6 +1992,7 @@ Result RenderGraphExecutor::compile(
     }
 
     impl_->initializeGpuTiming(device);
+    impl_->sceneBindingsReady = true;
     impl_->isCompiled = true;
     log = "RenderGraph compiled";
     impl_->publishDebugGraph(graph);
@@ -1883,6 +2037,9 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
         .debugReadback = impl_->debugObserver != nullptr,
     };
 
+    result = impl_->refreshFrameSceneBindings(nullptr, log);
+    if (!result) { return result; }
+
     std::vector<Impl::CompiledNode> replacements;
     replacements.reserve(impl_->executionList.size());
     std::string reloadDetails;
@@ -1893,9 +2050,10 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
                 "' of type '" + compiledNode.type + "'";
             return makeError(Error::InvalidArgument);
         }
+        const auto nodeContext = impl_->contextForScene(compileContext, compiledNode.sceneBinding);
         pass->setProperties(compiledNode.effectiveProperties);
         std::string prepareLog;
-        result = pass->prepare(compileContext, prepareLog);
+        result = pass->prepare(nodeContext, prepareLog);
         if (!result) {
             log = "Shader reload could not prepare pass '" + compiledNode.name + "' (" +
                 compiledNode.type + ")";
@@ -1906,7 +2064,7 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
         }
         const RenderGraphPassKind kind = pass->kind();
         const QueueType queueType = pass->queueType();
-        RenderPassReflection reflection = pass->reflect(compileContext);
+        RenderPassReflection reflection = pass->reflect(nodeContext);
         const std::span<const RenderSubsystemId> oldSubsystems =
             compiledNode.pass->requiredSubsystems();
         const std::span<const RenderSubsystemId> newSubsystems = pass->requiredSubsystems();
@@ -1916,7 +2074,7 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
         if (kind != compiledNode.kind ||
             queueType != compiledNode.queueType ||
             reflection != compiledNode.reflection ||
-            !subsystemRequirementsMatch) {
+            !subsystemRequirementsMatch || pass->sceneDependency() != compiledNode.sceneDependency) {
             log = "Shader reload rejected pass '" + compiledNode.name +
                 "' because its render-graph contract changed; rebuild the graph instead";
             return makeError(Error::InvalidArgument);
@@ -1927,7 +2085,7 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
             RenderGraphLogScope scope(
                 "reload shaders for pass '" + compiledNode.name + "' (" +
                 compiledNode.type + ")");
-            result = pass->compile(compileContext, passLog);
+            result = pass->compile(nodeContext, passLog);
         }
         if (!result) {
             log = "Shader reload failed for pass '" + compiledNode.name + "' (" +
@@ -1955,6 +2113,8 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
             .effectiveProperties = compiledNode.effectiveProperties,
             .pass = std::move(pass),
             .reflection = std::move(reflection),
+            .sceneDependency = compiledNode.sceneDependency,
+            .sceneBinding = compiledNode.sceneBinding,
             .executionWidth = compiledNode.executionWidth,
             .executionHeight = compiledNode.executionHeight,
         });
@@ -1994,6 +2154,10 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
     if (!impl_->isCompiled) {
         return makeError(Error::InvalidArgument);
     }
+
+    std::string sceneLog;
+    Result sceneResult = impl_->refreshFrameSceneBindings(historyResources, sceneLog);
+    if (!sceneResult) { spdlog::error("[RenderGraph] {}", sceneLog); return sceneResult; }
 
     // External command buffers now outlive execute(). Guard destructive graph
     // changes and legacy passes using the same completion points as the caller.
@@ -2211,6 +2375,10 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     if (!impl_->isCompiled || impl_->device == nullptr || impl_->executionList.empty()) {
         return makeError(Error::InvalidArgument);
     }
+
+    std::string sceneLog;
+    Result sceneResult = impl_->refreshFrameSceneBindings(desc.historyResources, sceneLog);
+    if (!sceneResult) { spdlog::error("[RenderGraph] {}", sceneLog); return sceneResult; }
 
     // Preflight before beginning a slot or mutating subsystem/resource state.
     // Unreviewed passes retain the universal-queue execution contract.
@@ -2493,10 +2661,7 @@ bool RenderGraphExecutor::syncRuntimeProperties(const RenderGraph& graph)
 
         if (compiledNode.runtimeProperties != graphNode->runtimeProperties) {
             compiledNode.runtimeProperties = graphNode->runtimeProperties;
-            compiledNode.effectiveProperties = mergeRenderGraphProperties(
-                compiledNode.staticProperties,
-                compiledNode.runtimeProperties);
-            compiledNode.pass->setProperties(compiledNode.effectiveProperties);
+            impl_->applySceneProperties(compiledNode, compiledNode.sceneBinding);
             synced = true;
         }
     }

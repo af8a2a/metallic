@@ -44,19 +44,22 @@ bool graphHasTextureOutput(const RenderGraph& graph, std::string_view outputName
 
 bool applySampleScenePath(RenderGraph& graph, const RenderSampleDesc& desc, std::string& outMessage)
 {
-    for (const std::string& target : desc.scenePathTargets) {
-        RenderGraphNode* node = graph.findNode(target);
-        if (node == nullptr) {
-            outMessage = "Sample scenePathTargets node not found: " + target;
-            return false;
+    std::vector<uint32_t> targets;
+    for (const auto& node : graph.nodes()) {
+        if (renderGraphPassSceneDependency(node.type).source != RenderGraphSceneSource::None &&
+            node.properties.value("sceneBinding", "world") != "asset") {
+            targets.push_back(node.id);
         }
+    }
+    for (const uint32_t target : targets) {
+        RenderGraphNode* node = graph.findNode(target);
         RenderGraphProperties properties = node->properties;
         if (!properties.is_object()) {
             properties = RenderGraphProperties::object();
         }
         properties["path"] = desc.scenePath;
         if (!graph.setNodeProperties(node->id, std::move(properties))) {
-            outMessage = "Sample failed to update node properties: " + target;
+            outMessage = "Sample failed to update node properties: " + node->name;
             return false;
         }
     }

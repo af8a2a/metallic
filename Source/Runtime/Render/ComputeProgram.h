@@ -66,9 +66,13 @@ struct ComputeDispatchDesc {
     uint64_t indirectOffset = 0;
 };
 
+class ComputeProgram;
+
 struct ComputeIndirectDispatch {
     const void* pushData = nullptr;
     uint64_t argumentOffset = 0;
+    // Optional permutation with exactly the same descriptor and push-data layout.
+    const ComputeProgram* program = nullptr;
 };
 
 class ComputeProgram {
@@ -88,7 +92,8 @@ public:
     Result dispatch(const ComputeDispatchDesc& desc);
     // Bind one immutable descriptor table for the batch. Every item supplies
     // pushDataSize bytes and an offset into desc.indirectArguments. Optional
-    // barriers separate dispatches sharing writable resources.
+    // barriers separate dispatches sharing writable resources. Compatible per-item
+    // programs share this table; the entire batch is validated before recording.
     Result dispatchIndirectBatch(const ComputeDispatchDesc& desc,
         std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches = {});
 

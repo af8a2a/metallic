@@ -141,39 +141,7 @@ struct PathTraceInstance
     float rayConeLodConstant;
 };
 
-struct PathTraceTextureInfo
-{
-    uint textureIndex;
-    uint texCoord;
-    uint ntcTextureSetIndex;
-    uint ntcChannelMapping;
-    float4 transform0;
-    float4 transform1;
-};
-
-struct PathTraceMaterial
-{
-    float4 baseColor;
-    float4 emissive;
-    float4 params;
-    float4 textureParams;
-    float4 glassParams;
-    float4 attenuationColor;
-    float4 diffuseTransmission;
-    float4 rtxcrHairBaseColor;
-    float4 rtxcrHairParams0;
-    float4 rtxcrHairParams1;
-    float4 rtxcrHairDiffuseTint;
-    PathTraceTextureInfo baseColorTexture;
-    PathTraceTextureInfo metallicRoughnessTexture;
-    PathTraceTextureInfo normalTexture;
-    PathTraceTextureInfo occlusionTexture;
-    PathTraceTextureInfo emissiveTexture;
-    PathTraceTextureInfo transmissionTexture;
-    PathTraceTextureInfo thicknessTexture;
-    PathTraceTextureInfo diffuseTransmissionTexture;
-    PathTraceTextureInfo diffuseTransmissionColorTexture;
-};
+#include "../../Libraries/Scene/SceneMaterial.slang"
 
 [[vk::binding(3, 0)]]
 StructuredBuffer<uint> gIndices;
@@ -248,7 +216,7 @@ struct ScenePathTracePush
     float jitterOffsetY;
     uint sampleFrame;
     uint temporalJitter;
-    uint deferredSettings; // bin:16, transmission samples:5, ray depth:5
+    uint deferredSettings; // shading class:16, transmission samples:5, ray depth:5
 };
 
 struct Ray

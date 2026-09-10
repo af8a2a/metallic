@@ -409,5 +409,91 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VisibilityBufferMaterialEditTest);
 
+class VisibilityBufferSceneHandoffTest final : public RhiTest {
+public:
+    VisibilityBufferSceneHandoffTest() { type = RhiTestType::Rendering; name = "visibility_buffer_async_scene_handoff"; }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string log;
+        if (!render::loadBuiltInRenderSample("lookdev-vbuffer", sample, log)) { return RhiTestResult::fail(log); }
+        sample.graph.removeNode(sample.graph.findNode("Reference")->id);
+        sample.graph.removeNode(sample.graph.findNode("Slider")->id);
+        sample.graph.addEdge("Deferred.color", "AutoExposure.source");
+        const uint32_t deferred = sample.graph.findNode("Deferred")->id;
+        const uint32_t raster = sample.graph.findNode("VBuffer")->id;
+        // An inherited scene must never be independently resolved from this stale path.
+        sample.graph.setNodeRuntimeProperty(deferred, "path", "Asset/meet_mat.glb");
+        sample.graph.setNodeRuntimeProperty(deferred, "accumulate", false);
+        sample.graph.setNodeRuntimeProperty(deferred, "debugView", "baseColor");
+        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", true);
+        // Before the async editor load finishes, the graph resolves its own scene
+        // from the sample path. The editor document object already exists but is empty.
+        scene::SceneDocument document;
+        render::RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&document);
+        auto result = preview.initialize(context.enableValidation, true, false);
+        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders and ray queries"); }
+        if (!result) { return RhiTestResult::fail("Preview initialization failed"); }
+        preview.setEnvironment({.enabled = false});
+        auto lighting = document.lighting();
+        lighting.autoExposure.enabled = false;
+        lighting.exposureEV100 = 0;
+        preview.setLighting(lighting);
+        const auto renderFrames = [&]() {
+            for (int frame = 0; frame < 3; ++frame) {
+                result = preview.render(sample.graph, 193, 157);
+                if (!result) { log = std::string(render::resultToString(result)) + ": " + preview.lastLog(); return false; }
+            }
+            return true;
+        };
+        if (!renderFrames()) { return RhiTestResult::fail("Path-resolved scene: " + log); }
+        const auto baseline = preview.pixels();
+        if (std::count_if(baseline.begin(), baseline.end(), [](uint32_t pixel) { return (pixel & 0xffffffu) != 0; }) < 1000) {
+            return RhiTestResult::fail("Path-resolved scene did not render the subject");
+        }
+        const auto scenePath = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath;
+        // Keep the graph topology, scene path and extent unchanged, exactly as the
+        // asynchronous editor scene handoff, without asking the caller to mark dirty.
+        for (int handoff = 0; handoff < 3; ++handoff) {
+            if (handoff < 2) {
+                if (!document.load(scenePath)) { return RhiTestResult::fail(document.lastLoadResult().error); }
+            } else {
+                preview.bindRuntimeScene(nullptr); // Return to the path-resolved source.
+            }
+            if (sample.graph.dirty()) { return RhiTestResult::fail("Scene handoff must not rely on graph dirty"); }
+            if (!renderFrames()) { return RhiTestResult::fail("Scene handoff " + std::to_string(handoff) + ": " + log); }
+            if (preview.pixels() != baseline) { return RhiTestResult::fail("Scene handoff changed the rendered material"); }
+        }
+        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
+        if (!renderFrames() || preview.pixels() != baseline) { return RhiTestResult::fail("Flat path differs after scene handoff: " + log); }
+        // Change the world to a different file without synchronizing any graph path.
+        if (!document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/meet_mat.glb")) {
+            return RhiTestResult::fail(document.lastLoadResult().error);
+        }
+        preview.bindRuntimeScene(&document);
+        if (!renderFrames()) { return RhiTestResult::fail("Different-path world binding: " + log); }
+        const auto meetPixels = preview.pixels();
+        if (meetPixels == baseline) { return RhiTestResult::fail("World switch kept rendering the fallback asset"); }
+        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", true);
+        if (!renderFrames() || preview.pixels() != meetPixels) {
+            return RhiTestResult::fail("Classification differs after different-path world switch: " + log);
+        }
+        // A producer explicitly bound to an asset stays independent from the world;
+        // its deferred consumer still follows it despite its own meet_mat path.
+        sample.graph.setNodeRuntimeProperty(raster, "sceneBinding", "asset");
+        if (!renderFrames() || preview.pixels() != baseline) {
+            return RhiTestResult::fail("Inherited asset scene binding: " + log);
+        }
+        sample.graph.setNodeRuntimeProperty(raster, "sceneBinding", "world");
+        if (!renderFrames() || preview.pixels() != meetPixels) {
+            return RhiTestResult::fail("Return to world scene binding: " + log);
+        }
+        return RhiTestResult::pass("Automatic scene generations, stale consumer path, world switch, explicit asset inheritance and classification parity");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VisibilityBufferSceneHandoffTest);
 } // namespace
 } // namespace metallic::tests

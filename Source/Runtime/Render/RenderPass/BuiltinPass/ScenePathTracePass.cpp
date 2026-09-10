@@ -562,6 +562,13 @@ struct ScenePathTraceCameraSnapshot {
 
 class ScenePathTracePass final : public ComputePass {
 public:
+    RenderGraphSceneDependency sceneDependency() const override
+    {
+        return visibilityDeferred_
+            ? RenderGraphSceneDependency{RenderGraphSceneSource::Input, {"visibility", "depth", "rasterInfo"}}
+            : RenderGraphSceneDependency{RenderGraphSceneSource::World};
+    }
+
     explicit ScenePathTracePass(bool realtime = false, bool visibilityDeferred = false)
         : realtime_(realtime), visibilityDeferred_(visibilityDeferred) {}
 
@@ -644,7 +651,7 @@ public:
             if (visibilityDeferred_) {
                 settings.erase(settings.begin()); // Deferred resolve always exports physical HDR.
                 settings.push_back(runtimeIntSetting("environmentSamples", "OpenPBR Environment Samples", 64, 1, 256));
-                auto binning = runtimeBoolSetting("materialBinning", "Material Binning / Indirect Dispatch", true, true);
+                auto binning = runtimeBoolSetting("materialBinning", "Wave32 Material Tile Classification", true, true);
                 binning.rebuildGraph = true;
                 settings.push_back(binning);
                 settings.push_back(runtimeIntSetting("transmissionSamples", "Transmission Samples", 2, 1, 16, true));
@@ -904,7 +911,15 @@ public:
             sharcResourcesRevision_ = 0;
         }
 
-        const bool baseReady = programs_[static_cast<size_t>(PathTracePermutation::Base)].valid();
+        const bool classified = visibilityDeferred_ && boolProperty(properties(), "materialBinning", true);
+        if (classified && (!context.device->capabilities().computeSubgroupBallotArithmetic ||
+            context.device->capabilities().subgroupSize != 32)) {
+            log += "Deferred material classification requires native wave32; disable materialBinning on this device\n";
+            return makeError(Error::Unsupported);
+        }
+        const bool baseReady = programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
+            (!classified || std::all_of(classifiedPrograms_.begin(), classifiedPrograms_.end(),
+                [](const ComputeProgram& program) { return program.valid(); }));
         const bool sharcReady = cacheMode_ != kScenePathTraceCacheModeSharc ||
             (programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid() &&
                 programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid() &&
@@ -1172,13 +1187,24 @@ public:
         }();
 
         if (!programs_[static_cast<size_t>(PathTracePermutation::Base)].valid()) {
+            const SlangMacroDefine transmissionClass[] = {{"MATERIAL_CLASS", "4"}};
             result = compilePermutation(
                 PathTracePermutation::Base,
-                {},
+                classified ? std::span<const SlangMacroDefine>(transmissionClass) : std::span<const SlangMacroDefine>{},
                 baseBindings,
                 programs_[static_cast<size_t>(PathTracePermutation::Base)]);
             if (!result) {
                 return result;
+            }
+        }
+
+        if (classified) {
+            for (uint32_t type = 0; type < classifiedPrograms_.size(); ++type) {
+                if (classifiedPrograms_[type].valid()) { continue; }
+                const std::string typeValue = std::to_string(type);
+                const SlangMacroDefine classDefine[] = {{"MATERIAL_CLASS", typeValue.c_str()}};
+                result = compilePermutation(PathTracePermutation::Base, classDefine, baseBindings, classifiedPrograms_[type]);
+                if (!result) { return result; }
             }
         }
 
@@ -1448,29 +1474,9 @@ public:
     Result execute(RenderGraphExecutionContext& context) override
     {
         std::string syncLog;
-        if (sceneResourceManager_ != nullptr && device_ != nullptr && graphicsQueue_ != nullptr) {
-            std::shared_ptr<SceneResourceSnapshot> snapshot;
-            Result acquireResult = sceneResourceManager_->acquire(
-                *device_,
-                *graphicsQueue_,
-                context.properties(),
-                context.runtimeScene(),
-                SceneResourceFeatureBits::Geometry |
-                    SceneResourceFeatureBits::Materials |
-                    SceneResourceFeatureBits::MaterialTextures |
-                    SceneResourceFeatureBits::StandardAccelerationStructure,
-                snapshot,
-                syncLog);
-            if (!acquireResult || snapshot == nullptr) {
-                return acquireResult ? makeError(Error::Failure) : acquireResult;
-            }
-            sceneResources_ = *snapshot->pathTraceResources;
-        }
-        Result syncResult = sceneResources_.syncRuntimeScene(context.runtimeScene(), syncLog);
-        if (!syncResult) {
-            spdlog::warn("[ScenePathTracePass] Runtime scene sync failed: {}", syncLog);
-            return syncResult;
-        }
+        // RenderGraph prepares a single scene generation before recording any pass.
+        // Geometry, material tables and RTAS are acquired by compile(), never by
+        // independently resolving an authored path midway through this frame.
         if (!sceneResources_.textureUploadsReady()) {
             return {};
         }
@@ -1492,15 +1498,13 @@ public:
         if (!environment.valid()) {
             return {};
         }
-        const scene::Scene* lightScene = nullptr;
-        Result lightResult = sceneResourceManager_->resolveScene(
-            context.properties(), context.runtimeScene(), lightScene, syncLog);
-        if (!lightResult || context.subsystems() == nullptr) {
-            return lightResult ? makeError(Error::InvalidArgument) : lightResult;
+        const scene::Scene* lightScene = context.runtimeScene();
+        if (lightScene == nullptr || context.subsystems() == nullptr) {
+            return makeError(Error::InvalidArgument);
         }
         const uint64_t previousLightRevision = lights_.revision();
         const auto resolvedLighting = resolveSceneLighting(lightScene, context.world());
-        lightResult = lights_.update(*device_, context.commandBuffer(), *context.subsystems(),
+        Result lightResult = lights_.update(*device_, context.commandBuffer(), *context.subsystems(),
             lightScene, resolvedLighting);
         if (!lightResult) { return lightResult; }
         if (previousLightRevision != lights_.revision()) {
@@ -1637,6 +1641,9 @@ public:
             }
             if (info.width != context.width() || info.height != context.height() ||
                 lightScene == nullptr || info.sceneIdentity != lightScene->resourceIdentity()) {
+                spdlog::error("[VisibilityBufferDeferredPass] Raster scene/view mismatch: raster={}x{} scene={}, deferred={}x{} scene={}",
+                    info.width, info.height, info.sceneIdentity, context.width(), context.height(),
+                    lightScene != nullptr ? lightScene->resourceIdentity() : 0);
                 return makeError(Error::InvalidArgument);
             }
             deferredViews = &gpuScene->globalBufferViews();
@@ -1780,20 +1787,16 @@ public:
                     .offset = views[i]->offset, .size = views[i]->size});
             }
             if (boolProperty(context.properties(), "materialBinning", true)) {
-                const auto& materialDesc = sceneResources_.materialBuffer()->desc();
-                if (materialDesc.structureStride == 0 || materialDesc.size / materialDesc.structureStride >= 65536u) {
-                    return makeError(Error::InvalidArgument);
-                }
                 std::string binningLog;
                 result = materialBinning_.record(*device_, context.commandBuffer(), {
                     .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer,
                     .instances = deferredViews->instances.buffer, .materials = deferredViews->materials.buffer,
-                    .width = push.width, .height = push.height,
-                    .materialCount = static_cast<uint32_t>(materialDesc.size / materialDesc.structureStride)},
+                    .shadingMaterials = sceneResources_.materialBuffer(),
+                    .width = push.width, .height = push.height},
                     materialBins, binningLog);
                 if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
                 bindings.push_back({.binding = 70, .buffer = materialBins.bins});
-                bindings.push_back({.binding = 71, .buffer = materialBins.pixels});
+                bindings.push_back({.binding = 71, .buffer = materialBins.tiles});
             }
         }
         if (useOpenPBR) {
@@ -1898,14 +1901,15 @@ public:
             }
 #endif
         } else if (materialBins.arguments != nullptr) {
-            // Each pixel belongs to exactly one bin, so dispatches write disjoint
-            // texels in color/history and need no inter-bin memory dependency.
-            // The graph's output barrier makes the entire batch visible downstream.
-            std::vector<ScenePathTracePush> binPushes(materialBins.binCount, push);
-            std::vector<ComputeIndirectDispatch> dispatches(materialBins.binCount);
+            // Mixed tiles carry disjoint masks. Permutations share one immutable
+            // descriptor table, avoiding repeated scene texture writes per class.
+            std::array<ScenePathTracePush, kMaterialClassCount> binPushes;
+            std::array<ComputeIndirectDispatch, kMaterialClassCount> dispatches;
             for (uint32_t bin = 0; bin < materialBins.binCount; ++bin) {
+                binPushes[bin] = push;
                 binPushes[bin].deferredSettings = (push.deferredSettings & 0xffff0000u) | bin;
-                dispatches[bin] = {.pushData = &binPushes[bin], .argumentOffset = uint64_t(bin) * 12};
+                dispatches[bin] = {.pushData = &binPushes[bin], .argumentOffset = uint64_t(bin) * 12,
+                    .program = bin < classifiedPrograms_.size() ? &classifiedPrograms_[bin] : renderProgram};
             }
             result = renderProgram->dispatchIndirectBatch({.commandBuffer = &context.commandBuffer(),
                 .bindings = bindings.data(), .bindingCount = static_cast<uint32_t>(bindings.size()),
@@ -2054,6 +2058,7 @@ private:
 
     void clearPrograms()
     {
+        for (ComputeProgram& program : classifiedPrograms_) { program.clear(); }
         for (ComputeProgram& program : programs_) {
             program.clear();
         }
@@ -2944,6 +2949,7 @@ private:
     bool realtime_ = false;
     bool visibilityDeferred_ = false;
     MaterialBinning materialBinning_;
+    std::array<ComputeProgram, kMaterialClassCount - 1> classifiedPrograms_;
     bool compiledMaterialBinning_ = true;
     RenderGraphProperties deferredHistoryProperties_;
     SceneLightResources lights_;

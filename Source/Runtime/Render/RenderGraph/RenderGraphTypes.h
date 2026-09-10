@@ -306,9 +306,21 @@ private:
     friend class RenderGraphExecutor;
 };
 
+// Scene dependencies are part of the pass contract, like texture/buffer inputs.
+// World follows the bound document, falling back to path only without a valid world.
+// An authored sceneBinding="asset" explicitly opts a World pass into a separate asset.
+// Input inherits one producer's scene; every listed input must come from that producer.
+enum class RenderGraphSceneSource { None, World, Input };
+struct RenderGraphSceneDependency {
+    RenderGraphSceneSource source = RenderGraphSceneSource::None;
+    std::vector<std::string> inputs;
+    bool operator==(const RenderGraphSceneDependency&) const = default;
+};
+
 class RenderGraphPass {
 public:
     virtual ~RenderGraphPass() = default;
+    virtual RenderGraphSceneDependency sceneDependency() const { return {}; }
 
     virtual RenderPassReflection reflect(const RenderGraphCompileContext& context) const = 0;
     virtual RenderGraphPassKind kind() const;
@@ -369,6 +381,7 @@ bool registerRenderGraphPassType(
     std::string description,
     RenderGraphPassFactory factory);
 void registerBuiltInRenderGraphPasses();
+RenderGraphSceneDependency renderGraphPassSceneDependency(std::string_view type);
 std::unique_ptr<RenderGraphPass> createRenderGraphPass(std::string_view type);
 std::vector<RenderGraphPassInfo> listRenderGraphPassTypes();
 

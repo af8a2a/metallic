@@ -85,6 +85,15 @@ if(WIN32)
     set_tests_properties(MetallicLookDevMaterialInspectorSmoke PROPERTIES
         LABELS "editor" TIMEOUT 90 RESOURCE_LOCK MetallicEditor
     )
+    add_test(NAME MetallicLookDevSceneSwitchSmoke
+        COMMAND ${CMAKE_COMMAND}
+            "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/lookdev-scene-switch"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunSceneSwitchSmoke.cmake"
+    )
+    set_tests_properties(MetallicLookDevSceneSwitchSmoke PROPERTIES
+        LABELS "editor" TIMEOUT 180 RESOURCE_LOCK MetallicEditor
+    )
     add_test(NAME MetallicLookDevVBufferSmoke
         COMMAND ${CMAKE_COMMAND}
             "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
@@ -223,6 +232,7 @@ add_executable(MetallicRhiTests
     rhi/SphericalHarmonicsTests.cpp
     rhi/ReGIRVirtualLightTests.cpp
     rhi/RenderGraphTests.cpp
+    rhi/SceneBindingTests.cpp
     rhi/RadianceCacheTests.cpp
     rhi/RenderingTests.cpp
     rhi/ResourceTests.cpp
