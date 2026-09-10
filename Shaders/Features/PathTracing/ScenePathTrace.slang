@@ -77,7 +77,8 @@ struct ScenePathTraceCacheParams
 };
 
 [[vk::binding(20, 0)]]
-StructuredBuffer<ScenePathTraceCacheParams> gCacheParams;
+// Match the tightly packed CPU constants, including NRC at byte offset 76.
+StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> gCacheParams;
 
 #if METALLIC_PT_SHARC
 [[vk::binding(21, 0)]]
@@ -101,7 +102,7 @@ RWStructuredBuffer<NrcPackedTrainingPathInfo> gNrcTrainingPathInfo;
 RWStructuredBuffer<NrcPackedPathVertex> gNrcTrainingPathVertices;
 
 [[vk::binding(27, 0)]]
-RWStructuredBuffer<NrcRadianceParams> gNrcQueryRadianceParams;
+RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> gNrcQueryRadianceParams;
 
 [[vk::binding(28, 0)]]
 RWStructuredBuffer<uint> gNrcCounters;
@@ -1743,7 +1744,9 @@ float3 pathTrace(
         sharcHitData.normalWorld = hit.geometryNormal;
 
 #if SHARC_QUERY
-        {
+        // Camera hits must retain exact material/normal and direct-light detail.
+        // The cache is only filtered enough to query after a surface bounce.
+        if (depth > 0u) {
             uint gridLevel = HashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
             float voxelSize = HashGridGetVoxelSize(gridLevel, cache.sharc.hashGridParameters);
             bool isValidHit = hit.t > voxelSize * sqrt(3.0);
@@ -2039,18 +2042,9 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     color /= float(samples);
 
 #if NRC_QUERY
-    // Linear HDR output: the NRC resolve adds the predicted query radiance on
-    // top of this image before the tonemap pass runs.
-    if (push.enableAccumulation != 0u) {
-        if (push.hasHistory != 0u) {
-            float accumulationWeight = 1.0 / float(push.accumulationFrame + 1u);
-            float3 previousColor = gHistoryPrevious[pixel].rgb;
-            color = lerp(previousColor, color, accumulationWeight);
-        }
-        gHistoryCurrent[pixel] = float4(color, 1.0);
-    } else {
-        gHistoryCurrent[pixel] = float4(color, 1.0);
-    }
+    // Resolve adds this frame's predicted indirect light. Accumulate the
+    // complete frame afterwards so direct and cached light share one weight.
+    gHistoryCurrent[pixel] = float4(color, 1.0);
     return;
 #endif
 

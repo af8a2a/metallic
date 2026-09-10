@@ -2,6 +2,7 @@
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/NsightAftermath.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
@@ -1761,6 +1762,8 @@ struct VulkanDeviceFeatureSelection {
     bool shaderImageGatherExtended = false;
     bool uniformBufferStandardLayout = false;
     bool shaderBufferInt64Atomics = false;
+    bool shaderInt64 = false;
+    bool nrcRayTracingPipeline = false;
     bool shaderFloat16 = false;
     bool shaderInt16 = false;
     // Extension availability used by enabledDeviceExtensions().
@@ -1869,6 +1872,11 @@ struct VulkanDeviceFeatureSelection {
         result.shaderImageGatherExtended = probe.features.features.shaderImageGatherExtended == VK_TRUE;
         result.uniformBufferStandardLayout = probe.vulkan12Features.uniformBufferStandardLayout == VK_TRUE;
         result.shaderBufferInt64Atomics = probe.vulkan12Features.shaderBufferInt64Atomics == VK_TRUE;
+        result.shaderInt64 = probe.features.features.shaderInt64 == VK_TRUE;
+        // NRC's native barriers include the ray-tracing shader stage even when
+        // the application's path tracer uses compute ray queries.
+        result.nrcRayTracingPipeline = result.rayQuery && extensions.rayTracingPipeline &&
+            probe.rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
         result.shaderFloat16 = probe.vulkan12Features.shaderFloat16 == VK_TRUE;
         result.shaderInt16 = probe.features.features.shaderInt16 == VK_TRUE;
         result.nvxBinaryImport = extensions.streamlineBinaryImport;
@@ -2021,6 +2029,7 @@ struct VulkanEnabledFeatureChain {
         vulkan12Features.shaderBufferInt64Atomics = selection.shaderBufferInt64Atomics ? VK_TRUE : VK_FALSE;
         vulkan12Features.shaderFloat16 = selection.shaderFloat16 ? VK_TRUE : VK_FALSE;
         features.features.shaderInt16 = selection.shaderInt16 ? VK_TRUE : VK_FALSE;
+        features.features.shaderInt64 = selection.shaderInt64 ? VK_TRUE : VK_FALSE;
         features.features.shaderImageGatherExtended = selection.shaderImageGatherExtended ? VK_TRUE : VK_FALSE;
         features.features.geometryShader = selection.geometryShader ? VK_TRUE : VK_FALSE;
         vulkan13Features.subgroupSizeControl =
@@ -2048,7 +2057,8 @@ struct VulkanEnabledFeatureChain {
         accelerationStructureFeatures.accelerationStructure =
             selection.rayTracingAccelerationStructure ? VK_TRUE : VK_FALSE;
         rayQueryFeatures.rayQuery = selection.rayQuery ? VK_TRUE : VK_FALSE;
-        rayTracingPipelineFeatures.rayTracingPipeline = selection.streamline ? VK_TRUE : VK_FALSE;
+        rayTracingPipelineFeatures.rayTracingPipeline =
+            selection.streamline || selection.nrcRayTracingPipeline ? VK_TRUE : VK_FALSE;
 #ifdef VK_NV_cluster_acceleration_structure
         clusterAccelerationStructureFeatures.clusterAccelerationStructure =
             selection.clusterAccelerationStructure ? VK_TRUE : VK_FALSE;
@@ -2082,7 +2092,7 @@ struct VulkanEnabledFeatureChain {
         if (selection.rayQuery) {
             appendPNext(featureTail, rayQueryFeatures);
         }
-        if (selection.streamline) {
+        if (selection.streamline || selection.nrcRayTracingPipeline) {
             appendPNext(featureTail, rayTracingPipelineFeatures);
         }
 #ifdef VK_NV_cluster_acceleration_structure
@@ -2151,8 +2161,10 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
         extensions.push_back(VK_NV_COOPERATIVE_VECTOR_EXTENSION_NAME);
     }
 #endif
-    if (selection.streamline) {
+    if (selection.streamline || selection.nrcRayTracingPipeline) {
         extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+    }
+    if (selection.streamline) {
         extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
 #ifdef VK_NVX_binary_import
         extensions.push_back(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
@@ -2972,6 +2984,9 @@ DeviceImpl::~DeviceImpl()
         if (waitResult == VK_ERROR_DEVICE_LOST) {
             profiling::handleNsightAftermathDeviceLost();
         }
+#if METALLIC_HAS_NRC
+        vulkan::shutdownNrcLibrary(device);
+#endif
     }
 
     if (streamlineInitialized) {

@@ -101,6 +101,8 @@ struct ScenePathTraceTonemapPush {
     uint32_t height = 1;
     float exposure = 1.0f;
     uint32_t outputLinear = 0;
+    uint32_t hasHistory = 0;
+    uint32_t accumulationFrame = 0;
 };
 
 struct OpenPBRVec3 {
@@ -564,7 +566,18 @@ public:
 
     bool supportsFrameOverlap() const override { return cacheMode_ == kScenePathTraceCacheModeOff; }
 
-    ~ScenePathTracePass() override = default;
+    ~ScenePathTracePass() override
+    {
+#if METALLIC_HAS_NRC
+        // The final submitted frame has no following execute() to finish it.
+        if (nrcEndFramePending_ && graphicsQueue_ != nullptr) {
+            (void)nrc_.endFrame(*graphicsQueue_);
+            if (device_ != nullptr) {
+                (void)device_->waitIdle();
+            }
+        }
+#endif
+    }
 
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {
@@ -1321,13 +1334,17 @@ public:
             // Tonemap pass producing the final displayable color after the
             // NRC resolve has added the predicted radiance.
             if (!tonemapProgram_.valid()) {
-                const std::array<ComputeProgramBindingDesc, 2> tonemapBindings{
+                const std::array<ComputeProgramBindingDesc, 3> tonemapBindings{
                     ComputeProgramBindingDesc{
                         .binding = 0,
                         .kind = ComputeResourceBindingKind::StorageImage,
                     },
                     ComputeProgramBindingDesc{
                         .binding = 1,
+                        .kind = ComputeResourceBindingKind::StorageImage,
+                    },
+                    ComputeProgramBindingDesc{
+                        .binding = 2,
                         .kind = ComputeResourceBindingKind::StorageImage,
                     },
                 };
@@ -1812,7 +1829,8 @@ public:
                 bindings,
                 programs_[static_cast<size_t>(PathTracePermutation::NrcUpdate)],
                 programs_[static_cast<size_t>(PathTracePermutation::NrcQuery)],
-                historyCurrentView);
+                historyCurrentView,
+                historyPreviousView);
             if (!result) {
                 return result;
             }
@@ -1834,7 +1852,7 @@ public:
         }
 
         if (push.enableAccumulation != 0 && context.historyResources() != nullptr) {
-            context.historyResources()->markWritten(historyNameForContext(context));
+            context.historyResources()->markWritten(historyNameForContext(context, push.cacheMode));
         }
         previousCamera_ = currentCamera;
         previousCameraWidth_ = context.width();
@@ -1881,7 +1899,9 @@ private:
         }
 
         const bool nrcHistory = push.cacheMode == kScenePathTraceCacheModeNrc;
-        const Format historyFormat = nrcHistory || exportDenoiserGuides(context.properties()) ? Format::Rgba16Sfloat :
+        // NRC's native resolve shader declares rgba32f storage output.
+        const Format historyFormat = nrcHistory ? Format::Rgba32Sfloat :
+            exportDenoiserGuides(context.properties()) ? Format::Rgba16Sfloat :
             ((visibilityDeferred_ || boolProperty(context.properties(), "outputLinear", false)) ? Format::Rgba32Sfloat : Format::Rgba8Unorm);
         const TextureDesc historyDesc{
             .type = TextureType::Texture2D,
@@ -1896,12 +1916,7 @@ private:
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
         };
-        std::string historyName = historyNameForContext(context);
-        if (nrcHistory) {
-            // Distinct history slot: NRC mode accumulates linear HDR instead
-            // of tonemapped colors.
-            historyName += ".hdr";
-        }
+        const std::string historyName = historyNameForContext(context, push.cacheMode);
         Result result = history->ensureTexture(
             historyName,
             historyDesc,
@@ -2290,9 +2305,11 @@ private:
         const std::vector<ComputeDispatchBinding>& baseBindings,
         ComputeProgram& updateProgram,
         ComputeProgram& queryProgram,
-        TextureView* historyCurrentView)
+        TextureView* historyCurrentView,
+        TextureView* historyPreviousView)
     {
-        if (device_ == nullptr || graphicsQueue_ == nullptr || historyCurrentView == nullptr) {
+        if (device_ == nullptr || graphicsQueue_ == nullptr ||
+            historyCurrentView == nullptr || historyPreviousView == nullptr) {
             return makeError(Error::InvalidArgument);
         }
         CommandBuffer& commandBuffer = context.commandBuffer();
@@ -2497,10 +2514,13 @@ private:
             .height = push.height,
             .exposure = context.world() != nullptr ? std::exp2(-context.world()->lighting().exposureEV100) : 1.0f,
             .outputLinear = boolProperty(context.properties(), "outputLinear", false) ? 1u : 0u,
+            .hasHistory = push.hasHistory,
+            .accumulationFrame = push.accumulationFrame,
         };
-        const std::array<ComputeDispatchBinding, 2> tonemapBindings{
+        const std::array<ComputeDispatchBinding, 3> tonemapBindings{
             ComputeDispatchBinding{.binding = 0, .textureView = historyCurrentView},
             ComputeDispatchBinding{.binding = 1, .textureView = context.outputTexture("color").view()},
+            ComputeDispatchBinding{.binding = 2, .textureView = historyPreviousView},
         };
         return tonemapProgram_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
@@ -2637,11 +2657,14 @@ private:
         return kScenePathTraceDebugViewFinal;
     }
 
-    static std::string historyNameForContext(const RenderGraphExecutionContext& context)
+    static std::string historyNameForContext(const RenderGraphExecutionContext& context, uint32_t cacheMode)
     {
         std::string name(kScenePathTraceHistoryPrefix);
         name += context.passName();
         name += ".accumulation";
+        if (cacheMode == kScenePathTraceCacheModeNrc) {
+            name += ".hdr";
+        }
         return name;
     }
 

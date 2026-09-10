@@ -9,6 +9,8 @@ struct ScenePathTraceTonemapPush
     uint height;
     float exposure;
     uint outputLinear;
+    uint hasHistory;
+    uint accumulationFrame;
 };
 
 [[vk::binding(0, 0)]]
@@ -16,6 +18,9 @@ RWTexture2D<float4> gSource;
 
 [[vk::binding(1, 0)]]
 RWTexture2D<float4> gOutput;
+
+[[vk::binding(2, 0)]]
+RWTexture2D<float4> gHistoryPrevious;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -27,11 +32,17 @@ void scenePathTraceTonemapMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         return;
     }
 
+    float3 color = gSource[pixel].rgb;
+    if (push.hasHistory != 0u) {
+        color = lerp(gHistoryPrevious[pixel].rgb, color,
+            1.0 / float(push.accumulationFrame + 1u));
+    }
+    gSource[pixel] = float4(color, 1.0);
     if (push.outputLinear != 0u) {
-        gOutput[pixel] = float4(gSource[pixel].rgb, 1.0);
+        gOutput[pixel] = float4(color, 1.0);
         return;
     }
-    float3 color = max(gSource[pixel].rgb * push.exposure, float3(0.0, 0.0, 0.0));
+    color = max(color * push.exposure, float3(0.0, 0.0, 0.0));
     color = color / (color + float3(1.0, 1.0, 1.0));
     color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
     color = saturate(color);

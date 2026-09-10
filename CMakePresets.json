@@ -13,7 +13,7 @@
     },
     {
       "name": "metallic-dev",
-      "displayName": "Fast development (glTF and DLSS)",
+      "displayName": "Fast development (glTF, DLSS and NRC)",
       "inherits": "metallic-ninja",
       "binaryDir": "${sourceDir}/build-dev",
       "cacheVariables": {
@@ -21,21 +21,21 @@
         "METALLIC_BUILD_TESTS": false,
         "METALLIC_ENABLE_OPENUSD": false,
         "METALLIC_ENABLE_NRD": false,
-        "METALLIC_ENABLE_NRC": false,
+        "METALLIC_ENABLE_NRC": true,
         "METALLIC_ENABLE_NTC": false,
         "METALLIC_ENABLE_STREAMLINE": true
       }
     },
     {
       "name": "metallic-release",
-      "displayName": "Release (glTF and DLSS)",
+      "displayName": "Release (glTF, DLSS and NRC)",
       "inherits": "metallic-dev",
       "binaryDir": "${sourceDir}/build-release",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
       "name": "metallic-relwithdebinfo",
-      "displayName": "RelWithDebInfo (glTF and DLSS)",
+      "displayName": "RelWithDebInfo (glTF, DLSS and NRC)",
       "inherits": "metallic-dev",
       "binaryDir": "${sourceDir}/build-relwithdebinfo",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
@@ -62,6 +62,7 @@
       "binaryDir": "${sourceDir}/build-ci",
       "cacheVariables": {
         "METALLIC_BUILD_TESTS": true,
+        "METALLIC_ENABLE_NRC": false,
         "METALLIC_ENABLE_STREAMLINE": false
       }
     },
