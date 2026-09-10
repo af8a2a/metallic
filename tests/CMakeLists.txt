@@ -194,6 +194,7 @@ add_executable(MetallicRhiTests
     rhi/BindlessBufferTests.cpp
     rhi/DescriptorHeapCodePatternTests.cpp
     rhi/DlssMotionVectorTests.cpp
+    rhi/DlssNrTests.cpp
     rhi/AutoExposureTests.cpp
     rhi/OpenPbrLookDevTests.cpp
     rhi/SliderDebugTests.cpp
@@ -255,6 +256,7 @@ if(WIN32)
     endforeach()
 
     metallic_copy_streamline_runtime(MetallicRhiTests)
+    metallic_copy_dlss_nr_runtime(MetallicRhiTests)
     metallic_copy_aftermath_runtime(MetallicRhiTests)
     metallic_copy_nrc_runtime(MetallicRhiTests)
 endif()
@@ -302,3 +304,10 @@ set_tests_properties(MetallicRhiTests PROPERTIES
     LABELS "rhi"
     SKIP_RETURN_CODE 77
 )
+
+if(METALLIC_HAS_DLSS_NR)
+    add_test(NAME MetallicDlssNrRuntimeTests COMMAND MetallicRhiTests
+        --rhi-streamline --filter dlss_nr_runtime --rhi-no-validation
+        --output-dir "$<TARGET_FILE_DIR:MetallicRhiTests>/dlss-nr-output")
+    set_tests_properties(MetallicDlssNrRuntimeTests PROPERTIES LABELS "rhi;dlss-nr" SKIP_RETURN_CODE 77 TIMEOUT 120)
+endif()

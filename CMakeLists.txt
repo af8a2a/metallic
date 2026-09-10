@@ -159,6 +159,7 @@ endif()
 foreach(METALLIC_SETUP_MODULE IN ITEMS
     SetupSlang
     SetupStreamline
+    SetupDlssNr
     SetupNsight
     SetupNsightGraphicsCapture
     SetupAftermath

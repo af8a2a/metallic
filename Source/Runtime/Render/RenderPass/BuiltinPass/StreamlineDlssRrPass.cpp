@@ -54,38 +54,35 @@ public:
         const uint32_t renderHeight = hasPreparedExtent ? preparedSettings_.renderHeight : 0;
         RenderPassReflection reflection;
         const bool rayReconstruction = variant_ == DlssVariant::RayReconstruction;
+        // NGX samples every guide and temporarily transitions inputs to a
+        // shader-read layout, even though they enter and leave in General.
         RenderGraphField& inputColor = reflection.addTextureInput(
             "inputColor",
             rayReconstruction ? "DLSS-RR noisy HDR input color" : "DLSS-SR HDR input color")
             .texture2D(renderWidth, renderHeight)
             .storageReadWrite();
         inputColor.format = Format::Rgba16Sfloat;
-        inputColor.usage = inputColor.usage | TextureUsageBits::TransferSource;
+        inputColor.usage = inputColor.usage | TextureUsageBits::TransferSource | TextureUsageBits::Sampled;
 
         if (rayReconstruction) {
-            reflection.addTextureInput("albedo", "DLSS-RR diffuse albedo guide")
-                .texture2D(renderWidth, renderHeight)
-                .storageReadWrite()
-                .format = Format::Rgba16Sfloat;
-            reflection.addTextureInput("specularAlbedo", "DLSS-RR specular albedo guide")
-                .texture2D(renderWidth, renderHeight)
-                .storageReadWrite()
-                .format = Format::Rgba16Sfloat;
-            reflection.addTextureInput("normalRoughness", "DLSS-RR packed normal and roughness guide")
-                .texture2D(renderWidth, renderHeight)
-                .storageReadWrite()
-                .format = Format::Rgba16Sfloat;
-            reflection.addTextureInput("specularHitDistance", "DLSS-RR specular hit distance guide")
-                .texture2D(renderWidth, renderHeight)
-                .storageReadWrite()
-                .format = Format::R32Sfloat;
+            const auto addGuide = [&](const char* name, const char* description, Format format) {
+                auto& field = reflection.addTextureInput(name, description)
+                    .texture2D(renderWidth, renderHeight).storageReadWrite();
+                field.format = format;
+                field.usage = field.usage | TextureUsageBits::Sampled;
+            };
+            addGuide("albedo", "DLSS-RR diffuse albedo guide", Format::Rgba16Sfloat);
+            addGuide("specularAlbedo", "DLSS-RR specular albedo guide", Format::Rgba16Sfloat);
+            addGuide("normalRoughness", "DLSS-RR packed normal and roughness guide", Format::Rgba16Sfloat);
+            addGuide("specularHitDistance", "DLSS-RR specular hit distance guide", Format::R32Sfloat);
         }
-        reflection.addTextureInput(
+        auto& motion = reflection.addTextureInput(
             "motionVectors",
             rayReconstruction ? "DLSS-RR motion vector guide" : "DLSS-SR motion vectors")
             .texture2D(renderWidth, renderHeight)
-            .storageReadWrite()
-            .format = Format::Rg16Sfloat;
+            .storageReadWrite();
+        motion.format = Format::Rg16Sfloat;
+        motion.usage = motion.usage | TextureUsageBits::Sampled;
         const char* depthFieldName = rayReconstruction ? "linearDepth" : "depth";
         RenderGraphField& depth = reflection.addTextureInput(
             depthFieldName,
@@ -93,9 +90,7 @@ public:
             .texture2D(renderWidth, renderHeight)
             .storageReadWrite();
         depth.format = Format::R32Sfloat;
-        if (!rayReconstruction) {
-            depth.usage = depth.usage | TextureUsageBits::Sampled;
-        }
+        depth.usage = depth.usage | TextureUsageBits::Sampled;
 
         RenderGraphField& outputColor = reflection.addTextureOutput(
             "color",

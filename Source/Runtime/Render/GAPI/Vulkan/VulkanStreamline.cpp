@@ -1347,6 +1347,16 @@ void shutdownStreamline()
 #endif
 }
 
+void prepareStreamlineNgxCommandBuffer(CommandBuffer& commandBuffer)
+{
+#if METALLIC_HAS_STREAMLINE
+    std::lock_guard lock(streamlineMutex());
+    prepareDescriptorStateForStreamline(streamlineState(), commandBuffer);
+#else
+    (void)commandBuffer;
+#endif
+}
+
 Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDlssSrDesc& desc, std::string& log)
 {
 #if !METALLIC_HAS_STREAMLINE

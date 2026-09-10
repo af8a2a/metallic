@@ -164,6 +164,9 @@ Result setStreamlineVulkanDevice(
     const NativeQueue& computeQueue,
     std::string& log);
 void shutdownStreamline();
+// Switch from the engine's descriptor heap to legacy NGX descriptors, including
+// direct experimental features that share Streamline's Vulkan device.
+void prepareStreamlineNgxCommandBuffer(CommandBuffer& commandBuffer);
 Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDlssSrDesc& desc, std::string& log);
 Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDlssRrDesc& desc, std::string& log);
 

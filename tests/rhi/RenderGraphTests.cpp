@@ -1384,6 +1384,14 @@ public:
         const render::RenderPassReflection pathTraceReflection = pathTrace->reflect(reflectContext);
         const render::RenderPassReflection streamlineSrReflection = streamlineDlssSr->reflect(reflectContext);
         const render::RenderPassReflection streamlineReflection = streamlineDlssRr->reflect(reflectContext);
+        for (const auto* reflection : {&streamlineSrReflection, &streamlineReflection}) {
+            for (const auto& field : reflection->fields()) {
+                if (field.visibility == render::RenderGraphFieldVisibility::Input &&
+                    !render::hasFlag(field.usage, render::TextureUsageBits::Sampled)) {
+                    return RhiTestResult::fail("NGX inputs must allow sampling and shader-read layouts");
+                }
+            }
+        }
         const render::RenderGraphField* pathTraceMotionVectors = pathTraceReflection.findField(
             "motionVectors",
             render::RenderGraphFieldVisibility::Output);

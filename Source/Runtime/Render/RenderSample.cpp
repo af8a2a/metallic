@@ -329,6 +329,31 @@ public:
     bool requiresStreamline() const override { return true; }
 };
 
+class PathTracingDlssNrSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "pathtracing-sample-dlss-nr"; }
+    std::string_view name() const override { return "PathTracingSample / DLSS-NR (Experimental)"; }
+    std::string_view category() const override { return "PathTracing"; }
+    std::string_view description() const override
+    {
+        return "Experimental native-resolution DLSS Neural Rendering after DLSS-RR in DLAA mode. "
+            "Requires a user-provided DLSS-NR runtime; passes through with a warning when unavailable.";
+    }
+    std::string scenePath() const override { return "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_nr.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        return RenderSampleEnvironmentDesc{
+            .enabled = true, .path = "Asset/ABeautifulGame/environment.hdr"};
+    }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+    bool requiresStreamline() const override { return true; }
+};
+
 class RtxdiSample final : public RenderSample {
 public:
     std::string_view id() const override { return "rtxdi-sample"; }
@@ -638,6 +663,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const OpenPbrLookDevSample openPbrLookDev;
     static const LookDevShadingCompareSample lookDevShadingCompare;
     static const LookDevVisibilityBufferSample lookDevVisibilityBuffer;
+    static const PathTracingDlssNrSample pathTracingDlssNr;
     return {
         &realtimeLighting,
         &lightGridDebug,
@@ -650,6 +676,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &pathTracingSample(),
         &pathTracingDlssSrSample(),
         &pathTracingDlssRrSample(),
+        &pathTracingDlssNr,
         &rtxdiSample(),
         &rtxcrMaterialSample(),
         &materialVisualizationABeautifulGameSample(),
