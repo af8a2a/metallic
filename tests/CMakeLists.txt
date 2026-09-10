@@ -35,6 +35,26 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)
 endif()
 
 if(WIN32)
+    add_test(NAME MetallicStreamlineReflexConfiguration
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/streamline-reflex-configuration"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/StreamlineReflexTests.cmake")
+    set_tests_properties(MetallicStreamlineReflexConfiguration PROPERTIES LABELS "build;reflex")
+    if(METALLIC_HAS_NV_LOW_LATENCY)
+        foreach(reflex_mode IN ITEMS off on boost)
+            add_test(NAME MetallicEditorReflex.${reflex_mode}
+                COMMAND ${CMAKE_COMMAND}
+                    "-DEDITOR_EXECUTABLE=$<TARGET_FILE:Metallic>"
+                    "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/editor-reflex-${reflex_mode}"
+                    "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+                    "-DREFLEX_MODE=${reflex_mode}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunReflexSmoke.cmake")
+            set_tests_properties(MetallicEditorReflex.${reflex_mode} PROPERTIES
+                LABELS "editor;reflex" TIMEOUT 180 RESOURCE_LOCK MetallicEditor
+                SKIP_REGULAR_EXPRESSION "Reflex unavailable; skipping")
+        endforeach()
+    endif()
     if(METALLIC_ENABLE_STREAMLINE)
         add_test(NAME MetallicEditorDlssCameraSmoke
             COMMAND ${CMAKE_COMMAND}

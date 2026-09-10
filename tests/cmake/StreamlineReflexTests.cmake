@@ -1,0 +1,76 @@
+if(NOT DEFINED SOURCE_DIRECTORY OR NOT DEFINED TEST_DIRECTORY)
+    message(FATAL_ERROR "SOURCE_DIRECTORY and TEST_DIRECTORY are required")
+endif()
+
+foreach(case IN ITEMS enabled disabled missing_reflex missing_pcl missing_nvll no_streamline)
+    set(root "${TEST_DIRECTORY}/${case}")
+    set(sdk "${root}/sdk")
+    set(files
+        include/sl.h include/sl_version.h include/sl_dlss.h include/sl_dlss_d.h
+        include/sl_reflex.h include/sl_pcl.h lib/x64/sl.interposer.lib
+        bin/x64/sl.interposer.dll bin/x64/sl.common.dll bin/x64/sl.dlss.dll
+        bin/x64/nvngx_dlss.dll bin/x64/sl.dlss_d.dll bin/x64/nvngx_dlssd.dll
+        bin/x64/NvLowLatencyVk.dll bin/x64/sl.reflex.dll bin/x64/sl.pcl.dll)
+    if(case STREQUAL "missing_reflex")
+        list(REMOVE_ITEM files bin/x64/sl.reflex.dll)
+    elseif(case STREQUAL "missing_pcl")
+        list(REMOVE_ITEM files include/sl_pcl.h)
+    elseif(case STREQUAL "missing_nvll")
+        list(REMOVE_ITEM files bin/x64/NvLowLatencyVk.dll)
+    endif()
+    foreach(file IN LISTS files)
+        get_filename_component(directory "${sdk}/${file}" DIRECTORY)
+        file(MAKE_DIRECTORY "${directory}")
+        file(WRITE "${sdk}/${file}" "")
+    endforeach()
+    file(WRITE "${root}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.20)
+project(StreamlineReflexFixture NONE)
+set(METALLIC_STREAMLINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/sdk" CACHE PATH "")
+set(METALLIC_STREAMLINE_AUTO_DOWNLOAD OFF CACHE BOOL "")
+include("${SOURCE_DIRECTORY}/cmake/SetupStreamline.cmake")
+if(NOT METALLIC_HAS_STREAMLINE EQUAL EXPECT_STREAMLINE OR
+   NOT METALLIC_HAS_NV_LOW_LATENCY EQUAL EXPECT_REFLEX)
+    message(FATAL_ERROR "Unexpected SDK availability: SL=${METALLIC_HAS_STREAMLINE}, Reflex=${METALLIC_HAS_NV_LOW_LATENCY}")
+endif()
+get_target_property(definitions metallic_streamline INTERFACE_COMPILE_DEFINITIONS)
+if(NOT "METALLIC_HAS_NV_LOW_LATENCY=${EXPECT_REFLEX}" IN_LIST definitions)
+    message(FATAL_ERROR "Consumers did not receive the Reflex compile definition")
+endif()
+foreach(plugin IN ITEMS sl.reflex.dll sl.pcl.dll)
+    set(path "${METALLIC_STREAMLINE_ROOT}/bin/x64/${plugin}")
+    if(EXPECT_REFLEX)
+        if(NOT path IN_LIST METALLIC_STREAMLINE_RUNTIME_FILES OR
+           path IN_LIST METALLIC_STREAMLINE_OBSOLETE_RUNTIME_FILES)
+            message(FATAL_ERROR "Enabled ${plugin} would not be deployed or would be removed")
+        endif()
+    elseif(path IN_LIST METALLIC_STREAMLINE_RUNTIME_FILES)
+        message(FATAL_ERROR "Disabled ${plugin} would be deployed")
+    endif()
+endforeach()
+]=])
+    set(expect_streamline 1)
+    set(expect_reflex 0)
+    set(enable_streamline ON)
+    set(enable_reflex ON)
+    if(case STREQUAL "enabled")
+        set(expect_reflex 1)
+    elseif(case STREQUAL "disabled")
+        set(enable_reflex OFF)
+    elseif(case STREQUAL "missing_nvll")
+        set(expect_streamline 0)
+    elseif(case STREQUAL "no_streamline")
+        set(expect_streamline 0)
+        set(enable_streamline OFF)
+    endif()
+    execute_process(COMMAND "${CMAKE_COMMAND}" -S "${root}" -B "${root}/build"
+        "-DSOURCE_DIRECTORY=${SOURCE_DIRECTORY}"
+        "-DMETALLIC_ENABLE_STREAMLINE=${enable_streamline}"
+        "-DMETALLIC_ENABLE_NV_LOW_LATENCY=${enable_reflex}"
+        "-DEXPECT_STREAMLINE=${expect_streamline}" "-DEXPECT_REFLEX=${expect_reflex}"
+        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "${case} failed:\n${output}\n${errors}")
+    endif()
+endforeach()
+message(STATUS "Streamline/Reflex availability and deployment cases passed")

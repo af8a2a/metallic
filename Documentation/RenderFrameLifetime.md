@@ -197,7 +197,7 @@ build\Source\Metallic.exe --smoke-test
 
 The synchronization-validation environment setting is documented in the
 [LunarG layer settings](https://vulkan.lunarg.com/doc/view/latest/windows/khronos_validation_layer.html).
-Multi-frame smoke mode is bounded to 64 frames and defaults to one frame.
+Multi-frame smoke mode is bounded to 256 frames and defaults to one frame.
 
 Latest validation for the multi-queue extension: 36 focused RHI regressions passed
 with synchronization validation enabled, plus six-frame editor smoke runs for

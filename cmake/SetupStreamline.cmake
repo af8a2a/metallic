@@ -1,4 +1,5 @@
 option(METALLIC_ENABLE_STREAMLINE "Enable NVIDIA Streamline integration when the SDK is available" ON)
+option(METALLIC_ENABLE_NV_LOW_LATENCY "Enable NvLowLatencyVk through Streamline Reflex when available" ON)
 option(METALLIC_STREAMLINE_AUTO_DOWNLOAD "Download NVIDIA Streamline release SDK binaries when they are missing" ON)
 set(METALLIC_STREAMLINE_ROOT "${CMAKE_SOURCE_DIR}/External/streamline" CACHE PATH "NVIDIA Streamline source checkout or packaged SDK root")
 set(METALLIC_STREAMLINE_RELEASE_TAG "" CACHE STRING "NVIDIA Streamline release tag to download; defaults to the tag checked out in METALLIC_STREAMLINE_ROOT")
@@ -9,11 +10,14 @@ add_library(metallic::streamline ALIAS metallic_streamline)
 
 set(METALLIC_HAS_STREAMLINE 0 CACHE INTERNAL "Whether Metallic found a usable NVIDIA Streamline SDK")
 set(METALLIC_STREAMLINE_RUNTIME_FILES "" CACHE INTERNAL "NVIDIA Streamline runtime files to copy next to executables")
+set(METALLIC_HAS_NV_LOW_LATENCY 0)
 
 function(metallic_set_streamline_available value)
     set(METALLIC_HAS_STREAMLINE ${value} CACHE INTERNAL "Whether Metallic found a usable NVIDIA Streamline SDK")
     target_compile_definitions(metallic_streamline INTERFACE METALLIC_HAS_STREAMLINE=${value})
     add_compile_definitions(METALLIC_HAS_STREAMLINE=${value})
+    target_compile_definitions(metallic_streamline INTERFACE
+        METALLIC_HAS_NV_LOW_LATENCY=${METALLIC_HAS_NV_LOW_LATENCY})
 endfunction()
 
 function(metallic_copy_streamline_runtime target_name)
@@ -58,6 +62,7 @@ function(metallic_streamline_is_usable sdk_root out_var)
        EXISTS "${sdk_root}/lib/x64/sl.interposer.lib" AND
        EXISTS "${sdk_root}/bin/x64/sl.interposer.dll" AND
        EXISTS "${sdk_root}/bin/x64/sl.common.dll" AND
+       EXISTS "${sdk_root}/bin/x64/NvLowLatencyVk.dll" AND
        EXISTS "${sdk_root}/bin/x64/sl.dlss.dll" AND
        EXISTS "${sdk_root}/bin/x64/nvngx_dlss.dll" AND
        EXISTS "${sdk_root}/bin/x64/sl.dlss_d.dll" AND
@@ -245,6 +250,17 @@ set(METALLIC_STREAMLINE_SCRIPTS_DIR "${METALLIC_STREAMLINE_SDK_ROOT}/scripts")
 
 metallic_streamline_is_usable("${METALLIC_STREAMLINE_SDK_ROOT}" METALLIC_STREAMLINE_USABLE)
 if(METALLIC_STREAMLINE_USABLE)
+    if(METALLIC_ENABLE_NV_LOW_LATENCY AND
+       EXISTS "${METALLIC_STREAMLINE_INCLUDE_DIR}/sl_reflex.h" AND
+       EXISTS "${METALLIC_STREAMLINE_INCLUDE_DIR}/sl_pcl.h" AND
+       EXISTS "${METALLIC_STREAMLINE_BIN_DIR}/sl.reflex.dll" AND
+       EXISTS "${METALLIC_STREAMLINE_BIN_DIR}/sl.pcl.dll" AND
+       EXISTS "${METALLIC_STREAMLINE_BIN_DIR}/NvLowLatencyVk.dll")
+        set(METALLIC_HAS_NV_LOW_LATENCY 1)
+        message(STATUS "NVIDIA NvLowLatencyVk enabled through Streamline Reflex")
+    elseif(METALLIC_ENABLE_NV_LOW_LATENCY)
+        message(STATUS "NVIDIA NvLowLatencyVk unavailable: Reflex/PCL SDK files are missing")
+    endif()
     metallic_set_streamline_available(1)
     add_compile_definitions(
         STREAMLINE_FEATURE_DLSS_RR=1
@@ -257,7 +273,7 @@ if(METALLIC_STREAMLINE_USABLE)
         "METALLIC_STREAMLINE_INTERPOSER_DLL=\"sl.interposer.dll\""
     )
 
-    # Deploy only the DLSS-SR and DLSS-RR runtime. Streamline loads and
+    # Deploy only the supported DLSS and optional Reflex/PCL runtime. Streamline loads and
     # signature-verifies every sl.*.dll it finds next to sl.interposer.dll
     # before filtering by requested features, so shipping additional plugins
     # would slow down startup. NvLowLatencyVk.dll is required unconditionally
@@ -274,8 +290,16 @@ if(METALLIC_STREAMLINE_USABLE)
         "${METALLIC_STREAMLINE_SCRIPTS_DIR}/sl.interposer.json"
         CACHE INTERNAL "NVIDIA Streamline runtime files to copy next to executables"
     )
+    if(METALLIC_HAS_NV_LOW_LATENCY)
+        set(METALLIC_STREAMLINE_RUNTIME_FILES
+            ${METALLIC_STREAMLINE_RUNTIME_FILES}
+            "${METALLIC_STREAMLINE_BIN_DIR}/sl.reflex.dll"
+            "${METALLIC_STREAMLINE_BIN_DIR}/sl.pcl.dll"
+            CACHE INTERNAL "NVIDIA Streamline runtime files to copy next to executables"
+        )
+    endif()
 
-    # SDK runtime files outside the supported DLSS-SR/DLSS-RR set, deployed
+    # SDK runtime files outside the supported plugin set, deployed
     # next to executables by older builds and therefore removed on copy.
     file(GLOB METALLIC_STREAMLINE_SDK_RUNTIME_FILES
         "${METALLIC_STREAMLINE_BIN_DIR}/*.dll"

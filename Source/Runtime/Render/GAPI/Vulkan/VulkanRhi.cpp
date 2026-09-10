@@ -1650,6 +1650,7 @@ struct VulkanDeviceFeatureProbe {
     bool supportsStreamline(const VulkanExtensionSet& extensions, bool accelerationStructureSupported) const
     {
         return accelerationStructureSupported &&
+            vulkan13Features.privateData == VK_TRUE &&
             extensions.rayQuery &&
             rayQueryFeatures.rayQuery == VK_TRUE &&
             extensions.rayTracingPipeline &&
@@ -1729,6 +1730,7 @@ struct VulkanDeviceFeatureProbe {
 };
 
 struct VulkanDeviceFeatureSelection {
+    bool privateData = false;
     bool shaderDemoteToHelperInvocation = false;
     bool shaderIntegerDotProduct = false;
     bool cooperativeVector = false;
@@ -1784,6 +1786,7 @@ struct VulkanDeviceFeatureSelection {
             probe.supportsSubgroupSizeControl();
 
         VulkanDeviceFeatureSelection result;
+        result.privateData = request.streamline && probe.vulkan13Features.privateData == VK_TRUE;
         result.shaderDemoteToHelperInvocation =
             probe.vulkan13Features.shaderDemoteToHelperInvocation == VK_TRUE;
         result.shaderIntegerDotProduct =
@@ -2025,6 +2028,8 @@ struct VulkanEnabledFeatureChain {
         vulkan13Features.computeFullSubgroups =
             selection.computeFullSubgroups ? VK_TRUE : VK_FALSE;
         vulkan13Features.synchronization2 = VK_TRUE;
+        // Streamline's Vulkan platform layer creates a private-data slot at startup.
+        vulkan13Features.privateData = selection.privateData ? VK_TRUE : VK_FALSE;
         vulkan13Features.dynamicRendering = VK_TRUE;
         vulkan13Features.shaderDemoteToHelperInvocation =
             selection.shaderDemoteToHelperInvocation ? VK_TRUE : VK_FALSE;

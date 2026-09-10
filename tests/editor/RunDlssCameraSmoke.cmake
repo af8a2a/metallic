@@ -9,7 +9,7 @@ set(ENV{METALLIC_SMOKE_TEST_SAMPLE} pathtracing-sample-dlss-rr)
 set(ENV{METALLIC_SMOKE_TEST_DLSS_CAMERA} 1)
 set(ENV{METALLIC_DEBUG_VALIDATION} 1)
 execute_process(
-    COMMAND "${EDITOR_EXECUTABLE}" --smoke-test
+    COMMAND "${EDITOR_EXECUTABLE}" --smoke-test --debug-control
         --scene "${TEST_DIRECTORY}/scene.gltf"
     WORKING_DIRECTORY "${TEST_DIRECTORY}"
     RESULT_VARIABLE result

@@ -47,6 +47,7 @@ private:
     void shutdown();
     void pollEvents();
     void pollShaderHotReload();
+    bool waitForFrameSlotBeforeInput();
     bool renderFrame();
     bool runMultiViewportSmokeTest();
     bool runSliderDebugSmokeTest();
