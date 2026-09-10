@@ -53,14 +53,16 @@ void setSlangShaderDebugMode(SlangShaderDebugMode mode) noexcept;
 SlangShaderDebugMode slangShaderDebugMode() noexcept;
 
 // Successful shader compiles automatically register their complete Slang
-// dependency list. Poll this from the interactive frame loop to detect stable
-// source edits, including edits to included files. Passing zero disables the
-// save debounce and is useful for deterministic tests.
+// dependency list. File metadata and content hashes are scanned by a background
+// worker. Interactive polling only consumes stable edits and never waits for
+// the worker or performs file I/O. Passing zero disables the save debounce and
+// waits for a fresh background content scan, for deterministic tests only.
 std::vector<std::string> pollSlangShaderChanges(
     uint32_t debounceMilliseconds = 150,
     uint32_t retryMilliseconds = 1000);
 // Accept the most recently reported source snapshots after every affected
-// pipeline has been committed. Failed reloads intentionally stay dirty and are
+// pipeline has been committed, without file I/O. Newer background observations
+// remain unaccepted. Failed reloads intentionally stay dirty and are
 // reported again after retryMilliseconds, so fixing a newly-added include is
 // sufficient to recover without touching an already-known file.
 void acknowledgeSlangShaderChanges();
