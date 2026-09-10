@@ -12,7 +12,7 @@ cmake --preset metallic-dev
 cmake --build --preset metallic-dev --parallel 8
 ```
 
-This builds the editor with glTF support. OpenUSD/oneTBB, NRD shader compilation,
+This builds the editor with glTF support. OpenUSD/oneTBB, NRD denoising,
 NRC, NTC and Streamline are disabled; tests are off. USD files report an explicit
 unsupported-build error. To run the scene, task and debug tests in this profile:
 
@@ -46,8 +46,16 @@ Installed packages live in `.cache/dependencies/<sha256>`, outside `build-full`.
 Deleting or cleaning the application build therefore keeps the dependency
 binaries. A clean full build imports those four libraries with `find_package`;
 their C/C++ sources do not enter its build graph. Smaller libraries, GoogleTest,
-and NRD/NTC when enabled still build from source. NRC/Streamline retain their
+and NTC when enabled still build from source. NRC/Streamline retain their
 existing SDK binary integration.
+
+NRD now uses vendored shaders and Metallic-owned dispatch scheduling. Enabling
+`METALLIC_ENABLE_NRD` does not build the NRD SDK or ShaderMake, fetch DXC, or compile
+all shader permutations. Kernels compile on first use through the Slang disk
+cache. This also allows `cmake --preset metallic-dev -DMETALLIC_ENABLE_NRD=ON`
+without initializing the NRD submodule. See the
+[NRD integration notes](../Shaders/Libraries/Denoising/NRD/README.md) for ownership,
+upgrades, and the `MetallicNrdTests` validation target.
 
 The hash includes compiler identity/version/target, platform, Windows SDK,
 CRT, configuration, compile/link flags, toolchain file, dependency Git revisions,

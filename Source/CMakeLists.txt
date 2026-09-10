@@ -153,8 +153,15 @@ else()
     )
 endif()
 
-if(TARGET NRD)
-    target_link_libraries(MetallicRuntimeRender PUBLIC NRD)
+if(METALLIC_ENABLE_NRD)
+    target_sources(MetallicRuntimeRender PRIVATE
+        Runtime/Render/Denoising/NrdPlan.cpp
+        Runtime/Render/Denoising/NrdReblur.cpp
+        Runtime/Render/Denoising/NrdRelax.cpp
+        Runtime/Render/Denoising/NrdReference.cpp
+    )
+    target_link_libraries(MetallicRuntimeRender PRIVATE MathLib)
+    target_include_directories(MetallicRuntimeRender PRIVATE "${CMAKE_SOURCE_DIR}")
     target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_HAS_NRD=1)
 else()
     target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_HAS_NRD=0)

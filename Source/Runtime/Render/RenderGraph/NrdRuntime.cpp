@@ -1,307 +1,231 @@
 #include "Runtime/Render/RenderGraph/NrdRuntime.h"
-
+#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/RenderFrameContext.h"
+#if METALLIC_HAS_NRD
+#include "Runtime/Render/Denoising/NrdPlan.h"
+#endif
+#include <spdlog/spdlog.h>
 #include <algorithm>
-#include <array>
-#include <cstddef>
-#include <cstring>
 #include <limits>
-#include <string_view>
+#include <unordered_map>
 #include <unordered_set>
-#include <utility>
 #include <vector>
 
 namespace metallic::render {
 namespace {
-
 #if METALLIC_HAS_NRD
-
-Result resultFromNrd(nrd::Result result)
-{
-    switch (result) {
-    case nrd::Result::SUCCESS:
-        return {};
-    case nrd::Result::INVALID_ARGUMENT:
-    case nrd::Result::NON_UNIQUE_IDENTIFIER:
-        return makeError(Error::InvalidArgument);
-    case nrd::Result::UNSUPPORTED:
-        return makeError(Error::Unsupported);
-    case nrd::Result::FAILURE:
-    case nrd::Result::MAX_NUM:
-        return makeError(Error::Failure);
-    }
-    return makeError(Error::Failure);
-}
-
-std::string nrdResultMessage(std::string_view label, nrd::Result result)
-{
-    std::string message(label);
-    message += " returned ";
-    message += std::to_string(static_cast<uint32_t>(result));
-    return message;
-}
-
 uint16_t divideRoundUp(uint32_t dividend, uint16_t divisor)
 {
     return static_cast<uint16_t>((dividend + divisor - 1u) / divisor);
 }
 
-Format formatFromNrd(nrd::Format format)
+Format formatFromNrd(denoising::Format format)
 {
     switch (format) {
-    case nrd::Format::R8_UNORM:
+    case denoising::Format::R8_UNORM:
         return Format::R8Unorm;
-    case nrd::Format::R8_SNORM:
+    case denoising::Format::R8_SNORM:
         return Format::R8Snorm;
-    case nrd::Format::R8_UINT:
+    case denoising::Format::R8_UINT:
         return Format::R8Uint;
-    case nrd::Format::R8_SINT:
+    case denoising::Format::R8_SINT:
         return Format::R8Sint;
-    case nrd::Format::RG8_UNORM:
+    case denoising::Format::RG8_UNORM:
         return Format::Rg8Unorm;
-    case nrd::Format::RG8_SNORM:
+    case denoising::Format::RG8_SNORM:
         return Format::Rg8Snorm;
-    case nrd::Format::RG8_UINT:
+    case denoising::Format::RG8_UINT:
         return Format::Rg8Uint;
-    case nrd::Format::RG8_SINT:
+    case denoising::Format::RG8_SINT:
         return Format::Rg8Sint;
-    case nrd::Format::RGBA8_UNORM:
+    case denoising::Format::RGBA8_UNORM:
         return Format::Rgba8Unorm;
-    case nrd::Format::RGBA8_SNORM:
+    case denoising::Format::RGBA8_SNORM:
         return Format::Rgba8Snorm;
-    case nrd::Format::RGBA8_UINT:
+    case denoising::Format::RGBA8_UINT:
         return Format::Rgba8Uint;
-    case nrd::Format::RGBA8_SINT:
+    case denoising::Format::RGBA8_SINT:
         return Format::Rgba8Sint;
-    case nrd::Format::RGBA8_SRGB:
+    case denoising::Format::RGBA8_SRGB:
         return Format::Rgba8Srgb;
-    case nrd::Format::R16_UNORM:
+    case denoising::Format::R16_UNORM:
         return Format::R16Unorm;
-    case nrd::Format::R16_SNORM:
+    case denoising::Format::R16_SNORM:
         return Format::R16Snorm;
-    case nrd::Format::R16_UINT:
+    case denoising::Format::R16_UINT:
         return Format::R16Uint;
-    case nrd::Format::R16_SINT:
+    case denoising::Format::R16_SINT:
         return Format::R16Sint;
-    case nrd::Format::R16_SFLOAT:
+    case denoising::Format::R16_SFLOAT:
         return Format::R16Sfloat;
-    case nrd::Format::RG16_UNORM:
+    case denoising::Format::RG16_UNORM:
         return Format::Rg16Unorm;
-    case nrd::Format::RG16_SNORM:
+    case denoising::Format::RG16_SNORM:
         return Format::Rg16Snorm;
-    case nrd::Format::RG16_UINT:
+    case denoising::Format::RG16_UINT:
         return Format::Rg16Uint;
-    case nrd::Format::RG16_SINT:
+    case denoising::Format::RG16_SINT:
         return Format::Rg16Sint;
-    case nrd::Format::RG16_SFLOAT:
+    case denoising::Format::RG16_SFLOAT:
         return Format::Rg16Sfloat;
-    case nrd::Format::RGBA16_UNORM:
+    case denoising::Format::RGBA16_UNORM:
         return Format::Rgba16Unorm;
-    case nrd::Format::RGBA16_SNORM:
+    case denoising::Format::RGBA16_SNORM:
         return Format::Rgba16Snorm;
-    case nrd::Format::RGBA16_UINT:
+    case denoising::Format::RGBA16_UINT:
         return Format::Rgba16Uint;
-    case nrd::Format::RGBA16_SINT:
+    case denoising::Format::RGBA16_SINT:
         return Format::Rgba16Sint;
-    case nrd::Format::RGBA16_SFLOAT:
+    case denoising::Format::RGBA16_SFLOAT:
         return Format::Rgba16Sfloat;
-    case nrd::Format::R32_UINT:
+    case denoising::Format::R32_UINT:
         return Format::R32Uint;
-    case nrd::Format::R32_SINT:
+    case denoising::Format::R32_SINT:
         return Format::R32Sint;
-    case nrd::Format::R32_SFLOAT:
+    case denoising::Format::R32_SFLOAT:
         return Format::R32Sfloat;
-    case nrd::Format::RG32_UINT:
+    case denoising::Format::RG32_UINT:
         return Format::Rg32Uint;
-    case nrd::Format::RG32_SINT:
+    case denoising::Format::RG32_SINT:
         return Format::Rg32Sint;
-    case nrd::Format::RG32_SFLOAT:
+    case denoising::Format::RG32_SFLOAT:
         return Format::Rg32Sfloat;
-    case nrd::Format::RGB32_UINT:
+    case denoising::Format::RGB32_UINT:
         return Format::Rgb32Uint;
-    case nrd::Format::RGB32_SINT:
+    case denoising::Format::RGB32_SINT:
         return Format::Rgb32Sint;
-    case nrd::Format::RGB32_SFLOAT:
+    case denoising::Format::RGB32_SFLOAT:
         return Format::Rgb32Sfloat;
-    case nrd::Format::RGBA32_UINT:
+    case denoising::Format::RGBA32_UINT:
         return Format::Rgba32Uint;
-    case nrd::Format::RGBA32_SINT:
+    case denoising::Format::RGBA32_SINT:
         return Format::Rgba32Sint;
-    case nrd::Format::RGBA32_SFLOAT:
+    case denoising::Format::RGBA32_SFLOAT:
         return Format::Rgba32Sfloat;
-    case nrd::Format::R10_G10_B10_A2_UNORM:
+    case denoising::Format::R10_G10_B10_A2_UNORM:
         return Format::A2B10G10R10UnormPack32;
-    case nrd::Format::R10_G10_B10_A2_UINT:
+    case denoising::Format::R10_G10_B10_A2_UINT:
         return Format::A2R10G10B10UintPack32;
-    case nrd::Format::R11_G11_B10_UFLOAT:
+    case denoising::Format::R11_G11_B10_UFLOAT:
         return Format::B10G11R11UfloatPack32;
-    case nrd::Format::R9_G9_B9_E5_UFLOAT:
+    case denoising::Format::R9_G9_B9_E5_UFLOAT:
         return Format::E5B9G9R9UfloatPack32;
-    case nrd::Format::MAX_NUM:
+    case denoising::Format::MAX_NUM:
         return Format::Unknown;
     }
     return Format::Unknown;
 }
 
-SamplerDesc samplerFromNrd(nrd::Sampler sampler)
-{
-    const SamplerFilter filter = sampler == nrd::Sampler::LINEAR_CLAMP
-        ? SamplerFilter::Linear
-        : SamplerFilter::Nearest;
-    return SamplerDesc{
-        .minFilter = filter,
-        .magFilter = filter,
-        .mipFilter = SamplerFilter::Nearest,
-        .addressU = SamplerAddressMode::ClampToEdge,
-        .addressV = SamplerAddressMode::ClampToEdge,
-        .addressW = SamplerAddressMode::ClampToEdge,
-        .minLod = 0.0f,
-        .maxLod = 1000.0f,
-    };
-}
-
 struct NrdPushData {
-    uint64_t constantBufferAddress = 0;
-    uint32_t samplerIndex = 0;
-    uint32_t sampledImageIndex = 0;
-    uint32_t storageImageIndex = 0;
-    uint32_t padding = 0;
+    uint64_t constants;
+    uint64_t resources;
 };
-
-static_assert(offsetof(NrdPushData, constantBufferAddress) == 0);
-static_assert(offsetof(NrdPushData, samplerIndex) == 8);
-static_assert(offsetof(NrdPushData, sampledImageIndex) == 12);
-static_assert(offsetof(NrdPushData, storageImageIndex) == 16);
-
+struct NrdResourceIndices {
+    uint32_t sampled[32]{};
+    uint32_t storage[16]{};
+    uint32_t samplers[2]{};
+};
+static_assert(sizeof(NrdPushData) == 16);
+static_assert(sizeof(NrdResourceIndices) == 200);
+static_assert(offsetof(NrdResourceIndices, storage) == 128);
+static_assert(offsetof(NrdResourceIndices, samplers) == 192);
 #endif
-
 } // namespace
 
 Format nrdNormalRoughnessFormat()
 {
-#if METALLIC_HAS_NRD
-    const nrd::LibraryDesc* libraryDesc = nrd::GetLibraryDesc();
-    if (libraryDesc == nullptr) {
-        return Format::Unknown;
-    }
-    switch (libraryDesc->normalEncoding) {
-    case nrd::NormalEncoding::RGBA8_UNORM:
-        return Format::Rgba8Unorm;
-    case nrd::NormalEncoding::RGBA8_SNORM:
-        return Format::Rgba8Snorm;
-    case nrd::NormalEncoding::R10_G10_B10_A2_UNORM:
-        return Format::A2B10G10R10UnormPack32;
-    case nrd::NormalEncoding::RGBA16_UNORM:
-        return Format::Rgba16Unorm;
-    case nrd::NormalEncoding::RGBA16_SNORM:
-        return Format::Rgba16Snorm;
-    case nrd::NormalEncoding::MAX_NUM:
-        return Format::Unknown;
-    }
-#endif
+    // Must match the vendored frontend's NRD_NORMAL_ENCODING = 2.
     return Format::A2B10G10R10UnormPack32;
 }
 
 #if METALLIC_HAS_NRD
-
 struct NrdRuntime::Impl {
     struct TextureResource {
         std::unique_ptr<Texture> texture;
         std::unique_ptr<TextureView> view;
         ResourceState state = ResourceState::Undefined;
     };
-
-    nrd::Instance* instance = nullptr;
+    struct Handles {
+        BindlessHandle sampled;
+        BindlessHandle storage;
+    };
+    denoising::NrdPlan plan;
     Device* device = nullptr;
-    uint16_t width = 0;
-    uint16_t height = 0;
-    std::vector<TextureResource> permanentTextures;
-    std::vector<TextureResource> transientTextures;
+    uint16_t width = 0, height = 0;
+    std::vector<TextureResource> permanentTextures, transientTextures;
     NrdUserTexturePool userTexturePool{};
     std::unique_ptr<BindlessHeap> descriptorHeap;
-    std::vector<BindlessHandle> samplerHandles;
-    std::vector<BindlessHandle> sampledImageHandles;
-    std::vector<BindlessHandle> storageImageHandles;
+    std::array<BindlessHandle, 2> samplers;
+    std::vector<BindlessHandle> sampledHandles, storageHandles;
+    std::unordered_map<TextureView*, Handles> textureHandles;
     std::vector<std::unique_ptr<ComputePipeline>> pipelines;
-    uint32_t sampledImageCursor = 0;
-    uint32_t storageImageCursor = 0;
-    uint64_t previousConstantAddress = 0;
-    bool internalTexturesInitialized = false;
+    uint32_t sampledCursor = 0, storageCursor = 0;
+    bool clearPending = true;
+    bool historyInvalid = true;
+    bool frameReady = false;
+    std::array<bool, 4> scheduled{};
+
+    Result pipeline(uint32_t index)
+    {
+        if (pipelines[index])
+            return {};
+        const auto& recipe = plan.pipelines()[index];
+        std::vector<SlangMacroDefine> defines;
+        for (const auto& define : recipe.defines)
+            defines.push_back({define.name, define.value});
+        const char* searchPaths[] = {PROJECT_SOURCE_DIR "/External/MathLib"};
+        ShaderCompileResult compiled;
+        Result result = compileSlangShaderToSpirv(
+            {
+                .moduleName = recipe.shaderName.c_str(),
+                .entryPointName = "main",
+                .searchPath = PROJECT_SOURCE_DIR "/Shaders/Libraries/Denoising/NRD",
+                .additionalSearchPaths = searchPaths,
+                .additionalSearchPathCount = 1,
+                .macroDefines = defines.data(),
+                .macroDefineCount = static_cast<uint32_t>(defines.size()),
+            },
+            compiled);
+        if (!result) {
+            spdlog::error("NRD {}: {}", recipe.shaderName, compiled.diagnostics);
+            return result;
+        }
+        std::unique_ptr<ShaderModule> shader;
+        result = device->createShaderModule({.code = compiled.spirv.data(),
+                                             .byteSize = compiled.spirv.size() * sizeof(uint32_t),
+                                             .debugName = recipe.shaderName.c_str()},
+                                            shader);
+        if (!result)
+            return result;
+        // Shader source already accesses the native heap. No binding remap,
+        // register shifts, descriptor sets, or NRD shader blobs are involved.
+        return device->createComputePipeline({.computeShader = shader.get(),
+                                              .computeEntryPoint = "main",
+                                              .usesBindlessHeap = true,
+                                              .bindlessUserPushDataSize = sizeof(NrdPushData)},
+                                             pipelines[index]);
+    }
 };
 
-NrdRuntime::NrdRuntime()
-    : impl_(std::make_unique<Impl>())
-{
-}
-
-NrdRuntime::~NrdRuntime()
-{
-    clear();
-}
-
+NrdRuntime::NrdRuntime() = default;
+NrdRuntime::~NrdRuntime() = default;
 NrdRuntime::NrdRuntime(NrdRuntime&&) noexcept = default;
 NrdRuntime& NrdRuntime::operator=(NrdRuntime&&) noexcept = default;
 
-Result NrdRuntime::initialize(
-    Device& device,
-    uint16_t width,
-    uint16_t height,
-    const NrdUserTexturePool& userTexturePool,
-    std::string& log)
+Result NrdRuntime::initialize(Device& device, uint16_t width, uint16_t height,
+                              const NrdUserTexturePool& userTexturePool, std::string& log)
 {
-    if (width == 0 || height == 0) {
-        log = "NrdRuntime requires a non-zero image size";
+    if (!width || !height)
         return makeError(Error::InvalidArgument);
-    }
-    if (!device.capabilities().bindlessDescriptorHeap) {
-        log = "NrdRuntime requires bindless descriptor heaps";
+    if (!device.capabilities().bindlessDescriptorHeap)
         return makeError(Error::Unsupported);
-    }
-
     clear();
-    impl_ = std::make_unique<Impl>();
+    impl_ = std::make_shared<Impl>();
     impl_->device = &device;
     impl_->width = width;
     impl_->height = height;
     impl_->userTexturePool = userTexturePool;
-
-    const std::array<nrd::DenoiserDesc, 4> denoisers = {
-        nrd::DenoiserDesc{
-            .identifier = static_cast<nrd::Identifier>(nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR),
-            .denoiser = nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR,
-        },
-        nrd::DenoiserDesc{
-            .identifier = static_cast<nrd::Identifier>(nrd::Denoiser::RELAX_DIFFUSE_SPECULAR),
-            .denoiser = nrd::Denoiser::RELAX_DIFFUSE_SPECULAR,
-        },
-        nrd::DenoiserDesc{
-            .identifier = static_cast<nrd::Identifier>(nrd::Denoiser::REFERENCE),
-            .denoiser = nrd::Denoiser::REFERENCE,
-        },
-        nrd::DenoiserDesc{
-            .identifier = static_cast<nrd::Identifier>(nrd::Denoiser::REFERENCE) + 1,
-            .denoiser = nrd::Denoiser::REFERENCE,
-        },
-    };
-    const nrd::InstanceCreationDesc creationDesc{
-        .denoisers = denoisers.data(),
-        .denoisersNum = static_cast<uint32_t>(denoisers.size()),
-    };
-    const nrd::Result createResult = nrd::CreateInstance(creationDesc, impl_->instance);
-    if (createResult != nrd::Result::SUCCESS) {
-        log = nrdResultMessage("nrd::CreateInstance", createResult);
-        clear();
-        return resultFromNrd(createResult);
-    }
-
-    const nrd::InstanceDesc* instanceDesc = nrd::GetInstanceDesc(*impl_->instance);
-    const nrd::LibraryDesc* libraryDesc = nrd::GetLibraryDesc();
-    if (instanceDesc == nullptr || libraryDesc == nullptr) {
-        log = "NrdRuntime failed to get NRD descriptors";
-        clear();
-        return makeError(Error::Failure);
-    }
-
-    auto createTextureResource = [&](const nrd::TextureDesc& nrdDesc, Impl::TextureResource& resource) {
+    auto createTextureResource = [&](const denoising::TextureDesc& nrdDesc, Impl::TextureResource& resource) {
         const Format format = formatFromNrd(nrdDesc.format);
         if (format == Format::Unknown || nrdDesc.downsampleFactor == 0) {
             log = "NrdRuntime received an unsupported internal texture descriptor";
@@ -312,9 +236,7 @@ Result NrdRuntime::initialize(
         Result result = device.createTexture(
             TextureDesc{
                 .type = TextureType::Texture2D,
-                .usage = TextureUsageBits::Sampled |
-                    TextureUsageBits::Storage |
-                    TextureUsageBits::TransferDestination,
+                .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage | TextureUsageBits::TransferDestination,
                 .format = format,
                 .width = textureWidth,
                 .height = textureHeight,
@@ -330,16 +252,15 @@ Result NrdRuntime::initialize(
             log += resultToString(result);
             return result ? makeError(Error::Failure) : result;
         }
-        result = device.createTextureView(
-            *resource.texture,
-            TextureViewDesc{
-                .format = format,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            },
-            resource.view);
+        result = device.createTextureView(*resource.texture,
+                                          TextureViewDesc{
+                                              .format = format,
+                                              .baseMip = 0,
+                                              .mipCount = 1,
+                                              .baseLayer = 0,
+                                              .layerCount = 1,
+                                          },
+                                          resource.view);
         if (!result || resource.view == nullptr) {
             log = "createTextureView(NRD internal) returned ";
             log += resultToString(result);
@@ -348,526 +269,269 @@ Result NrdRuntime::initialize(
         return Result{};
     };
 
-    impl_->permanentTextures.resize(instanceDesc->permanentPoolSize);
-    for (uint32_t index = 0; index < instanceDesc->permanentPoolSize; ++index) {
-        Result result = createTextureResource(
-            instanceDesc->permanentPool[index],
-            impl_->permanentTextures[index]);
-        if (!result) {
-            clear();
-            return result;
+    auto createPool = [&](const auto& descriptions, auto& textures) -> Result {
+        textures.resize(descriptions.size());
+        for (size_t i = 0; i < descriptions.size(); ++i) {
+            auto result = createTextureResource(descriptions[i], textures[i]);
+            if (!result)
+                return result;
         }
-    }
-    impl_->transientTextures.resize(instanceDesc->transientPoolSize);
-    for (uint32_t index = 0; index < instanceDesc->transientPoolSize; ++index) {
-        Result result = createTextureResource(
-            instanceDesc->transientPool[index],
-            impl_->transientTextures[index]);
-        if (!result) {
-            clear();
-            return result;
-        }
-    }
-
-    const uint32_t sampledImageCount = std::max(
-        instanceDesc->descriptorPoolDesc.totalTexturesNum,
-        instanceDesc->descriptorPoolDesc.perSetTexturesMaxNum);
-    const uint32_t storageImageCount = std::max(
-        instanceDesc->descriptorPoolDesc.totalStorageTexturesNum,
-        instanceDesc->descriptorPoolDesc.perSetStorageTexturesMaxNum);
-    Result result = device.createBindlessHeap(
-        BindlessHeapDesc{
-            .maxSamplers = instanceDesc->samplersNum,
-            .maxSampledImages = sampledImageCount,
-            .maxStorageImages = storageImageCount,
-        },
-        impl_->descriptorHeap);
-    if (!result || impl_->descriptorHeap == nullptr) {
-        log = "createBindlessHeap(NRD) returned ";
-        log += resultToString(result);
+        return {};
+    };
+    auto result = createPool(impl_->plan.permanentPool(), impl_->permanentTextures);
+    if (result)
+        result = createPool(impl_->plan.transientPool(), impl_->transientTextures);
+    if (!result) {
         clear();
-        return result ? makeError(Error::Failure) : result;
+        return result;
     }
-
-    impl_->samplerHandles.resize(instanceDesc->samplersNum);
-    std::vector<BindlessSamplerWrite> samplerWrites(instanceDesc->samplersNum);
-    for (uint32_t index = 0; index < instanceDesc->samplersNum; ++index) {
-        result = impl_->descriptorHeap->allocateSampler(impl_->samplerHandles[index]);
+    // One descriptor per distinct view/access, reused by every stage in a frame.
+    // The extra user slots allow REFERENCE diffuse/specular to bind distinct
+    // signals without overwriting descriptors used by an earlier dispatch.
+    const uint32_t capacity = static_cast<uint32_t>(impl_->permanentTextures.size() + impl_->transientTextures.size() +
+                                                    userTexturePool.size() * 2);
+    result = device.createBindlessHeap({.maxSamplers = 2, .maxSampledImages = capacity, .maxStorageImages = capacity},
+                                       impl_->descriptorHeap);
+    if (!result) {
+        clear();
+        return result;
+    }
+    std::array<BindlessSamplerWrite, 2> samplers;
+    for (uint32_t i = 0; i < 2; ++i) {
+        result = impl_->descriptorHeap->allocateSampler(impl_->samplers[i]);
         if (!result) {
-            log = "allocateSampler(NRD) returned ";
-            log += resultToString(result);
             clear();
             return result;
         }
-        samplerWrites[index] = {
-            .handle = impl_->samplerHandles[index],
-            .sampler = samplerFromNrd(instanceDesc->samplers[index]),
-        };
+        const auto filter = i == 0 ? SamplerFilter::Nearest : SamplerFilter::Linear;
+        samplers[i] = {.handle = impl_->samplers[i],
+                       .sampler = {.minFilter = filter,
+                                   .magFilter = filter,
+                                   .mipFilter = SamplerFilter::Nearest,
+                                   .addressU = SamplerAddressMode::ClampToEdge,
+                                   .addressV = SamplerAddressMode::ClampToEdge,
+                                   .addressW = SamplerAddressMode::ClampToEdge}};
     }
-    if (!samplerWrites.empty()) {
-        result = impl_->descriptorHeap->writeSamplers(
-            samplerWrites.data(),
-            static_cast<uint32_t>(samplerWrites.size()));
-        if (!result) {
-            log = "writeSamplers(NRD) returned ";
-            log += resultToString(result);
-            clear();
-            return result;
-        }
+    result = impl_->descriptorHeap->writeSamplers(samplers.data(), 2);
+    if (!result) {
+        clear();
+        return result;
     }
-
-    impl_->sampledImageHandles.resize(sampledImageCount);
-    for (BindlessHandle& handle : impl_->sampledImageHandles) {
-        result = impl_->descriptorHeap->allocateSampledImage(handle);
+    impl_->sampledHandles.resize(capacity);
+    impl_->storageHandles.resize(capacity);
+    for (uint32_t i = 0; i < capacity; ++i) {
+        result = impl_->descriptorHeap->allocateSampledImage(impl_->sampledHandles[i]);
+        if (result)
+            result = impl_->descriptorHeap->allocateStorageImage(impl_->storageHandles[i]);
         if (!result) {
-            log = "allocateSampledImage(NRD) returned ";
-            log += resultToString(result);
-            clear();
-            return result;
-        }
-    }
-    impl_->storageImageHandles.resize(storageImageCount);
-    for (BindlessHandle& handle : impl_->storageImageHandles) {
-        result = impl_->descriptorHeap->allocateStorageImage(handle);
-        if (!result) {
-            log = "allocateStorageImage(NRD) returned ";
-            log += resultToString(result);
             clear();
             return result;
         }
     }
-
-    const uint32_t samplerBinding = libraryDesc->spirvBindingOffsets.samplerOffset +
-        instanceDesc->samplersBaseRegisterIndex;
-    const uint32_t constantBinding = libraryDesc->spirvBindingOffsets.constantBufferOffset +
-        instanceDesc->constantBufferRegisterIndex;
-    const uint32_t sampledBinding = libraryDesc->spirvBindingOffsets.textureOffset +
-        instanceDesc->resourcesBaseRegisterIndex;
-    const uint32_t storageBinding = libraryDesc->spirvBindingOffsets.storageTextureAndBufferOffset +
-        instanceDesc->resourcesBaseRegisterIndex;
-
-    impl_->pipelines.resize(instanceDesc->pipelinesNum);
-    for (uint32_t pipelineIndex = 0; pipelineIndex < instanceDesc->pipelinesNum; ++pipelineIndex) {
-        const nrd::PipelineDesc& pipelineDesc = instanceDesc->pipelines[pipelineIndex];
-        if (pipelineDesc.computeShaderSPIRV.bytecode == nullptr || pipelineDesc.computeShaderSPIRV.size == 0) {
-            log = "NrdRuntime requires NRD SPIR-V shader blobs";
-            clear();
-            return makeError(Error::Unsupported);
-        }
-
-        std::vector<ShaderBindingMappingDesc> mappings;
-        mappings.reserve(2 + pipelineDesc.resourceRangesNum);
-        if (instanceDesc->samplersNum > 0) {
-            mappings.push_back(ShaderBindingMappingDesc{
-                .descriptorSet = instanceDesc->constantBufferAndSamplersSpaceIndex,
-                .firstBinding = samplerBinding,
-                .bindingCount = instanceDesc->samplersNum,
-                .type = ShaderBindingType::Sampler,
-                .source = ShaderBindingSource::HeapIndexFromPushData,
-                .pushDataOffset = static_cast<uint32_t>(offsetof(NrdPushData, samplerIndex)),
-            });
-        }
-        if (pipelineDesc.hasConstantData) {
-            mappings.push_back(ShaderBindingMappingDesc{
-                .descriptorSet = instanceDesc->constantBufferAndSamplersSpaceIndex,
-                .firstBinding = constantBinding,
-                .bindingCount = 1,
-                .type = ShaderBindingType::ConstantBuffer,
-                .source = ShaderBindingSource::DeviceAddressFromPushData,
-                .pushDataOffset = static_cast<uint32_t>(offsetof(NrdPushData, constantBufferAddress)),
-            });
-        }
-        for (uint32_t rangeIndex = 0; rangeIndex < pipelineDesc.resourceRangesNum; ++rangeIndex) {
-            const nrd::ResourceRangeDesc& range = pipelineDesc.resourceRanges[rangeIndex];
-            const bool storage = range.descriptorType == nrd::DescriptorType::STORAGE_TEXTURE;
-            mappings.push_back(ShaderBindingMappingDesc{
-                .descriptorSet = instanceDesc->resourcesSpaceIndex,
-                .firstBinding = storage ? storageBinding : sampledBinding,
-                .bindingCount = range.descriptorsNum,
-                .type = storage ? ShaderBindingType::StorageImage : ShaderBindingType::SampledImage,
-                .source = ShaderBindingSource::HeapIndexFromPushData,
-                .pushDataOffset = storage
-                    ? static_cast<uint32_t>(offsetof(NrdPushData, storageImageIndex))
-                    : static_cast<uint32_t>(offsetof(NrdPushData, sampledImageIndex)),
-            });
-        }
-
-        std::unique_ptr<ShaderModule> shader;
-        result = device.createShaderModule(
-            ShaderModuleDesc{
-                .code = static_cast<const uint32_t*>(pipelineDesc.computeShaderSPIRV.bytecode),
-                .byteSize = pipelineDesc.computeShaderSPIRV.size,
-                .debugName = pipelineDesc.shaderIdentifier,
-            },
-            shader);
-        if (!result || shader == nullptr) {
-            log = "createShaderModule(NRD) returned ";
-            log += resultToString(result);
-            clear();
-            return result ? makeError(Error::Failure) : result;
-        }
-        result = device.createComputePipeline(
-            ComputePipelineDesc{
-                .computeShader = shader.get(),
-                .computeEntryPoint = instanceDesc->shaderEntryPoint,
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(NrdPushData),
-                .bindingMappings = mappings.data(),
-                .bindingMappingCount = static_cast<uint32_t>(mappings.size()),
-            },
-            impl_->pipelines[pipelineIndex]);
-        if (!result || impl_->pipelines[pipelineIndex] == nullptr) {
-            log = "createComputePipeline(NRD) returned ";
-            log += resultToString(result);
-            clear();
-            return result ? makeError(Error::Failure) : result;
-        }
-    }
+    impl_->pipelines.resize(impl_->plan.pipelines().size());
     return {};
 }
 
 void NrdRuntime::clear()
 {
-    if (impl_ == nullptr) {
-        return;
-    }
-    impl_->pipelines.clear();
-    impl_->descriptorHeap.reset();
-    impl_->permanentTextures.clear();
-    impl_->transientTextures.clear();
-    if (impl_->instance != nullptr) {
-        nrd::DestroyInstance(*impl_->instance);
-        impl_->instance = nullptr;
-    }
-    impl_->device = nullptr;
-    impl_->width = 0;
-    impl_->height = 0;
+    impl_.reset();
 }
-
 bool NrdRuntime::valid() const
 {
-    return impl_ != nullptr &&
-        impl_->instance != nullptr &&
-        impl_->device != nullptr &&
-        impl_->descriptorHeap != nullptr &&
-        !impl_->pipelines.empty();
+    return impl_ && impl_->descriptorHeap;
 }
-
 uint16_t NrdRuntime::width() const
 {
-    return impl_ != nullptr ? impl_->width : 0;
+    return impl_ ? impl_->width : 0;
 }
-
 uint16_t NrdRuntime::height() const
 {
-    return impl_ != nullptr ? impl_->height : 0;
+    return impl_ ? impl_->height : 0;
 }
 
-void NrdRuntime::setUserPoolTexture(nrd::ResourceType resource, Texture& texture, TextureView& view)
+void NrdRuntime::setUserPoolTexture(denoising::ResourceType resource, Texture& texture, TextureView& view)
 {
-    if (impl_ == nullptr || static_cast<size_t>(resource) >= impl_->userTexturePool.size()) {
-        return;
-    }
-    impl_->userTexturePool[static_cast<size_t>(resource)] = {
-        .texture = &texture,
-        .view = &view,
-    };
+    const auto i = static_cast<size_t>(resource);
+    if (impl_ && i < impl_->userTexturePool.size())
+        impl_->userTexturePool[i] = {&texture, &view};
 }
 
-Result NrdRuntime::setCommonSettings(const nrd::CommonSettings& settings)
+Result NrdRuntime::setCommonSettings(const denoising::CommonSettings& settings)
 {
-    if (!valid()) {
+    if (impl_)
+        impl_->frameReady = false;
+    if (!valid() || settings.resourceSize[0] != width() || settings.resourceSize[1] != height())
         return makeError(Error::InvalidArgument);
-    }
-    impl_->sampledImageCursor = 0;
-    impl_->storageImageCursor = 0;
-    impl_->previousConstantAddress = 0;
-    return resultFromNrd(nrd::SetCommonSettings(*impl_->instance, settings));
-}
-
-Result NrdRuntime::setReblurSettings(const nrd::ReblurSettings& settings)
-{
-    return setDenoiserSettings(
-        static_cast<nrd::Identifier>(nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR),
-        &settings);
-}
-
-Result NrdRuntime::setRelaxSettings(const nrd::RelaxSettings& settings)
-{
-    return setDenoiserSettings(
-        static_cast<nrd::Identifier>(nrd::Denoiser::RELAX_DIFFUSE_SPECULAR),
-        &settings);
-}
-
-Result NrdRuntime::setDenoiserSettings(nrd::Identifier identifier, const void* settings)
-{
-    if (!valid() || settings == nullptr) {
+    auto common = settings;
+    if (impl_->historyInvalid)
+        common.accumulationMode = denoising::AccumulationMode::CLEAR_AND_RESTART;
+    if (!impl_->plan.beginFrame(common))
         return makeError(Error::InvalidArgument);
-    }
-    return resultFromNrd(nrd::SetDenoiserSettings(*impl_->instance, identifier, settings));
+    impl_->clearPending |=
+        impl_->plan.commonSettings().accumulationMode == denoising::AccumulationMode::CLEAR_AND_RESTART;
+    impl_->textureHandles.clear();
+    impl_->sampledCursor = impl_->storageCursor = 0;
+    impl_->scheduled.fill(false);
+    impl_->frameReady = true;
+    return {};
 }
 
-Result NrdRuntime::denoise(NrdDenoiserMode mode, CommandBuffer& commandBuffer, Streamer& streamer)
+Result NrdRuntime::setReblurSettings(const denoising::ReblurSettings& settings)
 {
-    if (mode == NrdDenoiserMode::Reference) {
-        const std::array<nrd::Identifier, 2> identifiers = {
-            static_cast<nrd::Identifier>(nrd::Denoiser::REFERENCE),
-            static_cast<nrd::Identifier>(nrd::Denoiser::REFERENCE) + 1,
-        };
-        return denoiseIdentifiers(
-            identifiers.data(),
-            static_cast<uint32_t>(identifiers.size()),
-            commandBuffer,
-            streamer);
-    }
-
-    const nrd::Identifier identifier = mode == NrdDenoiserMode::Relax
-        ? static_cast<nrd::Identifier>(nrd::Denoiser::RELAX_DIFFUSE_SPECULAR)
-        : static_cast<nrd::Identifier>(nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR);
-    return denoiseIdentifiers(&identifier, 1, commandBuffer, streamer);
-}
-
-Result NrdRuntime::denoiseIdentifiers(
-    const nrd::Identifier* denoisers,
-    uint32_t denoiserCount,
-    CommandBuffer& commandBuffer,
-    Streamer& streamer)
-{
-    if (!valid() || denoisers == nullptr || denoiserCount == 0) {
+    if (!valid())
         return makeError(Error::InvalidArgument);
-    }
+    impl_->plan.setReblurSettings(settings);
+    return {};
+}
+Result NrdRuntime::setRelaxSettings(const denoising::RelaxSettings& settings)
+{
+    if (!valid())
+        return makeError(Error::InvalidArgument);
+    impl_->plan.setRelaxSettings(settings);
+    return {};
+}
 
-    if (!impl_->internalTexturesInitialized) {
-        std::vector<TextureBarrierDesc> barriers;
-        barriers.reserve(impl_->permanentTextures.size() + impl_->transientTextures.size());
-        auto append = [&barriers](Impl::TextureResource& resource) {
-            barriers.push_back(TextureBarrierDesc{
-                .texture = resource.texture.get(),
-                .before = resource.state,
-                .after = ResourceState::TransferDestination,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            });
-            resource.state = ResourceState::TransferDestination;
-        };
-        for (Impl::TextureResource& resource : impl_->permanentTextures) {
-            append(resource);
-        }
-        for (Impl::TextureResource& resource : impl_->transientTextures) {
-            append(resource);
-        }
-        if (!barriers.empty()) {
-            commandBuffer.barrier(BarrierDesc{
-                .textures = barriers.data(),
-                .textureCount = static_cast<uint32_t>(barriers.size()),
-            });
-            const ColorValue clear{0.0f, 0.0f, 0.0f, 0.0f};
-            for (Impl::TextureResource& resource : impl_->permanentTextures) {
-                commandBuffer.clearColorTexture(*resource.texture, resource.state, clear);
+Result NrdRuntime::denoise(NrdDenoiserMode mode, CommandBuffer& commands, Streamer& streamer)
+{
+    return record(static_cast<uint32_t>(mode), commands, streamer);
+}
+Result NrdRuntime::denoiseReference(bool specular, CommandBuffer& commands, Streamer& streamer)
+{
+    return record(specular ? 3 : 2, commands, streamer);
+}
+
+Result NrdRuntime::record(uint32_t index, CommandBuffer& commands, Streamer& streamer)
+{
+    if (!valid() || !impl_->frameReady || index >= 4 || impl_->scheduled[index])
+        return makeError(Error::InvalidArgument);
+    if (index == 0 && !impl_->device->capabilities().shaderImageGatherExtended)
+        return makeError(Error::Unsupported);
+    impl_->scheduled[index] = true;
+    // A discarded recording must not become valid temporal history. Keep the
+    // resources alive with the transaction until submission/cancellation.
+    auto state = impl_;
+    auto result = commands.addSubmissionTransaction(
+        std::make_shared<SubmissionTransaction>([state] { state->historyInvalid = false; },
+                                                [state] {
+                                                    state->historyInvalid = true;
+                                                    state->clearPending = true;
+                                                    // A discarded command buffer did not perform its layout
+                                                    // transitions. The next frame discards and clears every internal
+                                                    // image instead.
+                                                    for (auto& texture : state->permanentTextures)
+                                                        texture.state = ResourceState::Undefined;
+                                                    for (auto& texture : state->transientTextures)
+                                                        texture.state = ResourceState::Undefined;
+                                                }));
+    if (!result)
+        return result;
+    if (impl_->clearPending) {
+        auto clearPool = [&](auto& pool) {
+            for (auto& texture : pool) {
+                TextureBarrierDesc barrier{.texture = texture.texture.get(),
+                                           .before = texture.state,
+                                           .after = ResourceState::TransferDestination,
+                                           .mipCount = 1,
+                                           .layerCount = 1};
+                commands.barrier({.textures = &barrier, .textureCount = 1});
+                texture.state = ResourceState::TransferDestination;
+                commands.clearColorTexture(*texture.texture, texture.state, {0, 0, 0, 0});
             }
-            for (Impl::TextureResource& resource : impl_->transientTextures) {
-                commandBuffer.clearColorTexture(*resource.texture, resource.state, clear);
-            }
-        }
-        impl_->internalTexturesInitialized = true;
+        };
+        clearPool(impl_->permanentTextures);
+        clearPool(impl_->transientTextures);
+        impl_->clearPending = false;
     }
-
-    const nrd::DispatchDesc* dispatches = nullptr;
-    uint32_t dispatchCount = 0;
-    const nrd::Result nrdResult = nrd::GetComputeDispatches(
-        *impl_->instance,
-        denoisers,
-        denoiserCount,
-        dispatches,
-        dispatchCount);
-    if (nrdResult != nrd::Result::SUCCESS) {
-        return resultFromNrd(nrdResult);
-    }
-
-    commandBuffer.bindBindlessHeap(*impl_->descriptorHeap);
-    for (uint32_t dispatchIndex = 0; dispatchIndex < dispatchCount; ++dispatchIndex) {
-        const nrd::DispatchDesc& dispatchDesc = dispatches[dispatchIndex];
-        commandBuffer.beginDebugLabel(DebugLabelDesc{
-            .name = dispatchDesc.name != nullptr ? dispatchDesc.name : "NRD",
-            .color = ColorValue{0.2f, 0.8f, 0.25f, 1.0f},
-        });
-        Result result = dispatch(commandBuffer, streamer, dispatchDesc, impl_->previousConstantAddress);
-        commandBuffer.endDebugLabel();
-        if (!result) {
+    const auto dispatches = impl_->plan.schedule(index);
+    commands.bindBindlessHeap(*impl_->descriptorHeap);
+    for (const auto& stage : dispatches) {
+        result = impl_->pipeline(stage.pipelineIndex);
+        if (!result)
             return result;
-        }
+        commands.beginDebugLabel({.name = stage.name, .color = {0.2f, 0.8f, 0.25f, 1.0f}});
+        result = dispatch(commands, streamer, stage);
+        commands.endDebugLabel();
+        if (!result)
+            return result;
     }
     return {};
 }
 
-Result NrdRuntime::dispatch(
-    CommandBuffer& commandBuffer,
-    Streamer& streamer,
-    const nrd::DispatchDesc& dispatchDesc,
-    uint64_t& previousConstantAddress)
+Result NrdRuntime::dispatch(CommandBuffer& commands, Streamer& streamer, const denoising::DispatchDesc& stage)
 {
-    if (!valid() || dispatchDesc.pipelineIndex >= impl_->pipelines.size()) {
-        return makeError(Error::InvalidArgument);
-    }
-    const nrd::InstanceDesc* instanceDesc = nrd::GetInstanceDesc(*impl_->instance);
-    if (instanceDesc == nullptr) {
-        return makeError(Error::Failure);
-    }
-    const nrd::PipelineDesc& pipelineDesc = instanceDesc->pipelines[dispatchDesc.pipelineIndex];
-
-    struct ResolvedTexture {
-        Texture* texture = nullptr;
-        TextureView* view = nullptr;
-        ResourceState* state = nullptr;
-    };
-    auto resolve = [&](const nrd::ResourceDesc& resourceDesc) -> ResolvedTexture {
-        if (resourceDesc.type == nrd::ResourceType::TRANSIENT_POOL) {
-            if (resourceDesc.indexInPool >= impl_->transientTextures.size()) {
-                return {};
-            }
-            Impl::TextureResource& resource = impl_->transientTextures[resourceDesc.indexInPool];
-            return {resource.texture.get(), resource.view.get(), &resource.state};
-        }
-        if (resourceDesc.type == nrd::ResourceType::PERMANENT_POOL) {
-            if (resourceDesc.indexInPool >= impl_->permanentTextures.size()) {
-                return {};
-            }
-            Impl::TextureResource& resource = impl_->permanentTextures[resourceDesc.indexInPool];
-            return {resource.texture.get(), resource.view.get(), &resource.state};
-        }
-        const size_t index = static_cast<size_t>(resourceDesc.type);
-        if (index >= impl_->userTexturePool.size()) {
-            return {};
-        }
-        const NrdTextureRef& resource = impl_->userTexturePool[index];
-        return {resource.texture, resource.view, nullptr};
-    };
-
-    uint32_t sampledCount = 0;
-    uint32_t storageCount = 0;
-    for (uint32_t rangeIndex = 0; rangeIndex < pipelineDesc.resourceRangesNum; ++rangeIndex) {
-        const nrd::ResourceRangeDesc& range = pipelineDesc.resourceRanges[rangeIndex];
-        if (range.descriptorType == nrd::DescriptorType::STORAGE_TEXTURE) {
-            storageCount += range.descriptorsNum;
-        } else {
-            sampledCount += range.descriptorsNum;
-        }
-    }
-    if (impl_->sampledImageCursor > impl_->sampledImageHandles.size() ||
-        sampledCount > impl_->sampledImageHandles.size() - impl_->sampledImageCursor ||
-        impl_->storageImageCursor > impl_->storageImageHandles.size() ||
-        storageCount > impl_->storageImageHandles.size() - impl_->storageImageCursor) {
-        return makeError(Error::OutOfMemory);
-    }
-
-    const uint32_t sampledBase = impl_->sampledImageCursor;
-    const uint32_t storageBase = impl_->storageImageCursor;
+    NrdResourceIndices indices;
+    for (uint32_t i = 0; i < 2; ++i)
+        indices.samplers[i] = impl_->samplers[i].shaderIndex;
+    uint32_t sampled = 0, storage = 0;
     std::vector<BindlessImageWrite> writes;
-    writes.reserve(dispatchDesc.resourcesNum);
     std::vector<TextureBarrierDesc> barriers;
-    barriers.reserve(dispatchDesc.resourcesNum);
     std::unordered_set<Texture*> transitioned;
-
-    uint32_t resourceIndex = 0;
-    for (uint32_t rangeIndex = 0; rangeIndex < pipelineDesc.resourceRangesNum; ++rangeIndex) {
-        const nrd::ResourceRangeDesc& range = pipelineDesc.resourceRanges[rangeIndex];
-        const bool storage = range.descriptorType == nrd::DescriptorType::STORAGE_TEXTURE;
-        for (uint32_t descriptorIndex = 0; descriptorIndex < range.descriptorsNum; ++descriptorIndex) {
-            if (resourceIndex >= dispatchDesc.resourcesNum) {
+    for (uint32_t i = 0; i < stage.resourcesNum; ++i) {
+        const auto& resource = stage.resources[i];
+        NrdTextureRef texture;
+        ResourceState* state = nullptr;
+        if (resource.type == denoising::ResourceType::PERMANENT_POOL ||
+            resource.type == denoising::ResourceType::TRANSIENT_POOL) {
+            auto& pool = resource.type == denoising::ResourceType::PERMANENT_POOL ? impl_->permanentTextures
+                                                                                  : impl_->transientTextures;
+            if (resource.indexInPool >= pool.size())
                 return makeError(Error::InvalidArgument);
-            }
-            const nrd::ResourceDesc& resourceDesc = dispatchDesc.resources[resourceIndex++];
-            if (resourceDesc.descriptorType != range.descriptorType) {
+            auto& internal = pool[resource.indexInPool];
+            texture = {internal.texture.get(), internal.view.get()};
+            state = &internal.state;
+        } else {
+            const auto slot = static_cast<size_t>(resource.type);
+            if (slot >= impl_->userTexturePool.size())
                 return makeError(Error::InvalidArgument);
-            }
-            ResolvedTexture resource = resolve(resourceDesc);
-            if (resource.texture == nullptr || resource.view == nullptr) {
-                return makeError(Error::InvalidArgument);
-            }
-
-            const BindlessHandle handle = storage
-                ? impl_->storageImageHandles[impl_->storageImageCursor++]
-                : impl_->sampledImageHandles[impl_->sampledImageCursor++];
-            writes.push_back(BindlessImageWrite{
-                .handle = handle,
-                .view = resource.view,
-                .state = ResourceState::General,
-            });
-            if (transitioned.insert(resource.texture).second) {
-                barriers.push_back(TextureBarrierDesc{
-                    .texture = resource.texture,
-                    .before = resource.state != nullptr ? *resource.state : ResourceState::General,
-                    .after = ResourceState::General,
-                    .baseMip = 0,
-                    .mipCount = resource.texture->desc().mipCount,
-                    .baseLayer = 0,
-                    .layerCount = resource.texture->desc().layerCount,
-                });
-            }
-            if (resource.state != nullptr) {
-                *resource.state = ResourceState::General;
-            }
+            texture = impl_->userTexturePool[slot];
         }
-    }
-    if (resourceIndex != dispatchDesc.resourcesNum) {
-        return makeError(Error::InvalidArgument);
-    }
-    if (!barriers.empty()) {
-        commandBuffer.barrier(BarrierDesc{
-            .textures = barriers.data(),
-            .textureCount = static_cast<uint32_t>(barriers.size()),
-        });
+        if (!texture.texture || !texture.view)
+            return makeError(Error::InvalidArgument);
+        const bool output = resource.descriptorType == denoising::DescriptorType::STORAGE_TEXTURE;
+        if ((output && storage >= 16) || (!output && sampled >= 32))
+            return makeError(Error::InvalidArgument);
+        auto& handles = impl_->textureHandles[texture.view];
+        auto& handle = output ? handles.storage : handles.sampled;
+        if (!handle.valid()) {
+            auto& cursor = output ? impl_->storageCursor : impl_->sampledCursor;
+            const auto& available = output ? impl_->storageHandles : impl_->sampledHandles;
+            if (cursor >= available.size())
+                return makeError(Error::OutOfMemory);
+            handle = available[cursor++];
+            writes.push_back({.handle = handle, .view = texture.view, .state = ResourceState::General});
+        }
+        if (output)
+            indices.storage[storage++] = handle.shaderIndex;
+        else
+            indices.sampled[sampled++] = handle.shaderIndex;
+        if (transitioned.insert(texture.texture).second) {
+            barriers.push_back({.texture = texture.texture,
+                                .before = state ? *state : ResourceState::General,
+                                .after = ResourceState::General,
+                                .mipCount = 1,
+                                .layerCount = 1});
+        }
+        if (state)
+            *state = ResourceState::General;
     }
     if (!writes.empty()) {
-        Result result = impl_->descriptorHeap->writeImages(
-            writes.data(),
-            static_cast<uint32_t>(writes.size()));
-        if (!result) {
+        const auto result = impl_->descriptorHeap->writeImages(writes.data(), static_cast<uint32_t>(writes.size()));
+        if (!result)
             return result;
-        }
     }
-
-    if (pipelineDesc.hasConstantData) {
-        if (!dispatchDesc.constantBufferDataMatchesPreviousDispatch || previousConstantAddress == 0) {
-            if (dispatchDesc.constantBufferData == nullptr || dispatchDesc.constantBufferDataSize == 0) {
-                return makeError(Error::InvalidArgument);
-            }
-            const uint64_t offset = streamer.streamConstantData(
-                dispatchDesc.constantBufferData,
-                dispatchDesc.constantBufferDataSize);
-            Buffer* constantBuffer = streamer.constantBuffer();
-            if (offset == std::numeric_limits<uint64_t>::max() || constantBuffer == nullptr) {
-                return makeError(Error::OutOfMemory);
-            }
-            const uint64_t baseAddress = constantBuffer->deviceAddress();
-            if (baseAddress == 0 || offset > std::numeric_limits<uint64_t>::max() - baseAddress) {
-                return makeError(Error::Failure);
-            }
-            previousConstantAddress = baseAddress + offset;
-        }
-    }
-
-    const NrdPushData push{
-        .constantBufferAddress = previousConstantAddress,
-        .samplerIndex = impl_->samplerHandles.empty() ? 0 : impl_->samplerHandles.front().index,
-        .sampledImageIndex = sampledCount == 0
-            ? 0
-            : impl_->sampledImageHandles[sampledBase].index,
-        .storageImageIndex = storageCount == 0
-            ? 0
-            : impl_->storageImageHandles[storageBase].index,
-    };
-    ComputePipeline* pipeline = impl_->pipelines[dispatchDesc.pipelineIndex].get();
-    if (pipeline == nullptr) {
+    commands.barrier({.textures = barriers.data(), .textureCount = static_cast<uint32_t>(barriers.size())});
+    const auto constantsOffset = streamer.streamConstantData(stage.constantBufferData, stage.constantBufferDataSize);
+    const auto resourcesOffset = streamer.streamConstantData(&indices, sizeof(indices));
+    auto* buffer = streamer.constantBuffer();
+    if (!buffer || constantsOffset == UINT64_MAX || resourcesOffset == UINT64_MAX)
+        return makeError(Error::OutOfMemory);
+    const auto address = buffer->deviceAddress();
+    if (!address)
         return makeError(Error::Failure);
-    }
-    commandBuffer.bindComputePipeline(*pipeline, &push, sizeof(push));
-    commandBuffer.dispatch(dispatchDesc.gridWidth, dispatchDesc.gridHeight, 1);
+    const NrdPushData push{address + constantsOffset, address + resourcesOffset};
+    commands.bindComputePipeline(*impl_->pipelines[stage.pipelineIndex], &push, sizeof(push));
+    commands.dispatch(stage.gridWidth, stage.gridHeight, 1);
     return {};
 }
-
 #endif
-
 } // namespace metallic::render

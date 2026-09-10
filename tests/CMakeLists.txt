@@ -1,5 +1,28 @@
 include(GoogleTest)
 
+if(METALLIC_ENABLE_NRD)
+    add_executable(MetallicNrdTests rhi/NrdTests.cpp)
+    target_link_libraries(MetallicNrdTests PRIVATE MetallicRuntimeRender MathLib GTest::gtest_main)
+    target_include_directories(MetallicNrdTests PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(MetallicNrdTests PRIVATE PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    if(WIN32)
+        target_compile_definitions(MetallicNrdTests PRIVATE NOMINMAX)
+        set(_nrd_test_slang_root "${CMAKE_SOURCE_DIR}/External/slang")
+        if(DEFINED SLANG_ROOT)
+            set(_nrd_test_slang_root "${SLANG_ROOT}")
+        endif()
+        file(GLOB _nrd_test_slang_dlls "${_nrd_test_slang_root}/bin/*.dll")
+        foreach(_dll IN LISTS _nrd_test_slang_dlls)
+            add_custom_command(TARGET MetallicNrdTests POST_BUILD COMMAND ${CMAKE_COMMAND} -E
+                copy_if_different "${_dll}" "$<TARGET_FILE_DIR:MetallicNrdTests>")
+        endforeach()
+        metallic_copy_spdlog_runtime(MetallicNrdTests)
+        metallic_copy_streamline_runtime(MetallicNrdTests)
+    endif()
+    add_test(NAME MetallicNrdTests COMMAND MetallicNrdTests --gtest_color=no)
+    set_tests_properties(MetallicNrdTests PROPERTIES LABELS "rhi;nrd" TIMEOUT 300)
+endif()
+
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)
     foreach(dependency_case IN ITEMS reuse boolean missing compiler configuration crt flags features multiconfig)
         add_test(NAME MetallicDependencyCache.${dependency_case}

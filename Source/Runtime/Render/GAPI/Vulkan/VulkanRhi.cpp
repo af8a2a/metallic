@@ -1756,6 +1756,7 @@ struct VulkanDeviceFeatureSelection {
     // fp16/int16 shader capabilities) and by SHaRC's 64-bit hash-grid atomics.
     // Enabled opportunistically.
     bool scalarBlockLayout = false;
+    bool shaderImageGatherExtended = false;
     bool uniformBufferStandardLayout = false;
     bool shaderBufferInt64Atomics = false;
     bool shaderFloat16 = false;
@@ -1862,6 +1863,7 @@ struct VulkanDeviceFeatureSelection {
             result.pushDescriptor;
         result.aftermath = request.aftermath && aftermathSupported;
         result.scalarBlockLayout = probe.vulkan12Features.scalarBlockLayout == VK_TRUE;
+        result.shaderImageGatherExtended = probe.features.features.shaderImageGatherExtended == VK_TRUE;
         result.uniformBufferStandardLayout = probe.vulkan12Features.uniformBufferStandardLayout == VK_TRUE;
         result.shaderBufferInt64Atomics = probe.vulkan12Features.shaderBufferInt64Atomics == VK_TRUE;
         result.shaderFloat16 = probe.vulkan12Features.shaderFloat16 == VK_TRUE;
@@ -2016,6 +2018,7 @@ struct VulkanEnabledFeatureChain {
         vulkan12Features.shaderBufferInt64Atomics = selection.shaderBufferInt64Atomics ? VK_TRUE : VK_FALSE;
         vulkan12Features.shaderFloat16 = selection.shaderFloat16 ? VK_TRUE : VK_FALSE;
         features.features.shaderInt16 = selection.shaderInt16 ? VK_TRUE : VK_FALSE;
+        features.features.shaderImageGatherExtended = selection.shaderImageGatherExtended ? VK_TRUE : VK_FALSE;
         features.features.geometryShader = selection.geometryShader ? VK_TRUE : VK_FALSE;
         vulkan13Features.subgroupSizeControl =
             selection.subgroupSizeControl ? VK_TRUE : VK_FALSE;
@@ -9292,6 +9295,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->capabilities.shaderIntegerDotProduct =
         selectedFeatures.shaderIntegerDotProduct;
     deviceImpl->capabilities.cooperativeVector = selectedFeatures.cooperativeVector;
+    deviceImpl->capabilities.shaderImageGatherExtended = selectedFeatures.shaderImageGatherExtended;
     deviceImpl->bufferDeviceAddressEnabled = selectedFeatures.usesBufferDeviceAddress();
 
     if (deviceImpl->debugUtilsEnabled) {

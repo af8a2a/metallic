@@ -371,6 +371,7 @@ struct DeviceCapabilities {
     bool streamlineDlssRr = false;
     bool aftermath = false;
     bool shaderIntegerDotProduct = false;
+    bool shaderImageGatherExtended = false;
     bool cooperativeVector = false;
     bool timestampQueries = false;
     double timestampPeriodNanoseconds = 0.0;
