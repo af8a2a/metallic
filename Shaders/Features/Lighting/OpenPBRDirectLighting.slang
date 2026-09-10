@@ -24,6 +24,15 @@ float deferredRadicalInverse(uint index, uint base)
     return value;
 }
 
+float3 openPbrDirectVisibility(float3 origin, float3 direction, float distance, ScenePathTracePush push)
+{
+    if (openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)) { return float3(1.0); }
+    if (openPbrDebugFlag(push, kOpenPBRDebugUseOpaqueShadows)) {
+        return traceShadow(origin, direction, distance, push) ? float3(0.0) : float3(1.0);
+    }
+    return openPbrShadowTransmittance(origin, direction, distance, makeOpenPBRInteriorStack(), push);
+}
+
 float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
     ScenePathTracePush push, inout uint seed, bool sampledEnvironment)
 {
@@ -52,9 +61,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
             if (luminanceMax(bsdf * light.illuminance) <= 0.0) { continue; }
             float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
             float distance = max(light.distance - length(origin - hit.position), 0.0);
-            bool shadowed = !openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) &&
-                traceShadow(origin, light.direction, distance, push);
-            if (!shadowed) { radiance += bsdf * light.illuminance; }
+            radiance += bsdf * light.illuminance * openPbrDirectVisibility(origin, light.direction, distance, push);
         }
     }
     if (sampledEnvironment && push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
@@ -71,10 +78,9 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
             openpbr_sample(prepared, random, direction, weight, pdf, type);
             if (pdf <= 0.0 || type == OpenPBR_BsdfLobeTypeNone) { continue; }
             float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(direction, hit.geometryNormal));
-            if (!openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) &&
-                traceShadow(origin, direction, max(push.clipOrtho.y, 1.0), push)) { continue; }
+            float3 visibility = openPbrDirectVisibility(origin, direction, max(push.clipOrtho.y, 1.0), push);
             environment += max(openpbr_get_sum_of_diffuse_specular(weight), float3(0.0)) *
-                environmentRadiance(direction, push, false);
+                environmentRadiance(direction, push, false) * visibility;
         }
         radiance += environment * surface.occlusion / float(count);
     } else if (!sampledEnvironment) {

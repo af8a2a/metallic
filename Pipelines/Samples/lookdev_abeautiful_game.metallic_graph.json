@@ -1,0 +1,174 @@
+{
+    "version": 1,
+    "name": "LookDev ABeautifulGame Material Binning",
+    "nodes": [
+        {
+            "id": 1,
+            "name": "Reference",
+            "type": "ScenePathTracePass",
+            "position": {
+                "x": 80.0,
+                "y": 80.0
+            },
+            "properties": {
+                "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
+                "camera": {
+                    "center": [
+                        0.0,
+                        0.07500000298023224,
+                        0.0
+                    ],
+                    "eye": [
+                        0.0,
+                        0.41999998688697815,
+                        1.149999976158142
+                    ],
+                    "fovDegrees": 45.0,
+                    "projection": "perspective",
+                    "reversedZ": true,
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 10000.0,
+                    "znear": 0.0010000000474974513
+                },
+                "samples": 2,
+                "bsdf": "openpbr",
+                "maxDepth": 12,
+                "accumulate": true,
+                "outputLinear": true,
+                "cameraSyncGroup": "LookDevComparison"
+            }
+        },
+        {
+            "id": 2,
+            "name": "VBuffer",
+            "type": "VisibilityBufferPass",
+            "position": {
+                "x": 80.0,
+                "y": 440.0
+            },
+            "properties": {
+                "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
+                "camera": {
+                    "center": [
+                        0.0,
+                        0.07500000298023224,
+                        0.0
+                    ],
+                    "eye": [
+                        0.0,
+                        0.41999998688697815,
+                        1.149999976158142
+                    ],
+                    "fovDegrees": 45.0,
+                    "projection": "perspective",
+                    "reversedZ": true,
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 10000.0,
+                    "znear": 0.0010000000474974513
+                },
+                "cameraSyncGroup": "LookDevComparison",
+                "visualization": "none",
+                "lodLevel": 0
+            }
+        },
+        {
+            "id": 3,
+            "name": "Deferred",
+            "type": "VisibilityBufferDeferredPass",
+            "position": {
+                "x": 440.0,
+                "y": 440.0
+            },
+            "properties": {
+                "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
+                "bsdf": "openpbr",
+                "outputLinear": true,
+                "environmentSamples": 8,
+                "accumulate": true,
+                "materialBinning": true,
+                "transmissionSamples": 2,
+                "transmissionDepth": 8
+            }
+        },
+        {
+            "id": 4,
+            "name": "Slider",
+            "type": "SliderDebugPass",
+            "position": {
+                "x": 800.0,
+                "y": 220.0
+            },
+            "properties": {
+                "splitPosition": 0.5
+            }
+        },
+        {
+            "id": 5,
+            "name": "AutoExposure",
+            "type": "AutoExposurePass",
+            "position": {
+                "x": 1160.0,
+                "y": 220.0
+            },
+            "properties": {
+                "toneCurve": "none"
+            }
+        },
+        {
+            "id": 6,
+            "name": "FinalBlit",
+            "type": "FinalBlitPass",
+            "position": {
+                "x": 1520.0,
+                "y": 220.0
+            },
+            "properties": {}
+        }
+    ],
+    "edges": [
+        {
+            "id": 1,
+            "src": "VBuffer.visibility",
+            "dst": "Deferred.visibility"
+        },
+        {
+            "id": 2,
+            "src": "VBuffer.depth",
+            "dst": "Deferred.depth"
+        },
+        {
+            "id": 3,
+            "src": "VBuffer.rasterInfo",
+            "dst": "Deferred.rasterInfo"
+        },
+        {
+            "id": 4,
+            "src": "Reference.color",
+            "dst": "Slider.sourceA"
+        },
+        {
+            "id": 5,
+            "src": "Deferred.color",
+            "dst": "Slider.sourceB"
+        },
+        {
+            "id": 6,
+            "src": "Slider.color",
+            "dst": "AutoExposure.source"
+        },
+        {
+            "id": 7,
+            "src": "AutoExposure.color",
+            "dst": "FinalBlit.source"
+        }
+    ],
+    "outputs": []
+}

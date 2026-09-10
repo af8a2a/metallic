@@ -252,6 +252,7 @@ struct ScenePathTracePush
     float jitterOffsetY;
     uint sampleFrame;
     uint temporalJitter;
+    uint deferredSettings; // bin:16, transmission samples:5, ray depth:5
 };
 
 struct Ray

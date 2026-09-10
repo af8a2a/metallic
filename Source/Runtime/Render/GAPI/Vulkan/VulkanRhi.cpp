@@ -1739,6 +1739,7 @@ struct VulkanDeviceFeatureSelection {
     bool geometryShader = false;
     bool subgroupSizeControl = false;
     bool computeFullSubgroups = false;
+    bool computeSubgroupBallotArithmetic = false;
     bool taskShaderSubgroupBallot = false;
     bool taskShaderSubgroupSizeControl = false;
     uint32_t subgroupSize = 0;
@@ -1827,6 +1828,11 @@ struct VulkanDeviceFeatureSelection {
             result.subgroupSizeControl &&
             probe.supportsTaskShaderSubgroupSizeControl();
         result.subgroupSize = probe.subgroupProperties.subgroupSize;
+        constexpr VkSubgroupFeatureFlags kMaterialBinningOperations = VK_SUBGROUP_FEATURE_BASIC_BIT |
+            VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
+        result.computeSubgroupBallotArithmetic =
+            (probe.subgroupProperties.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
+            (probe.subgroupProperties.supportedOperations & kMaterialBinningOperations) == kMaterialBinningOperations;
         result.minSubgroupSize =
             probe.subgroupSizeControlProperties.minSubgroupSize;
         result.maxSubgroupSize =
@@ -5795,6 +5801,20 @@ void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_
     }
 }
 
+Result CommandBuffer::dispatchIndirect(Buffer& buffer, uint64_t offset)
+{
+    if (impl_ == nullptr || buffer.impl_ == nullptr ||
+        buffer.impl_->device != impl_->device ||
+        (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+        !hasFlag(buffer.desc().usage, BufferUsageBits::Indirect) ||
+        (offset & 3u) != 0 || offset > buffer.desc().size ||
+        sizeof(VkDispatchIndirectCommand) > buffer.desc().size - offset) {
+        return makeError(Error::InvalidArgument);
+    }
+    vkCmdDispatchIndirect(impl_->commandBuffer, buffer.impl_->buffer, offset);
+    return {};
+}
+
 Result CommandBuffer::buildRayTracingAccelerationStructure(
     const RayTracingAccelerationStructureBuildDesc& desc)
 {
@@ -9265,6 +9285,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         selectedFeatures.subgroupSizeControl;
     deviceImpl->capabilities.computeFullSubgroups =
         selectedFeatures.computeFullSubgroups;
+    deviceImpl->capabilities.computeSubgroupBallotArithmetic = selectedFeatures.computeSubgroupBallotArithmetic;
     deviceImpl->capabilities.taskShaderSubgroupBallot =
         selectedFeatures.taskShaderSubgroupBallot;
     deviceImpl->capabilities.taskShaderSubgroupSizeControl =

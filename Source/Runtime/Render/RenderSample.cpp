@@ -159,6 +159,27 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
+class LookDevABeautifulGameSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "lookdev-abeautiful-game"; }
+    std::string_view name() const override { return "LookDev / ABeautifulGame / Material Binning"; }
+    std::string_view category() const override { return "LookDev"; }
+    std::string_view description() const override
+    {
+        return "OpenPBR VBuffer deferred lighting with GPU material bins and glass ray continuation, "
+            "compared with path tracing under the same HDRI and exposure.";
+    }
+    std::string scenePath() const override { return "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"; }
+    std::string graphPath() const override { return "Pipelines/Samples/lookdev_abeautiful_game.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"Reference", "VBuffer", "Deferred"}; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        return RenderSampleEnvironmentDesc{.enabled = true, .path = "Asset/ABeautifulGame/environment.hdr",
+            .intensity = 1.0f, .rotationDegrees = 0.0f, .visible = true};
+    }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class PathTracingMeetMatSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-meet-mat"; }
@@ -638,12 +659,14 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const OpenPbrLookDevSample openPbrLookDev;
     static const LookDevShadingCompareSample lookDevShadingCompare;
     static const LookDevVisibilityBufferSample lookDevVisibilityBuffer;
+    static const LookDevABeautifulGameSample lookDevABeautifulGame;
     return {
         &realtimeLighting,
         &lightGridDebug,
         &openPbrLookDev,
         &lookDevShadingCompare,
         &lookDevVisibilityBuffer,
+        &lookDevABeautifulGame,
         &pathTracingMeetMatSample(),
         &pathTracingSharcMeetMatSample(),
         &pathTracingNrcMeetMatSample(),

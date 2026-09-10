@@ -2920,6 +2920,11 @@ Result RenderGraphPreviewRenderer::render(
     impl_->height = outputHeight;
     return {};
 }
+Result RenderGraphPreviewRenderer::collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats)
+{
+    return impl_->executor.collectCompletedGpuExecutionStats(outStats);
+}
+
 const std::vector<uint32_t>& RenderGraphPreviewRenderer::pixels() const
 {
     return impl_->pixels;

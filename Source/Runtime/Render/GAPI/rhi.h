@@ -355,6 +355,7 @@ struct DeviceCapabilities {
     bool geometryShader = false;
     bool subgroupSizeControl = false;
     bool computeFullSubgroups = false;
+    bool computeSubgroupBallotArithmetic = false;
     bool taskShaderSubgroupBallot = false;
     bool taskShaderSubgroupSizeControl = false;
     uint32_t subgroupSize = 0;
@@ -1760,6 +1761,8 @@ public:
     void drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     void drawMeshTasksIndirect(Buffer& buffer, uint64_t offset = 0);
     void dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
+    // Three GPU-written uint32 group counts; offset is 4-byte aligned.
+    Result dispatchIndirect(Buffer& buffer, uint64_t offset = 0);
     Result buildClusterAccelerationStructureTriangles(
         const ClusterAccelerationStructureTriangleBuildDesc& desc);
     Result buildClusterAccelerationStructureBottomLevels(

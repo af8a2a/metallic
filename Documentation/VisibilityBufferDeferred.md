@@ -3,6 +3,8 @@
 ```powershell
 cmake --build cmake-build-debug-visual-studio --target LookDev --parallel 8
 .\cmake-build-debug-visual-studio\Source\LookDev.exe --sample lookdev-vbuffer
+# 15 种源材质，包括棋子顶部的 transmission / volume 玻璃
+.\cmake-build-debug-visual-studio\Source\LookDev.exe --sample lookdev-abeautiful-game
 ```
 
 在 Built-in Sample 中选择 **LookDev / VBuffer vs Path Tracing** 也可加载。
@@ -34,8 +36,39 @@ VisibilityBufferPass 保持可见性职责：GPUScene 实例／meshlet 剔除、
 材质贴图、glTF 到 OpenPBR 的映射、OpenPBR 能量 LUT、点光／聚光／方向光单位和
 阴影逻辑复用现有参考渲染资源。直接光调用 `openpbr_eval`，环境照明调用
 `openpbr_sample`，包含漫反射与镜面／金属反射。此路径不发射主可见性光线，
-光线查询用于灯光和环境遮挡。默认每像素每帧 64 次环境采样，并渐进累积线性 HDR；
-不做多次反弹 GI。
+光线查询用于灯光和环境遮挡。不透明表面默认每像素每帧 64 次环境采样，并渐进累积线性 HDR，
+仍只计算直接光与环境照明。透射表面从重建的主命中继续执行同一 OpenPBR 路径积分器，
+默认 2 个样本、最多 8 层，支持折射、出射界面、内部全反射和 Beer–Lambert 体积吸收。
+阴影连接复用参考路径的直线透射近似，玻璃不再一律作为不透明遮挡物。
+
+## GPU 材质分箱
+
+`materialBinning` 默认开启。可见性光栅化沿用原有 meshlet indirect draw；延迟着色按材质
+执行 **indirect compute dispatch**，无需为屏幕空间着色重新绘制几何。
+
+```text
+VBuffer ID → Count → Allocate / indirect XYZ → Scatter → DispatchIndirect × material bins
+```
+
+- 按 GPUScene 到源材质的映射分箱；背景为 0，材质为 source material ID + 1。
+  ABeautifulGame 有 15 个源材质，对应 16 个箱。材质参数在 Inspector 修改后仍沿用该 ID。
+- Count 和 Scatter 在 wave 内反复取出一种材质，使用 ballot count / prefix count 聚合，
+  每个 wave 对其中一种材质仅做一次全局原子操作。混合材质 wave 和边界残余 lane 均参与正确计数。
+- Allocate 用 wave prefix sum 分配互不重叠的区间，同时生成每箱 3 个 uint 的 indirect 参数；
+  超过 65535 个 X 组时扩展到 Y。空箱的 X/Y 为 0，不执行着色。
+- 像素队列共占 `width × height × 4` 字节，计数、范围和参数另占每箱 24 字节，
+  无每材质预留整屏容量，也无 CPU 像素计数回读。最多支持 65535 个源材质。
+- Scratch buffer 按帧完成点复用并保留到 GPU 完成。阶段间显式同步 compute 读写，
+  参数输出转为 `IndirectArgument` 后才消费；分辨率变化会重建所需容量。
+- 同一入口按箱调度，保持材质选择在 wave 内一致；像素 RNG 种子与队列顺序无关。
+  `ComputeProgram::dispatchIndirectBatch` 为整批保留一份描述符表，每箱只更新 push 参数与间接参数偏移，
+  避免重复写入完整材质纹理描述符。
+  这不是每种材质生成独立 shader permutation，二次射线仍可能命中其他材质并发散。
+
+分箱需要计算阶段的 subgroup ballot 和 arithmetic 支持，运行时会检查能力。
+相关能力的定义见 [Vulkan subgroup limits](https://docs.vulkan.org/spec/latest/chapters/limits.html)。
+关闭 `materialBinning` 可使用相同着色估计器的整屏 8×8 dispatch 进行结果和性能对照。
+材质很少、分辨率很低或每箱像素很少时，分箱和多次提交的开销可能超过减少发散的收益。
 
 ## 接口与同步
 
@@ -46,9 +79,15 @@ VisibilityBufferPass 保持可见性职责：GPUScene 实例／meshlet 剔除、
 | `rasterInfo` | 必需，VisibilityBufferPass 发布的 HostUpload metadata buffer |
 | `color` | 始终为未曝光的线性 RGBA32F，接到公共曝光链路 |
 | `environmentSamples` | 每帧 1–256 次 OpenPBR 环境采样，默认 64 |
+| `materialBinning` | 默认 true，按源材质间接调度；false 为整屏对照路径 |
+| `transmissionSamples` | 透射表面每帧 1–16 个继续追踪样本，默认 2 |
+| `transmissionDepth` | 透射继续追踪深度 2–16，默认 8，包含光栅主命中 |
 | `accumulate` | 默认 true，可关闭以查看单帧延迟渲染结果 |
 | `debugDisableShadows` | 关闭直接光和环境遮挡，用于隔离 BSDF 差异 |
-| `debugView` | final、baseColor、geometryNormal、shadingNormal、tangent |
+| `debugDisableTransmission` | 关闭透射，用于对照玻璃和阴影效果 |
+| `debugDisableVolumeAttenuation` | 关闭体积吸收 |
+| `debugUseOpaqueShadows` | 使用二值遮挡对照阴影透射近似 |
+| `debugView` | final、baseColor、geometryNormal、shadingNormal、tangent、material |
 | `flipBitangent` | 与参考路径相同的材质 TBN 调试开关 |
 
 `rasterInfo` 包含实际观察相机、分辨率、scene identity 和 producer 类型。
@@ -63,21 +102,31 @@ Reference 和 VBuffer 通过 `cameraSyncGroup: "LookDevComparison"` 联动。
 
 - 支持 resident GPUScene 的 opaque 和 alpha-mask 材质；沿用 VBuffer 的单／双面及 LOD 路径。
   Stream page geometry 暂返回 Unsupported，避免将 stream record 当作 resident record 解释。
-- 两路使用同一 OpenPBR BSDF。延迟路径只计算可见表面的直接光与环境照明，
+- 两路使用同一 OpenPBR BSDF。延迟路径的不透明主表面只计算直接光与环境照明，
   参考路径默认每帧 4 spp、12 层反弹，因此凹槽、接触区和反射内的间接照明仍会不同。
 - 环境采样累积只增加着色样本，不对 VBuffer 的主表面做像素抖动／抗锯齿；
   轮廓可能与路径追踪参考的像素积分存在差异。
-- 当前未实现透明 BLEND 的排序合成、穿过玻璃后的场景折射或多次反弹透射。
-  环境阴影使用现有的二值 shadow query。
+- 支持 ABeautifulGame 的 `KHR_materials_transmission` 和 `KHR_materials_volume`，
+  以及已有的金属／粗糙度、法线、遮蔽、发光与颜色贴图。两种棋子顶部使用 OPAQUE alpha mode，
+  透射由 OpenPBR BSDF 处理；透明 BLEND 排序合成仍不支持。此次未增加 clearcoat / sheen 等资产未使用的扩展。
+- 该资产没有设置 attenuationDistance，按无限距离处理，不能仅根据 attenuationColor 期待体积吸收。
+  测试通过 Inspector 同一材质更新接口设定有限距离后验证吸收。
+- 透射路径是有限深度的混合渲染：不透明主表面的镜面反射仍只采样环境，
+  与完整路径追踪的间接照明、反射中的场景和焦散有差异。直线阴影透射不求解精确折射光源连接。
 - 纹理重建使用现有材质采样器和每三角形的 ray-cone LOD 尺度；
   参考路径使用每 primitive 的平均尺度，纹理缩小过滤可有差异。
 
 场景、HDRI、太阳和材质参考来源见 [OpenPbrLookDev.md](OpenPbrLookDev.md)。
-渲染图由 `Tools/BuildOpenPbrLookDev.py` 随参考场景一起生成。
+默认 shader ball 渲染图由 `Tools/BuildOpenPbrLookDev.py` 随参考场景一起生成。
+ABeautifulGame 图为 `Pipelines/Samples/lookdev_abeautiful_game.metallic_graph.json`，使用资产配套 HDRI，
+默认 8 次环境采样、2 次透射采样，以便交互比较。
 
 ## 验证
 
 ```powershell
+$env:METALLIC_VK_INTERNAL_PIPELINE_CACHE = "disabled"
+.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter material_binning_indirect_coverage --rhi-validation --output-dir .cache/validation/material-binning
+.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter visibility_buffer_abeautiful_game_transmission --rhi-validation --output-dir .cache/validation/material-binning
 .\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter visibility_buffer_deferred_openpbr --rhi-validation --output-dir rhi-test-output/vbuffer-lookdev
 ctest --test-dir cmake-build-debug-visual-studio -C Debug -R MetallicLookDevVBufferSmoke --output-on-failure
 ```
@@ -88,6 +137,24 @@ GPU 测试先用相同的 OpenPBR 直接光照比较光线／VBuffer 主可见�
 编辑器测试覆盖 Slider 拖动、相机联动与历史保留。
 
 回归测试关闭 Aftermath，覆盖正常驱动编译下的行为。
+分箱探针检查 258 个箱的计数、区间、逐像素唯一覆盖、无效 ID、空箱、尺寸变化和缓冲复用，
+并以超过 65535 个 X 组的单材质队列验证二维间接调度。
+ABeautifulGame 测试比较整屏／分箱的颜色、法线、材质 ID 和最终着色，检查透射开关、有限距离吸收及材质更新，
+生成 `ABeautifulGameComparison.png`、两路完整图及 `ABeautifulGameTiming.txt`。
+计时同时报告包含 CPU 提交与 readback 的 preview.render 墙钟时间，以及 Deferred 节点的 GPU timestamp。
+后者包含分箱和所有材质着色；两者不能互相替代。
+
+2026-09-10，RTX 5070 Ti / NVIDIA 616.64，Debug 构建、validation 开启、驱动内部缓存关闭，
+ABeautifulGame 的 15 个源材质，8 次环境采样、4 次透射采样、深度 8、关闭累积，
+预热后 12 帧的测量结果如下（毫秒）：
+
+| 分辨率 | 整屏 GPU / 端到端 | 分箱 GPU / 端到端 |
+| --- | --- | --- |
+| 385×257 | 0.565 / 6.581 | 0.630 / 6.554 |
+| 1280×720 | 0.901 / 8.138 | 1.136 / 8.128 |
+
+当前资产尚未体现分箱的 GPU 加速，端到端差异也不足以说明收益。分箱默认接入用于后续材质扩展和对比，
+不应据此宣称更快；可关闭该开关选择整屏路径。后续材质数量、着色复杂度和分辨率变化后应重新测量。
 
 ## Aftermath 排查
 

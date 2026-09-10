@@ -3,6 +3,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
 #include "Runtime/Render/SceneResourceManager.h"
 #include "Runtime/Render/SceneLightResources.h"
+#include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -630,10 +631,18 @@ public:
             if (visibilityDeferred_) {
                 settings.erase(settings.begin()); // Deferred resolve always exports physical HDR.
                 settings.push_back(runtimeIntSetting("environmentSamples", "OpenPBR Environment Samples", 64, 1, 256));
-                settings.push_back(runtimeBoolSetting("accumulate", "Accumulate Environment", true, true));
+                auto binning = runtimeBoolSetting("materialBinning", "Material Binning / Indirect Dispatch", true, true);
+                binning.rebuildGraph = true;
+                settings.push_back(binning);
+                settings.push_back(runtimeIntSetting("transmissionSamples", "Transmission Samples", 2, 1, 16, true));
+                settings.push_back(runtimeIntSetting("transmissionDepth", "Transmission Max Depth", 8, 2, 16, true));
+                settings.push_back(runtimeBoolSetting("debugDisableTransmission", "Disable Transmission", false, true));
+                settings.push_back(runtimeBoolSetting("debugDisableVolumeAttenuation", "Disable Volume Absorption", false, true));
+                settings.push_back(runtimeBoolSetting("debugUseOpaqueShadows", "Use Opaque Shadows", false, true));
+                settings.push_back(runtimeBoolSetting("accumulate", "Accumulate Lighting", true, true));
                 settings.push_back(runtimeEnumSetting("debugView", "Surface Debug", "final",
                     {{"Final", "final"}, {"Base Color", "baseColor"}, {"Geometry Normal", "geometryNormal"},
-                        {"Shading Normal", "shadingNormal"}, {"Tangent", "tangent"}}));
+                        {"Shading Normal", "shadingNormal"}, {"Tangent", "tangent"}, {"Material ID", "material"}}));
                 return settings; // Camera is supplied by rasterInfo, not a second editable camera.
             }
             appendCameraRuntimeSettings(settings, {0.0f, 0.2f, 2.5f}, {0.0f, 0.0f, 0.0f}, 50.0f, true);
@@ -751,6 +760,17 @@ public:
             true);
         return settings;
     }
+    Result prepare(const RenderGraphCompileContext& context, std::string& log) override
+    {
+        // Resource-only graph rebuilds reuse compiled passes. A scheduling toggle
+        // also changes the entry point, thread-group size and descriptor layout.
+        if (visibilityDeferred_ && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
+            compiledMaterialBinning_ != boolProperty(properties(), "materialBinning", true)) {
+            return compile(context, log);
+        }
+        return {};
+    }
+
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
@@ -803,7 +823,8 @@ public:
         const char* entryPointName = nullptr;
         if (visibilityDeferred_) {
             moduleName = "Features/VisibilityBuffer/VisibilityBufferDeferred";
-            entryPointName = "visibilityBufferDeferredMain";
+            entryPointName = boolProperty(properties(), "materialBinning", true)
+                ? "visibilityBufferDeferredBinnedMain" : "visibilityBufferDeferredMain";
         } else if (realtime_) {
             moduleName = "Features/Lighting/SceneRealtimeLighting";
             entryPointName = "sceneRealtimeLightingMain";
@@ -946,7 +967,8 @@ public:
             baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
             });
-        } else {
+        }
+        if (!realtime_ || visibilityDeferred_) {
             baseBindings.push_back({.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = 53, .kind = ComputeResourceBindingKind::SampledImage});
         }
@@ -955,6 +977,10 @@ public:
             baseBindings.push_back({.binding = 61, .kind = ComputeResourceBindingKind::SampledImage});
             for (uint32_t binding = 62; binding <= 69; ++binding) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
+            }
+            if (boolProperty(properties(), "materialBinning", true)) {
+                baseBindings.push_back({.binding = 70, .kind = ComputeResourceBindingKind::StorageBuffer});
+                baseBindings.push_back({.binding = 71, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
         }
         if (useOpenPBR) {
@@ -1386,6 +1412,7 @@ public:
 #endif
 
         compiledShaderKey_ = shaderKey;
+        compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
         return {};
     }
 
@@ -1455,7 +1482,7 @@ public:
             nrcSceneRevision_ = 0;
 #endif
         }
-        if (!realtime_) {
+        if (!realtime_ || visibilityDeferred_) {
             const auto& bounds = sceneResources_.bounds();
             const float3 center = bounds.valid ? bounds.center() : float3(0.0f);
             ReGIRBuildParameters sampling;
@@ -1593,6 +1620,8 @@ public:
             std::memcpy(push.viewport, info.viewport, sizeof(info.viewport));
             std::memcpy(push.clipOrtho, info.clipOrtho, sizeof(info.clipOrtho));
             push.samples = uintProperty(context.properties(), "environmentSamples", 64, 1, 256);
+            push.deferredSettings = (uintProperty(context.properties(), "transmissionSamples", 2, 1, 16) << 16u) |
+                (uintProperty(context.properties(), "transmissionDepth", 8, 2, 16) << 21u);
             visibilityView = visibility.view();
             visibilityDepthView = visibilityDepth.view();
         }
@@ -1702,10 +1731,12 @@ public:
             bindings.push_back(ComputeDispatchBinding{
                 .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,
             });
-        } else {
+        }
+        if (!realtime_ || visibilityDeferred_) {
             bindings.push_back({.binding = 52, .buffer = lights_.reGIRBuffer()});
             bindings.push_back({.binding = 53, .textureViews = punctualPdfViews, .textureViewCount = 1});
         }
+        MaterialBinningResult materialBins;
         if (visibilityDeferred_) {
             bindings.push_back({.binding = 60, .textureViews = &visibilityView, .textureViewCount = 1});
             bindings.push_back({.binding = 61, .textureViews = &visibilityDepthView, .textureViewCount = 1});
@@ -1715,6 +1746,22 @@ public:
             for (uint32_t i = 0; i < std::size(views); ++i) {
                 bindings.push_back({.binding = 62 + i, .buffer = views[i]->buffer,
                     .offset = views[i]->offset, .size = views[i]->size});
+            }
+            if (boolProperty(context.properties(), "materialBinning", true)) {
+                const auto& materialDesc = sceneResources_.materialBuffer()->desc();
+                if (materialDesc.structureStride == 0 || materialDesc.size / materialDesc.structureStride >= 65536u) {
+                    return makeError(Error::InvalidArgument);
+                }
+                std::string binningLog;
+                result = materialBinning_.record(*device_, context.commandBuffer(), {
+                    .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer,
+                    .instances = deferredViews->instances.buffer, .materials = deferredViews->materials.buffer,
+                    .width = push.width, .height = push.height,
+                    .materialCount = static_cast<uint32_t>(materialDesc.size / materialDesc.structureStride)},
+                    materialBins, binningLog);
+                if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
+                bindings.push_back({.binding = 70, .buffer = materialBins.bins});
+                bindings.push_back({.binding = 71, .buffer = materialBins.pixels});
             }
         }
         if (useOpenPBR) {
@@ -1817,6 +1864,20 @@ public:
                 return result;
             }
 #endif
+        } else if (materialBins.arguments != nullptr) {
+            // Each pixel belongs to exactly one bin, so dispatches write disjoint
+            // texels in color/history and need no inter-bin memory dependency.
+            // The graph's output barrier makes the entire batch visible downstream.
+            std::vector<ScenePathTracePush> binPushes(materialBins.binCount, push);
+            std::vector<ComputeIndirectDispatch> dispatches(materialBins.binCount);
+            for (uint32_t bin = 0; bin < materialBins.binCount; ++bin) {
+                binPushes[bin].deferredSettings = (push.deferredSettings & 0xffff0000u) | bin;
+                dispatches[bin] = {.pushData = &binPushes[bin], .argumentOffset = uint64_t(bin) * 12};
+            }
+            result = renderProgram->dispatchIndirectBatch({.commandBuffer = &context.commandBuffer(),
+                .bindings = bindings.data(), .bindingCount = static_cast<uint32_t>(bindings.size()),
+                .pushDataSize = sizeof(push), .indirectArguments = materialBins.arguments}, dispatches);
+            if (!result) { return result; }
         } else {
             result = renderProgram->dispatch(ComputeDispatchDesc{
                 .commandBuffer = &context.commandBuffer(),
@@ -1969,6 +2030,7 @@ private:
         sharcClearProgram_.clear();
         sharcResolveProgram_.clear();
         tonemapProgram_.clear();
+        materialBinning_.clear();
     }
 
     Result ensureCacheParamsBuffer(Device& device)
@@ -2843,6 +2905,8 @@ private:
 
     bool realtime_ = false;
     bool visibilityDeferred_ = false;
+    MaterialBinning materialBinning_;
+    bool compiledMaterialBinning_ = true;
     RenderGraphProperties deferredHistoryProperties_;
     SceneLightResources lights_;
     SceneResourceManager fallbackSceneResourceManager_;

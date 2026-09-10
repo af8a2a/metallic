@@ -484,11 +484,28 @@ bool ComputeProgram::valid() const
 
 Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
 {
+    return dispatchImpl(desc, {}, {});
+}
+
+Result ComputeProgram::dispatchIndirectBatch(const ComputeDispatchDesc& desc,
+    std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches)
+{
+    if (desc.indirectArguments == nullptr || dispatches.empty()) {
+        return makeError(Error::InvalidArgument);
+    }
+    ComputeDispatchDesc first = desc;
+    first.pushData = dispatches.front().pushData;
+    first.indirectOffset = dispatches.front().argumentOffset;
+    return dispatchImpl(first, dispatches, betweenDispatches);
+}
+
+Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
+    std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches)
+{
     if (!valid() ||
         desc.commandBuffer == nullptr ||
-        desc.groupCountX == 0 ||
-        desc.groupCountY == 0 ||
-        desc.groupCountZ == 0 ||
+        (desc.indirectArguments == nullptr &&
+         (desc.groupCountX == 0 || desc.groupCountY == 0 || desc.groupCountZ == 0)) ||
         desc.descriptorSetIndex >= impl_->descriptorSetCount ||
         (impl_->pushConstantSize > 0 &&
          (desc.pushData == nullptr || desc.pushDataSize != impl_->pushConstantSize)) ||
@@ -498,7 +515,22 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
     }
 
     std::shared_ptr<ComputeDescriptorTables> retainedTables;
+    if (desc.indirectArguments != nullptr &&
+        ((static_cast<uint32_t>(desc.indirectArguments->desc().usage) &
+          static_cast<uint32_t>(BufferUsageBits::Indirect)) == 0 ||
+         (desc.indirectOffset & 3u) != 0 ||
+         desc.indirectOffset > desc.indirectArguments->desc().size ||
+         3 * sizeof(uint32_t) > desc.indirectArguments->desc().size - desc.indirectOffset)) {
+        return makeError(Error::InvalidArgument);
+    }
     ComputeDescriptorTables* tables = impl_.get();
+    for (const auto& item : dispatches) {
+        if ((impl_->pushConstantSize > 0 && item.pushData == nullptr) ||
+            (item.argumentOffset & 3u) != 0 || item.argumentOffset > desc.indirectArguments->desc().size ||
+            3 * sizeof(uint32_t) > desc.indirectArguments->desc().size - item.argumentOffset) {
+            return makeError(Error::InvalidArgument);
+        }
+    }
     if (RenderFrameContext* frame = desc.commandBuffer->frameContext()) {
         if (!frame->recording()) {
             return makeError(Error::InvalidArgument);
@@ -701,9 +733,26 @@ Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
 
     desc.commandBuffer->bindBindlessHeap(*tables->heap);
     desc.commandBuffer->bindComputePipeline(*impl_->pipeline);
+    if (!dispatches.empty()) {
+        for (size_t index = 0; index < dispatches.size(); ++index) {
+            if (impl_->pushConstantSize > 0) {
+                std::memcpy(pushData.data(), dispatches[index].pushData, impl_->pushConstantSize);
+            }
+            desc.commandBuffer->pushBindlessData(pushData.data(), static_cast<uint32_t>(pushData.size()));
+            auto result = desc.commandBuffer->dispatchIndirect(*desc.indirectArguments, dispatches[index].argumentOffset);
+            if (!result) { return result; }
+            if (index + 1 < dispatches.size() && (betweenDispatches.bufferCount > 0 || betweenDispatches.textureCount > 0)) {
+                desc.commandBuffer->barrier(betweenDispatches);
+            }
+        }
+        return {};
+    }
     desc.commandBuffer->pushBindlessData(
         pushData.data(),
         static_cast<uint32_t>(pushData.size()));
+    if (desc.indirectArguments != nullptr) {
+        return desc.commandBuffer->dispatchIndirect(*desc.indirectArguments, desc.indirectOffset);
+    }
     desc.commandBuffer->dispatch(
         desc.groupCountX,
         desc.groupCountY,

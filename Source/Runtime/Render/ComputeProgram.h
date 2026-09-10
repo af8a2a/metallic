@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 
 namespace metallic::render {
@@ -59,6 +60,15 @@ struct ComputeDispatchDesc {
     uint32_t groupCountY = 1;
     uint32_t groupCountZ = 1;
     uint32_t descriptorSetIndex = 0;
+    // When present, GPU-generated counts replace groupCountX/Y/Z. The caller
+    // transitions this buffer to IndirectArgument and retains it until completion.
+    Buffer* indirectArguments = nullptr;
+    uint64_t indirectOffset = 0;
+};
+
+struct ComputeIndirectDispatch {
+    const void* pushData = nullptr;
+    uint64_t argumentOffset = 0;
 };
 
 class ComputeProgram {
@@ -76,8 +86,15 @@ public:
     void clear();
     bool valid() const;
     Result dispatch(const ComputeDispatchDesc& desc);
+    // Bind one immutable descriptor table for the batch. Every item supplies
+    // pushDataSize bytes and an offset into desc.indirectArguments. Optional
+    // barriers separate dispatches sharing writable resources.
+    Result dispatchIndirectBatch(const ComputeDispatchDesc& desc,
+        std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches = {});
 
 private:
+    Result dispatchImpl(const ComputeDispatchDesc& desc,
+        std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches);
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

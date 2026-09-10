@@ -1,5 +1,6 @@
 #include "../Lighting/OpenPBRDirectLighting.slang"
 #include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
+#include "../../Libraries/GPUDriven/MaterialBinningCommon.slang"
 
 [[vk::binding(60, 0)]] Texture2D<uint> gVisibility;
 [[vk::binding(61, 0)]] Texture2D<float> gVisibilityDepth;
@@ -11,6 +12,8 @@
 [[vk::binding(67, 0)]] StructuredBuffer<GPUDrivenPreviewGeometry> gRasterGeometries;
 [[vk::binding(68, 0)]] StructuredBuffer<GPUDrivenPreviewInstance> gRasterInstances;
 [[vk::binding(69, 0)]] StructuredBuffer<GPUDrivenPreviewMaterial> gRasterMaterials;
+[[vk::binding(70, 0)]] StructuredBuffer<MaterialBin> gMaterialBins;
+[[vk::binding(71, 0)]] StructuredBuffer<uint> gMaterialPixels;
 
 float3 rasterWorldPosition(GPUDrivenPreviewInstance instance, float3 position)
 {
@@ -120,14 +123,10 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
     return true;
 }
 
-// Primary visibility is entirely provided by rasterization. Rays in the shared
-// lighting function only test punctual/environment visibility, without GI bounces.
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void visibilityBufferDeferredMain(uint3 dispatchThreadId : SV_DispatchThreadID,
-    uniform ScenePathTracePush push)
+// Both scheduling paths share the exact per-pixel estimator and RNG seed.
+// Primary visibility stays rasterized, including for volume transmission.
+void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
 {
-    uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float2 samplePixel = float2(pixel) + 0.5;
     Ray ray;
@@ -136,9 +135,29 @@ void visibilityBufferDeferredMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     uint seed = hash(pixel.x + pixel.y * push.width +
         (push.enableAccumulation != 0u ? push.accumulationFrame * 0x9e3779b9u : 0u));
     HitInfo hit;
-    float3 radiance = reconstructVisibilitySurface(pixel, ray, push, hit)
-        ? shadeOpenPBRDirectSurface(ray, hit, samplePixel, push, seed, true)
-        : environmentRadiance(ray.direction, push, true);
+    float3 radiance;
+    if (!reconstructVisibilitySurface(pixel, ray, push, hit)) {
+        radiance = environmentRadiance(ray.direction, push, true);
+    } else if (gMaterials[hit.materialIndex].glassParams.x > 0.0 &&
+        !openPbrDebugFlag(push, kOpenPBRDebugDisableTransmission) &&
+        push.debugView == kOpenPBRDebugViewFinal) {
+        // Ray continuation is isolated to transmissive materials. Reusing the
+        // OpenPBR reference integrator preserves refraction, exit interfaces,
+        // total internal reflection, colored shadows and Beer-Lambert absorption.
+        ScenePathTracePush transmissionPush = push;
+        transmissionPush.maxDepth = clamp((push.deferredSettings >> 21u) & 31u, 2u, 16u);
+        uint samples = clamp((push.deferredSettings >> 16u) & 31u, 1u, 16u);
+        radiance = float3(0.0);
+        for (uint sample = 0u; sample < samples; ++sample) {
+            float ignoredDistance;
+            radiance += pathTraceOpenPBRWithPrimaryHit(ray,
+                primaryRayConeFromPixel(samplePixel, push), transmissionPush,
+                seed, ignoredDistance, true, hit);
+        }
+        radiance /= float(samples);
+    } else {
+        radiance = shadeOpenPBRDirectSurface(ray, hit, samplePixel, push, seed, true);
+    }
     if (push.enableAccumulation != 0u) {
         if (push.hasHistory != 0u) {
             radiance = lerp(gHistoryPrevious[pixel].rgb, radiance, 1.0 / float(push.accumulationFrame + 1u));
@@ -146,4 +165,26 @@ void visibilityBufferDeferredMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         gHistoryCurrent[pixel] = float4(radiance, 1.0);
     }
     gOutput[pixel] = float4(max(radiance, float3(0.0)), 1.0);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void visibilityBufferDeferredMain(uint3 dispatchId : SV_DispatchThreadID,
+    uniform ScenePathTracePush push)
+{
+    shadeVisibilityPixel(dispatchId.xy, push);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void visibilityBufferDeferredBinnedMain(uint3 dispatchId : SV_DispatchThreadID,
+    uniform ScenePathTracePush push)
+{
+    MaterialBin bin = gMaterialBins[push.deferredSettings & 0xffffu];
+    uint rowBase = dispatchId.y * kMaterialBinMaxGroupsX * kMaterialBinGroupSize;
+    // Check the padded final row before adding X, even near UINT32_MAX pixels.
+    if (rowBase >= bin.count || dispatchId.x >= bin.count - rowBase) { return; }
+    uint index = rowBase + dispatchId.x;
+    uint pixel = gMaterialPixels[bin.offset + index];
+    shadeVisibilityPixel(uint2(pixel % push.width, pixel / push.width), push);
 }

@@ -516,12 +516,14 @@ float3 openPbrPrimaryDebugColor(
     return float3(1.0, 0.0, 1.0);
 }
 
-float3 pathTraceOpenPBR(
+float3 pathTraceOpenPBRWithPrimaryHit(
     Ray ray,
     RayCone rayCone,
     ScenePathTracePush push,
     inout uint seed,
-    out float specularHitDistance)
+    out float specularHitDistance,
+    bool hasPrimaryHit,
+    HitInfo primaryHit)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
@@ -534,7 +536,14 @@ float3 pathTraceOpenPBR(
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
-        if (!traceClosest(ray, push, hit)) {
+        bool found;
+        if (depth == 0u && hasPrimaryHit) {
+            hit = primaryHit;
+            found = true;
+        } else {
+            found = traceClosest(ray, push, hit);
+        }
+        if (!found) {
             if (captureSpecularHitDistance) {
                 specularHitDistance = 65504.0;
                 captureSpecularHitDistance = false;
@@ -751,6 +760,16 @@ float3 pathTraceOpenPBR(
     }
 
     return radiance;
+}
+
+// Preserve the ray-primary reference API; the raster path supplies an authored
+// first hit while sharing BSDF sampling, nested IORs and volume attenuation.
+float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push,
+    inout uint seed, out float specularHitDistance)
+{
+    HitInfo unusedHit = {};
+    return pathTraceOpenPBRWithPrimaryHit(ray, rayCone, push, seed,
+        specularHitDistance, false, unusedHit);
 }
 
 [shader("compute")]

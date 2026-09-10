@@ -131,6 +131,8 @@ add_executable(MetallicRhiTests
     rhi/OpenPbrLookDevTests.cpp
     rhi/SliderDebugTests.cpp
     rhi/VisibilityBufferDeferredTests.cpp
+    rhi/MaterialBinningTests.cpp
+    rhi/DeferredTransmissionTests.cpp
     rhi/ClusterLightGridTests.cpp
     rhi/CommandSubmissionTests.cpp
     rhi/FrameContextTests.cpp

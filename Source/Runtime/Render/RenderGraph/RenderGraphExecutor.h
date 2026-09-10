@@ -136,6 +136,7 @@ public:
     uint32_t width() const;
     uint32_t height() const;
     const std::string& lastLog() const;
+    Result collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats);
 
 private:
     struct Impl;
