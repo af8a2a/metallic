@@ -584,12 +584,12 @@ sl::DLSSDOptions makeDlssRrBaseOptions(
     options.indicatorInvertAxisY = sl::Boolean::eFalse;
     options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
     options.alphaUpscalingEnabled = sl::Boolean::eFalse;
-    options.dlaaPreset = sl::DLSSDPreset::ePresetD;
-    options.qualityPreset = sl::DLSSDPreset::ePresetD;
-    options.balancedPreset = sl::DLSSDPreset::ePresetD;
-    options.performancePreset = sl::DLSSDPreset::ePresetD;
-    options.ultraPerformancePreset = sl::DLSSDPreset::ePresetD;
-    options.ultraQualityPreset = sl::DLSSDPreset::ePresetD;
+    options.dlaaPreset = sl::DLSSDPreset::ePresetF;
+    options.qualityPreset = sl::DLSSDPreset::ePresetF;
+    options.balancedPreset = sl::DLSSDPreset::ePresetF;
+    options.performancePreset = sl::DLSSDPreset::ePresetF;
+    options.ultraPerformancePreset = sl::DLSSDPreset::ePresetF;
+    options.ultraQualityPreset = sl::DLSSDPreset::ePresetF;
     return options;
 }
 

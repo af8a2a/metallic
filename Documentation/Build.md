@@ -12,9 +12,10 @@ cmake --preset metallic-dev
 cmake --build --preset metallic-dev --parallel 8
 ```
 
-This builds the editor with glTF support. OpenUSD/oneTBB, NRD denoising,
-NRC, NTC and Streamline are disabled; tests are off. USD files report an explicit
-unsupported-build error. To run the scene, task and debug tests in this profile:
+This builds the editor with glTF and Streamline DLSS support when the SDK is
+available. OpenUSD/oneTBB, NRD denoising, NRC and NTC are disabled; tests are off.
+USD files report an explicit unsupported-build error. The `metallic-ci` profile
+disables Streamline and enables the scene, task and debug tests:
 
 ```powershell
 cmake --preset metallic-ci
@@ -25,6 +26,32 @@ ctest --preset metallic-ci
 USD tests skip when USD is disabled; a separate test checks the disabled importer.
 Closing optional integrations changes which render passes can run. Use the full
 profile when working on those integrations.
+
+## Release and optimized debugging
+
+Native configure and build presets provide both optimized configurations:
+
+| Preset | CMake build type | Build directory |
+| --- | --- | --- |
+| `metallic-release` | `Release` | `build-release` |
+| `metallic-relwithdebinfo` | `RelWithDebInfo` | `build-relwithdebinfo` |
+
+Both inherit the `metallic-dev` feature settings, including Streamline DLSS,
+source dependencies and disabled tests. `RelWithDebInfo` enables optimization
+and native debug symbols. Each configuration has its own CMake cache and output
+directory.
+
+```powershell
+cmake --preset metallic-release
+cmake --build --preset metallic-release --parallel 8
+
+cmake --preset metallic-relwithdebinfo
+cmake --build --preset metallic-relwithdebinfo --parallel 8
+```
+
+In CLion, reload the CMake project and enable the desired preset in CMake
+settings. Select it as the active build profile; no manually derived Release
+profile or `CMAKE_BUILD_TYPE` override is needed.
 
 ## Full development with reusable dependencies
 

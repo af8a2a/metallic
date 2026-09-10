@@ -13,7 +13,7 @@
     },
     {
       "name": "metallic-dev",
-      "displayName": "Fast development (glTF, no heavy optional SDKs)",
+      "displayName": "Fast development (glTF and DLSS)",
       "inherits": "metallic-ninja",
       "binaryDir": "${sourceDir}/build-dev",
       "cacheVariables": {
@@ -23,8 +23,22 @@
         "METALLIC_ENABLE_NRD": false,
         "METALLIC_ENABLE_NRC": false,
         "METALLIC_ENABLE_NTC": false,
-        "METALLIC_ENABLE_STREAMLINE": false
+        "METALLIC_ENABLE_STREAMLINE": true
       }
+    },
+    {
+      "name": "metallic-release",
+      "displayName": "Release (glTF and DLSS)",
+      "inherits": "metallic-dev",
+      "binaryDir": "${sourceDir}/build-release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "metallic-relwithdebinfo",
+      "displayName": "RelWithDebInfo (glTF and DLSS)",
+      "inherits": "metallic-dev",
+      "binaryDir": "${sourceDir}/build-relwithdebinfo",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
     },
     {
       "name": "metallic-full",
@@ -46,7 +60,10 @@
       "displayName": "Scene/task/debug tests without optional SDKs",
       "inherits": "metallic-dev",
       "binaryDir": "${sourceDir}/build-ci",
-      "cacheVariables": { "METALLIC_BUILD_TESTS": true }
+      "cacheVariables": {
+        "METALLIC_BUILD_TESTS": true,
+        "METALLIC_ENABLE_STREAMLINE": false
+      }
     },
     {
       "name": "metallic-deps-debug",
@@ -58,6 +75,8 @@
   ],
   "buildPresets": [
     { "name": "metallic-dev", "configurePreset": "metallic-dev", "targets": ["Metallic"] },
+    { "name": "metallic-release", "configurePreset": "metallic-release", "targets": ["Metallic"] },
+    { "name": "metallic-relwithdebinfo", "configurePreset": "metallic-relwithdebinfo", "targets": ["Metallic"] },
     { "name": "metallic-full", "configurePreset": "metallic-full", "targets": ["Metallic", "MetallicSceneTests", "MetallicTaskTests", "MetallicDebugTests"] },
     { "name": "metallic-ci", "configurePreset": "metallic-ci", "targets": ["MetallicSceneTests", "MetallicTaskTests", "MetallicDebugTests"] },
     { "name": "metallic-deps-debug", "configurePreset": "metallic-deps-debug", "targets": ["MetallicDependencies"] }

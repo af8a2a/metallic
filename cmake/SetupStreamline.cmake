@@ -52,6 +52,7 @@ endfunction()
 
 function(metallic_streamline_is_usable sdk_root out_var)
     if(EXISTS "${sdk_root}/include/sl.h" AND
+       EXISTS "${sdk_root}/include/sl_version.h" AND
        EXISTS "${sdk_root}/include/sl_dlss.h" AND
        EXISTS "${sdk_root}/include/sl_dlss_d.h" AND
        EXISTS "${sdk_root}/lib/x64/sl.interposer.lib" AND
@@ -67,7 +68,33 @@ function(metallic_streamline_is_usable sdk_root out_var)
     endif()
 endfunction()
 
+function(metallic_streamline_sdk_version sdk_root out_var)
+    set(${out_var} "" PARENT_SCOPE)
+    if(NOT EXISTS "${sdk_root}/include/sl_version.h")
+        return()
+    endif()
+
+    file(READ "${sdk_root}/include/sl_version.h" METALLIC_STREAMLINE_VERSION_HEADER)
+    set(METALLIC_STREAMLINE_VERSION_PARTS "")
+    foreach(METALLIC_STREAMLINE_VERSION_PART MAJOR MINOR PATCH)
+        if(NOT METALLIC_STREAMLINE_VERSION_HEADER MATCHES
+           "#define[ \t]+SL_VERSION_${METALLIC_STREAMLINE_VERSION_PART}[ \t]+([0-9]+)")
+            return()
+        endif()
+        list(APPEND METALLIC_STREAMLINE_VERSION_PARTS "${CMAKE_MATCH_1}")
+    endforeach()
+    list(JOIN METALLIC_STREAMLINE_VERSION_PARTS "." METALLIC_STREAMLINE_VERSION)
+    set(${out_var} "${METALLIC_STREAMLINE_VERSION}" PARENT_SCOPE)
+endfunction()
+
 function(metallic_streamline_find_existing_sdk root out_var)
+    metallic_streamline_release_tag("${root}" METALLIC_STREAMLINE_EXPECTED_TAG)
+    if(METALLIC_STREAMLINE_EXPECTED_TAG MATCHES "^v([0-9]+\\.[0-9]+\\.[0-9]+)$")
+        set(METALLIC_STREAMLINE_EXPECTED_VERSION "${CMAKE_MATCH_1}")
+    else()
+        metallic_streamline_sdk_version("${root}" METALLIC_STREAMLINE_EXPECTED_VERSION)
+    endif()
+
     set(METALLIC_STREAMLINE_CANDIDATES
         "${root}"
         "${root}/_sdk"
@@ -76,6 +103,13 @@ function(metallic_streamline_find_existing_sdk root out_var)
     foreach(METALLIC_STREAMLINE_CANDIDATE IN LISTS METALLIC_STREAMLINE_CANDIDATES)
         metallic_streamline_is_usable("${METALLIC_STREAMLINE_CANDIDATE}" METALLIC_STREAMLINE_CANDIDATE_USABLE)
         if(METALLIC_STREAMLINE_CANDIDATE_USABLE)
+            # Updating the submodule must also refresh cached headers and DLLs.
+            metallic_streamline_sdk_version("${METALLIC_STREAMLINE_CANDIDATE}" METALLIC_STREAMLINE_CANDIDATE_VERSION)
+            if(NOT METALLIC_STREAMLINE_EXPECTED_VERSION STREQUAL "" AND
+               NOT METALLIC_STREAMLINE_CANDIDATE_VERSION STREQUAL METALLIC_STREAMLINE_EXPECTED_VERSION)
+                message(STATUS "Ignoring NVIDIA Streamline SDK ${METALLIC_STREAMLINE_CANDIDATE_VERSION} at ${METALLIC_STREAMLINE_CANDIDATE}; expected ${METALLIC_STREAMLINE_EXPECTED_VERSION}.")
+                continue()
+            endif()
             set(${out_var} "${METALLIC_STREAMLINE_CANDIDATE}" PARENT_SCOPE)
             return()
         endif()
@@ -170,6 +204,13 @@ function(metallic_streamline_download_sdk root out_var)
         return()
     endif()
 
+    metallic_streamline_sdk_version("${METALLIC_STREAMLINE_EXTRACTED_SDK_ROOT}" METALLIC_STREAMLINE_EXTRACTED_VERSION)
+    if(METALLIC_STREAMLINE_TAG MATCHES "^v([0-9]+\\.[0-9]+\\.[0-9]+)$" AND
+       NOT "v${METALLIC_STREAMLINE_EXTRACTED_VERSION}" STREQUAL METALLIC_STREAMLINE_TAG)
+        message(STATUS "NVIDIA Streamline auto-download failed: SDK version ${METALLIC_STREAMLINE_EXTRACTED_VERSION} does not match ${METALLIC_STREAMLINE_TAG}.")
+        return()
+    endif()
+
     file(MAKE_DIRECTORY "${root}/_sdk")
     file(COPY "${METALLIC_STREAMLINE_EXTRACTED_SDK_ROOT}/" DESTINATION "${root}/_sdk")
     set(${out_var} "${root}/_sdk" PARENT_SCOPE)
@@ -185,6 +226,11 @@ if(NOT WIN32)
     metallic_set_streamline_available(0)
     message(STATUS "NVIDIA Streamline skipped: this integration currently targets Windows/Vulkan.")
     return()
+endif()
+
+if(EXISTS "${METALLIC_STREAMLINE_ROOT}/include/sl_version.h")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${METALLIC_STREAMLINE_ROOT}/include/sl_version.h")
 endif()
 
 metallic_streamline_find_existing_sdk("${METALLIC_STREAMLINE_ROOT}" METALLIC_STREAMLINE_SDK_ROOT)
