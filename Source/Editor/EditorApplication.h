@@ -50,6 +50,7 @@ private:
     bool renderFrame();
     bool runMultiViewportSmokeTest();
     bool runSliderDebugSmokeTest();
+    bool runDlssCameraSmokeTest();
     bool runMaterialInspectorSmokeTest();
     void drawDockspace();
     void drawPanels();

@@ -2073,6 +2073,11 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_DLSS_CAMERA")) {
+            const bool passed = runDlssCameraSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_VIEWPORTS")) {
             const bool passed = runMultiViewportSmokeTest();
             shutdown();
@@ -4306,10 +4311,13 @@ void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties
         render::RenderGraphProperties runtimeProperties = candidate.runtimeProperties.is_object()
             ? candidate.runtimeProperties
             : render::RenderGraphProperties::object();
-        const render::RenderGraphProperties effectiveProperties = effectiveNodeProperties(candidate);
-        const uint32_t resetSerial = effectiveProperties.value("resetSerial", 0u);
         runtimeProperties["camera"] = camera;
-        runtimeProperties["resetSerial"] = resetSerial + 1u;
+        // DLSS reprojects its history using the previous camera and motion vectors.
+        // Resetting on every viewport movement prevents temporal reconstruction.
+        if (candidate.type == "NrdDenoisePass") {
+            const render::RenderGraphProperties effectiveProperties = effectiveNodeProperties(candidate);
+            runtimeProperties["resetSerial"] = effectiveProperties.value("resetSerial", 0u) + 1u;
+        }
         companionUpdated = renderGraph_.setNodeRuntimeProperties(
             candidate.id,
             std::move(runtimeProperties)) || companionUpdated;

@@ -10,6 +10,56 @@
 
 namespace metallic {
 
+bool EditorApplication::runDlssCameraSmokeTest()
+{
+    const auto expect = [](bool condition, const char* message) {
+        if (!condition) { spdlog::error("[Smoke DLSS Camera] {}", message); }
+        return condition;
+    };
+    auto* cameraNode = viewportCameraRenderGraphNode();
+    auto* dlssNode = renderGraph_.findNode("DlssRr");
+    if (!expect(cameraNode != nullptr && dlssNode != nullptr, "Find DLSS-RR camera and reconstruction pass")) {
+        return false;
+    }
+    const uint32_t cameraId = cameraNode->id;
+    const uint32_t dlssId = dlssNode->id;
+    auto properties = cameraNode->properties;
+    properties.merge_patch(cameraNode->runtimeProperties);
+    uint32_t resetSerial = 7;
+    renderGraph_.setNodeRuntimeProperty(dlssId, "resetSerial", resetSerial);
+    if (!renderFrame() || !expect(viewportPreviewValid_, "Initial RR frame renders")) { return false; }
+    const uint64_t historyRevision = historyResources_.invalidationRevision();
+    for (uint32_t frame = 0; frame < 16; ++frame) {
+        auto profileFrame = profiler_.beginFrame();
+        // Exercise both translation and rotation through the viewport's actual
+        // camera update path. An explicit user reset must remain independent.
+        auto& camera = properties["camera"];
+        camera["eye"][0] = camera["eye"][0].get<float>() + 0.002f;
+        if (frame < 8) {
+            camera["center"][0] = camera["center"][0].get<float>() + 0.002f;
+        }
+        if (frame == 8) {
+            ++resetSerial;
+            renderGraph_.setNodeRuntimeProperty(dlssId, "resetSerial", resetSerial);
+        }
+        applyBunnyCameraProperties(properties, "Smoke DLSS camera motion");
+        const auto* updatedDlss = renderGraph_.findNode(dlssId);
+        if (!expect(updatedDlss->runtimeProperties.value("resetSerial", 0u) == resetSerial,
+                "Camera motion preserves the DLSS reset counter") ||
+            !expect(updatedDlss->runtimeProperties.at("camera") ==
+                    renderGraph_.findNode(cameraId)->runtimeProperties.at("camera"),
+                "Producer and DLSS cameras stay synchronized") ||
+            !expect(!renderGraph_.dirty(), "Camera motion does not rebuild the graph")) {
+            return false;
+        }
+        if (!renderFrame() || !expect(viewportPreviewValid_, "Moving RR frame renders")) { return false; }
+    }
+    if (!expect(historyResources_.invalidationRevision() > historyRevision,
+            "Camera movement still invalidates non-reprojected accumulation")) { return false; }
+    spdlog::info("[Smoke DLSS Camera] Passed 16 moving RR frames, camera synchronization and explicit reset");
+    return true;
+}
+
 bool EditorApplication::runSliderDebugSmokeTest()
 {
     const auto expect = [](bool condition, const char* message) {

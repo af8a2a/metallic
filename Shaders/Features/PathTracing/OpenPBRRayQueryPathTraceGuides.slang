@@ -67,8 +67,8 @@ DlssRrGuideData evaluateOpenPbrDlssRrGuides(
 
     HitInfo hit;
     if (!traceClosest(ray, push, hit)) {
-        data.motionVector = motionVectorToPrevious(
-            ray.origin + ray.direction * max(push.clipOrtho.y, 1.0),
+        data.motionVector = skyMotionVectorToPrevious(
+            ray.direction,
             samplePixel,
             push);
         return data;

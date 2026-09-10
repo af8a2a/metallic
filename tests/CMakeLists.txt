@@ -35,6 +35,18 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)
 endif()
 
 if(WIN32)
+    if(METALLIC_ENABLE_STREAMLINE)
+        add_test(NAME MetallicEditorDlssCameraSmoke
+            COMMAND ${CMAKE_COMMAND}
+                "-DEDITOR_EXECUTABLE=$<TARGET_FILE:Metallic>"
+                "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/editor-dlss-camera"
+                "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunDlssCameraSmoke.cmake"
+        )
+        set_tests_properties(MetallicEditorDlssCameraSmoke PROPERTIES
+            LABELS "editor;dlss" TIMEOUT 90 RESOURCE_LOCK MetallicEditor
+        )
+    endif()
     add_test(NAME MetallicLookDevMaterialInspectorSmoke
         COMMAND ${CMAKE_COMMAND}
             "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
@@ -161,6 +173,7 @@ add_executable(MetallicRhiTests
     rhi/RhiTest.h
     rhi/BindlessBufferTests.cpp
     rhi/DescriptorHeapCodePatternTests.cpp
+    rhi/DlssMotionVectorTests.cpp
     rhi/AutoExposureTests.cpp
     rhi/OpenPbrLookDevTests.cpp
     rhi/SliderDebugTests.cpp

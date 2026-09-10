@@ -550,8 +550,25 @@ float2 motionVectorToPrevious(float3 worldPosition, float2 currentPixelCenter, S
         previousUv)) {
         return float2(0.0, 0.0);
     }
-    float2 currentUv = currentPixelCenter / float2(max(push.width, 1u), max(push.height, 1u));
+    // The hit came from the jittered primary ray. Subtract that same sample
+    // position so a stationary camera produces zero motion, as required by
+    // Streamline's motionVectorsJittered = false contract.
+    float2 samplePixel = currentPixelCenter + float2(push.jitterOffsetX, push.jitterOffsetY);
+    float2 currentUv = samplePixel / float2(max(push.width, 1u), max(push.height, 1u));
     return previousUv - currentUv;
+}
+
+float2 skyMotionVectorToPrevious(float3 direction, float2 currentPixelCenter, ScenePathTracePush push)
+{
+    // A sky direction is a point at infinity (w = 0). Project it relative to
+    // the previous eye so camera translation cannot create sky parallax.
+    if (push.upProjection.w > 0.5) {
+        return float2(0.0, 0.0);
+    }
+    return motionVectorToPrevious(
+        push.previousEye.xyz + direction * max(push.previousClipOrtho.y, 1.0),
+        currentPixelCenter,
+        push);
 }
 
 float3 approxSpecularIntegralGGX(float3 specularReflectance, float alpha, float cosTheta)
