@@ -21,6 +21,8 @@ class NrdDenoisePass final : public ComputePass {
 public:
     ~NrdDenoisePass() override = default;
 
+    bool supportsFrameOverlap() const override { return false; }
+
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
@@ -106,7 +108,7 @@ public:
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
     {
 #if !METALLIC_HAS_NRD
-        log = "NrdDenoisePass requires the NRD SDK target";
+        log = "NrdDenoisePass requires METALLIC_ENABLE_NRD=ON";
         return makeError(Error::Unsupported);
 #else
         if (context.device == nullptr) {
@@ -473,25 +475,25 @@ private:
         }
 
         NrdUserTexturePool pool{};
-        auto put = [&pool](nrd::ResourceType resource, TextureHandle texture) {
+        auto put = [&pool](denoising::ResourceType resource, TextureHandle texture) {
             pool[static_cast<size_t>(resource)] = NrdTextureRef{
                 .texture = texture.texture(),
                 .view = texture.view(),
             };
         };
-        put(nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST, noisyDiffuse);
-        put(nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST, noisySpecular);
-        put(nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST, denoisedDiffuse);
-        put(nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST, denoisedSpecular);
-        put(nrd::ResourceType::IN_NORMAL_ROUGHNESS, normalRoughness);
-        put(nrd::ResourceType::IN_MV, motionVectors);
-        put(nrd::ResourceType::IN_VIEWZ, viewZ);
-        put(nrd::ResourceType::IN_BASECOLOR_METALNESS, baseColorMetalness);
-        put(nrd::ResourceType::IN_DIFF_CONFIDENCE, diffuseConfidence);
-        put(nrd::ResourceType::IN_SPEC_CONFIDENCE, specularConfidence);
-        put(nrd::ResourceType::OUT_VALIDATION, validation);
-        put(nrd::ResourceType::IN_SIGNAL, noisyDiffuse);
-        put(nrd::ResourceType::OUT_SIGNAL, denoisedDiffuse);
+        put(denoising::ResourceType::IN_DIFF_RADIANCE_HITDIST, noisyDiffuse);
+        put(denoising::ResourceType::IN_SPEC_RADIANCE_HITDIST, noisySpecular);
+        put(denoising::ResourceType::OUT_DIFF_RADIANCE_HITDIST, denoisedDiffuse);
+        put(denoising::ResourceType::OUT_SPEC_RADIANCE_HITDIST, denoisedSpecular);
+        put(denoising::ResourceType::IN_NORMAL_ROUGHNESS, normalRoughness);
+        put(denoising::ResourceType::IN_MV, motionVectors);
+        put(denoising::ResourceType::IN_VIEWZ, viewZ);
+        put(denoising::ResourceType::IN_BASECOLOR_METALNESS, baseColorMetalness);
+        put(denoising::ResourceType::IN_DIFF_CONFIDENCE, diffuseConfidence);
+        put(denoising::ResourceType::IN_SPEC_CONFIDENCE, specularConfidence);
+        put(denoising::ResourceType::OUT_VALIDATION, validation);
+        put(denoising::ResourceType::IN_SIGNAL, noisyDiffuse);
+        put(denoising::ResourceType::OUT_SIGNAL, denoisedDiffuse);
 
         const uint16_t width = static_cast<uint16_t>(context.width());
         const uint16_t height = static_cast<uint16_t>(context.height());
@@ -512,17 +514,17 @@ private:
             return {};
         }
 
-        nrd_->setUserPoolTexture(nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST, *noisyDiffuse.texture(), *noisyDiffuse.view());
-        nrd_->setUserPoolTexture(nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST, *noisySpecular.texture(), *noisySpecular.view());
-        nrd_->setUserPoolTexture(nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST, *denoisedDiffuse.texture(), *denoisedDiffuse.view());
-        nrd_->setUserPoolTexture(nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST, *denoisedSpecular.texture(), *denoisedSpecular.view());
-        nrd_->setUserPoolTexture(nrd::ResourceType::IN_NORMAL_ROUGHNESS, *normalRoughness.texture(), *normalRoughness.view());
-        nrd_->setUserPoolTexture(nrd::ResourceType::IN_MV, *motionVectors.texture(), *motionVectors.view());
-        nrd_->setUserPoolTexture(nrd::ResourceType::IN_VIEWZ, *viewZ.texture(), *viewZ.view());
-        nrd_->setUserPoolTexture(nrd::ResourceType::IN_BASECOLOR_METALNESS, *baseColorMetalness.texture(), *baseColorMetalness.view());
-        nrd_->setUserPoolTexture(nrd::ResourceType::IN_DIFF_CONFIDENCE, *diffuseConfidence.texture(), *diffuseConfidence.view());
-        nrd_->setUserPoolTexture(nrd::ResourceType::IN_SPEC_CONFIDENCE, *specularConfidence.texture(), *specularConfidence.view());
-        nrd_->setUserPoolTexture(nrd::ResourceType::OUT_VALIDATION, *validation.texture(), *validation.view());
+        nrd_->setUserPoolTexture(denoising::ResourceType::IN_DIFF_RADIANCE_HITDIST, *noisyDiffuse.texture(), *noisyDiffuse.view());
+        nrd_->setUserPoolTexture(denoising::ResourceType::IN_SPEC_RADIANCE_HITDIST, *noisySpecular.texture(), *noisySpecular.view());
+        nrd_->setUserPoolTexture(denoising::ResourceType::OUT_DIFF_RADIANCE_HITDIST, *denoisedDiffuse.texture(), *denoisedDiffuse.view());
+        nrd_->setUserPoolTexture(denoising::ResourceType::OUT_SPEC_RADIANCE_HITDIST, *denoisedSpecular.texture(), *denoisedSpecular.view());
+        nrd_->setUserPoolTexture(denoising::ResourceType::IN_NORMAL_ROUGHNESS, *normalRoughness.texture(), *normalRoughness.view());
+        nrd_->setUserPoolTexture(denoising::ResourceType::IN_MV, *motionVectors.texture(), *motionVectors.view());
+        nrd_->setUserPoolTexture(denoising::ResourceType::IN_VIEWZ, *viewZ.texture(), *viewZ.view());
+        nrd_->setUserPoolTexture(denoising::ResourceType::IN_BASECOLOR_METALNESS, *baseColorMetalness.texture(), *baseColorMetalness.view());
+        nrd_->setUserPoolTexture(denoising::ResourceType::IN_DIFF_CONFIDENCE, *diffuseConfidence.texture(), *diffuseConfidence.view());
+        nrd_->setUserPoolTexture(denoising::ResourceType::IN_SPEC_CONFIDENCE, *specularConfidence.texture(), *specularConfidence.view());
+        nrd_->setUserPoolTexture(denoising::ResourceType::OUT_VALIDATION, *validation.texture(), *validation.view());
         return {};
     }
 
@@ -541,7 +543,7 @@ private:
         }
 
         const RenderGraphProperties& properties = context.properties();
-        nrd::CommonSettings commonSettings;
+        denoising::CommonSettings commonSettings;
         writeViewToClipMatrix(currentCamera, commonSettings.viewToClipMatrix);
         writeViewToClipMatrix(previousCamera, commonSettings.viewToClipMatrixPrev);
         writeWorldToViewMatrix(currentCamera, commonSettings.worldToViewMatrix);
@@ -558,11 +560,11 @@ private:
         commonSettings.rectSizePrev[0] = static_cast<uint16_t>(context.width());
         commonSettings.rectSizePrev[1] = static_cast<uint16_t>(context.height());
         commonSettings.frameIndex = frameIndex_;
-        commonSettings.timeDeltaBetweenFrames = floatProperty(properties, "timeDeltaSeconds", 1.0f / 60.0f, 0.0f, 1.0f);
+        commonSettings.timeDeltaBetweenFrames = 1000.0f * floatProperty(properties, "timeDeltaSeconds", 1.0f / 60.0f, 0.0f, 1.0f);
         commonSettings.denoisingRange = floatProperty(properties, "denoisingRange", 10000.0f, 0.0f, 1000000.0f);
         commonSettings.accumulationMode = frameIndex_ == 0
-            ? nrd::AccumulationMode::CLEAR_AND_RESTART
-            : nrd::AccumulationMode::CONTINUE;
+            ? denoising::AccumulationMode::CLEAR_AND_RESTART
+            : denoising::AccumulationMode::CONTINUE;
         commonSettings.isMotionVectorInWorldSpace = boolProperty(&properties, "motionVectorInWorldSpace", false);
         commonSettings.isBaseColorMetalnessAvailable = true;
         commonSettings.isHistoryConfidenceAvailable =
@@ -576,43 +578,33 @@ private:
         }
 
         if (denoiserMode == kNrdDenoiserModeReference) {
-            nrd_->setUserPoolTexture(nrd::ResourceType::IN_SIGNAL, *noisyDiffuse.texture(), *noisyDiffuse.view());
-            nrd_->setUserPoolTexture(nrd::ResourceType::OUT_SIGNAL, *denoisedDiffuse.texture(), *denoisedDiffuse.view());
-            nrd::Identifier referenceDiffuse = static_cast<nrd::Identifier>(nrd::Denoiser::REFERENCE);
-            result = nrd_->denoiseIdentifiers(
-                &referenceDiffuse,
-                1,
-                context.commandBuffer(),
-                *context.streamer());
+            nrd_->setUserPoolTexture(denoising::ResourceType::IN_SIGNAL, *noisyDiffuse.texture(), *noisyDiffuse.view());
+            nrd_->setUserPoolTexture(denoising::ResourceType::OUT_SIGNAL, *denoisedDiffuse.texture(), *denoisedDiffuse.view());
+            result = nrd_->denoiseReference(false, context.commandBuffer(), *context.streamer());
             if (!result) {
                 return result;
             }
 
-            nrd_->setUserPoolTexture(nrd::ResourceType::IN_SIGNAL, *noisySpecular.texture(), *noisySpecular.view());
-            nrd_->setUserPoolTexture(nrd::ResourceType::OUT_SIGNAL, *denoisedSpecular.texture(), *denoisedSpecular.view());
-            nrd::Identifier referenceSpecular = static_cast<nrd::Identifier>(nrd::Denoiser::REFERENCE) + 1;
-            return nrd_->denoiseIdentifiers(
-                &referenceSpecular,
-                1,
-                context.commandBuffer(),
-                *context.streamer());
+            nrd_->setUserPoolTexture(denoising::ResourceType::IN_SIGNAL, *noisySpecular.texture(), *noisySpecular.view());
+            nrd_->setUserPoolTexture(denoising::ResourceType::OUT_SIGNAL, *denoisedSpecular.texture(), *denoisedSpecular.view());
+            return nrd_->denoiseReference(true, context.commandBuffer(), *context.streamer());
         }
 
         if (denoiserMode == kNrdDenoiserModeRelax) {
-            nrd::RelaxSettings relaxSettings;
+            denoising::RelaxSettings relaxSettings;
             const uint32_t historyLength = uintProperty(
                 properties,
                 "relaxHistoryLength",
                 relaxSettings.diffuseMaxAccumulatedFrameNum,
                 0,
-                nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+                denoising::RELAX_MAX_HISTORY_FRAME_NUM);
             const uint32_t fastHistoryLength = std::min(
                 uintProperty(
                     properties,
                     "relaxFastHistoryLength",
                     relaxSettings.diffuseMaxFastAccumulatedFrameNum,
                     0,
-                    nrd::RELAX_MAX_HISTORY_FRAME_NUM),
+                    denoising::RELAX_MAX_HISTORY_FRAME_NUM),
                 historyLength);
             relaxSettings.diffuseMaxAccumulatedFrameNum = historyLength;
             relaxSettings.specularMaxAccumulatedFrameNum = historyLength;
@@ -651,7 +643,7 @@ private:
                 return result;
             }
         } else {
-            nrd::ReblurSettings reblurSettings;
+            denoising::ReblurSettings reblurSettings;
             result = nrd_->setReblurSettings(reblurSettings);
             if (!result) {
                 return result;

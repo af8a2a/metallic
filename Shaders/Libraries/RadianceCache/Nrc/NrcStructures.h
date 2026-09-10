@@ -245,7 +245,8 @@ struct NrcBuffers
     RWStructuredBuffer<NrcPackedQueryPathInfo> queryPathInfo;
     RWStructuredBuffer<NrcPackedTrainingPathInfo> trainingPathInfo;
     RWStructuredBuffer<NrcPackedPathVertex> trainingPathVertices;
-    RWStructuredBuffer<NrcRadianceParams> queryRadianceParams;
+    // The SDK consumes tightly packed 56-byte records (specular at byte 44).
+    RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> queryRadianceParams;
     RWStructuredBuffer<uint> countersData;
 };
 

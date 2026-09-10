@@ -6,6 +6,7 @@
 
 #include <array>
 #include <mutex>
+#include <utility>
 
 namespace metallic::render::vulkan {
 
@@ -83,19 +84,31 @@ void nrcMemoryLoggerCallback(nrc::MemoryEventType eventType, size_t size, const 
     }
 }
 
-// The NRC library is initialized once per process; contexts are per instance.
-struct NrcLibraryRefCount {
+// Keep SDK-global Vulkan objects alive across graph changes, then release them
+// before their device is destroyed. Pass lifetime is shorter than SDK lifetime.
+struct NrcLibrary {
     std::mutex mutex;
-    uint32_t count = 0;
+    bool initialized = false;
+    VkDevice device = VK_NULL_HANDLE;
 };
 
-NrcLibraryRefCount& nrcLibraryRefCount()
+NrcLibrary& nrcLibrary()
 {
-    static NrcLibraryRefCount refCount;
-    return refCount;
+    static NrcLibrary library;
+    return library;
 }
 
 } // namespace
+
+void shutdownNrcLibrary(VkDevice device)
+{
+    std::lock_guard<std::mutex> lock(nrcLibrary().mutex);
+    if (nrcLibrary().initialized && nrcLibrary().device == device) {
+        nrc::vulkan::Shutdown();
+        nrcLibrary().initialized = false;
+        nrcLibrary().device = VK_NULL_HANDLE;
+    }
+}
 
 NrcIntegration::NrcIntegration() = default;
 
@@ -104,8 +117,22 @@ NrcIntegration::~NrcIntegration()
     clear();
 }
 
-NrcIntegration::NrcIntegration(NrcIntegration&&) noexcept = default;
-NrcIntegration& NrcIntegration::operator=(NrcIntegration&&) noexcept = default;
+NrcIntegration::NrcIntegration(NrcIntegration&& other) noexcept
+{
+    *this = std::move(other);
+}
+
+NrcIntegration& NrcIntegration::operator=(NrcIntegration&& other) noexcept
+{
+    if (this != &other) {
+        clear();
+        context_ = std::exchange(other.context_, nullptr);
+        buffers_ = std::move(other.buffers_);
+        nativeBuffers_ = std::exchange(other.nativeBuffers_, nrc::vulkan::Buffers{});
+        contextSettings_ = std::exchange(other.contextSettings_, nrc::ContextSettings{});
+    }
+    return *this;
+}
 
 Result NrcIntegration::initialize(Device& device, std::string& log)
 {
@@ -122,8 +149,12 @@ Result NrcIntegration::initialize(Device& device, std::string& log)
     }
 
     {
-        std::lock_guard<std::mutex> lock(nrcLibraryRefCount().mutex);
-        if (nrcLibraryRefCount().count == 0) {
+        std::lock_guard<std::mutex> lock(nrcLibrary().mutex);
+        if (nrcLibrary().initialized && nrcLibrary().device != nativeDeviceInfo.device) {
+            log = "NRC is already initialized for another Vulkan device";
+            return makeError(Error::Unsupported);
+        }
+        if (!nrcLibrary().initialized) {
             nrc::GlobalSettings globalSettings;
             globalSettings.loggerFn = &nrcLoggerCallback;
             globalSettings.memoryLoggerFn = &nrcMemoryLoggerCallback;
@@ -139,8 +170,9 @@ Result NrcIntegration::initialize(Device& device, std::string& log)
                 log = nrcResultMessage("nrc::vulkan::Initialize", initStatus);
                 return resultFromNrc(initStatus);
             }
+            nrcLibrary().initialized = true;
+            nrcLibrary().device = nativeDeviceInfo.device;
         }
-        ++nrcLibraryRefCount().count;
     }
 
     nrc::vulkan::Context* context = nullptr;
@@ -168,16 +200,6 @@ void NrcIntegration::clear()
         buffer.reset();
     }
     nativeBuffers_ = nrc::vulkan::Buffers {};
-
-    {
-        std::lock_guard<std::mutex> lock(nrcLibraryRefCount().mutex);
-        if (nrcLibraryRefCount().count > 0) {
-            --nrcLibraryRefCount().count;
-            if (nrcLibraryRefCount().count == 0) {
-                nrc::vulkan::Shutdown();
-            }
-        }
-    }
 }
 
 bool NrcIntegration::valid() const

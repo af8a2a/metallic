@@ -23,17 +23,23 @@ render::RenderGraphNode* EditorApplication::viewportSliderDebugNode()
     auto* output = activePreviewRenderGraphNode();
     if (output == nullptr) { return nullptr; }
     std::vector<std::string> pending{output->name};
+    render::RenderGraphNode* inactiveNr = nullptr;
     for (size_t i = 0; i < pending.size(); ++i) {
         const std::string name = pending[i];
         auto* node = renderGraph_.findNode(name);
         if (node != nullptr && node->type == "SliderDebugPass") { return node; }
+        if (node != nullptr && node->type == "DlssNrPass") {
+            if (sliderProperties(*node).value("sliderDebug", false)) { return node; }
+            if (inactiveNr == nullptr) { inactiveNr = node; }
+        }
         for (const auto& edge : renderGraph_.edges()) {
             if (edge.dstPass == name && std::find(pending.begin(), pending.end(), edge.srcPass) == pending.end()) {
                 pending.push_back(edge.srcPass);
             }
         }
     }
-    return nullptr;
+    // Keep the NR checkbox accessible while its divider is disabled.
+    return inactiveNr;
 }
 
 void EditorApplication::setSliderDebugProperty(
@@ -58,6 +64,14 @@ void EditorApplication::drawSliderDebugControls()
     bool horizontal = properties.value("orientation", "vertical") == "horizontal";
     bool swap = properties.value("swapSides", false);
     ImGui::PushID("SliderDebugControls");
+    if (node->type == "DlssNrPass") {
+        bool enabled = properties.value("sliderDebug", false);
+        if (ImGui::Checkbox("DLSS-NR Slider Debug", &enabled)) {
+            setSliderDebugProperty(node->id, "sliderDebug", enabled);
+        }
+        if (!enabled) { ImGui::PopID(); return; }
+        ImGui::SameLine();
+    }
     ImGui::TextUnformatted("Compare");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(140.0f * mainScale_);
@@ -83,6 +97,10 @@ bool EditorApplication::drawSliderDebugOverlay(const ImVec2& min, const ImVec2& 
         return false;
     }
     const auto properties = sliderProperties(*node);
+    if (node->type == "DlssNrPass" && !properties.value("sliderDebug", false)) {
+        sliderDragNodeId_ = 0;
+        return false;
+    }
     float split = properties.value("splitPosition", 0.5f);
     split = std::isfinite(split) ? std::clamp(split, 0.0f, 1.0f) : 0.5f;
     const bool horizontal = properties.value("orientation", "vertical") == "horizontal";
@@ -110,6 +128,10 @@ bool EditorApplication::drawSliderDebugOverlay(const ImVec2& min, const ImVec2& 
     }
 
     std::string labelA = "A", labelB = "B";
+    if (node->type == "DlssNrPass") {
+        labelA = "A: Before DLSS-NR";
+        labelB = "B: After DLSS-NR";
+    }
     for (const auto& edge : renderGraph_.edges()) {
         if (edge.dstPass != node->name) { continue; }
         if (edge.dstField == "sourceA") { labelA += ": " + edge.srcPass; }

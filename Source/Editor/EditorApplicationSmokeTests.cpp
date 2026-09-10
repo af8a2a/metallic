@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -9,6 +10,60 @@
 #include <cmath>
 
 namespace metallic {
+
+bool EditorApplication::runDlssCameraSmokeTest()
+{
+    const auto expect = [](bool condition, const char* message) {
+        if (!condition) { spdlog::error("[Smoke DLSS Camera] {}", message); }
+        return condition;
+    };
+    auto* cameraNode = viewportCameraRenderGraphNode();
+    auto* dlssNode = renderGraph_.findNode("DlssRr");
+    if (!expect(cameraNode != nullptr && dlssNode != nullptr, "Find DLSS-RR camera and reconstruction pass")) {
+        return false;
+    }
+    const uint32_t cameraId = cameraNode->id;
+    const uint32_t dlssId = dlssNode->id;
+    auto properties = cameraNode->properties;
+    properties.merge_patch(cameraNode->runtimeProperties);
+    uint32_t resetSerial = 7;
+    renderGraph_.setNodeRuntimeProperty(dlssId, "resetSerial", resetSerial);
+    const auto renderDlssFrame = [&]() {
+        const render::vulkan::StreamlineFrameScope streamlineFrame;
+        return renderFrame();
+    };
+    if (!renderDlssFrame() || !expect(viewportPreviewValid_, "Initial RR frame renders")) { return false; }
+    const uint64_t historyRevision = historyResources_.invalidationRevision();
+    for (uint32_t frame = 0; frame < 16; ++frame) {
+        auto profileFrame = profiler_.beginFrame();
+        // Exercise both translation and rotation through the viewport's actual
+        // camera update path. An explicit user reset must remain independent.
+        auto& camera = properties["camera"];
+        camera["eye"][0] = camera["eye"][0].get<float>() + 0.002f;
+        if (frame < 8) {
+            camera["center"][0] = camera["center"][0].get<float>() + 0.002f;
+        }
+        if (frame == 8) {
+            ++resetSerial;
+            renderGraph_.setNodeRuntimeProperty(dlssId, "resetSerial", resetSerial);
+        }
+        applyBunnyCameraProperties(properties, "Smoke DLSS camera motion");
+        const auto* updatedDlss = renderGraph_.findNode(dlssId);
+        if (!expect(updatedDlss->runtimeProperties.value("resetSerial", 0u) == resetSerial,
+                "Camera motion preserves the DLSS reset counter") ||
+            !expect(updatedDlss->runtimeProperties.at("camera") ==
+                    renderGraph_.findNode(cameraId)->runtimeProperties.at("camera"),
+                "Producer and DLSS cameras stay synchronized") ||
+            !expect(!renderGraph_.dirty(), "Camera motion does not rebuild the graph")) {
+            return false;
+        }
+        if (!renderDlssFrame() || !expect(viewportPreviewValid_, "Moving RR frame renders")) { return false; }
+    }
+    if (!expect(historyResources_.invalidationRevision() > historyRevision,
+            "Camera movement still invalidates non-reprojected accumulation")) { return false; }
+    spdlog::info("[Smoke DLSS Camera] Passed 16 moving RR frames, camera synchronization and explicit reset");
+    return true;
+}
 
 bool EditorApplication::runSliderDebugSmokeTest()
 {
@@ -23,6 +78,8 @@ bool EditorApplication::runSliderDebugSmokeTest()
     const uint32_t sliderId = slider->id;
     const uint64_t historyRevision = historyResources_.invalidationRevision();
     const auto split = [&] { return renderGraph_.findNode(sliderId)->runtimeProperties.value("splitPosition", 0.5f); };
+    const bool nrComparison = slider->type == "DlssNrPass";
+    if (nrComparison) { setSliderDebugProperty(sliderId, "sliderDebug", true); }
     // Drive real ImGui input transitions through the overlay without depending on
     // the desktop's saved docking layout or moving the user's physical cursor.
     auto overlayFrame = [&](float x, float y, bool down, bool alt = false) {
@@ -59,6 +116,20 @@ bool EditorApplication::runSliderDebugSmokeTest()
     overlayFrame(300, 175, false, false);
     if (!expect(historyResources_.invalidationRevision() == historyRevision && !renderGraph_.dirty(),
             "Slider controls preserve accumulation and compiled graph")) { return false; }
+
+    if (nrComparison) {
+        if (!expect(renderFrame(), "NR comparison renders after dragging")) { return false; }
+        setSliderDebugProperty(sliderId, "sliderDebug", false);
+        if (!expect(!overlayFrame(300, 175, true) && sliderDragNodeId_ == 0,
+                "Disabled NR comparison does not capture the mouse") ||
+            !expect(historyResources_.invalidationRevision() == historyRevision && !renderGraph_.dirty(),
+                "NR comparison toggles preserve history")) { return false; }
+        overlayFrame(300, 175, false);
+        activePreviewOutput_ = cameraNode->name + ".color";
+        if (!expect(viewportSliderDebugNode() == nullptr, "NR input preview has no comparison controls")) { return false; }
+        spdlog::info("[Smoke Slider] Passed DLSS-NR toggle, GPU viewport, drag, axes, camera gestures and history retention");
+        return true;
+    }
 
     auto cameraProperties = cameraNode->properties;
     cameraProperties.merge_patch(cameraNode->runtimeProperties);
@@ -188,6 +259,9 @@ bool EditorApplication::runMultiViewportSmokeTest()
             destroyViewportTexture();
         }
 
+        const render::vulkan::StreamlineFrameScope streamlineFrame(
+            (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) == 0 &&
+            ImGui::GetPlatformIO().Viewports.Size <= 1);
         pollEvents();
         const uint64_t before = submittedFrameIndex_;
         if (!renderFrame() || !expect(running_ && submittedFrameIndex_ == before + 1,

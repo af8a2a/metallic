@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <type_traits>
@@ -16,6 +17,9 @@
 #ifndef METALLIC_HAS_STREAMLINE
 #define METALLIC_HAS_STREAMLINE 0
 #endif
+#ifndef METALLIC_HAS_NV_LOW_LATENCY
+#define METALLIC_HAS_NV_LOW_LATENCY 0
+#endif
 
 #if METALLIC_HAS_STREAMLINE
 #include <sl.h>
@@ -23,6 +27,9 @@
 #include <sl_dlss_d.h>
 #include <sl_helpers_vk.h>
 #include <sl_matrix_helpers.h>
+#if METALLIC_HAS_NV_LOW_LATENCY
+#include <sl_reflex.h>
+#endif
 #endif
 
 namespace metallic::render::vulkan {
@@ -43,7 +50,21 @@ struct StreamlineState {
     bool dlssSrSupported = false;
     bool dlssRrSupported = false;
     bool descriptorHeapWorkaroundEnabled = false;
-    uint32_t frameIndex = 0;
+    uint32_t frameIndex = 1;
+    sl::FrameToken* activeFrameToken = nullptr;
+#if METALLIC_HAS_NV_LOW_LATENCY
+    PFun_slReflexSleep* reflexSleep = nullptr;
+    PFun_slReflexSetOptions* reflexSetOptions = nullptr;
+    PFun_slReflexGetState* reflexGetState = nullptr;
+    PFun_slPCLSetMarker* pclSetMarker = nullptr;
+    StreamlineReflexStatus reflexStatus;
+    StreamlineReflexOptions appliedReflexOptions;
+    bool reflexOptionsApplied = false;
+    bool latencyFrameActive = false;
+    bool simulationOpen = false;
+    bool renderSubmitOpen = false;
+    bool presentOpen = false;
+#endif
     sl::ViewportHandle viewport{0};
     VkDevice vulkanDevice = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
@@ -200,6 +221,112 @@ Result resultFromSl(sl::Result result, const char* label, std::string& log)
     log += slResultName(result);
     return makeError(errorFromSl(result));
 }
+
+Result getEvaluationFrameToken(StreamlineState& state, sl::FrameToken*& token, std::string& log)
+{
+    token = state.activeFrameToken;
+    if (token != nullptr) {
+        return {};
+    }
+    const uint32_t frameIndex = state.frameIndex++;
+    return resultFromSl(slGetNewFrameToken(token, &frameIndex), "slGetNewFrameToken", log);
+}
+
+#if METALLIC_HAS_NV_LOW_LATENCY
+// sl.common owns NvLowLatencyVk's device, sleep semaphore and library lifetime.
+// Going through Reflex avoids a second NvLL_VK_InitLowLatencyDevice on that device.
+void disableReflex(StreamlineState& state, const char* operation, sl::Result result)
+{
+    spdlog::warn("[Reflex] {} failed: {}; low latency disabled", operation, slResultName(result));
+    if (state.reflexSetOptions != nullptr) {
+        const sl::ReflexOptions off;
+        (void)state.reflexSetOptions(off);
+    }
+    state.reflexSleep = nullptr;
+    state.reflexSetOptions = nullptr;
+    state.reflexGetState = nullptr;
+    state.reflexStatus.available = false;
+    state.reflexStatus.latencyReportAvailable = false;
+}
+
+void refreshReflexStatus(StreamlineState& state)
+{
+    if (state.reflexGetState == nullptr) {
+        return;
+    }
+    sl::ReflexState nativeState;
+    const sl::Result result = state.reflexGetState(nativeState);
+    if (result != sl::Result::eOk) {
+        disableReflex(state, "slReflexGetState", result);
+        return;
+    }
+    auto& status = state.reflexStatus;
+    status.available = nativeState.lowLatencyAvailable;
+    status.latencyReportAvailable = false;
+    if (!status.suspended && nativeState.latencyReportAvailable) {
+        // The SDK may return zero-filled reports during its warm-up period.
+        const auto& report = nativeState.frameReport[sl::kReflexFrameReportCount - 1];
+        if (report.simStartTime != 0 && report.simEndTime >= report.simStartTime &&
+            report.renderSubmitStartTime >= report.simEndTime &&
+            report.renderSubmitEndTime >= report.renderSubmitStartTime &&
+            report.presentStartTime >= report.renderSubmitEndTime &&
+            report.presentEndTime >= report.presentStartTime && report.gpuRenderStartTime != 0 &&
+            report.gpuRenderEndTime >= report.gpuRenderStartTime &&
+            report.gpuRenderEndTime >= report.simStartTime) {
+            status.latencyReportAvailable = true;
+            status.reportFrameId = report.frameID;
+            status.renderLatencyMs = static_cast<double>(report.gpuRenderEndTime - report.simStartTime) / 1000.0;
+            status.gpuRenderMs = static_cast<double>(report.gpuRenderEndTime - report.gpuRenderStartTime) / 1000.0;
+        }
+    }
+}
+
+void emitLatencyMarker(StreamlineState& state, sl::PCLMarker marker)
+{
+    if (!state.latencyFrameActive || state.activeFrameToken == nullptr || state.pclSetMarker == nullptr) {
+        return;
+    }
+    const sl::Result result = state.pclSetMarker(marker, *state.activeFrameToken);
+    if (result != sl::Result::eOk) {
+        disableReflex(state, "slPCLSetMarker", result);
+        state.pclSetMarker = nullptr;
+        state.latencyFrameActive = false;
+    }
+}
+
+void initializeReflex(StreamlineState& state, const sl::AdapterInfo& adapterInfo)
+{
+    if (slIsFeatureSupported(sl::kFeatureReflex, adapterInfo) != sl::Result::eOk ||
+        slIsFeatureSupported(sl::kFeaturePCL, adapterInfo) != sl::Result::eOk) {
+        spdlog::info("[Reflex] Unavailable on the current Vulkan device");
+        return;
+    }
+    const auto import = [](sl::Feature feature, const char* name, auto& function) {
+        return slGetFeatureFunction(feature, name, reinterpret_cast<void*&>(function)) == sl::Result::eOk;
+    };
+    if (!import(sl::kFeatureReflex, "slReflexSleep", state.reflexSleep) ||
+        !import(sl::kFeatureReflex, "slReflexSetOptions", state.reflexSetOptions) ||
+        !import(sl::kFeatureReflex, "slReflexGetState", state.reflexGetState) ||
+        !import(sl::kFeaturePCL, "slPCLSetMarker", state.pclSetMarker)) {
+        disableReflex(state, "Import Reflex/PCL functions", sl::Result::eErrorFeatureMissing);
+        state.pclSetMarker = nullptr;
+        return;
+    }
+    if (const char* mode = std::getenv("METALLIC_REFLEX_MODE")) {
+        if (std::strcmp(mode, "off") == 0) {
+            state.reflexStatus.options.mode = StreamlineReflexMode::Off;
+        } else if (std::strcmp(mode, "boost") == 0) {
+            state.reflexStatus.options.mode = StreamlineReflexMode::Boost;
+        } else if (std::strcmp(mode, "on") != 0) {
+            spdlog::warn("[Reflex] Ignoring METALLIC_REFLEX_MODE='{}'; expected off, on or boost", mode);
+        }
+    }
+    refreshReflexStatus(state);
+    spdlog::info("[Reflex] NvLowLatencyVk via Streamline: {} (mode {})",
+        state.reflexStatus.available ? "available" : "unavailable",
+        static_cast<uint32_t>(state.reflexStatus.options.mode));
+}
+#endif
 
 bool isUnsupportedStateTrackingHookWarning(const char* message)
 {
@@ -584,12 +711,12 @@ sl::DLSSDOptions makeDlssRrBaseOptions(
     options.indicatorInvertAxisY = sl::Boolean::eFalse;
     options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
     options.alphaUpscalingEnabled = sl::Boolean::eFalse;
-    options.dlaaPreset = sl::DLSSDPreset::ePresetD;
-    options.qualityPreset = sl::DLSSDPreset::ePresetD;
-    options.balancedPreset = sl::DLSSDPreset::ePresetD;
-    options.performancePreset = sl::DLSSDPreset::ePresetD;
-    options.ultraPerformancePreset = sl::DLSSDPreset::ePresetD;
-    options.ultraQualityPreset = sl::DLSSDPreset::ePresetD;
+    options.dlaaPreset = sl::DLSSDPreset::ePresetF;
+    options.qualityPreset = sl::DLSSDPreset::ePresetF;
+    options.balancedPreset = sl::DLSSDPreset::ePresetF;
+    options.performancePreset = sl::DLSSDPreset::ePresetF;
+    options.ultraPerformancePreset = sl::DLSSDPreset::ePresetF;
+    options.ultraQualityPreset = sl::DLSSDPreset::ePresetF;
     return options;
 }
 
@@ -932,6 +1059,10 @@ Result initializeStreamlinePreDevice(std::string& log)
     const sl::Feature features[] = {
         sl::kFeatureDLSS,
         sl::kFeatureDLSS_RR,
+#if METALLIC_HAS_NV_LOW_LATENCY
+        sl::kFeatureReflex,
+        sl::kFeaturePCL,
+#endif
     };
 
     sl::Preferences preferences;
@@ -940,7 +1071,7 @@ Result initializeStreamlinePreDevice(std::string& log)
     // Leave projectId/engineVersion empty so NGX uses the registered applicationId.
     preferences.applicationId = 231313132;
     // Leave pathsToPlugins unset so Streamline scans the executable directory,
-    // where the build deploys only the DLSS-SR/DLSS-RR plugin set; Streamline
+    // where the build deploys only the supported DLSS/Reflex/PCL set; Streamline
     // loads and signature-verifies every sl.*.dll it finds there before
     // filtering by requested features.
     preferences.featuresToLoad = features;
@@ -1021,7 +1152,175 @@ Result setStreamlineVulkanDevice(
         log += "slIsFeatureSupported(kFeatureDLSS_RR) returned ";
         log += slResultName(dlssRrSupportResult);
     }
+#if METALLIC_HAS_NV_LOW_LATENCY
+    initializeReflex(state, adapterInfo);
+#endif
     return {};
+#endif
+}
+
+StreamlineReflexStatus streamlineReflexStatus()
+{
+#if METALLIC_HAS_STREAMLINE && METALLIC_HAS_NV_LOW_LATENCY
+    std::lock_guard lock(streamlineMutex());
+    return streamlineState().reflexStatus;
+#else
+    return {};
+#endif
+}
+
+Result setStreamlineReflexOptions(const StreamlineReflexOptions& options)
+{
+    if (options.mode != StreamlineReflexMode::Off && options.mode != StreamlineReflexMode::On &&
+        options.mode != StreamlineReflexMode::Boost) {
+        return makeError(Error::InvalidArgument);
+    }
+#if METALLIC_HAS_STREAMLINE && METALLIC_HAS_NV_LOW_LATENCY
+    std::lock_guard lock(streamlineMutex());
+    auto& state = streamlineState();
+    if (!state.reflexStatus.available || state.reflexSetOptions == nullptr) {
+        return makeError(Error::Unsupported);
+    }
+    // Apply before the next sleep, rather than changing settings midway through a frame.
+    state.reflexStatus.options = options;
+    return {};
+#else
+    return makeError(Error::Unsupported);
+#endif
+}
+
+StreamlineFrameScope::StreamlineFrameScope(bool allowLatency)
+{
+#if METALLIC_HAS_STREAMLINE
+    std::lock_guard lock(streamlineMutex());
+    auto& state = streamlineState();
+    if (!state.initialized || !state.vulkanDeviceSet || state.activeFrameToken != nullptr) {
+        return;
+    }
+    std::string log;
+    sl::FrameToken* token = nullptr;
+    if (!getEvaluationFrameToken(state, token, log) || token == nullptr) {
+        spdlog::warn("[Streamline] Cannot begin application frame: {}", log);
+        return;
+    }
+    state.activeFrameToken = token;
+    active_ = true;
+#if METALLIC_HAS_NV_LOW_LATENCY
+    state.reflexStatus.suspended = !allowLatency;
+    if (!allowLatency) {
+        state.reflexStatus.latencyReportAvailable = false;
+    }
+    StreamlineReflexOptions effectiveOptions = state.reflexStatus.options;
+    if (!allowLatency) {
+        effectiveOptions = {StreamlineReflexMode::Off, 0};
+    }
+    if (state.reflexSetOptions != nullptr &&
+        (!state.reflexOptionsApplied || state.appliedReflexOptions != effectiveOptions)) {
+        sl::ReflexOptions options;
+        options.mode = effectiveOptions.mode == StreamlineReflexMode::Boost
+            ? sl::ReflexMode::eLowLatencyWithBoost
+            : effectiveOptions.mode == StreamlineReflexMode::On
+                ? sl::ReflexMode::eLowLatency : sl::ReflexMode::eOff;
+        options.frameLimitUs = effectiveOptions.frameLimitUs;
+        const auto result = state.reflexSetOptions(options);
+        if (result == sl::Result::eOk) {
+            state.appliedReflexOptions = effectiveOptions;
+            state.reflexOptionsApplied = true;
+            spdlog::info("[Reflex] Applied mode {}, frame interval {} us{}",
+                static_cast<uint32_t>(effectiveOptions.mode), effectiveOptions.frameLimitUs,
+                allowLatency ? "" : " (suspended)");
+        } else {
+            disableReflex(state, "slReflexSetOptions", result);
+        }
+    }
+    // The plugin invokes NvLL_VK_Sleep and waits on its timeline semaphore.
+    // Keep calling even in Off mode so driver frame limiting and PCL still work.
+    if (allowLatency && state.reflexSleep != nullptr) {
+        const auto result = state.reflexSleep(*token);
+        if (result != sl::Result::eOk) {
+            disableReflex(state, "slReflexSleep", result);
+        }
+    }
+    if (state.frameIndex % 60 == 0) {
+        refreshReflexStatus(state);
+    }
+    state.latencyFrameActive = allowLatency && state.pclSetMarker != nullptr;
+    state.simulationOpen = state.latencyFrameActive;
+    emitLatencyMarker(state, sl::PCLMarker::eSimulationStart);
+#else
+    (void)allowLatency;
+#endif
+#else
+    (void)allowLatency;
+#endif
+}
+
+StreamlineFrameScope::~StreamlineFrameScope()
+{
+#if METALLIC_HAS_STREAMLINE
+    if (!active_) {
+        return;
+    }
+    std::lock_guard lock(streamlineMutex());
+    auto& state = streamlineState();
+#if METALLIC_HAS_NV_LOW_LATENCY
+    // Close only phases that actually started, including early-return/cancel paths.
+    if (state.simulationOpen) {
+        emitLatencyMarker(state, sl::PCLMarker::eSimulationEnd);
+    }
+    if (state.renderSubmitOpen) {
+        emitLatencyMarker(state, sl::PCLMarker::eRenderSubmitEnd);
+    }
+    if (state.presentOpen) {
+        emitLatencyMarker(state, sl::PCLMarker::ePresentEnd);
+    }
+    state.simulationOpen = false;
+    state.renderSubmitOpen = false;
+    state.presentOpen = false;
+    state.latencyFrameActive = false;
+#endif
+    state.activeFrameToken = nullptr;
+#endif
+}
+
+void setStreamlineLatencyMarker(StreamlineLatencyMarker marker)
+{
+#if METALLIC_HAS_STREAMLINE && METALLIC_HAS_NV_LOW_LATENCY
+    std::lock_guard lock(streamlineMutex());
+    auto& state = streamlineState();
+    if (!state.latencyFrameActive) {
+        return;
+    }
+    switch (marker) {
+    case StreamlineLatencyMarker::SimulationEnd:
+        if (state.simulationOpen) {
+            emitLatencyMarker(state, sl::PCLMarker::eSimulationEnd);
+            state.simulationOpen = false;
+        }
+        break;
+    case StreamlineLatencyMarker::RenderSubmitStart:
+        emitLatencyMarker(state, sl::PCLMarker::eRenderSubmitStart);
+        state.renderSubmitOpen = true;
+        break;
+    case StreamlineLatencyMarker::RenderSubmitEnd:
+        if (state.renderSubmitOpen) {
+            emitLatencyMarker(state, sl::PCLMarker::eRenderSubmitEnd);
+            state.renderSubmitOpen = false;
+        }
+        break;
+    case StreamlineLatencyMarker::PresentStart:
+        emitLatencyMarker(state, sl::PCLMarker::ePresentStart);
+        state.presentOpen = true;
+        break;
+    case StreamlineLatencyMarker::PresentEnd:
+        if (state.presentOpen) {
+            emitLatencyMarker(state, sl::PCLMarker::ePresentEnd);
+            state.presentOpen = false;
+        }
+        break;
+    }
+#else
+    (void)marker;
 #endif
 }
 
@@ -1045,6 +1344,16 @@ void shutdownStreamline()
     (void)slShutdown();
     destroyDescriptorHeapWorkaround(state);
     state = StreamlineState{};
+#endif
+}
+
+void prepareStreamlineNgxCommandBuffer(CommandBuffer& commandBuffer)
+{
+#if METALLIC_HAS_STREAMLINE
+    std::lock_guard lock(streamlineMutex());
+    prepareDescriptorStateForStreamline(streamlineState(), commandBuffer);
+#else
+    (void)commandBuffer;
 #endif
 }
 
@@ -1125,8 +1434,7 @@ Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDl
     }
 
     sl::FrameToken* frameToken = nullptr;
-    const uint32_t frameIndex = state.frameIndex++;
-    Result result = resultFromSl(slGetNewFrameToken(frameToken, &frameIndex), "slGetNewFrameToken", log);
+    Result result = getEvaluationFrameToken(state, frameToken, log);
     if (!result) {
         return result;
     }
@@ -1269,8 +1577,7 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
     }
 
     sl::FrameToken* frameToken = nullptr;
-    const uint32_t frameIndex = state.frameIndex++;
-    Result result = resultFromSl(slGetNewFrameToken(frameToken, &frameIndex), "slGetNewFrameToken", log);
+    Result result = getEvaluationFrameToken(state, frameToken, log);
     if (!result) {
         return result;
     }

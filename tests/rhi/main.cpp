@@ -44,6 +44,7 @@ namespace render = metallic::render;
 
 struct Options {
     bool enableValidation = true;
+    bool enableStreamline = false;
     std::filesystem::path outputDirectory = "rhi-test-output";
 };
 
@@ -54,6 +55,7 @@ void printRhiUsage()
         "  --output-dir <path>      Write generated images to <path>\n"
         "  --rhi-no-validation      Disable Vulkan validation for RHI tests\n"
         "  --rhi-validation         Enable Vulkan validation for RHI tests\n"
+        "  --rhi-streamline         Enable Streamline, bindless heap and ray queries\n"
         "\n"
         "GoogleTest options replace the old custom runner flags:\n"
         "  --gtest_list_tests       List registered tests\n"
@@ -73,6 +75,10 @@ bool parseArguments(int argc, char** argv, Options& options, std::vector<std::st
         }
         if (argument == "--rhi-validation") {
             options.enableValidation = true;
+            continue;
+        }
+        if (argument == "--rhi-streamline") {
+            options.enableStreamline = true;
             continue;
         }
         if (argument == "--output-dir") {
@@ -160,6 +166,10 @@ public:
             render::DeviceDesc{
                 .applicationName = "Metallic RHI Tests",
                 .enableValidation = options_.enableValidation,
+                .enableBindlessDescriptorHeap = options_.enableStreamline,
+                .enableRayTracingAccelerationStructure = options_.enableStreamline,
+                .enableRayQuery = options_.enableStreamline,
+                .enableStreamline = options_.enableStreamline,
             },
             device_);
         if (!result) {

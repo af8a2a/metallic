@@ -28,6 +28,9 @@ namespace metallic::render::vulkan {
 // Context::Configure.
 #if METALLIC_HAS_NRC
 
+// Called by device teardown after all contexts and GPU work have completed.
+void shutdownNrcLibrary(VkDevice device);
+
 class NrcIntegration {
 public:
     static constexpr uint32_t kBufferCount = static_cast<uint32_t>(nrc::BufferIdx::Count);
@@ -41,7 +44,7 @@ public:
     NrcIntegration(const NrcIntegration&) = delete;
     NrcIntegration& operator=(const NrcIntegration&) = delete;
 
-    // Initializes the NRC library (process-wide, reference counted) and
+    // Initializes the NRC library for the device lifetime and
     // creates a context on the device.
     Result initialize(Device& device, std::string& log);
     void clear();

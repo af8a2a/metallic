@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -48,6 +49,7 @@ constexpr uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 constexpr uint32_t kSpirvMagic = 0x07230203u;
 constexpr auto kShaderDependencyHashInterval = std::chrono::milliseconds(500);
+constexpr auto kShaderDependencyScanInterval = std::chrono::milliseconds(50);
 
 std::atomic<SlangShaderDebugMode> gSlangShaderDebugMode{SlangShaderDebugMode::Disabled};
 
@@ -68,16 +70,12 @@ struct ShaderDependencySnapshot {
 struct TrackedShaderDependency {
     std::filesystem::path path;
     ShaderDependencyStamp acceptedStamp;
-    std::optional<ShaderDependencyStamp> pendingStamp;
-    std::chrono::steady_clock::time_point pendingSince{};
-    ShaderDependencyStamp reportedStamp;
+    ShaderDependencyStamp observedStamp;
+    std::chrono::steady_clock::time_point observedSince{};
+    std::optional<ShaderDependencyStamp> reportedStamp;
     std::chrono::steady_clock::time_point lastReportedAt{};
     std::chrono::steady_clock::time_point nextContentHashAt{};
-    bool dirty = false;
 };
-
-std::mutex gShaderDependencyMutex;
-std::unordered_map<std::string, TrackedShaderDependency> gShaderDependencies;
 
 struct ShaderCacheHeader {
     std::array<char, 8> magic{};
@@ -189,12 +187,8 @@ ShaderDependencyStamp currentTrackedDependencyStamp(
     }
 
     const ShaderDependencyStamp* reusable = nullptr;
-    if (tracked.pendingStamp.has_value() &&
-        sameShaderDependencyMetadata(current, *tracked.pendingStamp)) {
-        reusable = &*tracked.pendingStamp;
-    } else if (tracked.dirty &&
-        sameShaderDependencyMetadata(current, tracked.reportedStamp)) {
-        reusable = &tracked.reportedStamp;
+    if (sameShaderDependencyMetadata(current, tracked.observedStamp)) {
+        reusable = &tracked.observedStamp;
     } else if (sameShaderDependencyMetadata(current, tracked.acceptedStamp)) {
         reusable = &tracked.acceptedStamp;
     }
@@ -208,6 +202,203 @@ ShaderDependencyStamp currentTrackedDependencyStamp(
     }
     tracked.nextContentHashAt = now + kShaderDependencyHashInterval;
     return current;
+}
+
+class ShaderHotReloadTracker {
+public:
+    ~ShaderHotReloadTracker()
+    {
+        if (worker_.joinable()) {
+            {
+                std::scoped_lock lock(mutex_);
+                worker_.request_stop();
+            }
+            wake_.notify_all();
+            worker_.join();
+        }
+    }
+
+    void registerDependencies(std::span<const ShaderDependencySnapshot> dependencies)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        std::scoped_lock lock(mutex_);
+        bool added = false;
+        for (const ShaderDependencySnapshot& dependency : dependencies) {
+            const std::string key = dependency.path.generic_string();
+            if (key.empty()) {
+                continue;
+            }
+            auto [iter, inserted] = dependencies_.try_emplace(key);
+            if (inserted) {
+                iter->second.path = dependency.path;
+                iter->second.acceptedStamp = dependency.stamp;
+                iter->second.observedStamp = dependency.stamp;
+                iter->second.observedSince = now;
+                iter->second.nextContentHashAt = now + kShaderDependencyHashInterval;
+                added = true;
+            }
+        }
+        if (added) {
+            if (!worker_.joinable()) {
+                worker_ = std::jthread([this](std::stop_token stop) { scanDependencies(stop); });
+            }
+            requestScan();
+        }
+    }
+
+    std::vector<std::string> poll(uint32_t debounceMilliseconds, uint32_t retryMilliseconds)
+    {
+        std::unique_lock lock(mutex_, std::defer_lock);
+        if (debounceMilliseconds == 0) {
+            lock.lock();
+        } else if (!lock.try_lock()) {
+            // Even copying a worker snapshot must not stall the frame thread.
+            return {};
+        }
+        if (debounceMilliseconds_ != debounceMilliseconds || retryMilliseconds_ != retryMilliseconds) {
+            debounceMilliseconds_ = debounceMilliseconds;
+            retryMilliseconds_ = retryMilliseconds;
+            readyChanges_.clear();
+            requestScan();
+        }
+        if (debounceMilliseconds == 0 && !dependencies_.empty()) {
+            // Explicit deterministic-test mode: force a fresh background hash
+            // scan and wait for it. Interactive callers never take this path.
+            const uint64_t requested = ++requestedScan_;
+            wake_.notify_all();
+            wake_.wait(lock, [&]() { return completedScan_ >= requested; });
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        std::vector<std::string> changedFiles;
+        changedFiles.reserve(readyChanges_.size());
+        for (const auto& [path, stamp] : readyChanges_) {
+            TrackedShaderDependency& tracked = dependencies_.at(path);
+            tracked.reportedStamp = stamp;
+            tracked.lastReportedAt = now;
+            changedFiles.push_back(path);
+        }
+        if (!readyChanges_.empty()) {
+            readyChanges_.clear();
+            requestScan();
+        }
+        lock.unlock();
+        std::sort(changedFiles.begin(), changedFiles.end());
+        return changedFiles;
+    }
+
+    void acknowledge()
+    {
+        std::scoped_lock lock(mutex_);
+        for (auto& [path, tracked] : dependencies_) {
+            (void)path;
+            if (tracked.reportedStamp.has_value()) {
+                // Only accept snapshots actually delivered to the caller. A
+                // newer background observation may belong to the next reload.
+                tracked.acceptedStamp = *tracked.reportedStamp;
+                tracked.reportedStamp.reset();
+                tracked.nextContentHashAt = {};
+            }
+        }
+        readyChanges_.clear();
+        requestScan();
+    }
+
+    void reset()
+    {
+        std::scoped_lock lock(mutex_);
+        dependencies_.clear();
+        readyChanges_.clear();
+        debounceMilliseconds_ = 150;
+        retryMilliseconds_ = 1000;
+        requestScan();
+    }
+
+private:
+    // Called under mutex_. Invalidates any scan currently doing file I/O.
+    void requestScan()
+    {
+        ++revision_;
+        ++requestedScan_;
+        wake_.notify_all();
+    }
+
+    void scanDependencies(std::stop_token stop)
+    {
+        std::unique_lock lock(mutex_);
+        while (!stop.stop_requested()) {
+            if (dependencies_.empty()) {
+                completedScan_ = requestedScan_;
+                wake_.notify_all();
+                wake_.wait(lock, [&]() { return stop.stop_requested() || !dependencies_.empty(); });
+            } else {
+                wake_.wait_for(lock, kShaderDependencyScanInterval, [&]() {
+                    return stop.stop_requested() || requestedScan_ > completedScan_;
+                });
+            }
+            if (stop.stop_requested()) {
+                return;
+            }
+
+            const uint64_t revision = revision_;
+            const uint64_t requested = requestedScan_;
+            const auto debounce = std::chrono::milliseconds(debounceMilliseconds_);
+            const auto retry = std::chrono::milliseconds(retryMilliseconds_);
+            auto dependencies = dependencies_;
+            lock.unlock();
+
+            std::vector<std::pair<std::string, ShaderDependencyStamp>> changes;
+            for (auto& [path, tracked] : dependencies) {
+                if (stop.stop_requested()) {
+                    return;
+                }
+                const auto now = std::chrono::steady_clock::now();
+                const bool pending = tracked.observedStamp != tracked.acceptedStamp &&
+                    (!tracked.reportedStamp.has_value() || tracked.observedStamp != *tracked.reportedStamp);
+                const ShaderDependencyStamp current = currentTrackedDependencyStamp(
+                    tracked, now, debounce.count() == 0 || pending);
+                if (current != tracked.observedStamp) {
+                    tracked.observedStamp = current;
+                    tracked.observedSince = now;
+                }
+                if (current == tracked.acceptedStamp || now - tracked.observedSince < debounce) {
+                    continue;
+                }
+                if (!tracked.reportedStamp.has_value() || current != *tracked.reportedStamp ||
+                    now - tracked.lastReportedAt >= retry) {
+                    changes.emplace_back(path, current);
+                }
+            }
+
+            lock.lock();
+            // Registration, delivery, acknowledgement or reset may have
+            // changed the state while I/O was in flight. Never overwrite it.
+            if (revision != revision_) {
+                continue;
+            }
+            dependencies_ = std::move(dependencies);
+            readyChanges_ = std::move(changes);
+            completedScan_ = requested;
+            wake_.notify_all();
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::unordered_map<std::string, TrackedShaderDependency> dependencies_;
+    std::vector<std::pair<std::string, ShaderDependencyStamp>> readyChanges_;
+    uint32_t debounceMilliseconds_ = 150;
+    uint32_t retryMilliseconds_ = 1000;
+    uint64_t revision_ = 0;
+    uint64_t requestedScan_ = 0;
+    uint64_t completedScan_ = 0;
+    std::jthread worker_;
+};
+
+ShaderHotReloadTracker& shaderHotReloadTracker()
+{
+    static ShaderHotReloadTracker tracker;
+    return tracker;
 }
 
 bool snapshotShaderDependencies(
@@ -243,20 +434,7 @@ bool shaderDependencySnapshotsMatch(std::span<const ShaderDependencySnapshot> sn
 
 void registerShaderDependencies(std::span<const ShaderDependencySnapshot> dependencies)
 {
-    const auto now = std::chrono::steady_clock::now();
-    std::scoped_lock lock(gShaderDependencyMutex);
-    for (const ShaderDependencySnapshot& dependency : dependencies) {
-        const std::string key = dependency.path.generic_string();
-        if (key.empty()) {
-            continue;
-        }
-        auto [iter, inserted] = gShaderDependencies.try_emplace(key);
-        if (inserted) {
-            iter->second.path = dependency.path;
-            iter->second.acceptedStamp = dependency.stamp;
-            iter->second.nextContentHashAt = now + kShaderDependencyHashInterval;
-        }
-    }
+    shaderHotReloadTracker().registerDependencies(dependencies);
 }
 
 void publishShaderDependencies(
@@ -641,83 +819,17 @@ std::vector<std::string> pollSlangShaderChanges(
     uint32_t debounceMilliseconds,
     uint32_t retryMilliseconds)
 {
-    const auto now = std::chrono::steady_clock::now();
-    const auto debounce = std::chrono::milliseconds(debounceMilliseconds);
-    const auto retry = std::chrono::milliseconds(retryMilliseconds);
-    std::vector<std::string> changedFiles;
-
-    std::scoped_lock lock(gShaderDependencyMutex);
-    for (auto& [path, tracked] : gShaderDependencies) {
-        const ShaderDependencyStamp currentStamp = currentTrackedDependencyStamp(
-            tracked,
-            now,
-            debounceMilliseconds == 0 || tracked.pendingStamp.has_value());
-        if (!tracked.dirty && currentStamp == tracked.acceptedStamp) {
-            tracked.pendingStamp.reset();
-            continue;
-        }
-
-        if (tracked.dirty) {
-            if (currentStamp == tracked.acceptedStamp) {
-                tracked.dirty = false;
-                tracked.pendingStamp.reset();
-                continue;
-            }
-            if (currentStamp == tracked.reportedStamp) {
-                tracked.pendingStamp.reset();
-                if (now - tracked.lastReportedAt >= retry) {
-                    tracked.lastReportedAt = now;
-                    changedFiles.push_back(path);
-                }
-                continue;
-            }
-        }
-
-        if (!tracked.pendingStamp.has_value() || *tracked.pendingStamp != currentStamp) {
-            tracked.pendingStamp = currentStamp;
-            tracked.pendingSince = now;
-        }
-        if (now - tracked.pendingSince < debounce) {
-            continue;
-        }
-        tracked.dirty = true;
-        tracked.reportedStamp = currentStamp;
-        tracked.lastReportedAt = now;
-        tracked.pendingStamp.reset();
-        changedFiles.push_back(path);
-    }
-    std::sort(changedFiles.begin(), changedFiles.end());
-    return changedFiles;
+    return shaderHotReloadTracker().poll(debounceMilliseconds, retryMilliseconds);
 }
 
 void acknowledgeSlangShaderChanges()
 {
-    const auto now = std::chrono::steady_clock::now();
-    std::scoped_lock lock(gShaderDependencyMutex);
-    for (auto& [path, tracked] : gShaderDependencies) {
-        (void)path;
-        if (!tracked.dirty) {
-            continue;
-        }
-
-        const ShaderDependencyStamp currentStamp = currentTrackedDependencyStamp(
-            tracked,
-            now,
-            true);
-        tracked.acceptedStamp = tracked.reportedStamp;
-        tracked.dirty = false;
-        tracked.pendingStamp.reset();
-        if (currentStamp != tracked.acceptedStamp) {
-            tracked.pendingStamp = currentStamp;
-            tracked.pendingSince = now;
-        }
-    }
+    shaderHotReloadTracker().acknowledge();
 }
 
 void resetSlangShaderHotReloadTracking()
 {
-    std::scoped_lock lock(gShaderDependencyMutex);
-    gShaderDependencies.clear();
+    shaderHotReloadTracker().reset();
 }
 
 Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult)

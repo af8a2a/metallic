@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
@@ -2073,6 +2074,11 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_DLSS_CAMERA")) {
+            const bool passed = runDlssCameraSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_VIEWPORTS")) {
             const bool passed = runMultiViewportSmokeTest();
             shutdown();
@@ -2080,10 +2086,16 @@ int EditorApplication::run(
         }
         uint32_t smokeFrameCount = 1;
         if (const char* count = std::getenv("METALLIC_SMOKE_TEST_FRAMES")) {
-            smokeFrameCount = static_cast<uint32_t>(std::clamp(std::strtoul(count, nullptr, 10), 1ul, 64ul));
+            smokeFrameCount = static_cast<uint32_t>(std::clamp(std::strtoul(count, nullptr, 10), 1ul, 256ul));
         }
         for (uint32_t index = 0; index < smokeFrameCount; ++index) {
             auto profileFrame = profiler_.beginFrame();
+            if (!waitForFrameSlotBeforeInput()) {
+                shutdown();
+                return 1;
+            }
+            const render::vulkan::StreamlineFrameScope streamlineFrame(
+                ImGui::GetPlatformIO().Viewports.Size <= 1);
             const render::profiling::NsightProfileRange frameMarker(
                 render::profiling::NsightDomain::Editor,
                 "Frame",
@@ -2101,6 +2113,16 @@ int EditorApplication::run(
                 }
             }
         }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_REFLEX")) {
+            const auto status = render::vulkan::streamlineReflexStatus();
+            spdlog::info("[Smoke Reflex] available={}, report={}, frame={}, render={} ms, gpu={} ms",
+                status.available, status.latencyReportAvailable, status.reportFrameId,
+                status.renderLatencyMs, status.gpuRenderMs);
+            if (!status.available || !status.latencyReportAvailable) {
+                shutdown();
+                return status.available ? 1 : 77;
+            }
+        }
         shutdown();
         return 0;
     }
@@ -2113,6 +2135,12 @@ int EditorApplication::run(
             render::profiling::NsightCategory::Frame,
             nsightFrameIndex++);
         auto profileFrame = profiler_.beginFrame();
+        if (!waitForFrameSlotBeforeInput()) {
+            break;
+        }
+        const render::vulkan::StreamlineFrameScope streamlineFrame(
+            (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) == 0 &&
+            ImGui::GetPlatformIO().Viewports.Size <= 1);
         {
             auto profileScope = profiler_.scope("Poll Events");
             pollEvents();
@@ -2335,7 +2363,8 @@ bool EditorApplication::initializeRhi()
     // Streamline has to hook Vulkan before the device is created. Interactive
     // editor sessions can switch to any built-in sample at runtime, including
     // DLSS-RR, while an explicit DLSS-RR smoke test also needs the integration.
-    const bool enableStreamline = !smokeTest_ || startupSampleRequiresStreamline;
+    const bool enableStreamline = !smokeTest_ || startupSampleRequiresStreamline ||
+        environmentFlagEnabled("METALLIC_SMOKE_TEST_REFLEX");
     spdlog::info(
         "[Startup] Streamline device integration {} for editor session "
         "(startup sample '{}', sample requires Streamline={})",
@@ -2761,6 +2790,21 @@ void EditorApplication::pollShaderHotReload()
     spdlog::info("[ShaderHotReload] {}", renderGraphStatus_);
 }
 
+bool EditorApplication::waitForFrameSlotBeforeInput()
+{
+    // Resolve frame-slot backpressure before Reflex sleep and input sampling.
+    // renderFrame still begins the context, including for direct smoke-test callers.
+    auto profileScope = profiler_.scope("Wait Frame Slot Before Input");
+    const auto& frame = frameSlots_[submittedFrameIndex_ % kFrameSlotCount];
+    const auto result = frame.context.wait();
+    if (!result) {
+        spdlog::error("Frame slot wait failed: {}", render::resultToString(result));
+        running_ = false;
+        return false;
+    }
+    return true;
+}
+
 bool EditorApplication::renderFrame()
 {
     currentFrameSlot_ = static_cast<uint32_t>(submittedFrameIndex_ % kFrameSlotCount);
@@ -2856,6 +2900,7 @@ bool EditorApplication::renderFrame()
         auto profileScope = profiler_.scope("ImGui Render");
         ImGui::Render();
     }
+    render::vulkan::setStreamlineLatencyMarker(render::vulkan::StreamlineLatencyMarker::SimulationEnd);
     if (!renderVulkanFrame(renderMainViewport)) {
         running_ = false;
         return false;
@@ -2998,6 +3043,32 @@ void EditorApplication::drawDockspace()
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
                 requestPendingSceneAction(PendingSceneAction::Exit);
+            }
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("NVIDIA Reflex")) {
+            const auto status = render::vulkan::streamlineReflexStatus();
+            if (!status.available) {
+                ImGui::TextDisabled("Unavailable on this device or build");
+            }
+            ImGui::BeginDisabled(!status.available);
+            const char* modeNames[] = {"Off", "On", "On + Boost"};
+            for (uint32_t mode = 0; mode < std::size(modeNames); ++mode) {
+                auto options = status.options;
+                options.mode = static_cast<render::vulkan::StreamlineReflexMode>(mode);
+                if (ImGui::MenuItem(modeNames[mode], nullptr, options.mode == status.options.mode)) {
+                    (void)render::vulkan::setStreamlineReflexOptions(options);
+                }
+            }
+            ImGui::EndDisabled();
+            if (status.suspended) {
+                ImGui::TextDisabled("Paused while minimized or using detached windows");
+            } else if (status.latencyReportAvailable) {
+                ImGui::Separator();
+                ImGui::Text("Render latency: %.2f ms", status.renderLatencyMs);
+                ImGui::Text("GPU render: %.2f ms", status.gpuRenderMs);
+                ImGui::TextDisabled("Render latency excludes display latency");
             }
             ImGui::EndMenu();
         }
@@ -4306,10 +4377,13 @@ void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties
         render::RenderGraphProperties runtimeProperties = candidate.runtimeProperties.is_object()
             ? candidate.runtimeProperties
             : render::RenderGraphProperties::object();
-        const render::RenderGraphProperties effectiveProperties = effectiveNodeProperties(candidate);
-        const uint32_t resetSerial = effectiveProperties.value("resetSerial", 0u);
         runtimeProperties["camera"] = camera;
-        runtimeProperties["resetSerial"] = resetSerial + 1u;
+        // DLSS reprojects its history using the previous camera and motion vectors.
+        // Resetting on every viewport movement prevents temporal reconstruction.
+        if (candidate.type == "NrdDenoisePass") {
+            const render::RenderGraphProperties effectiveProperties = effectiveNodeProperties(candidate);
+            runtimeProperties["resetSerial"] = effectiveProperties.value("resetSerial", 0u) + 1u;
+        }
         companionUpdated = renderGraph_.setNodeRuntimeProperties(
             candidate.id,
             std::move(runtimeProperties)) || companionUpdated;
@@ -6389,6 +6463,7 @@ bool EditorApplication::renderGraphPreview()
 
 bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
 {
+    render::vulkan::setStreamlineLatencyMarker(render::vulkan::StreamlineLatencyMarker::RenderSubmitStart);
     FrameSlot& frame = frameSlots_[currentFrameSlot_];
     if (swapchain_ == nullptr ||
         frame.commandPool == nullptr ||
@@ -6605,12 +6680,15 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             submittedFrameIndex_, currentFrameSlot_, frame.context.completion().value());
     }
     ++submittedFrameIndex_;
+    render::vulkan::setStreamlineLatencyMarker(render::vulkan::StreamlineLatencyMarker::RenderSubmitEnd);
     if (!renderMainViewport) {
         return true;
     }
     {
         auto profileScope = profiler_.scope("Present");
+        render::vulkan::setStreamlineLatencyMarker(render::vulkan::StreamlineLatencyMarker::PresentStart);
         result = swapchain_->present(*graphicsQueue_, imageIndex, *renderFinishedSemaphores_[imageIndex]);
+        render::vulkan::setStreamlineLatencyMarker(render::vulkan::StreamlineLatencyMarker::PresentEnd);
     }
     if (!result) {
         if (render::hasError(result, render::Error::OutOfDate)) {

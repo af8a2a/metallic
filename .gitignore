@@ -24,6 +24,8 @@
 *.dll
 *.so.*
 
+# Unreleased DLSS-NR runtime supplied manually by the user
+/External/nvngx_dlssnr.dll
 
 # Fortran module files
 *.mod

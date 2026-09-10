@@ -46,7 +46,11 @@ endif()
 
 metallic_nrc_is_usable("${METALLIC_NRC_ROOT}" METALLIC_NRC_USABLE)
 if(NOT METALLIC_NRC_USABLE)
-    message(STATUS "NVIDIA NRC SDK binaries were not found at ${METALLIC_NRC_ROOT}; the neural radiance cache pass will compile as unsupported.")
+    message(STATUS
+        "NVIDIA NRC SDK headers or binaries were not found at ${METALLIC_NRC_ROOT}; "
+        "the neural radiance cache pass will compile as unsupported. "
+        "Run `git submodule update --init --recursive -- External/NRC` "
+        "or set METALLIC_NRC_ROOT to a complete SDK checkout, then reconfigure.")
     return()
 endif()
 

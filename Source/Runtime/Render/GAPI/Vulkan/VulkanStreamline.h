@@ -8,6 +8,54 @@
 
 namespace metallic::render::vulkan {
 
+enum class StreamlineReflexMode : uint32_t {
+    Off,
+    On,
+    Boost,
+};
+
+struct StreamlineReflexOptions {
+    StreamlineReflexMode mode = StreamlineReflexMode::On;
+    uint32_t frameLimitUs = 0;
+    bool operator==(const StreamlineReflexOptions&) const = default;
+};
+
+struct StreamlineReflexStatus {
+    bool available = false;
+    bool suspended = false;
+    bool latencyReportAvailable = false;
+    StreamlineReflexOptions options;
+    uint64_t reportFrameId = 0;
+    double renderLatencyMs = 0.0; // Simulation start to GPU render end; excludes display latency.
+    double gpuRenderMs = 0.0;
+};
+
+enum class StreamlineLatencyMarker : uint32_t {
+    SimulationEnd,
+    RenderSubmitStart,
+    RenderSubmitEnd,
+    PresentStart,
+    PresentEnd,
+};
+
+StreamlineReflexStatus streamlineReflexStatus();
+Result setStreamlineReflexOptions(const StreamlineReflexOptions& options);
+void setStreamlineLatencyMarker(StreamlineLatencyMarker marker);
+
+// One scope per application frame, before input polling. DLSS evaluations inside
+// the scope share its token. Offscreen callers can continue evaluating without it.
+// Must be externally serialized with device lifetime and other frame scopes.
+class StreamlineFrameScope {
+public:
+    explicit StreamlineFrameScope(bool allowLatency = true);
+    ~StreamlineFrameScope();
+    StreamlineFrameScope(const StreamlineFrameScope&) = delete;
+    StreamlineFrameScope& operator=(const StreamlineFrameScope&) = delete;
+
+private:
+    bool active_ = false;
+};
+
 struct StreamlineDlssRrTextureRef {
     Texture* texture = nullptr;
     TextureView* view = nullptr;
@@ -116,6 +164,9 @@ Result setStreamlineVulkanDevice(
     const NativeQueue& computeQueue,
     std::string& log);
 void shutdownStreamline();
+// Switch from the engine's descriptor heap to legacy NGX descriptors, including
+// direct experimental features that share Streamline's Vulkan device.
+void prepareStreamlineNgxCommandBuffer(CommandBuffer& commandBuffer);
 Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDlssSrDesc& desc, std::string& log);
 Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDlssRrDesc& desc, std::string& log);
 

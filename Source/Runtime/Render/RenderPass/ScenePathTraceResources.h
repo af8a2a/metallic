@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/NeuralTextureResources.h"
+#include "Runtime/Render/SceneShadingVertex.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/Scene.h"
 
@@ -55,7 +56,9 @@ public:
     const scene::Bounds& bounds() const;
     SceneAccelerationStructureBuilder& accelerationStructure();
     const SceneAccelerationStructureBuilder& accelerationStructure() const;
-    Buffer* vertexBuffer() const;
+    Buffer* shadingVertexBuffer() const;
+    // Null when positions are supplied by ray-tracing position fetch.
+    Buffer* fallbackPositionBuffer() const;
     Buffer* indexBuffer() const;
     Buffer* primitiveBuffer() const;
     Buffer* instanceBuffer() const;

@@ -98,6 +98,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/SceneRtxdiPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRayQueryVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/StreamlineDlssRrPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/DlssNrPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
     Runtime/Render/RenderPass/ScenePathTraceResources.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp
@@ -106,6 +107,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.cpp
     Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.cpp
     Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanDlssNr.cpp
 )
 
 target_include_directories(MetallicRuntimeRender PUBLIC
@@ -131,6 +133,7 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     metallic::aftermath
     metallic::nsight_events
     metallic::streamline
+    metallic::dlss_nr
     metallic::nrc
     nlohmann_json
     slang::slang
@@ -154,8 +157,15 @@ else()
     )
 endif()
 
-if(TARGET NRD)
-    target_link_libraries(MetallicRuntimeRender PUBLIC NRD)
+if(METALLIC_ENABLE_NRD)
+    target_sources(MetallicRuntimeRender PRIVATE
+        Runtime/Render/Denoising/NrdPlan.cpp
+        Runtime/Render/Denoising/NrdReblur.cpp
+        Runtime/Render/Denoising/NrdRelax.cpp
+        Runtime/Render/Denoising/NrdReference.cpp
+    )
+    target_link_libraries(MetallicRuntimeRender PRIVATE MathLib)
+    target_include_directories(MetallicRuntimeRender PRIVATE "${CMAKE_SOURCE_DIR}")
     target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_HAS_NRD=1)
 else()
     target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_HAS_NRD=0)
@@ -218,8 +228,12 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/SceneLoader.cpp
     Runtime/Scene/ScenePicker.cpp
     Runtime/Scene/TinyGltfImpl.cpp
-    Runtime/Scene/UsdSceneImporter.cpp
 )
+if(METALLIC_ENABLE_OPENUSD)
+    target_sources(MetallicRuntimeScene PRIVATE Runtime/Scene/UsdSceneImporter.cpp)
+else()
+    target_sources(MetallicRuntimeScene PRIVATE Runtime/Scene/UsdSceneImporterStub.cpp)
+endif()
 
 target_include_directories(MetallicRuntimeScene PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -332,6 +346,7 @@ if(WIN32)
     endif()
 
     metallic_copy_streamline_runtime(Metallic)
+    metallic_copy_dlss_nr_runtime(Metallic)
     metallic_copy_aftermath_runtime(Metallic)
     metallic_copy_nrc_runtime(Metallic)
 endif()
@@ -387,6 +402,7 @@ function(configure_metallic_editor_sample target_name)
         endif()
 
         metallic_copy_streamline_runtime(${target_name})
+        metallic_copy_dlss_nr_runtime(${target_name})
         metallic_copy_aftermath_runtime(${target_name})
         metallic_copy_nrc_runtime(${target_name})
     endif()

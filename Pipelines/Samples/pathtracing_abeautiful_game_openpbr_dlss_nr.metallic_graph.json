@@ -1,0 +1,182 @@
+{
+  "edges": [
+    {
+      "dst": "DlssRr.inputColor",
+      "id": 1,
+      "src": "PathTrace.color"
+    },
+    {
+      "dst": "DlssRr.albedo",
+      "id": 2,
+      "src": "PathTrace.albedo"
+    },
+    {
+      "dst": "DlssRr.specularAlbedo",
+      "id": 3,
+      "src": "PathTrace.specularAlbedo"
+    },
+    {
+      "dst": "DlssRr.normalRoughness",
+      "id": 4,
+      "src": "PathTrace.normalRoughness"
+    },
+    {
+      "dst": "DlssRr.motionVectors",
+      "id": 5,
+      "src": "PathTrace.motionVectors"
+    },
+    {
+      "dst": "DlssRr.linearDepth",
+      "id": 6,
+      "src": "PathTrace.linearDepth"
+    },
+    {
+      "dst": "DlssRr.specularHitDistance",
+      "id": 7,
+      "src": "PathTrace.specularHitDistance"
+    },
+    {
+      "dst": "FinalBlit.source",
+      "id": 8,
+      "src": "DlssNr.color"
+    },
+    {
+      "id": 9,
+      "src": "DlssRr.color",
+      "dst": "AutoExposure.source"
+    },
+    {
+      "id": 10,
+      "src": "AutoExposure.color",
+      "dst": "DlssNr.inputColor"
+    },
+    {
+      "id": 11,
+      "src": "PathTrace.motionVectors",
+      "dst": "DlssNr.motionVectors"
+    },
+    {
+      "id": 12,
+      "src": "PathTrace.depth",
+      "dst": "DlssNr.depth"
+    }
+  ],
+  "name": "PathTracingSampleDLSSNR",
+  "nodes": [
+    {
+      "id": 1,
+      "name": "PathTrace",
+      "position": {
+        "x": 160.0,
+        "y": 280.0
+      },
+      "properties": {
+        "accumulate": false,
+        "bsdf": "openpbr",
+        "camera": {
+          "center": [
+            0.0,
+            0.07500000298023224,
+            0.0
+          ],
+          "eye": [
+            0.0,
+            0.41999998688697815,
+            1.149999976158142
+          ],
+          "fovDegrees": 45.0,
+          "projection": "perspective",
+          "reversedZ": true,
+          "up": [
+            0.0,
+            1.0,
+            0.0
+          ],
+          "zfar": 10000.0,
+          "znear": 0.0010000000474974513
+        },
+        "exportDenoiserGuides": true,
+        "maxDepth": 12,
+        "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
+        "samples": 2,
+        "outputLinear": true
+      },
+      "type": "ScenePathTracePass"
+    },
+    {
+      "id": 2,
+      "name": "DlssRr",
+      "position": {
+        "x": 540.0,
+        "y": 280.0
+      },
+      "properties": {
+        "camera": {
+          "center": [
+            0.0,
+            0.07500000298023224,
+            0.0
+          ],
+          "eye": [
+            0.0,
+            0.41999998688697815,
+            1.149999976158142
+          ],
+          "fovDegrees": 45.0,
+          "projection": "perspective",
+          "reversedZ": true,
+          "up": [
+            0.0,
+            1.0,
+            0.0
+          ],
+          "zfar": 10000.0,
+          "znear": 0.0010000000474974513
+        },
+        "mode": "DLAA",
+        "resetSerial": 0
+      },
+      "type": "StreamlineDlssRrPass"
+    },
+    {
+      "id": 4,
+      "name": "AutoExposure",
+      "type": "AutoExposurePass",
+      "position": {
+        "x": 900.0,
+        "y": 280.0
+      },
+      "properties": {}
+    },
+    {
+      "id": 3,
+      "name": "FinalBlit",
+      "position": {
+        "x": 1620.0,
+        "y": 280.0
+      },
+      "properties": {},
+      "type": "FinalBlitPass"
+    },
+    {
+      "id": 5,
+      "name": "DlssNr",
+      "type": "DlssNrPass",
+      "position": {
+        "x": 1260.0,
+        "y": 280.0
+      },
+      "properties": {
+        "intensity": 1.0,
+        "enabled": true,
+        "preset": 0,
+        "style": 0,
+        "fallbackToInput": true,
+        "depthInverted": true,
+        "resetSerial": 0
+      }
+    }
+  ],
+  "outputs": [],
+  "version": 1
+}

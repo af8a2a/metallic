@@ -17,6 +17,10 @@
 #define METALLIC_HAS_RTXCR 0
 #endif
 
+#ifndef SCENE_RAYQUERY_ENABLE_POSITION_FETCH
+#define SCENE_RAYQUERY_ENABLE_POSITION_FETCH 0
+#endif
+
 #if METALLIC_HAS_RTXCR
 #include <rtxcr/HairChiangBSDF.hlsli>
 #endif
@@ -77,7 +81,8 @@ struct ScenePathTraceCacheParams
 };
 
 [[vk::binding(20, 0)]]
-StructuredBuffer<ScenePathTraceCacheParams> gCacheParams;
+// Match the tightly packed CPU constants, including NRC at byte offset 76.
+StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> gCacheParams;
 
 #if METALLIC_PT_SHARC
 [[vk::binding(21, 0)]]
@@ -101,7 +106,7 @@ RWStructuredBuffer<NrcPackedTrainingPathInfo> gNrcTrainingPathInfo;
 RWStructuredBuffer<NrcPackedPathVertex> gNrcTrainingPathVertices;
 
 [[vk::binding(27, 0)]]
-RWStructuredBuffer<NrcRadianceParams> gNrcQueryRadianceParams;
+RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> gNrcQueryRadianceParams;
 
 [[vk::binding(28, 0)]]
 RWStructuredBuffer<uint> gNrcCounters;
@@ -114,13 +119,7 @@ RaytracingAccelerationStructure gScene;
 [[vk::binding(1, 0)]]
 RWTexture2D<float4> gOutput;
 
-struct PathTraceVertex
-{
-    float4 position;
-    float4 normal;
-    float4 tangent;
-    float4 texcoord;
-};
+#include "../../Libraries/Scene/SceneShadingVertex.slang"
 
 struct PathTracePrimitive
 {
@@ -175,9 +174,6 @@ struct PathTraceMaterial
     PathTraceTextureInfo diffuseTransmissionTexture;
     PathTraceTextureInfo diffuseTransmissionColorTexture;
 };
-
-[[vk::binding(2, 0)]]
-StructuredBuffer<PathTraceVertex> gVertices;
 
 [[vk::binding(3, 0)]]
 StructuredBuffer<uint> gIndices;
@@ -551,8 +547,25 @@ float2 motionVectorToPrevious(float3 worldPosition, float2 currentPixelCenter, S
         previousUv)) {
         return float2(0.0, 0.0);
     }
-    float2 currentUv = currentPixelCenter / float2(max(push.width, 1u), max(push.height, 1u));
+    // The hit came from the jittered primary ray. Subtract that same sample
+    // position so a stationary camera produces zero motion, as required by
+    // Streamline's motionVectorsJittered = false contract.
+    float2 samplePixel = currentPixelCenter + float2(push.jitterOffsetX, push.jitterOffsetY);
+    float2 currentUv = samplePixel / float2(max(push.width, 1u), max(push.height, 1u));
     return previousUv - currentUv;
+}
+
+float2 skyMotionVectorToPrevious(float3 direction, float2 currentPixelCenter, ScenePathTracePush push)
+{
+    // A sky direction is a point at infinity (w = 0). Project it relative to
+    // the previous eye so camera translation cannot create sky parallax.
+    if (push.upProjection.w > 0.5) {
+        return float2(0.0, 0.0);
+    }
+    return motionVectorToPrevious(
+        push.previousEye.xyz + direction * max(push.previousClipOrtho.y, 1.0),
+        currentPixelCenter,
+        push);
 }
 
 float3 approxSpecularIntegralGGX(float3 specularReflectance, float alpha, float cosTheta)
@@ -1207,53 +1220,63 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
     uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
     uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    PathTraceVertex v0 = gVertices[i0];
-    PathTraceVertex v1 = gVertices[i1];
-    PathTraceVertex v2 = gVertices[i2];
+    SceneShadingVertex v0 = gVertices[i0];
+    SceneShadingVertex v1 = gVertices[i1];
+    SceneShadingVertex v2 = gVertices[i2];
 
     float2 bary = query.CommittedTriangleBarycentrics();
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
 
-    float3 p0 = v0.position.xyz;
-    float3 p1 = v1.position.xyz;
-    float3 p2 = v2.position.xyz;
-    float2 uv0 = v0.texcoord.xy;
-    float2 uv1 = v1.texcoord.xy;
-    float2 uv2 = v2.texcoord.xy;
-    float3 localPosition = p0 * weights.x + p1 * weights.y + p2 * weights.z;
-    float3 localNormal = v0.normal.xyz * weights.x + v1.normal.xyz * weights.y + v2.normal.xyz * weights.z;
+#if SCENE_RAYQUERY_ENABLE_POSITION_FETCH
+    // Position fetch returns object-space positions in triangle vertex order.
+    // Attributes still use the indexed vertex buffer; keep the same TBN basis.
+    float3 positions[3] = query.CommittedGetIntersectionTriangleVertexPositions();
+    float3 p0 = positions[0];
+    float3 p1 = positions[1];
+    float3 p2 = positions[2];
+#else
+    float3 p0 = loadSceneVertexPosition(i0);
+    float3 p1 = loadSceneVertexPosition(i1);
+    float3 p2 = loadSceneVertexPosition(i2);
+#endif
+    float2 uv0 = v0.texcoord;
+    float2 uv1 = v1.texcoord;
+    float2 uv2 = v2.texcoord;
+    float3 localNormal = decodeSceneNormal(v0.normal) * weights.x +
+        decodeSceneNormal(v1.normal) * weights.y + decodeSceneNormal(v2.normal) * weights.z;
     float3 localNormalFallback = safeNormalize(localNormal, float3(0.0, 1.0, 0.0));
     float3 localGeometryNormal = safeTriangleNormal(
         p1 - p0,
         p2 - p0,
         localNormalFallback);
     localNormal = dot(localNormal, localNormal) > 0.000001 ? safeNormalize(localNormal, localGeometryNormal) : localGeometryNormal;
-    float4 localTangent = v0.tangent * weights.x + v1.tangent * weights.y + v2.tangent * weights.z;
-    float3 localTangentDirection = dot(localTangent.xyz, localTangent.xyz) > 0.000001
-        ? safeNormalize(localTangent.xyz, float3(1.0, 0.0, 0.0))
-        : float3(1.0, 0.0, 0.0);
-    float tangentSign = localTangent.w >= 0.0 ? 1.0 : -1.0;
     hit.texcoord = uv0 * weights.x + uv1 * weights.y + uv2 * weights.z;
 
-    float3 localTriangleTangent;
-    float3 localTriangleBitangent;
-    computeTriangleTangentSpace(p0, p1, p2, uv0, uv1, uv2, localNormal, localTriangleTangent, localTriangleBitangent);
-
-    float4x3 objectToWorld = query.CommittedObjectToWorld4x3();
     float3x4 worldToObject = query.CommittedWorldToObject3x4();
-    hit.position = float3(mul(float4(localPosition, 1.0), objectToWorld));
+    hit.t = query.CommittedRayT();
+    hit.position = ray.origin + ray.direction * hit.t;
     hit.geometryNormal = safeNormalize(transformObjectNormalToWorld(localGeometryNormal, worldToObject), localGeometryNormal);
     hit.normal = safeNormalize(transformObjectNormalToWorld(localNormal, worldToObject), hit.geometryNormal);
     hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
 
     float3 referenceAxis = abs(hit.normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
     float3 fallbackTangent = safeNormalize(cross(referenceAxis, hit.normal), float3(1.0, 0.0, 0.0));
+    float tangentSign = 1.0;
     if ((primitive.flags & kPrimitiveHasAuthoredTangents) != 0u) {
+        float4 localTangent = decodeSceneTangent(v0.tangent) * weights.x +
+            decodeSceneTangent(v1.tangent) * weights.y + decodeSceneTangent(v2.tangent) * weights.z;
+        float3 localTangentDirection = dot(localTangent.xyz, localTangent.xyz) > 0.000001
+            ? safeNormalize(localTangent.xyz, float3(1.0, 0.0, 0.0))
+            : float3(1.0, 0.0, 0.0);
+        tangentSign = localTangent.w >= 0.0 ? 1.0 : -1.0;
         float3 worldTangent = safeNormalize(mul(localTangentDirection, worldToObject).xyz, fallbackTangent);
         worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
         hit.tangent = float4(worldTangent, tangentSign);
         hit.bitangent = safeNormalize(cross(hit.normal, worldTangent) * tangentSign, cross(hit.normal, fallbackTangent));
     } else {
+        float3 localTriangleTangent;
+        float3 localTriangleBitangent;
+        computeTriangleTangentSpace(p0, p1, p2, uv0, uv1, uv2, localNormal, localTriangleTangent, localTriangleBitangent);
         float3 worldTangent = safeNormalize(mul(localTriangleTangent, worldToObject).xyz, fallbackTangent);
         worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
         float3 worldBitangent = safeNormalize(mul(localTriangleBitangent, worldToObject).xyz, cross(hit.normal, worldTangent));
@@ -1266,7 +1289,6 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.tangent.w *= push.bitangentFlip;
     hit.bitangent *= push.bitangentFlip;
 
-    hit.t = query.CommittedRayT();
     hit.materialIndex = instance.materialIndex;
     hit.instanceIndex = instanceIndex;
     hit.primitiveIndex = instance.primitiveIndex;
@@ -1727,7 +1749,9 @@ float3 pathTrace(
         sharcHitData.normalWorld = hit.geometryNormal;
 
 #if SHARC_QUERY
-        {
+        // Camera hits must retain exact material/normal and direct-light detail.
+        // The cache is only filtered enough to query after a surface bounce.
+        if (depth > 0u) {
             uint gridLevel = HashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
             float voxelSize = HashGridGetVoxelSize(gridLevel, cache.sharc.hashGridParameters);
             bool isValidHit = hit.t > voxelSize * sqrt(3.0);
@@ -2023,18 +2047,9 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     color /= float(samples);
 
 #if NRC_QUERY
-    // Linear HDR output: the NRC resolve adds the predicted query radiance on
-    // top of this image before the tonemap pass runs.
-    if (push.enableAccumulation != 0u) {
-        if (push.hasHistory != 0u) {
-            float accumulationWeight = 1.0 / float(push.accumulationFrame + 1u);
-            float3 previousColor = gHistoryPrevious[pixel].rgb;
-            color = lerp(previousColor, color, accumulationWeight);
-        }
-        gHistoryCurrent[pixel] = float4(color, 1.0);
-    } else {
-        gHistoryCurrent[pixel] = float4(color, 1.0);
-    }
+    // Resolve adds this frame's predicted indirect light. Accumulate the
+    // complete frame afterwards so direct and cached light share one weight.
+    gHistoryCurrent[pixel] = float4(color, 1.0);
     return;
 #endif
 

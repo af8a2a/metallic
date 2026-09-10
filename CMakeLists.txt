@@ -1,21 +1,39 @@
 cmake_minimum_required(VERSION 3.20)
+if(POLICY CMP0141)
+    cmake_policy(SET CMP0141 NEW)
+endif()
 project(Metallic LANGUAGES C CXX)
+
+option(METALLIC_BUILD_DEPENDENCIES_ONLY "Build the reusable dependency package only" OFF)
+if(METALLIC_BUILD_DEPENDENCIES_ONLY)
+    add_subdirectory(cmake/dependencies)
+    return()
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Ninja parses MSVC /showIncludes output to track header dependencies. Force
-# English diagnostics so the dependency prefix remains byte-stable even when
-# the configure shell and build shell use different Windows code pages.
-if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
-    set(CMAKE_C_COMPILER_LAUNCHER
-        "${CMAKE_COMMAND};-P;${CMAKE_SOURCE_DIR}/cmake/RunMsvcCompiler.cmake;--")
-    set(CMAKE_CXX_COMPILER_LAUNCHER
-        "${CMAKE_COMMAND};-P;${CMAKE_SOURCE_DIR}/cmake/RunMsvcCompiler.cmake;--")
-    set(CMAKE_C_CL_SHOWINCLUDES_PREFIX "Note: including file:  ")
-    set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "Note: including file:  ")
-    set(CMAKE_CL_SHOWINCLUDES_PREFIX "Note: including file:  ")
+if(MSVC AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
+include(cmake/CompilerLauncher.cmake)
+
+option(METALLIC_ENABLE_OPENUSD "Enable USD scene import" ON)
+option(METALLIC_ENABLE_NRD "Enable NVIDIA NRD denoising" ON)
+set(METALLIC_DEPENDENCY_MODE SOURCE CACHE STRING "Dependency provider: SOURCE or PREBUILT")
+set_property(CACHE METALLIC_DEPENDENCY_MODE PROPERTY STRINGS SOURCE PREBUILT)
+if(NOT METALLIC_DEPENDENCY_MODE MATCHES "^(SOURCE|PREBUILT)$")
+    message(FATAL_ERROR "METALLIC_DEPENDENCY_MODE must be SOURCE or PREBUILT")
+endif()
+if(METALLIC_DEPENDENCY_MODE STREQUAL "PREBUILT")
+    include(cmake/DependencyCache.cmake)
+    metallic_dependency_identity()
+    file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/metallic-dependencies-expected.txt"
+        CONTENT "@METALLIC_DEPENDENCY_IDENTITY@" @ONLY)
+    metallic_check_dependency_package()
+    list(PREPEND CMAKE_PREFIX_PATH "${METALLIC_DEPENDENCY_ROOT}")
+    message(STATUS "Using dependency package: ${METALLIC_DEPENDENCY_ROOT}")
 endif()
 
 option(METALLIC_CLUSTER_LOD_TOPOLOGY_NYX
@@ -141,6 +159,7 @@ endif()
 foreach(METALLIC_SETUP_MODULE IN ITEMS
     SetupSlang
     SetupStreamline
+    SetupDlssNr
     SetupNsight
     SetupNsightGraphicsCapture
     SetupAftermath
@@ -190,11 +209,13 @@ ensure_git_submodule(
     "microprofile"
 )
 
-ensure_git_submodule(
-    "External/googletest"
-    "${CMAKE_SOURCE_DIR}/External/googletest/googletest/include/gtest/gtest.h"
-    "GoogleTest"
-)
+if(METALLIC_BUILD_TESTS)
+    ensure_git_submodule(
+        "External/googletest"
+        "${CMAKE_SOURCE_DIR}/External/googletest/googletest/include/gtest/gtest.h"
+        "GoogleTest"
+    )
+endif()
 
 ensure_git_submodule(
     "External/Rtxtf"
@@ -202,18 +223,20 @@ ensure_git_submodule(
     "RTXTF-Library"
 )
 
-ensure_git_submodule(
-    "External/oneTBB"
-    "${CMAKE_SOURCE_DIR}/External/oneTBB/include/oneapi/tbb.h"
-    "oneTBB"
-)
-
-ensure_git_submodule(
-    "External/OpenUSD"
-    "${CMAKE_SOURCE_DIR}/External/OpenUSD/pxr/usd/usd/stage.h"
-    "OpenUSD"
-)
-add_subdirectory(External)
+if(METALLIC_ENABLE_OPENUSD AND METALLIC_DEPENDENCY_MODE STREQUAL "SOURCE")
+    ensure_git_submodule(
+        "External/oneTBB"
+        "${CMAKE_SOURCE_DIR}/External/oneTBB/include/oneapi/tbb.h"
+        "oneTBB"
+    )
+    ensure_git_submodule(
+        "External/OpenUSD"
+        "${CMAKE_SOURCE_DIR}/External/OpenUSD/pxr/usd/usd/stage.h"
+        "OpenUSD"
+    )
+endif()
+include(cmake/DependencyOptions.cmake)
+add_subdirectory(External EXCLUDE_FROM_ALL)
 
 # spdlog follows BUILD_SHARED_LIBS even when SPDLOG_BUILD_SHARED is disabled.
 # When a shared build is requested, keep every executable self-contained by

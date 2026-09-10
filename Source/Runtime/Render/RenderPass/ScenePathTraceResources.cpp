@@ -57,13 +57,6 @@ private:
     SceneResourceLogClock::time_point begin_ = SceneResourceLogClock::now();
 };
 
-struct ScenePathTraceGpuVertex {
-    float position[4] = {};
-    float normal[4] = {};
-    float tangent[4] = {1.0f, 0.0f, 0.0f, 1.0f};
-    float texcoord[4] = {};
-};
-
 struct ScenePathTraceGpuPrimitive {
     uint32_t firstVertex = 0;
     uint32_t vertexCount = 0;
@@ -114,7 +107,8 @@ struct ScenePathTraceGpuMaterial {
 };
 
 struct ScenePathTraceGpuScene {
-    std::vector<ScenePathTraceGpuVertex> vertices;
+    std::vector<SceneShadingVertex> vertices;
+    std::vector<std::array<float, 3>> positions;
     std::vector<uint32_t> indices;
     std::vector<ScenePathTraceGpuPrimitive> primitives;
     std::vector<ScenePathTraceGpuInstance> instances;
@@ -974,6 +968,7 @@ float rayConeLodConstantForPrimitive(
 
 bool appendPrimitiveGeometry(
     const scene::RenderPrimitive& primitive,
+    bool includePositions,
     ScenePathTraceGpuScene& outScene,
     ScenePathTraceGpuPrimitive& outPrimitive)
 {
@@ -1007,22 +1002,12 @@ bool appendPrimitiveGeometry(
         const float2 texcoord = vertexIndex < primitive.texcoords0.size()
             ? primitive.texcoords0[vertexIndex]
             : float2(0.0f, 0.0f);
-        ScenePathTraceGpuVertex vertex;
-        vertex.position[0] = position.x;
-        vertex.position[1] = position.y;
-        vertex.position[2] = position.z;
-        vertex.position[3] = 1.0f;
-        vertex.normal[0] = normal.x;
-        vertex.normal[1] = normal.y;
-        vertex.normal[2] = normal.z;
-        vertex.normal[3] = 0.0f;
-        vertex.tangent[0] = tangent.x;
-        vertex.tangent[1] = tangent.y;
-        vertex.tangent[2] = tangent.z;
-        vertex.tangent[3] = tangent.w >= 0.0f ? 1.0f : -1.0f;
-        vertex.texcoord[0] = texcoord.x;
-        vertex.texcoord[1] = texcoord.y;
-        outScene.vertices.push_back(vertex);
+        outScene.vertices.push_back(SceneShadingVertex{
+            .normal = packSceneNormal(normal.x, normal.y, normal.z),
+            .tangent = packSceneTangent(tangent.x, tangent.y, tangent.z, tangent.w),
+            .texcoord = {texcoord.x, texcoord.y},
+        });
+        if (includePositions) { outScene.positions.push_back({position.x, position.y, position.z}); }
     }
 
     if (primitive.indices.empty()) {
@@ -1036,6 +1021,7 @@ bool appendPrimitiveGeometry(
         const uint32_t sourceIndex = primitive.indices[index];
         if (sourceIndex >= outPrimitive.vertexCount) {
             outScene.vertices.resize(outPrimitive.firstVertex);
+            if (includePositions) { outScene.positions.resize(outPrimitive.firstVertex); }
             outScene.indices.resize(outPrimitive.firstIndex);
             return false;
         }
@@ -1070,6 +1056,7 @@ std::vector<ScenePathTraceGpuMaterial> buildGpuMaterials(
 
 bool buildGpuScene(
     const scene::Scene& loadedScene,
+    bool includePositions,
     const std::vector<uint32_t>& textureIndexMap,
     const std::vector<uint32_t>& neuralTextureSetIndexMap,
     ScenePathTraceGpuScene& outScene,
@@ -1085,7 +1072,7 @@ bool buildGpuScene(
         kInvalidPrimitiveIndex);
     for (uint32_t primitiveIndex = 0; primitiveIndex < loadedScene.renderPrimitives().size(); ++primitiveIndex) {
         ScenePathTraceGpuPrimitive gpuPrimitive;
-        if (!appendPrimitiveGeometry(loadedScene.renderPrimitives()[primitiveIndex], outScene, gpuPrimitive)) {
+        if (!appendPrimitiveGeometry(loadedScene.renderPrimitives()[primitiveIndex], includePositions, outScene, gpuPrimitive)) {
             continue;
         }
         primitiveToGpuPrimitive[primitiveIndex] = static_cast<uint32_t>(outScene.primitives.size());
@@ -1862,7 +1849,8 @@ struct ScenePathTraceResources::Impl {
     void resetGpuBuffers()
     {
         waitForTextureUploads();
-        vertexBuffer.reset();
+        shadingVertexBuffer.reset();
+        fallbackPositionBuffer.reset();
         indexBuffer.reset();
         primitiveBuffer.reset();
         instanceBuffer.reset();
@@ -1905,7 +1893,8 @@ struct ScenePathTraceResources::Impl {
         return prepared &&
             rtxBuilder.valid() &&
             drawBounds.valid &&
-            vertexBuffer != nullptr &&
+            shadingVertexBuffer != nullptr &&
+            (device->capabilities().rayTracingPositionFetch || fallbackPositionBuffer != nullptr) &&
             indexBuffer != nullptr &&
             primitiveBuffer != nullptr &&
             instanceBuffer != nullptr &&
@@ -1948,7 +1937,8 @@ struct ScenePathTraceResources::Impl {
     uint64_t sourceVisibilityRevision = 0;
     uint64_t sourceMaterialRevision = 0;
     std::vector<std::array<int32_t, 10>> sourceMaterialResourceLayout;
-    std::unique_ptr<Buffer> vertexBuffer;
+    std::unique_ptr<Buffer> shadingVertexBuffer;
+    std::unique_ptr<Buffer> fallbackPositionBuffer;
     std::unique_ptr<Buffer> indexBuffer;
     std::unique_ptr<Buffer> primitiveBuffer;
     std::unique_ptr<Buffer> instanceBuffer;
@@ -2063,6 +2053,7 @@ Result ScenePathTraceResources::prepare(
         SceneResourceLogScope scope("build GPU scene payload");
         if (!buildGpuScene(
                 loadedScene,
+                !device.capabilities().rayTracingPositionFetch,
                 textureIndexMap,
                 impl_->neuralTextures.logicalTextureSetIndices(),
                 gpuScene,
@@ -2097,14 +2088,21 @@ Result ScenePathTraceResources::prepare(
 
     {
         SceneResourceLogScope scope("upload GPU scene storage buffers");
+        if (!gpuScene.positions.empty()) {
+            result = uploadStorageBuffer(
+                device, gpuScene.positions.data(), gpuScene.positions.size() * sizeof(std::array<float, 3>),
+                sizeof(std::array<float, 3>), impl_->fallbackPositionBuffer, log,
+                "ScenePathTracePass fallback positions", &impl_->bufferUploads, &impl_->stagingArena);
+            if (!result) { impl_->clear(); return result; }
+        }
         result = uploadStorageBuffer(
             device,
             gpuScene.vertices.data(),
-            static_cast<uint64_t>(gpuScene.vertices.size() * sizeof(ScenePathTraceGpuVertex)),
-            sizeof(ScenePathTraceGpuVertex),
-            impl_->vertexBuffer,
+            static_cast<uint64_t>(gpuScene.vertices.size() * sizeof(SceneShadingVertex)),
+            sizeof(SceneShadingVertex),
+            impl_->shadingVertexBuffer,
             log,
-            "ScenePathTracePass vertices",
+            "ScenePathTracePass shading vertices",
             &impl_->bufferUploads,
             &impl_->stagingArena);
         if (!result) {
@@ -2313,6 +2311,7 @@ Result ScenePathTraceResources::pumpPrepareAsync(
         case Impl::AsyncPrepareStage::GpuPayload:
             if (!buildGpuScene(
                     *impl_->asyncScene,
+                    !impl_->device->capabilities().rayTracingPositionFetch,
                     impl_->textureIndexMap,
                     impl_->neuralTextures.logicalTextureSetIndices(),
                     impl_->asyncGpuScene,
@@ -2353,10 +2352,10 @@ Result ScenePathTraceResources::pumpPrepareAsync(
             switch (impl_->asyncBufferStep) {
             case 0:
                 data = impl_->asyncGpuScene.vertices.data();
-                byteSize = impl_->asyncGpuScene.vertices.size() * sizeof(ScenePathTraceGpuVertex);
-                stride = sizeof(ScenePathTraceGpuVertex);
-                destination = &impl_->vertexBuffer;
-                label = "ScenePathTracePass vertices";
+                byteSize = impl_->asyncGpuScene.vertices.size() * sizeof(SceneShadingVertex);
+                stride = sizeof(SceneShadingVertex);
+                destination = &impl_->shadingVertexBuffer;
+                label = "ScenePathTracePass shading vertices";
                 break;
             case 1:
                 data = impl_->asyncGpuScene.indices.data();
@@ -2385,6 +2384,17 @@ Result ScenePathTraceResources::pumpPrepareAsync(
                 stride = sizeof(ScenePathTraceGpuMaterial);
                 destination = &impl_->materialBuffer;
                 label = "ScenePathTracePass materials";
+                break;
+            case 5:
+                if (impl_->asyncGpuScene.positions.empty()) {
+                    ++impl_->asyncBufferStep;
+                    continue;
+                }
+                data = impl_->asyncGpuScene.positions.data();
+                stride = sizeof(std::array<float, 3>);
+                byteSize = impl_->asyncGpuScene.positions.size() * stride;
+                destination = &impl_->fallbackPositionBuffer;
+                label = "ScenePathTracePass fallback positions";
                 break;
             default:
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitUploads;
@@ -2613,6 +2623,7 @@ Result ScenePathTraceResources::syncRuntimeScene(
     ScenePathTraceGpuScene gpuScene;
     if (!buildGpuScene(
             *boundScene,
+            false, // Only the instance payload is uploaded during a transform edit.
             impl_->textureIndexMap,
             impl_->neuralTextures.logicalTextureSetIndices(),
             gpuScene,
@@ -2688,9 +2699,14 @@ const SceneAccelerationStructureBuilder& ScenePathTraceResources::accelerationSt
     return impl_->rtxBuilder;
 }
 
-Buffer* ScenePathTraceResources::vertexBuffer() const
+Buffer* ScenePathTraceResources::shadingVertexBuffer() const
 {
-    return impl_->vertexBuffer.get();
+    return impl_->shadingVertexBuffer.get();
+}
+
+Buffer* ScenePathTraceResources::fallbackPositionBuffer() const
+{
+    return impl_->fallbackPositionBuffer.get();
 }
 
 Buffer* ScenePathTraceResources::indexBuffer() const

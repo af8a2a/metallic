@@ -2,6 +2,7 @@
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/NsightAftermath.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
@@ -548,6 +549,9 @@ VkBuildAccelerationStructureFlagsKHR toVkAccelerationStructureBuildFlags(
     }
     if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowCompaction)) {
         result |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
+    }
+    if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess)) {
+        result |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_BIT_KHR;
     }
     return result;
 }
@@ -1372,6 +1376,7 @@ struct VulkanExtensionSet {
     bool accelerationStructure = false;
     bool deferredHostOperations = false;
     bool rayQuery = false;
+    bool rayTracingPositionFetch = false;
     bool rayTracingPipeline = false;
     bool pipelineLibrary = false;
     bool pushDescriptor = false;
@@ -1402,6 +1407,7 @@ struct VulkanExtensionSet {
         result.accelerationStructure = result.has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         result.deferredHostOperations = result.has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         result.rayQuery = result.has(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        result.rayTracingPositionFetch = result.has(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME);
         result.rayTracingPipeline = result.has(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
         result.pipelineLibrary = result.has(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
         result.pushDescriptor = result.has(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
@@ -1451,6 +1457,7 @@ struct VulkanDeviceFeatureRequest {
     uint32_t preferredTaskSubgroupSize = 0;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
+    bool rayTracingPositionFetch = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
@@ -1476,6 +1483,7 @@ struct VulkanDeviceFeatureRequest {
                 desc.preferredTaskSubgroupSize,
             .rayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure,
             .rayQuery = desc.enableRayQuery,
+            .rayTracingPositionFetch = desc.enableRayTracingPositionFetch,
             .pushDescriptor = desc.enablePushDescriptor,
             .clusterAccelerationStructure = desc.enableClusterAccelerationStructure,
             .partitionedAccelerationStructure = desc.enablePartitionedAccelerationStructure,
@@ -1506,6 +1514,9 @@ struct VulkanDeviceFeatureProbe {
     };
     VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+    };
+    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rayTracingPositionFetchFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR,
     };
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
@@ -1565,6 +1576,9 @@ struct VulkanDeviceFeatureProbe {
         }
         if (extensions.rayQuery) {
             appendPNext(featureTail, rayQueryFeatures);
+        }
+        if (extensions.rayTracingPositionFetch) {
+            appendPNext(featureTail, rayTracingPositionFetchFeatures);
         }
         if (extensions.rayTracingPipeline) {
             appendPNext(featureTail, rayTracingPipelineFeatures);
@@ -1650,6 +1664,7 @@ struct VulkanDeviceFeatureProbe {
     bool supportsStreamline(const VulkanExtensionSet& extensions, bool accelerationStructureSupported) const
     {
         return accelerationStructureSupported &&
+            vulkan13Features.privateData == VK_TRUE &&
             extensions.rayQuery &&
             rayQueryFeatures.rayQuery == VK_TRUE &&
             extensions.rayTracingPipeline &&
@@ -1729,6 +1744,7 @@ struct VulkanDeviceFeatureProbe {
 };
 
 struct VulkanDeviceFeatureSelection {
+    bool privateData = false;
     bool shaderDemoteToHelperInvocation = false;
     bool shaderIntegerDotProduct = false;
     bool cooperativeVector = false;
@@ -1748,6 +1764,7 @@ struct VulkanDeviceFeatureSelection {
     uint32_t maxComputeWorkgroupSubgroups = 0;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
+    bool rayTracingPositionFetch = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
@@ -1757,8 +1774,11 @@ struct VulkanDeviceFeatureSelection {
     // fp16/int16 shader capabilities) and by SHaRC's 64-bit hash-grid atomics.
     // Enabled opportunistically.
     bool scalarBlockLayout = false;
+    bool shaderImageGatherExtended = false;
     bool uniformBufferStandardLayout = false;
     bool shaderBufferInt64Atomics = false;
+    bool shaderInt64 = false;
+    bool nrcRayTracingPipeline = false;
     bool shaderFloat16 = false;
     bool shaderInt16 = false;
     // Extension availability used by enabledDeviceExtensions().
@@ -1784,6 +1804,7 @@ struct VulkanDeviceFeatureSelection {
             probe.supportsSubgroupSizeControl();
 
         VulkanDeviceFeatureSelection result;
+        result.privateData = request.streamline && probe.vulkan13Features.privateData == VK_TRUE;
         result.shaderDemoteToHelperInvocation =
             probe.vulkan13Features.shaderDemoteToHelperInvocation == VK_TRUE;
         result.shaderIntegerDotProduct =
@@ -1852,6 +1873,9 @@ struct VulkanDeviceFeatureSelection {
             extensions.rayQuery &&
             probe.rayQueryFeatures.rayQuery == VK_TRUE;
         result.pushDescriptor = (request.pushDescriptor || request.streamline) && extensions.pushDescriptor;
+        result.rayTracingPositionFetch = request.rayTracingPositionFetch &&
+            result.rayTracingAccelerationStructure && extensions.rayTracingPositionFetch &&
+            probe.rayTracingPositionFetchFeatures.rayTracingPositionFetch == VK_TRUE;
         result.clusterAccelerationStructure =
             request.clusterAccelerationStructure &&
             clusterAccelerationStructureSupported &&
@@ -1868,8 +1892,14 @@ struct VulkanDeviceFeatureSelection {
             result.pushDescriptor;
         result.aftermath = request.aftermath && aftermathSupported;
         result.scalarBlockLayout = probe.vulkan12Features.scalarBlockLayout == VK_TRUE;
+        result.shaderImageGatherExtended = probe.features.features.shaderImageGatherExtended == VK_TRUE;
         result.uniformBufferStandardLayout = probe.vulkan12Features.uniformBufferStandardLayout == VK_TRUE;
         result.shaderBufferInt64Atomics = probe.vulkan12Features.shaderBufferInt64Atomics == VK_TRUE;
+        result.shaderInt64 = probe.features.features.shaderInt64 == VK_TRUE;
+        // NRC's native barriers include the ray-tracing shader stage even when
+        // the application's path tracer uses compute ray queries.
+        result.nrcRayTracingPipeline = result.rayQuery && extensions.rayTracingPipeline &&
+            probe.rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
         result.shaderFloat16 = probe.vulkan12Features.shaderFloat16 == VK_TRUE;
         result.shaderInt16 = probe.features.features.shaderInt16 == VK_TRUE;
         result.nvxBinaryImport = extensions.streamlineBinaryImport;
@@ -1963,6 +1993,9 @@ struct VulkanEnabledFeatureChain {
     VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
     };
+    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rayTracingPositionFetchFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR,
+    };
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
     };
@@ -2022,12 +2055,16 @@ struct VulkanEnabledFeatureChain {
         vulkan12Features.shaderBufferInt64Atomics = selection.shaderBufferInt64Atomics ? VK_TRUE : VK_FALSE;
         vulkan12Features.shaderFloat16 = selection.shaderFloat16 ? VK_TRUE : VK_FALSE;
         features.features.shaderInt16 = selection.shaderInt16 ? VK_TRUE : VK_FALSE;
+        features.features.shaderInt64 = selection.shaderInt64 ? VK_TRUE : VK_FALSE;
+        features.features.shaderImageGatherExtended = selection.shaderImageGatherExtended ? VK_TRUE : VK_FALSE;
         features.features.geometryShader = selection.geometryShader ? VK_TRUE : VK_FALSE;
         vulkan13Features.subgroupSizeControl =
             selection.subgroupSizeControl ? VK_TRUE : VK_FALSE;
         vulkan13Features.computeFullSubgroups =
             selection.computeFullSubgroups ? VK_TRUE : VK_FALSE;
         vulkan13Features.synchronization2 = VK_TRUE;
+        // Streamline's Vulkan platform layer creates a private-data slot at startup.
+        vulkan13Features.privateData = selection.privateData ? VK_TRUE : VK_FALSE;
         vulkan13Features.dynamicRendering = VK_TRUE;
         vulkan13Features.shaderDemoteToHelperInvocation =
             selection.shaderDemoteToHelperInvocation ? VK_TRUE : VK_FALSE;
@@ -2046,7 +2083,10 @@ struct VulkanEnabledFeatureChain {
         accelerationStructureFeatures.accelerationStructure =
             selection.rayTracingAccelerationStructure ? VK_TRUE : VK_FALSE;
         rayQueryFeatures.rayQuery = selection.rayQuery ? VK_TRUE : VK_FALSE;
-        rayTracingPipelineFeatures.rayTracingPipeline = selection.streamline ? VK_TRUE : VK_FALSE;
+        rayTracingPositionFetchFeatures.rayTracingPositionFetch =
+            selection.rayTracingPositionFetch ? VK_TRUE : VK_FALSE;
+        rayTracingPipelineFeatures.rayTracingPipeline =
+            selection.streamline || selection.nrcRayTracingPipeline ? VK_TRUE : VK_FALSE;
 #ifdef VK_NV_cluster_acceleration_structure
         clusterAccelerationStructureFeatures.clusterAccelerationStructure =
             selection.clusterAccelerationStructure ? VK_TRUE : VK_FALSE;
@@ -2080,7 +2120,10 @@ struct VulkanEnabledFeatureChain {
         if (selection.rayQuery) {
             appendPNext(featureTail, rayQueryFeatures);
         }
-        if (selection.streamline) {
+        if (selection.rayTracingPositionFetch) {
+            appendPNext(featureTail, rayTracingPositionFetchFeatures);
+        }
+        if (selection.streamline || selection.nrcRayTracingPipeline) {
             appendPNext(featureTail, rayTracingPipelineFeatures);
         }
 #ifdef VK_NV_cluster_acceleration_structure
@@ -2131,6 +2174,9 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
     if (selection.rayQuery) {
         extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
     }
+    if (selection.rayTracingPositionFetch) {
+        extensions.push_back(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME);
+    }
     if (selection.pushDescriptor) {
         extensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
     }
@@ -2149,8 +2195,10 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
         extensions.push_back(VK_NV_COOPERATIVE_VECTOR_EXTENSION_NAME);
     }
 #endif
-    if (selection.streamline) {
+    if (selection.streamline || selection.nrcRayTracingPipeline) {
         extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+    }
+    if (selection.streamline) {
         extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
 #ifdef VK_NVX_binary_import
         extensions.push_back(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
@@ -2970,6 +3018,9 @@ DeviceImpl::~DeviceImpl()
         if (waitResult == VK_ERROR_DEVICE_LOST) {
             profiling::handleNsightAftermathDeviceLost();
         }
+#if METALLIC_HAS_NRC
+        vulkan::shutdownNrcLibrary(device);
+#endif
     }
 
     if (streamlineInitialized) {
@@ -6907,6 +6958,10 @@ Result Device::queryRayTracingAccelerationStructureBuildSizes(
         !impl_->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
+    if (hasFlag(inputs.flags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess) &&
+        !impl_->capabilities.rayTracingPositionFetch) {
+        return makeError(Error::Unsupported);
+    }
 
     activateVolkDevice(impl_->device);
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
@@ -7024,6 +7079,10 @@ Result Device::createRayTracingAccelerationStructure(
     }
     if (!impl_->rayTracingAccelerationStructureEnabled ||
         !impl_->capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+    if (hasFlag(desc.buildFlags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess) &&
+        !impl_->capabilities.rayTracingPositionFetch) {
         return makeError(Error::Unsupported);
     }
 
@@ -9301,6 +9360,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->rayTracingAccelerationStructureEnabled = selectedFeatures.rayTracingAccelerationStructure;
     deviceImpl->capabilities.rayQuery = selectedFeatures.rayQuery;
     deviceImpl->rayQueryEnabled = selectedFeatures.rayQuery;
+    deviceImpl->capabilities.rayTracingPositionFetch = selectedFeatures.rayTracingPositionFetch;
+    if (selectedFeatures.rayTracingPositionFetch) {
+        spdlog::info("[Vulkan] VK_KHR_ray_tracing_position_fetch enabled");
+    }
     deviceImpl->capabilities.pushDescriptor = selectedFeatures.pushDescriptor;
     deviceImpl->pushDescriptorEnabled = selectedFeatures.pushDescriptor;
     deviceImpl->capabilities.clusterAccelerationStructure = selectedFeatures.clusterAccelerationStructure;
@@ -9313,6 +9376,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->capabilities.shaderIntegerDotProduct =
         selectedFeatures.shaderIntegerDotProduct;
     deviceImpl->capabilities.cooperativeVector = selectedFeatures.cooperativeVector;
+    deviceImpl->capabilities.shaderImageGatherExtended = selectedFeatures.shaderImageGatherExtended;
     deviceImpl->bufferDeviceAddressEnabled = selectedFeatures.usesBufferDeviceAddress();
 
     if (deviceImpl->debugUtilsEnabled) {

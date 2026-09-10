@@ -338,6 +338,9 @@ struct DeviceDesc {
     uint32_t preferredTaskSubgroupSize = 0;
     bool enableRayTracingAccelerationStructure = false;
     bool enableRayQuery = false;
+    // Optional optimization, enabled only when acceleration structures and the
+    // device's position-fetch feature are available. False forces the fallback.
+    bool enableRayTracingPositionFetch = true;
     bool enablePushDescriptor = false;
     bool enableClusterAccelerationStructure = false;
     bool enablePartitionedAccelerationStructure = false;
@@ -364,6 +367,7 @@ struct DeviceCapabilities {
     uint32_t maxComputeWorkgroupSubgroups = 0;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
+    bool rayTracingPositionFetch = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
@@ -372,6 +376,7 @@ struct DeviceCapabilities {
     bool streamlineDlssRr = false;
     bool aftermath = false;
     bool shaderIntegerDotProduct = false;
+    bool shaderImageGatherExtended = false;
     bool cooperativeVector = false;
     bool timestampQueries = false;
     double timestampPeriodNanoseconds = 0.0;
@@ -544,6 +549,7 @@ enum class RayTracingAccelerationStructureBuildFlags : uint8_t {
     PreferFastBuild = 1u << 1,
     AllowUpdate = 1u << 2,
     AllowCompaction = 1u << 3,
+    AllowDataAccess = 1u << 4,
 };
 
 constexpr RayTracingAccelerationStructureBuildFlags operator|(
@@ -1855,7 +1861,7 @@ public:
     Device& operator=(const Device&) = delete;
 
     const DeviceCapabilities& capabilities() const;
-    Queue* getQueue(QueueType type, uint32_t index = 0);
+    Queue* getQueue(QueueType type, uint32_t indwriteStorageBufferex = 0);
     Result waitIdle();
     Result createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapchain>& outSwapchain);
     Result createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& outCommandPool);

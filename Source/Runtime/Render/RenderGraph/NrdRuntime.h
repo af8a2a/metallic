@@ -13,7 +13,7 @@
 #endif
 
 #if METALLIC_HAS_NRD
-#include <NRD.h>
+#include "Runtime/Render/Denoising/NrdTypes.h"
 #endif
 
 namespace metallic::render {
@@ -33,10 +33,11 @@ struct NrdTextureRef {
     TextureView* view = nullptr;
 };
 
-using NrdUserTexturePool = std::array<NrdTextureRef, static_cast<size_t>(nrd::ResourceType::MAX_NUM)>;
+using NrdUserTexturePool = std::array<NrdTextureRef, static_cast<size_t>(denoising::ResourceType::MAX_NUM)>;
 
-// White-box NRD integration hosted above the backend. It consumes NRD's
-// dispatch descriptions and records them exclusively through the public RHI.
+// Vendored NRD kernels, scheduled and bound by Metallic. The caller must wait
+// for the previous frame before reusing this temporal instance (the render graph
+// enforces this through NrdDenoisePass::supportsFrameOverlap = false).
 class NrdRuntime {
 public:
     NrdRuntime();
@@ -48,39 +49,27 @@ public:
     NrdRuntime(const NrdRuntime&) = delete;
     NrdRuntime& operator=(const NrdRuntime&) = delete;
 
-    Result initialize(
-        Device& device,
-        uint16_t width,
-        uint16_t height,
-        const NrdUserTexturePool& userTexturePool,
-        std::string& log);
+    Result initialize(Device& device, uint16_t width, uint16_t height, const NrdUserTexturePool& userTexturePool,
+                      std::string& log);
     void clear();
     bool valid() const;
 
     uint16_t width() const;
     uint16_t height() const;
 
-    void setUserPoolTexture(nrd::ResourceType resource, Texture& texture, TextureView& view);
-    Result setCommonSettings(const nrd::CommonSettings& settings);
-    Result setReblurSettings(const nrd::ReblurSettings& settings);
-    Result setRelaxSettings(const nrd::RelaxSettings& settings);
+    void setUserPoolTexture(denoising::ResourceType resource, Texture& texture, TextureView& view);
+    Result setCommonSettings(const denoising::CommonSettings& settings);
+    Result setReblurSettings(const denoising::ReblurSettings& settings);
+    Result setRelaxSettings(const denoising::RelaxSettings& settings);
     Result denoise(NrdDenoiserMode mode, CommandBuffer& commandBuffer, Streamer& streamer);
-    Result denoiseIdentifiers(
-        const nrd::Identifier* denoisers,
-        uint32_t denoiserCount,
-        CommandBuffer& commandBuffer,
-        Streamer& streamer);
+    Result denoiseReference(bool specular, CommandBuffer& commandBuffer, Streamer& streamer);
 
 private:
-    Result setDenoiserSettings(nrd::Identifier identifier, const void* settings);
-    Result dispatch(
-        CommandBuffer& commandBuffer,
-        Streamer& streamer,
-        const nrd::DispatchDesc& dispatchDesc,
-        uint64_t& previousConstantAddress);
+    Result record(uint32_t index, CommandBuffer& commandBuffer, Streamer& streamer);
+    Result dispatch(CommandBuffer& commandBuffer, Streamer& streamer, const denoising::DispatchDesc& stage);
 
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 
 #endif

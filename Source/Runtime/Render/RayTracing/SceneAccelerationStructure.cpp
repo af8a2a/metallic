@@ -478,6 +478,12 @@ Result SceneAccelerationStructureBuilder::Impl::poll(
         }
     }
     compactedBlases.clear();
+    // BLAS geometry inputs are no longer referenced after the compact/TLAS
+    // submission completes. TLAS refits only need instances and scratch;
+    // shading obtains positions from the BLAS or its own fallback stream.
+    vertexBuffer.reset();
+    indexBuffer.reset();
+    stats.geometryBytes = instanceBuffer != nullptr ? instanceBuffer->desc().size : 0;
     pendingInstances.clear();
     pendingInstanceBlasIndices.clear();
     originalBlasSizes.clear();
@@ -646,6 +652,10 @@ Result SceneAccelerationStructureBuilder::buildInternal(
         return result;
     }
 
+    const RayTracingAccelerationStructureBuildFlags blasBuildFlags = kSceneBlasBuildFlags |
+        (device.capabilities().rayTracingPositionFetch
+            ? RayTracingAccelerationStructureBuildFlags::AllowDataAccess
+            : RayTracingAccelerationStructureBuildFlags::None);
     std::vector<RayTracingTriangleGeometryDesc> geometries;
     geometries.reserve(primitiveInputs.size());
     impl_->blases.reserve(primitiveInputs.size());
@@ -669,7 +679,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
         result = device.queryRayTracingAccelerationStructureBuildSizes(
             RayTracingAccelerationStructureBuildInputs{
                 .type = RayTracingAccelerationStructureType::BottomLevel,
-                .flags = kSceneBlasBuildFlags,
+                .flags = blasBuildFlags,
                 .geometries = &geometries.back(),
                 .geometryCount = 1,
             },
@@ -683,7 +693,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
         result = device.createRayTracingAccelerationStructure(
             RayTracingAccelerationStructureDesc{
                 .type = RayTracingAccelerationStructureType::BottomLevel,
-                .buildFlags = kSceneBlasBuildFlags,
+                .buildFlags = blasBuildFlags,
                 .size = sizes.accelerationStructureSize,
             },
             blas);

@@ -108,6 +108,10 @@ void registerBuiltInRenderGraphPasses()
         "Denoise a path traced HDR color target with NVIDIA DLSS Ray Reconstruction",
         []() { return builtin_pass::createStreamlineDlssRrPass(); });
     registerRenderGraphPassType(
+        "DlssNrPass",
+        "Experimental NVIDIA DLSS Neural Rendering at native resolution",
+        []() { return builtin_pass::createDlssNrPass(); });
+    registerRenderGraphPassType(
         "RenderGraphBufferWritePass",
         "Write a known byte pattern into a graph buffer",
         []() { return builtin_pass::createRenderGraphBufferWritePass(); });
