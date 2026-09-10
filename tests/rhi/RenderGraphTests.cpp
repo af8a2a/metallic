@@ -47,6 +47,8 @@ constexpr uint32_t kSpirvVersion16 = 0x00010600u;
 constexpr uint16_t kSpirvOpExtension = 10u;
 constexpr uint16_t kSpirvOpExtInstImport = 11u;
 constexpr uint16_t kSpirvOpCapability = 17u;
+constexpr uint16_t kSpirvOpRayQueryGetIntersectionTriangleVertexPositionsKhr = 5340u;
+constexpr uint32_t kSpirvRayQueryPositionFetchKhr = 5391u;
 constexpr uint16_t kSpirvOpRayQueryGetIntersectionClusterIdNv = 5345u;
 constexpr uint32_t kSpirvRayTracingClusterAccelerationStructureNv = 5437u;
 
@@ -5096,47 +5098,52 @@ public:
 
     RhiTestResult run(RhiTestContext&) override
     {
-        const char* capabilities[] = {"spvRayQueryKHR"};
+        const char* capabilities[] = {"spvRayQueryKHR", "spvRayQueryPositionFetchKHR"};
         const struct ShaderEntry {
             const char* moduleName;
             const char* entryPointName;
         } entries[] = {
             {"Features/PathTracing/ScenePathTraceGuides", "scenePathTraceGuidesMain"},
             {"Features/PathTracing/OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain"},
+            {"Features/Debug/SceneMaterialVisualize", "sceneMaterialVisualizeMain"},
+            {"Features/ReSTIR/SceneRtxdi", "sceneRtxdiMain"},
         };
 
-        for (const ShaderEntry& entry : entries) {
-            render::ShaderCompileResult compileResult;
-            render::Result result = render::compileSlangShaderToSpirv(
-                render::SlangShaderDesc{
-                    .moduleName = entry.moduleName,
-                    .entryPointName = entry.entryPointName,
-                    .searchPath = kShaderSearchPath,
-                    .capabilities = capabilities,
-                    .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-                },
-                compileResult);
-            if (!result) {
-                return RhiTestResult::fail(
-                    std::string("Path tracing guide shader compile returned ") +
-                    toString(result) +
-                    " for " +
-                    entry.moduleName +
-                    "." +
-                    entry.entryPointName +
-                    ": " +
-                    compileResult.diagnostics);
-            }
-            if (compileResult.spirv.empty()) {
-                return RhiTestResult::fail(
-                    std::string("Path tracing guide shader produced empty SPIR-V for ") +
-                    entry.moduleName +
-                    "." +
-                    entry.entryPointName);
+        for (uint32_t positionFetch : {0u, 1u}) {
+            const render::SlangMacroDefine defines[] = {
+                {"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", positionFetch != 0 ? "1" : "0"},
+            };
+            for (const ShaderEntry& entry : entries) {
+                render::ShaderCompileResult compileResult;
+                render::Result result = render::compileSlangShaderToSpirv(
+                    render::SlangShaderDesc{
+                        .moduleName = entry.moduleName,
+                        .entryPointName = entry.entryPointName,
+                        .searchPath = kShaderSearchPath,
+                        .capabilities = capabilities,
+                        .capabilityCount = 1u + positionFetch,
+                        .macroDefines = defines,
+                        .macroDefineCount = static_cast<uint32_t>(std::size(defines)),
+                    },
+                    compileResult);
+                if (!result || compileResult.spirv.empty()) {
+                    return RhiTestResult::fail(
+                        std::string("Path tracing guide shader compile failed for ") +
+                        entry.moduleName + "." + entry.entryPointName + ": " +
+                        toString(result) + " " + compileResult.diagnostics);
+                }
+                if (spirvContainsOpcode(compileResult.spirv,
+                        kSpirvOpRayQueryGetIntersectionTriangleVertexPositionsKhr) != (positionFetch != 0) ||
+                    spirvContainsCapability(compileResult.spirv,
+                        kSpirvRayQueryPositionFetchKhr) != (positionFetch != 0) ||
+                    spirvContainsExtension(compileResult.spirv,
+                        "SPV_KHR_ray_tracing_position_fetch") != (positionFetch != 0)) {
+                    return RhiTestResult::fail("guide shader position-fetch instruction/capability mismatch");
+                }
             }
         }
 
-        return RhiTestResult::pass("compiled path tracing guide shaders");
+        return RhiTestResult::pass("compiled Standard/OpenPBR guides, material visualization and RTXDI with position fetch enabled and disabled");
     }
 };
 

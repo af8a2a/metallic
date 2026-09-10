@@ -810,6 +810,7 @@ public:
         const bool useOpenPBR = useOpenPBRBsdf(properties());
         const bool exportGuides = exportDenoiserGuides(properties());
         const bool ntcActive = sceneResources_.neuralTextures().active();
+        const bool positionFetch = context.device->capabilities().rayTracingPositionFetch;
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
         const char* moduleName = nullptr;
@@ -864,7 +865,8 @@ public:
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
             "|cache=" + std::to_string(cacheMode_) +
             "|ntc=" + (ntcActive ? "1" : "0") +
-            "|coopvec=" + (ntcCooperativeVector ? "1" : "0");
+            "|coopvec=" + (ntcCooperativeVector ? "1" : "0") +
+            "|positionFetch=" + (positionFetch ? "1" : "0");
         if (useOpenPBR) {
             result = openPBRLuts_.prepare(*context.device, log);
             if (!result) {
@@ -898,6 +900,9 @@ public:
             "spvRayQueryKHR",
             "spvGroupNonUniformBallot",
         };
+        if (positionFetch) {
+            capabilities.push_back("spvRayQueryPositionFetchKHR");
+        }
         if (ntcCooperativeVector) {
             capabilities.push_back("spvCooperativeVectorNV");
         }
@@ -955,6 +960,9 @@ public:
                 .kind = ComputeResourceBindingKind::SampledImage,
             },
         };
+        if (!positionFetch) {
+            baseBindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
+        }
         if (realtime_) {
             baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
@@ -1053,6 +1061,10 @@ public:
                 SlangMacroDefine{
                     .name = "METALLIC_NTC_COOPERATIVE_VECTOR",
                     .value = ntcCooperativeVector ? "1" : "0",
+                },
+                SlangMacroDefine{
+                    .name = "SCENE_RAYQUERY_ENABLE_POSITION_FETCH",
+                    .value = positionFetch ? "1" : "0",
                 },
             };
             defines.insert(defines.end(), extraDefines.begin(), extraDefines.end());
@@ -1673,7 +1685,7 @@ public:
             },
             ComputeDispatchBinding{
                 .binding = 2,
-                .buffer = sceneResources_.vertexBuffer(),
+                .buffer = sceneResources_.shadingVertexBuffer(),
             },
             ComputeDispatchBinding{
                 .binding = 3,
@@ -1715,6 +1727,9 @@ public:
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentImportancePdfViews)),
             },
         };
+        if (sceneResources_.fallbackPositionBuffer() != nullptr) {
+            bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
+        }
         if (realtime_) {
             bindings.push_back(ComputeDispatchBinding{
                 .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,

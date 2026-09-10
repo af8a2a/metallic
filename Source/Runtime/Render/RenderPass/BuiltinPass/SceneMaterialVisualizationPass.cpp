@@ -103,9 +103,11 @@ public:
             return result;
         }
         const bool ntcActive = sceneResources_.neuralTextures().active();
+        const bool positionFetch = context.device->capabilities().rayTracingPositionFetch;
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
         if (rayQueryProgram_.valid() &&
+            compiledPositionFetch_ == positionFetch &&
             compiledNtcActive_ == ntcActive &&
             compiledNtcCooperativeVector_ == ntcCooperativeVector) {
             return {};
@@ -114,10 +116,12 @@ public:
 
         ShaderCompileResult computeCompile;
         std::vector<const char*> capabilities{"spvRayQueryKHR"};
+        if (positionFetch) { capabilities.push_back("spvRayQueryPositionFetchKHR"); }
         if (ntcCooperativeVector) {
             capabilities.push_back("spvCooperativeVectorNV");
         }
         const SlangMacroDefine ntcDefines[] = {
+            {"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", positionFetch ? "1" : "0"},
             SlangMacroDefine{
                 .name = "METALLIC_HAS_NTC",
                 .value = ntcActive ? "1" : "0",
@@ -199,6 +203,9 @@ public:
                 .descriptorCount = kScenePathTraceMaxMaterialTextures,
             },
         };
+        if (!positionFetch) {
+            bindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
+        }
         if (ntcActive) {
             bindings.push_back(ComputeProgramBindingDesc{
                 .binding = kNeuralTextureLatentsBinding,
@@ -245,6 +252,7 @@ public:
             return result;
         }
         compiledNtcActive_ = ntcActive;
+        compiledPositionFetch_ = positionFetch;
         compiledNtcCooperativeVector_ = ntcCooperativeVector;
         return {};
     }
@@ -310,7 +318,7 @@ public:
             },
             ComputeDispatchBinding{
                 .binding = 2,
-                .buffer = sceneResources_.vertexBuffer(),
+                .buffer = sceneResources_.shadingVertexBuffer(),
             },
             ComputeDispatchBinding{
                 .binding = 3,
@@ -335,6 +343,9 @@ public:
             },
         };
         const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
+        if (sceneResources_.fallbackPositionBuffer() != nullptr) {
+            bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
+        }
         if (neuralTextures.active()) {
             const auto& latentViews = neuralTextures.latentTextureViews();
             bindings.push_back(ComputeDispatchBinding{
@@ -563,6 +574,7 @@ private:
     Queue* graphicsQueue_ = nullptr;
     ComputeProgram rayQueryProgram_;
     bool compiledNtcActive_ = false;
+    bool compiledPositionFetch_ = false;
     bool compiledNtcCooperativeVector_ = false;
 };
 

@@ -442,7 +442,7 @@ public:
         }
         const uint64_t revision = resources.revision();
         auto* const instances = resources.instanceBuffer();
-        auto* const vertices = resources.vertexBuffer();
+        auto* const vertices = resources.shadingVertexBuffer();
         auto* const tlas = resources.accelerationStructure().accelerationStructure();
         // Simulate consecutive drag updates through the same API as the gizmo.
         for (int step = 0; step < 16; ++step) {
@@ -454,7 +454,7 @@ public:
                 }
                 result = resources.syncRuntimeScene(&scene, log);
                 if (!result || resources.revision() != revision ||
-                    resources.instanceBuffer() != instances || resources.vertexBuffer() != vertices ||
+                    resources.instanceBuffer() != instances || resources.shadingVertexBuffer() != vertices ||
                     resources.accelerationStructure().accelerationStructure() != tlas) {
                     return RhiTestResult::fail("light/camera drag rebuilt geometry resources: " + log);
                 }
@@ -472,7 +472,7 @@ public:
             return RhiTestResult::fail("light parent edit failed");
         }
         result = resources.syncRuntimeScene(&scene, log);
-        if (!result || resources.revision() <= revision || resources.vertexBuffer() != vertices ||
+        if (!result || resources.revision() <= revision || resources.shadingVertexBuffer() != vertices ||
             std::abs(resources.bounds().min.x - oldMinX - 3.0f) > 1e-5f ||
             log.find("Updated scene acceleration-structure instance transforms") == std::string::npos) {
             return RhiTestResult::fail("light parent failed to update its geometry child: " + log);

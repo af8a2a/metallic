@@ -550,6 +550,9 @@ VkBuildAccelerationStructureFlagsKHR toVkAccelerationStructureBuildFlags(
     if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowCompaction)) {
         result |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
     }
+    if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess)) {
+        result |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_BIT_KHR;
+    }
     return result;
 }
 
@@ -1373,6 +1376,7 @@ struct VulkanExtensionSet {
     bool accelerationStructure = false;
     bool deferredHostOperations = false;
     bool rayQuery = false;
+    bool rayTracingPositionFetch = false;
     bool rayTracingPipeline = false;
     bool pipelineLibrary = false;
     bool pushDescriptor = false;
@@ -1403,6 +1407,7 @@ struct VulkanExtensionSet {
         result.accelerationStructure = result.has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         result.deferredHostOperations = result.has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         result.rayQuery = result.has(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        result.rayTracingPositionFetch = result.has(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME);
         result.rayTracingPipeline = result.has(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
         result.pipelineLibrary = result.has(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
         result.pushDescriptor = result.has(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
@@ -1452,6 +1457,7 @@ struct VulkanDeviceFeatureRequest {
     uint32_t preferredTaskSubgroupSize = 0;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
+    bool rayTracingPositionFetch = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
@@ -1477,6 +1483,7 @@ struct VulkanDeviceFeatureRequest {
                 desc.preferredTaskSubgroupSize,
             .rayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure,
             .rayQuery = desc.enableRayQuery,
+            .rayTracingPositionFetch = desc.enableRayTracingPositionFetch,
             .pushDescriptor = desc.enablePushDescriptor,
             .clusterAccelerationStructure = desc.enableClusterAccelerationStructure,
             .partitionedAccelerationStructure = desc.enablePartitionedAccelerationStructure,
@@ -1507,6 +1514,9 @@ struct VulkanDeviceFeatureProbe {
     };
     VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+    };
+    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rayTracingPositionFetchFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR,
     };
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
@@ -1566,6 +1576,9 @@ struct VulkanDeviceFeatureProbe {
         }
         if (extensions.rayQuery) {
             appendPNext(featureTail, rayQueryFeatures);
+        }
+        if (extensions.rayTracingPositionFetch) {
+            appendPNext(featureTail, rayTracingPositionFetchFeatures);
         }
         if (extensions.rayTracingPipeline) {
             appendPNext(featureTail, rayTracingPipelineFeatures);
@@ -1750,6 +1763,7 @@ struct VulkanDeviceFeatureSelection {
     uint32_t maxComputeWorkgroupSubgroups = 0;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
+    bool rayTracingPositionFetch = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
@@ -1853,6 +1867,9 @@ struct VulkanDeviceFeatureSelection {
             extensions.rayQuery &&
             probe.rayQueryFeatures.rayQuery == VK_TRUE;
         result.pushDescriptor = (request.pushDescriptor || request.streamline) && extensions.pushDescriptor;
+        result.rayTracingPositionFetch = request.rayTracingPositionFetch &&
+            result.rayTracingAccelerationStructure && extensions.rayTracingPositionFetch &&
+            probe.rayTracingPositionFetchFeatures.rayTracingPositionFetch == VK_TRUE;
         result.clusterAccelerationStructure =
             request.clusterAccelerationStructure &&
             clusterAccelerationStructureSupported &&
@@ -1970,6 +1987,9 @@ struct VulkanEnabledFeatureChain {
     VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
     };
+    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rayTracingPositionFetchFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR,
+    };
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
     };
@@ -2057,6 +2077,8 @@ struct VulkanEnabledFeatureChain {
         accelerationStructureFeatures.accelerationStructure =
             selection.rayTracingAccelerationStructure ? VK_TRUE : VK_FALSE;
         rayQueryFeatures.rayQuery = selection.rayQuery ? VK_TRUE : VK_FALSE;
+        rayTracingPositionFetchFeatures.rayTracingPositionFetch =
+            selection.rayTracingPositionFetch ? VK_TRUE : VK_FALSE;
         rayTracingPipelineFeatures.rayTracingPipeline =
             selection.streamline || selection.nrcRayTracingPipeline ? VK_TRUE : VK_FALSE;
 #ifdef VK_NV_cluster_acceleration_structure
@@ -2091,6 +2113,9 @@ struct VulkanEnabledFeatureChain {
         }
         if (selection.rayQuery) {
             appendPNext(featureTail, rayQueryFeatures);
+        }
+        if (selection.rayTracingPositionFetch) {
+            appendPNext(featureTail, rayTracingPositionFetchFeatures);
         }
         if (selection.streamline || selection.nrcRayTracingPipeline) {
             appendPNext(featureTail, rayTracingPipelineFeatures);
@@ -2142,6 +2167,9 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
     }
     if (selection.rayQuery) {
         extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    }
+    if (selection.rayTracingPositionFetch) {
+        extensions.push_back(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME);
     }
     if (selection.pushDescriptor) {
         extensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
@@ -6910,6 +6938,10 @@ Result Device::queryRayTracingAccelerationStructureBuildSizes(
         !impl_->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
+    if (hasFlag(inputs.flags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess) &&
+        !impl_->capabilities.rayTracingPositionFetch) {
+        return makeError(Error::Unsupported);
+    }
 
     activateVolkDevice(impl_->device);
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
@@ -7027,6 +7059,10 @@ Result Device::createRayTracingAccelerationStructure(
     }
     if (!impl_->rayTracingAccelerationStructureEnabled ||
         !impl_->capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+    if (hasFlag(desc.buildFlags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess) &&
+        !impl_->capabilities.rayTracingPositionFetch) {
         return makeError(Error::Unsupported);
     }
 
@@ -9303,6 +9339,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->rayTracingAccelerationStructureEnabled = selectedFeatures.rayTracingAccelerationStructure;
     deviceImpl->capabilities.rayQuery = selectedFeatures.rayQuery;
     deviceImpl->rayQueryEnabled = selectedFeatures.rayQuery;
+    deviceImpl->capabilities.rayTracingPositionFetch = selectedFeatures.rayTracingPositionFetch;
+    if (selectedFeatures.rayTracingPositionFetch) {
+        spdlog::info("[Vulkan] VK_KHR_ray_tracing_position_fetch enabled");
+    }
     deviceImpl->capabilities.pushDescriptor = selectedFeatures.pushDescriptor;
     deviceImpl->pushDescriptorEnabled = selectedFeatures.pushDescriptor;
     deviceImpl->capabilities.clusterAccelerationStructure = selectedFeatures.clusterAccelerationStructure;

@@ -12,13 +12,7 @@ RaytracingAccelerationStructure gScene;
 [[vk::binding(1, 0)]]
 RWTexture2D<float4> gOutput;
 
-struct RtxdiVertex
-{
-    float4 position;
-    float4 normal;
-    float4 tangent;
-    float4 texcoord;
-};
+#include "../../Libraries/Scene/SceneShadingVertex.slang"
 
 struct RtxdiPrimitive
 {
@@ -73,9 +67,6 @@ struct RtxdiMaterial
     RtxdiTextureInfo diffuseTransmissionTexture;
     RtxdiTextureInfo diffuseTransmissionColorTexture;
 };
-
-[[vk::binding(2, 0)]]
-StructuredBuffer<RtxdiVertex> gVertices;
 
 [[vk::binding(3, 0)]]
 StructuredBuffer<uint> gIndices;
@@ -729,42 +720,32 @@ bool traceClosest(Ray ray, SceneRtxdiPush push, out HitInfo hit)
     uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
     uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
     uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    RtxdiVertex v0 = gVertices[i0];
-    RtxdiVertex v1 = gVertices[i1];
-    RtxdiVertex v2 = gVertices[i2];
+    SceneShadingVertex v0 = gVertices[i0];
+    SceneShadingVertex v1 = gVertices[i1];
+    SceneShadingVertex v2 = gVertices[i2];
     float2 bary = query.CommittedTriangleBarycentrics();
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-    float3 p0 = v0.position.xyz;
-    float3 p1 = v1.position.xyz;
-    float3 p2 = v2.position.xyz;
-    float2 uv0 = v0.texcoord.xy;
-    float2 uv1 = v1.texcoord.xy;
-    float2 uv2 = v2.texcoord.xy;
-    float3 localPosition = p0 * weights.x + p1 * weights.y + p2 * weights.z;
+#if SCENE_RAYQUERY_ENABLE_POSITION_FETCH
+    float3 positions[3] = query.CommittedGetIntersectionTriangleVertexPositions();
+    float3 p0 = positions[0];
+    float3 p1 = positions[1];
+    float3 p2 = positions[2];
+#else
+    float3 p0 = loadSceneVertexPosition(i0);
+    float3 p1 = loadSceneVertexPosition(i1);
+    float3 p2 = loadSceneVertexPosition(i2);
+#endif
+    float2 uv0 = v0.texcoord;
+    float2 uv1 = v1.texcoord;
+    float2 uv2 = v2.texcoord;
     float3 localGeometryNormal = safeNormalize(cross(p1 - p0, p2 - p0), float3(0.0, 1.0, 0.0));
-    float3 localNormal = v0.normal.xyz * weights.x + v1.normal.xyz * weights.y + v2.normal.xyz * weights.z;
+    float3 localNormal = decodeSceneNormal(v0.normal) * weights.x + decodeSceneNormal(v1.normal) * weights.y + decodeSceneNormal(v2.normal) * weights.z;
     localNormal = safeNormalize(localNormal, localGeometryNormal);
-    float4 localTangent = v0.tangent * weights.x + v1.tangent * weights.y + v2.tangent * weights.z;
-    float3 localTangentDirection = safeNormalize(localTangent.xyz, float3(1.0, 0.0, 0.0));
-    float tangentSign = localTangent.w >= 0.0 ? 1.0 : -1.0;
     hit.texcoord = uv0 * weights.x + uv1 * weights.y + uv2 * weights.z;
 
-    float3 localTriangleTangent;
-    float3 localTriangleBitangent;
-    computeTriangleTangentSpace(
-        p0,
-        p1,
-        p2,
-        uv0,
-        uv1,
-        uv2,
-        localNormal,
-        localTriangleTangent,
-        localTriangleBitangent);
-
-    float4x3 objectToWorld = query.CommittedObjectToWorld4x3();
     float3x4 worldToObject = query.CommittedWorldToObject3x4();
-    hit.position = float3(mul(float4(localPosition, 1.0), objectToWorld));
+    hit.t = query.CommittedRayT();
+    hit.position = ray.origin + ray.direction * hit.t;
     hit.geometryNormal = safeNormalize(
         transformObjectNormalToWorld(localGeometryNormal, worldToObject),
         localGeometryNormal);
@@ -774,7 +755,11 @@ bool traceClosest(Ray ray, SceneRtxdiPush push, out HitInfo hit)
         ? float3(0.0, 0.0, 1.0)
         : float3(0.0, 1.0, 0.0);
     float3 fallbackTangent = safeNormalize(cross(referenceAxis, hit.normal), float3(1.0, 0.0, 0.0));
+    float tangentSign = 1.0;
     if ((primitive.flags & kPrimitiveHasAuthoredTangents) != 0u) {
+        float4 localTangent = decodeSceneTangent(v0.tangent) * weights.x + decodeSceneTangent(v1.tangent) * weights.y + decodeSceneTangent(v2.tangent) * weights.z;
+        float3 localTangentDirection = safeNormalize(localTangent.xyz, float3(1.0, 0.0, 0.0));
+        tangentSign = localTangent.w >= 0.0 ? 1.0 : -1.0;
         float3 worldTangent = safeNormalize(mul(localTangentDirection, worldToObject).xyz, fallbackTangent);
         worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
         hit.tangent = float4(worldTangent, tangentSign);
@@ -782,6 +767,18 @@ bool traceClosest(Ray ray, SceneRtxdiPush push, out HitInfo hit)
             cross(hit.normal, worldTangent) * tangentSign,
             cross(hit.normal, fallbackTangent));
     } else {
+        float3 localTriangleTangent;
+        float3 localTriangleBitangent;
+        computeTriangleTangentSpace(
+            p0,
+            p1,
+            p2,
+            uv0,
+            uv1,
+            uv2,
+            localNormal,
+            localTriangleTangent,
+            localTriangleBitangent);
         float3 worldTangent = safeNormalize(mul(localTriangleTangent, worldToObject).xyz, fallbackTangent);
         worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
         float3 worldBitangent = safeNormalize(
@@ -796,7 +793,6 @@ bool traceClosest(Ray ray, SceneRtxdiPush push, out HitInfo hit)
     }
     hit.tangent.w *= push.bitangentFlip;
     hit.bitangent *= push.bitangentFlip;
-    hit.t = query.CommittedRayT();
     hit.materialIndex = instance.materialIndex;
     return true;
 }

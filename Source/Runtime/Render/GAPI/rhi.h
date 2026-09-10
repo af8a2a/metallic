@@ -338,6 +338,9 @@ struct DeviceDesc {
     uint32_t preferredTaskSubgroupSize = 0;
     bool enableRayTracingAccelerationStructure = false;
     bool enableRayQuery = false;
+    // Optional optimization, enabled only when acceleration structures and the
+    // device's position-fetch feature are available. False forces the fallback.
+    bool enableRayTracingPositionFetch = true;
     bool enablePushDescriptor = false;
     bool enableClusterAccelerationStructure = false;
     bool enablePartitionedAccelerationStructure = false;
@@ -363,6 +366,7 @@ struct DeviceCapabilities {
     uint32_t maxComputeWorkgroupSubgroups = 0;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
+    bool rayTracingPositionFetch = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
@@ -544,6 +548,7 @@ enum class RayTracingAccelerationStructureBuildFlags : uint8_t {
     PreferFastBuild = 1u << 1,
     AllowUpdate = 1u << 2,
     AllowCompaction = 1u << 3,
+    AllowDataAccess = 1u << 4,
 };
 
 constexpr RayTracingAccelerationStructureBuildFlags operator|(
