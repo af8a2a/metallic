@@ -1,0 +1,68 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 27, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "metallic-ninja",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+      }
+    },
+    {
+      "name": "metallic-dev",
+      "displayName": "Fast development (glTF, no heavy optional SDKs)",
+      "inherits": "metallic-ninja",
+      "binaryDir": "${sourceDir}/build-dev",
+      "cacheVariables": {
+        "METALLIC_DEPENDENCY_MODE": "SOURCE",
+        "METALLIC_BUILD_TESTS": false,
+        "METALLIC_ENABLE_OPENUSD": false,
+        "METALLIC_ENABLE_NRD": false,
+        "METALLIC_ENABLE_NRC": false,
+        "METALLIC_ENABLE_NTC": false,
+        "METALLIC_ENABLE_STREAMLINE": false
+      }
+    },
+    {
+      "name": "metallic-full",
+      "displayName": "Full development using installed dependencies",
+      "inherits": "metallic-ninja",
+      "binaryDir": "${sourceDir}/build-full",
+      "cacheVariables": {
+        "METALLIC_DEPENDENCY_MODE": "PREBUILT",
+        "METALLIC_BUILD_TESTS": true,
+        "METALLIC_ENABLE_OPENUSD": true,
+        "METALLIC_ENABLE_NRD": true,
+        "METALLIC_ENABLE_NRC": true,
+        "METALLIC_ENABLE_NTC": true,
+        "METALLIC_ENABLE_STREAMLINE": true
+      }
+    },
+    {
+      "name": "metallic-ci",
+      "displayName": "Scene/task/debug tests without optional SDKs",
+      "inherits": "metallic-dev",
+      "binaryDir": "${sourceDir}/build-ci",
+      "cacheVariables": { "METALLIC_BUILD_TESTS": true }
+    },
+    {
+      "name": "metallic-deps-debug",
+      "displayName": "Build reusable Debug dependencies",
+      "inherits": "metallic-ninja",
+      "binaryDir": "${sourceDir}/build-dependencies/debug",
+      "cacheVariables": { "METALLIC_BUILD_DEPENDENCIES_ONLY": true }
+    }
+  ],
+  "buildPresets": [
+    { "name": "metallic-dev", "configurePreset": "metallic-dev", "targets": ["Metallic"] },
+    { "name": "metallic-full", "configurePreset": "metallic-full", "targets": ["Metallic", "MetallicSceneTests", "MetallicTaskTests", "MetallicDebugTests"] },
+    { "name": "metallic-ci", "configurePreset": "metallic-ci", "targets": ["MetallicSceneTests", "MetallicTaskTests", "MetallicDebugTests"] },
+    { "name": "metallic-deps-debug", "configurePreset": "metallic-deps-debug", "targets": ["MetallicDependencies"] }
+  ],
+  "testPresets": [
+    { "name": "metallic-ci", "configurePreset": "metallic-ci", "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^(scene|task|debug|build)$" } } }
+  ]
+}

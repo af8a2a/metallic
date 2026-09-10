@@ -1,5 +1,16 @@
 include(GoogleTest)
 
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)
+    foreach(dependency_case IN ITEMS reuse boolean missing compiler configuration crt flags features multiconfig)
+        add_test(NAME MetallicDependencyCache.${dependency_case}
+            COMMAND ${CMAKE_COMMAND}
+                "-DCASE=${dependency_case}"
+                "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/dependency-cache-tests"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DependencyCacheTests.cmake")
+        set_tests_properties(MetallicDependencyCache.${dependency_case} PROPERTIES LABELS "build")
+    endforeach()
+endif()
+
 if(WIN32)
     add_test(NAME MetallicLookDevMaterialInspectorSmoke
         COMMAND ${CMAKE_COMMAND}

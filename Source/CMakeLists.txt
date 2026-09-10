@@ -217,8 +217,12 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/SceneLoader.cpp
     Runtime/Scene/ScenePicker.cpp
     Runtime/Scene/TinyGltfImpl.cpp
-    Runtime/Scene/UsdSceneImporter.cpp
 )
+if(METALLIC_ENABLE_OPENUSD)
+    target_sources(MetallicRuntimeScene PRIVATE Runtime/Scene/UsdSceneImporter.cpp)
+else()
+    target_sources(MetallicRuntimeScene PRIVATE Runtime/Scene/UsdSceneImporterStub.cpp)
+endif()
 
 target_include_directories(MetallicRuntimeScene PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}"

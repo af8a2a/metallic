@@ -1852,7 +1852,7 @@ public:
     Device& operator=(const Device&) = delete;
 
     const DeviceCapabilities& capabilities() const;
-    Queue* getQueue(QueueType type, uint32_t index = 0);
+    Queue* getQueue(QueueType type, uint32_t indwriteStorageBufferex = 0);
     Result waitIdle();
     Result createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapchain>& outSwapchain);
     Result createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& outCommandPool);

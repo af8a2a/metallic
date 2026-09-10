@@ -3,6 +3,7 @@
 #include "Runtime/Scene/SceneLoader.h"
 #include "Runtime/Scene/ScenePicker.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/UsdSceneImporter.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "meshoptimizer.h"
 
@@ -4572,6 +4573,7 @@ void testAsyncSceneLoad(const std::filesystem::path& directory)
         EXPECT_TRUE(image.decodeAttempted);
     }
 
+#if METALLIC_HAS_OPENUSD
     const std::filesystem::path usdPath = writeUsdFeatureScene(directory);
     metallic::scene::SceneLoadHandle usdImages = loader.request(
         usdPath,
@@ -4592,6 +4594,7 @@ void testAsyncSceneLoad(const std::filesystem::path& directory)
     EXPECT_EQ(usdImage.decodedMips.front().pixels[1], 192u);
     EXPECT_EQ(usdImage.decodedMips.front().pixels[2], 32u);
     EXPECT_EQ(usdImage.decodedMips.front().pixels[3], 255u);
+#endif
 
     metallic::scene::SceneLoadHandle cancelled = loader.request(path);
     ASSERT_TRUE(cancelled.cancel());
@@ -4645,11 +4648,34 @@ TEST(SceneImport, FullScene)
 
 TEST(SceneImport, UsdFeatures)
 {
+#if !METALLIC_HAS_OPENUSD
+    GTEST_SKIP() << "USD import is disabled in this build";
+#endif
     testUsdFeatureScene(prepareOutputDirectory());
 }
 
+#if !METALLIC_HAS_OPENUSD
+TEST(SceneImport, DisabledUsdReportsHowToEnableImport)
+{
+    using namespace metallic::scene::detail;
+    for (const char* extension : {".usd", ".usda", ".usdc", ".usdz", ".USDZ"}) {
+        const auto path = std::filesystem::path("scene").replace_extension(extension);
+        EXPECT_TRUE(isUsdScenePath(path));
+        UsdImportedScene imported;
+        imported.nodes.emplace_back();
+        EXPECT_FALSE(importUsdScene(path, imported));
+        EXPECT_TRUE(imported.nodes.empty());
+        EXPECT_NE(imported.error.find("METALLIC_ENABLE_OPENUSD=ON"), std::string::npos);
+    }
+    EXPECT_FALSE(isUsdScenePath("scene.gltf"));
+}
+#endif
+
 TEST(SceneImport, UsdcBinary)
 {
+#if !METALLIC_HAS_OPENUSD
+    GTEST_SKIP() << "USD import is disabled in this build";
+#endif
     const std::filesystem::path path =
         std::filesystem::path(PROJECT_SOURCE_DIR) /
         "External/OpenUSD/extras/usd/examples/wasmFetchResolver/stages/teapots/meshes/teapot.usdc";
@@ -4666,6 +4692,9 @@ TEST(SceneImport, UsdcBinary)
 
 TEST(SceneImport, UsdzEmbeddedTexture)
 {
+#if !METALLIC_HAS_OPENUSD
+    GTEST_SKIP() << "USD import is disabled in this build";
+#endif
     const std::filesystem::path path =
         std::filesystem::path(PROJECT_SOURCE_DIR) /
         "External/OpenUSD/pxr/usd/usdUtils/testenv/"
@@ -4690,6 +4719,9 @@ TEST(SceneImport, UsdzEmbeddedTexture)
 
 TEST(SceneImport, SuperSponzaUsdSmoke)
 {
+#if !METALLIC_HAS_OPENUSD
+    GTEST_SKIP() << "USD import is disabled in this build";
+#endif
     if (std::getenv("METALLIC_TEST_SUPER_SPONZA_USD") == nullptr) {
         GTEST_SKIP() << "Set METALLIC_TEST_SUPER_SPONZA_USD=1 to run the 436 MB fixture";
     }
