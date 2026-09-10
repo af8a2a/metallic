@@ -364,7 +364,8 @@ Result DlssNrContext::initialize(Device& device, std::string& log)
     return {};
 #else
     (void)device;
-    log = "DLSS-NR is disabled; configure METALLIC_ENABLE_DLSS_NR=ON and METALLIC_DLSS_NR_RUNTIME";
+    log = "DLSS-NR is unavailable in this build; manually place nvngx_dlssnr.dll in External, "
+        "enable METALLIC_ENABLE_DLSS_NR and reconfigure with a usable Windows x64/MSVC Streamline/NGX SDK";
     return makeError(Error::Unsupported);
 #endif
 }

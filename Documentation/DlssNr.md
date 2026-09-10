@@ -2,36 +2,40 @@
 
 `DlssNrPass` integrates the direct NGX feature-18 contract from
 `Unity-DLSS-RR/src/DLSSNRRuntime.cpp` with Metallic's Vulkan backend. It is
-separate from the Streamline DLSS-SR and DLSS-RR passes and is disabled at build
-time by default. The recovered API is experimental: Vulkan exports alone do
+separate from the Streamline DLSS-SR and DLSS-RR passes. The NR DLL is not
+publicly released, so builds without a manually installed runtime disable NR.
+The recovered API is experimental: Vulkan exports alone do
 not establish that a particular DLL, GPU and driver can execute this feature.
 
 ## Build
 
-Supply your own `nvngx_dlssnr.dll`; the project does not download or commit it.
-For the local reference checkout:
+Manually place your own runtime at **`External/nvngx_dlssnr.dll`** before
+configuring. Metallic does not download it, copy it from the Unity reference
+checkout, or commit it. The repository's `*.dll` ignore rule excludes it from
+source control. This is the only accepted runtime location; the former
+`METALLIC_DLSS_NR_RUNTIME` cache override is no longer used.
 
 ```powershell
-cmake -S . -B build-dlss-nr -DMETALLIC_BUILD_TESTS=ON `
-    -DMETALLIC_ENABLE_DLSS_NR=ON `
-    -DMETALLIC_DLSS_NR_RUNTIME=E:/Unity-DLSS-RR/External/NVIDIA-DLSS/lib/nvngx_dlssnr.dll
+cmake -S . -B build-dlss-nr -DMETALLIC_BUILD_TESTS=ON -DMETALLIC_ENABLE_DLSS_NR=ON
 cmake --build build-dlss-nr --target Metallic MetallicRhiTests --config Release
 ```
 
 Windows x64/MSVC, a working Streamline SDK, and its bundled NGX SDK are
 required. Override `METALLIC_DLSS_NR_NGX_ROOT` if that SDK lives elsewhere.
-The DLL is copied next to the executable. Missing build dependencies produce
-a configure error only when the experimental option is explicitly enabled.
+When available, the manually supplied DLL is deployed beside the executable.
+If the DLL, platform or SDK requirements are missing, configuration succeeds
+with **`METALLIC_HAS_DLSS_NR=0`** and prints the reason. This also applies when
+`METALLIC_ENABLE_DLSS_NR=ON`; that option cannot bypass the missing DLL check.
 
 `METALLIC_HAS_DLSS_NR` is derived by CMake; do not define it manually. The
-`METALLIC_ENABLE_DLSS_NR` option is cached **per build directory** and defaults
-to `OFF`. Enabling `build-dlss-nr` does not enable the IDE's `metallic-release`
-or Debug profile. Configure the profile you actually build and run, for example:
+`METALLIC_ENABLE_DLSS_NR` option defaults to `ON`, allowing detection of the
+manually supplied DLL. Set it to `OFF` to disable NR even when the DLL exists.
+Options are cached **per build directory**; older caches may retain `OFF`.
+Configure the profile you actually build and run, for example:
 
 ```powershell
 cmake --preset metallic-release -DMETALLIC_ENABLE_DLSS_NR=ON `
-    -DMETALLIC_DLSS_NR_NGX_ROOT=E:/metallic/External/streamline/_sdk/external/ngx-sdk `
-    -DMETALLIC_DLSS_NR_RUNTIME=E:/Unity-DLSS-RR/External/NVIDIA-DLSS/lib/nvngx_dlssnr.dll
+    -DMETALLIC_DLSS_NR_NGX_ROOT=External/streamline/_sdk/external/ngx-sdk
 cmake --build --preset metallic-release
 ```
 
@@ -40,8 +44,11 @@ An older cache can retain the unpackaged NGX header path, so update
 After configuring externally, reload the IDE's CMake project to refresh its
 code model. For a custom IDE profile, also save these `-D` arguments in that
 profile's CMake options so resetting its cache retains the opt-in.
-Successful configuration emits `Experimental DLSS-NR enabled`
-and the runtime target's compiler command contains `METALLIC_HAS_DLSS_NR=1`.
+With the local DLL and SDK present, configuration emits `Experimental DLSS-NR
+enabled` and the runtime target's compiler command contains
+`METALLIC_HAS_DLSS_NR=1`. Adding or removing the DLL triggers reconfiguration
+on the next build. Rebuilding a disabled executable also removes any previously
+deployed NR DLL from its output directory.
 
 ## Editor and render graph
 
@@ -163,6 +170,12 @@ to executable paths. Runtime tests skip when the build or runtime reports
 unsupported, and never enable
 fallback. A passing bypass test or editor smoke test by itself does not prove
 that neural rendering ran.
+
+`MetallicDlssNrConfiguration` checks missing/present local DLLs, explicit
+disable, ignored legacy runtime overrides, unsupported dependencies and NGX
+LFS pointers. It also builds a tiny fixture through DLL removal and restoration
+to verify automatic reconfiguration, compiler definitions and deployment.
+All fixture DLLs stay under the test build directory; they are not NR binaries.
 
 `dlss_nr_runtime_slider` compares every RGBA byte against the original input
 and an uninterrupted reference sequence across both axes, swapped sides,

@@ -35,6 +35,14 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)
 endif()
 
 if(WIN32)
+    add_test(NAME MetallicDlssNrConfiguration
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/dlss-nr-configuration"
+            "-DTEST_GENERATOR=${CMAKE_GENERATOR}"
+            "-DTEST_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DlssNrConfigurationTests.cmake")
+    set_tests_properties(MetallicDlssNrConfiguration PROPERTIES LABELS "build;dlss-nr" TIMEOUT 120)
     add_test(NAME MetallicStreamlineReflexConfiguration
         COMMAND ${CMAKE_COMMAND}
             "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
