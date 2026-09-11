@@ -10,9 +10,9 @@
 
 namespace metallic::render {
 
-// The standalone GPUDriven executable and its explicit visibility option use
-// this same sample, whose graph is backed by VisibilityBufferPass.
+// The standalone GPUDriven executable defaults to realtime lighting on Sponza.
 inline constexpr const char* kDefaultGPUDrivenSampleId = "gpu-driven-sample";
+inline constexpr const char* kGPUDrivenVisibilitySampleId = "gpu-driven-visibility-buffer";
 
 struct RenderSampleEnvironmentDesc {
     bool enabled = true;

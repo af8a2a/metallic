@@ -89,7 +89,7 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
-class RealtimeLightingSample final : public RenderSample {
+class RealtimeLightingSample : public RenderSample {
 public:
     std::string_view id() const override { return "realtime-lighting"; }
     std::string_view name() const override { return "Real-time / Physical Lighting"; }
@@ -458,16 +458,28 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
-class GPUDrivenSample final : public RenderSample {
+class GPUDrivenSample final : public RealtimeLightingSample {
 public:
     std::string_view id() const override { return kDefaultGPUDrivenSampleId; }
     std::string_view name() const override { return "GPUDrivenSample"; }
     std::string_view category() const override { return "GPUDriven"; }
     std::string_view description() const override
     {
-        return "Default GPUDriven sample producing raw visibility/depth with Wave32 AS/MS culling and optional ID/depth diagnostics.";
+        return "Repository Sponza rendered with GPU-driven visibility, clustered deferred lighting, SH/HDRI, auto exposure and DLSS-SR. Optional DLSS-NR.";
     }
-    std::string scenePath() const override { return "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"; }
+    std::string scenePath() const override { return "Asset/Sponza/glTF/Sponza.gltf"; }
+};
+
+class GPUDrivenVisibilitySample final : public RenderSample {
+public:
+    std::string_view id() const override { return kGPUDrivenVisibilitySampleId; }
+    std::string_view name() const override { return "GPUDrivenSample / Visibility Buffer"; }
+    std::string_view category() const override { return "GPUDriven"; }
+    std::string_view description() const override
+    {
+        return "Repository Sponza visibility/depth with Wave32 AS/MS culling and optional ID/depth diagnostics.";
+    }
+    std::string scenePath() const override { return "Asset/Sponza/glTF/Sponza.gltf"; }
     bool loadSceneInEditor() const override { return false; }
     std::string graphPath() const override
     {
@@ -690,6 +702,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const LookDevVisibilityBufferSample lookDevVisibilityBuffer;
     static const LookDevABeautifulGameSample lookDevABeautifulGame;
     static const PathTracingDlssNrSample pathTracingDlssNr;
+    static const GPUDrivenVisibilitySample gpuDrivenVisibility;
     return {
         &realtimeLighting,
         &lightGridDebug,
@@ -708,6 +721,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &rtxcrMaterialSample(),
         &materialVisualizationABeautifulGameSample(),
         &gpuDrivenSample(),
+        &gpuDrivenVisibility,
         &gpuDrivenUsdSample(),
         &gpuDrivenStreamAssetSample(),
         &gpuDrivenTerrainP0Sample(),

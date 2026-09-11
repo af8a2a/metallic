@@ -122,7 +122,7 @@ flowchart LR
 | `MetallicMaterialVisualizationSample` | 可执行文件 | 材质诊断样例 |
 | `MetallicPathTracingSample` | 可执行文件 | OpenPBR 路径追踪，可切换 DLSS-RR |
 | `MetallicRtxdiSample` | 可执行文件 | RTXDI/ReSTIR DI 样例 |
-| `MetallicGPUDrivenSample` | 可执行文件 | Visibility Buffer（默认）、StreamAsset 和 RTAS 可视化变体 |
+| `MetallicGPUDrivenSample` | 可执行文件 | 常驻 Sponza 实时延迟渲染（默认）、Visibility Buffer 调试、StreamAsset 和 RTAS 可视化变体 |
 | `MetallicTaskTests` | 测试可执行文件 | TaskSystem GoogleTest |
 | `MetallicSceneTests` | 测试可执行文件 | Scene GoogleTest |
 | `MetallicRhiTests` | 测试可执行文件 | 自定义 RHI 用例注册表适配到 GoogleTest |

@@ -2188,23 +2188,27 @@ public:
         if (gpuDrivenSample.desc.id != "gpu-driven-sample" ||
             gpuDrivenSample.desc.name != "GPUDrivenSample" ||
             gpuDrivenSample.desc.category != "GPUDriven" ||
-            gpuDrivenSample.desc.scenePath != "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf" ||
-            gpuDrivenSample.desc.loadSceneInEditor ||
-            gpuDrivenSample.desc.graphPath != "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json" ||
-            gpuDrivenSample.desc.environment.has_value() ||
+            gpuDrivenSample.desc.scenePath != "Asset/Sponza/glTF/Sponza.gltf" ||
+            !gpuDrivenSample.desc.loadSceneInEditor ||
+            gpuDrivenSample.desc.graphPath != "Pipelines/Samples/realtime_lighting.metallic_graph.json" ||
+            !gpuDrivenSample.desc.environment.has_value() ||
             gpuDrivenSample.desc.previewOutput != "FinalBlit.color" ||
-            gpuDrivenSample.desc.requiresStreamline) {
+            !gpuDrivenSample.desc.requiresStreamline) {
             return RhiTestResult::fail("GPUDrivenSample metadata did not load as expected");
         }
-        const render::RenderGraphNode* gpuDriven = gpuDrivenSample.graph.findNode("GPUDriven");
-        if (gpuDrivenSample.graph.nodes().size() != 2u ||
+        const render::RenderGraphNode* gpuDriven = gpuDrivenSample.graph.findNode("VBuffer");
+        const render::RenderGraphNode* gpuDrivenDeferred = gpuDrivenSample.graph.findNode("Deferred");
+        if (gpuDrivenSample.graph.nodes().size() != 6u ||
             gpuDriven == nullptr ||
             gpuDriven->type != "VisibilityBufferPass" ||
             !gpuDriven->properties.is_object() ||
             gpuDriven->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||
-            gpuDriven->properties.value("visualization", "") != "meshlet" ||
-            !gpuDriven->properties.contains("camera") ||
-            !gpuDriven->properties["camera"].is_object()) {
+            gpuDriven->properties.value("visualization", "") != "none" ||
+            gpuDrivenDeferred == nullptr ||
+            gpuDrivenDeferred->type != "VisibilityBufferDeferredPass" ||
+            gpuDrivenDeferred->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||
+            gpuDrivenDeferred->properties.value("lightingMode", "") != "realtime" ||
+            !gpuDrivenSample.graph.viewProperties().contains("camera")) {
             return RhiTestResult::fail("GPUDrivenSample did not apply pass defaults");
         }
         if (!gpuDrivenSample.graph.validate(validationLog)) {
@@ -2214,9 +2218,28 @@ public:
             !gpuDrivenSample.graph.outputs().empty()) {
             return RhiTestResult::fail("GPUDrivenSample graph first output changed");
         }
+        if (!render::setRenderSampleScenePath(gpuDrivenSample, "Asset/meet_mat.glb", message) ||
+            gpuDrivenSample.graph.findNode("VBuffer")->properties.value("path", "") != "Asset/meet_mat.glb" ||
+            gpuDrivenSample.graph.findNode("Deferred")->properties.value("path", "") != "Asset/meet_mat.glb") {
+            return RhiTestResult::fail("GPUDrivenSample scene override did not reach visibility and lighting");
+        }
+        render::RenderSampleLoadResult gpuDrivenVisibilitySample;
+        if (!render::loadBuiltInRenderSample(render::kGPUDrivenVisibilitySampleId, gpuDrivenVisibilitySample, message) ||
+            gpuDrivenVisibilitySample.desc.scenePath != "Asset/Sponza/glTF/Sponza.gltf" ||
+            gpuDrivenVisibilitySample.desc.requiresStreamline ||
+            gpuDrivenVisibilitySample.graph.nodes().size() != 2u ||
+            gpuDrivenVisibilitySample.graph.findNode("GPUDriven") == nullptr ||
+            gpuDrivenVisibilitySample.graph.findNode("GPUDriven")->type != "VisibilityBufferPass" ||
+            !gpuDrivenVisibilitySample.graph.validate(validationLog)) {
+            return RhiTestResult::fail("GPUDrivenSample visibility diagnostics did not retain their standalone graph");
+        }
         bool requiresStreamline = true;
         if (!render::queryBuiltInRenderSampleStreamlineRequirement(
                 "gpu-driven-sample",
+                requiresStreamline) ||
+            !requiresStreamline ||
+            !render::queryBuiltInRenderSampleStreamlineRequirement(
+                render::kGPUDrivenVisibilitySampleId,
                 requiresStreamline) ||
             requiresStreamline ||
             !render::queryBuiltInRenderSampleStreamlineRequirement(

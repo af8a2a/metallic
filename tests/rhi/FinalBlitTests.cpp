@@ -232,15 +232,17 @@ public:
             {"openpbr_lookdev.metallic_graph.json", "PathTrace.color"},
             {"lookdev_shading_compare.metallic_graph.json", "Slider.color"},
             {"lookdev_vbuffer.metallic_graph.json", "Slider.color"},
+            {"lookdev_abeautiful_game.metallic_graph.json", "Slider.color"},
             {"material_visualization_abeautiful_game.metallic_graph.json", "MaterialViz.color"},
             {"pathtracing_abeautiful_game_openpbr.metallic_graph.json", "PathTrace.color"},
             {"pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json", "DlssRr.color"},
+            {"pathtracing_abeautiful_game_openpbr_dlss_nr.metallic_graph.json", "DlssRr.color"},
             {"pathtracing_abeautiful_game_openpbr_dlss_sr.metallic_graph.json", "DlssSr.color"},
             {"pathtracing_meet_mat.metallic_graph.json", "PathTrace.color"},
             {"pathtracing_meet_mat_nrc.metallic_graph.json", "PathTrace.color"},
             {"pathtracing_meet_mat_sharc.metallic_graph.json", "PathTrace.color"},
             {"rtxcr_material_showcase.metallic_graph.json", "PathTrace.color"},
-            {"realtime_lighting.metallic_graph.json", "Lighting.color"},
+            {"realtime_lighting.metallic_graph.json", "DlssSr.color"},
             {"rtxdi_meet_mat.metallic_graph.json", "Composite.color"},
         };
         std::string log;
@@ -302,6 +304,18 @@ private:
             }
             if (hdrConnections != 1) { return false; }
             sourceOutput = "AutoExposure.color";
+        }
+        if (const auto* nr = graph.findNode("DlssNr"); nr != nullptr) {
+            if (nr->type != "DlssNrPass") { return false; }
+            size_t colorConnections = 0;
+            for (const auto& edge : graph.edges()) {
+                if (edge.dstPass == nr->name && edge.dstField == "inputColor") {
+                    if (render::makeRenderGraphFieldName(edge.srcPass, edge.srcField) != sourceOutput) { return false; }
+                    ++colorConnections;
+                }
+            }
+            if (colorConnections != 1) { return false; }
+            sourceOutput = "DlssNr.color";
         }
         const render::RenderGraphNode* final = graph.findNode("FinalBlit");
         if (final == nullptr || final->type != "FinalBlitPass" || !graph.outputs().empty() ||

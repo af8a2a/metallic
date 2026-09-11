@@ -1,11 +1,12 @@
 # Visibility Buffer Sample
 
-`MetallicGPUDrivenSample` 无参数启动时默认加载 `gpu-driven-sample`，图中使用 `VisibilityBufferPass`，无需传入 `--visibility-buffer`。默认场景使用仓库附带的
-`Asset/SuperSponza/NewSponza_Main_glTF_003.gltf`。入口命令：
+`MetallicGPUDrivenSample` 无参数启动时默认加载 `gpu-driven-sample`，复用 [实时渲染 pipeline](RealtimePipeline.md)，默认场景为 Git 仓库常驻的 `Asset/Sponza/glTF/Sponza.gltf`。链路为 `VisibilityBuffer → Deferred → DLSS-SR → AutoExposure → DLSS-NR（默认关闭）→ FinalBlit`，场景在编辑器中加载并使用共享 ViewConstants。入口命令：
 
 ```powershell
 cmake-build-release-visual-studio\Source\MetallicGPUDrivenSample.exe --smoke-test
 ```
+
+原始可见性调试模式通过 `--visibility-buffer`（或兼容别名 `--legacy-preloaded`）加载，Sample ID 为 `gpu-driven-visibility-buffer`，同样默认使用仓库常驻 Sponza。`--scene <path>` 可覆盖所选模式的场景。下面描述该调试模式的可见性 pass；`--usd`、StreamAsset 和地形选项保留各自的专用图与资源。
 
 ## 帧内数据流
 

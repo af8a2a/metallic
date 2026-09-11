@@ -44,7 +44,7 @@
                 "meshletFrustumCull": true,
                 "meshletNormalConeCull": true,
                 "visualization": "meshlet",
-                "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"
+                "path": "Asset/Sponza/glTF/Sponza.gltf"
             },
             "type": "VisibilityBufferPass"
         },

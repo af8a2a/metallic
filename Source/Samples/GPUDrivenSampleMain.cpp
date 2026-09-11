@@ -9,6 +9,7 @@
 namespace {
 
 constexpr const char* kGPUDrivenSampleId = metallic::render::kDefaultGPUDrivenSampleId;
+constexpr const char* kGPUDrivenVisibilitySampleId = metallic::render::kGPUDrivenVisibilitySampleId;
 constexpr const char* kGPUDrivenUsdSampleId = "gpu-driven-usd";
 constexpr const char* kGPUDrivenStreamAssetSampleId = "gpu-driven-streamasset";
 constexpr const char* kGPUDrivenTerrainP0SampleId = "gpu-driven-terrain-p0";
@@ -19,11 +20,11 @@ void printUsage()
 {
     spdlog::info(
         "MetallicGPUDrivenSample options:\n"
-        "  Default: SuperSponza through VisibilityBufferPass (VBuffer + optional visualization)\n"
+        "  Default: repository Sponza through realtime deferred lighting, auto exposure and DLSS-SR\n"
         "  --smoke-test                 Render one frame and exit\n"
         "  --debug-control              Enable local Agent debug control\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization\n"
-        "  --visibility-buffer          Load the visibility-buffer variant (default)\n"
+        "  --visibility-buffer          Load visibility-buffer diagnostics without lighting\n"
         "  --usd                        Load Super Sponza through OpenUSD\n"
         "  --streamasset                Load the default meshlet StreamAsset variant\n"
         "  --terrain-p0                 Load the generated Houdini height-field StreamAsset\n"
@@ -79,7 +80,7 @@ int main(int argc, char** argv)
             continue;
         }
         if (argument == "--visibility-buffer" || argument == "--legacy-preloaded") {
-            sampleId = kGPUDrivenSampleId;
+            sampleId = kGPUDrivenVisibilitySampleId;
             continue;
         }
         if (argument == "--rtas-visualization") {
@@ -101,8 +102,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (!streamAssetPath.empty() && std::string_view(sampleId) == kGPUDrivenSampleId) {
-        spdlog::error("--streamasset-path cannot be used with the visibility-buffer variant");
+    if (!streamAssetPath.empty() &&
+        (std::string_view(sampleId) == kGPUDrivenSampleId || std::string_view(sampleId) == kGPUDrivenVisibilitySampleId)) {
+        spdlog::error("--streamasset-path requires a StreamAsset variant");
         return 1;
     }
 
