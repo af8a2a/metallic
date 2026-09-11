@@ -1,3 +1,5 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 // SHaRC maintenance passes (reference: RTXGI v2 SDK SharcResolve.hlsl).
 //
 // sharcClearMain   - clears hash entries / accumulation / resolved buffers so
@@ -24,17 +26,13 @@ struct SceneSharcMaintenanceParams
     uint frameIndex;
 };
 
-[[vk::binding(0, 0)]]
-RWStructuredBuffer<uint64_t> gHashEntries;
+#define gHashEntries METALLIC_RESOURCE(RWStructuredBuffer<uint64_t>, 0)
 
-[[vk::binding(1, 0)]]
-RWStructuredBuffer<SharcAccumulationData> gAccumulation;
+#define gAccumulation METALLIC_RESOURCE(RWStructuredBuffer<SharcAccumulationData>, 1)
 
-[[vk::binding(2, 0)]]
-RWStructuredBuffer<SharcPackedData> gResolved;
+#define gResolved METALLIC_RESOURCE(RWStructuredBuffer<SharcPackedData>, 2)
 
-[[vk::binding(3, 0)]]
-StructuredBuffer<SceneSharcMaintenanceParams> gParams;
+#define gParams METALLIC_RESOURCE(StructuredBuffer<SceneSharcMaintenanceParams>, 3)
 
 [shader("compute")]
 [numthreads(SHARC_MAINTENANCE_BLOCK_SIZE, 1, 1)]

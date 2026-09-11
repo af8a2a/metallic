@@ -1,3 +1,5 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 #ifndef MATERIAL_CLASS
 #define MATERIAL_CLASS -1
 #endif
@@ -6,18 +8,18 @@
 #include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
 #include "../../Libraries/GPUDriven/MaterialBinningCommon.slang"
 
-[[vk::binding(60, 0)]] Texture2D<uint> gVisibility;
-[[vk::binding(61, 0)]] Texture2D<float> gVisibilityDepth;
-[[vk::binding(62, 0)]] StructuredBuffer<GPUDrivenPreviewVertex> gRasterVertices;
-[[vk::binding(63, 0)]] StructuredBuffer<GPUDrivenPreviewMeshlet> gRasterMeshlets;
-[[vk::binding(64, 0)]] StructuredBuffer<VisibleClusterRecord> gRasterRecords;
-[[vk::binding(65, 0)]] StructuredBuffer<uint> gRasterMeshletVertices;
-[[vk::binding(66, 0)]] StructuredBuffer<uint> gRasterTriangles;
-[[vk::binding(67, 0)]] StructuredBuffer<GPUDrivenPreviewGeometry> gRasterGeometries;
-[[vk::binding(68, 0)]] StructuredBuffer<GPUDrivenPreviewInstance> gRasterInstances;
-[[vk::binding(69, 0)]] StructuredBuffer<GPUDrivenPreviewMaterial> gRasterMaterials;
-[[vk::binding(70, 0)]] StructuredBuffer<MaterialBin> gMaterialBins;
-[[vk::binding(71, 0)]] StructuredBuffer<MaterialTile> gMaterialTiles;
+#define gVisibility METALLIC_RESOURCE(Texture2D<uint>, 60)
+#define gVisibilityDepth METALLIC_RESOURCE(Texture2D<float>, 61)
+#define gRasterVertices METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewVertex>, 62)
+#define gRasterMeshlets METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewMeshlet>, 63)
+#define gRasterRecords METALLIC_RESOURCE(StructuredBuffer<VisibleClusterRecord>, 64)
+#define gRasterMeshletVertices METALLIC_RESOURCE(StructuredBuffer<uint>, 65)
+#define gRasterTriangles METALLIC_RESOURCE(StructuredBuffer<uint>, 66)
+#define gRasterGeometries METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewGeometry>, 67)
+#define gRasterInstances METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewInstance>, 68)
+#define gRasterMaterials METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewMaterial>, 69)
+#define gMaterialBins METALLIC_RESOURCE(StructuredBuffer<MaterialBin>, 70)
+#define gMaterialTiles METALLIC_RESOURCE(StructuredBuffer<MaterialTile>, 71)
 
 float3 rasterWorldPosition(GPUDrivenPreviewInstance instance, float3 position)
 {
@@ -183,17 +185,17 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void visibilityBufferDeferredMain(uint3 dispatchId : SV_DispatchThreadID,
-    uniform ScenePathTracePush push)
+void visibilityBufferDeferredMain(uint3 dispatchId : SV_DispatchThreadID)
 {
+    ScenePathTracePush push = METALLIC_CONSTANTS(ScenePathTracePush);
     shadeVisibilityPixel(dispatchId.xy, push);
 }
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
-void visibilityBufferDeferredBinnedMain(uint3 group : SV_GroupID,
-    uniform ScenePathTracePush push)
+void visibilityBufferDeferredBinnedMain(uint3 group : SV_GroupID)
 {
+    ScenePathTracePush push = METALLIC_CONSTANTS(ScenePathTracePush);
     MaterialBin bin = gMaterialBins[push.deferredSettings & 0xffffu];
     uint index = group.y * kMaterialBinMaxGroupsX + group.x;
     if (index >= bin.count) { return; }

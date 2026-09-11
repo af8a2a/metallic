@@ -1,7 +1,9 @@
+#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+
 #include "../../../Shaders/Libraries/Lighting/PhotometricLighting.slang"
 #include "../../../Shaders/Libraries/Math/SphericalHarmonics.slang"
-[[vk::binding(0, 0)]] RWStructuredBuffer<float4> gOutput;
-[[vk::binding(1, 0)]] StructuredBuffer<float4> gSH;
+#define gOutput METALLIC_RESOURCE(RWStructuredBuffer<float4>, 0)
+#define gSH METALLIC_RESOURCE(StructuredBuffer<float4>, 1)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

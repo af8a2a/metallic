@@ -1,3 +1,5 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 #define OPENPBR_LANGUAGE_TARGET_SLANG 1
 #define OPENPBR_USE_TEXTURE_LUTS 1
 #define OPENPBR_ENERGY_TABLES_USE_UINT16 0
@@ -7,11 +9,9 @@
 #define OPENPBR_FEATURE_EnableMetallic true
 #define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
 
-[[vk::binding(11, 0)]]
-Texture2D<float4> gOpenPBRLut2D[6];
+#define gOpenPBRLut2D(index) METALLIC_RESOURCE_ARRAY(Texture2D<float4>, 11, index)
 
-[[vk::binding(12, 0)]]
-Texture3D<float4> gOpenPBRLut3D[2];
+#define gOpenPBRLut3D(index) METALLIC_RESOURCE_ARRAY(Texture3D<float4>, 12, index)
 
 uint openPBRLut2DSlot(int lutId)
 {
@@ -40,7 +40,7 @@ uint openPBRLut3DSlot(int lutId)
 
 float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 {
-    Texture2D<float4> texture = gOpenPBRLut2D[openPBRLut2DSlot(lutId)];
+    Texture2D<float4> texture = gOpenPBRLut2D(openPBRLut2DSlot(lutId));
     uint width;
     uint height;
     texture.GetDimensions(width, height);
@@ -58,7 +58,7 @@ float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 
 float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 {
-    Texture3D<float4> texture = gOpenPBRLut3D[openPBRLut3DSlot(lutId)];
+    Texture3D<float4> texture = gOpenPBRLut3D(openPBRLut3DSlot(lutId));
     uint width;
     uint height;
     uint depth;
@@ -774,9 +774,9 @@ float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push,
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
-                                  uniform ScenePathTracePush push)
+void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+    ScenePathTracePush push = METALLIC_CONSTANTS(ScenePathTracePush);
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

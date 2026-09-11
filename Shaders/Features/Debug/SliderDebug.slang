@@ -1,13 +1,15 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 struct SliderDebugPush {
     float splitPosition;
     uint horizontal;
     uint swapSides;
 };
 
-[[vk::push_constant]] ConstantBuffer<SliderDebugPush> gPush;
-[[vk::binding(0, 0)]] Texture2D<float4> gSourceA;
-[[vk::binding(1, 0)]] Texture2D<float4> gSourceB;
-[[vk::binding(2, 0)]] RWTexture2D<float4> gOutput;
+#define gPush METALLIC_CONSTANTS(SliderDebugPush)
+#define gSourceA METALLIC_RESOURCE(Texture2D<float4>, 0)
+#define gSourceB METALLIC_RESOURCE(Texture2D<float4>, 1)
+#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 2)
 
 bool sliderDebugUsesSourceA(uint2 pixel, uint width, uint height)
 {

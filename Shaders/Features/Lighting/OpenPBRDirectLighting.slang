@@ -1,7 +1,9 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 #include "../PathTracing/OpenPBRRayQueryPathTrace.slang"
 #include "../../Libraries/Math/SphericalHarmonics.slang"
 
-[[vk::binding(51, 0)]] StructuredBuffer<float4> gEnvironmentIrradianceSH;
+#define gEnvironmentIrradianceSH METALLIC_RESOURCE(StructuredBuffer<float4>, 51)
 
 float3 environmentDiffuseIrradiance(float3 normal, ScenePathTracePush push)
 {

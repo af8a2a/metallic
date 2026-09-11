@@ -1,14 +1,14 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 // GPU construction of a grid ReGIR light selector. Each grid cell owns a
 // fixed-size set of RIS light slots, matching the selection flow used by RTXDI.
 
 #define METALLIC_PUNCTUAL_SAMPLING_DISABLE_RESOURCES
 #include "../../Libraries/Lighting/PunctualLightSampling.slang"
 
-[[vk::binding(0, 0)]]
-Texture2D<float> gLocalLightPdf;
+#define gLocalLightPdf METALLIC_RESOURCE(Texture2D<float>, 0)
 
-[[vk::binding(1, 0)]]
-RWStructuredBuffer<uint4> gReGIRData;
+#define gReGIRData METALLIC_RESOURCE(RWStructuredBuffer<uint4>, 1)
 
 static const uint kReGIRHeaderRecordCount = 3u;
 static const uint kReGIRMagic = 0x52454749u;
@@ -113,9 +113,9 @@ bool sampleLocalLightPdf(inout uint seed, uint lightCount, out uint lightIndex, 
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void buildReGIRMain(
-    uint3 dispatchThreadId : SV_DispatchThreadID,
-    uniform BuildReGIRPush push)
+    uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+    BuildReGIRPush push = METALLIC_CONSTANTS(BuildReGIRPush);
     uint lightSlot = dispatchThreadId.x;
     if (lightSlot >= push.lightSlotCount) {
         return;

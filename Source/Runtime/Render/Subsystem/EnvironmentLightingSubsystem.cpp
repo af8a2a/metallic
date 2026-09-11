@@ -110,7 +110,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
                 .bindings = bindings.data(),
                 .bindingCount = static_cast<uint32_t>(bindings.size()),
                 .debugName = "EnvironmentLightingPrecompute",
-                .descriptorSetCount = 2,
+                .resourceTableCount = 2,
                 .requiresRayQuery = false,
             },
             log);
@@ -157,7 +157,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             .groupCountX = dispatchWidth,
             .groupCountY = dispatchHeight,
             .groupCountZ = 1,
-            .descriptorSetIndex = 0,
+            .resourceTableIndex = 0,
         });
         if (!result) {
             return result;
@@ -180,7 +180,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             .groupCountX = kEnvironmentSHCoefficientCount,
             .groupCountY = 1,
             .groupCountZ = 1,
-            .descriptorSetIndex = 1,
+            .resourceTableIndex = 1,
         });
     }
 };

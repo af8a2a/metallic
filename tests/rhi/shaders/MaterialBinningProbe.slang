@@ -1,23 +1,26 @@
+#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+
 #include "../../../Shaders/Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
 #include "../../../Shaders/Libraries/GPUDriven/MaterialBinningCommon.slang"
 
-[[vk::binding(0, 0)]] RWTexture2D<uint> gVisibility;
-[[vk::binding(1, 0)]] RWStructuredBuffer<VisibleClusterRecord> gRecords;
-[[vk::binding(2, 0)]] RWStructuredBuffer<GPUDrivenPreviewInstance> gInstances;
-[[vk::binding(3, 0)]] RWStructuredBuffer<GPUDrivenPreviewMaterial> gMaterials;
-[[vk::binding(4, 0)]] RWStructuredBuffer<PathTraceMaterial> gShadingMaterials;
-[[vk::binding(5, 0)]] StructuredBuffer<MaterialBin> gBins;
-[[vk::binding(6, 0)]] StructuredBuffer<MaterialTile> gTiles;
-[[vk::binding(7, 0)]] StructuredBuffer<uint> gArguments;
-[[vk::binding(8, 0)]] RWStructuredBuffer<uint> gResult;
+#define gVisibility METALLIC_RESOURCE(RWTexture2D<uint>, 0)
+#define gRecords METALLIC_RESOURCE(RWStructuredBuffer<VisibleClusterRecord>, 1)
+#define gInstances METALLIC_RESOURCE(RWStructuredBuffer<GPUDrivenPreviewInstance>, 2)
+#define gMaterials METALLIC_RESOURCE(RWStructuredBuffer<GPUDrivenPreviewMaterial>, 3)
+#define gShadingMaterials METALLIC_RESOURCE(RWStructuredBuffer<PathTraceMaterial>, 4)
+#define gBins METALLIC_RESOURCE(StructuredBuffer<MaterialBin>, 5)
+#define gTiles METALLIC_RESOURCE(StructuredBuffer<MaterialTile>, 6)
+#define gArguments METALLIC_RESOURCE(StructuredBuffer<uint>, 7)
+#define gResult METALLIC_RESOURCE(RWStructuredBuffer<uint>, 8)
 
 struct ProbePush { uint width; uint height; uint binCount; uint bin; };
 static const uint kProbeHeader = 27u;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void materialFixtureMain(uint3 id : SV_DispatchThreadID, uniform ProbePush push)
+void materialFixtureMain(uint3 id : SV_DispatchThreadID)
 {
+    ProbePush push = METALLIC_CONSTANTS(ProbePush);
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
     if (i < 260u) {
         VisibleClusterRecord record = {0u, i, 0u, 0u};
@@ -61,8 +64,9 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID, uniform ProbePush push)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void materialReadbackResetMain(uint3 id : SV_DispatchThreadID, uniform ProbePush push)
+void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
 {
+    ProbePush push = METALLIC_CONSTANTS(ProbePush);
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
     if (i == 0u) { gResult[kProbeHeader - 2u] = push.bin; gResult[kProbeHeader - 1u] = 0u; }
     if (i < push.binCount) {
@@ -79,8 +83,9 @@ void materialReadbackResetMain(uint3 id : SV_DispatchThreadID, uniform ProbePush
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
-void materialIndirectProbeMain(uint3 group : SV_GroupID, uniform ProbePush push)
+void materialIndirectProbeMain(uint3 group : SV_GroupID)
 {
+    ProbePush push = METALLIC_CONSTANTS(ProbePush);
     MaterialBin bin = gBins[push.bin];
     uint index = group.y * kMaterialBinMaxGroupsX + group.x;
     if (index >= bin.count) { return; }

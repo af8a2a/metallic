@@ -1,8 +1,8 @@
-[[vk::binding(0, 0)]]
-RaytracingAccelerationStructure gScene;
+#include "../../Libraries/Resources/ComputeResources.slang"
 
-[[vk::binding(1, 0)]]
-RWTexture2D<float4> gOutput;
+#define gScene METALLIC_RESOURCE(RaytracingAccelerationStructure, 0)
+
+#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 1)
 
 #ifndef SCENE_RAYQUERY_ENABLE_CLUSTER_ID
 #define SCENE_RAYQUERY_ENABLE_CLUSTER_ID 0
@@ -106,9 +106,9 @@ float3 rayOriginFromPixel(uint2 pixel, SceneRayQueryVisualizationPush push)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void sceneRayQueryVisualizeMain(uint3 dispatchThreadId : SV_DispatchThreadID,
-                                uniform SceneRayQueryVisualizationPush push)
+void sceneRayQueryVisualizeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+    SceneRayQueryVisualizationPush push = METALLIC_CONSTANTS(SceneRayQueryVisualizationPush);
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

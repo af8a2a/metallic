@@ -1,25 +1,20 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 #include "OpenPBRRayQueryPathTrace.slang"
 
-[[vk::binding(14, 0)]]
-RWTexture2D<float4> gDlssRrAlbedo;
+#define gDlssRrAlbedo METALLIC_RESOURCE(RWTexture2D<float4>, 14)
 
-[[vk::binding(15, 0)]]
-RWTexture2D<float4> gDlssRrSpecularAlbedo;
+#define gDlssRrSpecularAlbedo METALLIC_RESOURCE(RWTexture2D<float4>, 15)
 
-[[vk::binding(16, 0)]]
-RWTexture2D<float4> gDlssRrNormalRoughness;
+#define gDlssRrNormalRoughness METALLIC_RESOURCE(RWTexture2D<float4>, 16)
 
-[[vk::binding(17, 0)]]
-RWTexture2D<float2> gDlssRrMotionVectors;
+#define gDlssRrMotionVectors METALLIC_RESOURCE(RWTexture2D<float2>, 17)
 
-[[vk::binding(18, 0)]]
-RWTexture2D<float> gDlssRrLinearDepth;
+#define gDlssRrLinearDepth METALLIC_RESOURCE(RWTexture2D<float>, 18)
 
-[[vk::binding(19, 0)]]
-RWTexture2D<float> gDlssRrSpecularHitDistance;
+#define gDlssRrSpecularHitDistance METALLIC_RESOURCE(RWTexture2D<float>, 19)
 
-[[vk::binding(20, 0)]]
-RWTexture2D<float> gDlssDepth;
+#define gDlssDepth METALLIC_RESOURCE(RWTexture2D<float>, 20)
 
 struct DlssRrGuideData
 {
@@ -118,9 +113,9 @@ DlssRrGuideData evaluateOpenPbrDlssRrGuides(
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID,
-                                        uniform ScenePathTracePush push)
+void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+    ScenePathTracePush push = METALLIC_CONSTANTS(ScenePathTracePush);
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

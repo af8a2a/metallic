@@ -12,6 +12,16 @@
 namespace metallic::render {
 namespace {
 
+constexpr uint32_t kMaxComputeResourceSlots = 256;
+
+// The RHI prepends its two-word heap header. These addresses match
+// ComputeResourcePush in Shaders/Libraries/Resources/ComputeResources.slang.
+struct ComputeResourcePush {
+    uint64_t resources = 0;
+    uint64_t constants = 0;
+};
+static_assert(sizeof(ComputeResourcePush) == 16);
+
 std::string resultMessage(const char* action, Result result)
 {
     return std::string(action) + " returned " + resultToString(result);
@@ -94,6 +104,9 @@ struct ComputeDescriptorTables {
     std::vector<uint32_t> bufferBaseShaderIndices;
     GpuCompletionPoint completion;
     std::vector<bool> usedTables;
+    // One immutable packet per table and submission. Indirect batches store
+    // all of their constants in the same packet, with a distinct address each.
+    std::vector<std::unique_ptr<Buffer>> resourcePackets;
 };
 
 struct ComputeProgram::Impl : ComputeDescriptorTables {
@@ -101,18 +114,21 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
     std::unique_ptr<ShaderModule> shader;
     std::unique_ptr<ComputePipeline> pipeline;
     uint32_t pushConstantSize = 0;
-    uint32_t descriptorSetCount = 0;
+    uint32_t resourceTableCount = 0;
     uint32_t bindlessPushDataSize = 0;
     uint32_t samplerBasePushDataOffset = UINT32_MAX;
     uint32_t imageBasePushDataOffset = UINT32_MAX;
     uint32_t bufferBasePushDataOffset = UINT32_MAX;
+    bool usesResourceTable = true;
+    uint32_t resourceSlotCount = 0;
     std::string debugName = "ComputeProgram";
     std::vector<std::shared_ptr<ComputeDescriptorTables>> frameTables;
 
     bool hasCompatibleBindings(const Impl& other) const
     {
-        if (device != other.device || pushConstantSize != other.pushConstantSize ||
-            descriptorSetCount != other.descriptorSetCount || bindlessPushDataSize != other.bindlessPushDataSize ||
+        if (device != other.device || usesResourceTable != other.usesResourceTable ||
+            resourceSlotCount != other.resourceSlotCount || pushConstantSize != other.pushConstantSize ||
+            resourceTableCount != other.resourceTableCount || bindlessPushDataSize != other.bindlessPushDataSize ||
             samplerBasePushDataOffset != other.samplerBasePushDataOffset ||
             imageBasePushDataOffset != other.imageBasePushDataOffset || bufferBasePushDataOffset != other.bufferBasePushDataOffset ||
             samplerBaseShaderIndices != other.samplerBaseShaderIndices ||
@@ -161,7 +177,7 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
         for (auto& binding : tables->bindings) {
             binding.handles.clear();
         }
-        for (uint32_t set = 0; set < descriptorSetCount; ++set) {
+        for (uint32_t set = 0; set < resourceTableCount; ++set) {
             for (size_t bindingIndex = 0; bindingIndex < bindings.size(); ++bindingIndex) {
                 auto& binding = tables->bindings[bindingIndex];
                 const uint32_t count = std::max(binding.desc.descriptorCount, 1u);
@@ -191,7 +207,8 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
                 }
             }
         }
-        tables->usedTables.assign(descriptorSetCount, false);
+        tables->usedTables.assign(resourceTableCount, false);
+        tables->resourcePackets.resize(resourceTableCount);
         tables->usedTables[tableIndex] = true;
         tables->completion = frame.completion();
         frameTables.push_back(tables);
@@ -211,11 +228,12 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
         heap.reset();
         frameTables.clear();
         pushConstantSize = 0;
-        descriptorSetCount = 0;
+        resourceTableCount = 0;
         bindlessPushDataSize = 0;
         samplerBasePushDataOffset = UINT32_MAX;
         imageBasePushDataOffset = UINT32_MAX;
         bufferBasePushDataOffset = UINT32_MAX;
+        resourcePackets.clear();
         bindings.clear();
         samplerBaseShaderIndices.clear();
         imageBaseShaderIndices.clear();
@@ -248,7 +266,7 @@ Result ComputeProgram::initialize(
         (desc.byteSize % sizeof(uint32_t)) != 0 ||
         desc.bindings == nullptr ||
         desc.bindingCount == 0 ||
-        desc.descriptorSetCount == 0 ||
+        desc.resourceTableCount == 0 ||
         hasDuplicateBindings(desc.bindings, desc.bindingCount)) {
         log = "ComputeProgramDesc is invalid";
         return makeError(Error::InvalidArgument);
@@ -266,7 +284,9 @@ Result ComputeProgram::initialize(
     impl_ = std::make_shared<Impl>();
     impl_->device = &device;
     impl_->pushConstantSize = desc.pushConstantSize;
-    impl_->descriptorSetCount = desc.descriptorSetCount;
+    impl_->resourceTableCount = desc.resourceTableCount;
+    impl_->usesResourceTable = desc.usesResourceTable;
+    impl_->resourcePackets.resize(desc.resourceTableCount);
     impl_->debugName = desc.debugName != nullptr ? desc.debugName : "ComputeProgram";
 
     uint64_t samplerCount = 0;
@@ -276,6 +296,14 @@ Result ComputeProgram::initialize(
     impl_->bindings.reserve(desc.bindingCount);
     for (uint32_t bindingIndex = 0; bindingIndex < desc.bindingCount; ++bindingIndex) {
         const ComputeProgramBindingDesc& binding = desc.bindings[bindingIndex];
+        if (desc.usesResourceTable) {
+            if (binding.binding >= kMaxComputeResourceSlots) {
+                log = "ComputeProgram resource slot exceeds the native table limit";
+                clear();
+                return makeError(Error::InvalidArgument);
+            }
+            impl_->resourceSlotCount = std::max(impl_->resourceSlotCount, binding.binding + 1);
+        }
         const uint32_t descriptorCount = std::max(binding.descriptorCount, 1u);
         if ((binding.kind == ComputeResourceBindingKind::Sampler ||
              binding.kind == ComputeResourceBindingKind::AccelerationStructure ||
@@ -287,7 +315,7 @@ Result ComputeProgram::initialize(
             return makeError(Error::InvalidArgument);
         }
         const uint64_t slotCount =
-            static_cast<uint64_t>(descriptorCount) * desc.descriptorSetCount;
+            static_cast<uint64_t>(descriptorCount) * desc.resourceTableCount;
         switch (binding.kind) {
         case ComputeResourceBindingKind::Sampler:
             samplerCount += slotCount;
@@ -319,7 +347,7 @@ Result ComputeProgram::initialize(
     const bool hasSamplerBindings = samplerCount != 0;
     const bool hasImageBindings = sampledImageCount + storageImageCount != 0;
     const bool hasBufferBindings = bufferCount != 0;
-    const bool dynamicDescriptorTables = desc.descriptorSetCount > 1;
+    const bool dynamicDescriptorTables = !desc.usesResourceTable && desc.resourceTableCount > 1;
     const uint32_t pushedHeapBaseCount = dynamicDescriptorTables
         ? static_cast<uint32_t>(hasSamplerBindings) +
             static_cast<uint32_t>(hasImageBindings) +
@@ -333,27 +361,27 @@ Result ComputeProgram::initialize(
     }
     uint32_t nextPushDataOffset = desc.pushConstantSize;
     if (hasSamplerBindings) {
-        impl_->samplerBaseShaderIndices.assign(desc.descriptorSetCount, UINT32_MAX);
+        impl_->samplerBaseShaderIndices.assign(desc.resourceTableCount, UINT32_MAX);
         if (dynamicDescriptorTables) {
             impl_->samplerBasePushDataOffset = nextPushDataOffset;
             nextPushDataOffset += sizeof(uint32_t);
         }
     }
     if (hasImageBindings) {
-        impl_->imageBaseShaderIndices.assign(desc.descriptorSetCount, UINT32_MAX);
+        impl_->imageBaseShaderIndices.assign(desc.resourceTableCount, UINT32_MAX);
         if (dynamicDescriptorTables) {
             impl_->imageBasePushDataOffset = nextPushDataOffset;
             nextPushDataOffset += sizeof(uint32_t);
         }
     }
     if (hasBufferBindings) {
-        impl_->bufferBaseShaderIndices.assign(desc.descriptorSetCount, UINT32_MAX);
+        impl_->bufferBaseShaderIndices.assign(desc.resourceTableCount, UINT32_MAX);
         if (dynamicDescriptorTables) {
             impl_->bufferBasePushDataOffset = nextPushDataOffset;
             nextPushDataOffset += sizeof(uint32_t);
         }
     }
-    impl_->bindlessPushDataSize = nextPushDataOffset;
+    impl_->bindlessPushDataSize = desc.usesResourceTable ? sizeof(ComputeResourcePush) : nextPushDataOffset;
 
     Result result = device.createBindlessHeap(
         BindlessHeapDesc{
@@ -371,11 +399,11 @@ Result ComputeProgram::initialize(
 
     for (Impl::BindingState& binding : impl_->bindings) {
         const uint32_t descriptorCount = std::max(binding.desc.descriptorCount, 1u);
-        binding.handles.reserve(descriptorCount * desc.descriptorSetCount);
+        binding.handles.reserve(descriptorCount * desc.resourceTableCount);
     }
-    for (uint32_t descriptorSetIndex = 0;
-         descriptorSetIndex < desc.descriptorSetCount;
-         ++descriptorSetIndex) {
+    for (uint32_t resourceTableIndex = 0;
+         resourceTableIndex < desc.resourceTableCount;
+         ++resourceTableIndex) {
         for (Impl::BindingState& binding : impl_->bindings) {
             const uint32_t descriptorCount = std::max(binding.desc.descriptorCount, 1u);
             std::vector<uint32_t>* groupBases = nullptr;
@@ -415,14 +443,14 @@ Result ComputeProgram::initialize(
                     clear();
                     return result;
                 }
-                if ((*groupBases)[descriptorSetIndex] == UINT32_MAX) {
-                    (*groupBases)[descriptorSetIndex] = handle.shaderIndex;
+                if ((*groupBases)[resourceTableIndex] == UINT32_MAX) {
+                    (*groupBases)[resourceTableIndex] = handle.shaderIndex;
                 }
-                if (descriptorSetIndex == 0 && descriptorIndex == 0) {
+                if (resourceTableIndex == 0 && descriptorIndex == 0) {
                     binding.heapIndexOffset =
-                        handle.shaderIndex - (*groupBases)[descriptorSetIndex];
+                        handle.shaderIndex - (*groupBases)[resourceTableIndex];
                 }
-                const uint32_t expectedShaderIndex = (*groupBases)[descriptorSetIndex] +
+                const uint32_t expectedShaderIndex = (*groupBases)[resourceTableIndex] +
                     binding.heapIndexOffset + descriptorIndex;
                 if (handle.shaderIndex != expectedShaderIndex) {
                     log = "ComputeProgram descriptor-table allocation is not contiguous";
@@ -437,6 +465,9 @@ Result ComputeProgram::initialize(
     std::vector<ShaderBindingMappingDesc> mappings;
     mappings.reserve(impl_->bindings.size());
     for (const Impl::BindingState& binding : impl_->bindings) {
+        if (desc.usesResourceTable) {
+            break;
+        }
         const bool samplerBinding = usesSamplerHeap(binding.desc.kind);
         const bool imageBinding = usesImageHeap(binding.desc.kind);
         mappings.push_back(ShaderBindingMappingDesc{
@@ -502,7 +533,7 @@ bool ComputeProgram::valid() const
         impl_->shader != nullptr &&
         impl_->pipeline != nullptr &&
         impl_->heap != nullptr &&
-        impl_->descriptorSetCount != 0;
+        impl_->resourceTableCount != 0;
 }
 
 Result ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
@@ -529,7 +560,7 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         desc.commandBuffer == nullptr ||
         (desc.indirectArguments == nullptr &&
          (desc.groupCountX == 0 || desc.groupCountY == 0 || desc.groupCountZ == 0)) ||
-        desc.descriptorSetIndex >= impl_->descriptorSetCount ||
+        desc.resourceTableIndex >= impl_->resourceTableCount ||
         (impl_->pushConstantSize > 0 &&
          (desc.pushData == nullptr || desc.pushDataSize != impl_->pushConstantSize)) ||
         (impl_->pushConstantSize == 0 && desc.pushDataSize != 0)) {
@@ -562,7 +593,7 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         if (!frame->recording()) {
             return makeError(Error::InvalidArgument);
         }
-        Result result = impl_->acquireTables(*frame, desc.descriptorSetIndex, retainedTables);
+        Result result = impl_->acquireTables(*frame, desc.resourceTableIndex, retainedTables);
         if (!result) {
             return result;
         }
@@ -575,12 +606,12 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
     }
 
     std::vector<uint8_t> pushData(impl_->bindlessPushDataSize, 0);
-    if (impl_->pushConstantSize != 0) {
+    if (!impl_->usesResourceTable && impl_->pushConstantSize != 0) {
         std::memcpy(pushData.data(), desc.pushData, impl_->pushConstantSize);
     }
     if (impl_->imageBasePushDataOffset != UINT32_MAX) {
         const uint32_t imageBase =
-            tables->imageBaseShaderIndices[desc.descriptorSetIndex];
+            tables->imageBaseShaderIndices[desc.resourceTableIndex];
         std::memcpy(
             pushData.data() + impl_->imageBasePushDataOffset,
             &imageBase,
@@ -588,7 +619,7 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
     }
     if (impl_->samplerBasePushDataOffset != UINT32_MAX) {
         const uint32_t samplerBase =
-            tables->samplerBaseShaderIndices[desc.descriptorSetIndex];
+            tables->samplerBaseShaderIndices[desc.resourceTableIndex];
         std::memcpy(
             pushData.data() + impl_->samplerBasePushDataOffset,
             &samplerBase,
@@ -596,7 +627,7 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
     }
     if (impl_->bufferBasePushDataOffset != UINT32_MAX) {
         const uint32_t bufferBase =
-            tables->bufferBaseShaderIndices[desc.descriptorSetIndex];
+            tables->bufferBaseShaderIndices[desc.resourceTableIndex];
         std::memcpy(
             pushData.data() + impl_->bufferBasePushDataOffset,
             &bufferBase,
@@ -624,7 +655,7 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         }
         const uint32_t descriptorCount =
             std::max(expectedBinding.desc.descriptorCount, 1u);
-        const uint32_t firstHandle = desc.descriptorSetIndex * descriptorCount;
+        const uint32_t firstHandle = desc.resourceTableIndex * descriptorCount;
         if (firstHandle >= expectedBinding.handles.size() ||
             descriptorCount > expectedBinding.handles.size() - firstHandle) {
             return makeError(Error::Failure);
@@ -761,6 +792,59 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         }
     }
 
+    uint64_t constantsAddress = 0;
+    const uint64_t constantStride = (uint64_t(impl_->pushConstantSize) + 15u) & ~uint64_t(15u);
+    if (impl_->usesResourceTable) {
+        const uint64_t constantsOffset = (uint64_t(impl_->resourceSlotCount) * sizeof(uint64_t) + 15u) & ~uint64_t(15u);
+        const uint64_t dispatchCount = std::max<size_t>(dispatches.size(), 1);
+        if (constantStride != 0 && dispatchCount > (UINT64_MAX - constantsOffset) / constantStride) {
+            return makeError(Error::InvalidArgument);
+        }
+        const uint64_t packetSize = constantsOffset + constantStride * dispatchCount;
+        auto& packet = tables->resourcePackets[desc.resourceTableIndex];
+        if (packet == nullptr || packet->desc().size < packetSize) {
+            Result result = impl_->device->createBuffer(BufferDesc{
+                .size = packetSize,
+                .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::HostUpload,
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
+            }, packet);
+            if (!result) {
+                return result;
+            }
+        }
+        auto* bytes = static_cast<uint8_t*>(packet->map());
+        if (bytes == nullptr || packet->deviceAddress() == 0) {
+            if (bytes != nullptr) { packet->unmap(); }
+            return makeError(Error::Failure);
+        }
+        std::memset(bytes, 0xff, static_cast<size_t>(constantsOffset));
+        for (const auto& binding : tables->bindings) {
+            const uint32_t descriptorCount = std::max(binding.desc.descriptorCount, 1u);
+            uint64_t handle = binding.handles[desc.resourceTableIndex * descriptorCount].shaderIndex;
+            // Slang 2026.1.2 lowers DescriptorHandle<RTAS> to an address cast,
+            // unlike its image/buffer/sampler handles, which index heap arrays.
+            const auto* resource = findDispatchBinding(desc, binding.desc.binding);
+            if (binding.desc.kind == ComputeResourceBindingKind::AccelerationStructure) {
+                handle = resource->accelerationStructure->deviceAddress();
+            } else if (binding.desc.kind == ComputeResourceBindingKind::PartitionedAccelerationStructure) {
+                handle = resource->partitionedAccelerationStructure->deviceAddress();
+            }
+            std::memcpy(bytes + binding.desc.binding * sizeof(uint64_t), &handle, sizeof(handle));
+        }
+        if (impl_->pushConstantSize != 0) {
+            for (size_t index = 0; index < dispatchCount; ++index) {
+                const void* constants = dispatches.empty() ? desc.pushData : dispatches[index].pushData;
+                std::memcpy(bytes + constantsOffset + constantStride * index, constants, impl_->pushConstantSize);
+            }
+        }
+        packet->flush();
+        packet->unmap();
+        constantsAddress = packet->deviceAddress() + constantsOffset;
+        const ComputeResourcePush push{packet->deviceAddress(), constantsAddress};
+        std::memcpy(pushData.data(), &push, sizeof(push));
+    }
+
     desc.commandBuffer->bindBindlessHeap(*tables->heap);
     desc.commandBuffer->bindComputePipeline(*impl_->pipeline);
     if (!dispatches.empty()) {
@@ -771,7 +855,10 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
                 desc.commandBuffer->bindComputePipeline(*program->pipeline);
                 boundProgram = program;
             }
-            if (impl_->pushConstantSize > 0) {
+            if (impl_->usesResourceTable) {
+                const uint64_t address = constantsAddress + constantStride * index;
+                std::memcpy(pushData.data() + offsetof(ComputeResourcePush, constants), &address, sizeof(address));
+            } else if (impl_->pushConstantSize > 0) {
                 std::memcpy(pushData.data(), dispatches[index].pushData, impl_->pushConstantSize);
             }
             desc.commandBuffer->pushBindlessData(pushData.data(), static_cast<uint32_t>(pushData.size()));

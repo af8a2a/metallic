@@ -1,14 +1,16 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 #include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
 #include "../../Libraries/GPUDriven/MaterialBinningCommon.slang"
 
-[[vk::binding(0, 0)]] Texture2D<uint> gVisibility;
-[[vk::binding(1, 0)]] StructuredBuffer<VisibleClusterRecord> gRecords;
-[[vk::binding(2, 0)]] StructuredBuffer<GPUDrivenPreviewInstance> gInstances;
-[[vk::binding(3, 0)]] StructuredBuffer<GPUDrivenPreviewMaterial> gMaterials;
-[[vk::binding(4, 0)]] StructuredBuffer<PathTraceMaterial> gShadingMaterials;
-[[vk::binding(5, 0)]] RWStructuredBuffer<MaterialBin> gBins;
-[[vk::binding(6, 0)]] RWStructuredBuffer<MaterialTile> gTiles;
-[[vk::binding(7, 0)]] RWStructuredBuffer<uint> gIndirect;
+#define gVisibility METALLIC_RESOURCE(Texture2D<uint>, 0)
+#define gRecords METALLIC_RESOURCE(StructuredBuffer<VisibleClusterRecord>, 1)
+#define gInstances METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewInstance>, 2)
+#define gMaterials METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewMaterial>, 3)
+#define gShadingMaterials METALLIC_RESOURCE(StructuredBuffer<PathTraceMaterial>, 4)
+#define gBins METALLIC_RESOURCE(RWStructuredBuffer<MaterialBin>, 5)
+#define gTiles METALLIC_RESOURCE(RWStructuredBuffer<MaterialTile>, 6)
+#define gIndirect METALLIC_RESOURCE(RWStructuredBuffer<uint>, 7)
 
 struct MaterialBinningPush
 {
@@ -40,8 +42,9 @@ uint materialClassForPixel(uint2 pixel)
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
-void materialBinningResetMain(uint lane : SV_GroupIndex, uniform MaterialBinningPush push)
+void materialBinningResetMain(uint lane : SV_GroupIndex)
 {
+    MaterialBinningPush push = METALLIC_CONSTANTS(MaterialBinningPush);
     if (lane < kMaterialClassCount) {
         MaterialBin bin = {lane * push.tileCount, 0u};
         gBins[lane] = bin;
@@ -50,8 +53,9 @@ void materialBinningResetMain(uint lane : SV_GroupIndex, uniform MaterialBinning
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
-void materialBinningClassifyMain(uint3 group : SV_GroupID, uniform MaterialBinningPush push)
+void materialBinningClassifyMain(uint3 group : SV_GroupID)
 {
+    MaterialBinningPush push = METALLIC_CONSTANTS(MaterialBinningPush);
     uint lane = WaveGetLaneIndex();
     uint columns = (push.width + kMaterialTileWidth - 1u) / kMaterialTileWidth;
     MaterialTile tile = {group.y * columns + group.x, 0u};
@@ -74,8 +78,9 @@ void materialBinningClassifyMain(uint3 group : SV_GroupID, uniform MaterialBinni
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
-void materialBinningArgumentsMain(uint lane : SV_GroupIndex, uniform MaterialBinningPush push)
+void materialBinningArgumentsMain(uint lane : SV_GroupIndex)
 {
+    MaterialBinningPush push = METALLIC_CONSTANTS(MaterialBinningPush);
     if (lane < kMaterialClassCount) {
         uint count = gBins[lane].count;
         gIndirect[lane * 3u] = min(count, kMaterialBinMaxGroupsX);

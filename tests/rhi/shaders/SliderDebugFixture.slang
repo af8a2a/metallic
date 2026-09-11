@@ -1,8 +1,10 @@
-[[vk::binding(0, 0)]] RWTexture2D<float4> gOutput;
-[[vk::binding(1, 0)]] Texture2D<float4> gInput;
-[[vk::binding(2, 0)]] RWStructuredBuffer<float4> gReadback;
+#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+
+#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 0)
+#define gInput METALLIC_RESOURCE(Texture2D<float4>, 1)
+#define gReadback METALLIC_RESOURCE(RWStructuredBuffer<float4>, 2)
 struct FixturePush { uint path; };
-[[vk::push_constant]] ConstantBuffer<FixturePush> gPush;
+#define gPush METALLIC_CONSTANTS(FixturePush)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]

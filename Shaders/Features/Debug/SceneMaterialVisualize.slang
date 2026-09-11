@@ -1,11 +1,11 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 // NTC resources are shared with the path tracer and occupy bindings 29-33.
 #include "../../Libraries/Texturing/NeuralTextureSampling.slang"
 
-[[vk::binding(0, 0)]]
-RaytracingAccelerationStructure gScene;
+#define gScene METALLIC_RESOURCE(RaytracingAccelerationStructure, 0)
 
-[[vk::binding(1, 0)]]
-RWTexture2D<float4> gOutput;
+#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 1)
 
 #include "../../Libraries/Scene/SceneShadingVertex.slang"
 
@@ -63,20 +63,15 @@ struct MaterialVisualizeMaterial
     MaterialVisualizeTextureInfo diffuseTransmissionColorTexture;
 };
 
-[[vk::binding(3, 0)]]
-StructuredBuffer<uint> gIndices;
+#define gIndices METALLIC_RESOURCE(StructuredBuffer<uint>, 3)
 
-[[vk::binding(4, 0)]]
-StructuredBuffer<MaterialVisualizePrimitive> gPrimitives;
+#define gPrimitives METALLIC_RESOURCE(StructuredBuffer<MaterialVisualizePrimitive>, 4)
 
-[[vk::binding(5, 0)]]
-StructuredBuffer<MaterialVisualizeInstance> gInstances;
+#define gInstances METALLIC_RESOURCE(StructuredBuffer<MaterialVisualizeInstance>, 5)
 
-[[vk::binding(6, 0)]]
-StructuredBuffer<MaterialVisualizeMaterial> gMaterials;
+#define gMaterials METALLIC_RESOURCE(StructuredBuffer<MaterialVisualizeMaterial>, 6)
 
-[[vk::binding(7, 0)]]
-Texture2D<float4> gMaterialTextures[256];
+#define gMaterialTextures(index) METALLIC_RESOURCE_ARRAY(Texture2D<float4>, 7, index)
 
 static const uint kMaxMaterialTextures = 256u;
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
@@ -273,14 +268,14 @@ float4 loadMaterialTexture(
     uint width = 1u;
     uint height = 1u;
     uint textureIndex = textureInfo.textureIndex;
-    gMaterialTextures[textureIndex].GetDimensions(width, height);
+    gMaterialTextures(textureIndex).GetDimensions(width, height);
     if (width == 0u || height == 0u) {
         return fallback;
     }
 
     float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
-    return gMaterialTextures[textureIndex].Load(int3(texel, 0));
+    return gMaterialTextures(textureIndex).Load(int3(texel, 0));
 }
 
 float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
@@ -558,9 +553,9 @@ float3 visualizeHit(HitInfo hit, SceneMaterialVisualizationPush push)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void sceneMaterialVisualizeMain(uint3 dispatchThreadId : SV_DispatchThreadID,
-                                uniform SceneMaterialVisualizationPush push)
+void sceneMaterialVisualizeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+    SceneMaterialVisualizationPush push = METALLIC_CONSTANTS(SceneMaterialVisualizationPush);
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

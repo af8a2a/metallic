@@ -1,6 +1,8 @@
+#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+
 #include "../../../Shaders/Features/PathTracing/ScenePathTrace.slang"
 
-[[vk::binding(63, 0)]] RWStructuredBuffer<float4> gMotionResults;
+#define gMotionResults METALLIC_RESOURCE(RWStructuredBuffer<float4>, 63)
 
 [shader("compute")]
 [numthreads(32, 1, 1)]

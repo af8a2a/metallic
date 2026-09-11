@@ -163,7 +163,7 @@ public:
                 return RhiTestResult::fail("METALLIC_GPU_PATTERN_TABLES must be shared, separate or constant");
             }
         }
-        const uint32_t descriptorSetCount = tableMode == "constant" ? 1u : 2u;
+        const uint32_t resourceTableCount = tableMode == "constant" ? 1u : 2u;
         const uint32_t finalizeTable = tableMode == "shared" ? 1u : 0u;
         const char* pdfValue = std::getenv("METALLIC_GPU_PATTERN_PREFIX_PDF");
         const bool prefixPdf = environment && pdfValue != nullptr && std::strcmp(pdfValue, "1") == 0;
@@ -275,7 +275,8 @@ public:
         result = program.initialize(*device, {.spirv = shader.spirv.data(),
             .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = sizeof(PatternValues),
             .bindings = bindings, .bindingCount = 3, .debugName = "DescriptorHeap Code Pattern",
-            .descriptorSetCount = descriptorSetCount, .requiresRayQuery = false}, log);
+            .resourceTableCount = resourceTableCount, .requiresRayQuery = false,
+            .usesResourceTable = environment}, log);
         if (!result) { return RhiTestResult::fail(log); }
         if (compileOnly) {
             std::cout << "Pattern compile only: ComputeProgram initialized; no fixture resources, commands or submissions; "
@@ -366,7 +367,7 @@ public:
             PATTERN_REQUIRE(program.dispatch({.commandBuffer = commands.buffer.get(),
                 .bindings = resources, .bindingCount = 3,
                 .pushData = &finalizePush, .pushDataSize = sizeof(finalizePush),
-                .groupCountX = 9, .descriptorSetIndex = finalizeTable}));
+                .groupCountX = 9, .resourceTableIndex = finalizeTable}));
         }
         PATTERN_REQUIRE(commands.buffer->end());
         render::CommandBuffer* submitted[] = {commands.buffer.get()};

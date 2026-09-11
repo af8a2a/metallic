@@ -1421,6 +1421,7 @@ public:
 
     const RayTracingAccelerationStructureDesc& desc() const;
     bool valid() const;
+    uint64_t deviceAddress() const;
 
 private:
     explicit RayTracingAccelerationStructure(
@@ -1447,6 +1448,7 @@ public:
 
     const PartitionedAccelerationStructureDesc& desc() const;
     bool valid() const;
+    uint64_t deviceAddress() const;
 
 private:
     explicit PartitionedAccelerationStructure(

@@ -1,3 +1,5 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 // GPU PDF preparation for RTXDI-style local-light and environment importance sampling.
 
 #define METALLIC_PUNCTUAL_SAMPLING_DISABLE_RESOURCES
@@ -10,14 +12,11 @@ static const uint kGenerateLocalMip = 2u;
 static const uint kGenerateEnvironmentMip = 3u;
 static const float kPi = 3.14159265358979323846;
 
-[[vk::binding(0, 0)]]
-Texture2D<float4> gEnvironmentMap;
+#define gEnvironmentMap METALLIC_RESOURCE(Texture2D<float4>, 0)
 
-[[vk::binding(1, 0)]]
-RWTexture2D<float> gLocalPdfMips[kMaxPdfMipCount];
+#define gLocalPdfMips(index) METALLIC_RESOURCE_ARRAY(RWTexture2D<float>, 1, index)
 
-[[vk::binding(2, 0)]]
-RWTexture2D<float> gEnvironmentPdfMips[kMaxPdfMipCount];
+#define gEnvironmentPdfMips(index) METALLIC_RESOURCE_ARRAY(RWTexture2D<float>, 2, index)
 
 struct PrepareLightsPdfPush
 {
@@ -55,7 +54,7 @@ void prepareLocalLightPdf(uint2 dispatchPosition, PrepareLightsPdfPush push)
     if (any(pdfPosition >= push.destinationSize)) {
         return;
     }
-    gLocalPdfMips[0][pdfPosition] = linearIndex < min(push.lightCount, punctualLightCount())
+    gLocalPdfMips(0)[pdfPosition] = linearIndex < min(push.lightCount, punctualLightCount())
         ? punctualLightPower(gPunctualLights[linearIndex + 1u])
         : 0.0;
 }
@@ -74,17 +73,17 @@ void prepareEnvironmentPdf(uint2 position, PrepareLightsPdfPush push)
             (kPi / float(max(push.sourceSize.y, 1u)));
         weight = luminance(radiance) * max(sin(theta), 0.0);
     }
-    gEnvironmentPdfMips[0][position] = weight;
+    gEnvironmentPdfMips(0)[position] = weight;
 }
 
 float loadLocalPdf(uint mipLevel, uint2 position, uint2 sourceSize)
 {
-    return all(position < sourceSize) ? max(gLocalPdfMips[mipLevel][position], 0.0) : 0.0;
+    return all(position < sourceSize) ? max(gLocalPdfMips(mipLevel)[position], 0.0) : 0.0;
 }
 
 float loadEnvironmentPdf(uint mipLevel, uint2 position, uint2 sourceSize)
 {
-    return all(position < sourceSize) ? max(gEnvironmentPdfMips[mipLevel][position], 0.0) : 0.0;
+    return all(position < sourceSize) ? max(gEnvironmentPdfMips(mipLevel)[position], 0.0) : 0.0;
 }
 
 void generateLocalMip(uint2 position, PrepareLightsPdfPush push)
@@ -98,7 +97,7 @@ void generateLocalMip(uint2 position, PrepareLightsPdfPush push)
         loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 0u), push.sourceSize) * 0.25 +
         loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 1u), push.sourceSize) * 0.25 +
         loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 1u), push.sourceSize) * 0.25;
-    gLocalPdfMips[push.sourceMipLevel + 1u][position] = sum;
+    gLocalPdfMips(push.sourceMipLevel + 1u)[position] = sum;
 }
 
 void generateEnvironmentMip(uint2 position, PrepareLightsPdfPush push)
@@ -112,15 +111,15 @@ void generateEnvironmentMip(uint2 position, PrepareLightsPdfPush push)
         loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 0u), push.sourceSize) * 0.25 +
         loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 1u), push.sourceSize) * 0.25 +
         loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 1u), push.sourceSize) * 0.25;
-    gEnvironmentPdfMips[push.sourceMipLevel + 1u][position] = sum;
+    gEnvironmentPdfMips(push.sourceMipLevel + 1u)[position] = sum;
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void prepareLightsPdfMain(
-    uint3 dispatchThreadId : SV_DispatchThreadID,
-    uniform PrepareLightsPdfPush push)
+    uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+    PrepareLightsPdfPush push = METALLIC_CONSTANTS(PrepareLightsPdfPush);
     if (push.mode == kPrepareLocalLights) {
         prepareLocalLightPdf(dispatchThreadId.xy, push);
     } else if (push.mode == kPrepareEnvironment) {

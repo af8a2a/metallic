@@ -1,8 +1,8 @@
-[[vk::binding(0, 0)]]
-RWTexture2D<float4> gOutput;
+#include "../../Libraries/Resources/ComputeResources.slang"
 
-[[vk::binding(1, 0)]]
-Texture2D<float4> gSource;
+#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 0)
+
+#define gSource METALLIC_RESOURCE(Texture2D<float4>, 1)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]

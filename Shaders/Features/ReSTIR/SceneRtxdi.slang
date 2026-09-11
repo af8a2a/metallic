@@ -1,3 +1,5 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 // ReSTIR DI implementation for Metallic. The integration follows the fused
 // spatiotemporal flow demonstrated by RTXDI while using Metallic-native data.
 
@@ -6,11 +8,9 @@
 #include "../../Libraries/Texturing/NeuralTextureSampling.slang"
 #include "../../Libraries/Lighting/PunctualLightSampling.slang"
 
-[[vk::binding(0, 0)]]
-RaytracingAccelerationStructure gScene;
+#define gScene METALLIC_RESOURCE(RaytracingAccelerationStructure, 0)
 
-[[vk::binding(1, 0)]]
-RWTexture2D<float4> gOutput;
+#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 1)
 
 #include "../../Libraries/Scene/SceneShadingVertex.slang"
 
@@ -68,66 +68,46 @@ struct RtxdiMaterial
     RtxdiTextureInfo diffuseTransmissionColorTexture;
 };
 
-[[vk::binding(3, 0)]]
-StructuredBuffer<uint> gIndices;
+#define gIndices METALLIC_RESOURCE(StructuredBuffer<uint>, 3)
 
-[[vk::binding(4, 0)]]
-StructuredBuffer<RtxdiPrimitive> gPrimitives;
+#define gPrimitives METALLIC_RESOURCE(StructuredBuffer<RtxdiPrimitive>, 4)
 
-[[vk::binding(5, 0)]]
-StructuredBuffer<RtxdiInstance> gInstances;
+#define gInstances METALLIC_RESOURCE(StructuredBuffer<RtxdiInstance>, 5)
 
-[[vk::binding(6, 0)]]
-StructuredBuffer<RtxdiMaterial> gMaterials;
+#define gMaterials METALLIC_RESOURCE(StructuredBuffer<RtxdiMaterial>, 6)
 
-[[vk::binding(7, 0)]]
-Texture2D<float4> gMaterialTextures[256];
+#define gMaterialTextures(index) METALLIC_RESOURCE_ARRAY(Texture2D<float4>, 7, index)
 
-[[vk::binding(8, 0)]]
-RWTexture2D<uint4> gReservoirCurrent;
+#define gReservoirCurrent METALLIC_RESOURCE(RWTexture2D<uint4>, 8)
 
-[[vk::binding(9, 0)]]
-RWTexture2D<uint4> gReservoirPrevious;
+#define gReservoirPrevious METALLIC_RESOURCE(RWTexture2D<uint4>, 9)
 
-[[vk::binding(10, 0)]]
-RWTexture2D<float4> gPositionCurrent;
+#define gPositionCurrent METALLIC_RESOURCE(RWTexture2D<float4>, 10)
 
-[[vk::binding(11, 0)]]
-RWTexture2D<float4> gPositionPrevious;
+#define gPositionPrevious METALLIC_RESOURCE(RWTexture2D<float4>, 11)
 
-[[vk::binding(12, 0)]]
-RWTexture2D<float4> gNormalCurrent;
+#define gNormalCurrent METALLIC_RESOURCE(RWTexture2D<float4>, 12)
 
-[[vk::binding(13, 0)]]
-RWTexture2D<float4> gNormalPrevious;
+#define gNormalPrevious METALLIC_RESOURCE(RWTexture2D<float4>, 13)
 
-[[vk::binding(14, 0)]]
-RWTexture2D<float4> gNoisyDiffuse;
+#define gNoisyDiffuse METALLIC_RESOURCE(RWTexture2D<float4>, 14)
 
-[[vk::binding(15, 0)]]
-RWTexture2D<float4> gNoisySpecular;
+#define gNoisySpecular METALLIC_RESOURCE(RWTexture2D<float4>, 15)
 
-[[vk::binding(16, 0)]]
-RWTexture2D<float4> gNrdNormalRoughness;
+#define gNrdNormalRoughness METALLIC_RESOURCE(RWTexture2D<float4>, 16)
 
-[[vk::binding(17, 0)]]
-RWTexture2D<float4> gNrdMotionVectors;
+#define gNrdMotionVectors METALLIC_RESOURCE(RWTexture2D<float4>, 17)
 
-[[vk::binding(18, 0)]]
-RWTexture2D<float> gNrdViewZ;
+#define gNrdViewZ METALLIC_RESOURCE(RWTexture2D<float>, 18)
 
-[[vk::binding(19, 0)]]
-RWTexture2D<float4> gBaseColorMetalness;
+#define gBaseColorMetalness METALLIC_RESOURCE(RWTexture2D<float4>, 19)
 
-[[vk::binding(20, 0)]]
-RWTexture2D<float4> gEmissive;
+#define gEmissive METALLIC_RESOURCE(RWTexture2D<float4>, 20)
 
-[[vk::binding(21, 0)]]
-Texture2D<float4> gEnvironmentMap;
+#define gEnvironmentMap METALLIC_RESOURCE(Texture2D<float4>, 21)
 
 
-[[vk::binding(23, 0)]]
-Texture2D<float> gEnvironmentPdf;
+#define gEnvironmentPdf METALLIC_RESOURCE(Texture2D<float>, 23)
 
 
 static const uint kMaxMaterialTextures = 256u;
@@ -615,13 +595,13 @@ float4 loadMaterialTexture(
     uint width = 1u;
     uint height = 1u;
     uint textureIndex = textureInfo.textureIndex;
-    gMaterialTextures[textureIndex].GetDimensions(width, height);
+    gMaterialTextures(textureIndex).GetDimensions(width, height);
     if (width == 0u || height == 0u) {
         return fallback;
     }
     float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
-    return gMaterialTextures[textureIndex].Load(int3(texel, 0));
+    return gMaterialTextures(textureIndex).Load(int3(texel, 0));
 }
 
 float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
@@ -1191,8 +1171,9 @@ float3 skyColor(float3 direction)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneRtxdiPush push)
+void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+    SceneRtxdiPush push = METALLIC_CONSTANTS(SceneRtxdiPush);
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

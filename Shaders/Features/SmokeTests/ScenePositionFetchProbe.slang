@@ -1,8 +1,10 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 #include "../PathTracing/ScenePathTrace.slang"
 
-[[vk::binding(63, 0)]] RWStructuredBuffer<float4> gProbeOutput;
+#define gProbeOutput METALLIC_RESOURCE(RWStructuredBuffer<float4>, 63)
 struct ProbePush { float translationX; };
-[[vk::push_constant]] ProbePush gProbePush;
+#define gProbePush METALLIC_CONSTANTS(ProbePush)
 
 [shader("compute")]
 [numthreads(4, 1, 1)]

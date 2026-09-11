@@ -4124,6 +4124,11 @@ bool RayTracingAccelerationStructure::valid() const
         impl_->address != 0;
 }
 
+uint64_t RayTracingAccelerationStructure::deviceAddress() const
+{
+    return valid() ? impl_->address : 0;
+}
+
 PartitionedAccelerationStructure::PartitionedAccelerationStructure(
     std::unique_ptr<detail::PartitionedAccelerationStructureImpl> impl)
     : impl_(std::move(impl))
@@ -4145,6 +4150,11 @@ const PartitionedAccelerationStructureDesc& PartitionedAccelerationStructure::de
 bool PartitionedAccelerationStructure::valid() const
 {
     return impl_ != nullptr && impl_->storage != nullptr && impl_->address != 0;
+}
+
+uint64_t PartitionedAccelerationStructure::deviceAddress() const
+{
+    return valid() ? impl_->address : 0;
 }
 
 void* Buffer::map()

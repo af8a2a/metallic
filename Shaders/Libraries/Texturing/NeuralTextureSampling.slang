@@ -1,3 +1,5 @@
+#include "../Resources/ComputeResources.slang"
+
 #ifndef METALLIC_HAS_NTC
 #define METALLIC_HAS_NTC 0
 #endif
@@ -16,22 +18,17 @@
 static const uint kMaxNeuralTextureSets = 64u;
 static const uint kInvalidNeuralTextureSetIndex = 0xffffffffu;
 
-[[vk::binding(29, 0)]]
-Texture2DArray<float4> gNtcLatentTextures[kMaxNeuralTextureSets];
+#define gNtcLatentTextures(index) METALLIC_RESOURCE_ARRAY(Texture2DArray<float4>, 29, index)
 
-[[vk::binding(30, 0)]]
-StructuredBuffer<NtcTextureSetConstants> gNtcTextureSetConstants;
+#define gNtcTextureSetConstants METALLIC_RESOURCE(StructuredBuffer<NtcTextureSetConstants>, 30)
 
-[[vk::binding(31, 0)]]
-ByteAddressBuffer gNtcWeights;
+#define gNtcWeights METALLIC_RESOURCE(ByteAddressBuffer, 31)
 
 // x is the byte offset of this texture set's weights in gNtcWeights.
 // y is 1 for converted CoopVec FP8 weights and 0 for Generic INT8 weights.
-[[vk::binding(32, 0)]]
-StructuredBuffer<uint4> gNtcTextureSetInfo;
+#define gNtcTextureSetInfo METALLIC_RESOURCE(StructuredBuffer<uint4>, 32)
 
-[[vk::binding(33, 0)]]
-SamplerState gNtcLatentSampler;
+#define gNtcLatentSampler METALLIC_RESOURCE(SamplerState, 33)
 
 bool metallicHasNeuralTexture(uint textureSetIndex, uint textureSetCount)
 {
@@ -84,7 +81,7 @@ float4 metallicSampleNeuralTexture(
     if (gNtcTextureSetInfo[textureSetIndex].y != 0u) {
         sampled = NtcSampleTextureSet_CoopVec_FP8(
             constants,
-            gNtcLatentTextures[textureSetIndex],
+            gNtcLatentTextures(textureSetIndex),
             gNtcLatentSampler,
             gNtcWeights,
             gNtcTextureSetInfo[textureSetIndex].x,
@@ -97,7 +94,7 @@ float4 metallicSampleNeuralTexture(
     {
         sampled = NtcSampleTextureSet(
             constants,
-            gNtcLatentTextures[textureSetIndex],
+            gNtcLatentTextures(textureSetIndex),
             gNtcLatentSampler,
             gNtcWeights,
             gNtcTextureSetInfo[textureSetIndex].x,

@@ -1,3 +1,5 @@
+#include "../Resources/ComputeResources.slang"
+
 #ifndef METALLIC_PHOTOMETRIC_LIGHTING
 #define METALLIC_PHOTOMETRIC_LIGHTING
 
@@ -9,8 +11,7 @@ struct GpuPunctualLight
     float4 spot;
 };
 
-[[vk::binding(50, 0)]]
-StructuredBuffer<GpuPunctualLight> gPunctualLights;
+#define gPunctualLights METALLIC_RESOURCE(StructuredBuffer<GpuPunctualLight>, 50)
 
 uint punctualLightCount() { return uint(gPunctualLights[0].positionRange.x); }
 float lightingExposure() { return gPunctualLights[0].positionRange.y; }

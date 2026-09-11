@@ -388,7 +388,7 @@ Result ImportancePdfCompute::initialize(Device& device, std::string& log)
             .bindings = bindings,
             .bindingCount = static_cast<uint32_t>(std::size(bindings)),
             .debugName = "ImportancePdfCompute",
-            .descriptorSetCount = kImportancePdfMaxMipCount * 2u,
+            .resourceTableCount = kImportancePdfMaxMipCount * 2u,
             .requiresRayQuery = false,
         },
         log);
@@ -431,7 +431,7 @@ Result ImportancePdfCompute::buildLocalLights(
         },
         {.binding = 50, .buffer = &punctualLights},
     };
-    auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t descriptorSetIndex) {
+    auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t resourceTableIndex) {
         return impl_->program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = bindings,
@@ -441,7 +441,7 @@ Result ImportancePdfCompute::buildLocalLights(
             .groupCountX = (push.destinationSize[0] + 7u) / 8u,
             .groupCountY = (push.destinationSize[1] + 7u) / 8u,
             .groupCountZ = 1,
-            .descriptorSetIndex = descriptorSetIndex,
+            .resourceTableIndex = resourceTableIndex,
         });
     };
 
@@ -508,7 +508,7 @@ Result ImportancePdfCompute::buildEnvironment(
         },
         {.binding = 50, .buffer = impl_->emptyLights.get()},
     };
-    auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t descriptorSetIndex) {
+    auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t resourceTableIndex) {
         return impl_->program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = bindings,
@@ -518,7 +518,7 @@ Result ImportancePdfCompute::buildEnvironment(
             .groupCountX = (push.destinationSize[0] + 7u) / 8u,
             .groupCountY = (push.destinationSize[1] + 7u) / 8u,
             .groupCountZ = 1,
-            .descriptorSetIndex = descriptorSetIndex,
+            .resourceTableIndex = resourceTableIndex,
         });
     };
 

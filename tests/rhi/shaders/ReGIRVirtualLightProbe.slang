@@ -1,6 +1,8 @@
+#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+
 #include "../../../Shaders/Libraries/Lighting/PunctualLightSampling.slang"
 
-[[vk::binding(0, 0)]] RWStructuredBuffer<float4> gProbeOutput;
+#define gProbeOutput METALLIC_RESOURCE(RWStructuredBuffer<float4>, 0)
 
 struct ReGIRProbePush
 {
@@ -24,8 +26,9 @@ uint2 probeMortonPosition(uint index)
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void reGIRVirtualLightProbeMain(uint3 id : SV_DispatchThreadID, uniform ReGIRProbePush push)
+void reGIRVirtualLightProbeMain(uint3 id : SV_DispatchThreadID)
 {
+    ReGIRProbePush push = METALLIC_CONSTANTS(ReGIRProbePush);
     if (id.x >= push.sampleCount) { return; }
     uint seed = (id.x + 1u) * 747796405u + push.seedOffset * 2891336453u;
     uint lightIndex = 0xffffffffu;

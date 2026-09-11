@@ -19,6 +19,7 @@ enum class ComputeResourceBindingKind : uint8_t {
 };
 
 struct ComputeProgramBindingDesc {
+    // Application resource-table slot, not a Vulkan descriptor binding.
     uint32_t binding = 0;
     ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
     uint32_t descriptorCount = 1;
@@ -31,8 +32,11 @@ struct ComputeProgramDesc {
     const ComputeProgramBindingDesc* bindings = nullptr;
     uint32_t bindingCount = 0;
     const char* debugName = nullptr;
-    uint32_t descriptorSetCount = 1;
+    uint32_t resourceTableCount = 1;
     bool requiresRayQuery = true;
+    // Native DescriptorHandle shaders include ComputeResources.slang. The
+    // mapped path is retained only for explicit legacy shader diagnostics.
+    bool usesResourceTable = true;
 };
 
 struct ComputeDispatchBinding {
@@ -59,7 +63,7 @@ struct ComputeDispatchDesc {
     uint32_t groupCountX = 1;
     uint32_t groupCountY = 1;
     uint32_t groupCountZ = 1;
-    uint32_t descriptorSetIndex = 0;
+    uint32_t resourceTableIndex = 0;
     // When present, GPU-generated counts replace groupCountX/Y/Z. The caller
     // transitions this buffer to IndirectArgument and retains it until completion.
     Buffer* indirectArguments = nullptr;

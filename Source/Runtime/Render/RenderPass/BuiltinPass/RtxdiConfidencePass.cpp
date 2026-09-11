@@ -148,7 +148,7 @@ public:
                 .bindings = bindings,
                 .bindingCount = static_cast<uint32_t>(std::size(bindings)),
                 .debugName = "RtxdiConfidencePass",
-                .descriptorSetCount = kMaximumFilterPasses + 2u,
+                .resourceTableCount = kMaximumFilterPasses + 2u,
             },
             programLog);
         if (!programLog.empty()) {
@@ -272,7 +272,7 @@ public:
             {.binding = 12, .textureView = diffuseConfidenceHistory.current},
             {.binding = 13, .textureView = specularConfidenceHistory.current},
         };
-        auto dispatch = [&](uint32_t mode, uint32_t descriptorSetIndex, uint32_t width, uint32_t height) {
+        auto dispatch = [&](uint32_t mode, uint32_t resourceTableIndex, uint32_t width, uint32_t height) {
             push.mode = mode;
             return program_.dispatch(ComputeDispatchDesc{
                 .commandBuffer = &context.commandBuffer(),
@@ -283,7 +283,7 @@ public:
                 .groupCountX = (width + 7u) / 8u,
                 .groupCountY = (height + 7u) / 8u,
                 .groupCountZ = 1,
-                .descriptorSetIndex = descriptorSetIndex,
+                .resourceTableIndex = resourceTableIndex,
             });
         };
 

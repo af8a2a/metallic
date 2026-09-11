@@ -1,48 +1,36 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 // RTXDI temporal lighting gradients converted to NRD history confidence.
 // This follows the FullSample gradient strata, A-trous filtering, confidence
 // conversion, and short non-linear temporal filtering flow.
 
-[[vk::binding(0, 0)]]
-RWTexture2D<float4> gNoisyDiffuse;
+#define gNoisyDiffuse METALLIC_RESOURCE(RWTexture2D<float4>, 0)
 
-[[vk::binding(1, 0)]]
-RWTexture2D<float4> gNoisySpecular;
+#define gNoisySpecular METALLIC_RESOURCE(RWTexture2D<float4>, 1)
 
-[[vk::binding(2, 0)]]
-RWTexture2D<float4> gBaseColorMetalness;
+#define gBaseColorMetalness METALLIC_RESOURCE(RWTexture2D<float4>, 2)
 
-[[vk::binding(3, 0)]]
-RWTexture2D<float4> gMotionVectors;
+#define gMotionVectors METALLIC_RESOURCE(RWTexture2D<float4>, 3)
 
-[[vk::binding(4, 0)]]
-RWTexture2D<float2> gPreviousLuminance;
+#define gPreviousLuminance METALLIC_RESOURCE(RWTexture2D<float2>, 4)
 
-[[vk::binding(5, 0)]]
-RWTexture2D<float2> gCurrentLuminance;
+#define gCurrentLuminance METALLIC_RESOURCE(RWTexture2D<float2>, 5)
 
-[[vk::binding(6, 0)]]
-RWTexture2D<float4> gGradientA;
+#define gGradientA METALLIC_RESOURCE(RWTexture2D<float4>, 6)
 
-[[vk::binding(7, 0)]]
-RWTexture2D<float4> gGradientB;
+#define gGradientB METALLIC_RESOURCE(RWTexture2D<float4>, 7)
 
-[[vk::binding(8, 0)]]
-RWTexture2D<float> gPreviousDiffuseConfidence;
+#define gPreviousDiffuseConfidence METALLIC_RESOURCE(RWTexture2D<float>, 8)
 
-[[vk::binding(9, 0)]]
-RWTexture2D<float> gPreviousSpecularConfidence;
+#define gPreviousSpecularConfidence METALLIC_RESOURCE(RWTexture2D<float>, 9)
 
-[[vk::binding(10, 0)]]
-RWTexture2D<float> gDiffuseConfidence;
+#define gDiffuseConfidence METALLIC_RESOURCE(RWTexture2D<float>, 10)
 
-[[vk::binding(11, 0)]]
-RWTexture2D<float> gSpecularConfidence;
+#define gSpecularConfidence METALLIC_RESOURCE(RWTexture2D<float>, 11)
 
-[[vk::binding(12, 0)]]
-RWTexture2D<float> gCurrentDiffuseConfidence;
+#define gCurrentDiffuseConfidence METALLIC_RESOURCE(RWTexture2D<float>, 12)
 
-[[vk::binding(13, 0)]]
-RWTexture2D<float> gCurrentSpecularConfidence;
+#define gCurrentSpecularConfidence METALLIC_RESOURCE(RWTexture2D<float>, 13)
 
 static const uint kComputeGradient = 0u;
 static const uint kFilterAToB = 1u;
@@ -249,9 +237,9 @@ void resolveConfidence(uint2 pixel, bool sourceA, RtxdiConfidencePush push)
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void rtxdiConfidenceMain(
-    uint3 dispatchThreadId : SV_DispatchThreadID,
-    uniform RtxdiConfidencePush push)
+    uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+    RtxdiConfidencePush push = METALLIC_CONSTANTS(RtxdiConfidencePush);
     uint2 pixel = dispatchThreadId.xy;
     if (push.mode == kComputeGradient) {
         computeGradient(pixel, push);

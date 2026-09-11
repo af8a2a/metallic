@@ -274,7 +274,8 @@ public:
 };
 
 render::Result createProbe(render::Device& device, const char* entry,
-    std::span<const render::ComputeProgramBindingDesc> bindings, render::ComputeProgram& program, std::string& log)
+    std::span<const render::ComputeProgramBindingDesc> bindings, render::ComputeProgram& program, std::string& log,
+    uint32_t tableCount = 1)
 {
     render::ShaderCompileResult shader;
     render::Result result = render::compileSlangShaderToSpirv({
@@ -285,7 +286,7 @@ render::Result createProbe(render::Device& device, const char* entry,
     return program.initialize(device, {
         .spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * sizeof(uint32_t),
         .pushConstantSize = sizeof(uint32_t), .bindings = bindings.data(),
-        .bindingCount = static_cast<uint32_t>(bindings.size()), .requiresRayQuery = false,
+        .bindingCount = static_cast<uint32_t>(bindings.size()), .resourceTableCount = tableCount, .requiresRayQuery = false,
     }, log);
 }
 
@@ -326,7 +327,7 @@ public:
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
         };
         std::string log;
-        FRAME_REQUIRE(createProbe(*device, "copyValue", bindings, program, log));
+        FRAME_REQUIRE(createProbe(*device, "copyValue", bindings, program, log, 2));
         QueueDrain drain{queue, gate.get()};
         FRAME_REQUIRE(first.begin(0));
         FRAME_REQUIRE(second.begin(1));
@@ -337,7 +338,8 @@ public:
                 {.binding = 0, .buffer = inputs[index].get()}, {.binding = 1, .buffer = output.get()},
             };
             FRAME_REQUIRE(program.dispatch({.commandBuffer = commands.buffer.get(),
-                .bindings = resources, .bindingCount = 2, .pushData = &index, .pushDataSize = 4}));
+                .bindings = resources, .bindingCount = 2, .pushData = &index, .pushDataSize = 4,
+                .resourceTableIndex = index % 2}));
         }
         FRAME_REQUIRE(first.submit(tracker, gate.get()));
         FRAME_REQUIRE(second.submit(tracker));

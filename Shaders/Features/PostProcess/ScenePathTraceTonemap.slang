@@ -1,3 +1,5 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 // Tonemap pass used with the NRC query mode. The path tracer writes linear
 // HDR radiance into the history texture, the NRC resolve adds the predicted
 // query radiance on top, and this pass applies the same Reinhard + gamma
@@ -13,20 +15,17 @@ struct ScenePathTraceTonemapPush
     uint accumulationFrame;
 };
 
-[[vk::binding(0, 0)]]
-RWTexture2D<float4> gSource;
+#define gSource METALLIC_RESOURCE(RWTexture2D<float4>, 0)
 
-[[vk::binding(1, 0)]]
-RWTexture2D<float4> gOutput;
+#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 1)
 
-[[vk::binding(2, 0)]]
-RWTexture2D<float4> gHistoryPrevious;
+#define gHistoryPrevious METALLIC_RESOURCE(RWTexture2D<float4>, 2)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void scenePathTraceTonemapMain(uint3 dispatchThreadId : SV_DispatchThreadID,
-                               uniform ScenePathTraceTonemapPush push)
+void scenePathTraceTonemapMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+    ScenePathTraceTonemapPush push = METALLIC_CONSTANTS(ScenePathTraceTonemapPush);
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

@@ -55,7 +55,7 @@ public:
             if (!result) { log = shader.diagnostics; return result; }
             result = programs_[i].initialize(*device_, {.spirv = shader.spirv.data(),
                 .byteSize = shader.spirv.size() * 4, .pushConstantSize = 16,
-                .bindings = fixture_ ? layout : layout + 5, .bindingCount = fixture_ ? 5u : 4u, .descriptorSetCount = !fixture_ && i == 0 ? 2u : 1u, .requiresRayQuery = false}, log);
+                .bindings = fixture_ ? layout : layout + 5, .bindingCount = fixture_ ? 5u : 4u, .resourceTableCount = !fixture_ && i == 0 ? 2u : 1u, .requiresRayQuery = false}, log);
             if (!result) { return result; }
         }
         return {};

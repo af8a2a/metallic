@@ -1,3 +1,5 @@
+#include "../Resources/ComputeResources.slang"
+
 #ifndef METALLIC_SCENE_SHADING_VERTEX_SLANG
 #define METALLIC_SCENE_SHADING_VERTEX_SLANG
 
@@ -13,13 +15,13 @@ struct SceneShadingVertex
     float2 texcoord;
 };
 
-[[vk::binding(2, 0)]] StructuredBuffer<SceneShadingVertex> gVertices;
+#define gVertices METALLIC_RESOURCE(StructuredBuffer<SceneShadingVertex>, 2)
 #if !SCENE_RAYQUERY_ENABLE_POSITION_FETCH
 // Present only on devices that cannot fetch triangle positions from the BLAS.
 // Three scalars keep a 12-byte stride under std430 as well as scalar layout;
 // an array of float3 would have a 16-byte stride under std430.
 struct SceneVertexPosition { float x; float y; float z; };
-[[vk::binding(54, 0)]] StructuredBuffer<SceneVertexPosition> gVertexPositions;
+#define gVertexPositions METALLIC_RESOURCE(StructuredBuffer<SceneVertexPosition>, 54)
 
 float3 loadSceneVertexPosition(uint index)
 {

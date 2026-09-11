@@ -1,3 +1,5 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 // Fixed read-only probes. No floating-point atomics, wave-size assumptions or
 // user shader text. CPU merges at most 256 associative group summaries.
 struct ProbePush
@@ -27,8 +29,8 @@ struct Partial
     uint firstIndex;
     uint firstBits;
 };
-[[vk::binding(0, 0)]] ByteAddressBuffer gInput;
-[[vk::binding(1, 0)]] RWStructuredBuffer<Partial> gOutput;
+#define gInput METALLIC_RESOURCE(ByteAddressBuffer, 0)
+#define gOutput METALLIC_RESOURCE(RWStructuredBuffer<Partial>, 1)
 groupshared Partial partials[128];
 
 bool lessValue(uint a, uint b, uint type)
@@ -60,8 +62,9 @@ Partial merge(Partial a, Partial b, uint type)
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void probe(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID,
-    uint3 local : SV_GroupThreadID, uniform ProbePush push)
+    uint3 local : SV_GroupThreadID)
 {
+    ProbePush push = METALLIC_CONSTANTS(ProbePush);
     Partial result = {};
     result.firstIndex = 0xffffffff;
     for (uint i = tid.x; i < push.count; i += push.groupCount * 128) {

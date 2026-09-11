@@ -1,11 +1,13 @@
+#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+
 #include "../../../Shaders/Libraries/Lighting/ClusterLightGridCommon.slang"
 
-[[vk::binding(0, 0)]] StructuredBuffer<ClusterLightGridParams> gParams;
-[[vk::binding(1, 0)]] StructuredBuffer<ClusterLightData> gLights;
-[[vk::binding(2, 0)]] StructuredBuffer<uint> gCandidates;
-[[vk::binding(3, 0)]] StructuredBuffer<ClusterLightGridCell> gCells;
-[[vk::binding(4, 0)]] StructuredBuffer<uint> gLightIndices;
-[[vk::binding(5, 0)]] RWStructuredBuffer<uint4> gOutput;
+#define gParams METALLIC_RESOURCE(StructuredBuffer<ClusterLightGridParams>, 0)
+#define gLights METALLIC_RESOURCE(StructuredBuffer<ClusterLightData>, 1)
+#define gCandidates METALLIC_RESOURCE(StructuredBuffer<uint>, 2)
+#define gCells METALLIC_RESOURCE(StructuredBuffer<ClusterLightGridCell>, 3)
+#define gLightIndices METALLIC_RESOURCE(StructuredBuffer<uint>, 4)
+#define gOutput METALLIC_RESOURCE(RWStructuredBuffer<uint4>, 5)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

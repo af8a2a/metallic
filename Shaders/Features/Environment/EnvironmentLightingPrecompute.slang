@@ -1,3 +1,5 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 // GPU projection and cosine convolution: irradiance SH through l=2.
 #include "../../Libraries/Math/SphericalHarmonics.slang"
 #include "../../Libraries/Lighting/ProceduralEnvironment.slang"
@@ -8,14 +10,11 @@ static const uint kThreadCount = 128u;
 static const uint kCoefficientCount = SH::L2RGB::kCoefficientCount;
 static const float kPi = 3.14159265358979323846;
 
-[[vk::binding(0, 0)]]
-Texture2D<float4> gEnvironmentMap;
+#define gEnvironmentMap METALLIC_RESOURCE(Texture2D<float4>, 0)
 
-[[vk::binding(1, 0)]]
-RWStructuredBuffer<float4> gPartials;
+#define gPartials METALLIC_RESOURCE(RWStructuredBuffer<float4>, 1)
 
-[[vk::binding(2, 0)]]
-RWStructuredBuffer<float4> gCoefficients;
+#define gCoefficients METALLIC_RESOURCE(RWStructuredBuffer<float4>, 2)
 
 struct EnvironmentLightingPrecomputePush
 {
@@ -108,9 +107,9 @@ void finalizeCoefficient(
 [numthreads(kThreadCount, 1, 1)]
 void environmentLightingPrecomputeMain(
     uint3 groupId : SV_GroupID,
-    uint groupThreadIndex : SV_GroupIndex,
-    uniform EnvironmentLightingPrecomputePush push)
+    uint groupThreadIndex : SV_GroupIndex)
 {
+    EnvironmentLightingPrecomputePush push = METALLIC_CONSTANTS(EnvironmentLightingPrecomputePush);
     if (push.mode == kIntegratePartials) {
         integratePartials(groupId, groupThreadIndex, push);
     } else if (push.mode == kFinalizeCoefficients) {

@@ -1,17 +1,14 @@
-[[vk::binding(0, 0)]]
-RWTexture2D<float4> gDenoisedDiffuse;
+#include "../../Libraries/Resources/ComputeResources.slang"
 
-[[vk::binding(1, 0)]]
-RWTexture2D<float4> gDenoisedSpecular;
+#define gDenoisedDiffuse METALLIC_RESOURCE(RWTexture2D<float4>, 0)
 
-[[vk::binding(2, 0)]]
-RWTexture2D<float4> gBaseColorMetalness;
+#define gDenoisedSpecular METALLIC_RESOURCE(RWTexture2D<float4>, 1)
 
-[[vk::binding(3, 0)]]
-RWTexture2D<float4> gEmissive;
+#define gBaseColorMetalness METALLIC_RESOURCE(RWTexture2D<float4>, 2)
 
-[[vk::binding(4, 0)]]
-RWTexture2D<float4> gOutput;
+#define gEmissive METALLIC_RESOURCE(RWTexture2D<float4>, 3)
+
+#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 4)
 
 struct RtxdiCompositePush
 {
@@ -30,9 +27,9 @@ float3 toneMap(float3 color, float exposure)
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void rtxdiCompositeMain(
-    uint3 dispatchThreadId : SV_DispatchThreadID,
-    uniform RtxdiCompositePush push)
+    uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+    RtxdiCompositePush push = METALLIC_CONSTANTS(RtxdiCompositePush);
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

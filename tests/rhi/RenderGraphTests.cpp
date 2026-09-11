@@ -27,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -51,6 +52,46 @@ constexpr uint16_t kSpirvOpRayQueryGetIntersectionTriangleVertexPositionsKhr = 5
 constexpr uint32_t kSpirvRayQueryPositionFetchKhr = 5391u;
 constexpr uint16_t kSpirvOpRayQueryGetIntersectionClusterIdNv = 5345u;
 constexpr uint32_t kSpirvRayTracingClusterAccelerationStructureNv = 5437u;
+
+// Native DescriptorHandle shaders expose only Slang's unbounded heap arrays.
+// A scalar/fixed-array descriptor here would silently restore a per-pass Vulkan
+// binding, even if its binding number happened to match a heap's number.
+bool hasNativeComputeResourceInterface(const std::vector<uint32_t>& words)
+{
+    if (words.size() < 5 || words[0] != kSpirvMagic) { return false; }
+    std::unordered_map<uint32_t, uint32_t> pointees, bindings, sets;
+    std::unordered_set<uint32_t> runtimeArrays;
+    std::vector<std::pair<uint32_t, uint32_t>> resources;
+    uint32_t pushBlocks = 0;
+    bool deviceAddresses = false;
+    for (size_t offset = 5; offset < words.size();) {
+        const uint32_t count = words[offset] >> 16;
+        const uint32_t opcode = words[offset] & 0xffff;
+        if (count == 0 || count > words.size() - offset) { return false; }
+        const uint32_t* instruction = words.data() + offset;
+        if (opcode == 17 && count == 2 && instruction[1] == 5347) { deviceAddresses = true; }
+        if (opcode == 29 && count == 3) { runtimeArrays.insert(instruction[1]); }
+        if (opcode == 32 && count == 4) { pointees[instruction[1]] = instruction[3]; }
+        if (opcode == 71 && count == 4) {
+            if (instruction[2] == 33) { bindings[instruction[1]] = instruction[3]; }
+            if (instruction[2] == 34) { sets[instruction[1]] = instruction[3]; }
+        }
+        if (opcode == 59 && count >= 4) {
+            const uint32_t storage = instruction[3];
+            if (storage == 9) { ++pushBlocks; }
+            if (storage == 0 || storage == 2 || storage == 12) {
+                resources.emplace_back(instruction[2], instruction[1]);
+            }
+        }
+        offset += count;
+    }
+    for (const auto& [id, type] : resources) {
+        if (!bindings.contains(id) || !sets.contains(id) || sets[id] != 0 ||
+            (bindings[id] != 0 && bindings[id] != 2) || !pointees.contains(type) ||
+            !runtimeArrays.contains(pointees[type])) { return false; }
+    }
+    return deviceAddresses && pushBlocks == 1 && !resources.empty();
+}
 
 render::EnvironmentSettings sampleEnvironmentSettings(const render::RenderSampleDesc& desc)
 {
@@ -3215,8 +3256,8 @@ public:
                 ": " +
                 compileResult.diagnostics);
         }
-        if (compileResult.spirv.empty()) {
-            return RhiTestResult::fail("OpenPBR RayQuery path tracing shader produced empty SPIR-V");
+        if (!hasNativeComputeResourceInterface(compileResult.spirv)) {
+            return RhiTestResult::fail("OpenPBR shader must use native heap arrays and address-based compute resources");
         }
         return RhiTestResult::pass(
             std::string("compiled OpenPBR RayQuery path tracing shader, words=") +
@@ -5080,8 +5121,8 @@ public:
                     ": " +
                     compileResult.diagnostics);
             }
-            if (compileResult.spirv.empty()) {
-                return RhiTestResult::fail("RTXDI shader produced empty SPIR-V");
+            if (!hasNativeComputeResourceInterface(compileResult.spirv)) {
+                return RhiTestResult::fail(std::string(entry.moduleName) + " retained a fixed descriptor binding or invalid compute resource ABI");
             }
         }
         return RhiTestResult::pass("compiled RTXDI ReSTIR DI and RELAX composite shaders");
@@ -5131,6 +5172,9 @@ public:
                         std::string("Path tracing guide shader compile failed for ") +
                         entry.moduleName + "." + entry.entryPointName + ": " +
                         toString(result) + " " + compileResult.diagnostics);
+                }
+                if (!hasNativeComputeResourceInterface(compileResult.spirv)) {
+                    return RhiTestResult::fail(std::string(entry.moduleName) + " must use native compute resources in both position-fetch variants");
                 }
                 if (spirvContainsOpcode(compileResult.spirv,
                         kSpirvOpRayQueryGetIntersectionTriangleVertexPositionsKhr) != (positionFetch != 0) ||

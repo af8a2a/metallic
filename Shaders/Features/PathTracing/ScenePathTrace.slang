@@ -1,3 +1,5 @@
+#include "../../Libraries/Resources/ComputeResources.slang"
+
 #ifndef STF_SHADER_STAGE
 #define STF_SHADER_STAGE 6
 #endif
@@ -80,44 +82,35 @@ struct ScenePathTraceCacheParams
     NrcConstants nrc;
 };
 
-[[vk::binding(20, 0)]]
 // Match the tightly packed CPU constants, including NRC at byte offset 76.
-StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> gCacheParams;
+typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathTraceCacheBuffer;
+#define gCacheParams METALLIC_RESOURCE(ScenePathTraceCacheBuffer, 20)
 
 #if METALLIC_PT_SHARC
-[[vk::binding(21, 0)]]
-RWStructuredBuffer<uint64_t> gSharcHashEntries;
+#define gSharcHashEntries METALLIC_RESOURCE(RWStructuredBuffer<uint64_t>, 21)
 
-[[vk::binding(22, 0)]]
-RWStructuredBuffer<SharcAccumulationData> gSharcAccumulation;
+#define gSharcAccumulation METALLIC_RESOURCE(RWStructuredBuffer<SharcAccumulationData>, 22)
 
-[[vk::binding(23, 0)]]
-RWStructuredBuffer<SharcPackedData> gSharcResolved;
+#define gSharcResolved METALLIC_RESOURCE(RWStructuredBuffer<SharcPackedData>, 23)
 #endif
 
 #if METALLIC_PT_NRC
-[[vk::binding(24, 0)]]
-RWStructuredBuffer<NrcPackedQueryPathInfo> gNrcQueryPathInfo;
+#define gNrcQueryPathInfo METALLIC_RESOURCE(RWStructuredBuffer<NrcPackedQueryPathInfo>, 24)
 
-[[vk::binding(25, 0)]]
-RWStructuredBuffer<NrcPackedTrainingPathInfo> gNrcTrainingPathInfo;
+#define gNrcTrainingPathInfo METALLIC_RESOURCE(RWStructuredBuffer<NrcPackedTrainingPathInfo>, 25)
 
-[[vk::binding(26, 0)]]
-RWStructuredBuffer<NrcPackedPathVertex> gNrcTrainingPathVertices;
+#define gNrcTrainingPathVertices METALLIC_RESOURCE(RWStructuredBuffer<NrcPackedPathVertex>, 26)
 
-[[vk::binding(27, 0)]]
-RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> gNrcQueryRadianceParams;
+typedef RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> NrcQueryRadianceBuffer;
+#define gNrcQueryRadianceParams METALLIC_RESOURCE(NrcQueryRadianceBuffer, 27)
 
-[[vk::binding(28, 0)]]
-RWStructuredBuffer<uint> gNrcCounters;
+#define gNrcCounters METALLIC_RESOURCE(RWStructuredBuffer<uint>, 28)
 #endif
 
 
-[[vk::binding(0, 0)]]
-RaytracingAccelerationStructure gScene;
+#define gScene METALLIC_RESOURCE(RaytracingAccelerationStructure, 0)
 
-[[vk::binding(1, 0)]]
-RWTexture2D<float4> gOutput;
+#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 1)
 
 #include "../../Libraries/Scene/SceneShadingVertex.slang"
 
@@ -143,32 +136,23 @@ struct PathTraceInstance
 
 #include "../../Libraries/Scene/SceneMaterial.slang"
 
-[[vk::binding(3, 0)]]
-StructuredBuffer<uint> gIndices;
+#define gIndices METALLIC_RESOURCE(StructuredBuffer<uint>, 3)
 
-[[vk::binding(4, 0)]]
-StructuredBuffer<PathTracePrimitive> gPrimitives;
+#define gPrimitives METALLIC_RESOURCE(StructuredBuffer<PathTracePrimitive>, 4)
 
-[[vk::binding(5, 0)]]
-StructuredBuffer<PathTraceInstance> gInstances;
+#define gInstances METALLIC_RESOURCE(StructuredBuffer<PathTraceInstance>, 5)
 
-[[vk::binding(6, 0)]]
-StructuredBuffer<PathTraceMaterial> gMaterials;
+#define gMaterials METALLIC_RESOURCE(StructuredBuffer<PathTraceMaterial>, 6)
 
-[[vk::binding(7, 0)]]
-RWTexture2D<float4> gHistoryCurrent;
+#define gHistoryCurrent METALLIC_RESOURCE(RWTexture2D<float4>, 7)
 
-[[vk::binding(8, 0)]]
-RWTexture2D<float4> gHistoryPrevious;
+#define gHistoryPrevious METALLIC_RESOURCE(RWTexture2D<float4>, 8)
 
-[[vk::binding(9, 0)]]
-Texture2D<float4> gMaterialTextures[256];
+#define gMaterialTextures(index) METALLIC_RESOURCE_ARRAY(Texture2D<float4>, 9, index)
 
-[[vk::binding(10, 0)]]
-Texture2D<float4> gEnvironmentMap;
+#define gEnvironmentMap METALLIC_RESOURCE(Texture2D<float4>, 10)
 
-[[vk::binding(13, 0)]]
-Texture2D<float> gEnvironmentImportancePdf;
+#define gEnvironmentImportancePdf METALLIC_RESOURCE(Texture2D<float>, 13)
 
 #include "../../Libraries/Lighting/PunctualLightSampling.slang"
 #include "../../Libraries/Lighting/ProceduralEnvironment.slang"
@@ -925,14 +909,14 @@ float4 loadMaterialTextureMip0(
     uint width = 1u;
     uint height = 1u;
     uint textureIndex = textureInfo.textureIndex;
-    gMaterialTextures[textureIndex].GetDimensions(width, height);
+    gMaterialTextures(textureIndex).GetDimensions(width, height);
     if (width == 0u || height == 0u) {
         return fallback;
     }
 
     float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
-    return gMaterialTextures[textureIndex].Load(int3(texel, 0));
+    return gMaterialTextures(textureIndex).Load(int3(texel, 0));
 }
 
 float4 loadMaterialTexture(
@@ -1004,7 +988,7 @@ float4 loadMaterialTexture(
     uint height = 1u;
     uint mipCount = 1u;
     uint textureIndex = textureInfo.textureIndex;
-    gMaterialTextures[textureIndex].GetDimensions(0, width, height, mipCount);
+    gMaterialTextures(textureIndex).GetDimensions(0, width, height, mipCount);
     if (width == 0u || height == 0u || mipCount == 0u) {
         return fallback;
     }
@@ -1012,7 +996,7 @@ float4 loadMaterialTexture(
     float mipLevel = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection, width, height, mipCount);
     STF_SamplerState samplerState = makeMaterialStfSampler(push, seed);
     return samplerState.Texture2DLoadLevel(
-        gMaterialTextures[textureIndex],
+        gMaterialTextures(textureIndex),
         transformMaterialUv(textureInfo, uv),
         mipLevel);
 }
@@ -1916,9 +1900,9 @@ PathTraceCacheContext makeCacheContext()
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
-                        uniform ScenePathTracePush push)
+void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+    ScenePathTracePush push = METALLIC_CONSTANTS(ScenePathTracePush);
     uint2 pixel = dispatchThreadId.xy;
     uint samples = clamp(push.samples, 1u, 16u);
     uint2 outputPixel = pixel;

@@ -1,3 +1,5 @@
+#include "../Resources/ComputeResources.slang"
+
 #ifndef METALLIC_PUNCTUAL_LIGHT_SAMPLING
 #define METALLIC_PUNCTUAL_LIGHT_SAMPLING
 
@@ -71,11 +73,9 @@ uint punctualZCurveToLinearIndex(uint2 position)
 }
 
 #ifndef METALLIC_PUNCTUAL_SAMPLING_DISABLE_RESOURCES
-[[vk::binding(52, 0)]]
-StructuredBuffer<uint4> gPunctualReGIR;
+#define gPunctualReGIR METALLIC_RESOURCE(StructuredBuffer<uint4>, 52)
 
-[[vk::binding(53, 0)]]
-Texture2D<float> gPunctualLightPdf;
+#define gPunctualLightPdf METALLIC_RESOURCE(Texture2D<float>, 53)
 
 float punctualPdfWeight(uint2 position, uint mipLevel)
 {
