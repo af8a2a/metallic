@@ -359,6 +359,7 @@ struct DeviceCapabilities {
     bool subgroupSizeControl = false;
     bool computeFullSubgroups = false;
     bool computeSubgroupBallotArithmetic = false;
+    bool computeSubgroupShuffle = false;
     bool taskShaderSubgroupBallot = false;
     bool taskShaderSubgroupSizeControl = false;
     uint32_t subgroupSize = 0;

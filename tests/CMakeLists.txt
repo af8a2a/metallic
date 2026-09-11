@@ -230,6 +230,7 @@ add_executable(MetallicRhiTests
     rhi/RealtimePipelineTests.cpp
     rhi/EnvironmentPrefilterTests.cpp
     rhi/GPUDrivenCullingTests.cpp
+    rhi/HzbSpdTests.cpp
     rhi/RenderViewTests.cpp
     rhi/ShaderToHumanTests.cpp
     rhi/ShaderHotReloadTests.cpp

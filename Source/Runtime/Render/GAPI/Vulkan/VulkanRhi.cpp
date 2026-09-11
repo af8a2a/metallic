@@ -1756,6 +1756,7 @@ struct VulkanDeviceFeatureSelection {
     bool subgroupSizeControl = false;
     bool computeFullSubgroups = false;
     bool computeSubgroupBallotArithmetic = false;
+    bool computeSubgroupShuffle = false;
     bool taskShaderSubgroupBallot = false;
     bool taskShaderSubgroupSizeControl = false;
     uint32_t subgroupSize = 0;
@@ -1854,6 +1855,10 @@ struct VulkanDeviceFeatureSelection {
         result.computeSubgroupBallotArithmetic =
             (probe.subgroupProperties.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
             (probe.subgroupProperties.supportedOperations & kMaterialBinningOperations) == kMaterialBinningOperations;
+        constexpr VkSubgroupFeatureFlags kShuffleOperations = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT;
+        result.computeSubgroupShuffle =
+            (probe.subgroupProperties.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
+            (probe.subgroupProperties.supportedOperations & kShuffleOperations) == kShuffleOperations;
         result.minSubgroupSize =
             probe.subgroupSizeControlProperties.minSubgroupSize;
         result.maxSubgroupSize =
@@ -9355,6 +9360,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->capabilities.computeFullSubgroups =
         selectedFeatures.computeFullSubgroups;
     deviceImpl->capabilities.computeSubgroupBallotArithmetic = selectedFeatures.computeSubgroupBallotArithmetic;
+    deviceImpl->capabilities.computeSubgroupShuffle = selectedFeatures.computeSubgroupShuffle;
     deviceImpl->capabilities.taskShaderSubgroupBallot =
         selectedFeatures.taskShaderSubgroupBallot;
     deviceImpl->capabilities.taskShaderSubgroupSizeControl =

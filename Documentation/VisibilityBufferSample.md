@@ -41,6 +41,52 @@ StreamAsset 的 cluster 使用同一阶段划分和保守遮挡规则。历史�
 采样 mip 必须将屏幕矩形覆盖在每轴至多两个 texel 内，四个角全部满足严格深度分离才判遮挡。
 深度比较包含保守偏移，Reversed-Z 投影避免远处深度相减消失；变换后的球半径也覆盖 shear。
 
+### SPD HZB 生成
+
+`VisibilityBufferPass` 默认使用 `HzbSpd.slang`，这是针对 FP32 深度与现有线性 HZB buffer 的
+[FidelityFX SPD 算法](https://gpuopen.com/manuals/fidelityfx_sdk/techniques/single-pass-downsampler/) Slang 实现：
+每组 256 个线程处理 64×64 深度块，默认使用 wave operations：前两级在各线程的寄存器中归约，
+Morton 布局让相邻 2×2/4×4 像素落在连续 lane 中，后两级用 `WaveReadLaneAt` shuffle 归约。
+仅把 4×4 的结果经 LDS 交给首个 wave，再用 shuffle 完成块内剩余两级。
+每块归约暂存从 256 个 float（1024 字节）降为 16 个 float（64 字节），完整六级归约的
+workgroup 屏障从 9 次降为 1 次；最后工作组选举仍保留独立的 device-scope 屏障。
+全局计数器选出最后完成的工作组，由它生成 mip 6 之后的尾部。
+一次 dispatch 同时复制全分辨率 mip 0 并生成其余所有 mip。早期 HZB 与最终历史 HZB 各调用一次。
+
+所有尺寸逐级向上取整，源边缘复制，完整保留奇数尺寸的最后一行/列。普通 Z 使用 max，
+Reversed-Z 使用 min；不使用均值、线性采样或 FP16。无效深度按远平面清屏深度处理。
+由于 native `DescriptorHandle` 不能携带 HLSL `globallycoherent` 修饰，mip 6 与计数器通过
+device-scope release/acquire 原子操作发布/读取，并以工作组屏障同步；没有全局自旋等待。
+每次生成前通过 GPU buffer copy 清零设备内存中的计数器，资源随视图绑定延迟回收。
+
+Wave 版本通过 `SubgroupId * SubgroupSize + SubgroupLocalInvocationId` 分配像素，
+不假设 `SV_GroupIndex` 与 wave lane 存在对应关系。框架使用 SPIR-V 1.6，256 个 X 方向线程
+满足 [Vulkan 完整子组要求](https://docs.vulkan.org/spec/latest/chapters/shaders.html#shaders-full-subgroups)。
+仅在 compute 支持 basic/shuffle 且可能的 subgroup size 全部位于 16～256 时启用；
+shuffle 始终在有完整参与者的 16-lane 区块内取值，覆盖 Wave32/Wave64 等不同大小。
+不满足能力要求的设备自动使用 LDS 版本。本机实际 GPU 验证的 subgroup size 为 32。
+
+`hzbSpdWaveOps=false` 可切回 SPD LDS 版本；`hzbSpd=false` 可切回逐 mip dispatch 进行对照。任一输入维度超过 4096 时自动使用原有路径，
+保持完整 mip 链而不截断。独立 `GPUDrivenStreamAssetPass` 暂保留原有生成路径；
+`VisibilityBufferPass` 内的 resident/stream 混合绘制共用 SPD 生成的 HZB。
+
+本机 RTX 5060 / Wave32 的 Sponza 对照（关闭 validation，预热 16 帧后取 32 帧中位数）如下。
+时间是整个 VisibilityBuffer pass，包含光栅、两次 HZB 和计数器清零，不是孤立的 HZB kernel 时间。
+
+| 分辨率 | 逐 mip | SPD LDS | SPD wave |
+| --- | --- | --- | --- |
+| 799×293 | 0.181 ms | 0.125 ms | 0.114 ms |
+| 1920×1080 | 0.360 ms | 0.291 ms | 0.290 ms |
+
+这是一次对照采样；1080p 的整个 pass 基本持平，不能据此声称 HZB kernel 有同等幅度的加速。
+Wave 版本减少的 LDS 占用和块内同步次数可由生成的 SPIR-V 确认。
+
+测试：`hzb_spd_conservative_reduction` 在支持 wave 的设备上验证 168 个完整金字塔（wave/LDS 各 84 个），
+包括 1×1、单行/单列、16/32/64 像素边界、799×293、1920×1080、4096×4095、NaN 和重复生成；
+普通 Z 与 Reversed-Z 的每一级均与 CPU min/max 参考比较。不同 tile 的深度范围不同，以检查尾部归约。
+`hzb_spd_visibility_equivalence_timing` 验证 SPD wave/LDS/逐 mip 的可见三角形一致，记录 GPU 时间，
+并覆盖 4097×65 自动回退。
+
 本 Pass 不再创建 OpenPBR compute 管线、LUT 或 deferred color buffer，也不依赖环境光子系统。材质贴图只上传 MASK 几何所需的 base-color alpha 贴图；这属于可见性判定，不是着色。`VisibilityBufferShading.slang` 暂保留源码供后续独立着色阶段使用，当前 Pass 不编译、不调度它。
 
 独立着色阶段现由 [VisibilityBufferDeferredPass](VisibilityBufferDeferred.md) 提供，
@@ -73,7 +119,8 @@ Shader 职责按模块拆分：
 
 | 模块 | 职责 |
 | --- | --- |
-| `GPUDrivenCulling.slang` | Reset、实例剔除、HZB 归约 |
+| `GPUDrivenCulling.slang` | Reset、实例剔除、逐 mip HZB 回退 |
+| `HzbSpd.slang` | 64×64 分块、单次 dispatch 的完整 HZB 归约 |
 | `VisibilityBuffer.slang` | AS meshlet 剔除、opaque/masked MS、visibility PS |
 | `VisibilityBufferComposite.slang` | 可选的 ID / device depth / coverage 全屏调试显示 |
 
@@ -97,6 +144,7 @@ StreamAsset 目前不绘制固定剔除视图，且其光栅相机仅支持透�
 - `meshletFrustumCull`
 - `meshletNormalConeCull`
 - `meshletHzbCull`：默认开启，控制 resident meshlet / stream cluster 的两阶段遮挡测试，与实例 HZB 开关独立。
+- `hzbSpd`：默认开启，使用单次 dispatch 生成 HZB；超过 4096 的输入自动回退。
 - `freezeCullingCamera`：勾选时捕获当前相机作为固定剔除相机；取消勾选后恢复使用实时 viewport 相机剔除。
 
 | Visualization | JSON 值 | 显示内容 |

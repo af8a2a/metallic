@@ -2133,7 +2133,8 @@ Result GPUSceneSubsystem::recordBuildHzb(
 
     const GPUSceneHzbGpuView& hzb = visible->gpu.hzb;
     Buffer* writeBuffer = hzb.history[hzb.writeIndex].buffer;
-    if (writeBuffer == nullptr || desc.dispatches.size() != hzb.mipCount) {
+    if (writeBuffer == nullptr || desc.dispatches.size() != (desc.singleDispatch ? 1u : hzb.mipCount) ||
+        (desc.singleDispatch && (desc.counterBuffer == nullptr || desc.counterResetSource == nullptr))) {
         log = "GPUScene recordBuildHzb dispatch count does not match the View HZB mip chain";
         return makeError(Error::InvalidArgument);
     }
@@ -2159,6 +2160,19 @@ Result GPUSceneSubsystem::recordBuildHzb(
         });
     if (!result) { return result; }
     host_->retire(std::static_pointer_cast<void>(owned->second));
+    if (desc.singleDispatch) {
+        // Reset on the GPU for every build, including the second HZB in a frame.
+        // This also handles cancelled recordings without CPU counter state.
+        const BufferBarrierDesc resetBarriers[] = {
+            {.buffer = desc.counterResetSource, .before = ResourceState::General, .after = ResourceState::TransferSource},
+            {.buffer = desc.counterBuffer, .before = ResourceState::General, .after = ResourceState::TransferDestination}};
+        commandBuffer.barrier({.buffers = resetBarriers, .bufferCount = 2});
+        commandBuffer.copyBuffer({.source = desc.counterResetSource, .destination = desc.counterBuffer, .size = sizeof(uint32_t)});
+        const BufferBarrierDesc readyBarriers[] = {
+            {.buffer = desc.counterResetSource, .before = ResourceState::TransferSource, .after = ResourceState::General},
+            {.buffer = desc.counterBuffer, .before = ResourceState::TransferDestination, .after = ResourceState::General}};
+        commandBuffer.barrier({.buffers = readyBarriers, .bufferCount = 2});
+    }
     commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
     const BufferBarrierDesc writeBarrier{
         .buffer = writeBuffer,

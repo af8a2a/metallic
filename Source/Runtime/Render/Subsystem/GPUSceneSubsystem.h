@@ -62,6 +62,11 @@ struct GPUSceneHzbRecordDesc {
     BindlessHeap* bindlessHeap = nullptr;
     ComputePipeline* pipeline = nullptr;
     std::span<const GPUSceneComputeDispatchDesc> dispatches;
+    // SPD supplies one dispatch for the entire chain. Scratch is caller-owned
+    // and retained through submission; resetSource contains one zero uint.
+    bool singleDispatch = false;
+    Buffer* counterBuffer = nullptr;
+    Buffer* counterResetSource = nullptr;
 };
 
 // Non-owning snapshot of one {View, frame slot} GPU allocation. Buffer and
