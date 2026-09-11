@@ -2,6 +2,8 @@
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanOpacityMicromap.h"
+#include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSpirv.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/NsightAftermath.h"
@@ -530,9 +532,77 @@ VkSamplerAddressMode toVkSamplerAddressMode(SamplerAddressMode mode)
 VkAccelerationStructureTypeKHR toVkAccelerationStructureType(
     RayTracingAccelerationStructureType type)
 {
+    if (type == RayTracingAccelerationStructureType::OpacityMicromap) {
+        return VK_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_KHR;
+    }
     return type == RayTracingAccelerationStructureType::TopLevel
         ? VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR
         : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+}
+
+Result makeOpacityMicromapGeometry(
+    VkPhysicalDevice physicalDevice,
+    bool enabled,
+    const OpacityMicromapBuildInput* input,
+    RayTracingAccelerationStructureBuildFlags flags,
+    bool requireBuffers,
+    std::vector<VkMicromapUsageKHR>& usages,
+    VkAccelerationStructureGeometryMicromapDataKHR& data,
+    VkAccelerationStructureGeometryKHR& geometry)
+{
+    if (!enabled) {
+        return makeError(Error::Unsupported);
+    }
+    if (input == nullptr || input->usages == nullptr || input->usageCount == 0 ||
+        input->triangleStride < sizeof(OpacityMicromapTriangle) || input->triangleStride % 4 != 0 ||
+        hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowUpdate) ||
+        hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess)) {
+        return makeError(Error::InvalidArgument);
+    }
+    VkPhysicalDeviceOpacityMicromapPropertiesKHR properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_KHR,
+    };
+    VkPhysicalDeviceProperties2 properties2{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &properties,
+    };
+    vkGetPhysicalDeviceProperties2(physicalDevice, &properties2);
+    uint64_t count = 0;
+    usages.reserve(input->usageCount);
+    for (uint32_t i = 0; i < input->usageCount; ++i) {
+        const OpacityMicromapUsage& usage = input->usages[i];
+        if ((usage.format != OpacityMicromapFormat::TwoState && usage.format != OpacityMicromapFormat::FourState) ||
+            usage.count == 0 || usage.subdivisionLevel > (usage.format == OpacityMicromapFormat::TwoState
+                ? properties.maxOpacity2StateSubdivisionLevel : properties.maxOpacity4StateSubdivisionLevel)) {
+            return makeError(Error::InvalidArgument);
+        }
+        count += usage.count;
+        usages.push_back({usage.count, usage.subdivisionLevel, static_cast<VkOpacityMicromapFormatKHR>(usage.format)});
+    }
+    if (count > properties.maxMicromapTriangles) {
+        return makeError(Error::InvalidArgument);
+    }
+    data = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_MICROMAP_DATA_KHR,
+        .usageCountsCount = static_cast<uint32_t>(usages.size()), .pUsageCounts = usages.data(),
+        .triangleArrayStride = input->triangleStride};
+    if (requireBuffers) {
+        if (input->dataBuffer == nullptr || input->triangleBuffer == nullptr ||
+            !hasFlag(input->dataBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
+            !hasFlag(input->triangleBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
+            input->dataBuffer->deviceAddress() == 0 || input->triangleBuffer->deviceAddress() == 0 ||
+            input->dataOffset >= input->dataBuffer->desc().size ||
+            input->triangleOffset >= input->triangleBuffer->desc().size ||
+            count > (input->triangleBuffer->desc().size - input->triangleOffset) / input->triangleStride) {
+            return makeError(Error::InvalidArgument);
+        }
+        data.data = input->dataBuffer->deviceAddress() + input->dataOffset;
+        data.triangleArray = input->triangleBuffer->deviceAddress() + input->triangleOffset;
+        if (data.data % 128 != 0 || data.triangleArray % 128 != 0) {
+            return makeError(Error::InvalidArgument);
+        }
+    }
+    geometry = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+        .pNext = &data, .geometryType = VK_GEOMETRY_TYPE_MICROMAP_KHR};
+    return {};
 }
 
 VkBuildAccelerationStructureFlagsKHR toVkAccelerationStructureBuildFlags(
@@ -1378,6 +1448,7 @@ struct VulkanExtensionSet {
     bool deferredHostOperations = false;
     bool rayQuery = false;
     bool rayTracingPositionFetch = false;
+    bool opacityMicromap = false;
     bool rayTracingPipeline = false;
     bool pipelineLibrary = false;
     bool pushDescriptor = false;
@@ -1409,6 +1480,8 @@ struct VulkanExtensionSet {
         result.deferredHostOperations = result.has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         result.rayQuery = result.has(VK_KHR_RAY_QUERY_EXTENSION_NAME);
         result.rayTracingPositionFetch = result.has(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME);
+        result.opacityMicromap = result.has(VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME) &&
+            result.has(VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME);
         result.rayTracingPipeline = result.has(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
         result.pipelineLibrary = result.has(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
         result.pushDescriptor = result.has(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
@@ -1459,6 +1532,7 @@ struct VulkanDeviceFeatureRequest {
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool rayTracingPositionFetch = false;
+    bool opacityMicromap = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
@@ -1485,6 +1559,7 @@ struct VulkanDeviceFeatureRequest {
             .rayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure,
             .rayQuery = desc.enableRayQuery,
             .rayTracingPositionFetch = desc.enableRayTracingPositionFetch,
+            .opacityMicromap = desc.enableOpacityMicromap,
             .pushDescriptor = desc.enablePushDescriptor,
             .clusterAccelerationStructure = desc.enableClusterAccelerationStructure,
             .partitionedAccelerationStructure = desc.enablePartitionedAccelerationStructure,
@@ -1515,6 +1590,12 @@ struct VulkanDeviceFeatureProbe {
     };
     VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+    };
+    VkPhysicalDeviceOpacityMicromapFeaturesKHR opacityMicromapFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_KHR,
+    };
+    VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR deviceAddressCommandsFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR,
     };
     VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rayTracingPositionFetchFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR,
@@ -1577,6 +1658,10 @@ struct VulkanDeviceFeatureProbe {
         }
         if (extensions.rayQuery) {
             appendPNext(featureTail, rayQueryFeatures);
+        }
+        if (extensions.opacityMicromap) {
+            appendPNext(featureTail, opacityMicromapFeatures);
+            appendPNext(featureTail, deviceAddressCommandsFeatures);
         }
         if (extensions.rayTracingPositionFetch) {
             appendPNext(featureTail, rayTracingPositionFetchFeatures);
@@ -1767,6 +1852,7 @@ struct VulkanDeviceFeatureSelection {
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool rayTracingPositionFetch = false;
+    bool opacityMicromap = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
@@ -1879,6 +1965,10 @@ struct VulkanDeviceFeatureSelection {
             extensions.rayQuery &&
             probe.rayQueryFeatures.rayQuery == VK_TRUE;
         result.pushDescriptor = (request.pushDescriptor || request.streamline) && extensions.pushDescriptor;
+        result.opacityMicromap = request.opacityMicromap &&
+            result.rayTracingAccelerationStructure && extensions.opacityMicromap &&
+            probe.opacityMicromapFeatures.micromap == VK_TRUE &&
+            probe.deviceAddressCommandsFeatures.deviceAddressCommands == VK_TRUE;
         result.rayTracingPositionFetch = request.rayTracingPositionFetch &&
             result.rayTracingAccelerationStructure && extensions.rayTracingPositionFetch &&
             probe.rayTracingPositionFetchFeatures.rayTracingPositionFetch == VK_TRUE;
@@ -1999,6 +2089,12 @@ struct VulkanEnabledFeatureChain {
     VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
     };
+    VkPhysicalDeviceOpacityMicromapFeaturesKHR opacityMicromapFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_KHR,
+    };
+    VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR deviceAddressCommandsFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR,
+    };
     VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rayTracingPositionFetchFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR,
     };
@@ -2089,6 +2185,8 @@ struct VulkanEnabledFeatureChain {
         accelerationStructureFeatures.accelerationStructure =
             selection.rayTracingAccelerationStructure ? VK_TRUE : VK_FALSE;
         rayQueryFeatures.rayQuery = selection.rayQuery ? VK_TRUE : VK_FALSE;
+        opacityMicromapFeatures.micromap = selection.opacityMicromap ? VK_TRUE : VK_FALSE;
+        deviceAddressCommandsFeatures.deviceAddressCommands = selection.opacityMicromap ? VK_TRUE : VK_FALSE;
         rayTracingPositionFetchFeatures.rayTracingPositionFetch =
             selection.rayTracingPositionFetch ? VK_TRUE : VK_FALSE;
         rayTracingPipelineFeatures.rayTracingPipeline =
@@ -2125,6 +2223,10 @@ struct VulkanEnabledFeatureChain {
         }
         if (selection.rayQuery) {
             appendPNext(featureTail, rayQueryFeatures);
+        }
+        if (selection.opacityMicromap) {
+            appendPNext(featureTail, opacityMicromapFeatures);
+            appendPNext(featureTail, deviceAddressCommandsFeatures);
         }
         if (selection.rayTracingPositionFetch) {
             appendPNext(featureTail, rayTracingPositionFetchFeatures);
@@ -2179,6 +2281,10 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
     }
     if (selection.rayQuery) {
         extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    }
+    if (selection.opacityMicromap) {
+        extensions.push_back(VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME);
+        extensions.push_back(VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME);
     }
     if (selection.rayTracingPositionFetch) {
         extensions.push_back(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME);
@@ -5951,6 +6057,13 @@ Result CommandBuffer::buildRayTracingAccelerationStructure(
         return makeError(Error::InvalidArgument);
     }
 
+    const bool isMicromap = destinationDesc.type == RayTracingAccelerationStructureType::OpacityMicromap;
+    if (!isMicromap && desc.micromap != nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    std::vector<VkMicromapUsageKHR> micromapUsages;
+    VkAccelerationStructureGeometryMicromapDataKHR micromapData{};
+    std::vector<VkAccelerationStructureTrianglesOpacityMicromapKHR> attachments(desc.geometryCount);
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
     std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
     if (destinationDesc.type == RayTracingAccelerationStructureType::BottomLevel) {
@@ -5994,8 +6107,23 @@ Result CommandBuffer::buildRayTracingAccelerationStructure(
                 }
             }
 
+            if (source.opacityMicromap != nullptr) {
+                if (!impl_->device->capabilities.opacityMicromap) {
+                    return makeError(Error::Unsupported);
+                }
+                if (!source.opacityMicromap->valid() || source.opacityMicromap->impl_->device != impl_->device ||
+                    source.opacityMicromap->desc().type != RayTracingAccelerationStructureType::OpacityMicromap) {
+                    return makeError(Error::InvalidArgument);
+                }
+                attachments[index] = {
+                    .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_KHR,
+                    .indexType = VK_INDEX_TYPE_NONE_KHR,
+                    .micromap = source.opacityMicromap->impl_->accelerationStructure,
+                };
+            }
             VkAccelerationStructureGeometryTrianglesDataKHR triangles{
                 .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
+                .pNext = source.opacityMicromap != nullptr ? &attachments[index] : nullptr,
                 .vertexFormat = vertexFormat,
                 .vertexData = {.deviceAddress = vertexAddress + source.vertexOffset},
                 .vertexStride = source.vertexStride,
@@ -6014,8 +6142,29 @@ Result CommandBuffer::buildRayTracingAccelerationStructure(
                 .primitiveCount = source.primitiveCount,
             });
         }
+    } else if (isMicromap) {
+        if (desc.geometries != nullptr || desc.geometryCount != 0 || desc.instanceCount != 0 ||
+            desc.instanceBuffer != nullptr || desc.mode != RayTracingAccelerationStructureBuildMode::Build) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (desc.micromap == nullptr || desc.micromap->dataBuffer == nullptr ||
+            desc.micromap->triangleBuffer == nullptr || desc.micromap->dataBuffer->impl_ == nullptr ||
+            desc.micromap->triangleBuffer->impl_ == nullptr ||
+            desc.micromap->dataBuffer->impl_->device != impl_->device ||
+            desc.micromap->triangleBuffer->impl_->device != impl_->device) {
+            return makeError(Error::InvalidArgument);
+        }
+        VkAccelerationStructureGeometryKHR geometry{};
+        const Result result = makeOpacityMicromapGeometry(
+            impl_->device->physicalDevice, impl_->device->capabilities.opacityMicromap,
+            desc.micromap, destinationDesc.buildFlags, true,
+            micromapUsages, micromapData, geometry);
+        if (!result) {
+            return result;
+        }
+        geometries.push_back(geometry);
     } else {
-        if (desc.geometries != nullptr || desc.geometryCount != 0 ||
+        if (destinationDesc.type != RayTracingAccelerationStructureType::TopLevel || desc.geometries != nullptr || desc.geometryCount != 0 ||
             desc.instanceBuffer == nullptr || desc.instanceBuffer->impl_ == nullptr ||
             desc.instanceBuffer->impl_->device != impl_->device || desc.instanceCount == 0 ||
             !hasFlag(
@@ -6090,13 +6239,13 @@ Result CommandBuffer::buildRayTracingAccelerationStructure(
         impl_->device->device,
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &buildInfo,
-        primitiveCounts.data(),
+        isMicromap ? nullptr : primitiveCounts.data(),
         &sizes);
     const uint64_t requiredScratchSize =
         desc.mode == RayTracingAccelerationStructureBuildMode::Update
         ? sizes.updateScratchSize
         : sizes.buildScratchSize;
-    if (requiredScratchSize == 0 ||
+    if ((!isMicromap && requiredScratchSize == 0) ||
         alignedScratchOffset >= desc.scratchBuffer->desc().size ||
         requiredScratchSize > desc.scratchBuffer->desc().size - alignedScratchOffset ||
         sizes.accelerationStructureSize > destinationDesc.size) {
@@ -6108,11 +6257,12 @@ Result CommandBuffer::buildRayTracingAccelerationStructure(
     for (const VkAccelerationStructureBuildRangeInfoKHR& range : ranges) {
         rangePointers.push_back(&range);
     }
+    const VkAccelerationStructureBuildRangeInfoKHR* noRanges = nullptr;
     vkCmdBuildAccelerationStructuresKHR(
         impl_->commandBuffer,
         1,
         &buildInfo,
-        rangePointers.data());
+        isMicromap ? &noRanges : rangePointers.data());
 
     const VkMemoryBarrier2 barrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -6983,6 +7133,10 @@ Result Device::queryRayTracingAccelerationStructureProperties(
     VkPhysicalDeviceAccelerationStructurePropertiesKHR properties{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
     };
+    VkPhysicalDeviceOpacityMicromapPropertiesKHR micromapProperties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_KHR,
+    };
+    properties.pNext = impl_->capabilities.opacityMicromap ? &micromapProperties : nullptr;
     VkPhysicalDeviceProperties2 properties2{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
         .pNext = &properties,
@@ -6994,6 +7148,9 @@ Result Device::queryRayTracingAccelerationStructureProperties(
             properties.minAccelerationStructureScratchOffsetAlignment),
         .instanceBufferAlignment = 16,
         .instanceRecordSize = sizeof(RayTracingGpuInstance),
+        .maxOpacity2StateSubdivisionLevel = micromapProperties.maxOpacity2StateSubdivisionLevel,
+        .maxOpacity4StateSubdivisionLevel = micromapProperties.maxOpacity4StateSubdivisionLevel,
+        .maxMicromapTriangles = micromapProperties.maxMicromapTriangles,
     };
     return {};
 }
@@ -7016,6 +7173,13 @@ Result Device::queryRayTracingAccelerationStructureBuildSizes(
     }
 
     activateVolkDevice(impl_->device);
+    const bool isMicromap = inputs.type == RayTracingAccelerationStructureType::OpacityMicromap;
+    if (!isMicromap && inputs.micromap != nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    std::vector<VkMicromapUsageKHR> micromapUsages;
+    VkAccelerationStructureGeometryMicromapDataKHR micromapData{};
+    std::vector<VkAccelerationStructureTrianglesOpacityMicromapKHR> attachments(inputs.geometryCount);
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
     std::vector<uint32_t> primitiveCounts;
     if (inputs.type == RayTracingAccelerationStructureType::BottomLevel) {
@@ -7059,8 +7223,23 @@ Result Device::queryRayTracingAccelerationStructureBuildSizes(
                 }
             }
 
+            if (source.opacityMicromap != nullptr) {
+                if (!impl_->capabilities.opacityMicromap) {
+                    return makeError(Error::Unsupported);
+                }
+                if (!source.opacityMicromap->valid() || source.opacityMicromap->impl_->device != impl_.get() ||
+                    source.opacityMicromap->desc().type != RayTracingAccelerationStructureType::OpacityMicromap) {
+                    return makeError(Error::InvalidArgument);
+                }
+                attachments[index] = {
+                    .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_KHR,
+                    .indexType = VK_INDEX_TYPE_NONE_KHR,
+                    .micromap = source.opacityMicromap->impl_->accelerationStructure,
+                };
+            }
             VkAccelerationStructureGeometryTrianglesDataKHR triangles{
                 .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
+                .pNext = source.opacityMicromap != nullptr ? &attachments[index] : nullptr,
                 .vertexFormat = vertexFormat,
                 .vertexData = {.deviceAddress = vertexAddress + source.vertexOffset},
                 .vertexStride = source.vertexStride,
@@ -7077,8 +7256,21 @@ Result Device::queryRayTracingAccelerationStructureBuildSizes(
             geometries.push_back(geometry);
             primitiveCounts.push_back(source.primitiveCount);
         }
+    } else if (isMicromap) {
+        if (inputs.geometries != nullptr || inputs.geometryCount != 0 || inputs.instanceCount != 0) {
+            return makeError(Error::InvalidArgument);
+        }
+        VkAccelerationStructureGeometryKHR geometry{};
+        const Result result = makeOpacityMicromapGeometry(
+            impl_->physicalDevice, impl_->capabilities.opacityMicromap,
+            inputs.micromap, inputs.flags, false,
+            micromapUsages, micromapData, geometry);
+        if (!result) {
+            return result;
+        }
+        geometries.push_back(geometry);
     } else {
-        if (inputs.geometries != nullptr || inputs.geometryCount != 0 ||
+        if (inputs.type != RayTracingAccelerationStructureType::TopLevel || inputs.geometries != nullptr || inputs.geometryCount != 0 ||
             inputs.instanceCount == 0) {
             return makeError(Error::InvalidArgument);
         }
@@ -7108,9 +7300,9 @@ Result Device::queryRayTracingAccelerationStructureBuildSizes(
         impl_->device,
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &buildInfo,
-        primitiveCounts.data(),
+        isMicromap ? nullptr : primitiveCounts.data(),
         &sizes);
-    if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0) {
+    if (sizes.accelerationStructureSize == 0 || (!isMicromap && sizes.buildScratchSize == 0)) {
         return makeError(Error::Failure);
     }
     outSizes = RayTracingAccelerationStructureBuildSizes{
@@ -7138,10 +7330,19 @@ Result Device::createRayTracingAccelerationStructure(
         return makeError(Error::Unsupported);
     }
 
+    const bool isMicromap = desc.type == RayTracingAccelerationStructureType::OpacityMicromap;
+    if (isMicromap && !impl_->capabilities.opacityMicromap) {
+        return makeError(Error::Unsupported);
+    }
+    if (isMicromap && (hasFlag(desc.buildFlags, RayTracingAccelerationStructureBuildFlags::AllowUpdate) ||
+        hasFlag(desc.buildFlags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess) ||
+        desc.size > std::numeric_limits<uint64_t>::max() - 255)) {
+        return makeError(Error::InvalidArgument);
+    }
     std::unique_ptr<Buffer> storage;
     Result result = createBuffer(
         BufferDesc{
-            .size = desc.size,
+            .size = desc.size + (isMicromap ? 255 : 0),
             .usage = BufferUsageBits::AccelerationStructureStorage |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::Device,
@@ -7160,11 +7361,22 @@ Result Device::createRayTracingAccelerationStructure(
         .type = toVkAccelerationStructureType(desc.type),
     };
     VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
-    const VkResult vkResult = vkCreateAccelerationStructureKHR(
-        impl_->device,
-        &createInfo,
-        nullptr,
-        &accelerationStructure);
+    VkResult vkResult;
+    if (isMicromap) {
+        auto createMicromap = reinterpret_cast<PFN_vkCreateAccelerationStructure2KHR>(
+            vkGetDeviceProcAddr(impl_->device, "vkCreateAccelerationStructure2KHR"));
+        if (createMicromap == nullptr) {
+            return makeError(Error::Unsupported);
+        }
+        const VkAccelerationStructureCreateInfo2KHR micromapInfo{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_2_KHR,
+            .addressRange = {.address = (storage->deviceAddress() + 255) & ~uint64_t(255), .size = desc.size},
+            .type = VK_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_KHR,
+        };
+        vkResult = createMicromap(impl_->device, &micromapInfo, nullptr, &accelerationStructure);
+    } else {
+        vkResult = vkCreateAccelerationStructureKHR(impl_->device, &createInfo, nullptr, &accelerationStructure);
+    }
     if (vkResult != VK_SUCCESS) {
         return resultFromVk(vkResult);
     }
@@ -8107,10 +8319,20 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
     }
     activateVolkDevice(impl_->device);
 
+    std::vector<uint32_t> opacityCode;
+    ShaderModuleDesc deviceDesc = desc;
+    if (impl_->capabilities.opacityMicromap) {
+        if (!vulkan::enableOpacityMicromapSpirv(
+                std::span(desc.code, desc.byteSize / sizeof(uint32_t)), opacityCode)) {
+            return makeError(Error::InvalidArgument);
+        }
+        deviceDesc.code = opacityCode.data();
+        deviceDesc.byteSize = opacityCode.size() * sizeof(uint32_t);
+    }
     VkShaderModuleCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = desc.byteSize,
-        .pCode = desc.code,
+        .codeSize = deviceDesc.byteSize,
+        .pCode = deviceDesc.code,
     };
 
     VkShaderModule module = VK_NULL_HANDLE;
@@ -8118,7 +8340,7 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
     if (result != VK_SUCCESS) {
         return resultFromVk(result);
     }
-    profiling::registerNsightAftermathShaderBinary(desc.code, desc.byteSize);
+    profiling::registerNsightAftermathShaderBinary(deviceDesc.code, deviceDesc.byteSize);
     if (desc.debugName != nullptr && desc.debugName[0] != '\0' &&
         impl_->setDebugUtilsObjectName != nullptr) {
         const VkDebugUtilsObjectNameInfoEXT nameInfo{
@@ -8133,7 +8355,7 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
     auto shaderImpl = std::make_unique<detail::ShaderModuleImpl>();
     shaderImpl->device = impl_.get();
     shaderImpl->module = module;
-    shaderImpl->contentHash = detail::shaderContentHash(desc);
+    shaderImpl->contentHash = detail::shaderContentHash(deviceDesc);
     outShaderModule.reset(new ShaderModule(std::move(shaderImpl)));
     return {};
 }
@@ -8828,6 +9050,20 @@ Result Device::createGraphicsShaderObjectProgram(
         bindlessMappingInfo.pMappings = bindlessMappings.data();
     }
 
+    std::vector<uint32_t> opacityVertexCode, opacityFragmentCode;
+    auto deviceDesc = desc;
+    if (impl_->capabilities.opacityMicromap) {
+        if (!vulkan::enableOpacityMicromapSpirv(
+                std::span(desc.vertexCode, desc.vertexByteSize / sizeof(uint32_t)), opacityVertexCode) ||
+            !vulkan::enableOpacityMicromapSpirv(
+                std::span(desc.fragmentCode, desc.fragmentByteSize / sizeof(uint32_t)), opacityFragmentCode)) {
+            return makeError(Error::InvalidArgument);
+        }
+        deviceDesc.vertexCode = opacityVertexCode.data();
+        deviceDesc.vertexByteSize = opacityVertexCode.size() * sizeof(uint32_t);
+        deviceDesc.fragmentCode = opacityFragmentCode.data();
+        deviceDesc.fragmentByteSize = opacityFragmentCode.size() * sizeof(uint32_t);
+    }
     const char* vertexEntryPoint = desc.vertexEntryPoint != nullptr ? desc.vertexEntryPoint : "main";
     const char* fragmentEntryPoint = desc.fragmentEntryPoint != nullptr ? desc.fragmentEntryPoint : "main";
     const VkShaderCreateFlagsEXT shaderFlags =
@@ -8841,8 +9077,8 @@ Result Device::createGraphicsShaderObjectProgram(
             .stage = VK_SHADER_STAGE_VERTEX_BIT,
             .nextStage = VK_SHADER_STAGE_FRAGMENT_BIT,
             .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
-            .codeSize = static_cast<size_t>(desc.vertexByteSize),
-            .pCode = desc.vertexCode,
+            .codeSize = static_cast<size_t>(deviceDesc.vertexByteSize),
+            .pCode = deviceDesc.vertexCode,
             .pName = vertexEntryPoint,
         },
         VkShaderCreateInfoEXT{
@@ -8852,8 +9088,8 @@ Result Device::createGraphicsShaderObjectProgram(
             .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
             .nextStage = 0,
             .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
-            .codeSize = static_cast<size_t>(desc.fragmentByteSize),
-            .pCode = desc.fragmentCode,
+            .codeSize = static_cast<size_t>(deviceDesc.fragmentByteSize),
+            .pCode = deviceDesc.fragmentCode,
             .pName = fragmentEntryPoint,
         },
     };
@@ -8876,8 +9112,8 @@ Result Device::createGraphicsShaderObjectProgram(
         }
         return resultFromVk(result);
     }
-    profiling::registerNsightAftermathShaderBinary(desc.vertexCode, desc.vertexByteSize);
-    profiling::registerNsightAftermathShaderBinary(desc.fragmentCode, desc.fragmentByteSize);
+    profiling::registerNsightAftermathShaderBinary(deviceDesc.vertexCode, deviceDesc.vertexByteSize);
+    profiling::registerNsightAftermathShaderBinary(deviceDesc.fragmentCode, deviceDesc.fragmentByteSize);
 
     auto programImpl = std::make_unique<detail::GraphicsShaderObjectProgramImpl>();
     programImpl->device = impl_.get();
@@ -9061,6 +9297,20 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     vkEnumeratePhysicalDevices(deviceImpl->instance, &physicalDeviceCount, physicalDevices.data());
 
     const VulkanDeviceFeatureRequest requestedFeatures = VulkanDeviceFeatureRequest::from(desc);
+    bool validationSupportsOpacityMicromap = true;
+    if (deviceImpl->validationEnabled) {
+        for (const auto& layer : availableLayers) {
+            if (std::strcmp(layer.layerName, "VK_LAYER_KHRONOS_validation") == 0 &&
+                layer.specVersion < VK_MAKE_API_VERSION(0, 1, 4, 357)) {
+                validationSupportsOpacityMicromap = false;
+            }
+        }
+        if (!validationSupportsOpacityMicromap && requestedFeatures.opacityMicromap &&
+            (requestedFeatures.rayTracingAccelerationStructure || requestedFeatures.rayQuery || requestedFeatures.streamline)) {
+            spdlog::warn("[Vulkan] KHR OMM needs validation layers 1.4.357 or newer. "
+                "Keeping shader alpha traversal while this older validation layer is enabled.");
+        }
+    }
     VulkanPhysicalDeviceCandidate bestCandidate;
     VulkanDeviceFeatureSelection selectedFeatures;
 
@@ -9071,7 +9321,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             continue;
         }
 
-        const VulkanExtensionSet extensions = VulkanExtensionSet::query(physicalDevice);
+        VulkanExtensionSet extensions = VulkanExtensionSet::query(physicalDevice);
+        extensions.opacityMicromap &= validationSupportsOpacityMicromap;
         if (!extensions.swapchain || !extensions.shaderObject) {
             continue;
         }
@@ -9441,6 +9692,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->rayTracingAccelerationStructureEnabled = selectedFeatures.rayTracingAccelerationStructure;
     deviceImpl->capabilities.rayQuery = selectedFeatures.rayQuery;
     deviceImpl->rayQueryEnabled = selectedFeatures.rayQuery;
+    deviceImpl->capabilities.opacityMicromap = selectedFeatures.opacityMicromap;
+    if (selectedFeatures.opacityMicromap) {
+        spdlog::info("[Vulkan] VK_KHR_opacity_micromap enabled");
+    }
     deviceImpl->capabilities.rayTracingPositionFetch = selectedFeatures.rayTracingPositionFetch;
     if (selectedFeatures.rayTracingPositionFetch) {
         spdlog::info("[Vulkan] VK_KHR_ray_tracing_position_fetch enabled");

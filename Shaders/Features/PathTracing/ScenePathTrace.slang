@@ -1042,7 +1042,8 @@ bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, Sc
 {
     PathTraceInstance instance = gInstances[instanceIndex];
     PathTraceMaterial material = gMaterials[instance.materialIndex];
-    if (abs(material.textureParams.w - 1.0) > 0.25) {
+    bool blend = abs(material.textureParams.w - 2.0) < 0.25;
+    if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
         return true;
     }
 
@@ -1052,7 +1053,9 @@ bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, Sc
         uv,
         float4(1.0, 1.0, 1.0, 1.0),
         push).a;
-    return saturate(alpha) >= saturate(material.params.z);
+    // OMM leaves partial BLEND coverage unknown. Preserve the current opaque
+    // transport for those hits, while zero-alpha holes remain transparent.
+    return blend ? saturate(alpha) > 0.0 : saturate(alpha) >= saturate(material.params.z);
 }
 
 void computeTriangleTangentSpace(

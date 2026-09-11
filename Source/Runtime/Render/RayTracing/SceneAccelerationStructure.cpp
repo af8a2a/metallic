@@ -1,4 +1,5 @@
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
+#include "Runtime/Render/RayTracing/OpacityMicromapBake.h"
 
 #include <spdlog/spdlog.h>
 
@@ -47,17 +48,6 @@ uint64_t alignUp(uint64_t value, uint64_t alignment)
 std::string resultMessage(const char* action, Result result)
 {
     return std::string(action) + " returned " + resultToString(result);
-}
-
-bool primitiveUsesAlphaMask(
-    const scene::Scene& scene,
-    const scene::RenderPrimitive& primitive)
-{
-    if (primitive.materialIndex < 0 ||
-        static_cast<size_t>(primitive.materialIndex) >= scene.materials().size()) {
-        return false;
-    }
-    return scene.materials()[static_cast<size_t>(primitive.materialIndex)].alphaMode == "MASK";
 }
 
 void copyTransform(float (&destination)[3][4], const float4x4& source)
@@ -131,6 +121,9 @@ struct SceneAccelerationStructureBuilder::Impl {
     std::unique_ptr<Buffer> indexBuffer;
     std::unique_ptr<Buffer> instanceBuffer;
     std::unique_ptr<Buffer> scratchBuffer;
+    // OMM storage is referenced by the BLAS, including after compaction.
+    std::vector<std::unique_ptr<RayTracingAccelerationStructure>> micromaps;
+    std::vector<std::unique_ptr<Buffer>> micromapUploadBuffers;
     std::vector<std::unique_ptr<RayTracingAccelerationStructure>> blases;
     std::vector<std::unique_ptr<RayTracingAccelerationStructure>> compactedBlases;
     std::unique_ptr<RayTracingAccelerationStructure> tlas;
@@ -184,6 +177,8 @@ struct SceneAccelerationStructureBuilder::Impl {
         tlas.reset();
         compactedBlases.clear();
         blases.clear();
+        micromaps.clear();
+        micromapUploadBuffers.clear();
         scratchBuffer.reset();
         instanceBuffer.reset();
         indexBuffer.reset();
@@ -289,7 +284,7 @@ Result SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::str
 
     stats.peakAccelerationStructureBytes = std::max(
         stats.peakAccelerationStructureBytes,
-        stats.originalBlasBytes + compactDestinationBytes + tlasBytes);
+        stats.originalBlasBytes + compactDestinationBytes + tlasBytes + stats.opacityMicromapBytes);
 
     auto submitTopLevel = [&](bool useCompactedBlases) -> Result {
         std::vector<RayTracingInstanceDesc> instances = pendingInstances;
@@ -398,7 +393,7 @@ Result SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::str
     }
     stats.compactedBlasBytes = finalBlasBytes;
     stats.compactionSavedBytes = stats.originalBlasBytes - finalBlasBytes;
-    stats.accelerationStructureBytes = finalBlasBytes + tlasBytes;
+    stats.accelerationStructureBytes = finalBlasBytes + tlasBytes + stats.opacityMicromapBytes;
     stats.peakAccelerationStructureBytes = std::max(
         stats.peakAccelerationStructureBytes,
         stats.accelerationStructureBytes);
@@ -483,6 +478,7 @@ Result SceneAccelerationStructureBuilder::Impl::poll(
     // shading obtains positions from the BLAS or its own fallback stream.
     vertexBuffer.reset();
     indexBuffer.reset();
+    micromapUploadBuffers.clear();
     stats.geometryBytes = instanceBuffer != nullptr ? instanceBuffer->desc().size : 0;
     pendingInstances.clear();
     pendingInstanceBlasIndices.clear();
@@ -565,6 +561,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
     const BuildClock::time_point begin = BuildClock::now();
     impl_->buildBegin = begin;
     const std::vector<scene::RenderPrimitive>& renderPrimitives = scene.renderPrimitives();
+    const auto primitiveOpacity = scenePrimitiveOpacity(scene);
     std::vector<PrimitiveInput> primitiveInputs;
     std::vector<int32_t> primitiveToBlas(renderPrimitives.size(), -1);
     std::vector<RayTracingVertex> vertices;
@@ -591,7 +588,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
             .firstIndex = static_cast<uint32_t>(indices.size()),
             .indexCount = static_cast<uint32_t>(sourceIndexCount),
             .triangleCount = static_cast<uint32_t>(sourceIndexCount / 3),
-            .opaque = !primitiveUsesAlphaMask(scene, primitive),
+            .opaque = !primitiveOpacity[primitiveIndex].usesAlpha,
         };
         for (const float3& position : primitive.positions) {
             vertices.push_back(RayTracingVertex{position.x, position.y, position.z});
@@ -652,6 +649,78 @@ Result SceneAccelerationStructureBuilder::buildInternal(
         return result;
     }
 
+    RayTracingAccelerationStructureProperties ommProperties;
+    std::vector<BakedOpacityMicromap> bakedMicromaps;
+    if (device.capabilities().opacityMicromap && device.queryRayTracingAccelerationStructureProperties(ommProperties)) {
+        bakedMicromaps = bakeSceneOpacityMicromaps(scene, primitiveOpacity, std::min(4u, ommProperties.maxOpacity4StateSubdivisionLevel));
+    }
+    impl_->micromaps.resize(primitiveInputs.size());
+    std::vector<OpacityMicromapBuildInput> micromapInputs(primitiveInputs.size());
+    uint64_t micromapBytes = 0;
+    uint64_t micromapScratchSize = 0;
+    uint32_t micromapCount = 0;
+    uint64_t micromapTriangleCount = 0;
+    for (size_t i = 0; i < primitiveInputs.size() && !bakedMicromaps.empty(); ++i) {
+        auto& baked = bakedMicromaps[primitiveInputs[i].renderPrimitiveIndex];
+        if (baked.triangles.empty() || baked.triangles.size() > ommProperties.maxMicromapTriangles) {
+            continue;
+        }
+        auto& input = micromapInputs[i];
+        input.usages = baked.usages.data();
+        input.usageCount = uint32_t(baked.usages.size());
+        RayTracingAccelerationStructureBuildSizes sizes;
+        result = device.queryRayTracingAccelerationStructureBuildSizes({
+            .type = RayTracingAccelerationStructureType::OpacityMicromap,
+            .micromap = &input,
+        }, sizes);
+        if (result) {
+            result = device.createRayTracingAccelerationStructure({
+                .type = RayTracingAccelerationStructureType::OpacityMicromap,
+                .size = sizes.accelerationStructureSize,
+            }, impl_->micromaps[i]);
+        }
+        if (!result) {
+            log = resultMessage("create scene opacity micromap", result);
+            clear();
+            return result;
+        }
+        const auto upload = [&](const auto& values, Buffer*& buffer, uint64_t& offset) -> Result {
+            const uint64_t bytes = values.size() * sizeof(values[0]);
+            std::unique_ptr<Buffer> storage;
+            Result uploadResult = createBuffer(device, bytes + 127,
+                BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+                MemoryLocation::HostUpload, storage, "createBuffer(OMM input)", log);
+            if (!uploadResult) {
+                return uploadResult;
+            }
+            offset = alignUp(storage->deviceAddress(), 128) - storage->deviceAddress();
+            auto* mapped = static_cast<uint8_t*>(storage->map());
+            if (mapped == nullptr) {
+                return makeError(Error::Failure);
+            }
+            std::memcpy(mapped + offset, values.data(), size_t(bytes));
+            storage->flush(0, storage->desc().size);
+            storage->unmap();
+            buffer = storage.get();
+            impl_->micromapUploadBuffers.push_back(std::move(storage));
+            return {};
+        };
+        if (!(result = upload(baked.data, input.dataBuffer, input.dataOffset)) ||
+            !(result = upload(baked.triangles, input.triangleBuffer, input.triangleOffset))) {
+            log = resultMessage("upload scene opacity micromap", result);
+            clear();
+            return result;
+        }
+        micromapBytes += sizes.accelerationStructureSize;
+        micromapScratchSize = std::max(micromapScratchSize, sizes.buildScratchSize);
+        micromapTriangleCount += baked.triangles.size();
+        ++micromapCount;
+    }
+    if (micromapCount != 0) {
+        spdlog::info("[OMM] Baked {} KHR micromaps for {} alpha triangles, {} AS bytes",
+            micromapCount, micromapTriangleCount, micromapBytes);
+    }
+
     const RayTracingAccelerationStructureBuildFlags blasBuildFlags = kSceneBlasBuildFlags |
         (device.capabilities().rayTracingPositionFetch
             ? RayTracingAccelerationStructureBuildFlags::AllowDataAccess
@@ -660,7 +729,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
     geometries.reserve(primitiveInputs.size());
     impl_->blases.reserve(primitiveInputs.size());
     impl_->originalBlasSizes.reserve(primitiveInputs.size());
-    uint64_t maxScratchSize = 0;
+    uint64_t maxScratchSize = micromapScratchSize;
     uint64_t originalBlasBytes = 0;
     for (const PrimitiveInput& input : primitiveInputs) {
         geometries.push_back(RayTracingTriangleGeometryDesc{
@@ -674,6 +743,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
             .indexType = RayTracingIndexType::Uint32,
             .primitiveCount = input.triangleCount,
             .flags = input.opaque ? RayTracingGeometryFlags::Opaque : RayTracingGeometryFlags::None,
+            .opacityMicromap = impl_->micromaps[geometries.size()].get(),
         });
         RayTracingAccelerationStructureBuildSizes sizes;
         result = device.queryRayTracingAccelerationStructureBuildSizes(
@@ -838,6 +908,22 @@ Result SceneAccelerationStructureBuilder::buildInternal(
             impl_->compactionQueryPool.reset();
         }
     }
+    for (size_t index = 0; index < impl_->micromaps.size(); ++index) {
+        if (impl_->micromaps[index] == nullptr) {
+            continue;
+        }
+        result = commandBuffer->buildRayTracingAccelerationStructure({
+            .destination = impl_->micromaps[index].get(),
+            .scratchBuffer = impl_->scratchBuffer.get(),
+            .scratchBufferOffset = impl_->scratchOffset,
+            .micromap = &micromapInputs[index],
+        });
+        if (!result) {
+            log = resultMessage("buildRayTracingAccelerationStructure(OMM)", result);
+            clear();
+            return result;
+        }
+    }
     for (size_t index = 0; index < geometries.size(); ++index) {
         result = commandBuffer->buildRayTracingAccelerationStructure(
             RayTracingAccelerationStructureBuildDesc{
@@ -900,11 +986,14 @@ Result SceneAccelerationStructureBuilder::buildInternal(
         .geometryBytes = static_cast<uint64_t>(vertices.size()) * sizeof(RayTracingVertex) +
             static_cast<uint64_t>(indices.size()) * sizeof(uint32_t) +
             static_cast<uint64_t>(instances.size()) * properties.instanceRecordSize,
-        .accelerationStructureBytes = originalBlasBytes + tlasSizes.accelerationStructureSize,
+        .accelerationStructureBytes = originalBlasBytes + tlasSizes.accelerationStructureSize + micromapBytes,
         .scratchBytes = scratchBufferSize,
         .originalBlasBytes = originalBlasBytes,
         .peakAccelerationStructureBytes = originalBlasBytes +
-            tlasSizes.accelerationStructureSize,
+            tlasSizes.accelerationStructureSize + micromapBytes,
+        .opacityMicromapCount = micromapCount,
+        .opacityMicromapTriangleCount = micromapTriangleCount,
+        .opacityMicromapBytes = micromapBytes,
     };
     impl_->primitiveToBlas = std::move(primitiveToBlas);
     impl_->pendingInstances = std::move(instances);

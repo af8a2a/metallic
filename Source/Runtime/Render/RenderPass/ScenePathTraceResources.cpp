@@ -9,6 +9,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -769,7 +770,7 @@ float alphaModeCode(const std::string& alphaMode)
         return 1.0f;
     }
     if (alphaMode == "BLEND") {
-        return 0.0f;
+        return 2.0f;
     }
     return 0.0f;
 }
@@ -800,7 +801,7 @@ ScenePathTraceGpuMaterial makeMaterial(
     gpuMaterial.textureParams[3] = alphaModeCode(material.alphaMode);
     if (material.alphaMode == "BLEND") {
         std::string message =
-            "alphaMode BLEND is not supported by ScenePathTracePass yet; rendering as OPAQUE";
+            "alphaMode BLEND: ray queries skip zero alpha; partial alpha is rendered as opaque";
         if (!material.name.empty()) {
             message += " for material '";
             message += material.name;
@@ -1141,14 +1142,13 @@ std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
     return referenced;
 }
 
-std::vector<std::array<int32_t, 10>> materialResourceLayout(const scene::Scene& loadedScene)
+std::vector<std::array<int32_t, 19>> materialResourceLayout(const scene::Scene& loadedScene)
 {
-    std::vector<std::array<int32_t, 10>> layout;
+    std::vector<std::array<int32_t, 19>> layout;
     layout.reserve(loadedScene.materials().size());
     for (const scene::RenderMaterial& material : loadedScene.materials()) {
-        // Texture bindings determine residency/neural texture payloads. MASK
-        // determines BLAS geometry opacity; other properties only need a
-        // material buffer update.
+        // Opacity is baked into OMM. Changes to alpha, cutoff, and UV sampling
+        // require a BLAS/OMM rebuild; color/roughness still update only the buffer.
         layout.push_back({
             material.baseColorTexture.textureIndex,
             material.metallicRoughnessTexture.textureIndex,
@@ -1159,7 +1159,16 @@ std::vector<std::array<int32_t, 10>> materialResourceLayout(const scene::Scene& 
             material.thicknessTexture.textureIndex,
             material.diffuseTransmissionTexture.textureIndex,
             material.diffuseTransmissionColorTexture.textureIndex,
-            material.alphaMode == "MASK" ? 1 : 0,
+            material.alphaMode == "MASK" ? 1 : material.alphaMode == "BLEND" ? 2 : 0,
+            std::bit_cast<int32_t>(material.alphaMode == "OPAQUE" ? 1.0f : material.baseColorFactor.w),
+            std::bit_cast<int32_t>(material.alphaMode == "MASK" ? material.alphaCutoff : 0.0f),
+            material.baseColorTexture.texCoord,
+            std::bit_cast<int32_t>(material.baseColorTexture.uvTransform[0]),
+            std::bit_cast<int32_t>(material.baseColorTexture.uvTransform[1]),
+            std::bit_cast<int32_t>(material.baseColorTexture.uvTransform[2]),
+            std::bit_cast<int32_t>(material.baseColorTexture.uvTransform[3]),
+            std::bit_cast<int32_t>(material.baseColorTexture.uvTransform[4]),
+            std::bit_cast<int32_t>(material.baseColorTexture.uvTransform[5]),
         });
     }
     return layout;
@@ -1936,7 +1945,7 @@ struct ScenePathTraceResources::Impl {
     uint64_t sourceGeometryTransformRevision = 0;
     uint64_t sourceVisibilityRevision = 0;
     uint64_t sourceMaterialRevision = 0;
-    std::vector<std::array<int32_t, 10>> sourceMaterialResourceLayout;
+    std::vector<std::array<int32_t, 19>> sourceMaterialResourceLayout;
     std::unique_ptr<Buffer> shadingVertexBuffer;
     std::unique_ptr<Buffer> fallbackPositionBuffer;
     std::unique_ptr<Buffer> indexBuffer;

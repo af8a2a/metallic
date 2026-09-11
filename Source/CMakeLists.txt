@@ -67,6 +67,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/MeshletStreamRuntime.cpp
     Runtime/Render/NeuralTextureResources.cpp
     Runtime/Render/RayTracing/SceneAccelerationStructure.cpp
+    Runtime/Render/RayTracing/OpacityMicromapBake.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp
     Runtime/Render/GAPI/Streamer.cpp

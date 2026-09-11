@@ -349,6 +349,8 @@ struct DeviceDesc {
     // Optional optimization, enabled only when acceleration structures and the
     // device's position-fetch feature are available. False forces the fallback.
     bool enableRayTracingPositionFetch = true;
+    // Optional KHR OMM optimization. Unsupported devices keep shader alpha tests.
+    bool enableOpacityMicromap = true;
     bool enablePushDescriptor = false;
     bool enableClusterAccelerationStructure = false;
     bool enablePartitionedAccelerationStructure = false;
@@ -377,6 +379,7 @@ struct DeviceCapabilities {
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool rayTracingPositionFetch = false;
+    bool opacityMicromap = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
@@ -545,6 +548,7 @@ struct ClusterAccelerationStructureTriangleBuildDesc {
 enum class RayTracingAccelerationStructureType : uint8_t {
     BottomLevel,
     TopLevel,
+    OpacityMicromap,
 };
 
 enum class RayTracingAccelerationStructureBuildMode : uint8_t {
@@ -626,6 +630,38 @@ struct RayTracingAccelerationStructureProperties {
     uint64_t scratchAlignment = 1;
     uint64_t instanceBufferAlignment = 16;
     uint64_t instanceRecordSize = 0;
+    uint32_t maxOpacity2StateSubdivisionLevel = 0;
+    uint32_t maxOpacity4StateSubdivisionLevel = 0;
+    uint64_t maxMicromapTriangles = 0;
+};
+
+enum class OpacityMicromapFormat : uint16_t {
+    TwoState = 1,
+    FourState = 2,
+};
+
+// Packed device input; one record per original triangle, in BLAS triangle order.
+struct OpacityMicromapTriangle {
+    uint32_t dataOffset = 0;
+    uint16_t subdivisionLevel = 0;
+    OpacityMicromapFormat format = OpacityMicromapFormat::FourState;
+};
+static_assert(sizeof(OpacityMicromapTriangle) == 8);
+
+struct OpacityMicromapUsage {
+    uint32_t count = 0;
+    uint32_t subdivisionLevel = 0;
+    OpacityMicromapFormat format = OpacityMicromapFormat::FourState;
+};
+
+struct OpacityMicromapBuildInput {
+    const OpacityMicromapUsage* usages = nullptr;
+    uint32_t usageCount = 0;
+    class Buffer* dataBuffer = nullptr;
+    uint64_t dataOffset = 0;
+    class Buffer* triangleBuffer = nullptr;
+    uint64_t triangleOffset = 0;
+    uint64_t triangleStride = sizeof(OpacityMicromapTriangle);
 };
 
 struct RayTracingTriangleGeometryDesc {
@@ -639,6 +675,8 @@ struct RayTracingTriangleGeometryDesc {
     RayTracingIndexType indexType = RayTracingIndexType::Uint32;
     uint32_t primitiveCount = 0;
     RayTracingGeometryFlags flags = RayTracingGeometryFlags::Opaque;
+    // One micromap triangle per geometry triangle. Keep alive with the BLAS.
+    class RayTracingAccelerationStructure* opacityMicromap = nullptr;
 };
 
 struct RayTracingAccelerationStructureBuildInputs {
@@ -649,6 +687,7 @@ struct RayTracingAccelerationStructureBuildInputs {
     const RayTracingTriangleGeometryDesc* geometries = nullptr;
     uint32_t geometryCount = 0;
     uint32_t instanceCount = 0;
+    const OpacityMicromapBuildInput* micromap = nullptr;
 };
 
 struct RayTracingAccelerationStructureBuildSizes {
@@ -705,6 +744,7 @@ struct RayTracingAccelerationStructureBuildDesc {
     uint32_t instanceCount = 0;
     class Buffer* scratchBuffer = nullptr;
     uint64_t scratchBufferOffset = 0;
+    const OpacityMicromapBuildInput* micromap = nullptr;
 };
 
 struct ClusterAccelerationStructureBottomLevelBuildSizesDesc {
