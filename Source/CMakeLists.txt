@@ -104,6 +104,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/ScenePathTraceResources.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/Profiling/NsightGraphicsCapture.cpp
+    Runtime/Render/Profiling/TracyProfiler.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.cpp
     Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.cpp
@@ -144,6 +145,13 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
 target_link_libraries(MetallicRuntimeRender PRIVATE
     metallic::nsight_graphics_capture
 )
+
+if(METALLIC_ENABLE_TRACY AND TRACY_ENABLE)
+    target_link_libraries(MetallicRuntimeRender PUBLIC Tracy::TracyClient)
+    target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_HAS_TRACY=1)
+else()
+    target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_HAS_TRACY=0)
+endif()
 
 if(TARGET libntc)
     target_link_libraries(MetallicRuntimeRender PRIVATE libntc)

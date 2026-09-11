@@ -40,6 +40,7 @@ option(METALLIC_CLUSTER_LOD_TOPOLOGY_NYX
     "Build ClusterLOD topology with the experimental Nyx-style top-level BVH instead of the selector chain"
     OFF)
 option(METALLIC_BUILD_TESTS "Build Metallic test targets" ON)
+option(METALLIC_ENABLE_TRACY "Enable Tracy CPU/GPU profiling" ON)
 
 set(RTXCR_ROOT "" CACHE PATH
     "RTXCR checkout used by the RTXCR sample; individual submodules are preferred")
@@ -208,6 +209,14 @@ ensure_git_submodule(
     "${CMAKE_SOURCE_DIR}/External/microprofile/stb/stb_sprintf.h"
     "microprofile"
 )
+
+if(METALLIC_ENABLE_TRACY)
+    ensure_git_submodule(
+        "External/tracy"
+        "${CMAKE_SOURCE_DIR}/External/tracy/public/tracy/Tracy.hpp"
+        "Tracy"
+    )
+endif()
 
 if(METALLIC_BUILD_TESTS)
     ensure_git_submodule(

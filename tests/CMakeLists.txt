@@ -220,6 +220,7 @@ add_executable(MetallicRhiTests
     rhi/DeferredTransmissionTests.cpp
     rhi/ClusterLightGridTests.cpp
     rhi/CommandSubmissionTests.cpp
+    rhi/GpuProfilingTests.cpp
     rhi/FrameContextTests.cpp
     rhi/FinalBlitTests.cpp
     rhi/GPUSceneSubsystemTests.cpp

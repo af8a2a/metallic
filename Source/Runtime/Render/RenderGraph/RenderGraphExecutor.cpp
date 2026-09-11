@@ -5,6 +5,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
+#include "Runtime/Render/Profiling/TracyProfiler.h"
 #include "Runtime/Render/SceneResourceManager.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Render/Subsystem/BuiltinRenderSubsystems.h"
@@ -314,6 +315,7 @@ struct RenderGraphExecutor::Impl {
         bool pending = false;
         GpuCompletionPoint completion;
         RenderGraphExecutionStats stats;
+        profiling::GpuProfileFrame profile;
     };
 
     static constexpr uint32_t kGpuTimingSlotCount = 3;
@@ -357,6 +359,7 @@ struct RenderGraphExecutor::Impl {
     GpuTimingSlot* activeGpuTimingSlot = nullptr;
     uint32_t nextGpuTimingSlot = 0;
     bool activeGpuTimingValid = false;
+    profiling::TracyGpuProfiler tracyGpuProfiler;
     RenderGraphExecutionStats lastExecutionStats;
     uint64_t executionFrameIndex = 0;
     std::vector<GpuCompletionPoint> externalCompletions;
@@ -1403,6 +1406,9 @@ struct RenderGraphExecutor::Impl {
             if (!result) { return result; }
         }
         hasSubmittedWork = false;
+        // Also flush the last frames at shutdown/recompile; no additional wait
+        // is introduced beyond the caller's existing completion wait above.
+        (void)resolveGpuTimings();
         return {};
     }
 
@@ -1423,7 +1429,7 @@ struct RenderGraphExecutor::Impl {
             return;
         }
 
-        const uint64_t queriesPerSlot64 = static_cast<uint64_t>(executionList.size()) * 2ull;
+        const uint64_t queriesPerSlot64 = (static_cast<uint64_t>(executionList.size()) + 1ull) * 2ull;
         const uint64_t totalQueryCount64 = queriesPerSlot64 * kGpuTimingSlotCount;
         if (queriesPerSlot64 > std::numeric_limits<uint32_t>::max() ||
             totalQueryCount64 > std::numeric_limits<uint32_t>::max()) {
@@ -1456,17 +1462,28 @@ struct RenderGraphExecutor::Impl {
             return {};
         }
 
-        for (GpuTimingSlot& slot : gpuTimingSlots) {
+        // The ring can wrap while older submissions are still pending. Publish
+        // in execution order so the viewer never mistakes that for clock wrap.
+        std::array<GpuTimingSlot*, kGpuTimingSlotCount> orderedSlots;
+        for (size_t index = 0; index < gpuTimingSlots.size(); ++index) {
+            orderedSlots[index] = &gpuTimingSlots[index];
+        }
+        std::sort(orderedSlots.begin(), orderedSlots.end(), [](const auto* left, const auto* right) {
+            return left->stats.executionId < right->stats.executionId;
+        });
+        for (GpuTimingSlot* orderedSlot : orderedSlots) {
+            GpuTimingSlot& slot = *orderedSlot;
             if (!slot.pending || slot.queryCount == 0) {
                 continue;
             }
             if (slot.completion.isCancelled()) {
                 slot.pending = false;
                 slot.stats = {};
+                slot.profile = {};
                 continue;
             }
             if (slot.completion.valid() && !slot.completion.isComplete()) {
-                continue;
+                break;
             }
 
             std::vector<TimestampQueryResult> queryResults(slot.queryCount);
@@ -1481,16 +1498,16 @@ struct RenderGraphExecutor::Impl {
                     queryResults.begin(),
                     queryResults.end(),
                     [](const TimestampQueryResult& value) { return value.available; })) {
-                continue;
+                break;
             }
 
             const size_t timedNodeCount = std::min(
                 slot.stats.nodes.size(),
-                queryResults.size() / 2);
+                queryResults.size() / 2 - 1);
             for (size_t nodeIndex = 0; nodeIndex < timedNodeCount; ++nodeIndex) {
                 RenderGraphNodeExecutionStat& node = slot.stats.nodes[nodeIndex];
-                const TimestampQueryResult& begin = queryResults[nodeIndex * 2];
-                const TimestampQueryResult& end = queryResults[nodeIndex * 2 + 1];
+                const TimestampQueryResult& begin = queryResults[2 + nodeIndex * 2];
+                const TimestampQueryResult& end = queryResults[3 + nodeIndex * 2];
                 node.gpuMilliseconds = gpuTimestampQueryPool->durationMilliseconds(
                     begin.value,
                     end.value);
@@ -1499,10 +1516,12 @@ struct RenderGraphExecutor::Impl {
             if (timedNodeCount > 0) {
                 slot.stats.gpuMilliseconds = gpuTimestampQueryPool->durationMilliseconds(
                     queryResults.front().value,
-                    queryResults[timedNodeCount * 2 - 1].value);
+                    queryResults[1].value);
                 slot.stats.gpuTimingAvailable = true;
             }
 
+            tracyGpuProfiler.publish(slot.profile, queryResults, device->capabilities().timestampPeriodNanoseconds);
+            slot.profile = {};
             completedGpuExecutionStats.push_back(std::move(slot.stats));
             slot.stats = {};
             slot.pending = false;
@@ -1541,6 +1560,15 @@ struct RenderGraphExecutor::Impl {
                 return;
             }
             slot.stats = {};
+            slot.profile = {};
+            if (Queue* queue = device->getQueue(QueueType::Graphics)) {
+                tracyGpuProfiler.beginFrame(*queue, slot.profile);
+            }
+            if (!commandBuffer.writeTimestamp(*gpuTimestampQueryPool, slot.firstQuery,
+                    PipelineStageBits::BottomOfPipe)) {
+                slot.profile = {};
+                return;
+            }
             activeGpuTimingSlot = &slot;
             slot.completion = commandBuffer.frameContext() != nullptr
                 ? commandBuffer.frameContext()->completion() : GpuCompletionPoint{};
@@ -1550,19 +1578,23 @@ struct RenderGraphExecutor::Impl {
         }
     }
 
-    void finishGpuTiming(bool completed)
+    void finishGpuTiming(CommandBuffer& commandBuffer, bool completed)
     {
         if (activeGpuTimingSlot == nullptr) {
             return;
         }
 
-        if (completed &&
+        tracyGpuProfiler.endFrame(activeGpuTimingSlot->profile);
+        const Result endResult = commandBuffer.writeTimestamp(*gpuTimestampQueryPool,
+            activeGpuTimingSlot->firstQuery + 1, PipelineStageBits::BottomOfPipe);
+        if (completed && endResult &&
             activeGpuTimingValid &&
-            lastExecutionStats.nodes.size() * 2 == activeGpuTimingSlot->queryCount) {
+            (lastExecutionStats.nodes.size() + 1) * 2 == activeGpuTimingSlot->queryCount) {
             activeGpuTimingSlot->stats = lastExecutionStats;
             activeGpuTimingSlot->pending = true;
         } else {
             activeGpuTimingSlot->stats = {};
+            activeGpuTimingSlot->profile = {};
             activeGpuTimingSlot->pending = false;
         }
         activeGpuTimingSlot = nullptr;
@@ -1726,6 +1758,7 @@ struct RenderGraphExecutor::Impl {
         context.debugObserver_ = debugObserver;
         context.debugPassId_ = node.id;
         const std::string markerName = passProfileMarkerName(node.name, node.type);
+        METALLIC_TRACY_CPU_SCOPE(markerName.c_str());
         const uint32_t markerColor = profiling::nsightColorFromName(node.type);
         const profiling::NsightProfileRange passMarker(
             profiling::NsightDomain::Render,
@@ -1741,14 +1774,17 @@ struct RenderGraphExecutor::Impl {
         uint32_t gpuEndQuery = 0;
         if (activeGpuTimingSlot != nullptr && activeGpuTimingValid) {
             const uint32_t gpuBeginQuery = activeGpuTimingSlot->firstQuery +
-                static_cast<uint32_t>(lastExecutionStats.nodes.size()) * 2u;
+                2u + static_cast<uint32_t>(lastExecutionStats.nodes.size()) * 2u;
             gpuEndQuery = gpuBeginQuery + 1u;
             Result timestampResult = commandBuffer.writeTimestamp(
                 *gpuTimestampQueryPool,
                 gpuBeginQuery,
-                PipelineStageBits::TopOfPipe);
+                PipelineStageBits::BottomOfPipe);
             gpuTimingRecorded = timestampResult.has_value();
             activeGpuTimingValid = gpuTimingRecorded;
+            if (gpuTimingRecorded) {
+                tracyGpuProfiler.beginZone(activeGpuTimingSlot->profile, markerName);
+            }
         }
         const auto cpuBegin = std::chrono::steady_clock::now();
         Result result = node.pass->execute(context);
@@ -1757,6 +1793,7 @@ struct RenderGraphExecutor::Impl {
         }
         const auto cpuEnd = std::chrono::steady_clock::now();
         if (gpuTimingRecorded) {
+            tracyGpuProfiler.endZone(activeGpuTimingSlot->profile);
             Result timestampResult = commandBuffer.writeTimestamp(
                 *gpuTimestampQueryPool,
                 gpuEndQuery,
@@ -1858,6 +1895,7 @@ Result RenderGraphExecutor::compile(
     }
 
     if (impl_->device != nullptr && impl_->device != &device) {
+        impl_->tracyGpuProfiler = {};
         impl_->viewBuffers.clear();
         impl_->hasPreviousView = false;
         for (auto& slot : impl_->submissionSlots) {
@@ -2251,6 +2289,7 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
 
 Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources)
 {
+    METALLIC_TRACY_CPU_SCOPE("RenderGraph Record");
     DebugExecutionScope debugScope;
     if (!impl_->isCompiled) {
         return makeError(Error::InvalidArgument);
@@ -2354,6 +2393,7 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
     const auto cpuEnd = std::chrono::steady_clock::now();
     impl_->lastExecutionStats.cpuMilliseconds =
         std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
+    impl_->finishGpuTiming(commandBuffer, result.has_value());
 
     const Result graphResult = result;
     Result postResult = impl_->subsystemHost->recordPostGraph(
@@ -2366,7 +2406,6 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
         spdlog::error("[RenderGraph] {}", subsystemLog);
     }
 
-    impl_->finishGpuTiming(graphResult.has_value() && postResult.has_value());
     debugScope.success = graphResult.has_value() && postResult.has_value();
     impl_->historyResources = nullptr;
     return graphResult ? postResult : graphResult;

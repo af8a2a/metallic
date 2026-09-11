@@ -296,6 +296,14 @@ struct TimestampQueryResult {
     bool available = false;
 };
 
+// A simultaneous device/host clock sample. Host time is QPC on Windows and
+// CLOCK_MONOTONIC_RAW on Linux, converted to nanoseconds (not wall-clock time).
+struct GpuClockCalibration {
+    uint64_t gpuTimestamp = 0;
+    uint64_t cpuNanoseconds = 0;
+    uint64_t maxDeviationNanoseconds = 0;
+};
+
 struct RayTracingAccelerationStructureCompactionQueryPoolDesc {
     uint32_t queryCount = 0;
 };
@@ -1216,6 +1224,8 @@ public:
     Result waitIdle();
     QueueType type() const;
     uint32_t timestampValidBits() const;
+    // Optional and non-blocking: Unsupported leaves ordinary timestamp timing usable.
+    Result calibrateTimestamps(GpuClockCalibration& outCalibration) const;
 
 private:
     explicit Queue(std::unique_ptr<detail::QueueImpl> impl);

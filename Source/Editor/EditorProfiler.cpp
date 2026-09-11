@@ -1,4 +1,5 @@
 #include "Editor/EditorProfiler.h"
+#include "Runtime/Render/Profiling/TracyProfiler.h"
 
 #include "imgui.h"
 
@@ -640,6 +641,7 @@ void EditorProfiler::endFrame()
     }
 
     frameActive_ = false;
+    METALLIC_TRACY_FRAME_MARK();
     currentNodes_.clear();
     stack_.clear();
 }

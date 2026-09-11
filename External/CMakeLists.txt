@@ -159,9 +159,10 @@ endif()
 # on demand by Metallic's Slang cache. No NRD SDK, ShaderMake, DXC, or shader
 # permutation build is required here.
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tracy/CMakeLists.txt")
+if(METALLIC_ENABLE_TRACY)
     option(TRACY_ENABLE "Enable Tracy profiler" ON)
     option(TRACY_ON_DEMAND "Tracy on-demand mode" ON)
+    set(TRACY_STATIC ON CACHE BOOL "Build Tracy into Metallic" FORCE)
     add_subdirectory(tracy)
 endif()
 

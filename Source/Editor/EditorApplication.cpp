@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Runtime/Render/Profiling/TracyProfiler.h"
 
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -2061,6 +2062,7 @@ int EditorApplication::run(
             smokeFrameCount = static_cast<uint32_t>(std::clamp(std::strtoul(count, nullptr, 10), 1ul, 256ul));
         }
         for (uint32_t index = 0; index < smokeFrameCount; ++index) {
+            METALLIC_TRACY_CPU_SCOPE("Editor Frame");
             auto profileFrame = profiler_.beginFrame();
             if (!waitForFrameSlotBeforeInput()) {
                 shutdown();
@@ -2101,6 +2103,7 @@ int EditorApplication::run(
 
     uint64_t nsightFrameIndex = 0;
     while (running_) {
+        METALLIC_TRACY_CPU_SCOPE("Editor Frame");
         const render::profiling::NsightProfileRange frameMarker(
             render::profiling::NsightDomain::Editor,
             "Frame",

@@ -6,6 +6,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/NsightAftermath.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
+#include "Runtime/Render/Profiling/TracyProfiler.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Render/RenderFrameContext.h"
 
@@ -2993,6 +2994,8 @@ struct DeviceImpl {
     PFN_vkSetDebugUtilsObjectNameEXT setDebugUtilsObjectName = nullptr;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
+    PFN_vkGetCalibratedTimestampsEXT getCalibratedTimestamps = nullptr;
+    VkTimeDomainEXT calibrationHostDomain = VK_TIME_DOMAIN_DEVICE_EXT;
     std::vector<std::unique_ptr<Queue>> queues;
 
     ~DeviceImpl();
@@ -3643,6 +3646,7 @@ Queue& Queue::operator=(Queue&&) noexcept = default;
 
 Result Queue::submit(const QueueSubmitDesc& desc)
 {
+    METALLIC_TRACY_CPU_SCOPE("Queue Submit");
     if (impl_ == nullptr || impl_->queue == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
     }
@@ -3787,6 +3791,37 @@ uint32_t Queue::timestampValidBits() const
     return impl_ != nullptr ? impl_->timestampValidBits : 0;
 }
 
+Result Queue::calibrateTimestamps(GpuClockCalibration& outCalibration) const
+{
+    outCalibration = {};
+    if (impl_ == nullptr) { return makeError(Error::InvalidArgument); }
+    const auto& device = *impl_->device;
+    if (impl_->timestampValidBits == 0 || device.getCalibratedTimestamps == nullptr ||
+        device.calibrationHostDomain == VK_TIME_DOMAIN_DEVICE_EXT) {
+        return makeError(Error::Unsupported);
+    }
+    const VkCalibratedTimestampInfoEXT info[] = {
+        {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, VK_TIME_DOMAIN_DEVICE_EXT},
+        {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, device.calibrationHostDomain},
+    };
+    uint64_t timestamps[2]{};
+    uint64_t deviation = 0;
+    const VkResult result = device.getCalibratedTimestamps(device.device, 2, info, timestamps, &deviation);
+    if (result != VK_SUCCESS) { return resultFromVk(result); }
+    uint64_t cpuNanoseconds = timestamps[1];
+#if defined(_WIN32)
+    // Divide before multiplying so long-running QPC counters cannot overflow.
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+    const uint64_t ticksPerSecond = static_cast<uint64_t>(frequency.QuadPart);
+    cpuNanoseconds = (timestamps[1] / ticksPerSecond) * 1'000'000'000ull +
+        static_cast<uint64_t>(static_cast<double>(timestamps[1] % ticksPerSecond) *
+            1'000'000'000.0 / static_cast<double>(ticksPerSecond));
+#endif
+    outCalibration = {timestamps[0], cpuNanoseconds, deviation};
+    return {};
+}
+
 Fence::Fence(std::unique_ptr<detail::FenceImpl> impl)
     : impl_(std::move(impl))
 {
@@ -3805,6 +3840,7 @@ Fence& Fence::operator=(Fence&&) noexcept = default;
 
 Result Fence::wait(uint64_t timeoutNanoseconds)
 {
+    METALLIC_TRACY_CPU_SCOPE("Fence Wait");
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -3996,6 +4032,7 @@ Semaphore& Semaphore::operator=(Semaphore&&) noexcept = default;
 
 Result Semaphore::wait(uint64_t value, uint64_t timeoutNanoseconds)
 {
+    METALLIC_TRACY_CPU_SCOPE("Timeline Wait");
     if (impl_ == nullptr || impl_->semaphore == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
     }
@@ -9208,6 +9245,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 
     VulkanEnabledFeatureChain enabledFeatureChain(selectedFeatures);
     std::vector<const char*> deviceExtensions = enabledDeviceExtensions(selectedFeatures);
+    // Calibration is optional; never reject a GPU just because it lacks it.
+    const bool calibratedTimestamps = VulkanExtensionSet::query(deviceImpl->physicalDevice)
+        .has(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+    if (calibratedTimestamps) {
+        deviceExtensions.push_back(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+    }
     const void* deviceCreateNext = &enabledFeatureChain.features;
 #if defined(VK_KHR_pipeline_binary)
     VkPhysicalDevicePipelineBinaryFeaturesKHR pipelineBinaryFeatures{
@@ -9280,6 +9323,28 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     activateVolkDevice(deviceImpl->device);
 
     VkPhysicalDeviceProperties selectedProperties{};
+    if (calibratedTimestamps) {
+        const auto getDomains = reinterpret_cast<PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT>(
+            vkGetInstanceProcAddr(deviceImpl->instance, "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT"));
+        deviceImpl->getCalibratedTimestamps = reinterpret_cast<PFN_vkGetCalibratedTimestampsEXT>(
+            vkGetDeviceProcAddr(deviceImpl->device, "vkGetCalibratedTimestampsEXT"));
+        uint32_t count = 0;
+        if (getDomains != nullptr && getDomains(deviceImpl->physicalDevice, &count, nullptr) == VK_SUCCESS) {
+            std::vector<VkTimeDomainEXT> domains(count);
+            if (getDomains(deviceImpl->physicalDevice, &count, domains.data()) == VK_SUCCESS) {
+#if defined(_WIN32)
+                constexpr auto hostDomain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT;
+#elif defined(__linux__)
+                constexpr auto hostDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT;
+#else
+                constexpr auto hostDomain = VK_TIME_DOMAIN_DEVICE_EXT;
+#endif
+                if (std::find(domains.begin(), domains.end(), hostDomain) != domains.end()) {
+                    deviceImpl->calibrationHostDomain = hostDomain;
+                }
+            }
+        }
+    }
     vkGetPhysicalDeviceProperties(deviceImpl->physicalDevice, &selectedProperties);
     deviceImpl->pipelineCacheFileIdentity.backendTag = kVulkanPipelineCacheBackendTag;
     std::memcpy(

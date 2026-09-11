@@ -91,3 +91,4 @@ Asset/MeshletCache/
 cache/
 Asset/SuperSponza/
 Captures/NsightGraphics/
+Captures/*.tracy
