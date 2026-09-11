@@ -14,6 +14,12 @@
 
 环境漫反射/镜面分离参考本地 Unreal 的 `Engine/Shaders/Private/ReflectionEnvironmentShared.ush` 和 `BRDF.ush`；实现复用 Metallic 的 SH 与 GGX 积分近似。
 
+HDRI 镜面预过滤参考 Unreal `ReflectionEnvironmentShaders.usf` 的 PDF 驱动 mip 选择：先在异步解码任务中生成按球面面积加权的 radiance mip，GPU 再按 GGX 样本的 `1 / (sampleCount * pdf)` 立体角选择源 mip，并做三线性过滤。lat-long 使用采样纬度处的 texel 立体角；过滤足迹增加一级 mip 的重叠，降低有限样本对极亮小光源的残余混叠。非二次幂尺寸保留边界 texel 的面积贡献，极点按球面面积积分；原始 mip 0 保留 HDR 峰值，供背景、镜面极限和 SH/PDF 积分读取。这只增加环境更新时的预计算及约三分之一的纹理内存，不增加逐帧 pass。
+
+亮点回归来自 `LookDev_2026_09_11_12_23_50.ngfx-capture`：原先 256 个 GGX 样本始终读取 HDRI mip 0，将亮 texel 复制成离散白点。捕获中的 4 MiB 镜面预过滤 buffer 与修复前 GPU 回读逐字节相同；恢复捕获相机、移除 SR/NR 后也可复现。`MetallicRhiTests --filter environment_prefilter --rhi-validation` 验证恒定环境能量、单 texel HDR 的 GGX 峰值上界、非二次幂极点 mip 能量、原始 HDR 峰值保留，并输出同视角 `CaptureView.png` 供图像检查。单 texel 亮度 32768、粗糙度 4/7 时，峰值由 144.39 降至约 2.59（连续积分上界约 2.36，允许有限样本误差）。
+
+该修复验证：上述 3 项预过滤测试及环境异步快照、提交恢复、2 项 photometric、SH 数学共 8 项回归通过；`build-relwithdebinfo/Source/LookDev.exe --sample realtime-lighting --smoke-test` 配合 `METALLIC_SMOKE_TEST_DLSS_CAMERA=1` 通过 16 帧 SR 相机移动、共享视图及显式 Reset，并正常退出。测试日志和同视角修复前后图保存在本地 `.cache/bright-spots/`。
+
 视图的所有权参考 Unreal `SceneView.h` 中每个 `FSceneView` 的 `ViewUniformBuffer`：共享范围是一个视图，不是整个进程的单例。运行时可调用 `executor.bindRenderView(&view)` 并在录制下一帧前更新相机；多个 executor 各自保存帧历史。未绑定外部 View 时，具有顶层 `view` 的图会创建自己的 RenderView。编辑器只在加载旧图时从旧 `camera` 属性导入一次；旧 pass 的参数 ABI 通过执行上下文适配，节点原始属性不会随视口运动改变。`sceneBinding: asset` 或 `viewBinding: local` 保留独立相机。`rasterInfo` 继续用于验证场景身份和光栅资源，旧 SR 图仍可启用 `useRasterCamera` 兼容路径。
 
 统一视图回归：`MetallicRhiTests --filter render_view_shared_constants_history --rhi-validation` 检查 GPU 数据共享、纯旋转、上一帧数据、切镜、resize、序列化及多视图隔离。编辑器回归使用环境变量 `METALLIC_SMOKE_TEST_SAMPLE=realtime-lighting`、`METALLIC_SMOKE_TEST_DLSS_CAMERA=1` 运行 `Metallic --smoke-test`，检查 16 帧平移/旋转和显式 DLSS Reset。

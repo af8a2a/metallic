@@ -131,8 +131,14 @@ void prefilterSpecular(uint index, EnvironmentLightingPrecomputePush push)
         float3 direction = reflect(-normal, halfVector);
         float nl = saturate(dot(normal, direction));
         if (nl > 0.0) {
+            // V=N for split-sum convolution: p(L)=D(H)*NoH/(4*VoH)=D(H)/4.
+            // Integrate each sample's footprint instead of repeatedly picking
+            // isolated full-resolution HDR texels (which produces bright dots).
+            float denominator = cosine * cosine * (alpha * alpha - 1.0) + 1.0;
+            float pdf = (alpha * alpha) / max(4.0 * kPi * denominator * denominator, 1e-20);
+            float solidAngle = layer == 0u ? 0.0 : 1.0 / max(float(samples) * pdf, 1e-12);
             float3 value = push.procedural != 0u ? proceduralEnvironmentLocalRadiance(direction)
-                : environmentFilterSource(gEnvironmentMap, direction);
+                : environmentFilterSource(gEnvironmentMap, direction, solidAngle);
             radiance += (all(isfinite(value)) ? max(value, 0.0) : float3(0.0)) * nl;
             weight += nl;
         }

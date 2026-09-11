@@ -228,6 +228,7 @@ add_executable(MetallicRhiTests
     rhi/LightGridDebugPassTests.cpp
     rhi/PhotometricLightingTests.cpp
     rhi/RealtimePipelineTests.cpp
+    rhi/EnvironmentPrefilterTests.cpp
     rhi/RenderViewTests.cpp
     rhi/ShaderToHumanTests.cpp
     rhi/ShaderHotReloadTests.cpp

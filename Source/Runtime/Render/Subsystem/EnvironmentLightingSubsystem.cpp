@@ -9,8 +9,10 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <limits>
+#include <numbers>
 #include <utility>
 
 #ifndef PROJECT_SOURCE_DIR
@@ -56,11 +58,65 @@ static_assert(sizeof(EnvironmentLightingPrecomputePush) == 32);
 struct EnvironmentLightingSubsystem::DecodedEnvironment {
     uint64_t generation = 0;
     std::vector<float> pixels;
+    // Component offsets into pixels, including the unchanged full-resolution base.
+    std::vector<size_t> mipOffsets{0};
     uint32_t width = 1;
     uint32_t height = 1;
     bool mapAvailable = false;
     bool placeholder = false;
     std::string error;
+
+    void buildMipChain()
+    {
+        uint32_t sourceWidth = width, sourceHeight = height;
+        while (sourceWidth > 1 || sourceHeight > 1) {
+            const uint32_t targetWidth = std::max(sourceWidth / 2, 1u);
+            const uint32_t targetHeight = std::max(sourceHeight / 2, 1u);
+            const size_t sourceOffset = mipOffsets.back(), targetOffset = pixels.size();
+            pixels.resize(targetOffset + size_t(targetWidth) * targetHeight * 4);
+            // Integrate the covered spherical area, including fractional source
+            // texels for NPOT images. An unweighted box overweights the poles.
+            for (uint32_t y = 0; y < targetHeight; ++y) {
+                const double y0 = double(y) * sourceHeight / targetHeight;
+                const double y1 = double(y + 1) * sourceHeight / targetHeight;
+                const uint32_t beginY = static_cast<uint32_t>(std::floor(y0));
+                const uint32_t endY = std::min(static_cast<uint32_t>(std::ceil(y1)), sourceHeight);
+                std::array<double, 3> latitudeWeights{};
+                for (uint32_t sy = beginY; sy < endY; ++sy) {
+                    latitudeWeights[sy - beginY] =
+                        std::cos(std::numbers::pi * std::max(y0, double(sy)) / sourceHeight) -
+                        std::cos(std::numbers::pi * std::min(y1, double(sy + 1)) / sourceHeight);
+                }
+                for (uint32_t x = 0; x < targetWidth; ++x) {
+                    const double x0 = double(x) * sourceWidth / targetWidth;
+                    const double x1 = double(x + 1) * sourceWidth / targetWidth;
+                    const uint32_t beginX = static_cast<uint32_t>(std::floor(x0));
+                    const uint32_t endX = std::min(static_cast<uint32_t>(std::ceil(x1)), sourceWidth);
+                    std::array<double, 4> sum{};
+                    double weightSum = 0.0;
+                    for (uint32_t sy = beginY; sy < endY; ++sy) {
+                        for (uint32_t sx = beginX; sx < endX; ++sx) {
+                            const double weight = latitudeWeights[sy - beginY] *
+                                (std::min(x1, double(sx + 1)) - std::max(x0, double(sx)));
+                            const size_t index = sourceOffset + (size_t(sy) * sourceWidth + sx) * 4;
+                            for (uint32_t channel = 0; channel < 4; ++channel) {
+                                const float value = pixels[index + channel];
+                                sum[channel] += (std::isfinite(value) ? std::max(value, 0.0f) : 0.0f) * weight;
+                            }
+                            weightSum += weight;
+                        }
+                    }
+                    const size_t index = targetOffset + (size_t(y) * targetWidth + x) * 4;
+                    for (uint32_t channel = 0; channel < 4; ++channel) {
+                        pixels[index + channel] = static_cast<float>(sum[channel] / weightSum);
+                    }
+                }
+            }
+            mipOffsets.push_back(targetOffset);
+            sourceWidth = targetWidth;
+            sourceHeight = targetHeight;
+        }
+    }
 };
 
 struct EnvironmentLightingSubsystem::DecodeJob {
@@ -355,6 +411,7 @@ void EnvironmentLightingSubsystem::startDecodeJob(
         decoded.height = static_cast<uint32_t>(height);
         decoded.pixels.assign(pixels, pixels + static_cast<size_t>(componentCount));
         stbi_image_free(pixels);
+        decoded.buildMipChain();
         decoded.mapAvailable = true;
         return decoded;
     });
@@ -496,6 +553,7 @@ Result EnvironmentLightingSubsystem::publishDecoded(
     next->width = std::max(decoded.width, 1u);
     next->height = std::max(decoded.height, 1u);
     next->mapAvailable = decoded.mapAvailable;
+    const auto mipCount = static_cast<uint32_t>(decoded.mipOffsets.size());
 
     Result result = device_->createTexture(
         TextureDesc{
@@ -505,7 +563,7 @@ Result EnvironmentLightingSubsystem::publishDecoded(
             .width = next->width,
             .height = next->height,
             .depth = 1,
-            .mipCount = 1,
+            .mipCount = mipCount,
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
@@ -520,7 +578,7 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         TextureViewDesc{
             .format = Format::Rgba32Sfloat,
             .baseMip = 0,
-            .mipCount = 1,
+            .mipCount = mipCount,
             .baseLayer = 0,
             .layerCount = 1,
         },
@@ -609,7 +667,7 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         .before = ResourceState::Undefined,
         .after = ResourceState::TransferDestination,
         .baseMip = 0,
-        .mipCount = 1,
+        .mipCount = mipCount,
         .baseLayer = 0,
         .layerCount = 1,
     };
@@ -642,20 +700,24 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         .textureCount = 1,
     });
 
-    context.commandBuffer->copyBufferToTexture(BufferTextureCopyDesc{
-        .buffer = staging->radiance.get(),
-        .texture = next->radiance.get(),
-        .width = next->width,
-        .height = next->height,
-        .depth = 1,
-    });
+    for (uint32_t mip = 0; mip < mipCount; ++mip) {
+        context.commandBuffer->copyBufferToTexture(BufferTextureCopyDesc{
+            .buffer = staging->radiance.get(),
+            .texture = next->radiance.get(),
+            .bufferOffset = decoded.mipOffsets[mip] * sizeof(float),
+            .width = std::max(next->width >> mip, 1u),
+            .height = std::max(next->height >> mip, 1u),
+            .depth = 1,
+            .mipLevel = mip,
+        });
+    }
 
     TextureBarrierDesc textureToRead{
         .texture = next->radiance.get(),
         .before = ResourceState::TransferDestination,
         .after = ResourceState::ShaderRead,
         .baseMip = 0,
-        .mipCount = 1,
+        .mipCount = mipCount,
         .baseLayer = 0,
         .layerCount = 1,
     };

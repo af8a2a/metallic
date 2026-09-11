@@ -23,17 +23,35 @@ int2 environmentFilterTexel(int2 pixel, int2 size)
     return int2((pixel.x % size.x + size.x) % size.x, clamp(pixel.y, 0, size.y - 1));
 }
 
-float3 environmentFilterSource(Texture2D<float4> source, float3 direction)
+float3 environmentFilterSourceMip(Texture2D<float4> source, float3 direction, uint mip)
 {
-    uint width, height;
-    source.GetDimensions(width, height);
+    uint width, height, levels;
+    source.GetDimensions(mip, width, height, levels);
     float2 texel = environmentFilterUv(direction) * float2(width, height) - 0.5;
     int2 p = int2(floor(texel)), size = int2(width, height);
     float2 f = frac(texel);
-    return lerp(lerp(source.Load(int3(environmentFilterTexel(p, size), 0)).rgb,
-                     source.Load(int3(environmentFilterTexel(p + int2(1, 0), size), 0)).rgb, f.x),
-                lerp(source.Load(int3(environmentFilterTexel(p + int2(0, 1), size), 0)).rgb,
-                     source.Load(int3(environmentFilterTexel(p + int2(1, 1), size), 0)).rgb, f.x), f.y);
+    return lerp(lerp(source.Load(int3(environmentFilterTexel(p, size), mip)).rgb,
+                     source.Load(int3(environmentFilterTexel(p + int2(1, 0), size), mip)).rgb, f.x),
+                lerp(source.Load(int3(environmentFilterTexel(p + int2(0, 1), size), mip)).rgb,
+                     source.Load(int3(environmentFilterTexel(p + int2(1, 1), size), mip)).rgb, f.x), f.y);
+}
+
+float3 environmentFilterSource(Texture2D<float4> source, float3 direction, float sampleSolidAngle)
+{
+    uint width, height, levels;
+    source.GetDimensions(0, width, height, levels);
+    // A lat-long texel covers less solid angle near the poles. Using the local
+    // row area avoids undersampling bright polar texels and keeps wrap continuity.
+    float row = min(floor(environmentFilterUv(direction).y * height), float(height - 1));
+    float latitudeStep = 3.14159265359 / float(height);
+    float texelSolidAngle = (6.28318530718 / float(width)) *
+        2.0 * sin((row + 0.5) * latitudeStep) * sin(0.5 * latitudeStep);
+    // Overlap adjacent quadrature footprints by one mip to suppress residual
+    // aliasing from sub-texel HDR emitters at this finite sample count.
+    float mip = clamp(0.5 * log2(max(4.0 * sampleSolidAngle / max(texelSolidAngle, 1e-12), 1.0)), 0.0, float(levels - 1));
+    uint lo = uint(floor(mip)), hi = min(lo + 1u, levels - 1u);
+    return lerp(environmentFilterSourceMip(source, direction, lo),
+        environmentFilterSourceMip(source, direction, hi), frac(mip));
 }
 
 float3 environmentFilterLayer(StructuredBuffer<float4> source, float3 direction, uint layer)
