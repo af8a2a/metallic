@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include "Runtime/Render/GAPI/Rhi.h"
 
 #include <cstdint>
@@ -45,6 +47,7 @@ struct RhiTestContext {
     render::Queue& graphicsQueue;
     std::filesystem::path outputDirectory;
     bool enableValidation = false;
+    std::atomic_uint* validationMessageCount = nullptr;
 };
 
 class RhiTest {

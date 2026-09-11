@@ -37,6 +37,8 @@ struct ComputeProgramDesc {
     // Native DescriptorHandle shaders include ComputeResources.slang. The
     // mapped path is retained only for explicit legacy shader diagnostics.
     bool usesResourceTable = true;
+    // Optional cache borrowed only during pipeline creation.
+    PipelineCache* pipelineCache = nullptr;
 };
 
 struct ComputeDispatchBinding {

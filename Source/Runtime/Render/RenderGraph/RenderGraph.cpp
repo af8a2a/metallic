@@ -1208,6 +1208,7 @@ bool RenderGraph::validate(std::string& log) const
 void RenderGraph::clear()
 {
     name_ = "RenderGraph";
+    viewProperties_ = RenderGraphProperties::object();
     nodes_.clear();
     edges_.clear();
     outputs_.clear();
@@ -1312,6 +1313,7 @@ std::string serializeRenderGraphToString(const RenderGraph& graph)
     nlohmann::json root;
     root["version"] = 1;
     root["name"] = graph.name();
+    if (!graph.viewProperties().empty()) { root["view"] = graph.viewProperties(); }
     root["nodes"] = nlohmann::json::array();
     root["edges"] = nlohmann::json::array();
     root["outputs"] = nlohmann::json::array();
@@ -1356,6 +1358,8 @@ bool deserializeRenderGraphFromString(
         RenderGraph graph;
         graph.clear();
         graph.name_ = root.value("name", "RenderGraph");
+        graph.viewProperties_ = root.value("view", RenderGraphProperties::object());
+        if (!graph.viewProperties_.is_object()) { outMessage = "RenderGraph view must be an object"; return false; }
         graph.nodes_.clear();
         graph.edges_.clear();
         graph.outputs_.clear();

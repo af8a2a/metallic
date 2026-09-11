@@ -84,6 +84,7 @@ public:
         if (!result) {
             if (!properties().value("fallbackToInput", true)) { return result; }
             spdlog::warn("[DLSS-NR] {}; passing through input color", log);
+            failed_ = true;
             return {};
         }
         runtime_ = std::move(runtime);
@@ -97,6 +98,20 @@ public:
         const auto motion = context.inputTexture("motionVectors");
         const auto depth = context.inputTexture("depth");
         const auto& properties = context.properties();
+        // Enabling a bypassed NR node can reuse the compiled pass. Initialize
+        // lazily here so the toggle actually activates the feature.
+        if (runtime_ == nullptr && !failed_ && properties.value("enabled", true)) {
+            auto runtime = std::make_unique<vulkan::DlssNrContext>();
+            std::string log;
+            auto result = runtime->initialize(*device_, log);
+            if (!result) {
+                if (!properties.value("fallbackToInput", true)) { return result; }
+                spdlog::warn("[DLSS-NR] {}; passing through input color", log);
+                failed_ = true;
+            } else {
+                runtime_ = std::move(runtime);
+            }
+        }
         vulkan::DlssNrDesc desc{
             .inputColor = {input.texture(), input.view()},
             .outputColor = {output.texture(), output.view()},
@@ -126,16 +141,20 @@ public:
             copyColor(context.commandBuffer(), input, output);
             return {};
         }
+        const auto* view = context.viewConstants();
         const uint64_t revision = context.historyResources() != nullptr
-            ? context.historyResources()->invalidationRevision() : 0;
+            ? (view != nullptr ? context.historyResources()->reprojectionInvalidationRevision()
+                : context.historyResources()->invalidationRevision()) : 0;
         const uint64_t scene = context.runtimeScene() != nullptr ? context.runtimeScene()->resourceIdentity() : 0;
         auto historyProperties = properties;
+        if (view != nullptr) { historyProperties.erase("camera"); }
         // These controls only reveal the original pixels after NR evaluation;
         // moving the divider must not reset the neural temporal history.
         for (const char* key : {"sliderDebug", "splitPosition", "orientation", "swapSides"}) {
             historyProperties.erase(key);
         }
         settings.reset = !hasHistory_ || lastFrame_ + 1 != context.frameIndex() ||
+            (view != nullptr && view->frame[1] == 0) ||
             lastRevision_ != revision || lastScene_ != scene || lastProperties_ != historyProperties;
         const bool sliderDebug = properties.value("sliderDebug", false);
         if (sliderDebug) {

@@ -511,6 +511,7 @@ Result ComputeProgram::initialize(
             .bindlessUserPushDataSize = impl_->bindlessPushDataSize,
             .bindingMappings = mappings.data(),
             .bindingMappingCount = static_cast<uint32_t>(mappings.size()),
+            .pipelineCache = desc.pipelineCache,
         },
         impl_->pipeline);
     if (!result) {

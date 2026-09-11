@@ -34,6 +34,11 @@ public:
 
     const std::string& name() const { return name_; }
     void setName(std::string name);
+    const RenderGraphProperties& viewProperties() const { return viewProperties_; }
+    void setViewProperties(RenderGraphProperties properties)
+    {
+        if (viewProperties_ != properties) { viewProperties_ = std::move(properties); dirty_ = true; }
+    }
 
     const std::vector<RenderGraphNode>& nodes() const { return nodes_; }
     const std::vector<RenderGraphEdge>& edges() const { return edges_; }
@@ -79,6 +84,7 @@ public:
 
 private:
     std::string name_ = "RenderGraph";
+    RenderGraphProperties viewProperties_ = RenderGraphProperties::object();
     std::vector<RenderGraphNode> nodes_;
     std::vector<RenderGraphEdge> edges_;
     std::vector<RenderGraphOutput> outputs_;

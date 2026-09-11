@@ -3,6 +3,7 @@
 // GPU projection and cosine convolution: irradiance SH through l=2.
 #include "../../Libraries/Math/SphericalHarmonics.slang"
 #include "../../Libraries/Lighting/ProceduralEnvironment.slang"
+#include "../../Libraries/Lighting/EnvironmentPrefilter.slang"
 
 static const uint kIntegratePartials = 0u;
 static const uint kFinalizeCoefficients = 1u;
@@ -15,6 +16,7 @@ static const float kPi = 3.14159265358979323846;
 #define gPartials METALLIC_RESOURCE(RWStructuredBuffer<float4>, 1)
 
 #define gCoefficients METALLIC_RESOURCE(RWStructuredBuffer<float4>, 2)
+#define gSpecular METALLIC_RESOURCE(RWStructuredBuffer<float4>, 3)
 
 struct EnvironmentLightingPrecomputePush
 {
@@ -103,6 +105,41 @@ void finalizeCoefficient(
     }
 }
 
+// The split-sum radiance convolution is independent of camera, exposure and
+// environment rotation. Rebuild only when the source HDRI changes.
+void prefilterSpecular(uint index, EnvironmentLightingPrecomputePush push)
+{
+    uint layerSize = kEnvironmentFilterWidth * kEnvironmentFilterHeight;
+    if (index >= layerSize * kEnvironmentFilterLayers) { return; }
+    uint layer = index / layerSize;
+    uint pixel = index % layerSize;
+    float3 normal = environmentFilterDirection((float2(pixel % kEnvironmentFilterWidth,
+        pixel / kEnvironmentFilterWidth) + 0.5) / float2(kEnvironmentFilterWidth, kEnvironmentFilterHeight));
+    float roughness = float(layer) / float(kEnvironmentFilterLayers - 1u);
+    float alpha = max(roughness * roughness, 0.0001);
+    float3 tangent = normalize(cross(abs(normal.y) < 0.999 ? float3(0, 1, 0) : float3(1, 0, 0), normal));
+    float3 bitangent = cross(normal, tangent);
+    float3 radiance = float3(0.0);
+    float weight = 0.0;
+    const uint samples = 256u;
+    for (uint sample = 0u; sample < samples; ++sample) {
+        float2 xi = float2((float(sample) + 0.5) / float(samples), float(reversebits(sample)) * 2.32830643654e-10);
+        float phi = 6.28318530718 * xi.x;
+        float cosine = sqrt((1.0 - xi.y) / (1.0 + (alpha * alpha - 1.0) * xi.y));
+        float sine = sqrt(max(1.0 - cosine * cosine, 0.0));
+        float3 halfVector = tangent * (cos(phi) * sine) + bitangent * (sin(phi) * sine) + normal * cosine;
+        float3 direction = reflect(-normal, halfVector);
+        float nl = saturate(dot(normal, direction));
+        if (nl > 0.0) {
+            float3 value = push.procedural != 0u ? proceduralEnvironmentLocalRadiance(direction)
+                : environmentFilterSource(gEnvironmentMap, direction);
+            radiance += (all(isfinite(value)) ? max(value, 0.0) : float3(0.0)) * nl;
+            weight += nl;
+        }
+    }
+    gSpecular[index] = float4(radiance / max(weight, 1e-6), 1.0);
+}
+
 [shader("compute")]
 [numthreads(kThreadCount, 1, 1)]
 void environmentLightingPrecomputeMain(
@@ -114,5 +151,7 @@ void environmentLightingPrecomputeMain(
         integratePartials(groupId, groupThreadIndex, push);
     } else if (push.mode == kFinalizeCoefficients) {
         finalizeCoefficient(groupId, groupThreadIndex, push);
+    } else if (push.mode == 2u) {
+        prefilterSpecular(groupId.x * kThreadCount + groupThreadIndex, push);
     }
 }

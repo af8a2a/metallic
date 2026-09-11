@@ -244,6 +244,7 @@ struct RenderGraphExecutor::Impl {
         // can be replaced in-place while retaining its C++ address.
         std::array<uint64_t, 7> version{};
         std::string path;
+        bool localView = false;
         bool operator==(const SceneBinding&) const = default;
     };
 
@@ -327,6 +328,17 @@ struct RenderGraphExecutor::Impl {
     RenderWorld ownedWorld;
     RenderSubsystemHost* subsystemHost = &ownedSubsystemHost;
     RenderWorld* world = &ownedWorld;
+    RenderView ownedView;
+    RenderView* externalView = nullptr;
+    bool hasOwnedView = false;
+    RenderGraphProperties ownedViewProperties;
+    ViewConstants frameView;
+    ViewConstants previousView;
+    bool hasPreviousView = false;
+    GpuCompletionPoint previousViewCompletion;
+    RenderGraphProperties frameCameraProperties;
+    std::vector<std::shared_ptr<Buffer>> viewBuffers;
+    Buffer* frameViewBuffer = nullptr;
     std::vector<CompiledNode> executionList;
     std::unordered_map<std::string, ResourceSlot> resources;
     std::unordered_map<std::string, std::string> inputAliases;
@@ -426,6 +438,53 @@ struct RenderGraphExecutor::Impl {
     }
 
     ~Impl() { (void)waitForSubmittedWork(UINT64_MAX); }
+
+    RenderView* renderView() { return externalView != nullptr ? externalView : hasOwnedView ? &ownedView : nullptr; }
+
+    Result prepareView(CommandBuffer& commands, uint64_t frameIndex)
+    {
+        auto* view = renderView();
+        frameViewBuffer = nullptr;
+        if (view == nullptr) { return {}; }
+        uint32_t renderWidth = width, renderHeight = height;
+        // Resolution negotiation already resolved scene producers before recording.
+        // The view uses the scene's render extent, not an upscaler's display extent.
+        for (const auto& node : executionList) {
+            if (node.sceneDependency.source != RenderGraphSceneSource::None &&
+                !node.sceneBinding.localView) {
+                renderWidth = node.executionWidth;
+                renderHeight = node.executionHeight;
+                break;
+            }
+        }
+        frameView = view->constants(frameIndex, renderWidth, renderHeight, width, height,
+            hasPreviousView && previousViewCompletion.isSubmitted() ? &previousView : nullptr);
+        frameCameraProperties = view->cameraProperties();
+        RenderFrameContext* frame = commands.frameContext();
+        const uint32_t slot = frame != nullptr ? frame->slotIndex() : 0;
+        if (viewBuffers.size() <= slot) { viewBuffers.resize(slot + 1); }
+        if (viewBuffers[slot] == nullptr) {
+            std::unique_ptr<Buffer> buffer;
+            Result result = device->createBuffer({.size = sizeof(ViewConstants), .structureStride = sizeof(ViewConstants),
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload,
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, buffer);
+            if (!result) { return result; }
+            viewBuffers[slot] = std::move(buffer);
+        }
+        frameViewBuffer = viewBuffers[slot].get();
+        void* mapped = frameViewBuffer->map();
+        if (mapped == nullptr) { return makeError(Error::Failure); }
+        std::memcpy(mapped, &frameView, sizeof(frameView));
+        frameViewBuffer->unmap();
+        frameViewBuffer->flush();
+        const BufferBarrierDesc barrier{.buffer = frameViewBuffer, .before = ResourceState::Undefined, .after = ResourceState::ShaderRead};
+        commands.barrier({.buffers = &barrier, .bufferCount = 1});
+        if (frame != nullptr) { frame->retain(viewBuffers[slot]); }
+        previousView = frameView;
+        hasPreviousView = frame != nullptr;
+        previousViewCompletion = frame != nullptr ? frame->completion() : GpuCompletionPoint{};
+        return {};
+    }
 
     RenderUploadSubsystem* uploadSubsystem() const
     {
@@ -542,6 +601,7 @@ struct RenderGraphExecutor::Impl {
     {
         auto result = context;
         if (binding.source != nullptr) { result.runtimeScene = binding.source; }
+        if (binding.localView) { result.renderView = nullptr; }
         return result;
     }
 
@@ -603,6 +663,8 @@ struct RenderGraphExecutor::Impl {
                 if (!result) { log = "Pass '" + node.name + "' scene resolution failed: " + log; return result; }
                 bindings[index] = captureSceneBinding(source);
             }
+            bindings[index].localView = bindings[index].localView || mode == "asset" ||
+                properties.value("viewBinding", "global") == "local";
         }
         return {};
     }
@@ -629,6 +691,7 @@ struct RenderGraphExecutor::Impl {
             .runtimeScene = runtimeScene, .sceneResourceManager = &sceneResourcesSubsystem()->manager(),
             .renderWorld = world, .subsystemHost = subsystemHost, .width = width, .height = height,
             .defaultFormat = defaultFormat, .debugReadback = debugObserver != nullptr,
+            .renderView = renderView(),
         };
         for (size_t index = 0; index < executionList.size(); ++index) {
             auto& node = executionList[index];
@@ -1634,19 +1697,32 @@ struct RenderGraphExecutor::Impl {
         }
 
         RenderUploadSubsystem* upload = uploadSubsystem();
+        const bool usesView = frameViewBuffer != nullptr &&
+            !node.sceneBinding.localView &&
+            node.effectiveProperties.value("sceneBinding", "world") != "asset" &&
+            node.effectiveProperties.value("viewBinding", "global") != "local";
+        auto executionProperties = node.effectiveProperties;
+        if (usesView) {
+            // Compatibility adapter for passes still using the packed camera ABI.
+            // Authored node properties remain untouched; RenderView is authoritative.
+            executionProperties["camera"] = frameCameraProperties;
+            executionProperties["temporalJitter"] = frameView.frame[2] != 0;
+        }
         RenderGraphExecutionContext context(
             commandBuffer,
             frameIndex,
             node.executionWidth,
             node.executionHeight,
             node.name,
-            node.effectiveProperties,
+            executionProperties,
             std::move(bindings),
             historyResources,
             upload != nullptr ? upload->streamer() : nullptr,
             node.sceneBinding.source != nullptr ? node.sceneBinding.source : runtimeScene,
             world,
             subsystemHost);
+        context.viewConstants_ = usesView ? &frameView : nullptr;
+        context.viewConstantsBuffer_ = usesView ? frameViewBuffer : nullptr;
         context.debugObserver_ = debugObserver;
         context.debugPassId_ = node.id;
         const std::string markerName = passProfileMarkerName(node.name, node.type);
@@ -1782,6 +1858,8 @@ Result RenderGraphExecutor::compile(
     }
 
     if (impl_->device != nullptr && impl_->device != &device) {
+        impl_->viewBuffers.clear();
+        impl_->hasPreviousView = false;
         for (auto& slot : impl_->submissionSlots) {
             slot->commandBuffers.clear();
             (void)slot->frame.reset();
@@ -1792,6 +1870,27 @@ Result RenderGraphExecutor::compile(
         impl_->pendingSceneResourceSnapshot.reset();
     }
 
+    if (impl_->ownedViewProperties != graph.viewProperties()) {
+        const bool hadView = impl_->renderView() != nullptr;
+        if (!graph.viewProperties().is_object()) {
+            log = "RenderGraph view must be an object";
+            impl_->isCompiled = false;
+            return makeError(Error::InvalidArgument);
+        }
+        impl_->ownedView = RenderView{};
+        impl_->hasOwnedView = !graph.viewProperties().empty();
+        if (impl_->hasOwnedView && (!impl_->ownedView.setCameraProperties(
+                graph.viewProperties().value("camera", RenderGraphProperties::object())) ||
+                !graph.viewProperties().value("temporalJitter", RenderGraphProperties(false)).is_boolean())) {
+            log = "RenderGraph contains invalid view properties";
+            impl_->isCompiled = false;
+            return makeError(Error::InvalidArgument);
+        }
+        impl_->ownedView.setTemporalJitter(graph.viewProperties().value("temporalJitter", false));
+        impl_->ownedViewProperties = graph.viewProperties();
+        impl_->hasPreviousView = false;
+        if (hadView != (impl_->renderView() != nullptr)) { impl_->isCompiled = false; }
+    }
     impl_->resourceQueues.clear();
     if (!registerBuiltInRenderSubsystems(*impl_->subsystemHost, log)) {
         impl_->isCompiled = false;
@@ -1876,6 +1975,7 @@ Result RenderGraphExecutor::compile(
         .height = height,
         .defaultFormat = impl_->defaultFormat,
         .debugReadback = impl_->debugObserver != nullptr,
+        .renderView = impl_->renderView(),
     };
 
     if (auto* gpuScene = impl_->subsystemHost->get<GPUSceneSubsystem>()) {
@@ -2035,6 +2135,7 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
         .height = impl_->height,
         .defaultFormat = impl_->defaultFormat,
         .debugReadback = impl_->debugObserver != nullptr,
+        .renderView = impl_->renderView(),
     };
 
     result = impl_->refreshFrameSceneBindings(nullptr, log);
@@ -2211,6 +2312,12 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
         impl_->historyResources = nullptr;
         return result;
     }
+    result = impl_->prepareView(commandBuffer, frameIndex);
+    if (!result) {
+        impl_->subsystemHost->endFrame();
+        impl_->historyResources = nullptr;
+        return result;
+    }
     RenderUploadSubsystem* upload = impl_->uploadSubsystem();
     const std::vector<RenderSubsystemId> requiredSubsystems = impl_->requiredSubsystemViews();
     impl_->beginDebugExecution(frameIndex, frameResources ? frameResources->slotIndex() : 0);
@@ -2278,6 +2385,20 @@ void RenderGraphExecutor::bindRenderWorld(RenderWorld* world)
     impl_->world = world != nullptr ? world : &impl_->ownedWorld;
     impl_->runtimeScene = impl_->world->scene();
     impl_->subsystemHost->setWorld(impl_->world);
+}
+
+void RenderGraphExecutor::bindRenderView(RenderView* view)
+{
+    if (impl_->externalView != view) {
+        impl_->externalView = view;
+        impl_->hasPreviousView = false;
+        impl_->isCompiled = false;
+    }
+}
+
+RenderView* RenderGraphExecutor::renderView()
+{
+    return impl_->renderView();
 }
 
 RenderSubsystemHost* RenderGraphExecutor::subsystemHost()
@@ -2514,6 +2635,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (!created) { return created; }
         segments.push_back({.queue = queue, .commandBuffer = commands});
         impl_->recordingQueue = queue;
+        if (segments.size() == 1) { return impl_->prepareView(*commands, frameIndex); }
         return {};
     };
     const auto addDependency = [&](size_t destination, size_t source) {

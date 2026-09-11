@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/RenderView.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include "json.hpp"
@@ -165,6 +166,7 @@ struct RenderGraphCompileContext {
     uint32_t height = 1;
     Format defaultFormat = Format::Rgba8Unorm;
     bool debugReadback = false;
+    RenderView* renderView = nullptr;
 
     RenderWorld* world() const { return renderWorld; }
     RenderSubsystemHost* subsystems() const { return subsystemHost; }
@@ -241,6 +243,8 @@ public:
     const scene::Scene* runtimeScene() const { return runtimeScene_; }
     RenderWorld* world() const { return world_; }
     RenderSubsystemHost* subsystems() const { return subsystems_; }
+    const ViewConstants* viewConstants() const { return viewConstants_; }
+    Buffer* viewConstantsBuffer() const { return viewConstantsBuffer_; }
 
     template <typename T>
     T* subsystem() const
@@ -299,6 +303,8 @@ private:
     const scene::Scene* runtimeScene_ = nullptr;
     RenderWorld* world_ = nullptr;
     RenderSubsystemHost* subsystems_ = nullptr;
+    const ViewConstants* viewConstants_ = nullptr;
+    Buffer* viewConstantsBuffer_ = nullptr;
     IRenderDebugObserver* debugObserver_ = nullptr;
     uint32_t debugPassId_ = 0;
     bool debugAfterPassPublished_ = false;

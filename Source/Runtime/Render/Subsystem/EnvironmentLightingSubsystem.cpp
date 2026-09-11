@@ -36,6 +36,7 @@ struct EnvironmentUploadResources {
 constexpr uint32_t kEnvironmentSHCoefficientCount = 9;
 constexpr uint32_t kEnvironmentSHThreadCount = 128;
 constexpr uint32_t kEnvironmentSHMaxDispatchWidth = 65535;
+constexpr uint64_t kEnvironmentSpecularBytes = 256ull * 128 * 8 * sizeof(std::array<float, 4>);
 
 struct EnvironmentLightingPrecomputePush {
     uint32_t mode = 0;
@@ -100,6 +101,10 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
                 .binding = 2,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
+            ComputeProgramBindingDesc{
+                .binding = 3,
+                .kind = ComputeResourceBindingKind::StorageBuffer,
+            },
         };
         return program.initialize(
             device,
@@ -110,7 +115,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
                 .bindings = bindings.data(),
                 .bindingCount = static_cast<uint32_t>(bindings.size()),
                 .debugName = "EnvironmentLightingPrecompute",
-                .resourceTableCount = 2,
+                .resourceTableCount = 3,
                 .requiresRayQuery = false,
             },
             log);
@@ -121,6 +126,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
         TextureView& radianceView,
         Buffer& partials,
         Buffer& coefficients,
+        Buffer& specular,
         uint32_t width,
         uint32_t height,
         bool procedural)
@@ -140,6 +146,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             },
             ComputeDispatchBinding{.binding = 1, .buffer = &partials},
             ComputeDispatchBinding{.binding = 2, .buffer = &coefficients},
+            ComputeDispatchBinding{.binding = 3, .buffer = &specular},
         };
         EnvironmentLightingPrecomputePush push{
             .width = width,
@@ -171,7 +178,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
         };
         commandBuffer.barrier(BarrierDesc{.buffers = &partialsBarrier, .bufferCount = 1});
         push.mode = 1;
-        return program.dispatch(ComputeDispatchDesc{
+        result = program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = bindings.data(),
             .bindingCount = static_cast<uint32_t>(bindings.size()),
@@ -182,6 +189,13 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             .groupCountZ = 1,
             .resourceTableIndex = 1,
         });
+        if (!result) { return result; }
+        push.mode = 2;
+        return program.dispatch({.commandBuffer = &commandBuffer,
+            .bindings = bindings.data(), .bindingCount = static_cast<uint32_t>(bindings.size()),
+            .pushData = &push, .pushDataSize = sizeof(push),
+            .groupCountX = 256 * 128 * 8 / kEnvironmentSHThreadCount,
+            .resourceTableIndex = 2});
     }
 };
 
@@ -215,6 +229,7 @@ struct EnvironmentLightingSubsystem::Resources {
     std::unique_ptr<TextureView> radianceView;
     ImportancePdfTexture pdf;
     std::unique_ptr<Buffer> sphericalHarmonicsBuffer;
+    std::unique_ptr<Buffer> prefilteredSpecularBuffer;
     uint32_t width = 1;
     uint32_t height = 1;
     bool mapAvailable = false;
@@ -516,6 +531,11 @@ Result EnvironmentLightingSubsystem::publishDecoded(
     }
     constexpr uint64_t kSphericalHarmonicsBytes =
         kEnvironmentSHCoefficientCount * sizeof(std::array<float, 4>);
+    result = device_->createBuffer({.size = kEnvironmentSpecularBytes,
+        .structureStride = sizeof(std::array<float, 4>), .usage = BufferUsageBits::Storage,
+        .memoryLocation = MemoryLocation::Device,
+        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, next->prefilteredSpecularBuffer);
+    if (!result) { log = "Environment specular prefilter allocation failed"; return result; }
     result = device_->createBuffer(
         BufferDesc{
             .size = kSphericalHarmonicsBytes,
@@ -595,6 +615,10 @@ Result EnvironmentLightingSubsystem::publishDecoded(
     };
     std::array precomputeToGeneral{
         BufferBarrierDesc{
+            .buffer = next->prefilteredSpecularBuffer.get(),
+            .before = ResourceState::Undefined, .after = ResourceState::General,
+        },
+        BufferBarrierDesc{
             .buffer = staging->sphericalHarmonicsPartials.get(),
             .before = ResourceState::Undefined,
             .after = ResourceState::General,
@@ -652,6 +676,7 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         *next->radianceView,
         *staging->sphericalHarmonicsPartials,
         *next->sphericalHarmonicsBuffer,
+        *next->prefilteredSpecularBuffer,
         shWidth,
         shHeight,
         !decoded.mapAvailable);
@@ -671,6 +696,9 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         .buffers = &sphericalHarmonicsToRead,
         .bufferCount = 1,
     });
+    BufferBarrierDesc specularToRead{.buffer = next->prefilteredSpecularBuffer.get(),
+        .before = ResourceState::General, .after = ResourceState::ShaderRead};
+    context.commandBuffer->barrier({.buffers = &specularToRead, .bufferCount = 1});
     if (resources_ != nullptr) {
         context.host.retire(std::static_pointer_cast<void>(resources_));
     }
@@ -695,6 +723,7 @@ void EnvironmentLightingSubsystem::refreshSnapshot()
         snapshot_.radianceView = nullptr;
         snapshot_.pdfView = nullptr;
         snapshot_.sphericalHarmonicsBuffer = nullptr;
+        snapshot_.prefilteredSpecularBuffer = nullptr;
         snapshot_.width = 1;
         snapshot_.height = 1;
         snapshot_.mapAvailable = false;
@@ -703,6 +732,7 @@ void EnvironmentLightingSubsystem::refreshSnapshot()
     snapshot_.radianceView = resources_->radianceView.get();
     snapshot_.pdfView = resources_->pdf.valid() ? resources_->pdf.view() : nullptr;
     snapshot_.sphericalHarmonicsBuffer = resources_->sphericalHarmonicsBuffer.get();
+    snapshot_.prefilteredSpecularBuffer = resources_->prefilteredSpecularBuffer.get();
     snapshot_.width = resources_->width;
     snapshot_.height = resources_->height;
     snapshot_.mapAvailable = resources_->mapAvailable;

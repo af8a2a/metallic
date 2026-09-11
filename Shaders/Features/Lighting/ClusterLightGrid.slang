@@ -29,8 +29,8 @@ ClusterCellBounds clusterLightGridCellBounds(ClusterLightGridParams params, uint
     // while pixel Y grows downward; the camera's forward direction is positive Z.
     uint2 pixelMin = cell.xy * params.grid.w;
     uint2 pixelMax = min((cell.xy + 1u) * params.grid.w, params.viewport.xy);
-    float2 unitMin = float2(pixelMin) / float2(params.viewport.xy) * 2.0 - 1.0;
-    float2 unitMax = float2(pixelMax) / float2(params.viewport.xy) * 2.0 - 1.0;
+    float2 unitMin = (float2(pixelMin) - params.zParams.w) / float2(params.viewport.xy) * 2.0 - 1.0;
+    float2 unitMax = (float2(pixelMax) + params.zParams.w) / float2(params.viewport.xy) * 2.0 - 1.0;
     unitMin.y = -unitMin.y;
     unitMax.y = -unitMax.y;
     float nearDepth = clusterLightGridSliceDepth(params, cell.z);

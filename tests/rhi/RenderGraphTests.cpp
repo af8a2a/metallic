@@ -212,6 +212,32 @@ bool spirvContainsExtendedInstructionSet(
     return false;
 }
 
+bool spirvContainsSourceLines(const std::vector<uint32_t>& spirv, std::string_view sourceName)
+{
+    std::unordered_set<uint32_t> sourceIds;
+    bool hasLine = false;
+    for (size_t wordIndex = 5; wordIndex < spirv.size();) {
+        const uint32_t wordCount = spirv[wordIndex] >> 16u;
+        const uint32_t opcode = spirv[wordIndex] & 0xffffu;
+        if (wordCount == 0 || wordIndex + wordCount > spirv.size()) {
+            return false;
+        }
+        // OpString names the local source file; OpLine must refer to that file.
+        if (opcode == 7u && wordCount >= 3u) {
+            const char* begin = reinterpret_cast<const char*>(spirv.data() + wordIndex + 2);
+            const char* limit = begin + (wordCount - 2u) * sizeof(uint32_t);
+            const char* end = std::find(begin, limit, '\0');
+            if (end != limit && std::string_view(begin, end - begin).ends_with(sourceName)) {
+                sourceIds.insert(spirv[wordIndex + 1]);
+            }
+        }
+        hasLine |= opcode == 8u && wordCount == 4u && spirv[wordIndex + 2] > 0 &&
+            sourceIds.contains(spirv[wordIndex + 1]);
+        wordIndex += wordCount;
+    }
+    return hasLine;
+}
+
 render::Result createSlangShaderModule(
     render::Device& device,
     const char* moduleName,
@@ -3137,11 +3163,12 @@ public:
         render::ShaderCompileResult symbolCompile;
         result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, symbolCompile);
         if (!result || symbolCompile.spirv.empty() || cacheHit ||
-            !spirvContainsExtendedInstructionSet(
+            !spirvContainsSourceLines(symbolCompile.spirv, "ShaderCacheTest.slang") ||
+            spirvContainsExtendedInstructionSet(
                 symbolCompile.spirv,
                 "NonSemantic.Shader.DebugInfo.100")) {
             return RhiTestResult::fail(
-                "capture-symbol shader compile did not emit NonSemantic debug information");
+                "capture-symbol shader must retain source paths/lines without full variable debug information");
         }
         render::ShaderCompileResult cachedSymbolCompile;
         result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedSymbolCompile);
@@ -3224,7 +3251,7 @@ public:
                 "resetSlangShaderHotReloadTracking did not clear registered dependencies");
         }
         return RhiTestResult::pass(
-            "validated dependency polling, SPIR-V cache invalidation, and isolated NonSemantic debug modes");
+            "validated dependency polling, SPIR-V cache invalidation, and isolated source-line/full debug modes");
     }
 };
 

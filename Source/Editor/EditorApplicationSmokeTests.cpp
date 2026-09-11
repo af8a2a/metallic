@@ -1,5 +1,6 @@
 #include "Editor/EditorApplication.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
+#include "Runtime/Render/GPUDrivenRaster.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -8,6 +9,7 @@
 #include <spdlog/spdlog.h>
 #include <cstdlib>
 #include <cmath>
+#include <cstring>
 
 namespace metallic {
 
@@ -17,51 +19,84 @@ bool EditorApplication::runDlssCameraSmokeTest()
         if (!condition) { spdlog::error("[Smoke DLSS Camera] {}", message); }
         return condition;
     };
-    auto* cameraNode = viewportCameraRenderGraphNode();
     auto* dlssNode = renderGraph_.findNode("DlssRr");
-    if (!expect(cameraNode != nullptr && dlssNode != nullptr, "Find DLSS-RR camera and reconstruction pass")) {
+    if (dlssNode == nullptr) { dlssNode = renderGraph_.findNode("DlssSr"); }
+    if (!expect(dlssNode != nullptr && graphExecutor_->renderView() == &viewportView_, "DLSS graph is bound to the viewport view")) {
         return false;
     }
-    const uint32_t cameraId = cameraNode->id;
+    const bool rasterCamera = dlssNode->type == "StreamlineDlssSrPass";
+    const auto initialView = viewportCameraProperties();
+    const std::string preview = activePreviewOutput_;
+    for (const auto& node : renderGraph_.nodes()) {
+        activePreviewOutput_ = node.name + ".color";
+        if (!expect(viewportCameraProperties() == initialView,
+                "Intermediate previews preserve the viewport view")) { return false; }
+    }
+    activePreviewOutput_ = preview;
+    const auto nodeProperties = [&]() {
+        render::RenderGraphProperties result = render::RenderGraphProperties::array();
+        for (const auto& node : renderGraph_.nodes()) { result.push_back(node.runtimeProperties); }
+        return result;
+    };
     const uint32_t dlssId = dlssNode->id;
-    auto properties = cameraNode->properties;
-    properties.merge_patch(cameraNode->runtimeProperties);
+    auto properties = viewportCameraProperties();
     uint32_t resetSerial = 7;
     renderGraph_.setNodeRuntimeProperty(dlssId, "resetSerial", resetSerial);
     const auto renderDlssFrame = [&]() {
+        if (!waitForFrameSlotBeforeInput()) { return false; }
         const render::vulkan::StreamlineFrameScope streamlineFrame;
         return renderFrame();
     };
-    if (!renderDlssFrame() || !expect(viewportPreviewValid_, "Initial RR frame renders")) { return false; }
+    // Let ImGui's initial docking layout and debounced viewport resize settle.
+    for (uint32_t frame = 0; frame < 8; ++frame) {
+        if (!renderDlssFrame() || !expect(viewportPreviewValid_, "Initial DLSS frame renders")) { return false; }
+    }
     const uint64_t historyRevision = historyResources_.invalidationRevision();
+    const uint64_t reprojectionRevision = historyResources_.reprojectionInvalidationRevision();
     for (uint32_t frame = 0; frame < 16; ++frame) {
         auto profileFrame = profiler_.beginFrame();
         // Exercise both translation and rotation through the viewport's actual
         // camera update path. An explicit user reset must remain independent.
         auto& camera = properties["camera"];
-        camera["eye"][0] = camera["eye"][0].get<float>() + 0.002f;
         if (frame < 8) {
-            camera["center"][0] = camera["center"][0].get<float>() + 0.002f;
+            camera["eye"][0] = camera["eye"][0].get<float>() + 0.002f;
         }
+        camera["center"][0] = camera["center"][0].get<float>() + 0.002f;
         if (frame == 8) {
             ++resetSerial;
             renderGraph_.setNodeRuntimeProperty(dlssId, "resetSerial", resetSerial);
         }
-        applyBunnyCameraProperties(properties, "Smoke DLSS camera motion");
+        const auto before = nodeProperties();
+        applyViewportCameraProperties(properties, "Smoke DLSS camera motion");
         const auto* updatedDlss = renderGraph_.findNode(dlssId);
         if (!expect(updatedDlss->runtimeProperties.value("resetSerial", 0u) == resetSerial,
                 "Camera motion preserves the DLSS reset counter") ||
-            !expect(updatedDlss->runtimeProperties.at("camera") ==
-                    renderGraph_.findNode(cameraId)->runtimeProperties.at("camera"),
-                "Producer and DLSS cameras stay synchronized") ||
+            !expect(nodeProperties() == before, "Viewport motion never mutates pass properties") ||
             !expect(!renderGraph_.dirty(), "Camera motion does not rebuild the graph")) {
             return false;
         }
-        if (!renderDlssFrame() || !expect(viewportPreviewValid_, "Moving RR frame renders")) { return false; }
+        if (!renderDlssFrame() || !expect(viewportPreviewValid_, "Moving DLSS frame renders")) { return false; }
+        if (rasterCamera) {
+            const auto* metadata = graphExecutor_->outputResource("VBuffer.rasterInfo");
+            if (!expect(metadata != nullptr && metadata->buffer != nullptr, "Raster metadata is available")) { return false; }
+            const void* mapped = metadata->buffer->map();
+            if (!expect(mapped != nullptr, "Read the camera used for rasterization")) { return false; }
+            render::VisibilityBufferFrameInfo info;
+            std::memcpy(&info, mapped, sizeof(info));
+            metadata->buffer->unmap();
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                if (!expect(std::abs(info.eye[axis] - camera["eye"][axis].get<float>()) < 0.00001f &&
+                        std::abs(info.center[axis] - camera["center"][axis].get<float>()) < 0.00001f,
+                        "Viewport translation and rotation reach the rendered raster camera")) { return false; }
+            }
+        }
     }
-    if (!expect(historyResources_.invalidationRevision() > historyRevision,
+    if (!expect(historyResources_.reprojectionInvalidationRevision() == reprojectionRevision,
+            "Camera movement preserves reprojection history") ||
+        !expect(historyResources_.invalidationRevision() > historyRevision,
             "Camera movement still invalidates non-reprojected accumulation")) { return false; }
-    spdlog::info("[Smoke DLSS Camera] Passed 16 moving RR frames, camera synchronization and explicit reset");
+    spdlog::info("[Smoke DLSS Camera] Passed 16 moving {} frames, shared view and explicit reset",
+        rasterCamera ? "SR" : "RR");
     return true;
 }
 
@@ -126,12 +161,16 @@ bool EditorApplication::runSliderDebugSmokeTest()
     };
     if (!renderFrame() || !expect(viewportPreviewValid_, "Comparison viewport renders")) { return false; }
     auto* slider = viewportSliderDebugNode();
-    auto* cameraNode = viewportCameraRenderGraphNode();
-    if (!expect(slider != nullptr && cameraNode != nullptr, "Find comparison through exposure and presentation")) { return false; }
+    if (!expect(slider != nullptr, "Find comparison through exposure and presentation")) { return false; }
     const uint32_t sliderId = slider->id;
     const uint64_t historyRevision = historyResources_.invalidationRevision();
     const auto split = [&] { return renderGraph_.findNode(sliderId)->runtimeProperties.value("splitPosition", 0.5f); };
     const bool nrComparison = slider->type == "DlssNrPass";
+    std::string rawOutput;
+    for (const auto& edge : renderGraph_.edges()) {
+        if (edge.dstPass == slider->name) { rawOutput = edge.srcPass + "." + edge.srcField; break; }
+    }
+    if (!expect(!rawOutput.empty(), "Comparison has an input preview")) { return false; }
     if (nrComparison) { setSliderDebugProperty(sliderId, "sliderDebug", true); }
     // Drive real ImGui input transitions through the overlay without depending on
     // the desktop's saved docking layout or moving the user's physical cursor.
@@ -178,30 +217,23 @@ bool EditorApplication::runSliderDebugSmokeTest()
             !expect(historyResources_.invalidationRevision() == historyRevision && !renderGraph_.dirty(),
                 "NR comparison toggles preserve history")) { return false; }
         overlayFrame(300, 175, false);
-        activePreviewOutput_ = cameraNode->name + ".color";
+        activePreviewOutput_ = rawOutput;
         if (!expect(viewportSliderDebugNode() == nullptr, "NR input preview has no comparison controls")) { return false; }
         spdlog::info("[Smoke Slider] Passed DLSS-NR toggle, GPU viewport, drag, axes, camera gestures and history retention");
         return true;
     }
 
-    auto cameraProperties = cameraNode->properties;
-    cameraProperties.merge_patch(cameraNode->runtimeProperties);
+    auto cameraProperties = viewportCameraProperties();
     cameraProperties["camera"]["eye"][0] = cameraProperties["camera"]["eye"][0].get<float>() + 0.5f;
-    applyBunnyCameraProperties(cameraProperties, "Smoke camera");
-    uint32_t linkedCameras = 0;
-    for (const auto& candidate : renderGraph_.nodes()) {
-        if (candidate.properties.value("cameraSyncGroup", "") != "LookDevComparison") { continue; }
-        ++linkedCameras;
-        if (!expect(candidate.runtimeProperties["camera"] == cameraProperties["camera"],
-                "Viewport camera synchronizes both BSDF paths")) { return false; }
-    }
-    if (!expect(linkedCameras >= 2, "Comparison contains linked cameras")) { return false; }
+    applyViewportCameraProperties(cameraProperties, "Smoke camera");
+    if (!expect(viewportView_.cameraProperties() == cameraProperties["camera"],
+            "Comparison uses the shared viewport camera")) { return false; }
     if (!expect(historyResources_.invalidationRevision() > historyRevision, "Camera movement resets accumulation")) { return false; }
-    activePreviewOutput_ = cameraNode->name + ".color";
+    activePreviewOutput_ = rawOutput;
     if (!expect(viewportSliderDebugNode() == nullptr && !overlayFrame(300, 175, true),
             "Raw producer preview has no comparison interaction")) { return false; }
     overlayFrame(300, 175, false);
-    spdlog::info("[Smoke Slider] Passed GPU viewport, drag, endpoints, axes, camera gestures, linked cameras and history retention");
+    spdlog::info("[Smoke Slider] Passed GPU viewport, drag, endpoints, axes, camera gestures, shared view and history retention");
     return true;
 }
 

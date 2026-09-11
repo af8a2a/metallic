@@ -68,7 +68,8 @@ private:
     void drawSceneListTab();
     void drawSceneListSelectable(const char* label, int32_t index, int32_t type);
     render::RenderGraphNode* activePreviewRenderGraphNode();
-    render::RenderGraphNode* viewportCameraRenderGraphNode();
+    render::RenderGraphProperties viewportCameraProperties() const;
+    void initializeViewportView();
     bool drawRuntimeSettingsForNode(
         render::RenderGraphNode& node,
         bool hideCameraSettings,
@@ -78,7 +79,6 @@ private:
     void drawSliderDebugControls();
     bool drawSliderDebugOverlay(const ImVec2& min, const ImVec2& max);
     void setSliderDebugProperty(uint32_t nodeId, const char* key, render::RenderGraphProperties value);
-    void syncCameraGroup(const render::RenderGraphNode& source);
     void handleViewportCameraControls(const ImVec2& min, const ImVec2& max);
     void drawViewportObjectHandles(const ImVec2& min, const ImVec2& max);
     void drawViewportGizmo(const ImVec2& min, const ImVec2& max);
@@ -132,8 +132,7 @@ private:
         std::string value = {});
     void drawUnsavedSceneModal();
     void executePendingSceneAction();
-    void applyRuntimeNodeProperties(uint32_t nodeId, render::RenderGraphProperties properties, const char* status);
-    void applyBunnyCameraProperties(render::RenderGraphProperties properties, const char* status);
+    void applyViewportCameraProperties(render::RenderGraphProperties properties, const char* status);
     void drawRenderGraphEditorWindow();
     void drawRenderGraphPanel();
     void drawRenderGraphSettingsPanel();
@@ -253,6 +252,7 @@ private:
     std::vector<std::unique_ptr<render::SwapchainSemaphore>> renderFinishedSemaphores_;
     render::RenderSubsystemHost subsystemHost_;
     render::RenderWorld renderWorld_;
+    render::RenderView viewportView_;
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
     std::unique_ptr<render::RenderDebugRuntime> debugRuntime_;
     render::HistoryResourceManager historyResources_;

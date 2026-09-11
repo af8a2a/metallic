@@ -12,6 +12,7 @@ struct SceneProbeState {
     uint32_t executions = 0;
     bool failConsumer = false;
     std::unordered_map<std::string, uint64_t> identities;
+    std::unordered_map<std::string, bool> views;
 };
 SceneProbeState probe;
 
@@ -44,6 +45,7 @@ public:
         }
         identity_ = context.runtimeScene->resourceIdentity();
         materialRevision_ = context.runtimeScene->materialRevision();
+        hasView_ = context.renderView != nullptr;
         if (consumer_ && probe.failConsumer) {
             log = "Injected consumer scene preparation failure";
             return render::makeError(render::Error::Failure);
@@ -53,6 +55,8 @@ public:
     render::Result execute(render::RenderGraphExecutionContext& context) override
     {
         ++probe.executions;
+        if (hasView_ != (context.viewConstants() != nullptr)) { return render::makeError(render::Error::Failure); }
+        probe.views[context.passName()] = hasView_;
         if (context.runtimeScene() == nullptr || identity_ != context.runtimeScene()->resourceIdentity() ||
             materialRevision_ != context.runtimeScene()->materialRevision() ||
             render::runtimeSceneForPath(context.runtimeScene(), context.properties().value("path", "")) == nullptr) {
@@ -65,6 +69,7 @@ private:
     bool consumer_;
     uint64_t identity_ = 0;
     uint64_t materialRevision_ = 0;
+    bool hasView_ = false;
 };
 
 class RenderGraphSceneBindingContractTest final : public RhiTest {
@@ -93,7 +98,9 @@ public:
             graph.addEdge("Root.value", "Consumer.second");
             graph.markOutput("Consumer.value");
             graph.markOutput("Independent.value");
+            render::RenderView view;
             render::RenderGraphExecutor executor;
+            executor.bindRenderView(&view);
             executor.bindRuntimeScene(&first);
             std::string log;
             auto result = executor.compile(context.device, graph, 8, 8, log);
@@ -134,6 +141,9 @@ public:
                     executor.outputResource("Consumer.value") == originalOutput && originalOutput->buffer == originalBuffer;
             };
             if (!renderFrame() || !matches(first.resourceIdentity())) { return RhiTestResult::fail("Initial frame binding mismatch"); }
+            if (!probe.views["Root"] || !probe.views["Consumer"] || probe.views["Independent"]) {
+                return RhiTestResult::fail("World and independent asset view bindings");
+            }
             const uint32_t stableCompiles = probe.compiles;
             if (!renderFrame() || probe.compiles != stableCompiles) { return RhiTestResult::fail("Unchanged scene was recompiled"); }
             // Same object and path, new document identity, no graph dirty or rebind call.
@@ -178,6 +188,16 @@ public:
             result = rejected.compile(context.device, invalid, 8, 8, log);
             if (result || probe.compiles != beforeInvalid || log.find("same scene producer") == std::string::npos) {
                 return RhiTestResult::fail("Mixed scene input bundle was not rejected before preparation: " + log);
+            }
+            auto assetView = graph;
+            for (const auto edge : graph.edges()) {
+                if (edge.dstPass == "Consumer") {
+                    assetView.removeEdge(edge.id);
+                    assetView.addEdge("Independent.value", "Consumer." + edge.dstField);
+                }
+            }
+            if (!executor.compile(context.device, assetView, 8, 8, log) || !renderFrame() || probe.views["Consumer"]) {
+                return RhiTestResult::fail("Scene inputs must inherit the independent asset view: " + log);
             }
         }
         return RhiTestResult::pass("Both execute APIs: generation refresh, independent asset, inherited inputs, stable handles and preparation failure recovery");

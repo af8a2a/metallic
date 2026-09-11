@@ -7,6 +7,30 @@
 #include "../Lighting/OpenPBRDirectLighting.slang"
 #include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
 #include "../../Libraries/GPUDriven/MaterialBinningCommon.slang"
+#include "../../Libraries/Camera/ViewConstants.slang"
+
+ScenePathTracePush deferredViewPush()
+{
+    ScenePathTracePush push = METALLIC_CONSTANTS(ScenePathTracePush);
+#if METALLIC_GLOBAL_VIEW
+    ViewConstants view = METALLIC_RESOURCE(StructuredBuffer<ViewConstants>, 80)[0];
+    push.eye = view.current.eye;
+    push.center = view.current.center;
+    push.upProjection = view.current.upProjection;
+    push.viewport = view.current.viewport;
+    push.clipOrtho = view.current.clipOrtho;
+    push.previousEye = view.previous.eye;
+    push.previousCenter = view.previous.center;
+    push.previousUpProjection = view.previous.upProjection;
+    push.previousViewport = view.previous.viewport;
+    push.previousClipOrtho = view.previous.clipOrtho;
+    push.jitterOffsetX = view.jitter.x;
+    push.jitterOffsetY = view.jitter.y;
+    push.previousCameraValid = view.frame.y;
+    push.temporalJitter = view.frame.z;
+#endif
+    return push;
+}
 
 #define gVisibility METALLIC_RESOURCE(Texture2D<uint>, 60)
 #define gVisibilityDepth METALLIC_RESOURCE(Texture2D<float>, 61)
@@ -20,6 +44,10 @@
 #define gRasterMaterials METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewMaterial>, 69)
 #define gMaterialBins METALLIC_RESOURCE(StructuredBuffer<MaterialBin>, 70)
 #define gMaterialTiles METALLIC_RESOURCE(StructuredBuffer<MaterialTile>, 71)
+#if METALLIC_DEFERRED_UPSCALER_GUIDES
+#define gUpscalerMotion METALLIC_RESOURCE(RWTexture2D<float2>, 72)
+#define gUpscalerDepth METALLIC_RESOURCE(RWTexture2D<float>, 73)
+#endif
 
 float3 rasterWorldPosition(GPUDrivenPreviewInstance instance, float3 position)
 {
@@ -135,20 +163,28 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
 {
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float2 samplePixel = float2(pixel) + 0.5;
+    float2 rayPixel = samplePixel + float2(push.jitterOffsetX, push.jitterOffsetY);
     Ray ray;
-    ray.origin = rayOriginFromPixel(samplePixel, push);
-    ray.direction = rayDirectionFromPixel(samplePixel, push);
+    ray.origin = rayOriginFromPixel(rayPixel, push);
+    ray.direction = rayDirectionFromPixel(rayPixel, push);
     uint seed = hash(pixel.x + pixel.y * push.width +
         (push.enableAccumulation != 0u ? push.accumulationFrame * 0x9e3779b9u : 0u));
     HitInfo hit;
     float3 radiance;
+    bool hasSurface = reconstructVisibilitySurface(pixel, ray, push, hit);
+#if METALLIC_DEFERRED_UPSCALER_GUIDES
+    float deviceDepth = gVisibilityDepth.Load(int3(pixel, 0));
+    gUpscalerDepth[pixel] = push.clipOrtho.w > 0.5 ? 1.0 - deviceDepth : deviceDepth;
+    gUpscalerMotion[pixel] = hasSurface ? motionVectorToPrevious(hit.position, samplePixel, push)
+        : skyMotionVectorToPrevious(ray.direction, samplePixel, push);
+#endif
 #if MATERIAL_CLASS == 0
     radiance = environmentRadiance(ray.direction, push, true);
 #else
-    if (!reconstructVisibilitySurface(pixel, ray, push, hit)) {
+    if (!hasSurface) {
         radiance = environmentRadiance(ray.direction, push, true);
     }
-#if MATERIAL_CLASS < 0 || MATERIAL_CLASS == 4
+#if !METALLIC_REALTIME_DEFERRED && (MATERIAL_CLASS < 0 || MATERIAL_CLASS == 4)
     else if (gMaterials[hit.materialIndex].glassParams.x > 0.0 &&
         !openPbrDebugFlag(push, kOpenPBRDebugDisableTransmission) &&
         push.debugView == kOpenPBRDebugViewFinal) {
@@ -162,14 +198,14 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
         for (uint sample = 0u; sample < samples; ++sample) {
             float ignoredDistance;
             radiance += pathTraceOpenPBRWithPrimaryHit(ray,
-                primaryRayConeFromPixel(samplePixel, push), transmissionPush,
+                primaryRayConeFromPixel(rayPixel, push), transmissionPush,
                 seed, ignoredDistance, true, hit);
         }
         radiance /= float(samples);
     }
 #endif
     else {
-        radiance = shadeOpenPBRDirectSurface(ray, hit, samplePixel, push, seed, true,
+        radiance = shadeOpenPBRDirectSurface(ray, hit, rayPixel, push, seed, true,
             MATERIAL_CLASS == 1 ? 0 : (MATERIAL_CLASS == 2 ? 1 : -1),
             MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3);
     }
@@ -187,7 +223,7 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
 [numthreads(8, 8, 1)]
 void visibilityBufferDeferredMain(uint3 dispatchId : SV_DispatchThreadID)
 {
-    ScenePathTracePush push = METALLIC_CONSTANTS(ScenePathTracePush);
+    ScenePathTracePush push = deferredViewPush();
     shadeVisibilityPixel(dispatchId.xy, push);
 }
 
@@ -195,7 +231,7 @@ void visibilityBufferDeferredMain(uint3 dispatchId : SV_DispatchThreadID)
 [numthreads(32, 1, 1)]
 void visibilityBufferDeferredBinnedMain(uint3 group : SV_GroupID)
 {
-    ScenePathTracePush push = METALLIC_CONSTANTS(ScenePathTracePush);
+    ScenePathTracePush push = deferredViewPush();
     MaterialBin bin = gMaterialBins[push.deferredSettings & 0xffffu];
     uint index = group.y * kMaterialBinMaxGroupsX + group.x;
     if (index >= bin.count) { return; }

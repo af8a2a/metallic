@@ -60,6 +60,20 @@ source dependencies and disabled tests. `RelWithDebInfo` enables optimization
 and native debug symbols. Each configuration has its own CMake cache and output
 directory.
 
+The `metallic-relwithdebinfo` preset also enables Nsight Graphics capture by
+default in the editor and sample executables, equivalent to launching with
+`--nsight-capture`. Shaders include source paths and line information (`-g1`)
+while retaining optimization (`capture-symbols` mode). Full variable debug
+information can make optimized OpenPBR shader compilation take minutes; use
+`--nsight-shader-debug` for full, unoptimized shader debugging (`-g2 -O0`).
+Capture export requires an installed
+Nsight Graphics SDK and runtime.
+
+To disable this launch default, configure with
+`-DMETALLIC_DEFAULT_NSIGHT_CAPTURE=OFF`, or set the runtime environment variable
+`METALLIC_NSIGHT_GRAPHICS_CAPTURE=0`. An explicit `--nsight-capture` still takes
+precedence over the environment variable. Other presets keep capture opt-in.
+
 ```powershell
 cmake --preset metallic-release
 cmake --build --preset metallic-release --parallel 8

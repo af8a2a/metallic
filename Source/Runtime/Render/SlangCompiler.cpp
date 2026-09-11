@@ -41,7 +41,7 @@ namespace {
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 2;
-constexpr uint32_t kShaderCacheRequestVersion = 3;
+constexpr uint32_t kShaderCacheRequestVersion = 4;
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
@@ -876,6 +876,9 @@ Result compileSlangShaderToSpirv(
         return {};
     }
 
+    const auto compileStart = std::chrono::steady_clock::now();
+    spdlog::info("[Slang] Begin compile {}.{} (debugMode={})",
+        desc.moduleName, desc.entryPointName, static_cast<uint32_t>(debugMode));
     Slang::ComPtr<slang::IGlobalSession> globalSession;
     if (SLANG_FAILED(slang::createGlobalSession(globalSession.writeRef())) || globalSession == nullptr) {
         return makeError(Error::Failure);
@@ -923,7 +926,11 @@ Result compileSlangShaderToSpirv(
             .name = slang::CompilerOptionName::DebugInformation,
             .value = slang::CompilerOptionValue{
                 .kind = slang::CompilerOptionValueKind::Int,
-                .intValue0 = static_cast<int32_t>(SLANG_DEBUG_INFO_LEVEL_STANDARD),
+                // Capture needs source/line correlation. Full variable debug IR
+                // causes pathological optimized compile times for large OpenPBR
+                // kernels; reserve it for explicit unoptimized shader debugging.
+                .intValue0 = static_cast<int32_t>(debugMode == SlangShaderDebugMode::CaptureSymbols
+                    ? SLANG_DEBUG_INFO_LEVEL_MINIMAL : SLANG_DEBUG_INFO_LEVEL_STANDARD),
             },
         });
         if (debugMode == SlangShaderDebugMode::ShaderDebug) {
@@ -1060,6 +1067,10 @@ Result compileSlangShaderToSpirv(
                 cachePath.string());
         }
     }
+    spdlog::info("[Slang] End compile {}.{} in {:.2f} ms ({} bytes)",
+        desc.moduleName, desc.entryPointName,
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - compileStart).count(), byteSize);
     return {};
 }
 

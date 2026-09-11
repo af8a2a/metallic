@@ -471,7 +471,20 @@ public:
         GRID_CHECK(data.cellLights(5) == std::vector<uint32_t>({1, 3}));
         GRID_CHECK(scene.prepareView(view, 0, {.width = desc.width, .height = desc.height}));
         GRID_CHECK(grid.snapshot(scene) == nullptr);
-        return RhiTestResult::pass("GPU point/AABB and spot-cone intersections, source-index holes, global lights and camera invalidation");
+        // A light just across a tile edge can illuminate a jittered sample in
+        // the neighboring tile. Guard bands must cover it without shifting lookup.
+        desc = gridDesc();
+        desc.orthoHeight = 4.0f;
+        lights = {makeGridLight("point", float3(0.015625f, 1.0f, -2.0f), 0.001)};
+        GRID_CHECK(scene.syncLights({}, lights));
+        result = harness.run(grid, scene, view, 0, desc, data);
+        if (!result.passed) { return result; }
+        GRID_CHECK(data.cells[0].count == 0);
+        desc.jitterGuardPixels = 1.0f;
+        result = harness.run(grid, scene, view, 0, desc, data);
+        if (!result.passed) { return result; }
+        GRID_CHECK(data.cells[0].count == 1);
+        return RhiTestResult::pass("GPU light intersections, stable source slots, globals, camera invalidation and temporal jitter guard bands");
     }
 };
 

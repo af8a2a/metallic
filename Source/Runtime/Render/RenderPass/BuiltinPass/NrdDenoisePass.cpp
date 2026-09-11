@@ -166,7 +166,8 @@ public:
             0,
             0,
             std::numeric_limits<uint32_t>::max());
-        if (lastDenoiserMode_ != denoiserMode || lastResetSerial_ != resetSerial) {
+        if (lastDenoiserMode_ != denoiserMode || lastResetSerial_ != resetSerial ||
+            (context.viewConstants() != nullptr && context.viewConstants()->frame[1] == 0)) {
             frameIndex_ = 0;
             hasPreviousCamera_ = false;
             lastDenoiserMode_ = denoiserMode;

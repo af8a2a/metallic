@@ -25,6 +25,7 @@ struct ClusterLightGridDesc {
     float zFar = 1000.0f;
     // Positive values select orthographic projection and linear Z slices.
     float orthoHeight = 0.0f;
+    float jitterGuardPixels = 0.0f;
 };
 
 // Shared with ClusterLightGridCommon.slang. No exposure or metadata element is
@@ -37,7 +38,7 @@ struct alignas(16) ClusterLightGridParams {
     std::array<float, 4> upExtent{}; // up.xyz, tan(fov/2) or half ortho height
     std::array<float, 4> forwardExtent{}; // forward.xyz, horizontal extent
     // Perspective: log2(depth * B + O) * S. Orthographic: (depth-near)*S.
-    std::array<float, 4> zParams{}; // B, O, S, reserved
+    std::array<float, 4> zParams{}; // B, O, S, pixel guard band for temporal jitter
     std::array<uint32_t, 4> counts{}; // bounded local, directional, unbounded local, source slots
 };
 static_assert(sizeof(ClusterLightGridParams) == 128);

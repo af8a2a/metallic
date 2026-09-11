@@ -13,6 +13,11 @@ enum class HistorySlot : uint8_t {
     Previous,
 };
 
+enum class HistoryInvalidationReason : uint8_t {
+    Discontinuity,
+    CameraMotion,
+};
+
 struct HistoryTextureRef {
     Texture* texture = nullptr;
     TextureView* view = nullptr;
@@ -45,8 +50,9 @@ public:
     void beginFrame(uint64_t frameIndex);
     uint64_t frameIndex() const;
     void invalidate(std::string_view name);
-    void invalidateAll();
+    void invalidateAll(HistoryInvalidationReason reason = HistoryInvalidationReason::Discontinuity);
     uint64_t invalidationRevision() const;
+    uint64_t reprojectionInvalidationRevision() const;
 
     Result ensureTexture(
         std::string_view name,

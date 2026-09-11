@@ -73,6 +73,9 @@ public:
     Result waitForSubmittedWork(uint64_t timeoutNanoseconds = UINT64_MAX);
     void bindRuntimeScene(const scene::Scene* scene);
     void bindRenderWorld(RenderWorld* world);
+    // One view per executor; separate viewports/executors retain independent history.
+    void bindRenderView(RenderView* view);
+    RenderView* renderView();
     RenderSubsystemHost* subsystemHost();
     const RenderSubsystemHost* subsystemHost() const;
     Result beginSceneResourcePreparation(

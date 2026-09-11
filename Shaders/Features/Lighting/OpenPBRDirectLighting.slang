@@ -5,6 +5,32 @@
 
 #define gEnvironmentIrradianceSH METALLIC_RESOURCE(StructuredBuffer<float4>, 51)
 
+#if METALLIC_DEFERRED_LIGHT_GRID
+#include "../../Libraries/Lighting/ClusterLightGridCommon.slang"
+#define gDeferredGridParams METALLIC_RESOURCE(StructuredBuffer<ClusterLightGridParams>, 75)
+#define gDeferredGridLights METALLIC_RESOURCE(StructuredBuffer<GpuPunctualLight>, 76)
+#define gDeferredGridCandidates METALLIC_RESOURCE(StructuredBuffer<uint>, 77)
+#define gDeferredGridCells METALLIC_RESOURCE(StructuredBuffer<ClusterLightGridCell>, 78)
+#define gDeferredGridIndices METALLIC_RESOURCE(StructuredBuffer<uint>, 79)
+#endif
+
+#if METALLIC_REALTIME_DEFERRED
+#include "../../Libraries/Lighting/EnvironmentPrefilter.slang"
+#define gEnvironmentSpecular METALLIC_RESOURCE(StructuredBuffer<float4>, 74)
+
+float3 realtimeEnvironmentSpecular(float3 direction, float roughness, ScenePathTracePush push)
+{
+    float3 local = environmentLocalDirectionToWorld(direction, -push.environmentRotationRadians);
+    float level = saturate(roughness) * float(kEnvironmentFilterLayers - 1u);
+    uint lo = uint(floor(level)), hi = min(lo + 1u, kEnvironmentFilterLayers - 1u);
+    // Retain the original HDRI resolution for mirror reflections.
+    float3 a = lo == 0u ? environmentRadiance(direction, push, false)
+        : environmentFilterLayer(gEnvironmentSpecular, local, lo) * push.environmentIntensity;
+    float3 b = environmentFilterLayer(gEnvironmentSpecular, local, hi) * push.environmentIntensity;
+    return lerp(a, b, frac(level));
+}
+#endif
+
 float3 environmentDiffuseIrradiance(float3 normal, ScenePathTracePush push)
 {
     if (push.environmentMode == kEnvironmentModeDisabled || push.environmentIntensity <= 0.0) { return float3(0.0); }
@@ -62,8 +88,23 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
         OpenPBR_BaseRgbWavelengths_nm, OpenPBR_VacuumIor, viewDirection);
     float3 radiance = max(prepared.emission, float3(0.0));
     if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
-        for (uint i = 0u; i < punctualLightCount(); ++i) {
+#if METALLIC_DEFERRED_LIGHT_GRID
+        ClusterLightGridParams grid = gDeferredGridParams[0];
+        ClusterLightGridLookup lookup = clusterLightGridLookup(grid, gDeferredGridCells,
+            uint2(samplePixel), cameraLinearDepth(hit.position, push));
+        uint count = lookup.count + clusterLightGridGlobalLightCount(grid);
+#else
+        uint count = punctualLightCount();
+#endif
+        for (uint i = 0u; i < count; ++i) {
+#if METALLIC_DEFERRED_LIGHT_GRID
+            uint source = i < lookup.count
+                ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, i)
+                : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, i - lookup.count);
+            PunctualLightSample light = samplePunctualLightData(gDeferredGridLights[source], hit.position);
+#else
             PunctualLightSample light = samplePunctualLight(i, hit.position);
+#endif
             float3 bsdf = max(openpbr_get_sum_of_diffuse_specular(
                 openpbr_eval(prepared, light.direction)), float3(0.0));
             if (luminanceMax(bsdf * light.illuminance) <= 0.0) { continue; }
@@ -72,6 +113,32 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
             radiance += bsdf * light.illuminance * openPbrDirectVisibility(origin, light.direction, distance, push);
         }
     }
+#if METALLIC_REALTIME_DEFERRED
+    if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
+        float3 normal = hit.normal;
+        float roughness = saturate(surface.inputs.specular_roughness);
+        float metalness = saturate(surface.inputs.base_metalness);
+        float ior = max(surface.inputs.specular_ior, 1.0);
+        float dielectricF0 = ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
+        float3 f0 = lerp(dielectricF0 * surface.inputs.specular_color * surface.inputs.specular_weight,
+            surface.inputs.base_color, metalness);
+        float3 specularWeight = saturate(approxSpecularIntegralGGX(f0, max(roughness * roughness, 0.0001),
+            saturate(dot(normal, viewDirection))));
+        float diffuseWeight = surface.inputs.base_weight * (1.0 - metalness) *
+            (1.0 - surface.inputs.transmission_weight);
+        float3 diffuse = environmentDiffuseIrradiance(normal, push) / kPi *
+            surface.inputs.base_color * diffuseWeight * (1.0 - specularWeight);
+        float3 specular = realtimeEnvironmentSpecular(reflect(-viewDirection, normal), roughness, push) * specularWeight;
+        float3 transmitted = float3(0.0);
+        float3 refraction = refract(-viewDirection, normal, hit.frontFace ? 1.0 / ior : ior);
+        if (dot(refraction, refraction) > 0.0 && surface.inputs.transmission_weight > 0.0) {
+            transmitted = realtimeEnvironmentSpecular(refraction, roughness, push) *
+                surface.inputs.transmission_color * surface.inputs.transmission_weight *
+                (1.0 - metalness) * (1.0 - specularWeight);
+        }
+        radiance += (diffuse + specular + transmitted) * surface.occlusion;
+    }
+#else
     if (sampledEnvironment && push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
         float3 environment = float3(0.0);
         float3 rotation = float3(rand(seed), rand(seed), rand(seed));
@@ -98,5 +165,6 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
         radiance += surface.inputs.base_color * diffuseWeight * surface.occlusion *
             environmentDiffuseIrradiance(normal, push) / kPi;
     }
+#endif
     return radiance;
 }

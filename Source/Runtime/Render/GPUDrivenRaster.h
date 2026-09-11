@@ -20,8 +20,14 @@ struct alignas(16) VisibilityBufferFrameInfo {
     uint32_t hasStreamGeometry = 0;
     uint64_t sceneIdentity = 0;
     uint64_t reserved = 0;
+    uint32_t lightGridViewIndex = 0;
+    uint32_t lightGridViewGeneration = 0;
+    uint32_t lightGridFrameSlot = 0;
+    uint32_t temporalJitter = 0;
+    float jitter[2] = {};
+    uint64_t frameIndex = 0;
 };
-static_assert(sizeof(VisibilityBufferFrameInfo) == 112);
+static_assert(sizeof(VisibilityBufferFrameInfo) == 144);
 
 inline constexpr uint32_t kVisibilityTriangleBits = 7u;
 inline constexpr uint32_t kVisibilityTriangleMask =

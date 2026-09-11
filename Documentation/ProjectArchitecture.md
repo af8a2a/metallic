@@ -419,7 +419,7 @@ NsightEvents.h 在包含 `<nvtx3/nvToolsExt.h>` 时对 Windows 临时定义 `WIN
 
 ### 12.2 Nsight Graphics 捕获与 Shader 调试
 
-Profiler 可以通过 Nsight Graphics SDK 导出当前 View 的 Graphics Capture。使用 `--nsight-capture` 启动时，Metallic 会在 Vulkan 初始化前加载 Nsight Capture runtime，并为 Slang 生成的 SPIR-V 嵌入保留优化的 `NonSemantic.Shader.DebugInfo.100` 源码调试信息。应用启动后，在 Profiler 中点击 **Export Current View Capture** 捕获下一帧完整 View：
+Profiler 可以通过 Nsight Graphics SDK 导出当前 View 的 Graphics Capture。使用 `--nsight-capture` 启动时，Metallic 会在 Vulkan 初始化前加载 Nsight Capture runtime，并为 Slang 生成的 SPIR-V 嵌入保留优化的源码路径及行号信息（`-g1`，`OpString` / `OpLine`，源码从本地路径读取）。完整变量调试信息 `NonSemantic.Shader.DebugInfo.100` 由 `--nsight-shader-debug` 显式开启，同时关闭 shader 优化，避免大型 OpenPBR shader 在默认 capture 模式下出现分钟级编译等待。应用启动后，在 Profiler 中点击 **Export Current View Capture** 捕获下一帧完整 View：
 
 ```powershell
 # Profiler 导出带优化符号的 Graphics Capture

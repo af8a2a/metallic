@@ -634,6 +634,7 @@ public:
             runtimeBoolSetting("meshletFrustumCull", "Meshlet Sphere / Frustum Cull", true),
             runtimeBoolSetting("meshletNormalConeCull", "Meshlet Normal Cone Cull", true),
             runtimeBoolSetting("freezeCullingCamera", "Freeze Culling Camera", false),
+            runtimeBoolSetting("temporalJitter", "DLSS Temporal Jitter", false, true),
         };
         appendCameraRuntimeSettings(
             settings,
@@ -965,32 +966,35 @@ public:
              ++bucketIndex) {
             const bool masked = bucketIndex >= 2u;
             const bool doubleSided = (bucketIndex & 1u) != 0u;
-            result = context.device->createGraphicsPipeline(
-                GraphicsPipelineDesc{
-                    .taskShader = amplificationShader_.get(),
-                    .meshShader = masked ? maskedMeshShader_.get() : meshShader_.get(),
-                    .fragmentShader = masked ? maskedFragmentShader_.get() : fragmentShader_.get(),
-                    .taskRequiredSubgroupSize = amplificationWave32_
-                        ? kGPUDrivenPreviewAmplificationGroupSize
-                        : 0u,
-                    .taskRequireFullSubgroups = amplificationWave32_,
-                    .colorFormat = Format::R32Uint,
-                    .depthStencilFormat = Format::D32Sfloat,
-                    .rasterization = RasterizationState{
-                        .cullMode = doubleSided ? CullMode::None : CullMode::Back,
-                        // visibilityBufferMeshMain flips clip-space Y while the
-                        // positive-height Vulkan viewport flips winding again.
-                        .frontFace = FrontFace::CounterClockwise,
-                    },
-                    .depthStencil = DepthStencilState{
-                        .depthTestEnable = true,
-                        .depthWriteEnable = true,
-                        .depthCompareOp = depthCompareOp(kDefaultReversedZ),
-                    },
-                    .usesBindlessHeap = true,
-                    .pipelineCache = pipelineCache_.get(),
+            GraphicsPipelineDesc pipelineDesc{
+                .taskShader = amplificationShader_.get(),
+                .meshShader = masked ? maskedMeshShader_.get() : meshShader_.get(),
+                .fragmentShader = masked ? maskedFragmentShader_.get() : fragmentShader_.get(),
+                .taskRequiredSubgroupSize = amplificationWave32_
+                    ? kGPUDrivenPreviewAmplificationGroupSize
+                    : 0u,
+                .taskRequireFullSubgroups = amplificationWave32_,
+                .colorFormat = Format::R32Uint,
+                .depthStencilFormat = Format::D32Sfloat,
+                .rasterization = RasterizationState{
+                    .cullMode = doubleSided ? CullMode::None : CullMode::Back,
+                    // visibilityBufferMeshMain flips clip-space Y while the
+                    // positive-height Vulkan viewport flips winding again.
+                    .frontFace = FrontFace::CounterClockwise,
                 },
-                visibilityPipelines_[bucketIndex]);
+                .depthStencil = DepthStencilState{
+                    .depthTestEnable = true,
+                    .depthWriteEnable = true,
+                    .depthCompareOp = depthCompareOp(kDefaultReversedZ),
+                },
+                .usesBindlessHeap = true,
+                .pipelineCache = pipelineCache_.get(),
+            };
+            result = context.device->createGraphicsPipeline(pipelineDesc, visibilityPipelines_[bucketIndex]);
+            if (result) {
+                pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(false);
+                result = context.device->createGraphicsPipeline(pipelineDesc, standardZVisibilityPipelines_[bucketIndex]);
+            }
             if (!result || visibilityPipelines_[bucketIndex] == nullptr) {
                 log += resultMessage(
                     "createGraphicsPipeline(VisibilityBufferPass visibility bucket)",
@@ -1127,7 +1131,7 @@ public:
                 observedHistoryInvalidationRevision_ != invalidationRevision;
             observedHistoryInvalidationRevision_ = invalidationRevision;
         }
-        result = prepareGPUSceneView(*gpuSceneSubsystem, cameraCut, context.properties());
+        result = prepareGPUSceneView(*gpuSceneSubsystem, cameraCut, context.properties(), context.viewConstants());
         if (!result) {
             return result;
         }
@@ -1146,7 +1150,7 @@ public:
         result = updateParamsBuffer(
             context.width(),
             context.height(),
-            context.properties());
+            context.properties(), context.frameIndex(), context.viewConstants());
         if (!result) {
             return result;
         }
@@ -1163,6 +1167,13 @@ public:
         info.residentRecordCount = residentRecordCapacity_;
         info.hasStreamGeometry = streamEnabled_ ? 1u : 0u;
         info.sceneIdentity = sceneResourceIdentity_;
+        info.lightGridViewIndex = gpuSceneView_.index;
+        info.lightGridViewGeneration = gpuSceneView_.generation;
+        info.lightGridFrameSlot = activeFrameSlot_;
+        info.temporalJitter = boolProperty(&context.properties(), "temporalJitter", false) ? 1u : 0u;
+        info.jitter[0] = previousParams_.renderEye[3];
+        info.jitter[1] = previousParams_.renderCenter[3];
+        info.frameIndex = context.frameIndex();
         void* mappedInfo = rasterInfo.buffer()->map();
         if (mappedInfo == nullptr) { return makeError(Error::Failure); }
         std::memcpy(mappedInfo, &info, sizeof(info));
@@ -1385,6 +1396,7 @@ private:
         streamCullResetShader_.reset();
         streamInstanceCullShader_.reset();
         streamVisibilityPipeline_.reset();
+        standardZStreamVisibilityPipeline_.reset();
         streamCullResetPipeline_.reset();
         streamInstanceCullPipeline_.reset();
         streamVisibilityImageHandle_ = {};
@@ -1823,25 +1835,28 @@ private:
         if (!result) {
             return result;
         }
-        result = device.createGraphicsPipeline(
-            GraphicsPipelineDesc{
-                .meshShader = streamMeshShader_.get(),
-                .fragmentShader = streamFragmentShader_.get(),
-                .colorFormat = Format::R32Uint,
-                .depthStencilFormat = Format::D32Sfloat,
-                .rasterization = RasterizationState{
-                    .cullMode = CullMode::Back,
-                    .frontFace = FrontFace::CounterClockwise,
-                },
-                .depthStencil = DepthStencilState{
-                    .depthTestEnable = true,
-                    .depthWriteEnable = true,
-                    .depthCompareOp = depthCompareOp(kDefaultReversedZ),
-                },
-                .usesBindlessHeap = true,
-                .pipelineCache = pipelineCache_.get(),
+        GraphicsPipelineDesc pipelineDesc{
+            .meshShader = streamMeshShader_.get(),
+            .fragmentShader = streamFragmentShader_.get(),
+            .colorFormat = Format::R32Uint,
+            .depthStencilFormat = Format::D32Sfloat,
+            .rasterization = RasterizationState{
+                .cullMode = CullMode::Back,
+                .frontFace = FrontFace::CounterClockwise,
             },
-            streamVisibilityPipeline_);
+            .depthStencil = DepthStencilState{
+                .depthTestEnable = true,
+                .depthWriteEnable = true,
+                .depthCompareOp = depthCompareOp(kDefaultReversedZ),
+            },
+            .usesBindlessHeap = true,
+            .pipelineCache = pipelineCache_.get(),
+        };
+        result = device.createGraphicsPipeline(pipelineDesc, streamVisibilityPipeline_);
+        if (result) {
+            pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(false);
+            result = device.createGraphicsPipeline(pipelineDesc, standardZStreamVisibilityPipeline_);
+        }
         if (!result || streamVisibilityPipeline_ == nullptr) {
             log += resultMessage(
                 "createGraphicsPipeline(VisibilityBufferPass stream visibility)",
@@ -2299,6 +2314,7 @@ private:
         LoadOp loadOp,
         bool projectWithCullingCamera = false)
     {
+        const bool reversedZ = (projectWithCullingCamera ? previousParams_.clipOrtho[3] : previousParams_.renderClipOrtho[3]) > 0.5f;
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -2317,7 +2333,7 @@ private:
             .state = ResourceState::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
-            .clearDepth = depthClearValue(kDefaultReversedZ),
+            .clearDepth = depthClearValue(reversedZ),
         };
         commandBuffer.beginRendering(RenderingDesc{
             .renderArea = renderArea,
@@ -2338,7 +2354,7 @@ private:
         for (uint32_t bucketIndex = 0;
              bucketIndex < kGPUDrivenPreviewDrawBucketCount;
              ++bucketIndex) {
-            commandBuffer.bindGraphicsPipeline(*visibilityPipelines_[bucketIndex]);
+            commandBuffer.bindGraphicsPipeline(*(reversedZ ? visibilityPipelines_[bucketIndex] : standardZVisibilityPipelines_[bucketIndex]));
             const GPUDrivenPreviewUserPush push =
                 makePush(passIndex, bucketIndex, projectWithCullingCamera);
             commandBuffer.pushBindlessData(&push, sizeof(push));
@@ -2439,47 +2455,46 @@ private:
     Result prepareGPUSceneView(
         GPUSceneSubsystem& subsystem,
         bool cameraCut,
-        const RenderGraphProperties& frameProperties)
+        const RenderGraphProperties& frameProperties,
+        const ViewConstants* view)
     {
         GPUSceneViewPrepareInfo prepareInfo{
             .width = frameWidth_,
             .height = frameHeight_,
-            .cameraCut = cameraCut,
+            .cameraCut = cameraCut || (view != nullptr && view->frame[1] == 0),
             .freezeCullingCamera = boolProperty(
                 &frameProperties,
                 "freezeCullingCamera",
                 false),
         };
         GPUDrivenPreviewGpuParams camera;
-        // View preparation precedes the parameter upload. Reuse its camera
-        // builder and the same frozen snapshot that updateParamsBuffer selects.
-        if (prepareInfo.freezeCullingCamera && freezeCullingCamera_ && frozenCullingCameraValid_) {
-            camera = frozenCullingCamera_;
-        } else {
-            buildParams(frameWidth_, frameHeight_, frameProperties, drawBounds_,
-                baseMeshletRange_, lodLevelRanges_, instanceCount_, hzbMipCount_,
-                frameIndex_, hzbValid_, nullptr, materialTextureCount_, materialCount_, camera);
-        }
+        // Light visibility follows the render camera even while geometry culling is frozen.
+        buildParams(frameWidth_, frameHeight_, frameProperties, drawBounds_,
+            baseMeshletRange_, lodLevelRanges_, instanceCount_, hzbMipCount_,
+            frameIndex_, hzbValid_, nullptr, materialTextureCount_, materialCount_, camera);
+        if (view != nullptr) { applyViewCamera(view->current, camera); }
         lightGridDesc_ = ClusterLightGridDesc{
             .width = frameWidth_,
             .height = frameHeight_,
             .eye = float3(camera.eye[0], camera.eye[1], camera.eye[2]),
             .center = float3(camera.center[0], camera.center[1], camera.center[2]),
             .up = float3(camera.upProjection[0], camera.upProjection[1], camera.upProjection[2]),
-            // A frozen camera retains its projection aspect across viewport resizes.
+            // Light coverage always uses the current render aspect.
             .aspect = std::max(camera.viewport[0], 0.001f),
             .fovRadians = std::clamp(camera.viewport[3], 0.017453292f, 3.12413936f),
             .zNear = std::max(camera.clipOrtho[0], 0.0001f),
             .zFar = std::max(camera.clipOrtho[1], std::max(camera.clipOrtho[0], 0.0001f) + 0.0001f),
             .orthoHeight = camera.upProjection[3] > 0.5f
                 ? std::max(camera.clipOrtho[2], 0.0002f) : 0.0f,
+            .jitterGuardPixels = boolProperty(&frameProperties, "temporalJitter", false) ? 1.0f : 0.0f,
         };
-        if (boolProperty(&frameProperties, "instanceFrustumCull", true)) {
-            prepareInfo.lightFrustumPlanes = gpuSceneLightFrustumPlanes(
-                lightGridDesc_.eye, lightGridDesc_.center, lightGridDesc_.up,
-                lightGridDesc_.aspect, lightGridDesc_.fovRadians,
-                lightGridDesc_.zNear, lightGridDesc_.zFar, lightGridDesc_.orthoHeight);
-        }
+        const float guardX = 1.0f + 2.0f * lightGridDesc_.jitterGuardPixels / frameWidth_;
+        const float guardY = 1.0f + 2.0f * lightGridDesc_.jitterGuardPixels / frameHeight_;
+        prepareInfo.lightFrustumPlanes = gpuSceneLightFrustumPlanes(
+            lightGridDesc_.eye, lightGridDesc_.center, lightGridDesc_.up,
+            lightGridDesc_.aspect * guardX / guardY,
+            2.0f * std::atan(std::tan(lightGridDesc_.fovRadians * 0.5f) * guardY),
+            lightGridDesc_.zNear, lightGridDesc_.zFar, lightGridDesc_.orthoHeight * guardY);
         if (!subsystem.prepareView(gpuSceneView_, prepareInfo)) {
             return makeError(Error::InvalidArgument);
         }
@@ -2864,6 +2879,7 @@ private:
         if (!result) {
             return result;
         }
+        const bool reversedZ = previousParams_.renderClipOrtho[3] > 0.5f;
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -2882,7 +2898,7 @@ private:
             .state = ResourceState::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
-            .clearDepth = depthClearValue(kDefaultReversedZ),
+            .clearDepth = depthClearValue(reversedZ),
         };
         commandBuffer.beginRendering(RenderingDesc{
             .renderArea = renderArea,
@@ -2900,7 +2916,7 @@ private:
         });
         commandBuffer.setScissor(renderArea);
         commandBuffer.bindBindlessHeap(*streamRuntime_.bindlessHeap());
-        commandBuffer.bindGraphicsPipeline(*streamVisibilityPipeline_);
+        commandBuffer.bindGraphicsPipeline(*(reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_));
         MeshletStreamUserPush push = streamRuntime_.userPush();
         push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
         commandBuffer.pushBindlessData(&push, sizeof(push));
@@ -4242,7 +4258,9 @@ private:
     Result updateParamsBuffer(
         uint32_t width,
         uint32_t height,
-        const RenderGraphProperties& properties)
+        const RenderGraphProperties& properties,
+        uint64_t temporalFrameIndex,
+        const ViewConstants* view)
     {
         GPUDrivenPreviewFrameSlotResources& slot = activeFrameResources();
         if (slot.paramsBuffer == nullptr || !drawBounds_.valid) {
@@ -4280,6 +4298,12 @@ private:
             materialCount_,
             params);
 
+        if (view != nullptr) {
+            applyViewCamera(view->current, params);
+            copyCullingCameraToRender(params);
+            if (view->frame[1] == 0) { invalidateHzbHistory(); params.hzbValid = 0; }
+        }
+
         if (freezeCullingCamera &&
             (!frozenCullingCameraValid_ || freezeStateChanged)) {
             frozenCullingCamera_ = params;
@@ -4292,6 +4316,13 @@ private:
         const GPUDrivenPreviewGpuParams& previousCullingCamera =
             previousCameraValid_ ? previousParams_ : params;
         copyCullingCameraToPrevious(previousCullingCamera, params);
+
+        // The unused render camera w components carry pixel jitter. Culling and
+        // HZB cameras remain unjittered; consumers receive the same sample offset.
+        const auto jitter = view != nullptr ? std::array<float, 2>{view->jitter[0], view->jitter[1]} :
+            boolProperty(&properties, "temporalJitter", false) ? dlssTemporalJitter(temporalFrameIndex) : std::array<float, 2>{};
+        params.renderEye[3] = jitter[0];
+        params.renderCenter[3] = jitter[1];
 
         void* mapped = slot.paramsBuffer->map();
         if (mapped == nullptr) {
@@ -4351,11 +4382,13 @@ private:
     std::unique_ptr<ShaderModule> streamInstanceCullShader_;
     std::unique_ptr<PipelineCache> pipelineCache_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> visibilityPipelines_;
+    std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> standardZVisibilityPipelines_;
     std::unique_ptr<GraphicsPipeline> compositePipeline_;
     std::unique_ptr<ComputePipeline> resetPipeline_;
     std::unique_ptr<ComputePipeline> instanceCullPipeline_;
     std::unique_ptr<ComputePipeline> hzbPipeline_;
     std::unique_ptr<GraphicsPipeline> streamVisibilityPipeline_;
+    std::unique_ptr<GraphicsPipeline> standardZStreamVisibilityPipeline_;
     std::unique_ptr<ComputePipeline> streamCullResetPipeline_;
     std::unique_ptr<ComputePipeline> streamInstanceCullPipeline_;
     scene::Bounds drawBounds_;

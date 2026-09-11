@@ -96,16 +96,17 @@ public:
     std::string_view category() const override { return "Lighting"; }
     std::string_view description() const override
     {
-        return "OpenPBR punctual lighting, ray-query shadows and GPU SH environment GI. Add lights in Physical Lighting.";
+        return "Raster visibility, clustered OpenPBR lighting, SH diffuse and filtered HDRI reflections, auto exposure and DLSS-SR. Optional DLSS-NR.";
     }
     std::string scenePath() const override { return "Asset/meet_mat.glb"; }
     std::string graphPath() const override { return "Pipelines/Samples/realtime_lighting.metallic_graph.json"; }
-    std::vector<std::string> scenePathTargets() const override { return {"Lighting"}; }
+    std::vector<std::string> scenePathTargets() const override { return {"VBuffer", "Deferred"}; }
     std::optional<RenderSampleEnvironmentDesc> environment() const override
     {
         return RenderSampleEnvironmentDesc{.enabled = true, .path = "Asset/ABeautifulGame/environment.hdr"};
     }
     std::string previewOutput() const override { return "FinalBlit.color"; }
+    bool requiresStreamline() const override { return true; }
 };
 
 class OpenPbrLookDevSample final : public RenderSample {

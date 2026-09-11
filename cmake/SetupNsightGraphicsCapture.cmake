@@ -3,6 +3,11 @@ option(
     "Enable programmatic NVIDIA Nsight Graphics captures when the SDK is available"
     ON
 )
+option(
+    METALLIC_DEFAULT_NSIGHT_CAPTURE
+    "Enable Nsight Graphics capture and optimized shader debug symbols by default in editor executables"
+    OFF
+)
 set(
     METALLIC_NSIGHT_GRAPHICS_SDK_ROOT
     ""

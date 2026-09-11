@@ -27,6 +27,8 @@ struct EnvironmentLightingSnapshot {
     // Nine RGB irradiance SH coefficients (l <= 2), cosine-convolved on GPU.
     // Evaluate at the normal, multiply by diffuse albedo / pi exactly once.
     Buffer* sphericalHarmonicsBuffer = nullptr;
+    // Eight 256x128 lat-long layers, linear perceptual roughness, GGX filtered.
+    Buffer* prefilteredSpecularBuffer = nullptr;
     uint32_t width = 1;
     uint32_t height = 1;
     uint64_t settingsRevision = 0;

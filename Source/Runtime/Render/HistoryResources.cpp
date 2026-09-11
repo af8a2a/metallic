@@ -134,6 +134,7 @@ struct HistoryResourceManager::Impl {
     uint32_t previousSlot = 1;
     uint64_t frameIndex = 0;
     uint64_t invalidationRevision = 1;
+    uint64_t reprojectionInvalidationRevision = 1;
     std::unordered_map<std::string, std::shared_ptr<Record>> records;
 
     void advanceInvalidationRevision()
@@ -303,6 +304,7 @@ HistoryResourceManager& HistoryResourceManager::operator=(HistoryResourceManager
 
 Result HistoryResourceManager::initialize(Device& device)
 {
+    ++impl_->reprojectionInvalidationRevision;
     impl_->records.clear();
     impl_->device = &device;
     impl_->currentSlot = 0;
@@ -314,6 +316,7 @@ Result HistoryResourceManager::initialize(Device& device)
 
 void HistoryResourceManager::reset()
 {
+    ++impl_->reprojectionInvalidationRevision;
     impl_->records.clear();
     impl_->device = nullptr;
     impl_->currentSlot = 0;
@@ -347,13 +350,14 @@ void HistoryResourceManager::invalidate(std::string_view name)
     Impl::invalidateRecord(*record);
 }
 
-void HistoryResourceManager::invalidateAll()
+void HistoryResourceManager::invalidateAll(HistoryInvalidationReason reason)
 {
     for (auto& [name, record] : impl_->records) {
         (void)name;
         Impl::invalidateRecord(*record);
     }
     impl_->advanceInvalidationRevision();
+    if (reason != HistoryInvalidationReason::CameraMotion) { ++impl_->reprojectionInvalidationRevision; }
 }
 
 uint64_t HistoryResourceManager::frameIndex() const
@@ -364,6 +368,11 @@ uint64_t HistoryResourceManager::frameIndex() const
 uint64_t HistoryResourceManager::invalidationRevision() const
 {
     return impl_->invalidationRevision;
+}
+
+uint64_t HistoryResourceManager::reprojectionInvalidationRevision() const
+{
+    return impl_->reprojectionInvalidationRevision;
 }
 
 Result HistoryResourceManager::ensureTexture(

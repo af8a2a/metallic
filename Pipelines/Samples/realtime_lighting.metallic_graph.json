@@ -1,56 +1,84 @@
 {
-    "name": "PhysicalLighting",
+    "name": "Realtime Clustered Deferred DLSS",
     "version": 1,
     "nodes": [
         {
             "id": 1,
-            "name": "Lighting",
-            "type": "SceneRealtimeLightingPass",
+            "name": "VBuffer",
+            "type": "VisibilityBufferPass",
             "position": {
-                "x": 300,
+                "x": 80,
                 "y": 250
             },
             "properties": {
                 "path": "Asset/meet_mat.glb",
-                "camera": {
-                    "eye": [
-                        0.0,
-                        0.25,
-                        3.0
-                    ],
-                    "center": [
-                        0.0,
-                        0.15,
-                        0.0
-                    ],
-                    "up": [
-                        0.0,
-                        1.0,
-                        0.0
-                    ],
-                    "fovDegrees": 50.0,
-                    "znear": 0.001,
-                    "zfar": 10000.0
-                },
+                "visualization": "none",
+                "instanceFrustumCull": true
+            }
+        },
+        {
+            "id": 2,
+            "name": "Deferred",
+            "type": "VisibilityBufferDeferredPass",
+            "position": {
+                "x": 420,
+                "y": 250
+            },
+            "properties": {
+                "path": "Asset/meet_mat.glb",
+                "lightingMode": "realtime",
+                "exportUpscalerGuides": true,
+                "materialBinning": true,
+                "accumulate": false,
                 "outputLinear": true
             }
         },
         {
             "id": 3,
+            "name": "DlssSr",
+            "type": "StreamlineDlssSrPass",
+            "position": {
+                "x": 760,
+                "y": 250
+            },
+            "properties": {
+                "mode": "Quality",
+                "exportOutputGuides": true
+            }
+        },
+        {
+            "id": 4,
             "name": "AutoExposure",
             "type": "AutoExposurePass",
             "position": {
-                "x": 440,
+                "x": 1100,
                 "y": 250
             },
             "properties": {}
         },
         {
-            "id": 2,
+            "id": 5,
+            "name": "DlssNr",
+            "type": "DlssNrPass",
+            "position": {
+                "x": 1440,
+                "y": 250
+            },
+            "properties": {
+                "enabled": false,
+                "fallbackToInput": true,
+                "depthInverted": false,
+                "intensity": 1.0,
+                "preset": 0,
+                "style": 0
+            }
+        },
+        {
+            "id": 6,
             "name": "FinalBlit",
             "type": "FinalBlitPass",
             "position": {
-                "x": 800,
+                "x": 1780,
                 "y": 250
             },
             "properties": {}
@@ -59,14 +87,84 @@
     "edges": [
         {
             "id": 1,
-            "src": "AutoExposure.color",
-            "dst": "FinalBlit.source"
+            "src": "VBuffer.visibility",
+            "dst": "Deferred.visibility"
         },
         {
             "id": 2,
-            "src": "Lighting.color",
+            "src": "VBuffer.depth",
+            "dst": "Deferred.depth"
+        },
+        {
+            "id": 3,
+            "src": "VBuffer.rasterInfo",
+            "dst": "Deferred.rasterInfo"
+        },
+        {
+            "id": 4,
+            "src": "Deferred.color",
+            "dst": "DlssSr.inputColor"
+        },
+        {
+            "id": 5,
+            "src": "Deferred.motionVectors",
+            "dst": "DlssSr.motionVectors"
+        },
+        {
+            "id": 6,
+            "src": "Deferred.deviceDepth",
+            "dst": "DlssSr.depth"
+        },
+        {
+            "id": 8,
+            "src": "DlssSr.color",
             "dst": "AutoExposure.source"
+        },
+        {
+            "id": 9,
+            "src": "AutoExposure.color",
+            "dst": "DlssNr.inputColor"
+        },
+        {
+            "id": 10,
+            "src": "DlssSr.motionVectors",
+            "dst": "DlssNr.motionVectors"
+        },
+        {
+            "id": 11,
+            "src": "DlssSr.depth",
+            "dst": "DlssNr.depth"
+        },
+        {
+            "id": 12,
+            "src": "DlssNr.color",
+            "dst": "FinalBlit.source"
         }
     ],
-    "outputs": []
+    "outputs": [],
+    "view": {
+        "camera": {
+            "eye": [
+                0.0,
+                1.35,
+                4.4
+            ],
+            "center": [
+                0.0,
+                1.2,
+                0.0
+            ],
+            "up": [
+                0,
+                1,
+                0
+            ],
+            "fovDegrees": 50.0,
+            "znear": 0.05,
+            "zfar": 1000.0,
+            "reversedZ": true,
+            "projection": "perspective"
+        },
+        "temporalJitter": true
+    }
 }

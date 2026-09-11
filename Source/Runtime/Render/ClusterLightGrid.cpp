@@ -58,7 +58,8 @@ Result buildClusterLightGridParams(const ClusterLightGridDesc& desc,
         !std::isfinite(desc.fovRadians) || desc.fovRadians <= 0.0f || desc.fovRadians >= 3.141592654f ||
         !std::isfinite(desc.zNear) || !std::isfinite(desc.zFar) ||
         desc.zNear <= 0.0f || desc.zFar <= desc.zNear ||
-        !std::isfinite(desc.orthoHeight) || desc.orthoHeight < 0.0f) {
+        !std::isfinite(desc.orthoHeight) || desc.orthoHeight < 0.0f ||
+        !std::isfinite(desc.jitterGuardPixels) || desc.jitterGuardPixels < 0.0f || desc.jitterGuardPixels > 2.0f) {
         log = "ClusterLightGrid requires a finite camera, positive viewport and bounded grid configuration";
         return makeError(Error::InvalidArgument);
     }
@@ -118,7 +119,7 @@ Result buildClusterLightGridParams(const ClusterLightGridDesc& desc,
     params.rightFar = {right.x, right.y, right.z, desc.zFar};
     params.upExtent = {up.x, up.y, up.z, extentY};
     params.forwardExtent = {forward.x, forward.y, forward.z, extentX};
-    params.zParams = {zB, 0.0f, zScale, 0.0f};
+    params.zParams = {zB, 0.0f, zScale, desc.jitterGuardPixels};
     return {};
 }
 

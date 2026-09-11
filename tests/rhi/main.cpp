@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 
 #include <exception>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -45,6 +46,7 @@ namespace render = metallic::render;
 struct Options {
     bool enableValidation = true;
     bool enableStreamline = false;
+    bool enableRealtime = false;
     std::filesystem::path outputDirectory = "rhi-test-output";
 };
 
@@ -56,6 +58,7 @@ void printRhiUsage()
         "  --rhi-no-validation      Disable Vulkan validation for RHI tests\n"
         "  --rhi-validation         Enable Vulkan validation for RHI tests\n"
         "  --rhi-streamline         Enable Streamline, bindless heap and ray queries\n"
+        "  --rhi-realtime           Enable the realtime raster + DLSS test device\n"
         "\n"
         "GoogleTest options replace the old custom runner flags:\n"
         "  --gtest_list_tests       List registered tests\n"
@@ -78,6 +81,11 @@ bool parseArguments(int argc, char** argv, Options& options, std::vector<std::st
             continue;
         }
         if (argument == "--rhi-streamline") {
+            options.enableStreamline = true;
+            continue;
+        }
+        if (argument == "--rhi-realtime") {
+            options.enableRealtime = true;
             options.enableStreamline = true;
             continue;
         }
@@ -167,9 +175,20 @@ public:
                 .applicationName = "Metallic RHI Tests",
                 .enableValidation = options_.enableValidation,
                 .enableBindlessDescriptorHeap = options_.enableStreamline,
+                .enableMeshShader = options_.enableRealtime,
+                .enableTaskShader = options_.enableRealtime,
+                .enableTaskShaderSubgroupBallot = options_.enableRealtime,
+                .enableGeometryShader = options_.enableRealtime,
+                .enableSubgroupSizeControl = options_.enableRealtime,
+                .enableComputeFullSubgroups = options_.enableRealtime,
                 .enableRayTracingAccelerationStructure = options_.enableStreamline,
                 .enableRayQuery = options_.enableStreamline,
                 .enableStreamline = options_.enableStreamline,
+                .validationSink = {.callback = [](void* data, const render::ValidationMessage& message) noexcept {
+                    if (message.messageIdName != nullptr && std::strstr(message.messageIdName, "VUID-") != nullptr) {
+                        ++*static_cast<std::atomic_uint*>(data);
+                    }
+                }, .context = &validationMessageCount_},
             },
             device_);
         if (!result) {
@@ -194,6 +213,7 @@ public:
                 .graphicsQueue = *graphicsQueue_,
                 .outputDirectory = options_.outputDirectory,
                 .enableValidation = options_.enableValidation,
+                .validationMessageCount = &validationMessageCount_,
             });
     }
 
@@ -229,6 +249,7 @@ public:
 private:
     Options options_;
     bool sdlInitialized_ = false;
+    std::atomic_uint validationMessageCount_ = 0;
     std::unique_ptr<render::Device> device_;
     render::Queue* graphicsQueue_ = nullptr;
     std::unique_ptr<metallic::tests::RhiTestContext> context_;

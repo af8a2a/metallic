@@ -295,6 +295,10 @@ void visibilityBufferMeshMain(
             vertex.position.xyz);
         float4 position = projectPosition(worldPosition, projectionCamera);
         position.y = -position.y;
+        if (push.projectWithCullingCamera == 0u) {
+            position.xy -= 2.0 * float2(params.renderEye.w, params.renderCenter.w) /
+                float2(params.width, params.height) * position.w;
+        }
         vertices[groupThreadIndex].position = position;
 #if VISIBILITY_BUFFER_ALPHA_MASKED
         vertices[groupThreadIndex].texcoord = vertex.texcoord.xy;

@@ -25,9 +25,8 @@ struct PunctualLightSample
 
 // Delta lights supply incident illuminance before the surface cosine/BSDF.
 // Point/spot intensity is cd, distance is m: E = I / r^2 (lux).
-PunctualLightSample samplePunctualLight(uint index, float3 position)
+PunctualLightSample samplePunctualLightData(GpuPunctualLight light, float3 position)
 {
-    GpuPunctualLight light = gPunctualLights[index + 1u];
     PunctualLightSample sample;
     sample.direction = -light.directionType.xyz;
     sample.distance = 1e30;
@@ -51,6 +50,11 @@ PunctualLightSample samplePunctualLight(uint index, float3 position)
     }
     sample.illuminance = light.colorIntensity.rgb * (light.colorIntensity.w * attenuation);
     return sample;
+}
+
+PunctualLightSample samplePunctualLight(uint index, float3 position)
+{
+    return samplePunctualLightData(gPunctualLights[index + 1u], position);
 }
 
 // Isotropic GGX + energy-reduced Lambert for the standard material path.

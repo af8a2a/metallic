@@ -59,6 +59,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Subsystem/GPUSceneSubsystem.cpp
     Runtime/Render/Subsystem/RenderSubsystem.cpp
     Runtime/Render/Subsystem/RenderWorld.cpp
+    Runtime/Render/RenderView.cpp
     Runtime/Render/MeshletStreamClas.cpp
     Runtime/Render/MeshletStreamClasPool.cpp
     Runtime/Render/MeshletStreamPageLoader.cpp
@@ -283,6 +284,11 @@ endif()
 
 target_link_libraries(MetallicRuntimeRender PUBLIC
     MetallicRuntimeScene
+)
+
+# Apply the launch default to every executable that shares the editor shell.
+set_property(SOURCE Editor/EditorApplication.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    METALLIC_DEFAULT_NSIGHT_CAPTURE=$<BOOL:${METALLIC_DEFAULT_NSIGHT_CAPTURE}>
 )
 
 set(METALLIC_EDITOR_SOURCES

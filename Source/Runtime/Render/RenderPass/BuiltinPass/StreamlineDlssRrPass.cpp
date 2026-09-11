@@ -1,6 +1,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
+#include "Runtime/Render/GPUDrivenRaster.h"
 
 #include <spdlog/spdlog.h>
 
@@ -99,6 +100,16 @@ public:
             .storageReadWrite();
         outputColor.format = Format::Rgba16Sfloat;
         outputColor.usage = outputColor.usage | TextureUsageBits::TransferDestination;
+        if (boolProperty(&properties(), "useRasterCamera", false)) {
+            reflection.addBufferInput("rasterInfo", "Authoritative raster camera and jitter")
+                .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
+        }
+        if (boolProperty(&properties(), "exportOutputGuides", false)) {
+            reflection.addTextureOutput("motionVectors", "Display-resolution UV motion for NR")
+                .texture2D(context.width, context.height).storageReadWrite().format = Format::Rg16Sfloat;
+            reflection.addTextureOutput("depth", "Display-resolution standard depth for NR")
+                .texture2D(context.width, context.height).storageReadWrite().format = Format::R32Sfloat;
+        }
         return reflection;
     }
 
@@ -171,6 +182,12 @@ public:
                   preparedSettings_,
                   log);
         preparedValid_ = result.has_value();
+        if (result && variant_ == DlssVariant::SuperResolution && auxiliaryHeap_ != nullptr) {
+            // Resource-only graph rebuilds reuse this pass. Resize its private
+            // D32 export together with the newly negotiated input dimensions.
+            return prepareSuperResolutionResources(*context.device, preparedSettings_.renderWidth,
+                preparedSettings_.renderHeight, log);
+        }
         return result;
     }
 
@@ -183,6 +200,23 @@ public:
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
             log = std::string(passTypeName()) + " requires a device and graphics queue";
             return makeError(Error::InvalidArgument);
+        }
+        if (boolProperty(&properties(), "exportOutputGuides", false)) {
+            ShaderCompileResult shader;
+            auto result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/UpscalerGuideResolve",
+                .entryPointName = "upscalerGuideResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
+            if (!result) { log = shader.diagnostics; return result; }
+            const ComputeProgramBindingDesc bindings[] = {
+                {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
+                {.binding = 1, .kind = ComputeResourceBindingKind::SampledImage},
+                {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
+                {.binding = 3, .kind = ComputeResourceBindingKind::StorageImage},
+            };
+            result = guideResolve_.initialize(*context.device, {.spirv = shader.spirv.data(),
+                .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = 8,
+                .bindings = bindings, .bindingCount = 4, .debugName = "UpscalerGuideResolve",
+                .requiresRayQuery = false}, log);
+            if (!result) { return result; }
         }
         const bool featureSupported = variant_ == DlssVariant::RayReconstruction
             ? context.device->capabilities().streamlineDlssRr
@@ -277,7 +311,7 @@ public:
             lastOutputHeight_ = outputHeight;
             hasPreviousCamera_ = false;
             forceReset_ = false;
-            return {};
+            return resolveOutputGuides(context, motionVectors, depth, {});
         }
 
         const uint32_t resetSerial = uintProperty(
@@ -286,8 +320,13 @@ public:
             0,
             0,
             std::numeric_limits<uint32_t>::max());
+        const auto* view = context.viewConstants();
+        const uint64_t historyRevision = context.historyResources() != nullptr
+            ? (view != nullptr ? context.historyResources()->reprojectionInvalidationRevision()
+                : context.historyResources()->invalidationRevision()) : 0;
         const bool reset =
-            forceReset_ ||
+            forceReset_ || (view != nullptr && view->frame[1] == 0) ||
+            lastFrame_ + 1 != context.frameIndex() || lastHistoryRevision_ != historyRevision ||
             lastMode_ != mode ||
             lastResetSerial_ != resetSerial ||
             lastRenderWidth_ != renderWidth ||
@@ -298,7 +337,33 @@ public:
             renderWidth,
             renderHeight,
             context.properties());
-        const std::array<float, 2> jitter = dlssTemporalJitter(context.frameIndex());
+        std::array<float, 2> jitter = dlssTemporalJitter(context.frameIndex());
+        if (view != nullptr) {
+            applyViewCameraToDlss(view->current, camera);
+            jitter = {view->jitter[0], view->jitter[1]};
+        } else if (boolProperty(&properties(), "useRasterCamera", false)) {
+            const auto metadata = context.inputBuffer("rasterInfo");
+            if (!metadata.valid() || metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
+                metadata.desc().memoryLocation != MemoryLocation::HostUpload) { return makeError(Error::InvalidArgument); }
+            VisibilityBufferFrameInfo info;
+            const void* mapped = metadata.buffer()->map();
+            if (mapped == nullptr) { return makeError(Error::Failure); }
+            std::memcpy(&info, mapped, sizeof(info));
+            metadata.buffer()->unmap();
+            if (info.width != renderWidth || info.height != renderHeight || info.frameIndex != context.frameIndex()) {
+                return makeError(Error::InvalidArgument);
+            }
+            copyFloat3(info.eye, camera.eye);
+            copyFloat3(info.center, camera.center);
+            copyFloat3(info.upProjection, camera.up);
+            camera.fovRadians = info.viewport[3];
+            camera.aspectRatio = info.viewport[0];
+            camera.zNear = info.clipOrtho[0];
+            camera.zFar = info.clipOrtho[1];
+            camera.orthoHeight = info.clipOrtho[2];
+            camera.orthographic = info.upProjection[3] > 0.5f;
+            jitter = {info.jitter[0], info.jitter[1]};
+        }
         // The primary rays are shifted by +jitter; NGX expects the inverse
         // correction in pixel space.
         camera.jitterOffset[0] = -jitter[0];
@@ -310,6 +375,11 @@ public:
             previousCameraWidth_ == outputWidth &&
             previousCameraHeight_ == outputHeight;
         applyPreviousCamera(previousCameraValid ? previousCamera_ : currentCamera, camera);
+        if (view != nullptr && previousCameraValid) {
+            auto previous = camera;
+            applyViewCameraToDlss(view->previous, previous);
+            applyPreviousCamera(cameraSnapshotFrom(previous), camera);
+        }
         camera.previousValid = previousCameraValid;
 
         std::string log;
@@ -387,11 +457,40 @@ public:
             previousCameraHeight_ = outputHeight;
             hasPreviousCamera_ = true;
             forceReset_ = false;
+            lastFrame_ = context.frameIndex();
+            lastHistoryRevision_ = historyRevision;
+            result = resolveOutputGuides(context, motionVectors, depth, jitter);
         }
         return result;
     }
 
 private:
+    Result resolveOutputGuides(RenderGraphExecutionContext& context, TextureHandle motion,
+        TextureHandle depth, std::array<float, 2> jitter)
+    {
+        if (!boolProperty(&properties(), "exportOutputGuides", false)) { return {}; }
+        auto& command = context.commandBuffer();
+        TextureBarrierDesc barriers[] = {
+            {.texture = motion.texture(), .before = ResourceState::General, .after = ResourceState::ShaderRead},
+            {.texture = depth.texture(), .before = ResourceState::General, .after = ResourceState::ShaderRead},
+        };
+        command.barrier({.textures = barriers, .textureCount = 2});
+        auto* mv = motion.view();
+        auto* z = depth.view();
+        const ComputeDispatchBinding bindings[] = {
+            {.binding = 0, .textureViews = &mv, .textureViewCount = 1},
+            {.binding = 1, .textureViews = &z, .textureViewCount = 1},
+            {.binding = 2, .textureView = context.outputTexture("motionVectors").view()},
+            {.binding = 3, .textureView = context.outputTexture("depth").view()},
+        };
+        auto result = guideResolve_.dispatch({.commandBuffer = &command,
+            .bindings = bindings, .bindingCount = 4, .pushData = jitter.data(), .pushDataSize = 8,
+            .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
+        for (auto& barrier : barriers) { std::swap(barrier.before, barrier.after); }
+        command.barrier({.textures = barriers, .textureCount = 2});
+        return result;
+    }
+
     const char* passTypeName() const
     {
         return variant_ == DlssVariant::RayReconstruction
@@ -581,6 +680,19 @@ private:
         camera.orthoHeight = orthoHeight;
         camera.orthographic = cameraIsOrthographic(cameraProperties);
         return camera;
+    }
+
+    static void applyViewCameraToDlss(const ViewCameraConstants& view, vulkan::StreamlineDlssRrCamera& camera)
+    {
+        copyFloat3(view.eye, camera.eye);
+        copyFloat3(view.center, camera.center);
+        copyFloat3(view.upProjection, camera.up);
+        camera.fovRadians = view.viewport[3];
+        camera.aspectRatio = view.viewport[0];
+        camera.zNear = view.clipOrtho[0];
+        camera.zFar = view.clipOrtho[1];
+        camera.orthoHeight = view.clipOrtho[2];
+        camera.orthographic = view.upProjection[3] > 0.5f;
     }
 
     static DlssRrCameraSnapshot cameraSnapshotFrom(const vulkan::StreamlineDlssRrCamera& camera)
@@ -1001,6 +1113,9 @@ private:
         return {};
     }
 
+    ComputeProgram guideResolve_;
+    uint64_t lastFrame_ = 0;
+    uint64_t lastHistoryRevision_ = 0;
     DlssVariant variant_ = DlssVariant::SuperResolution;
     vulkan::StreamlineDlssRrMode lastMode_ = vulkan::StreamlineDlssRrMode::Off;
     uint32_t lastResetSerial_ = 0;

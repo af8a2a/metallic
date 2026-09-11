@@ -63,10 +63,13 @@ constexpr float kViewportCameraWheelSpeedStep = 1.25f;
 constexpr float kMaxDollyDisplacement = 0.99f;
 constexpr const char* kDefaultRenderSampleId = "pathtracing-sample";
 
-bool environmentFlagEnabled(const char* name)
+bool environmentFlagEnabled(const char* name, bool defaultValue = false)
 {
     const char* value = std::getenv(name);
-    return value != nullptr && value[0] != '\0' &&
+    if (value == nullptr) {
+        return defaultValue;
+    }
+    return value[0] != '\0' &&
         std::string_view(value) != "0" &&
         std::string_view(value) != "false" &&
         std::string_view(value) != "FALSE";
@@ -717,37 +720,6 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
         return render::RenderGraphProperties{{"exposure", 1.0f}};
     }
     return render::RenderGraphProperties::object();
-}
-
-render::RenderGraphNode* findSceneCameraNode(
-    render::RenderGraph& graph,
-    const render::RenderGraphNode* outputNode)
-{
-    std::vector<std::string> pendingNodes;
-    if (outputNode != nullptr) {
-        pendingNodes.push_back(outputNode->name);
-    }
-    for (size_t pendingIndex = 0; pendingIndex < pendingNodes.size(); ++pendingIndex) {
-        const std::string nodeName = pendingNodes[pendingIndex];
-        render::RenderGraphNode* node = graph.findNode(nodeName);
-        if (node != nullptr && isSceneAwareRenderPass(*node)) {
-            return node;
-        }
-        for (const render::RenderGraphEdge& edge : graph.edges()) {
-            if (edge.dstPass != nodeName ||
-                std::find(pendingNodes.begin(), pendingNodes.end(), edge.srcPass) != pendingNodes.end()) {
-                continue;
-            }
-            pendingNodes.push_back(edge.srcPass);
-        }
-    }
-
-    for (const render::RenderGraphNode& node : graph.nodes()) {
-        if (isSceneAwareRenderPass(node)) {
-            return graph.findNode(node.id);
-        }
-    }
-    return nullptr;
 }
 
 bool isVec3Property(const render::RenderGraphProperties& value)
@@ -1968,7 +1940,8 @@ int EditorApplication::run(
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
     nsightGraphicsCaptureRequested_ =
         enableNsightGraphicsCapture ||
-        environmentFlagEnabled("METALLIC_NSIGHT_GRAPHICS_CAPTURE");
+        environmentFlagEnabled(
+            "METALLIC_NSIGHT_GRAPHICS_CAPTURE", METALLIC_DEFAULT_NSIGHT_CAPTURE != 0);
     nsightShaderDebugRequested_ =
         enableNsightShaderDebug ||
         environmentFlagEnabled("METALLIC_NSIGHT_SHADER_DEBUG");
@@ -2335,6 +2308,7 @@ bool EditorApplication::initialize()
         StartupLogScope scope("Startup render graph and scene setup");
         renderWorld_.setScene(&scene_);
         graphExecutor_ = std::make_unique<render::RenderGraphExecutor>(subsystemHost_, renderWorld_);
+        graphExecutor_->bindRenderView(&viewportView_);
         graphExecutor_->setDebugObserver(debugRuntime_.get());
         graphExecutor_->bindRuntimeScene(&scene_);
         sceneAccelerationStructure_ =
@@ -3896,7 +3870,7 @@ render::RenderGraphNode* EditorApplication::activePreviewRenderGraphNode()
     if (node == nullptr) {
         node = findRenderGraphNodeForOutput(renderGraph_, renderGraph_.firstOutputName());
     }
-    // Keep the source pass's runtime settings and camera available through FinalBlit.
+    // Keep the source pass's runtime settings available through FinalBlit.
     if (node != nullptr && node->type == "FinalBlitPass") {
         for (const render::RenderGraphEdge& edge : renderGraph_.edges()) {
             if (edge.dstPass == node->name && edge.dstField == "source") {
@@ -3907,9 +3881,30 @@ render::RenderGraphNode* EditorApplication::activePreviewRenderGraphNode()
     return node;
 }
 
-render::RenderGraphNode* EditorApplication::viewportCameraRenderGraphNode()
+render::RenderGraphProperties EditorApplication::viewportCameraProperties() const
 {
-    return findSceneCameraNode(renderGraph_, activePreviewRenderGraphNode());
+    return {{"camera", viewportView_.cameraProperties()}};
+}
+
+void EditorApplication::initializeViewportView()
+{
+    viewportView_.setCamera(render::ViewCamera{});
+    auto properties = renderGraph_.viewProperties();
+    if (properties.empty()) {
+        // Import legacy graph cameras once. Viewport input never targets a pass.
+        for (const auto& node : renderGraph_.nodes()) {
+            const auto legacy = effectiveNodeProperties(node);
+            if (legacy.value("sceneBinding", "world") == "asset") { continue; }
+            if (!properties.contains("camera") && legacy.contains("camera")) {
+                properties["camera"] = legacy["camera"];
+            }
+            if (legacy.value("temporalJitter", false) || legacy.value("exportDlssRrGuides", false) ||
+                legacy.value("exportUpscalerGuides", false)) { properties["temporalJitter"] = true; }
+        }
+    }
+    viewportView_.setCameraProperties(properties.value("camera", render::RenderGraphProperties::object()));
+    viewportView_.setTemporalJitter(properties.value("temporalJitter", false));
+    viewportView_.cameraCut();
 }
 
 bool EditorApplication::drawRuntimeSettingsForNode(
@@ -3926,6 +3921,9 @@ bool EditorApplication::drawRuntimeSettingsForNode(
     }
 
     const std::vector<render::RenderGraphRuntimeSetting> settings = pass->runtimeSettings();
+    const auto effective = effectiveNodeProperties(node);
+    hideCameraSettings = hideCameraSettings ||
+        (effective.value("sceneBinding", "world") != "asset" && effective.value("viewBinding", "global") != "local");
     if (!hasVisibleRuntimeSettings(settings, hideCameraSettings)) {
         if (showEmptyMessage) {
             ImGui::TextDisabled("No runtime settings for this pass.");
@@ -3962,9 +3960,7 @@ bool EditorApplication::drawRuntimeSettingsForNode(
     if (changed) {
         renderGraph_.setNodeRuntimeProperties(node.id, std::move(runtimeProperties));
         if (cameraChanged) {
-            syncCameraGroup(node);
-            // A raster camera may also drive an accumulating reference pass.
-            // Its own runtime setting need not request history invalidation.
+            // Explicit local views retain their legacy per-node settings.
             invalidateHistory = true;
         }
         if (invalidateHistory) {
@@ -3986,13 +3982,7 @@ bool EditorApplication::drawRuntimeSettingsForNode(
 
 void EditorApplication::drawCameraControls()
 {
-    render::RenderGraphNode* node = viewportCameraRenderGraphNode();
-    if (node == nullptr) {
-        ImGui::TextDisabled("No render camera controls for this graph.");
-        return;
-    }
-
-    render::RenderGraphProperties properties = effectiveNodeProperties(*node);
+    render::RenderGraphProperties properties = viewportCameraProperties();
     ensureCameraProperties(properties, scene_.bounds());
     render::RenderGraphProperties& camera = properties["camera"];
 
@@ -4096,7 +4086,7 @@ void EditorApplication::drawCameraControls()
     }
 
     if (changed) {
-        applyBunnyCameraProperties(std::move(properties), "Updated render camera");
+        applyViewportCameraProperties(std::move(properties), "Updated render camera");
     }
 }
 
@@ -4306,90 +4296,13 @@ void EditorApplication::beginEnvironmentEdit()
     environmentEditBaselineFromSample_ = environmentFromSample_;
 }
 
-void EditorApplication::syncCameraGroup(const render::RenderGraphNode& source)
+void EditorApplication::applyViewportCameraProperties(render::RenderGraphProperties properties, const char* status)
 {
-    const auto properties = effectiveNodeProperties(source);
-    const std::string group = properties.value("cameraSyncGroup", "");
-    if (group.empty() || !properties.contains("camera")) {
-        return;
-    }
-    for (const auto& candidate : renderGraph_.nodes()) {
-        if (candidate.id != source.id && isSceneAwareRenderPass(candidate) &&
-            effectiveNodeProperties(candidate).value("cameraSyncGroup", "") == group) {
-            renderGraph_.setNodeRuntimeProperty(candidate.id, "camera", properties["camera"]);
-        }
-    }
-}
-
-void EditorApplication::applyRuntimeNodeProperties(
-    uint32_t nodeId,
-    render::RenderGraphProperties properties,
-    const char* status)
-{
-    render::RenderGraphNode* node = renderGraph_.findNode(nodeId);
-    if (node == nullptr) {
-        return;
-    }
-
-    render::RenderGraphProperties runtimeProperties = node->runtimeProperties.is_object()
-        ? node->runtimeProperties
-        : render::RenderGraphProperties::object();
-    if (properties.is_object() && properties.contains("camera")) {
-        runtimeProperties["camera"] = properties["camera"];
-    } else {
-        runtimeProperties = std::move(properties);
-    }
-    renderGraph_.setNodeRuntimeProperties(nodeId, std::move(runtimeProperties));
-    syncCameraGroup(*node);
-    historyResources_.invalidateAll();
-    if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
-        graphExecutor_->syncRuntimeProperties(renderGraph_);
-    }
+    if (!properties.contains("camera") || !viewportView_.setCameraProperties(properties["camera"])) { return; }
+    // Progressive accumulators cannot reproject; temporal passes use ViewConstants history.
+    historyResources_.invalidateAll(render::HistoryInvalidationReason::CameraMotion);
     viewportPreviewNeedsRender_ = true;
-    if (status != nullptr) {
-        renderGraphStatus_ = status;
-    }
-}
-void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties properties, const char* status)
-{
-    render::RenderGraphNode* node = viewportCameraRenderGraphNode();
-    if (node == nullptr) {
-        return;
-    }
-    const render::RenderGraphProperties camera = properties.is_object() &&
-        properties.contains("camera") &&
-        properties["camera"].is_object()
-        ? properties["camera"]
-        : render::RenderGraphProperties::object();
-    applyRuntimeNodeProperties(node->id, std::move(properties), status);
-
-    if (camera.empty()) {
-        return;
-    }
-    bool companionUpdated = false;
-    for (const render::RenderGraphNode& candidate : renderGraph_.nodes()) {
-        if (candidate.type != "NrdDenoisePass" &&
-            candidate.type != "StreamlineDlssSrPass" &&
-            candidate.type != "StreamlineDlssRrPass") {
-            continue;
-        }
-        render::RenderGraphProperties runtimeProperties = candidate.runtimeProperties.is_object()
-            ? candidate.runtimeProperties
-            : render::RenderGraphProperties::object();
-        runtimeProperties["camera"] = camera;
-        // DLSS reprojects its history using the previous camera and motion vectors.
-        // Resetting on every viewport movement prevents temporal reconstruction.
-        if (candidate.type == "NrdDenoisePass") {
-            const render::RenderGraphProperties effectiveProperties = effectiveNodeProperties(candidate);
-            runtimeProperties["resetSerial"] = effectiveProperties.value("resetSerial", 0u) + 1u;
-        }
-        companionUpdated = renderGraph_.setNodeRuntimeProperties(
-            candidate.id,
-            std::move(runtimeProperties)) || companionUpdated;
-    }
-    if (companionUpdated && graphExecutor_ != nullptr && !renderGraph_.dirty()) {
-        graphExecutor_->syncRuntimeProperties(renderGraph_);
-    }
+    if (status != nullptr) { renderGraphStatus_ = status; }
 }
 
 void EditorApplication::drawSceneNode(int32_t nodeIndex)
@@ -5596,7 +5509,6 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
 {
     viewportGizmoCapturingMouse_ = false;
     const scene::ConstSceneObject object = selectedSceneObject();
-    render::RenderGraphNode* renderNode = viewportCameraRenderGraphNode();
 
     const auto finishInterruptedTransaction = [this]() {
         if (gizmoWasUsing_ &&
@@ -5629,7 +5541,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     if (!viewportInteractionEnabled_ || inspectorTransformEditing_ ||
         inspectorPropertyEditing_ || !object ||
         object.hasComponent<scene::GeneratedComponent>() ||
-        !object.hasComponent<scene::SourceNodeComponent>() || renderNode == nullptr) {
+        !object.hasComponent<scene::SourceNodeComponent>()) {
         finishInterruptedTransaction();
         return;
     }
@@ -5694,7 +5606,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         return;
     }
 
-    render::RenderGraphProperties properties = effectiveNodeProperties(*renderNode);
+    render::RenderGraphProperties properties = viewportCameraProperties();
     ensureCameraProperties(properties, scene_.bounds());
     const ViewportCameraMatrices matrices = viewportCameraMatrices(
         properties["camera"],
@@ -5769,12 +5681,8 @@ void EditorApplication::drawViewportObjectHandles(const ImVec2& min, const ImVec
     if (!viewportInteractionEnabled_ || !scene_.valid()) {
         return;
     }
-    render::RenderGraphNode* renderNode = viewportCameraRenderGraphNode();
-    if (renderNode == nullptr) {
-        return;
-    }
 
-    render::RenderGraphProperties properties = effectiveNodeProperties(*renderNode);
+    render::RenderGraphProperties properties = viewportCameraProperties();
     ensureCameraProperties(properties, scene_.bounds());
     const ViewportCameraMatrices matrices = viewportCameraMatrices(
         properties["camera"],
@@ -5895,11 +5803,7 @@ void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& ma
         return;
     }
 
-    render::RenderGraphNode* renderNode = viewportCameraRenderGraphNode();
-    if (renderNode == nullptr) {
-        return;
-    }
-    render::RenderGraphProperties properties = effectiveNodeProperties(*renderNode);
+    render::RenderGraphProperties properties = viewportCameraProperties();
     ensureCameraProperties(properties, scene_.bounds());
     const render::RenderGraphProperties& camera = properties["camera"];
     const ViewportCameraMatrices matrices = viewportCameraMatrices(
@@ -6167,8 +6071,7 @@ void EditorApplication::drawViewportPanel()
 
 void EditorApplication::handleViewportCameraControls(const ImVec2& min, const ImVec2& max)
 {
-    render::RenderGraphNode* node = viewportCameraRenderGraphNode();
-    if (node == nullptr || !viewportInteractionEnabled_) {
+    if (!viewportInteractionEnabled_) {
         viewportCameraDragButton_ = kNoViewportCameraDragButton;
         return;
     }
@@ -6195,7 +6098,7 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
         viewportCameraDragButton_ = kNoViewportCameraDragButton;
     }
 
-    render::RenderGraphProperties properties = effectiveNodeProperties(*node);
+    render::RenderGraphProperties properties = viewportCameraProperties();
     ensureCameraProperties(properties, scene_.bounds());
     render::RenderGraphProperties& camera = properties["camera"];
     bool changed = false;
@@ -6280,7 +6183,7 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
     }
 
     if (changed) {
-        applyBunnyCameraProperties(std::move(properties), "Updated render camera from viewport");
+        applyViewportCameraProperties(std::move(properties), "Updated render camera from viewport");
     }
 }
 
@@ -6782,6 +6685,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
     preserveSampleEnvironmentForNextSceneLoad_ = environmentFromSample_;
 
     renderGraph_ = std::move(sample.graph);
+    initializeViewportView();
     graphEditorPositionsInitialized_ = false;
     selectedGraphNodeId_ = -1;
     selectedGraphLinkId_ = -1;
@@ -6819,6 +6723,8 @@ void EditorApplication::saveRenderGraph()
 {
     std::string message;
     const std::filesystem::path path = resolveGraphAssetPath(graphFilePath_);
+    renderGraph_.setViewProperties({{"camera", viewportView_.cameraProperties()},
+        {"temporalJitter", viewportView_.temporalJitter()}});
     if (!render::saveRenderGraphToFile(renderGraph_, path, message)) {
         renderGraphStatus_ = message;
         return;
@@ -6853,6 +6759,7 @@ void EditorApplication::loadRenderGraph()
         }
     }
     renderGraph_ = std::move(loadedGraph);
+    initializeViewportView();
     graphEditorPositionsInitialized_ = false;
     selectedGraphNodeId_ = -1;
     selectedGraphLinkId_ = -1;
@@ -7018,62 +6925,30 @@ void EditorApplication::applyLoadedSceneCamera()
         }
     }
 
-    std::vector<uint32_t> sceneNodeIds;
-    for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
-        if (isSceneAwareRenderPass(node)) {
-            sceneNodeIds.push_back(node.id);
-        }
-    }
-    if (sceneNodeIds.empty()) {
-        return;
-    }
-
     constexpr double kPi = 3.14159265358979323846;
-    bool changed = false;
-    for (const uint32_t nodeId : sceneNodeIds) {
-        render::RenderGraphNode* node = renderGraph_.findNode(nodeId);
-        if (node == nullptr) {
-            continue;
-        }
-
-        render::RenderGraphProperties runtimeProperties = node->runtimeProperties.is_object()
-            ? node->runtimeProperties
-            : render::RenderGraphProperties::object();
-        render::RenderGraphProperties cameraProperties = runtimeProperties.contains("camera") &&
-            runtimeProperties["camera"].is_object()
-            ? runtimeProperties["camera"]
-            : render::RenderGraphProperties::object();
-        ensureCameraProperties(cameraProperties, scene_.bounds());
-        cameraProperties["projection"] =
-            selectedCamera->type == scene::CameraType::Orthographic ? "orthographic" : "perspective";
-        const double yfov = selectedCamera->yfov > 0.0 ? selectedCamera->yfov : 0.7853981633974483;
-        const double radius = std::max(static_cast<double>(scene_.bounds().radius()), 1.0);
-        const double znear = std::max(selectedCamera->znear, radius * 0.001);
-        const double zfar = selectedCamera->zfar > znear
-            ? selectedCamera->zfar
-            : std::max(znear + 0.001, radius * 100.0);
-        cameraProperties["fovDegrees"] = static_cast<float>(std::clamp(yfov * 180.0 / kPi, 1.0, 179.0));
-        cameraProperties["znear"] = static_cast<float>(znear);
-        cameraProperties["zfar"] = static_cast<float>(zfar);
-        if (selectedCamera->type == scene::CameraType::Orthographic) {
-            cameraProperties["orthoHeight"] =
-                static_cast<float>(std::max(selectedCamera->ymag * 2.0, 0.0001));
-        }
-        storeVec3Property(cameraProperties, "eye", selectedCamera->eye);
-        storeVec3Property(cameraProperties, "center", selectedCamera->center);
-        storeVec3Property(cameraProperties, "up", selectedCamera->up);
-
-        runtimeProperties["camera"] = std::move(cameraProperties);
-        changed = renderGraph_.setNodeRuntimeProperties(node->id, std::move(runtimeProperties)) || changed;
+    auto cameraProperties = viewportView_.cameraProperties();
+    cameraProperties["projection"] =
+        selectedCamera->type == scene::CameraType::Orthographic ? "orthographic" : "perspective";
+    const double yfov = selectedCamera->yfov > 0.0 ? selectedCamera->yfov : 0.7853981633974483;
+    const double radius = std::max(static_cast<double>(scene_.bounds().radius()), 1.0);
+    const double znear = std::max(selectedCamera->znear, radius * 0.001);
+    const double zfar = selectedCamera->zfar > znear
+        ? selectedCamera->zfar
+        : std::max(znear + 0.001, radius * 100.0);
+    cameraProperties["fovDegrees"] = static_cast<float>(std::clamp(yfov * 180.0 / kPi, 1.0, 179.0));
+    cameraProperties["znear"] = static_cast<float>(znear);
+    cameraProperties["zfar"] = static_cast<float>(zfar);
+    if (selectedCamera->type == scene::CameraType::Orthographic) {
+        cameraProperties["orthoHeight"] =
+            static_cast<float>(std::max(selectedCamera->ymag * 2.0, 0.0001));
     }
+    storeVec3Property(cameraProperties, "eye", selectedCamera->eye);
+    storeVec3Property(cameraProperties, "center", selectedCamera->center);
+    storeVec3Property(cameraProperties, "up", selectedCamera->up);
 
-    if (!changed) {
-        return;
-    }
+    if (!viewportView_.setCameraProperties(cameraProperties)) { return; }
+    viewportView_.cameraCut();
     historyResources_.invalidateAll();
-    if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
-        graphExecutor_->syncRuntimeProperties(renderGraph_);
-    }
     viewportPreviewNeedsRender_ = true;
     renderGraphStatus_ = "Applied scene camera: " + selectedCamera->name;
 }
