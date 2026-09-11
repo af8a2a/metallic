@@ -39,6 +39,10 @@ resident LookDev 比较通过 `LookDev.exe --sample lookdev-vbuffer` 启动。
 
 RenderGraph 类型为 `VisibilityBufferPass`，内置图节点仍名为 `GPUDriven`。加载旧 JSON 时自动将 `GPUDrivenPreviewPass` 迁移到新类型；下次保存时写入新名称。
 
+法线锥轴的余因子变换必须按方向归一化，不能套用相机向量的绝对长度阈值。仓库 Sponza 的节点缩放为 `0.008`，余因子向量的长度平方约为 `4.096e-9`；旧阈值 `1e-8` 会将有效轴替换成固定 `+Z`，导致地板随相机运动误剔除。现在先按最大分量缩放再归一化，保留余因子的朝向符号；无法确定方向的退化轴不执行法线锥拒绝。
+
+GPU 回归 `gpu_driven_cone_scale_invariance` 验证 16 组缩放/旋转下的轴方向及正背面判定；`gpu_driven_sponza_culling_equivalence` 使用报告问题的三个相机位置，比较关闭全部剔除、开启全部剔除、逐项关闭剔除的可见性图，并覆盖连续 HZB 帧。修复前其中一个视角有 19,917 个像素不同，修复后全部组合逐像素一致。测试另输出 `SponzaShaded.png` 供同视角材质图检查；该图移除 SR/NR，以隔离几何剔除和时域重建。
+
 当前路径不创建 RTAS、不发起 ray query，也不计算几何阴影或几何环境遮挡。双面材质跳过 normal-cone backface 剔除。
 
 ## Visibility 数据契约与 Nanite 参考

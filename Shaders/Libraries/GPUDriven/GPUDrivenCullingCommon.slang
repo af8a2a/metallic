@@ -49,9 +49,14 @@ float3 transformNormal(SceneTransform transform, float3 localNormal)
     float3 cofactor0 = cross(transform.world1.xyz, transform.world2.xyz);
     float3 cofactor1 = cross(transform.world2.xyz, transform.world0.xyz);
     float3 cofactor2 = cross(transform.world0.xyz, transform.world1.xyz);
-    return safeNormalize(
-        cofactor0 * localNormal.x + cofactor1 * localNormal.y + cofactor2 * localNormal.z,
-        float3(0.0, 0.0, 1.0));
+    float3 normal = cofactor0 * localNormal.x + cofactor1 * localNormal.y + cofactor2 * localNormal.z;
+    // Cofactors scale quadratically with the object. Sponza's 0.008 scale
+    // produces a squared length of 4.096e-9: the camera-vector epsilon would
+    // replace its valid cone axis with +Z. Rescale before normalizing so the
+    // decision depends on direction, including the cofactor's winding sign.
+    float maxComponent = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));
+    return maxComponent > 0.0 && isfinite(maxComponent)
+        ? normalize(normal / maxComponent) : float3(0.0);
 }
 
 CameraData cullingCamera(GPUDrivenPreviewParams params)
@@ -292,7 +297,8 @@ bool meshletVisible(
         float3 coneApex = transformPoint(transform, meshlet.coneApexCutoff.xyz);
         float3 coneAxis = transformNormal(transform, meshlet.coneAxisLodError.xyz);
         float3 viewDirection = safeNormalize(coneApex - camera.eye.xyz, -coneAxis);
-        if (dot(viewDirection, coneAxis) >= meshlet.coneApexCutoff.w) {
+        // A degenerate transform/axis cannot prove that the meshlet is back-facing.
+        if (dot(coneAxis, coneAxis) > 0.0 && dot(viewDirection, coneAxis) >= meshlet.coneApexCutoff.w) {
             return false;
         }
     }
