@@ -22,6 +22,7 @@ enum class NrdDenoiserMode : uint32_t {
     Reblur,
     Relax,
     Reference,
+    Sigma = 4,
 };
 
 Format nrdNormalRoughnessFormat();
@@ -50,7 +51,7 @@ public:
     NrdRuntime& operator=(const NrdRuntime&) = delete;
 
     Result initialize(Device& device, uint16_t width, uint16_t height, const NrdUserTexturePool& userTexturePool,
-                      std::string& log);
+                      std::string& log, bool sigmaOnly = false);
     void clear();
     bool valid() const;
 
@@ -61,6 +62,7 @@ public:
     Result setCommonSettings(const denoising::CommonSettings& settings);
     Result setReblurSettings(const denoising::ReblurSettings& settings);
     Result setRelaxSettings(const denoising::RelaxSettings& settings);
+    Result setSigmaSettings(const denoising::SigmaSettings& settings);
     Result denoise(NrdDenoiserMode mode, CommandBuffer& commandBuffer, Streamer& streamer);
     Result denoiseReference(bool specular, CommandBuffer& commandBuffer, Streamer& streamer);
 

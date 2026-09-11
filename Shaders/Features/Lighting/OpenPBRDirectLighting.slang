@@ -16,6 +16,9 @@
 
 #if METALLIC_REALTIME_DEFERRED
 #include "../../Libraries/Lighting/EnvironmentPrefilter.slang"
+#include "../../Libraries/Lighting/ScreenSpaceShadowCommon.slang"
+#define gRealtimeShadow METALLIC_RESOURCE(Texture2D<float>, 81)
+#define gRealtimeShadowParameters METALLIC_RESOURCE(StructuredBuffer<ShadowParameters>, 82)
 #define gEnvironmentSpecular METALLIC_RESOURCE(StructuredBuffer<float4>, 74)
 
 float3 realtimeEnvironmentSpecular(float3 direction, float roughness, ScenePathTracePush push)
@@ -110,7 +113,23 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
             if (luminanceMax(bsdf * light.illuminance) <= 0.0) { continue; }
             float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
             float distance = max(light.distance - length(origin - hit.position), 0.0);
-            radiance += bsdf * light.illuminance * openPbrDirectVisibility(origin, light.direction, distance, push);
+            float3 visibility;
+#if METALLIC_REALTIME_DEFERRED
+            ShadowParameters shadow = gRealtimeShadowParameters[0];
+            // SIGMA encodes sqrt(visibility); attenuate only the selected light.
+            float encoded = gRealtimeShadow.Load(int3(uint2(samplePixel), 0));
+            if (!openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) &&
+                shadow.control.x != 0u && source == shadow.control.z) {
+                visibility = float3(encoded * encoded);
+                // The selected light already uses the sampled TLAS ray before SIGMA.
+                // A center-ray hard-shadow clamp here would destroy its soft edge.
+            } else {
+                visibility = openPbrDirectVisibility(origin, light.direction, distance, push);
+            }
+#else
+            visibility = openPbrDirectVisibility(origin, light.direction, distance, push);
+#endif
+            radiance += bsdf * light.illuminance * visibility;
         }
     }
 #if METALLIC_REALTIME_DEFERRED

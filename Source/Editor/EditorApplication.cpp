@@ -7,6 +7,8 @@
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/ScreenSpaceShadows.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "imnodes.h"
@@ -1475,10 +1477,26 @@ bool drawRuntimeSettingControl(
     render::RenderGraphProperties& outValue)
 {
     const char* label = setting.label.empty() ? setting.key.c_str() : setting.label.c_str();
+    if (setting.type != render::RenderGraphRuntimeSettingType::Bool &&
+        setting.type != render::RenderGraphRuntimeSettingType::ActionCounter) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(label);
+        ImGui::PopTextWrapPos();
+        ImGui::SetNextItemWidth(-std::numeric_limits<float>::min());
+    }
     switch (setting.type) {
     case render::RenderGraphRuntimeSettingType::Bool: {
         bool value = boolValueOr(currentValue, boolValueOr(setting.defaultValue, false));
-        if (ImGui::Checkbox(label, &value)) {
+        bool changed = ImGui::Checkbox("##value", &value);
+        ImGui::SameLine();
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(label);
+        ImGui::PopTextWrapPos();
+        if (ImGui::IsItemClicked()) {
+            value = !value;
+            changed = true;
+        }
+        if (changed) {
             outValue = value;
             return true;
         }
@@ -1488,7 +1506,7 @@ bool drawRuntimeSettingControl(
         int value = intValueOr(currentValue, intValueOr(setting.defaultValue, 0));
         const int minValue = intValueOr(setting.minValue, 0);
         const int maxValue = std::max(intValueOr(setting.maxValue, 100), minValue);
-        if (ImGui::SliderInt(label, &value, minValue, maxValue)) {
+        if (ImGui::SliderInt("##value", &value, minValue, maxValue)) {
             outValue = std::clamp(value, minValue, maxValue);
             return true;
         }
@@ -1498,7 +1516,7 @@ bool drawRuntimeSettingControl(
         float value = floatValueOr(currentValue, floatValueOr(setting.defaultValue, 0.0f));
         const float minValue = floatValueOr(setting.minValue, 0.0f);
         const float maxValue = std::max(floatValueOr(setting.maxValue, 1.0f), minValue);
-        if (ImGui::SliderFloat(label, &value, minValue, maxValue, "%.3f")) {
+        if (ImGui::SliderFloat("##value", &value, minValue, maxValue, "%.3f")) {
             outValue = std::clamp(value, minValue, maxValue);
             return true;
         }
@@ -1507,7 +1525,7 @@ bool drawRuntimeSettingControl(
     case render::RenderGraphRuntimeSettingType::Float3: {
         float values[3] = {};
         floatArrayValueOr(currentValue, values, 3, setting.defaultValue);
-        if (ImGui::InputFloat3(label, values, "%.6f")) {
+        if (ImGui::InputFloat3("##value", values, "%.6f")) {
             outValue = {values[0], values[1], values[2]};
             return true;
         }
@@ -1516,7 +1534,7 @@ bool drawRuntimeSettingControl(
     case render::RenderGraphRuntimeSettingType::Color4: {
         float values[4] = {};
         floatArrayValueOr(currentValue, values, 4, setting.defaultValue);
-        if (ImGui::ColorEdit4(label, values)) {
+        if (ImGui::ColorEdit4("##value", values)) {
             outValue = {values[0], values[1], values[2], values[3]};
             return true;
         }
@@ -1535,7 +1553,7 @@ bool drawRuntimeSettingControl(
         }
         const char* preview = setting.options[static_cast<size_t>(selectedIndex)].label.c_str();
         bool changed = false;
-        if (ImGui::BeginCombo(label, preview)) {
+        if (ImGui::BeginCombo("##value", preview)) {
             for (int index = 0; index < static_cast<int>(setting.options.size()); ++index) {
                 const bool selected = index == selectedIndex;
                 if (ImGui::Selectable(setting.options[static_cast<size_t>(index)].label.c_str(), selected)) {
@@ -1555,7 +1573,14 @@ bool drawRuntimeSettingControl(
         return false;
     }
     case render::RenderGraphRuntimeSettingType::ActionCounter: {
-        if (ImGui::Button(label)) {
+        const bool wrapLabel = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f >
+            ImGui::GetContentRegionAvail().x;
+        if (wrapLabel) {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextUnformatted(label);
+            ImGui::PopTextWrapPos();
+        }
+        if (ImGui::Button(wrapLabel ? "Apply##value" : label)) {
             const int value = std::max(intValueOr(currentValue, intValueOr(setting.defaultValue, 0)), 0);
             outValue = value + 1;
             return true;
@@ -3226,21 +3251,32 @@ void EditorApplication::drawScenePanel()
 
     ImGui::Separator();
     if (ImGui::CollapsingHeader("Runtime Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
-        render::RenderGraphNode* node = activePreviewRenderGraphNode();
-        if (node == nullptr) {
-            ImGui::TextDisabled("No active preview render pass.");
-        } else {
-            ImGui::TextDisabled(
-                "Active pass: %s (%s)",
-                node->name.c_str(),
-                node->type.c_str());
-            ImGui::PushID("SceneRuntimeSettings");
-            drawRuntimeSettingsForNode(
-                *node,
-                true,
-                true);
+        ImGui::PushID("SceneRuntimeSettings");
+        ImGui::PushID(renderGraph_.name().c_str());
+        bool hasSettings = false;
+        for (const auto& graphNode : renderGraph_.nodes()) {
+            auto pass = render::createRenderGraphPass(graphNode.type);
+            if (pass == nullptr) { continue; }
+            pass->setProperties(effectiveNodeProperties(graphNode));
+            if (!hasVisibleRuntimeSettings(pass->runtimeSettings(), true)) { continue; }
+            hasSettings = true;
+            ImGui::PushID(static_cast<int>(graphNode.id));
+            if (ImGui::CollapsingHeader(graphNode.name.c_str())) {
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextDisabled("%s", graphNode.type.c_str());
+                ImGui::PopTextWrapPos();
+                if (auto* node = renderGraph_.findNode(graphNode.id)) {
+                    drawRuntimeSettingsForNode(*node, true, false);
+                }
+                ImGui::Spacing();
+            }
             ImGui::PopID();
         }
+        if (!hasSettings) {
+            ImGui::TextDisabled("No runtime settings in this graph.");
+        }
+        ImGui::PopID();
+        ImGui::PopID();
     }
 
     ImGui::Separator();
@@ -3923,8 +3959,25 @@ bool EditorApplication::drawRuntimeSettingsForNode(
         return false;
     }
 
-    const std::vector<render::RenderGraphRuntimeSetting> settings = pass->runtimeSettings();
     const auto effective = effectiveNodeProperties(node);
+    pass->setProperties(effective);
+    std::vector<render::RenderGraphRuntimeSetting> settings = pass->runtimeSettings();
+    if (node.type == "VisibilityBufferDeferredPass") {
+        for (const auto& edge : renderGraph_.edges()) {
+            if (edge.dstPass != node.name || edge.dstField != "shadow") { continue; }
+            const auto* source = renderGraph_.findNode(edge.srcPass);
+            if (source != nullptr && (source->type == "RayTracedShadowPass" || source->type == "ScreenSpaceShadowPass")) {
+                auto shadowPass = render::createRenderGraphPass(source->type);
+                const auto shadowSettings = shadowPass->runtimeSettings();
+                std::erase_if(settings, [&](const auto& setting) {
+                    return std::any_of(shadowSettings.begin(), shadowSettings.end(),
+                        [&](const auto& shadowSetting) { return setting.key == shadowSetting.key; });
+                });
+                ImGui::TextWrapped("Shadow controls: %s", source->name.c_str());
+            }
+            break;
+        }
+    }
     hideCameraSettings = hideCameraSettings ||
         (effective.value("sceneBinding", "world") != "asset" && effective.value("viewBinding", "global") != "local");
     if (!hasVisibleRuntimeSettings(settings, hideCameraSettings)) {
@@ -3932,6 +3985,42 @@ bool EditorApplication::drawRuntimeSettingsForNode(
             ImGui::TextDisabled("No runtime settings for this pass.");
         }
         return false;
+    }
+
+    std::string shadowLightStatus;
+    for (auto& setting : settings) {
+        if (setting.key != "shadowLightIndex") { continue; }
+        const scene::Scene* source = renderWorld_.scene();
+        if (graphExecutor_ != nullptr && graphExecutor_->subsystemHost() != nullptr) {
+            const auto* gpuScene = graphExecutor_->subsystemHost()->get<render::GPUSceneSubsystem>();
+            if (gpuScene != nullptr && gpuScene->sourceOverride() != nullptr) { source = gpuScene->sourceOverride(); }
+        }
+        const auto lighting = render::resolveSceneLighting(source, &renderWorld_);
+        const auto lights = render::buildScreenSpaceShadowLightRecords(source, lighting);
+        const auto slotLabel = [&](uint32_t slot) {
+            const float type = lights[slot + 1].directionType[3];
+            std::string label = "Slot " + std::to_string(slot) + " - " +
+                (type < 0.5f ? "Directional" : type < 1.5f ? "Point" : "Spot");
+            const size_t nativeCount = source != nullptr ? source->lights().size() : 0;
+            if (slot >= nativeCount && slot - nativeCount < lighting.lights.size()) {
+                label += " - " + lighting.lights[slot - nativeCount].name;
+            }
+            return label;
+        };
+        const uint32_t automatic = render::selectScreenSpaceShadowLight(lights, -1);
+        const int requested = intValueOr(runtimeSettingValue(node, setting), -1);
+        const uint32_t selected = render::selectScreenSpaceShadowLight(lights, requested);
+        setting.type = render::RenderGraphRuntimeSettingType::Enum;
+        setting.label = "Shadow Light";
+        setting.options = {{automatic == UINT32_MAX ? "Auto (-1): no active light"
+            : "Auto (-1): " + slotLabel(automatic), -1}};
+        for (uint32_t i = 1; i < lights.size(); ++i) {
+            if (lights[i].colorIntensity[3] > 0) { setting.options.push_back({slotLabel(i - 1), i - 1}); }
+        }
+        shadowLightStatus = selected == UINT32_MAX ? "No active shadow light." : "Resolved: " + slotLabel(selected);
+        if (requested >= 0 && selected != static_cast<uint32_t>(requested)) {
+            shadowLightStatus = "Slot " + std::to_string(requested) + " is unavailable; using Auto. " + shadowLightStatus;
+        }
     }
 
     render::RenderGraphProperties runtimeProperties = node.runtimeProperties.is_object()
@@ -3955,6 +4044,9 @@ bool EditorApplication::drawRuntimeSettingsForNode(
             invalidateHistory = invalidateHistory || setting.invalidateHistory;
             rebuildGraph = rebuildGraph || setting.rebuildGraph;
             cameraChanged = cameraChanged || isCameraRuntimeSetting(setting);
+        }
+        if (setting.key == "shadowLightIndex" && !shadowLightStatus.empty()) {
+            ImGui::TextWrapped("%s", shadowLightStatus.c_str());
         }
         ImGui::PopID();
     }
@@ -7536,10 +7628,8 @@ void EditorApplication::drawRenderGraphEditorWindow()
         218.0f * mainScale_,
         std::max(150.0f * mainScale_, available.y * 0.42f));
     const float topHeight = std::max(260.0f * mainScale_, available.y - bottomHeight - spacing);
-    const float sideWidth = std::min(
-        330.0f * mainScale_,
-        std::max(260.0f * mainScale_, available.x * 0.38f));
-    const float canvasWidth = std::max(360.0f * mainScale_, available.x - sideWidth - spacing);
+    const float sideWidth = std::min(420.0f * mainScale_, std::max(1.0f, (available.x - spacing) * 0.38f));
+    const float canvasWidth = std::max(1.0f, available.x - sideWidth - spacing);
 
     ImGui::BeginChild("GraphCanvasPanel", ImVec2(canvasWidth, topHeight), true);
     ImGui::TextUnformatted("Graph Editor");
@@ -7997,14 +8087,17 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
 
     std::unique_ptr<render::RenderGraphPass> pass = render::createRenderGraphPass(node->type);
     if (pass != nullptr) {
-        ImGui::Text(
+        pass->setProperties(effectiveNodeProperties(*node));
+        ImGui::TextWrapped(
             "Type: %s (%s)",
             node->type.c_str(),
             render::renderGraphPassKindName(pass->kind()));
     } else {
-        ImGui::Text("Type: %s", node->type.c_str());
+        ImGui::TextWrapped("Type: %s", node->type.c_str());
     }
-    ImGui::InputText("Name", graphNodeNameBuffer_, sizeof(graphNodeNameBuffer_));
+    ImGui::TextUnformatted("Name");
+    ImGui::SetNextItemWidth(-std::numeric_limits<float>::min());
+    ImGui::InputText("##NodeName", graphNodeNameBuffer_, sizeof(graphNodeNameBuffer_));
     if (ImGui::IsItemDeactivatedAfterEdit() && std::strlen(graphNodeNameBuffer_) > 0) {
         if (!renderGraph_.renameNode(node->id, graphNodeNameBuffer_)) {
             renderGraphStatus_ = "Node rename failed";
@@ -8039,7 +8132,9 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
             editingScenePathNodeId = static_cast<int>(node->id);
         }
 
-        ImGui::InputText("Scene Path", scenePathBuffer, sizeof(scenePathBuffer));
+        ImGui::TextUnformatted("Scene Path");
+        ImGui::SetNextItemWidth(-std::numeric_limits<float>::min());
+        ImGui::InputText("##ScenePath", scenePathBuffer, sizeof(scenePathBuffer));
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             properties["path"] = scenePathBuffer;
             renderGraph_.setNodeProperties(node->id, std::move(properties));
@@ -8064,7 +8159,7 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         ImGui::TextWrapped("%s", propertiesText.c_str());
     }
     if (pass != nullptr) {
-        pass->setProperties(node->properties);
+        pass->setProperties(effectiveNodeProperties(*node));
         const render::RenderPassReflection reflection = pass->reflect(render::RenderGraphCompileContext{});
         ImGui::Separator();
         ImGui::TextUnformatted("Fields");

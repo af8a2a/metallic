@@ -5,14 +5,14 @@ This is the NRD **4.16** shader snapshot from NVIDIA NRD commit
 [LICENSE.txt](LICENSE.txt), together with the original copyright notices.
 
 Metallic supports REBLUR diffuse + specular radiance, RELAX diffuse + specular
-radiance, and two independent REFERENCE accumulators. The frontend packing stays
+radiance, SIGMA shadows, and two independent REFERENCE accumulators. The frontend packing stays
 at normal encoding 2 and linear roughness encoding 1, matching Metallic's existing
 RTXDI shaders. The shared math routines come from `External/MathLib`.
 
 ## Ownership and dispatch
 
 - `Source/Runtime/Render/Denoising/NrdReblur.cpp`, `NrdRelax.cpp`, and
-  `NrdReference.cpp` contain the adapted, readable pass recipes and shader
+  `NrdReference.cpp` and `NrdSigma.cpp` contain the adapted, readable pass recipes and shader
   constant calculations. Their upstream CPU implementations are reference
   material; no NRD SDK API, library, instance, or embedded shader is loaded.
 - `NrdPlan.cpp` owns internal texture descriptions, transient reuse, history
@@ -59,7 +59,7 @@ ctest --test-dir build-full -R '^MetallicNrdTests$' --output-on-failure
 ```
 
 The focused suite compiles every supported permutation, checks that descriptor
-bindings are runtime heap arrays, checks CPU schedules, and runs all three modes
+bindings are runtime heap arrays, checks CPU schedules, and runs all four modes
 with Vulkan validation. GPU cases cover independent signals, temporal averaging,
 reset, odd image dimensions, resize, confidence toggles, and discarded recording.
 
@@ -77,3 +77,12 @@ script preserves the algorithm bodies and applies the following Slang adapters:
 native descriptor access, constant-field aliases with a separate prefix to avoid
 macro rescanning, explicit compute entry points, parenthesized comparisons that
 Slang otherwise parses as generic arguments, and REFERENCE bounds checks.
+
+SIGMA is integrated into the realtime deferred resolve through `RayTracedShadowPass`.
+The legacy `ScreenSpaceShadows` source files now trace every shadow ray against the
+scene TLAS, following the NRD-Sample sun-disk/occluder-distance packing workflow.
+It uses a dedicated SIGMA-only plan, preserving its encoded output across frames
+for the Copy/TemporalStabilization stages. Its owner serializes frame overlap;
+resize, camera cuts, scene/transform/light changes, settings changes and cancelled
+recordings invalidate its history. See `Documentation/ScreenSpaceShadows.md` for
+trace inputs, controls, limitations and validation commands.

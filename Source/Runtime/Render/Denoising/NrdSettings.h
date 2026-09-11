@@ -13,6 +13,12 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include <cstdint>
 
 namespace metallic::render::denoising {
+inline constexpr uint32_t SIGMA_MAX_HISTORY_FRAME_NUM = 7;
+struct SigmaSettings {
+    float lightDirection[3] = {};
+    float planeDistanceSensitivity = 0.02f;
+    uint32_t maxStabilizedFrameNum = 5;
+};
 //====================================================================================================================================================
 // COMMON
 //====================================================================================================================================================

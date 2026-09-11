@@ -18,12 +18,11 @@ if revision != REVISION:
 DEST.mkdir(parents=True, exist_ok=True)
 
 for source in (SOURCE / 'Include').glob('*.hlsli'):
-    if not source.name.startswith('SIGMA'):
-        shutil.copy2(source, DEST / source.name)
-        content = (DEST / source.name).read_text().replace(
-            'pos.x < 0.0 || pos.x > gRectSizeMinusOne.x',
-            '(pos.x < 0.0) || (pos.x > gRectSizeMinusOne.x)')
-        (DEST / source.name).write_text(content)
+    shutil.copy2(source, DEST / source.name)
+    content = (DEST / source.name).read_text().replace(
+        'pos.x < 0.0 || pos.x > gRectSizeMinusOne.x',
+        '(pos.x < 0.0) || (pos.x > gRectSizeMinusOne.x)')
+    (DEST / source.name).write_text(content)
 header = (DEST / 'NRD.hlsli').read_text()
 start = header.index('// ( Optional ) Bindings')
 end = header.index('// ( Optional ) Entry point', start)
@@ -36,18 +35,18 @@ header = header[:start] + '// Resource access is supplied exclusively by Metalli
 shutil.copy2(ROOT / 'External/nrd/LICENSE.txt', DEST / 'LICENSE.txt')
 
 for source in SOURCE.glob('*.resources.hlsli'):
-    if source.name.startswith(('REBLUR_', 'RELAX_', 'REFERENCE_')):
+    if source.name.startswith(('REBLUR_', 'RELAX_', 'REFERENCE_', 'SIGMA_')):
         # Retain logical input slots for the CPU field lists; remove HLSL registers.
         declarations = re.sub(r',\s*[tus]\s*,\s*(\d+)\s*\)', r', \1 )', source.read_text())
         (DEST / source.name).write_text(declarations)
 
 for source in SOURCE.glob('*.cs.hlsl'):
-    if not source.name.startswith(('REBLUR_', 'RELAX_', 'REFERENCE_')):
+    if not source.name.startswith(('REBLUR_', 'RELAX_', 'REFERENCE_', 'SIGMA_')):
         continue
     name = source.name.removesuffix('.cs.hlsl')
     resource = (SOURCE / (name + '.resources.hlsli')).read_text()
     constants = re.findall(r'NRD_CONSTANT\(\s*\w+\s*,\s*(\w+)\s*\)', resource)
-    for family in ('REBLUR', 'RELAX'):
+    for family in ('REBLUR', 'RELAX', 'SIGMA'):
         if family + '_SHARED_CONSTANTS' in resource:
             constants += re.findall(r'NRD_CONSTANT\(\s*\w+\s*,\s*(\w+)\s*\)',
                                    (DEST / (family + '_Config.hlsli')).read_text())
@@ -81,4 +80,4 @@ for source in SOURCE.glob('*.cs.hlsl'):
             '    if (any(pixelPos >= uint2(width, height))) return;')
     (DEST / (name + '.slang')).write_text(shader)
 
-print('Updated NRD REBLUR, RELAX, and REFERENCE shader sources in', DEST)
+print('Updated NRD REBLUR, RELAX, REFERENCE, and SIGMA shader sources in', DEST)

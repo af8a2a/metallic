@@ -96,7 +96,7 @@ public:
     std::string_view category() const override { return "Lighting"; }
     std::string_view description() const override
     {
-        return "Raster visibility, clustered OpenPBR lighting, SH diffuse and filtered HDRI reflections, auto exposure and DLSS-SR. Optional DLSS-NR.";
+        return "Raster visibility, clustered OpenPBR lighting, SH diffuse and filtered HDRI reflections, screen-space main-light shadows with NRD SIGMA, auto exposure and DLSS-SR. Optional DLSS-NR.";
     }
     std::string scenePath() const override { return "Asset/meet_mat.glb"; }
     std::string graphPath() const override { return "Pipelines/Samples/realtime_lighting.metallic_graph.json"; }

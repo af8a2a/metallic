@@ -75,6 +75,7 @@ struct DenoiserData {
         ReblurSettings reblur;
         RelaxSettings relax;
         ReferenceSettings reference;
+        SigmaSettings sigma;
     } settings;
     size_t dispatchOffset = 0, pingPongOffset = 0, pingPongNum = 0;
 };
@@ -97,13 +98,14 @@ struct InternalDispatchDesc {
 // never loads NRD binaries or asks the SDK to produce opaque dispatches.
 class NrdPlan {
 public:
-    NrdPlan();
+    explicit NrdPlan(bool sigmaOnly = false);
     NrdPlan(const NrdPlan&) = delete;
     NrdPlan& operator=(const NrdPlan&) = delete;
     bool beginFrame(const CommonSettings& settings);
     std::span<const DispatchDesc> schedule(uint32_t denoiserIndex);
     void setReblurSettings(const ReblurSettings& s) { denoiserData_[0].settings.reblur = s; }
     void setRelaxSettings(const RelaxSettings& s) { denoiserData_[1].settings.relax = s; }
+    void setSigmaSettings(const SigmaSettings& s) { denoiserData_[4].settings.sigma = s; }
     const auto& permanentPool() const { return permanentPool_; }
     const auto& transientPool() const { return transientPool_; }
     const auto& pipelines() const { return pipelines_; }
@@ -113,9 +115,12 @@ private:
     void addReblur(DenoiserData&);
     void addRelax(DenoiserData&);
     void addReference(DenoiserData&);
+    void addSigma(DenoiserData&);
     void updateReblur(const DenoiserData&);
     void updateRelax(const DenoiserData&);
     void updateReference(const DenoiserData&);
+    void updateSigma(const DenoiserData&);
+    void writeSigmaConstants(const SigmaSettings&, void*);
     void writeReblurConstants(const ReblurSettings&, void*);
     void writeRelaxConstants(const RelaxSettings&, void*);
     void swapHistory(const DenoiserData&);
@@ -131,7 +136,8 @@ private:
     }
     void addPass(const char*, std::span<const ShaderDefine>, NumThreads, uint16_t, uint32_t);
     void* emitDispatch(const DenoiserData&, uint32_t);
-    std::array<DenoiserData, 4> denoiserData_{};
+    std::array<DenoiserData, 5> denoiserData_{};
+    bool sigmaOnly_ = false;
     std::vector<TextureDesc> permanentPool_, transientPool_;
     std::vector<ResourceDesc> resources_;
     std::vector<PingPong> pingPongs_;

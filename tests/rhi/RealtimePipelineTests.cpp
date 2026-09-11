@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <thread>
+#include <stdexcept>
 
 namespace metallic::tests {
 namespace {
@@ -268,5 +269,179 @@ public:
 METALLIC_REGISTER_RHI_TEST(RealtimePipelineTest);
 METALLIC_REGISTER_RHI_TEST(EnvironmentPrefilterTest);
 
+
+class RealtimeShadowTest final : public RhiTest {
+public:
+    RealtimeShadowTest() { type = RhiTestType::Rendering; name = "realtime_ray_traced_sigma_shadows"; }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string log;
+        if (!render::loadBuiltInRenderSample("realtime-lighting", sample, log) ||
+            !render::setRenderSampleScenePath(sample, "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf", log)) {
+            return realtimeFailure(log);
+        }
+        sample.graph.removeNode(sample.graph.findNode("DlssSr")->id);
+        sample.graph.removeNode(sample.graph.findNode("DlssNr")->id);
+        sample.graph.addEdge("Deferred.color", "AutoExposure.source");
+        sample.graph.addEdge("AutoExposure.color", "FinalBlit.source");
+        sample.graph.setViewProperties({{"camera", {{"eye", {0.0, 1.4, 3.65}}, {"center", {0.0, 0.8, 0.0}},
+            {"fovDegrees", 50.0}, {"znear", 0.05}, {"zfar", 100.0}, {"reversedZ", true}}}, {"temporalJitter", true}});
+        scene::SceneDocument scene;
+        if (!scene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) {
+            return realtimeFailure(scene.lastLoadResult().error);
+        }
+        render::RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&scene);
+        auto result = preview.initialize(context.enableValidation, true);
+        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders"); }
+        if (!result) { return realtimeFailure("Initialize realtime shadow preview"); }
+        preview.setEnvironment({.enabled = false});
+        scene::LightingSettings lighting;
+        lighting.autoExposure.enabled = false;
+        lighting.exposureEV100 = 4.0f;
+        scene::PunctualLight sun;
+        sun.properties.type = "directional";
+        sun.properties.intensity = 30;
+        sun.direction = float3(0.6f, -1.0f, -0.3f);
+        // A disabled prefix and an active local light must not compact the sun's source slot.
+        scene::PunctualLight inactive;
+        inactive.enabled = false;
+        lighting.lights.push_back(inactive);
+        auto point = inactive;
+        point.enabled = true;
+        point.properties.intensity = 0.001;
+        lighting.lights.push_back(point);
+        lighting.lights.push_back(sun);
+        preview.setLighting(lighting);
+        const auto* shadowNode = sample.graph.findNode("Shadows");
+        if (shadowNode == nullptr || shadowNode->type != "RayTracedShadowPass") {
+            return realtimeFailure("Realtime pipeline is missing the explicit shadow stage");
+        }
+        const auto shadows = shadowNode->id;
+        const auto deferred = sample.graph.findNode("Deferred")->id;
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowAngularRadius", 1.5f);
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowRayLength", 100000.0f);
+        std::vector<uint32_t> unshadowed;
+        for (uint32_t mode = 0; mode < 4; ++mode) {
+            sample.graph.setNodeRuntimeProperty(shadows, "rayTracedShadows", true);
+            sample.graph.setNodeRuntimeProperty(deferred, "debugDisableShadows", mode == 0);
+            sample.graph.setNodeRuntimeProperty(shadows, "sigmaDenoise", mode >= 2);
+            sample.graph.setNodeRuntimeProperty(shadows, "shadowDebug", mode == 3);
+            for (uint32_t frame = 0; frame < 12; ++frame) {
+                if (!preview.render(sample.graph, 513, 385)) { return realtimeFailure(preview.lastLog()); }
+            }
+            const auto& pixels = preview.pixels();
+            if (mode == 0) { unshadowed = pixels; }
+            if (mode == 2) {
+                size_t darker = 0;
+                for (size_t i = 0; i < pixels.size(); ++i) {
+                    darker += int(unshadowed[i] & 255u) - int(pixels[i] & 255u) > 8;
+                }
+                if (darker < 100) { return realtimeFailure("SIGMA shadow did not attenuate direct lighting"); }
+            }
+            const char* files[] = {"ShadowDisabled.png", "ShadowRaw.png", "ShadowSigma.png", "ShadowVisibility.png"};
+            if (!saveRgba8Png(context.outputDirectory / files[mode], reinterpret_cast<const uint8_t*>(pixels.data()),
+                preview.width(), preview.height(), log)) { return realtimeFailure(log); }
+        }
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowDebug", false);
+        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
+        for (uint32_t frame = 0; frame < 8; ++frame) {
+            if (!preview.render(sample.graph, 513, 385)) { return realtimeFailure(preview.lastLog()); }
+        }
+        size_t darker = 0;
+        for (size_t i = 0; i < preview.pixels().size(); ++i) {
+            darker += int(unshadowed[i] & 255u) - int(preview.pixels()[i] & 255u) > 8;
+        }
+        if (darker < 100) { return realtimeFailure("Unbinned deferred resolve did not consume the graph shadow"); }
+        if (!preview.render(sample.graph, 321, 217)) { return realtimeFailure(preview.lastLog()); }
+        // Deterministic comparisons exercise live properties without rebuilding the graph.
+        auto view = sample.graph.viewProperties();
+        view["temporalJitter"] = false;
+        sample.graph.setViewProperties(view);
+        sample.graph.setNodeRuntimeProperty(shadows, "sigmaDenoise", false);
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowAngularRadius", 0.0f);
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowDebug", true);
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowLightIndex", -1);
+        const auto draw = [&]() {
+            // Let SIGMA converge; zero-radius raw shadows remain deterministic.
+            for (uint32_t frame = 0; frame < 8; ++frame) {
+                if (!preview.render(sample.graph, 321, 217)) { throw std::runtime_error(preview.lastLog()); }
+            }
+            return preview.pixels();
+        };
+        const auto automatic = draw();
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowLightIndex", int(scene.lights().size()) + 2);
+        if (draw() != automatic) { return realtimeFailure("Explicit sun slot and Auto produce different shadow signals"); }
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowLightIndex", 1412);
+        if (draw() != automatic) { return realtimeFailure("Invalid slot did not fall back to Auto"); }
+        // Old screen-space settings must never affect TLAS visibility.
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowDistance", 0.01f);
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowThickness", 10.0f);
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowSteps", 8);
+        sample.graph.setNodeRuntimeProperty(shadows, "preserveGeometryShadows", false);
+        if (draw() != automatic) { return realtimeFailure("Legacy screen-space controls altered full ray tracing"); }
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowRayLength", 0.01f);
+        const auto shortTrace = draw();
+        size_t changed = 0;
+        for (size_t i = 0; i < automatic.size(); ++i) { changed += automatic[i] != shortTrace[i]; }
+        if (changed < 100) { return realtimeFailure("Live ray length did not update TLAS visibility"); }
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowDebug", false);
+        const auto shortLighting = draw();
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowRayLength", 100000.0f);
+        const auto longLighting = draw();
+        changed = 0;
+        for (size_t i = 0; i < shortLighting.size(); ++i) {
+            changed += int(shortLighting[i] & 255u) - int(longLighting[i] & 255u) > 8;
+        }
+        if (changed < 30) { return realtimeFailure("Trace settings did not affect the selected stable LightGrid sun slot"); }
+        const auto hardLighting = longLighting;
+        // Live source-radius edits must widen the full geometry penumbra and
+        // lighten pixels inside the old hard shadow in final deferred lighting.
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowDebug", true);
+        const auto hardVisibility = draw();
+        sample.graph.setNodeRuntimeProperty(shadows, "sigmaDenoise", true);
+        std::array<size_t, 3> softened{};
+        const float angles[] = {0.0f, 1.0f, 8.0f};
+        const char* captures[] = {"ShadowAngle0.png", "ShadowAngle1.png", "ShadowAngle8.png"};
+        uint32_t fullyLit = 0;
+        for (auto pixel : hardVisibility) { fullyLit = std::max(fullyLit, pixel & 255u); }
+        for (size_t angle = 0; angle < 3; ++angle) {
+            sample.graph.setNodeRuntimeProperty(shadows, "shadowAngularRadius", angles[angle]);
+            const auto visibility = draw();
+            for (size_t i = 0; i < visibility.size(); ++i) {
+                const auto value = visibility[i] & 255u;
+                softened[angle] += (hardVisibility[i] & 255u) < 3u && value > 12u && value + 8u < fullyLit;
+            }
+            if (!saveRgba8Png(context.outputDirectory / captures[angle],
+                reinterpret_cast<const uint8_t*>(visibility.data()), preview.width(), preview.height(), log)) {
+                return realtimeFailure(log);
+            }
+        }
+        if (softened[2] < softened[0] + 30 || softened[2] < softened[1] + 20) {
+            return realtimeFailure("Angular radius did not widen the geometry penumbra: " +
+                std::to_string(softened[0]) + ", " + std::to_string(softened[1]) + ", " + std::to_string(softened[2]));
+        }
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowDebug", false);
+        const auto softLighting = draw();
+        size_t lightened = 0;
+        for (size_t i = 0; i < hardLighting.size(); ++i) {
+            lightened += (hardVisibility[i] & 255u) < 3u &&
+                int(softLighting[i] & 255u) - int(hardLighting[i] & 255u) > 8;
+        }
+        if (lightened < 30) { return realtimeFailure("Deferred hard-shadow composition erased the SIGMA penumbra"); }
+        if (!saveRgba8Png(context.outputDirectory / "ShadowAngle8Lighting.png",
+            reinterpret_cast<const uint8_t*>(softLighting.data()), preview.width(), preview.height(), log)) {
+            return realtimeFailure(log);
+        }
+        return RhiTestResult::pass("Full TLAS + SIGMA, live light selection, legacy settings, resize and both resolve paths; "
+            "penumbra pixels at 0/1/8 degrees: " + std::to_string(softened[0]) + "/" +
+            std::to_string(softened[1]) + "/" + std::to_string(softened[2]) +
+            "; final lighting softened pixels: " + std::to_string(lightened));
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(RealtimeShadowTest);
 } // namespace
 } // namespace metallic::tests

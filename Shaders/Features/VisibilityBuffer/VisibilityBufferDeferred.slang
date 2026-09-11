@@ -210,6 +210,12 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
             MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3);
     }
 #endif
+#if METALLIC_REALTIME_DEFERRED
+    if (gRealtimeShadowParameters[0].control.w != 0u) {
+        float encoded = gRealtimeShadow.Load(int3(pixel, 0));
+        radiance = float3(encoded * encoded);
+    }
+#endif
     if (push.enableAccumulation != 0u) {
         if (push.hasHistory != 0u) {
             radiance = lerp(gHistoryPrevious[pixel].rgb, radiance, 1.0 / float(push.accumulationFrame + 1u));

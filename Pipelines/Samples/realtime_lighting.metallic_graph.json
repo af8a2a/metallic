@@ -17,11 +17,30 @@
             }
         },
         {
+            "id": 7,
+            "name": "Shadows",
+            "type": "RayTracedShadowPass",
+            "position": {
+                "x": 420,
+                "y": 0
+            },
+            "properties": {
+                "sigmaDenoise": true,
+                "shadowLightIndex": -1,
+                "shadowBias": 0.01,
+                "shadowAngularRadius": 0.266,
+                "sigmaHistoryLength": 5,
+                "shadowLightRadius": 0.05,
+                "rayTracedShadows": true,
+                "shadowRayLength": 100000.0
+            }
+        },
+        {
             "id": 2,
             "name": "Deferred",
             "type": "VisibilityBufferDeferredPass",
             "position": {
-                "x": 420,
+                "x": 760,
                 "y": 250
             },
             "properties": {
@@ -38,7 +57,7 @@
             "name": "DlssSr",
             "type": "StreamlineDlssSrPass",
             "position": {
-                "x": 760,
+                "x": 1100,
                 "y": 250
             },
             "properties": {
@@ -51,7 +70,7 @@
             "name": "AutoExposure",
             "type": "AutoExposurePass",
             "position": {
-                "x": 1100,
+                "x": 1440,
                 "y": 250
             },
             "properties": {}
@@ -61,7 +80,7 @@
             "name": "DlssNr",
             "type": "DlssNrPass",
             "position": {
-                "x": 1440,
+                "x": 1780,
                 "y": 250
             },
             "properties": {
@@ -78,7 +97,7 @@
             "name": "FinalBlit",
             "type": "FinalBlitPass",
             "position": {
-                "x": 1780,
+                "x": 2120,
                 "y": 250
             },
             "properties": {}
@@ -139,6 +158,26 @@
             "id": 12,
             "src": "DlssNr.color",
             "dst": "FinalBlit.source"
+        },
+        {
+            "id": 13,
+            "src": "VBuffer.depth",
+            "dst": "Shadows.depth"
+        },
+        {
+            "id": 14,
+            "src": "VBuffer.rasterInfo",
+            "dst": "Shadows.rasterInfo"
+        },
+        {
+            "id": 15,
+            "src": "Shadows.shadow",
+            "dst": "Deferred.shadow"
+        },
+        {
+            "id": 16,
+            "src": "Shadows.parameters",
+            "dst": "Deferred.shadowParameters"
         }
     ],
     "outputs": [],

@@ -2198,7 +2198,7 @@ public:
         }
         const render::RenderGraphNode* gpuDriven = gpuDrivenSample.graph.findNode("VBuffer");
         const render::RenderGraphNode* gpuDrivenDeferred = gpuDrivenSample.graph.findNode("Deferred");
-        if (gpuDrivenSample.graph.nodes().size() != 6u ||
+        if (gpuDrivenSample.graph.nodes().size() != 7u ||
             gpuDriven == nullptr ||
             gpuDriven->type != "VisibilityBufferPass" ||
             !gpuDriven->properties.is_object() ||
@@ -2208,8 +2208,25 @@ public:
             gpuDrivenDeferred->type != "VisibilityBufferDeferredPass" ||
             gpuDrivenDeferred->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||
             gpuDrivenDeferred->properties.value("lightingMode", "") != "realtime" ||
+            gpuDrivenSample.graph.findNode("Shadows") == nullptr ||
+            gpuDrivenSample.graph.findNode("Shadows")->type != "RayTracedShadowPass" ||
+            !gpuDrivenSample.graph.findNode("Shadows")->properties.value("sigmaDenoise", false) ||
             !gpuDrivenSample.graph.viewProperties().contains("camera")) {
             return RhiTestResult::fail("GPUDrivenSample did not apply pass defaults");
+        }
+        for (const char* type : {"RayTracedShadowPass", "ScreenSpaceShadowPass"}) {
+            auto shadow = render::createRenderGraphPass(type);
+            if (shadow == nullptr) { return RhiTestResult::fail("Ray-traced shadow node or legacy alias unavailable"); }
+            const auto controls = shadow->runtimeSettings();
+            bool enabledControl = false;
+            for (const auto& control : controls) {
+                enabledControl |= control.key == "rayTracedShadows";
+                if (control.key == "shadowSteps" || control.key == "shadowThickness" ||
+                    control.key == "shadowDistance" || control.key == "preserveGeometryShadows") {
+                    return RhiTestResult::fail("Obsolete screen-space shadow control still exposed");
+                }
+            }
+            if (!enabledControl) { return RhiTestResult::fail("Ray-traced shadow enable control missing"); }
         }
         if (!gpuDrivenSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);

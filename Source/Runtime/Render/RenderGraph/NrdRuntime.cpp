@@ -140,6 +140,7 @@ Format nrdNormalRoughnessFormat()
 
 #if METALLIC_HAS_NRD
 struct NrdRuntime::Impl {
+    explicit Impl(bool sigmaOnly) : plan(sigmaOnly) {}
     struct TextureResource {
         std::unique_ptr<Texture> texture;
         std::unique_ptr<TextureView> view;
@@ -163,7 +164,7 @@ struct NrdRuntime::Impl {
     bool clearPending = true;
     bool historyInvalid = true;
     bool frameReady = false;
-    std::array<bool, 4> scheduled{};
+    std::array<bool, 5> scheduled{};
 
     Result pipeline(uint32_t index)
     {
@@ -213,14 +214,14 @@ NrdRuntime::NrdRuntime(NrdRuntime&&) noexcept = default;
 NrdRuntime& NrdRuntime::operator=(NrdRuntime&&) noexcept = default;
 
 Result NrdRuntime::initialize(Device& device, uint16_t width, uint16_t height,
-                              const NrdUserTexturePool& userTexturePool, std::string& log)
+                              const NrdUserTexturePool& userTexturePool, std::string& log, bool sigmaOnly)
 {
     if (!width || !height)
         return makeError(Error::InvalidArgument);
     if (!device.capabilities().bindlessDescriptorHeap)
         return makeError(Error::Unsupported);
     clear();
-    impl_ = std::make_shared<Impl>();
+    impl_ = std::make_shared<Impl>(sigmaOnly);
     impl_->device = &device;
     impl_->width = width;
     impl_->height = height;
@@ -391,6 +392,13 @@ Result NrdRuntime::setRelaxSettings(const denoising::RelaxSettings& settings)
     return {};
 }
 
+Result NrdRuntime::setSigmaSettings(const denoising::SigmaSettings& settings)
+{
+    if (!valid()) { return makeError(Error::InvalidArgument); }
+    impl_->plan.setSigmaSettings(settings);
+    return {};
+}
+
 Result NrdRuntime::denoise(NrdDenoiserMode mode, CommandBuffer& commands, Streamer& streamer)
 {
     return record(static_cast<uint32_t>(mode), commands, streamer);
@@ -402,7 +410,7 @@ Result NrdRuntime::denoiseReference(bool specular, CommandBuffer& commands, Stre
 
 Result NrdRuntime::record(uint32_t index, CommandBuffer& commands, Streamer& streamer)
 {
-    if (!valid() || !impl_->frameReady || index >= 4 || impl_->scheduled[index])
+    if (!valid() || !impl_->frameReady || index >= impl_->scheduled.size() || impl_->scheduled[index])
         return makeError(Error::InvalidArgument);
     if (index == 0 && !impl_->device->capabilities().shaderImageGatherExtended)
         return makeError(Error::Unsupported);

@@ -4,6 +4,7 @@
 #include "Runtime/Render/SceneResourceManager.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/MaterialBinning.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
@@ -575,7 +576,11 @@ public:
     explicit ScenePathTracePass(bool realtime = false, bool visibilityDeferred = false)
         : realtime_(realtime), visibilityDeferred_(visibilityDeferred) {}
 
-    bool supportsFrameOverlap() const override { return cacheMode_ == kScenePathTraceCacheModeOff; }
+    bool supportsFrameOverlap() const override
+    {
+        return cacheMode_ == kScenePathTraceCacheModeOff &&
+            !(visibilityDeferred_ && properties().value("lightingMode", "reference") == "realtime");
+    }
 
     ~ScenePathTracePass() override
     {
@@ -611,6 +616,12 @@ public:
             reflection.addTextureInput("depth", "Depth from the same visibility raster").sampledRead().format = Format::D32Sfloat;
             reflection.addBufferInput("rasterInfo", "CPU-authored raster camera and scene identity")
                 .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
+            if (properties().value("lightingMode", "reference") == "realtime") {
+                reflection.addTextureInput("shadow", "SIGMA-encoded visibility from RayTracedShadowPass")
+                    .sampledRead().setOptional().format = Format::R8Unorm;
+                reflection.addBufferInput("shadowParameters", "Matching shadow light and trace metadata")
+                    .buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).shaderRead().setOptional();
+            }
         }
         reflection.addTextureOutput("color", visibilityDeferred_ ? "OpenPBR deferred physical HDR" :
             (realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene"))
@@ -665,6 +676,8 @@ public:
                 guides.rebuildGraph = true;
                 settings.push_back(guides);
                 settings.push_back(runtimeIntSetting("environmentSamples", "OpenPBR Environment Samples", 64, 1, 256));
+                const auto shadowSettings = screenSpaceShadowRuntimeSettings(properties());
+                settings.insert(settings.end(), shadowSettings.begin(), shadowSettings.end());
                 auto binning = runtimeBoolSetting("materialBinning", "Wave32 Material Tile Classification", true, true);
                 binning.rebuildGraph = true;
                 settings.push_back(binning);
@@ -1044,6 +1057,8 @@ public:
             if (globalView) { baseBindings.push_back({.binding = 80, .kind = ComputeResourceBindingKind::StorageBuffer}); }
             if (properties().value("lightingMode", "reference") == "realtime") {
                 baseBindings.push_back({.binding = 74, .kind = ComputeResourceBindingKind::StorageBuffer});
+                baseBindings.push_back({.binding = 81, .kind = ComputeResourceBindingKind::SampledImage});
+                baseBindings.push_back({.binding = 82, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
             if (boolProperty(properties(), "exportUpscalerGuides", false)) {
                 baseBindings.push_back({.binding = 72, .kind = ComputeResourceBindingKind::StorageImage});
@@ -1870,6 +1885,7 @@ public:
             bindings.push_back({.binding = 53, .textureViews = punctualPdfViews, .textureViewCount = 1});
         }
         MaterialBinningResult materialBins;
+        ScreenSpaceShadowResult shadow;
         if (visibilityDeferred_) {
             if (context.viewConstantsBuffer() != nullptr) {
                 bindings.push_back({.binding = 80, .buffer = context.viewConstantsBuffer()});
@@ -1881,6 +1897,47 @@ public:
             }
             if (context.properties().value("lightingMode", "reference") == "realtime") {
                 bindings.push_back({.binding = 74, .buffer = environment.prefilteredSpecularBuffer});
+                const auto externalShadow = context.inputTexture("shadow");
+                const auto externalParameters = context.inputBuffer("shadowParameters");
+                if (externalShadow.valid() != externalParameters.valid()) {
+                    spdlog::error("Deferred shadows require both shadow and shadowParameters inputs");
+                    return makeError(Error::InvalidArgument);
+                }
+                if (externalShadow.valid()) {
+                    if (externalShadow.desc().width != context.width() || externalShadow.desc().height != context.height() ||
+                        externalParameters.desc().size != sizeof(ScreenSpaceShadowParameters)) {
+                        return makeError(Error::InvalidArgument);
+                    }
+                    shadow = {.texture = externalShadow.texture(), .shadow = externalShadow.view(),
+                        .parameters = externalParameters.buffer()};
+                } else {
+                    // Preserve realtime graphs authored before the explicit shadow stage.
+                    if (context.streamer() == nullptr) { return makeError(Error::InvalidArgument); }
+                    ViewConstants shadowView{};
+                    if (const auto* view = context.viewConstants()) {
+                        shadowView = *view;
+                    } else {
+                        std::memcpy(&shadowView.current, push.eye, sizeof(ViewCameraConstants));
+                        std::memcpy(&shadowView.previous, push.previousEye, sizeof(ViewCameraConstants));
+                        shadowView.jitter[0] = push.jitterOffsetX;
+                        shadowView.jitter[1] = push.jitterOffsetY;
+                        shadowView.jitter[2] = previousShadowJitter_[0];
+                        shadowView.jitter[3] = previousShadowJitter_[1];
+                        shadowView.frame[0] = push.sampleFrame;
+                        shadowView.frame[1] = push.previousCameraValid;
+                        shadowView.frame[2] = push.temporalJitter;
+                    }
+                    const auto settings = screenSpaceShadowSettings(context.properties());
+                    const auto lightRecords = buildScreenSpaceShadowLightRecords(lightScene, resolvedLighting);
+                    std::string shadowLog;
+                    result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(),
+                        *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(),
+                        lightScene->transformRevision(), settings, shadow, shadowLog, &sceneResources_);
+                    if (!result) { spdlog::error("Ray-traced shadows: {} ({})", shadowLog, resultToString(result)); return result; }
+                    previousShadowJitter_ = {shadowView.jitter[0], shadowView.jitter[1]};
+                }
+                bindings.push_back({.binding = 81, .textureViews = &shadow.shadow, .textureViewCount = 1});
+                bindings.push_back({.binding = 82, .buffer = shadow.parameters});
             }
             if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
                 bindings.push_back({.binding = 72, .textureView = context.outputTexture("motionVectors").view()});
@@ -3061,6 +3118,8 @@ private:
     bool visibilityDeferred_ = false;
     std::unique_ptr<PipelineCache> deferredPipelineCache_;
     MaterialBinning materialBinning_;
+    ScreenSpaceShadows shadows_;
+    std::array<float, 2> previousShadowJitter_{};
     std::array<ComputeProgram, kMaterialClassCount - 1> classifiedPrograms_;
     bool compiledMaterialBinning_ = true;
     RenderGraphProperties deferredHistoryProperties_;

@@ -1,6 +1,10 @@
 #include "Runtime/Render/RenderGraph/NrdRuntime.h"
 #include "Runtime/Render/Denoising/NrdPlan.h"
 #include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/ScreenSpaceShadows.h"
+#include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Scene/SceneDocument.h"
+#include <fstream>
 
 #include <gtest/gtest.h>
 #include <SDL3/SDL.h>
@@ -31,6 +35,32 @@ rd::CommonSettings commonSettings(uint16_t width = 63, uint16_t height = 37)
     }
     settings.timeDeltaBetweenFrames = 1000.0f / 60.0f;
     return settings;
+}
+
+TEST(NrdPlan, ShadowLightUsesStableSourceSlots)
+{
+    scene::LightingSettings lighting;
+    lighting.lights.resize(3);
+    lighting.lights[0].enabled = false;
+    lighting.lights[1].properties.type = "point";
+    lighting.lights[2].properties.type = "directional";
+    auto lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting);
+    ASSERT_EQ(lights.size(), 4u);
+    EXPECT_EQ(lights[1].colorIntensity[3], 0);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, -1), 2u);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 2), 2u);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 1), 1u);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 0), 2u);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 1412), 2u);
+    lighting.lights[0].enabled = true;
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, -1), 2u) << "Enabling earlier lights changed the sun slot";
+    lighting.lights[2].enabled = false;
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 2), 0u);
+    for (auto& light : lighting.lights) { light.enabled = false; }
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, -1), UINT32_MAX);
 }
 
 TEST(NrdPlan, HistoryCountersAndPassSchedule)
@@ -158,6 +188,8 @@ void require(render::Result result)
 
 class NrdGpu : public ::testing::Test {
 protected:
+    virtual bool requiresRayQueries() const { return false; }
+
     void SetUp() override
     {
         ASSERT_TRUE(video.ready) << SDL_GetError();
@@ -165,6 +197,8 @@ protected:
             {.applicationName = "Metallic native NRD tests",
              .enableValidation = true,
              .enableBindlessDescriptorHeap = true,
+             .enableRayTracingAccelerationStructure = requiresRayQueries(),
+             .enableRayQuery = requiresRayQueries(),
              .validationSink = {.callback =
                                     [](void* context, const render::ValidationMessage& message) noexcept {
                                         if ((message.severity & 0x1100u) != 0)
@@ -201,7 +235,8 @@ protected:
                 format = render::nrdNormalRoughnessFormat();
             if (resource == rd::ResourceType::IN_VIEWZ || resource == rd::ResourceType::IN_DIFF_CONFIDENCE ||
                 resource == rd::ResourceType::IN_SPEC_CONFIDENCE ||
-                resource == rd::ResourceType::IN_DISOCCLUSION_THRESHOLD_MIX)
+                resource == rd::ResourceType::IN_DISOCCLUSION_THRESHOLD_MIX ||
+                resource == rd::ResourceType::IN_PENUMBRA || resource == rd::ResourceType::OUT_SHADOW_TRANSLUCENCY)
                 format = render::Format::R32Sfloat;
             std::unique_ptr<render::Texture> texture;
             require(device->createTexture(
@@ -252,6 +287,8 @@ protected:
                 value = {2, 0, 0, 0};
             if (resource == rd::ResourceType::IN_DIFF_CONFIDENCE || resource == rd::ResourceType::IN_SPEC_CONFIDENCE)
                 value = {1, 0, 0, 0};
+            if (resource == rd::ResourceType::IN_PENUMBRA)
+                value = {diffuse, 0, 0, 0};
             command->clearColorTexture(*textures[i], render::ResourceState::TransferDestination, value);
             barrier.before = render::ResourceState::TransferDestination;
             barrier.after = render::ResourceState::General;
@@ -280,8 +317,9 @@ protected:
         }
         std::array<float, 2> values{};
         for (uint32_t i = 0; i < 2; ++i) {
-            auto output = pool[static_cast<size_t>(i ? rd::ResourceType::OUT_SPEC_RADIANCE_HITDIST
-                                                     : rd::ResourceType::OUT_DIFF_RADIANCE_HITDIST)];
+            auto output = pool[static_cast<size_t>(mode == render::NrdDenoiserMode::Sigma
+                ? rd::ResourceType::OUT_SHADOW_TRANSLUCENCY : (i ? rd::ResourceType::OUT_SPEC_RADIANCE_HITDIST
+                : rd::ResourceType::OUT_DIFF_RADIANCE_HITDIST))];
             render::TextureBarrierDesc barrier{.texture = output.texture,
                                                .before = render::ResourceState::General,
                                                .after = render::ResourceState::TransferSource};
@@ -389,6 +427,285 @@ TEST_F(NrdGpu, ReblurAndRelaxPreserveFlatRadiance)
             EXPECT_NEAR(values[1], 5, 0.25f);
         }
     }
+}
+
+TEST(NrdPlan, SigmaScheduleAndIsolatedAllocation)
+{
+    rd::NrdPlan plan(true);
+    auto common = commonSettings();
+    ASSERT_TRUE(plan.beginFrame(common));
+    auto stages = plan.schedule(4);
+    ASSERT_EQ(stages.size(), 6u);
+    EXPECT_EQ(plan.permanentPool().size(), 1u);
+    EXPECT_EQ(plan.transientPool().size(), 8u);
+    EXPECT_TRUE(plan.schedule(0).empty());
+    rd::SigmaSettings sigma;
+    sigma.maxStabilizedFrameNum = 0;
+    plan.setSigmaSettings(sigma);
+    ASSERT_TRUE(plan.beginFrame(common));
+    stages = plan.schedule(4);
+    EXPECT_EQ(stages.size(), 4u);
+    common.splitScreen = 1.0f;
+    ASSERT_TRUE(plan.beginFrame(common));
+    stages = plan.schedule(4);
+    ASSERT_EQ(stages.size(), 1u);
+    EXPECT_EQ(plan.pipelines()[stages[0].pipelineIndex].shaderName, "SIGMA_SplitScreen");
+}
+
+TEST_F(NrdGpu, SigmaLitOccludedResetResizeAndDiscard)
+{
+    for (uint32_t history : {0u, 5u}) {
+        rd::SigmaSettings sigma;
+        sigma.maxStabilizedFrameNum = history;
+        require(runtime.setSigmaSettings(sigma));
+        for (float penumbra : {65504.0f, 0.0f, 0.05f}) {
+            auto value = frame(render::NrdDenoiserMode::Sigma, penumbra, 0, true, false);
+            EXPECT_NEAR(value[0], penumbra == 65504.0f ? 1.0f : 0.0f, 0.005f);
+        }
+    }
+    frame(render::NrdDenoiserMode::Sigma, 65504, 0, true, false, true);
+    EXPECT_NEAR(frame(render::NrdDenoiserMode::Sigma, 0, 0, true, false)[0], 0, 0.005f);
+    createTextures(31, 19);
+    EXPECT_NEAR(frame(render::NrdDenoiserMode::Sigma, 65504, 0, false, false)[0], 1, 0.005f);
+}
+
+class NrdRayTracingGpu : public NrdGpu {
+protected:
+    bool requiresRayQueries() const override { return true; }
+};
+
+TEST_F(NrdRayTracingGpu, RayTracedShadowOcclusionAndHistory)
+{
+    render::ScreenSpaceShadows shadows;
+    render::ScreenSpaceShadowSettings settings;
+    settings.angularRadiusDegrees = 0.5f;
+    settings.maxDistance = 100000;
+    if (!device->capabilities().rayQuery || !device->capabilities().rayTracingAccelerationStructure) {
+        GTEST_SKIP() << "Ray queries unavailable";
+    }
+    // The blocker is behind the camera (z=-1), so it never appears in the depth
+    // buffer. It casts onto the visible z=3 plane along the directional-light ray.
+    const auto fixtureDirectory = std::filesystem::path(PROJECT_SOURCE_DIR) / ".tmp/NrdRayTracedShadowGeometry";
+    std::filesystem::create_directories(fixtureDirectory);
+    const float vertices[] = {
+        -10, -10, 3, 10, -10, 3, 10, 10, 3, -10, 10, 3,
+        4, -10, -1, 7, -10, -1, 7, 10, -1, 4, 10, -1,
+    };
+    const uint32_t indices[] = {0, 1, 2, 0, 2, 3, 0, 1, 2, 0, 2, 3};
+    {
+        std::ofstream mesh(fixtureDirectory / "Geometry.bin", std::ios::binary);
+        mesh.write(reinterpret_cast<const char*>(vertices), sizeof(vertices));
+        mesh.write(reinterpret_cast<const char*>(indices), sizeof(indices));
+        ASSERT_TRUE(mesh.good());
+    }
+    std::array<scene::SceneDocument, 3> scenes;
+    std::array<render::ScenePathTraceResources, 3> geometry;
+    render::SceneResourceManager sceneResources;
+    for (size_t i = 0; i < geometry.size(); ++i) {
+        auto document = render::RenderGraphProperties::parse(R"json({
+            "asset":{"version":"2.0"}, "scene":0, "scenes":[{"nodes":[0,1]}],
+            "nodes":[{"mesh":0},{"mesh":1}],
+            "buffers":[{"uri":"Geometry.bin","byteLength":144}],
+            "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":96},
+                           {"buffer":0,"byteOffset":96,"byteLength":48}],
+            "accessors":[
+                {"bufferView":0,"byteOffset":0,"componentType":5126,"count":4,"type":"VEC3","min":[-10,-10,3],"max":[10,10,3]},
+                {"bufferView":0,"byteOffset":48,"componentType":5126,"count":4,"type":"VEC3","min":[4,-10,-1],"max":[7,10,-1]},
+                {"bufferView":1,"byteOffset":0,"componentType":5125,"count":6,"type":"SCALAR"},
+                {"bufferView":1,"byteOffset":24,"componentType":5125,"count":6,"type":"SCALAR"}],
+            "materials":[{"doubleSided":true},{"doubleSided":true}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":2,"material":0}]},
+                      {"primitives":[{"attributes":{"POSITION":1},"indices":3,"material":1}]}]
+        })json");
+        if (i == 0) { document["scenes"][0]["nodes"] = {0}; }
+        if (i == 2) {
+            document["materials"][1]["alphaMode"] = "MASK";
+            document["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"] = {1, 1, 1, 0};
+        }
+        const auto path = fixtureDirectory / ("Scene" + std::to_string(i) + ".gltf");
+        { std::ofstream file(path); file << document.dump(); ASSERT_TRUE(file.good()); }
+        ASSERT_TRUE(scenes[i].load(path)) << scenes[i].lastLoadResult().error;
+        std::string log;
+        std::shared_ptr<render::SceneResourceSnapshot> snapshot;
+        ASSERT_TRUE(sceneResources.acquire(*device, *queue, {{"path", path.generic_string()}}, &scenes[i],
+            render::SceneResourceFeatureBits::Geometry | render::SceneResourceFeatureBits::Materials |
+            render::SceneResourceFeatureBits::MaterialTextures | render::SceneResourceFeatureBits::StandardAccelerationStructure,
+            snapshot, log)) << log;
+        ASSERT_NE(snapshot, nullptr);
+        ASSERT_NE(snapshot->pathTraceResources, nullptr);
+        geometry[i] = *snapshot->pathTraceResources;
+        ASSERT_TRUE(geometry[i].valid());
+    }
+    bool alphaCutout = false;
+    render::RenderView camera;
+    render::ViewCamera pose;
+    pose.eye = {0, 0, 0};
+    pose.center = {0, 0, 1};
+    pose.orthographic = true;
+    pose.orthoHeight = 4;
+    pose.nearPlane = 0.1f;
+    pose.farPlane = 10;
+    ASSERT_TRUE(camera.setCamera(pose));
+    std::array<render::GpuPunctualLight, 2> lights{};
+    lights[0].positionRange[0] = 1;
+    lights[1].directionType[0] = -0.70710678f;
+    lights[1].directionType[2] = 0.70710678f;
+    lights[1].colorIntensity[0] = lights[1].colorIntensity[1] = lights[1].colorIntensity[2] = 1;
+    lights[1].colorIntensity[3] = 10;
+    std::unique_ptr<render::Texture> depth;
+    std::unique_ptr<render::TextureView> depthView;
+    std::unique_ptr<render::Buffer> upload;
+    require(device->createTexture({.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::TransferDestination,
+        .format = render::Format::R32Sfloat, .width = w, .height = h}, depth));
+    require(device->createTextureView(*depth, {.format = render::Format::R32Sfloat}, depthView));
+    require(device->createBuffer({.size = uint64_t(w) * h * 4, .usage = render::BufferUsageBits::TransferSource,
+        .memoryLocation = render::MemoryLocation::HostUpload}, upload));
+    bool depthReady = false;
+    uint32_t shadowFrame = 0;
+    render::ViewConstants previous{};
+    auto renderShadow = [&](bool blocker, bool discard = false, bool falseDepthBlocker = false) {
+        auto view = camera.constants(shadowFrame++, w, h, w, h, depthReady ? &previous : nullptr);
+        auto* data = static_cast<float*>(upload->map());
+        for (uint32_t y = 0; y < h; ++y) {
+            for (uint32_t x = 0; x < w; ++x) {
+                const float z = falseDepthBlocker && x < 20 ? 2.0f : 3.0f;
+                float d = pose.orthographic ? (z - pose.nearPlane) / (pose.farPlane - pose.nearPlane)
+                    : pose.farPlane / (pose.farPlane - pose.nearPlane) * (1.0f - pose.nearPlane / z);
+                data[y * w + x] = pose.reversedZ ? 1.0f - d : d;
+            }
+        }
+        upload->flush(0, uint64_t(w) * h * 4);
+        upload->unmap();
+        require(command->begin());
+        command->hostWriteBarrier();
+        render::TextureBarrierDesc barrier{.texture = depth.get(),
+            .before = depthReady ? render::ResourceState::ShaderRead : render::ResourceState::Undefined,
+            .after = render::ResourceState::TransferDestination};
+        command->barrier({.textures = &barrier, .textureCount = 1});
+        command->copyBufferToTexture({.buffer = upload.get(), .texture = depth.get(), .width = w, .height = h});
+        barrier.before = render::ResourceState::TransferDestination;
+        barrier.after = render::ResourceState::ShaderRead;
+        command->barrier({.textures = &barrier, .textureCount = 1});
+        render::ScreenSpaceShadowResult output;
+        std::string log;
+        auto result = shadows.record(*device, *command, *streamer, *depthView, view, lights,
+            blocker ? (alphaCutout ? 3 : 1) : 2, 0, settings, output, log,
+            &geometry[blocker ? (alphaCutout ? 2 : 1) : 0]);
+        if (!result) { throw std::runtime_error(log + render::resultToString(result)); }
+        barrier.texture = output.texture;
+        barrier.before = render::ResourceState::ShaderRead;
+        barrier.after = render::ResourceState::TransferSource;
+        command->barrier({.textures = &barrier, .textureCount = 1});
+        command->copyTextureToBuffer({.texture = output.texture, .buffer = readback.get(), .width = w, .height = h});
+        barrier.before = render::ResourceState::TransferSource;
+        barrier.after = render::ResourceState::ShaderRead;
+        command->barrier({.textures = &barrier, .textureCount = 1});
+        require(command->end());
+        if (discard) {
+            command.reset();
+            require(commands->createCommandBuffer(command));
+            streamer->endFrame();
+            return std::vector<uint8_t>{};
+        }
+        render::CommandBuffer* list[] = {command.get()};
+        require(queue->submit({.commandBuffers = list, .commandBufferCount = 1}));
+        require(queue->waitIdle());
+        depthReady = true;
+        previous = view;
+        readback->invalidate();
+        auto* pixels = static_cast<const uint8_t*>(readback->map());
+        std::vector<uint8_t> image(pixels, pixels + w * h);
+        readback->unmap();
+        streamer->endFrame();
+        return image;
+    };
+    for (bool perspective : {false, true}) {
+        pose.orthographic = !perspective;
+        for (bool reversed : {false, true}) {
+            pose.reversedZ = reversed;
+            ASSERT_TRUE(camera.setCamera(pose));
+            camera.cameraCut();
+            for (bool denoise : {false, true}) {
+                settings.denoise = denoise;
+                auto flat = renderShadow(false);
+                EXPECT_EQ(*std::min_element(flat.begin(), flat.end()), 255) << "Flat surface self-shadowed";
+                auto falseOcclusion = renderShadow(false, false, true);
+                EXPECT_EQ(*std::min_element(falseOcclusion.begin(), falseOcclusion.end()), 255)
+                    << "A depth-only occluder affected full ray-traced shadows";
+                auto blocked = renderShadow(true);
+                size_t dark = 0;
+                for (uint32_t y = 5; y < h - 5; ++y) {
+                    for (uint32_t x = 21; x < w - 5; ++x) { dark += blocked[y * w + x] < 128; }
+                }
+                EXPECT_GT(dark, 30u) << "Offscreen geometry did not cast a shadow";
+                for (uint32_t i = 0; i < 3; ++i) { blocked = renderShadow(true); }
+                flat = renderShadow(false);
+                EXPECT_EQ(*std::min_element(flat.begin(), flat.end()), 255) << "Removed blocker retained history";
+            }
+        }
+    }
+    settings.angularRadiusDegrees = 3.0f;
+    auto temporalVariation = [&](bool denoise) {
+        settings.denoise = denoise;
+        std::vector<uint8_t> last;
+        double variation = 0.0;
+        for (uint32_t i = 0; i < 16; ++i) {
+            auto image = renderShadow(true);
+            if (i >= 8) {
+                for (size_t pixel = 0; pixel < image.size(); ++pixel) {
+                    variation += std::abs(int(image[pixel]) - int(last[pixel]));
+                }
+            }
+            last = std::move(image);
+        }
+        return variation;
+    };
+    const double rawVariation = temporalVariation(false);
+    const double filteredVariation = temporalVariation(true);
+    EXPECT_GT(rawVariation, 0.0);
+    EXPECT_LT(filteredVariation, rawVariation) << "SIGMA did not reduce temporal shadow noise";
+    // Local-light penumbra packing and source switching use the same history owner.
+    lights[1].directionType[3] = 1.0f;
+    lights[1].positionRange[0] = 6.0f;
+    lights[1].positionRange[2] = -4.0f;
+    for (bool denoise : {false, true}) {
+        settings.denoise = denoise;
+        auto local = renderShadow(true);
+        EXPECT_LT(*std::min_element(local.begin(), local.end()), 128);
+        auto flat = renderShadow(false);
+        EXPECT_EQ(*std::min_element(flat.begin(), flat.end()), 255);
+    }
+    alphaCutout = true;
+    auto cutout = renderShadow(true);
+    EXPECT_EQ(*std::min_element(cutout.begin(), cutout.end()), 255) << "Alpha-cutout geometry cast an opaque shadow";
+    alphaCutout = false;
+    settings.maxDistance = 1.0f;
+    auto truncated = renderShadow(true);
+    EXPECT_EQ(*std::min_element(truncated.begin(), truncated.end()), 255) << "Shadow ray ignored its maximum length";
+    settings.maxDistance = 100000.0f;
+    camera.setTemporalJitter(true);
+    renderShadow(true, true);
+    auto afterDiscard = renderShadow(false);
+    EXPECT_EQ(*std::min_element(afterDiscard.begin(), afterDiscard.end()), 255);
+    settings.enabled = false;
+    auto disabled = renderShadow(true);
+    EXPECT_EQ(*std::min_element(disabled.begin(), disabled.end()), 255);
+    settings.enabled = true;
+    lights[1].colorIntensity[3] = 0;
+    auto noLight = renderShadow(true);
+    EXPECT_EQ(*std::min_element(noLight.begin(), noLight.end()), 255);
+    w = 31;
+    h = 19;
+    depthView.reset();
+    depth.reset();
+    require(device->createTexture({.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::TransferDestination,
+        .format = render::Format::R32Sfloat, .width = w, .height = h}, depth));
+    require(device->createTextureView(*depth, {.format = render::Format::R32Sfloat}, depthView));
+    depthReady = false;
+    lights[1].colorIntensity[3] = 10;
+    auto resized = renderShadow(false);
+    EXPECT_EQ(resized.size(), size_t(w) * h);
+    EXPECT_EQ(*std::min_element(resized.begin(), resized.end()), 255);
 }
 } // namespace
 } // namespace metallic::tests

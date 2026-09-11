@@ -77,6 +77,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderGraph/RenderGraphExecutor.cpp
     Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.cpp
     Runtime/Render/RenderGraph/NrdRuntime.cpp
+    Runtime/Render/ScreenSpaceShadows.cpp
     Runtime/Render/RenderPass/BuiltinRenderPasses.cpp
     Runtime/Render/RenderPass/BuiltinPass/BunnyWireframePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ClearColorPass.cpp
@@ -85,6 +86,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/FinalBlitPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/AutoExposurePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SliderDebugPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ImageSamplePass.cpp
@@ -172,6 +174,7 @@ if(METALLIC_ENABLE_NRD)
         Runtime/Render/Denoising/NrdReblur.cpp
         Runtime/Render/Denoising/NrdRelax.cpp
         Runtime/Render/Denoising/NrdReference.cpp
+        Runtime/Render/Denoising/NrdSigma.cpp
     )
     target_link_libraries(MetallicRuntimeRender PRIVATE MathLib)
     target_include_directories(MetallicRuntimeRender PRIVATE "${CMAKE_SOURCE_DIR}")

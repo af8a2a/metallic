@@ -72,8 +72,17 @@ void registerBuiltInRenderGraphPasses()
         "Real-time photometric punctual lights, ray-query shadows and SH environment GI",
         []() { return builtin_pass::createSceneRealtimeLightingPass(); });
     registerRenderGraphPassType(
+        "RayTracedShadowPass",
+        "Trace main-light shadows against the scene TLAS and denoise with NRD SIGMA",
+        []() { return builtin_pass::createScreenSpaceShadowPass(); });
+    // Saved prototype graphs now execute the same full ray-traced implementation.
+    registerRenderGraphPassType(
+        "ScreenSpaceShadowPass",
+        "Legacy alias for RayTracedShadowPass (full TLAS tracing with NRD SIGMA)",
+        []() { return builtin_pass::createScreenSpaceShadowPass(); });
+    registerRenderGraphPassType(
         "VisibilityBufferDeferredPass",
-        "Resolve resident VBuffer surfaces with OpenPBR, physical lights, environment reflection and ray-query shadows",
+        "Resolve resident VBuffer surfaces with OpenPBR, physical lights, environment reflection and pipeline shadow visibility",
         []() { return builtin_pass::createVisibilityBufferDeferredPass(); });
     registerRenderGraphPassType(
         "ScenePathTracePass",

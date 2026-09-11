@@ -325,9 +325,10 @@ void* metallic::render::denoising::NrdPlan::emitDispatch(const DenoiserData& den
 }
 
 namespace metallic::render::denoising {
-NrdPlan::NrdPlan()
+NrdPlan::NrdPlan(bool sigmaOnly) : sigmaOnly_(sigmaOnly)
 {
     for (uint32_t index = 0; index < denoiserData_.size(); ++index) {
+        if (sigmaOnly_ && index != 4) { continue; }
         auto& data = denoiserData_[index];
         data.index = index;
         data.dispatchOffset = dispatches_.size();
@@ -339,6 +340,8 @@ NrdPlan::NrdPlan()
             addReblur(data);
         else if (index == 1)
             addRelax(data);
+        else if (index == 4)
+            addSigma(data);
         else
             addReference(data);
         data.pingPongNum = pingPongs_.size() - data.pingPongOffset;
@@ -370,7 +373,7 @@ std::span<const DispatchDesc> NrdPlan::schedule(uint32_t index)
 {
     activeDispatches_.clear();
     constantDataOffset_ = 0;
-    if (index >= denoiserData_.size())
+    if (index >= denoiserData_.size() || (sigmaOnly_ && index != 4))
         return {};
     const auto& data = denoiserData_[index];
     swapHistory(data);
@@ -378,6 +381,8 @@ std::span<const DispatchDesc> NrdPlan::schedule(uint32_t index)
         updateReblur(data);
     else if (index == 1)
         updateRelax(data);
+    else if (index == 4)
+        updateSigma(data);
     else
         updateReference(data);
     return activeDispatches_;
