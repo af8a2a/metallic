@@ -22,13 +22,24 @@ GPUScene → instance cull → Wave32 AS meshlet cull → MS + visibility PS
                                      GPUDriven.color → FinalBlit → Viewport
 ```
 
-1. `GPUDrivenCulling.slang` 先进行实例视锥/HZB 剔除，使用上一帧相机与上一帧 HZB。
-2. `VisibilityBuffer.slang` 的 amplification shader 每组处理 32 个 meshlet，执行 bucket、producer ownership、meshlet 视锥与 normal-cone 测试。支持时请求完整 Wave32，并以 wave prefix/count 压缩 payload；不支持时保留 subgroup/groupshared fallback。
+1. `GPUDrivenCulling.slang` 先用当前剔除相机执行实例视锥测试，再用上一帧相机与上一帧完整 HZB 判断早期绘制候选。历史 HZB 判为遮挡的实例只延后处理，不能直接丢弃。
+2. `VisibilityBuffer.slang` 的 amplification shader 每组处理 32 个 meshlet，执行 bucket、producer ownership、meshlet 视锥、normal-cone 和历史 HZB 测试。支持时请求完整 Wave32，并以 wave prefix/count 压缩 payload；不支持时保留 subgroup/groupshared fallback。
 3. Mesh shader 每组输出一个 meshlet 的共享顶点与索引（上限 128 vertices / 128 triangles），通过 per-primitive `SV_PrimitiveID` 输出可见性 ID。Opaque 变体仅输出 position；`VISIBILITY_BUFFER_ALPHA_MASKED=1` 变体另外输出 UV / material index 供 alpha test 使用。Fragment shader 只写入 `R32Uint` ID，不进行材质着色。
 4. 深度附件使用 `D32Sfloat`。Opaque fragment 允许 early depth；masked fragment 先按 alpha cutoff discard，不能强制 early depth 写入。四个 raster bucket 分别覆盖 opaque/masked 与单面/双面材质，BLEND 暂不进入此路径。
-5. Compute 将第一阶段深度归约成当前 HZB：Reversed-Z 用 min，普通 Z 用 max。第二阶段只重测之前的 HZB 遮挡候选，AS/MS 将恢复可见的 meshlet 补绘到同一 visibility/depth。
+5. Compute 将第一阶段深度归约成当前 HZB：Reversed-Z 用 min，普通 Z 用 max。第二阶段用当前剔除相机和当前 HZB 重测被延后的实例及 meshlet，将恢复可见的 meshlet 补绘到同一 visibility/depth；早期已经绘制的 meshlet 不再重复绘制。
 6. 完整深度再生成下一帧 HZB，直接保留最终 `GPUDriven.visibility`（R32Uint）和 `GPUDriven.depth`（D32Sfloat），不执行属性重建或材质着色。
 7. 可选的 `VisibilityBufferComposite.slang` 直接读取原始 ID / depth，输出 `GPUDriven.color`（Rgba8Unorm）供视口调试显示，不改变原始输出。关闭可视化时只清空 color，不绘制全屏三角形。内置图将 `GPUDriven.color` 连接到 `FinalBlit.source`，样例的 `previewOutput` 为自动呈现输出 `FinalBlit.color`，JSON 的 `outputs` 数组为空。原始 visibility / depth 仍是节点输出，可供后续 Pass 使用；整数 ID 应先经过可视化再呈现。
+
+两阶段 meshlet 划分通过重算不变的早期遮挡条件完成，不需要有容量上限的延后候选追加队列。
+AS 仍在两个阶段扫描 meshlet，再压缩需要光栅化的 payload；它减少的是 MS/光栅工作，尚未改成只间接调度延后候选。
+StreamAsset 的 cluster 使用同一阶段划分和保守遮挡规则。历史无效时全部通过早期遮挡测试，
+第二阶段始终读取本帧第一阶段构建的 HZB；相机切换、尺寸变化及场景修改沿用 GPUScene 的历史失效机制。
+
+`ConservativeOcclusion.slang` 集中处理保守边界：以包围球的相机空间 AABB 投影两个 Z 端点，
+避免离轴透视投影低估屏幕范围；额外扩大一个像素以覆盖光栅舍入与时域抖动。
+与近裁剪面相交、无效数值或无法证明遮挡时保留候选。HZB 使用逐级向上取整的尺寸，
+采样 mip 必须将屏幕矩形覆盖在每轴至多两个 texel 内，四个角全部满足严格深度分离才判遮挡。
+深度比较包含保守偏移，Reversed-Z 投影避免远处深度相减消失；变换后的球半径也覆盖 shear。
 
 本 Pass 不再创建 OpenPBR compute 管线、LUT 或 deferred color buffer，也不依赖环境光子系统。材质贴图只上传 MASK 几何所需的 base-color alpha 贴图；这属于可见性判定，不是着色。`VisibilityBufferShading.slang` 暂保留源码供后续独立着色阶段使用，当前 Pass 不编译、不调度它。
 
@@ -72,6 +83,9 @@ PSO 共用 `.cache/pso/VisibilityBufferPass.pso`，shader 内容及变体宏参�
 启用固定剔除相机后，Pass 锁存相机 pose、投影和裁剪参数。实例视锥/HZB、
 meshlet 包围球和 normal cone 使用这台相机，viewport 相机仅投影幸存的 meshlet。
 固定模式使用独立内部 visibility/depth 生成两阶段 HZB，避免误用观察相机深度。
+第一阶段 HZB 保持不变，直至固定视图和观察视图的晚期绘制都结束后才更新下一帧历史。
+StreamAsset 目前不绘制固定剔除视图，且其光栅相机仅支持透视 Reversed-Z；固定模式或不匹配的投影模式下，
+保守关闭 stream 实例/cluster 的 HZB 测试，不使用其他相机的深度证明遮挡。
 
 ## 可调开关
 
@@ -82,6 +96,7 @@ meshlet 包围球和 normal cone 使用这台相机，viewport 相机仅投影�
 - `instanceHzbCull`
 - `meshletFrustumCull`
 - `meshletNormalConeCull`
+- `meshletHzbCull`：默认开启，控制 resident meshlet / stream cluster 的两阶段遮挡测试，与实例 HZB 开关独立。
 - `freezeCullingCamera`：勾选时捕获当前相机作为固定剔除相机；取消勾选后恢复使用实时 viewport 相机剔除。
 
 | Visualization | JSON 值 | 显示内容 |
@@ -97,6 +112,11 @@ meshlet 包围球和 normal cone 使用这台相机，viewport 相机仅投影�
 ## 验证
 
 Shader 编译测试覆盖 Wave32 / atomic fallback 以及 opaque / masked 两种 MS，并检查 SPIR-V：opaque 不含用户 varying，masked 恰好导出 UV / material 两个 location。渲染测试覆盖 alpha 裁剪、固定相机、两阶段 HZB、奇数尺寸、五种可视化及环境光独立性，并读回验证 resident/stream 共用的原始 visibility/depth 不因可视化切换而改变。
+
+`gpu_driven_two_pass_occlusion` 在 GPU 上直接验证延后恢复、持续遮挡、无重复绘制、历史失效、近裁剪面、
+普通/Reversed-Z 深度，以及 32 组包围球的独立表面采样和 shear 边界。
+`gpu_driven_temporal_occlusion_equivalence` 比较两套独立历史，在移动相机、抖动、尺寸变化和透视/正交投影下，
+验证开启/关闭遮挡的 30 帧 Sponza 三角形可见性逐像素一致。
 
 ```powershell
 cmake-build-release-visual-studio\tests\MetallicRhiTests.exe --filter render_graph_gpu_driven_preview_shader_compile

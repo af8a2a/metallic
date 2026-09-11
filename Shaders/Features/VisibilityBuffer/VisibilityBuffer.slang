@@ -139,12 +139,12 @@ void visibilityBufferAmplificationMain(
     bool visible = localMeshletIndex < params.meshletCount;
     if (visible) {
         VisibleClusterRecord meshletDraw = meshletDraws[meshletDrawIndex];
-        uint expectedVisibility = push.passIndex == 0u ? 1u : 3u;
         visible = meshletDraw.instanceIndex < params.instanceCount &&
             visibleClusterSource(meshletDraw) == kVisibleClusterSourceResident &&
             visibleClusterDrawBucket(meshletDraw) == push.mipLevel &&
             push.mipLevel < kDrawBucketCount &&
-            visibility[meshletDraw.instanceIndex] == expectedVisibility;
+            (visibility[meshletDraw.instanceIndex] == 1u ||
+                (push.passIndex != 0u && visibility[meshletDraw.instanceIndex] == 3u));
         // Stream culling reuses the shared visibility state after resident
         // culling, so producer ownership must be checked independently here.
         if (visible && push.streamOwnerMaskBuffer != kInvalidTextureIndex) {
@@ -163,6 +163,13 @@ void visibilityBufferAmplificationMain(
                 instance.identity.w,
                 instanceTransform(instance),
                 params);
+            if (visible) {
+                SceneTransform transform = instanceTransform(instance);
+                visible = meshletVisibleInOcclusionPhase(
+                    transformPoint(transform, meshlet.boundingSphere.xyz),
+                    max(meshlet.boundingSphere.w * transformMaxScale(transform), 0.0),
+                    visibility[meshletDraw.instanceIndex], params, push);
+            }
         }
     }
 

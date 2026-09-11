@@ -141,6 +141,7 @@ inline constexpr uint32_t kGPUDrivenPreviewCullInstanceFrustum = 1u << 0u;
 inline constexpr uint32_t kGPUDrivenPreviewCullInstanceHzb = 1u << 1u;
 inline constexpr uint32_t kGPUDrivenPreviewCullMeshletFrustum = 1u << 2u;
 inline constexpr uint32_t kGPUDrivenPreviewCullMeshletNormalCone = 1u << 3u;
+inline constexpr uint32_t kGPUDrivenPreviewCullMeshletHzb = 1u << 4u;
 inline constexpr uint32_t kGPUDrivenStreamAssetDebugPage = 0;
 inline constexpr uint32_t kGPUDrivenStreamAssetDebugLod = 1;
 inline constexpr uint32_t kGPUDrivenStreamAssetDebugPrimitive = 2;
@@ -688,7 +689,8 @@ struct GPUDrivenPreviewGpuParams {
         kGPUDrivenPreviewCullInstanceFrustum |
         kGPUDrivenPreviewCullInstanceHzb |
         kGPUDrivenPreviewCullMeshletFrustum |
-        kGPUDrivenPreviewCullMeshletNormalCone;
+        kGPUDrivenPreviewCullMeshletNormalCone |
+        kGPUDrivenPreviewCullMeshletHzb;
     uint32_t materialTextureCount = 0;
     float environmentIntensity = 1.0f;
     float environmentRotationRadians = 0.0f;

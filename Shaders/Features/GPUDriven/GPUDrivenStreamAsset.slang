@@ -1,4 +1,5 @@
 #include "../../Libraries/GPUDriven/GPUDrivenRasterCommon.slang"
+#include "../../Libraries/GPUDriven/ConservativeOcclusion.slang"
 
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
@@ -472,15 +473,8 @@ float4 projectPosition(float3 worldPosition, GPUDrivenStreamAssetParams params)
 
     float zNear = max(params.clipOrtho.x, 0.0001);
     float zFar = max(params.clipOrtho.y, zNear + 0.0001);
-    float ndcZ = (viewPosition.z - zNear) / (zFar - zNear);
-    if (params.upProjection.w <= 0.5) {
-        float safeViewZ = abs(viewPosition.z) > 0.000001
-            ? viewPosition.z
-            : (viewPosition.z < 0.0 ? -0.000001 : 0.000001);
-        ndcZ = zFar / (zFar - zNear) -
-            (zFar * zNear) / ((zFar - zNear) * safeViewZ);
-    }
-    ndcZ = params.clipOrtho.w > 0.5 ? 1.0 - ndcZ : ndcZ;
+    float ndcZ = conservativeProjectDepth(viewPosition.z, zNear, zFar,
+        params.upProjection.w > 0.5, params.clipOrtho.w > 0.5);
     float aspect = max(params.viewport.x, 0.001);
 
     if (params.upProjection.w > 0.5) {
@@ -550,15 +544,8 @@ float streamProjectDepth(float viewZ, GPUDrivenStreamAssetCameraData camera)
 {
     float zNear = max(camera.clipOrtho.x, 0.0001);
     float zFar = max(camera.clipOrtho.y, zNear + 0.0001);
-    float depth = (viewZ - zNear) / (zFar - zNear);
-    if (camera.upProjection.w <= 0.5) {
-        float safeViewZ = abs(viewZ) > 0.000001
-            ? viewZ
-            : (viewZ < 0.0 ? -0.000001 : 0.000001);
-        depth = zFar / (zFar - zNear) -
-            (zFar * zNear) / ((zFar - zNear) * safeViewZ);
-    }
-    return camera.clipOrtho.w > 0.5 ? 1.0 - depth : depth;
+    return conservativeProjectDepth(viewZ, zNear, zFar,
+        camera.upProjection.w > 0.5, camera.clipOrtho.w > 0.5);
 }
 
 bool streamSphereInsideFrustum(
@@ -642,34 +629,13 @@ bool streamSphereOccluded(
     }
     float3 viewCenter = streamWorldToView(center, camera);
     float zNear = max(camera.clipOrtho.x, 0.0001);
-    if (viewCenter.z - radius <= zNear) {
+    float4 rect;
+    if (!conservativeSphereScreenRect(viewCenter, radius, float2(bindings.width, bindings.height),
+        max(camera.viewport.x, 0.001), clamp(camera.viewport.w, 0.017453292, 3.12413936),
+        camera.upProjection.w > 0.5 ? max(camera.clipOrtho.z, 0.0002) : 0.0, zNear, rect)) {
         return false;
     }
-    float2 centerPixels;
-    float2 radiusPixels;
-    if (camera.upProjection.w > 0.5) {
-        float halfHeight = max(camera.clipOrtho.z * 0.5, 0.0001);
-        float halfWidth = halfHeight * max(camera.viewport.x, 0.001);
-        centerPixels = float2(
-            (viewCenter.x / halfWidth * 0.5 + 0.5) * float(bindings.width),
-            (-viewCenter.y / halfHeight * 0.5 + 0.5) * float(bindings.height));
-        radiusPixels = float2(
-            radius / halfWidth * 0.5 * float(bindings.width),
-            radius / halfHeight * 0.5 * float(bindings.height));
-    } else {
-        float tanY = tan(clamp(camera.viewport.w, 0.017453292, 3.12413936) * 0.5);
-        float tanX = tanY * max(camera.viewport.x, 0.001);
-        float closestZ = max(viewCenter.z - radius, zNear);
-        centerPixels = float2(
-            (viewCenter.x / (viewCenter.z * tanX) * 0.5 + 0.5) * float(bindings.width),
-            (-viewCenter.y / (viewCenter.z * tanY) * 0.5 + 0.5) * float(bindings.height));
-        radiusPixels = float2(
-            radius / (closestZ * tanX) * 0.5 * float(bindings.width),
-            radius / (closestZ * tanY) * 0.5 * float(bindings.height));
-    }
-    float2 limit = float2(max(bindings.width, 1u) - 1u, max(bindings.height, 1u) - 1u);
-    float2 minPixels = clamp(centerPixels - radiusPixels, 0.0, limit);
-    float2 maxPixels = clamp(centerPixels + radiusPixels, 0.0, limit);
+    float2 minPixels = rect.xy, maxPixels = rect.zw;
     float maxExtent = max(maxPixels.x - minPixels.x, maxPixels.y - minPixels.y);
     uint mipLevel = min(
         bindings.hzbMipCount - 1u,
@@ -679,6 +645,7 @@ bool streamSphereOccluded(
     float mipScale = exp2(-float(mipLevel));
     uint2 minTexel = min(uint2(minPixels * mipScale), uint2(mipWidth - 1u, mipHeight - 1u));
     uint2 maxTexel = min(uint2(maxPixels * mipScale), uint2(mipWidth - 1u, mipHeight - 1u));
+    if (any(maxTexel - minTexel > 1u)) { return false; }
     uint mipOffset = streamHzbMipOffset(bindings, mipLevel);
     float depth00 = loadStreamHzb(push, bindings, hzbIndex, mipOffset + minTexel.y * mipWidth + minTexel.x);
     float depth10 = loadStreamHzb(push, bindings, hzbIndex, mipOffset + minTexel.y * mipWidth + maxTexel.x);
@@ -687,12 +654,23 @@ bool streamSphereOccluded(
     float nearestZ = max(viewCenter.z - radius, zNear);
     float depthBias = max(0.001, radius * 0.01);
     float nearestDepth = streamProjectDepth(max(nearestZ - depthBias, zNear), camera);
-    if (camera.clipOrtho.w > 0.5) {
-        float occluderDepth = min(min(depth00, depth10), min(depth01, depth11));
-        return nearestDepth < occluderDepth;
+    return conservativeDepthOccluded(nearestDepth, float4(depth00, depth10, depth01, depth11),
+        camera.clipOrtho.w > 0.5);
+}
+
+bool streamClusterVisibleInOcclusionPhase(float3 center, float radius, uint instanceState,
+    GPUDrivenStreamAssetParams params, GPUDrivenStreamAssetRasterBindings bindings, GPUDrivenStreamAssetPush push)
+{
+    bool early = push.traversalPhase == 0u;
+    if ((bindings.cullingFlags & (1u << 4u)) == 0u) {
+        return instanceState == (early ? 1u : 3u);
     }
-    float occluderDepth = max(max(depth00, depth10), max(depth01, depth11));
-    return nearestDepth > occluderDepth;
+    if (early ? instanceState != 1u : (instanceState != 1u && instanceState != 3u)) { return false; }
+    uint currentHzb = params.frameIndex & 1u;
+    bool deferred = instanceState == 3u || (bindings.hzbValid != 0u &&
+        streamSphereOccluded(center, radius, previousStreamCamera(params), bindings, push, currentHzb ^ 1u));
+    if (early) { return !deferred; }
+    return deferred && !streamSphereOccluded(center, radius, currentStreamCamera(params), bindings, push, currentHzb);
 }
 
 [shader("compute")]
@@ -2446,9 +2424,7 @@ void gpuDrivenStreamAssetMeshMain(
         group.world1.xyz * localSphereCenter.y +
         group.world2.xyz * localSphereCenter.z +
         group.world3.xyz;
-    float worldScale = max(
-        max(length(group.world0.xyz), length(group.world1.xyz)),
-        max(length(group.world2.xyz), 0.000001));
+    float worldScale = conservativeTransformScale(group.world0.xyz, group.world1.xyz, group.world2.xyz);
     float worldSphereRadius = localSphereRadius * worldScale;
     GPUDrivenStreamAssetCameraData rasterCamera = currentStreamCamera(params);
     if ((rasterBindings.cullingFlags & (1u << 2u)) != 0u &&
@@ -2493,9 +2469,8 @@ void gpuDrivenStreamAssetMeshMain(
             push.bufferShaderIndexBase + rasterBindings.instanceVisibilityBuffer,
             0));
     StructuredBuffer<uint> visibilityStates = visibilityStateHandle;
-    uint rasterPhase = min(push.traversalPhase, 1u);
-    uint expectedState = rasterPhase == 0u ? 1u : 3u;
-    if (visibilityStates[group.gpuSceneInstanceIndex] != expectedState) {
+    if (!streamClusterVisibleInOcclusionPhase(worldSphereCenter, worldSphereRadius,
+        visibilityStates[group.gpuSceneInstanceIndex], params, rasterBindings, push)) {
         SetMeshOutputCounts(0, 0);
         return;
     }

@@ -2971,6 +2971,11 @@ void RenderGraphPreviewRenderer::bindRuntimeScene(const scene::Scene* scene)
     impl_->executor.bindRuntimeScene(scene);
 }
 
+void RenderGraphPreviewRenderer::bindRenderView(RenderView* view)
+{
+    impl_->executor.bindRenderView(view);
+}
+
 RenderSubsystemHost* RenderGraphPreviewRenderer::subsystemHost()
 {
     return &impl_->subsystemHost;

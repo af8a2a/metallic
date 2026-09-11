@@ -633,6 +633,7 @@ public:
             runtimeBoolSetting("instanceHzbCull", "Instance HZB Cull", true),
             runtimeBoolSetting("meshletFrustumCull", "Meshlet Sphere / Frustum Cull", true),
             runtimeBoolSetting("meshletNormalConeCull", "Meshlet Normal Cone Cull", true),
+            runtimeBoolSetting("meshletHzbCull", "Meshlet Two-Pass HZB Cull", true),
             runtimeBoolSetting("freezeCullingCamera", "Freeze Culling Camera", false),
             runtimeBoolSetting("temporalJitter", "DLSS Temporal Jitter", false, true),
         };
@@ -1312,20 +1313,6 @@ public:
                 1,
                 LoadOp::Load,
                 true);
-            transitionTexture(
-                commandBuffer,
-                *cullingTargets_.depth,
-                ResourceState::DepthStencilAttachment,
-                ResourceState::ShaderRead);
-            result = buildHzb(commandBuffer);
-            if (!result) {
-                return result;
-            }
-            transitionTexture(
-                commandBuffer,
-                *cullingTargets_.depth,
-                ResourceState::ShaderRead,
-                ResourceState::DepthStencilAttachment);
             drawVisibility(commandBuffer, *visibility.view(), *depth.view(), 1, LoadOp::Load);
             if (streamEnabled_) {
                 result = drawStreamVisibility(
@@ -1355,11 +1342,17 @@ public:
 
         transitionTexture(commandBuffer, *visibility.texture(), ResourceState::ColorAttachment, ResourceState::ShaderRead);
         transitionTexture(commandBuffer, *depth.texture(), ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
-        if (!freezeCullingCamera_) {
-            result = buildHzb(commandBuffer);
-            if (!result) {
-                return result;
-            }
+        // Keep the early HZB immutable until both late raster views have consumed
+        // it. Only the completed visibility/depth becomes next frame's history.
+        if (freezeCullingCamera_) {
+            transitionTexture(commandBuffer, *cullingTargets_.depth,
+                ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
+        }
+        result = buildHzb(commandBuffer);
+        if (!result) { return result; }
+        if (freezeCullingCamera_) {
+            transitionTexture(commandBuffer, *cullingTargets_.depth,
+                ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
         }
         // Display the final IDs/depth while the images are shader-readable.
         drawComposite(commandBuffer, color);
@@ -2675,6 +2668,16 @@ private:
         if (boolProperty(&properties(), "meshletNormalConeCull", true)) {
             flags |= 1u << 3u;
         }
+        if (boolProperty(&properties(), "meshletHzbCull", true)) {
+            flags |= 1u << 4u;
+        }
+        // Stream raster currently projects perspective/reversed-Z and does not
+        // render into the frozen culling target. A different camera's HZB cannot
+        // prove occlusion; retain streamed geometry in these debug modes.
+        if (freezeCullingCamera_ || previousParams_.renderUpProjection[3] > 0.5f ||
+            previousParams_.renderClipOrtho[3] < 0.5f) {
+            flags &= ~((1u << 1u) | (1u << 4u));
+        }
         return flags;
     }
 
@@ -2804,7 +2807,7 @@ private:
         default:
             break;
         }
-        return MeshletStreamFrameDesc{
+        MeshletStreamFrameDesc frame{
             .width = frameWidth_,
             .height = frameHeight_,
             .selectedLodLevel = gpuLod
@@ -2824,6 +2827,16 @@ private:
                     std::max(radius * 8.0f, 100.0f)),
             },
         };
+        if (const ViewConstants* view = context.viewConstants()) {
+            const auto& camera = view->current;
+            frame.camera.eye = float3(camera.eye[0], camera.eye[1], camera.eye[2]);
+            frame.camera.center = float3(camera.center[0], camera.center[1], camera.center[2]);
+            frame.camera.up = float3(camera.upProjection[0], camera.upProjection[1], camera.upProjection[2]);
+            frame.camera.fovDegrees = camera.viewport[3] * (180.0f / 3.14159265359f);
+            frame.camera.znear = camera.clipOrtho[0];
+            frame.camera.zfar = camera.clipOrtho[1];
+        }
+        return frame;
     }
 
     Result dispatchStreamCulling(
@@ -4244,6 +4257,9 @@ private:
         if (boolProperty(&properties, "meshletNormalConeCull", true)) {
             outParams.cullingFlags |= kGPUDrivenPreviewCullMeshletNormalCone;
         }
+        if (boolProperty(&properties, "meshletHzbCull", true)) {
+            outParams.cullingFlags |= kGPUDrivenPreviewCullMeshletHzb;
+        }
         outParams.materialTextureCount = std::max(materialTextureCount, 1u);
         outParams.materialCount = std::max(materialCount, 1u);
         outParams.visibleMeshletCapacity = 1u;
@@ -4273,7 +4289,9 @@ private:
             false);
         const bool freezeStateChanged = freezeCullingCamera != freezeCullingCamera_;
         if (freezeStateChanged) {
-            frameIndex_ = 0;
+            // Keep the HZB write index already published by prepareGPUSceneView.
+            // Invalidating history is sufficient; resetting parity here would
+            // also disagree with the Stream producer's frame index.
             invalidateHzbHistory();
             previousCameraValid_ = false;
             if (!freezeCullingCamera) {

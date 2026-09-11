@@ -1,6 +1,7 @@
 #include "RhiTest.h"
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/RenderView.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include <spdlog/spdlog.h>
@@ -79,6 +80,83 @@ public:
     }
 };
 
+class TwoPassOcclusionProbe final : public render::ComputePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferOutput("data").buffer(32 * 16, 16).storageReadWrite();
+        reflection.addBufferOutput("history").buffer(222 * 4, 4).storageReadWrite();
+        reflection.addBufferOutput("current").buffer(222 * 4, 4).storageReadWrite();
+        return reflection;
+    }
+    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    {
+        render::ShaderCompileResult shader;
+        auto result = render::compileSlangShaderToSpirv({.moduleName = "TwoPassOcclusionProbe",
+            .entryPointName = "twoPassOcclusionProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+        if (!result) { log = shader.diagnostics; return result; }
+        const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}, {.binding = 1}, {.binding = 2}};
+        return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
+            .bindings = bindings, .bindingCount = 3, .requiresRayQuery = false}, log);
+    }
+    render::Result execute(render::RenderGraphExecutionContext& context) override
+    {
+        const render::ComputeDispatchBinding bindings[] = {
+            {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
+            {.binding = 1, .buffer = context.outputBuffer("history").buffer()},
+            {.binding = 2, .buffer = context.outputBuffer("current").buffer()}};
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 3});
+    }
+private:
+    render::ComputeProgram program_;
+};
+
+class GPUDrivenTwoPassOcclusionTest final : public RhiTest {
+public:
+    GPUDrivenTwoPassOcclusionTest() { type = RhiTestType::Rendering; name = "gpu_driven_two_pass_occlusion"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        const auto initialized = render::createDevice({.applicationName = "Two-pass occlusion regression",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
+        if (!initialized) { return RhiTestResult::fail("Occlusion probe device creation failed"); }
+        render::registerRenderGraphPassType("TwoPassOcclusionProbe", "Two-pass occlusion probe",
+            [] { return std::make_unique<TwoPassOcclusionProbe>(); });
+        render::RenderGraph graph;
+        graph.addNode("TwoPassOcclusionProbe", "Probe");
+        graph.markOutput("Probe.data");
+        graph.markOutput("Probe.history");
+        graph.markOutput("Probe.current");
+        render::RenderGraphExecutor executor;
+        std::string log;
+        if (!executor.compile(*device, graph, 1, 1, log)) { return RhiTestResult::fail(log); }
+        if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
+            !executor.waitForSubmittedWork()) { return RhiTestResult::fail("Occlusion probe dispatch failed"); }
+        auto* buffer = executor.outputResource("Probe.data")->buffer;
+        buffer->invalidate();
+        const auto* data = static_cast<const std::array<float, 4>*>(buffer->map());
+        if (data == nullptr) { return RhiTestResult::fail("Occlusion probe readback failed"); }
+        const std::array<std::array<float, 2>, 12> expected{{
+            {1, 0}, {0, 1}, {0, 0}, {1, 0}, {0, 1}, {1, 0},
+            {1, 0}, {0, 1}, {0, 0}, {0, 0}, {0, 0}, {0, 1}}};
+        bool valid = true;
+        for (uint32_t index = 0; index < 32; ++index) {
+            const auto& value = data[index];
+            valid = valid && value[2] == 0 && value[3] == 0;
+            if (index < expected.size()) {
+                valid = valid && value[0] == expected[index][0] && value[1] == expected[index][1];
+            }
+            spdlog::info("[Two-pass] case={} early={} late={} projectionErrors={} depth/scaleErrors={}",
+                index, value[0], value[1], value[2], value[3]);
+        }
+        buffer->unmap();
+        return valid ? RhiTestResult::pass("GPU occlusion rejection/recovery and conservative projection/depth/scale bounds")
+            : RhiTestResult::fail("Occlusion lost a disoccluded meshlet, drew a meshlet twice, or violated conservative bounds");
+    }
+};
+
 class GPUDrivenSponzaCullingTest final : public RhiTest {
 public:
     GPUDrivenSponzaCullingTest() { type = RhiTestType::Rendering; name = "gpu_driven_sponza_culling_equivalence"; }
@@ -97,8 +175,8 @@ public:
         const uint32_t raster = graph.addNode("VisibilityBufferPass", "VBuffer",
             {{"path", "Asset/Sponza/glTF/Sponza.gltf"}, {"visualization", "meshlet"}})->id;
         graph.markOutput("VBuffer.color");
-        const std::array<const char*, 4> flags{
-            "instanceFrustumCull", "instanceHzbCull", "meshletFrustumCull", "meshletNormalConeCull"};
+        const std::array<const char*, 5> flags{
+            "instanceFrustumCull", "instanceHzbCull", "meshletFrustumCull", "meshletNormalConeCull", "meshletHzbCull"};
         const std::array<std::array<double, 6>, 3> cameras{{
             {-5.646879, 11.323325, -0.051334, 29.722519, -15.616591, -5.377987},
             {-3.325359, 9.545668, -0.429330, 31.658249, -17.904564, -5.697884},
@@ -113,8 +191,8 @@ public:
             std::vector<uint32_t> reference;
             // No culling is the oracle. Then exercise all culling and disable one
             // stage at a time, including several frames of temporal HZB reuse.
-            for (int configuration = -2; configuration < 4; ++configuration) {
-                for (int flag = 0; flag < 4; ++flag) {
+            for (int configuration = -2; configuration < int(flags.size()); ++configuration) {
+                for (int flag = 0; flag < int(flags.size()); ++flag) {
                     graph.setNodeRuntimeProperty(raster, flags[flag], configuration != -2 && configuration != flag);
                 }
                 for (uint32_t frame = 0; frame < 3; ++frame) {
@@ -165,7 +243,72 @@ public:
     }
 };
 
+class GPUDrivenTemporalOcclusionTest final : public RhiTest {
+public:
+    GPUDrivenTemporalOcclusionTest() { type = RhiTestType::Rendering; name = "gpu_driven_temporal_occlusion_equivalence"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        scene::SceneDocument scene;
+        if (!scene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Sponza/glTF/Sponza.gltf")) {
+            return RhiTestResult::fail(scene.lastLoadResult().error);
+        }
+        // Independent histories, identical cameras/jitter. Only occlusion differs.
+        render::RenderView view;
+        view.setTemporalJitter(true);
+        render::RenderGraphPreviewRenderer reference, culled;
+        for (auto* preview : {&reference, &culled}) {
+            const auto initialized = preview->initialize(context.enableValidation, true);
+            if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders"); }
+            if (!initialized) { return RhiTestResult::fail("Temporal preview initialization failed"); }
+            preview->bindRuntimeScene(&scene);
+            preview->bindRenderView(&view);
+        }
+        render::RenderGraph referenceGraph, culledGraph;
+        for (auto* graph : {&referenceGraph, &culledGraph}) {
+            const bool enableOcclusion = graph == &culledGraph;
+            graph->addNode("VisibilityBufferPass", "VBuffer", {{"visualization", "triangle"},
+                {"instanceHzbCull", enableOcclusion}, {"meshletHzbCull", enableOcclusion}});
+            graph->markOutput("VBuffer.color");
+        }
+        for (uint32_t frame = 0; frame < 30; ++frame) {
+            const double motion = std::sin(frame * 1.7);
+            if (!view.setCameraProperties({
+                    {"eye", {-4.5 + motion * 2.0, 10.0 + motion * 1.5, -0.2 + motion}},
+                    {"center", {30.0 - motion * 4.0, -17.0 + motion * 2.0, -5.5}},
+                    {"up", {0, 1, 0}}, {"fovDegrees", 45.0}, {"znear", 0.018548}, {"zfar", 1854.789185},
+                    {"reversedZ", frame < 10 || frame >= 20},
+                    {"projection", frame >= 20 ? "orthographic" : "perspective"}, {"orthoHeight", 25.0}})) {
+                return RhiTestResult::fail("Temporal test camera is invalid");
+            }
+            if (frame == 8) { view.cameraCut(); }
+            const uint32_t width = frame < 16 ? 257 : 193;
+            const uint32_t height = frame < 16 ? 131 : 157;
+            if (!reference.render(referenceGraph, width, height)) { return RhiTestResult::fail(reference.lastLog()); }
+            if (!culled.render(culledGraph, width, height)) { return RhiTestResult::fail(culled.lastLog()); }
+            const auto covered = std::count_if(reference.pixels().begin(), reference.pixels().end(),
+                [](uint32_t pixel) { return (pixel & 255u) >= 64u; });
+            if (covered < 100) { return RhiTestResult::fail("Temporal reference contains too little geometry"); }
+            size_t changed = 0;
+            for (size_t pixel = 0; pixel < reference.pixels().size(); ++pixel) {
+                changed += reference.pixels()[pixel] != culled.pixels()[pixel];
+            }
+            spdlog::info("[Temporal occlusion] frame={} size={}x{} changed={}", frame, width, height, changed);
+            if (changed != 0) {
+                std::string log;
+                saveRgba8Png(context.outputDirectory / "TemporalReference.png",
+                    reinterpret_cast<const uint8_t*>(reference.pixels().data()), width, height, log);
+                saveRgba8Png(context.outputDirectory / "TemporalCulled.png",
+                    reinterpret_cast<const uint8_t*>(culled.pixels().data()), width, height, log);
+                return RhiTestResult::fail("Temporal HZB changed visibility at frame " + std::to_string(frame));
+            }
+        }
+        return RhiTestResult::pass("30 moving/jittered Sponza views match with occlusion on/off, including resize and both depth conventions");
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(GPUDrivenConeScaleTest);
+METALLIC_REGISTER_RHI_TEST(GPUDrivenTwoPassOcclusionTest);
 METALLIC_REGISTER_RHI_TEST(GPUDrivenSponzaCullingTest);
+METALLIC_REGISTER_RHI_TEST(GPUDrivenTemporalOcclusionTest);
 } // namespace
 } // namespace metallic::tests

@@ -2,11 +2,13 @@
 #define GPU_DRIVEN_CULLING_COMMON_SLANG
 
 #include "GPUDrivenSceneCommon.slang"
+#include "ConservativeOcclusion.slang"
 
 static const uint kCullInstanceFrustum = 1u << 0u;
 static const uint kCullInstanceHzb = 1u << 1u;
 static const uint kCullMeshletFrustum = 1u << 2u;
 static const uint kCullMeshletNormalCone = 1u << 3u;
+static const uint kCullMeshletHzb = 1u << 4u;
 static const uint kInstanceVisible = 1u << 0u;
 static const uint kInstanceDoubleSided = 1u << 1u;
 static const uint kInstanceAlphaMasked = 1u << 2u;
@@ -39,9 +41,7 @@ float3 transformPoint(SceneTransform transform, float3 localPosition)
 
 float transformMaxScale(SceneTransform transform)
 {
-    return max(
-        length(transform.world0.xyz),
-        max(length(transform.world1.xyz), length(transform.world2.xyz)));
+    return conservativeTransformScale(transform.world0.xyz, transform.world1.xyz, transform.world2.xyz);
 }
 
 float3 transformNormal(SceneTransform transform, float3 localNormal)
@@ -109,18 +109,7 @@ float projectDepth(float viewZ, CameraData camera)
 {
     float zNear = max(camera.clipOrtho.x, 0.0001);
     float zFar = max(camera.clipOrtho.y, zNear + 0.0001);
-    float depth;
-    if (camera.upProjection.w > 0.5) {
-        depth = (viewZ - zNear) / (zFar - zNear);
-    } else {
-        // Keep the hardware perspective depth distribution; linear view-space depth
-        // loses most of D32 precision near the camera when zFar is large.
-        float safeViewZ = abs(viewZ) > 0.000001 ? viewZ :
-            (viewZ < 0.0 ? -0.000001 : 0.000001);
-        depth = zFar / (zFar - zNear) -
-            (zFar * zNear) / ((zFar - zNear) * safeViewZ);
-    }
-    return camera.clipOrtho.w > 0.5 ? 1.0 - depth : depth;
+    return conservativeProjectDepth(viewZ, zNear, zFar, camera.upProjection.w > 0.5, camera.clipOrtho.w > 0.5);
 }
 
 float4 projectPosition(float3 worldPosition, CameraData camera)
@@ -158,18 +147,20 @@ bool sphereInsideFrustum(float3 center, float radius, CameraData camera)
     }
 
     float aspect = max(camera.viewport.x, 0.001);
+    float2 guard = 1.0 + 2.0 / max(camera.viewport.yz, 1.0);
     if (camera.upProjection.w > 0.5) {
         float halfHeight = max(camera.clipOrtho.z * 0.5, 0.0001);
         float halfWidth = halfHeight * aspect;
-        return abs(viewCenter.x) <= halfWidth + radius &&
-            abs(viewCenter.y) <= halfHeight + radius;
+        return abs(viewCenter.x) <= halfWidth * guard.x + radius &&
+            abs(viewCenter.y) <= halfHeight * guard.y + radius;
     }
 
     if (viewCenter.z + radius <= 0.0) {
         return false;
     }
     float tanY = tan(clamp(camera.viewport.w, 0.017453292, 3.12413936) * 0.5);
-    float tanX = tanY * aspect;
+    float tanX = tanY * aspect * guard.x;
+    tanY *= guard.y;
     float radiusX = radius * sqrt(1.0 + tanX * tanX);
     float radiusY = radius * sqrt(1.0 + tanY * tanY);
     return abs(viewCenter.x) <= viewCenter.z * tanX + radiusX &&
@@ -218,38 +209,17 @@ bool sphereOccluded(
 {
     float3 viewCenter = worldToView(center, camera);
     float zNear = max(camera.clipOrtho.x, 0.0001);
-    if (viewCenter.z - radius <= zNear) {
+    float4 rect;
+    if (params.hzbMipCount == 0u || !conservativeSphereScreenRect(viewCenter, radius,
+        float2(params.width, params.height), max(camera.viewport.x, 0.001),
+        clamp(camera.viewport.w, 0.017453292, 3.12413936),
+        camera.upProjection.w > 0.5 ? max(camera.clipOrtho.z, 0.0002) : 0.0, zNear, rect)) {
         return false;
     }
-
-    float2 centerPixels;
-    float2 radiusPixels;
-    if (camera.upProjection.w > 0.5) {
-        float halfHeight = max(camera.clipOrtho.z * 0.5, 0.0001);
-        float halfWidth = halfHeight * max(camera.viewport.x, 0.001);
-        centerPixels = float2(
-            (viewCenter.x / halfWidth * 0.5 + 0.5) * float(params.width),
-            (-viewCenter.y / halfHeight * 0.5 + 0.5) * float(params.height));
-        radiusPixels = float2(
-            radius / halfWidth * 0.5 * float(params.width),
-            radius / halfHeight * 0.5 * float(params.height));
-    } else {
-        float tanY = tan(clamp(camera.viewport.w, 0.017453292, 3.12413936) * 0.5);
-        float tanX = tanY * max(camera.viewport.x, 0.001);
-        centerPixels = float2(
-            (viewCenter.x / (viewCenter.z * tanX) * 0.5 + 0.5) * float(params.width),
-            (-viewCenter.y / (viewCenter.z * tanY) * 0.5 + 0.5) * float(params.height));
-        float closestZ = max(viewCenter.z - radius, zNear);
-        radiusPixels = float2(
-            radius / (closestZ * tanX) * 0.5 * float(params.width),
-            radius / (closestZ * tanY) * 0.5 * float(params.height));
-    }
-
-    float2 minPixels = clamp(centerPixels - radiusPixels, 0.0, float2(params.width - 1u, params.height - 1u));
-    float2 maxPixels = clamp(centerPixels + radiusPixels, 0.0, float2(params.width - 1u, params.height - 1u));
+    float2 minPixels = rect.xy, maxPixels = rect.zw;
     float maxExtent = max(maxPixels.x - minPixels.x, maxPixels.y - minPixels.y);
-    // At this mip the projected rectangle spans at most one texel per axis, so
-    // the four corner loads conservatively cover every contributing depth texel.
+    // At most two texels per axis. Verify the integer span as well, so rounding
+    // at power-of-two boundaries cannot skip a middle texel in a four-tap test.
     uint mipLevel = min(
         params.hzbMipCount - 1u,
         maxExtent > 1.0 ? uint(ceil(log2(maxExtent))) : 0u);
@@ -258,6 +228,7 @@ bool sphereOccluded(
     float mipScale = exp2(-float(mipLevel));
     uint2 minTexel = min(uint2(minPixels * mipScale), uint2(mipWidth - 1u, mipHeight - 1u));
     uint2 maxTexel = min(uint2(maxPixels * mipScale), uint2(mipWidth - 1u, mipHeight - 1u));
+    if (any(maxTexel - minTexel > 1u)) { return false; }
     uint mipOffset = hzbMipOffset(params, mipLevel);
     float depth00 = loadHzb(push, hzbBufferIndex, mipOffset + minTexel.y * mipWidth + minTexel.x);
     float depth10 = loadHzb(push, hzbBufferIndex, mipOffset + minTexel.y * mipWidth + maxTexel.x);
@@ -268,12 +239,25 @@ bool sphereOccluded(
     // separation to avoid toggling instances on quantized HZB boundaries.
     float depthBias = max(0.001, radius * 0.01);
     float nearestDepth = projectDepth(max(nearestZ - depthBias, zNear), camera);
-    if (camera.clipOrtho.w > 0.5) {
-        float occluderDepth = min(min(depth00, depth10), min(depth01, depth11));
-        return nearestDepth < occluderDepth;
+    return conservativeDepthOccluded(nearestDepth, float4(depth00, depth10, depth01, depth11), camera.clipOrtho.w > 0.5);
+}
+
+bool meshletVisibleInOcclusionPhase(float3 center, float radius, uint instanceState,
+    GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
+{
+    bool early = push.passIndex == 0u;
+    if ((params.cullingFlags & kCullMeshletHzb) == 0u) {
+        return instanceState == (early ? 1u : 3u);
     }
-    float occluderDepth = max(max(depth00, depth10), max(depth01, depth11));
-    return nearestDepth > occluderDepth;
+    if (early ? instanceState != 1u : (instanceState != 1u && instanceState != 3u)) { return false; }
+    uint currentHzb = params.frameIndex & 1u;
+    // Re-evaluate the immutable early predicate in the second task-shader pass.
+    // This reconstructs the deferred set without a bounded append queue (and
+    // without dropping geometry if a queue would overflow).
+    bool deferred = instanceState == 3u || (params.hzbValid != 0u &&
+        sphereOccluded(center, radius, previousCullingCamera(params), params, push, currentHzb ^ 1u));
+    if (early) { return !deferred; }
+    return deferred && !sphereOccluded(center, radius, cullingCamera(params), params, push, currentHzb);
 }
 
 bool meshletVisible(

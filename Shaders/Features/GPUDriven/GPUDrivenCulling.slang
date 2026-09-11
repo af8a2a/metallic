@@ -82,7 +82,7 @@ void gpuDrivenPreviewInstanceCullMain(
         return;
     }
 
-    if ((params.cullingFlags & kCullInstanceHzb) == 0 || params.hzbValid == 0) {
+    if ((params.cullingFlags & kCullInstanceHzb) == 0 || (push.passIndex == 0u && params.hzbValid == 0u)) {
         visibility[instanceIndex] = push.passIndex == 0 ? 1u : 3u;
         uint outputIndex = 0u;
         InterlockedAdd(visibleInstanceCounterHandle[0], 1u, outputIndex);
