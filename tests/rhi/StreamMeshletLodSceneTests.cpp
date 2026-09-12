@@ -40,8 +40,11 @@ public:
         scene::MeshletStreamAsset asset;
         if (!asset.open(assetPath, log)) { return RhiTestResult::fail(log); }
         uint32_t capacity = 0;
+        uint32_t lodStateWordCount = asset.instanceCount() * 4u;
         for (const auto& instance : asset.instances()) {
-            capacity += asset.primitives()[instance.primitiveIndex].groupCount;
+            const uint32_t groupCount = asset.primitives()[instance.primitiveIndex].groupCount;
+            capacity += groupCount;
+            lodStateWordCount += 4u + 3u * groupCount;
         }
         if (asset.pageCount() > 64 || asset.terminalGroups().empty()) {
             return RhiTestResult::fail("Bunny fixture exceeds the fully resident validation budget or has no roots");
@@ -82,6 +85,7 @@ public:
             return call("capture.batch", {{"pass", "VBuffer"}, {"checkpoint", "AfterTraversal"},
                 {"resources", {{{"id", "streaming.VBuffer.pageTable"}, {"count", asset.pageCount()}},
                     {{"id", "streaming.VBuffer.activeHeader"}, {"count", 1}},
+                    {{"id", "streaming.VBuffer.lodState"}, {"count", lodStateWordCount}},
                     {{"id", "streaming.VBuffer.activeGroups"}, {"count", capacity}}}}}).at("job");
         };
         const auto read = [&](const std::string& job, const std::string& id) {
@@ -94,6 +98,34 @@ public:
                 for (auto& row : page.at("items")) { rows.push_back(std::move(row)); }
             } while (rows.size() < total);
             return rows;
+        };
+        struct TraversalStats {
+            uint64_t allActiveGroups = 0;
+            uint64_t visitedBvhNodes = 0;
+            uint64_t testedGroups = 0;
+        };
+        const auto traversalStats = [&](const DebugValue& words) {
+            if (words.size() != lodStateWordCount) {
+                throw std::runtime_error("Incomplete stream BVH state capture");
+            }
+            TraversalStats result;
+            uint32_t base = asset.instanceCount() * 4u;
+            for (const auto& instance : asset.instances()) {
+                const uint32_t groupCount = asset.primitives()[instance.primitiveIndex].groupCount;
+                // The sparse header follows the unchanged active/mask pairs.
+                const uint32_t header = base + groupCount * 2u;
+                const uint32_t active = words.at(header).get<uint32_t>();
+                const uint32_t visited = words.at(header + 1u).get<uint32_t>();
+                const uint32_t tested = words.at(header + 2u).get<uint32_t>();
+                if (active > tested || tested > groupCount || (active != 0 && visited == 0)) {
+                    throw std::runtime_error("Invalid stream BVH traversal counters");
+                }
+                result.allActiveGroups += active;
+                result.visitedBvhNodes += visited;
+                result.testedGroups += tested;
+                base += 4u + 3u * groupCount;
+            }
+            return result;
         };
 
         struct ExpectedGroup {
@@ -177,6 +209,7 @@ public:
                 {"groups", asset.groupCount()}, {"terminalGroups", asset.terminalGroups().size()},
                 {"independentComputeQueue", independent}, {"cases", DebugValue::array()}};
             std::array<size_t, 2> finestCount{}, coarsestCount{};
+            std::array<std::array<uint64_t, 2>, 2> finestGroupTests{}, coarsestGroupTests{};
             for (uint32_t test = 0; test < 8; ++test) {
                 const bool ortho = test >= 4;
                 const uint32_t configuration = test % 4;
@@ -204,6 +237,7 @@ public:
                     graph.setNodeRuntimeProperty(node, "asyncSoftwareRaster", hybrid);
                     graph.setNodeRuntimeProperty(node, "softwareRasterMaxPixels", 8.f);
                     DebugValue header, pageTable, actual;
+                    TraversalStats traversal;
                     uint32_t warmupFrames = 0;
                     bool settled = false;
                     for (uint32_t batch = 0; batch < 28; ++batch) {
@@ -215,6 +249,7 @@ public:
                         pageTable = read(job, "streaming.VBuffer.pageTable");
                         actual = read(job, "streaming.VBuffer.activeGroups");
                         if (matchesCut(header, actual, fullTarget.groups)) {
+                            traversal = traversalStats(read(job, "streaming.VBuffer.lodState"));
                             settled = true;
                             break;
                         }
@@ -233,6 +268,9 @@ public:
                     const uint32_t activeCount = header.at("activeGroupCount");
                     if (header.at("overflowCount") != 0 || activeCount == 0 || activeCount > actual.size()) {
                         return RhiTestResult::fail("Invalid stream active header in case " + std::to_string(test));
+                    }
+                    if (traversal.allActiveGroups < activeCount) {
+                        return RhiTestResult::fail("Stream BVH active list omitted emitted groups");
                     }
 
                     const auto reference = referenceCut(view, manual, &pageTable);
@@ -308,11 +346,20 @@ public:
                     report["cases"].push_back({{"case", test}, {"orthographic", ortho}, {"reversedZ", reversed},
                         {"manualLevel", manual}, {"targetPixels", error}, {"hybrid", hybrid},
                         {"activeGroups", activeCount}, {"selectedClusters", selectedCount},
+                        {"bvhVisitedNodes", traversal.visitedBvhNodes},
+                        {"bvhTestedGroups", traversal.testedGroups},
+                        {"bvhAllActiveGroups", traversal.allActiveGroups}, {"groupsWithoutBvh", capacity},
                         {"fullResidentTargetClusters", fullTarget.selectedCount}, {"warmupFrames", warmupFrames},
                         {"triangleDepthTies", roundingTies},
                         {"coveredPixels", covered}, {"asyncBranches", branches}, {"groupLevels", levels}});
-                    if (manual == 0) { finestCount[ortho] = selectedCount; }
-                    if (manual == 31) { coarsestCount[ortho] = selectedCount; }
+                    if (manual == 0) {
+                        finestCount[ortho] = selectedCount;
+                        finestGroupTests[ortho][producer] = traversal.testedGroups;
+                    }
+                    if (manual == 31) {
+                        coarsestCount[ortho] = selectedCount;
+                        coarsestGroupTests[ortho][producer] = traversal.testedGroups;
+                    }
                     if (hybrid) {
                         render("VBuffer.color");
                         if (!saveRgba8Png(context.outputDirectory / ("StreamLodBunny-" + std::to_string(test) + ".png"),
@@ -357,6 +404,14 @@ public:
             for (uint32_t projection = 0; projection < 2; ++projection) {
                 if (coarsestCount[projection] == 0 || coarsestCount[projection] >= finestCount[projection]) {
                     return RhiTestResult::fail("Stream manual coarse LOD did not reduce the Bunny cluster count");
+                }
+                for (uint32_t producer = 0; producer < 2; ++producer) {
+                    if (coarsestGroupTests[projection][producer] >= capacity ||
+                        coarsestGroupTests[projection][producer] >= finestGroupTests[projection][producer]) {
+                        return RhiTestResult::fail("Stream BVH did not prune group tests for the coarse Bunny cut: coarse " +
+                            std::to_string(coarsestGroupTests[projection][producer]) + ", fine " +
+                            std::to_string(finestGroupTests[projection][producer]) + ", total " + std::to_string(capacity));
+                    }
                 }
             }
             std::ofstream reportFile(context.outputDirectory / "StreamMeshletLodSceneReport.json");

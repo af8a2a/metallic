@@ -40,6 +40,7 @@ static const uint kActiveBuildPhaseRun = 4u;
 static const uint kActiveBuildPhaseFrontier = 5u;
 static const uint kActiveBuildPhasePrefix = 6u;
 static const uint kActiveBuildPhaseEmit = 7u;
+static const uint kActiveBuildPhaseInitializeLodState = 8u;
 static const uint kBlasInputPhaseReset = 0u;
 static const uint kBlasInputPhaseCount = 1u;
 static const uint kBlasInputPhaseSetup = 2u;
@@ -181,8 +182,8 @@ struct GPUDrivenStreamAssetPrimitive
     uint materialIndex;
     uint nodeOffset;
     uint nodeCount;
-    uint padding2;
-    uint padding3;
+    uint lodBvhOffset;
+    uint lodBvhNodeCount;
     uint padding4;
 };
 
@@ -1795,6 +1796,140 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
     }
 }
 
+// MeshletLodBvhNode is 10 scalar words in the resident topology buffer. Nodes
+// are preorder, leaves cover descending group IDs, and escape skips a subtree.
+// This preserves parent-before-child evaluation without a stack/queue limit.
+bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
+    GPUDrivenStreamAssetInstance instance, float4 eye, float4 forward,
+    float4 projection, uint manualLevel)
+{
+    if ((topology[offset + 6u] & 1u) != 0u) { return true; }
+    if (manualLevel != 0xffffffffu) { return topology[offset + 5u] >= manualLevel; }
+    float4 sphere = float4(asfloat(topology[offset]), asfloat(topology[offset + 1u]),
+        asfloat(topology[offset + 2u]), asfloat(topology[offset + 3u]));
+    // Computing parent and child centers independently in float can break
+    // containment after large-coordinate cancellation. Bound both affine/view
+    // roundoff errors using all possible centers inside this object sphere.
+    float worldPadding = 0.0;
+    if (forward.w == 0.0) {
+        float3 extent = abs(sphere.xyz) + sphere.www;
+        float3 magnitude = abs(instance.world0.xyz) * extent.x + abs(instance.world1.xyz) * extent.y +
+            abs(instance.world2.xyz) * extent.z + abs(instance.world3.xyz) + abs(eye.xyz);
+        worldPadding = (32.0 * 1.1920928955078125e-7) * (magnitude.x + magnitude.y + magnitude.z);
+    }
+    float upperError = meshletLodProjectedError(sphere, asfloat(topology[offset + 4u]),
+        instance.world0, instance.world1, instance.world2, instance.world3, eye, forward, projection, worldPadding);
+    // Outward-rounded node spheres plus a small conservative comparison guard
+    // prevent floating point cancellation at an LOD threshold from dropping a
+    // desired leaf. Non-finite upper bounds also descend; leaves use exact error.
+    return !(upperError < projection.w - max(abs(projection.w) * 1e-4, 1e-5));
+}
+
+void buildStreamLodBvhFrontier(uint instanceIndex,
+    GPUDrivenStreamAssetInstance instance, GPUDrivenStreamAssetPrimitive primitive,
+    StructuredBuffer<GPUDrivenStreamAssetGroup> groups, StructuredBuffer<uint> topology,
+    RWStructuredBuffer<uint> state,
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
+    RWStructuredBuffer<uint> requests, GPUDrivenStreamAssetParams params)
+{
+    uint header = instanceIndex * 4u;
+    uint base = topology[params.lodInstanceOffsetsOffset + instanceIndex];
+    // After the existing active/mask pairs: all-active count, node visits,
+    // group tests, reserved; then groupCount sparse local group IDs.
+    uint sparse = base + primitive.groupCount * 2u;
+    uint previousCount = state[sparse];
+    for (uint index = 0u; index < previousCount; ++index) {
+        uint localGroup = state[sparse + 4u + index];
+        state[base + localGroup * 2u] = 0u;
+        state[base + localGroup * 2u + 1u] = 0u;
+    }
+    state[sparse] = 0u;
+    state[sparse + 1u] = 0u;
+    state[sparse + 2u] = 0u;
+    state[sparse + 3u] = 0u;
+    if (instance.visible == 0u) { return; }
+
+    float3 delta = params.center.xyz - params.eye.xyz;
+    float3 forward = dot(delta, delta) > 1e-12 ? normalize(delta) : float3(0.0, 0.0, -1.0);
+    float4 lodEye = float4(params.eye.xyz, params.clipOrtho.x);
+    float4 lodForward = float4(forward, params.upProjection.w);
+    float4 lodProjection = float4(params.viewport.z, tan(params.viewport.w * 0.5),
+        params.clipOrtho.z, params.lodPixelError);
+    uint manualLevel = params.enableGpuLodSelection != 0u ? 0xffffffffu : params.selectedLodLevel;
+    uint activeCount = 0u, rootCount = 0u, visitedNodes = 0u, testedGroups = 0u;
+    bool rootsReady = true;
+    uint nodeIndex = 0u;
+    while (nodeIndex < primitive.lodBvhNodeCount) {
+        uint offset = primitive.lodBvhOffset + nodeIndex * 10u;
+        ++visitedNodes;
+        if (!streamLodBvhNeedsFine(topology, offset, instance,
+                lodEye, lodForward, lodProjection, manualLevel)) {
+            nodeIndex = topology[offset + 7u];
+            continue;
+        }
+        uint firstGroup = topology[offset + 8u];
+        uint groupCount = topology[offset + 9u];
+        for (uint remaining = groupCount; remaining != 0u; --remaining) {
+            uint localGroup = firstGroup + remaining - 1u;
+            GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + localGroup];
+            ++testedGroups;
+            bool terminal = (group.flags & 1u) != 0u;
+            bool parentsActive = true;
+            for (uint parent = 0u; parent < group.parentCount; ++parent) {
+                uint parentId = topology[group.parentOffset + parent];
+                parentsActive = parentsActive && state[base + (parentId - primitive.groupOffset) * 2u] != 0u;
+            }
+            float4 sphere = float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius);
+            bool desired = meshletLodGroupNeedsFine(sphere, group.maxQuadricError,
+                group.lodLevel, group.flags, instance.world0, instance.world1, instance.world2,
+                instance.world3, lodEye, lodForward, lodProjection, manualLevel);
+            bool demanded = terminal || (parentsActive && desired);
+            if (demanded) {
+                if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) {
+                    markStreamPageDemand(pageTable, params, group.pageIndex);
+                } else {
+                    requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
+                }
+            }
+            bool drawable = groupPageDrawable(pageTable, params, group);
+            if (demanded && drawable) {
+                state[base + localGroup * 2u] = 1u;
+                state[sparse + 4u + activeCount++] = localGroup;
+            }
+            if (terminal) {
+                rootsReady = rootsReady && drawable;
+                ++rootCount;
+            }
+        }
+        ++nodeIndex;
+    }
+    // Keep ALL active IDs, including fully replaced ancestors and incomplete
+    // primitives, so sparse clearing cannot leave stale reachability next frame.
+    state[sparse] = activeCount;
+    state[sparse + 1u] = visitedNodes;
+    state[sparse + 2u] = testedGroups;
+    uint selectedCount = 0u;
+    if (rootsReady) {
+        for (uint remaining = activeCount; remaining != 0u; --remaining) {
+            uint localGroup = state[sparse + 4u + remaining - 1u];
+            GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + localGroup];
+            uint mask = 0u;
+            for (uint cluster = 0u; cluster < group.clusterCount; ++cluster) {
+                uint refined = topology[group.clusterRefinedOffset + cluster];
+                if (refined == kInvalidClusterIndex ||
+                    state[base + (refined - primitive.groupOffset) * 2u] == 0u) {
+                    mask |= 1u << cluster;
+                }
+            }
+            state[base + localGroup * 2u + 1u] = mask;
+            selectedCount += mask != 0u ? 1u : 0u;
+        }
+    }
+    state[header] = selectedCount;
+    state[header + 2u] = rootsReady ? rootCount : 0u;
+    state[header + 3u] = rootsReady ? 1u : 0u;
+}
+
 // The LOD topology is resident even when page payloads are absent. State has
 // four header words per instance (count, prefix, roots, ready), followed by
 // compact per-instance pairs (active group, selected cluster mask).
@@ -1815,10 +1950,17 @@ void buildStreamLodFrontier(
     state[header + 2u] = 0u;
     state[header + 3u] = 0u;
     GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
-    if (instance.visible == 0u || instance.primitiveIndex >= params.scenePrimitiveCount) {
+    if (instance.primitiveIndex >= params.scenePrimitiveCount) {
         return;
     }
     GPUDrivenStreamAssetPrimitive primitive = primitives[instance.primitiveIndex];
+    if (primitive.lodBvhNodeCount != 0u) {
+        buildStreamLodBvhFrontier(instanceIndex, instance, primitive, groups,
+            topology, state, pageTable, requests, params);
+        return;
+    }
+    // Metadata-free fixtures retain the brute-force traversal as an oracle.
+    if (instance.visible == 0u) { return; }
     uint base = topology[params.lodInstanceOffsetsOffset + instanceIndex];
     bool rootsReady = true;
     uint rootCount = 0u;
@@ -1932,7 +2074,11 @@ void emitStreamLodFrontier(
     uint base = topology[params.lodInstanceOffsetsOffset + instanceIndex];
     uint outputIndex = state[header + 1u];
     bool fallback = activeHeader[0].padding0 != 0u;
-    for (uint localGroup = 0u; localGroup < primitive.groupCount; ++localGroup) {
+    bool sparseTraversal = primitive.lodBvhNodeCount != 0u;
+    uint sparse = base + primitive.groupCount * 2u;
+    uint groupCount = sparseTraversal ? state[sparse] : primitive.groupCount;
+    for (uint index = 0u; index < groupCount; ++index) {
+        uint localGroup = sparseTraversal ? state[sparse + 4u + groupCount - 1u - index] : index;
         GPUDrivenStreamAssetGroup source = groups[primitive.groupOffset + localGroup];
         uint mask = state[base + localGroup * 2u + 1u];
         if (fallback) {
@@ -1967,7 +2113,11 @@ void emitStreamLodFrontier(
 [numthreads(64, 1, 1)]
 void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThreadID, uniform GPUDrivenStreamAssetPush push)
 {
-    uint threadIndex = dispatchThreadID.x + dispatchThreadID.y * (65535u * 64u);
+    uint rowBase = dispatchThreadID.y * (65535u * 64u);
+    // The final padded row for a near-32-bit state allocation can wrap the
+    // flattened index. Those lanes must not clear or build the first entries.
+    if (dispatchThreadID.x > 0xffffffffu - rowBase) { return; }
+    uint threadIndex = dispatchThreadID.x + rowBase;
     DescriptorHandle<StructuredBuffer<uint>> pageHandle =
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
@@ -2013,14 +2163,18 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
 
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
-    if (push.activeBuildPhase >= kActiveBuildPhaseFrontier && push.activeBuildPhase <= kActiveBuildPhaseEmit) {
+    if (push.activeBuildPhase >= kActiveBuildPhaseFrontier && push.activeBuildPhase <= kActiveBuildPhaseInitializeLodState) {
         DescriptorHandle<StructuredBuffer<uint>> topologyHandle =
             DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + params.lodTopologyBuffer, 0));
         DescriptorHandle<RWStructuredBuffer<uint>> stateHandle =
             DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + params.lodStateBuffer, 0));
         StructuredBuffer<uint> topology = topologyHandle;
         RWStructuredBuffer<uint> state = stateHandle;
-        if (push.activeBuildPhase == kActiveBuildPhasePrefix) {
+        if (push.activeBuildPhase == kActiveBuildPhaseInitializeLodState) {
+            uint wordCount, stride;
+            state.GetDimensions(wordCount, stride);
+            if (threadIndex < wordCount) { state[threadIndex] = 0u; }
+        } else if (push.activeBuildPhase == kActiveBuildPhasePrefix) {
             if (threadIndex == 0u) {
                 prefixStreamLodFrontier(state, activeHeader, params);
             }

@@ -6,7 +6,7 @@
 // stores render height, tan(half FOV), ortho height, and the biased pixel threshold.
 float meshletLodProjectedError(float4 sphere, float groupError,
     float4 world0, float4 world1, float4 world2, float4 world3,
-    float4 eye, float4 forward, float4 projection)
+    float4 eye, float4 forward, float4 projection, float worldBoundsPadding = 0.0)
 {
     // sqrt(||A^T A||inf) bounds the largest singular value, including shear.
     float3 a = world0.xyz, b = world1.xyz, c = world2.xyz;
@@ -17,7 +17,7 @@ float meshletLodProjectedError(float4 sphere, float groupError,
     if (forward.w != 0.0) { return error * projection.x / max(projection.z, 1e-6); }
     float3 center = a * sphere.x + b * sphere.y + c * sphere.z + world3.xyz - eye.xyz;
     float z = dot(center, forward.xyz);
-    float radius = sphere.w * scale + error;
+    float radius = sphere.w * scale + error + worldBoundsPadding;
     float minZ = z - radius;
     if (minZ <= eye.w) { return 3.402823466e+38; }
     float radial = sqrt(max(dot(center, center) - z * z, 0.0)) + radius;

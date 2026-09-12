@@ -68,6 +68,7 @@ inline constexpr uint32_t kMeshletStreamActiveBuildRunPhase = 4;
 inline constexpr uint32_t kMeshletStreamActiveBuildFrontierPhase = 5;
 inline constexpr uint32_t kMeshletStreamActiveBuildPrefixPhase = 6;
 inline constexpr uint32_t kMeshletStreamActiveBuildEmitPhase = 7;
+inline constexpr uint32_t kMeshletStreamActiveBuildInitializeLodStatePhase = 8;
 inline constexpr uint32_t kMeshletStreamBlasInputResetPhase = 0;
 inline constexpr uint32_t kMeshletStreamBlasInputCountPhase = 1;
 inline constexpr uint32_t kMeshletStreamBlasInputSetupPhase = 2;
@@ -146,8 +147,9 @@ struct MeshletStreamGpuPrimitive {
     uint32_t materialIndex = 0;
     uint32_t nodeOffset = 0;
     uint32_t nodeCount = 0;
-    uint32_t padding2 = 0;
-    uint32_t padding3 = 0;
+    // Word offset in resident LOD topology and count of preorder BVH nodes.
+    uint32_t lodBvhOffset = 0;
+    uint32_t lodBvhNodeCount = 0;
     uint32_t padding4 = 0;
 };
 

@@ -6,6 +6,167 @@
 
 namespace metallic::render {
 
+namespace {
+
+bool validLodSphere(const std::array<float, 4>& sphere, bool allowInfiniteRadius)
+{
+    return std::isfinite(sphere[0]) && std::isfinite(sphere[1]) &&
+        std::isfinite(sphere[2]) && sphere[3] >= 0 &&
+        (std::isfinite(sphere[3]) || (allowInfiniteRadius && sphere[3] == INFINITY));
+}
+
+bool lodSphereContains(const std::array<float, 4>& outer, const std::array<float, 4>& inner)
+{
+    if (outer[3] == INFINITY) { return true; }
+    const double distance = std::hypot(double(outer[0]) - inner[0],
+        double(outer[1]) - inner[1], double(outer[2]) - inner[2]);
+    return distance + inner[3] <= double(outer[3]);
+}
+
+bool validateMeshletLodBvh(std::span<const MeshletLodGroupRecord> groups,
+    std::span<const MeshletLodBvhNode> nodes)
+{
+    if (groups.empty() || nodes.empty() || nodes.size() > UINT32_MAX ||
+        nodes.front().escapeIndex != nodes.size()) { return false; }
+    struct Interior {
+        uint32_t index;
+        uint32_t children;
+    };
+    std::vector<Interior> stack;
+    size_t expectedGroupEnd = groups.size();
+    // Validate arbitrary input iteratively; malformed chains cannot overflow a
+    // recursive CPU stack. Escapes and leaf coverage enforce a single tree.
+    for (uint32_t index = 0; index < nodes.size(); ++index) {
+        while (!stack.empty() && nodes[stack.back().index].escapeIndex == index) {
+            const auto& parent = stack.back();
+            if (parent.children < 2 || nodes[parent.index].groupOffset != expectedGroupEnd) { return false; }
+            stack.pop_back();
+        }
+        if (index != 0 && stack.empty()) { return false; }
+        const auto& node = nodes[index];
+        if (node.escapeIndex <= index || node.escapeIndex > nodes.size() ||
+            !validLodSphere(node.sphere, true) || std::isnan(node.maxError) || node.maxError < 0) {
+            return false;
+        }
+        if (!stack.empty()) {
+            auto& entry = stack.back();
+            const auto& parent = nodes[entry.index];
+            if (++entry.children > 4 || node.escapeIndex > parent.escapeIndex ||
+                node.maxError > parent.maxError || node.maxLevel > parent.maxLevel ||
+                (node.flags & parent.flags) != node.flags || !lodSphereContains(parent.sphere, node.sphere)) {
+                return false;
+            }
+        }
+        if (node.groupCount == 0) {
+            if (node.escapeIndex - index < 3) { return false; }
+            stack.push_back({index, 0});
+            continue;
+        }
+        if (node.groupCount > 4 || node.escapeIndex != index + 1 ||
+            uint64_t(node.groupOffset) + node.groupCount != expectedGroupEnd) { return false; }
+        expectedGroupEnd = node.groupOffset;
+        for (uint32_t offset = 0; offset < node.groupCount; ++offset) {
+            const auto& group = groups[node.groupOffset + offset];
+            if (!validLodSphere(group.sphere, false) || !std::isfinite(group.error) || group.error < 0 ||
+                node.maxError < group.error || node.maxLevel < group.level ||
+                (node.flags & group.flags) != group.flags || !lodSphereContains(node.sphere, group.sphere)) {
+                return false;
+            }
+        }
+    }
+    while (!stack.empty()) {
+        const auto& entry = stack.back();
+        if (nodes[entry.index].escapeIndex != nodes.size() || entry.children < 2 ||
+            nodes[entry.index].groupOffset != expectedGroupEnd) { return false; }
+        stack.pop_back();
+    }
+    return expectedGroupEnd == 0;
+}
+
+} // namespace
+
+bool buildMeshletLodBvh(std::span<const MeshletLodGroupRecord> groups,
+    std::vector<MeshletLodBvhNode>& nodes, std::string& reason)
+{
+    nodes.clear();
+    reason.clear();
+    if (groups.size() > UINT32_MAX) {
+        reason = "too many meshlet LOD groups for BVH indices";
+        return false;
+    }
+    for (const auto& group : groups) {
+        if (!validLodSphere(group.sphere, false) || !std::isfinite(group.error) || group.error < 0) {
+            reason = "invalid meshlet LOD BVH group metric";
+            return false;
+        }
+    }
+    const auto aggregate = [](uint32_t count, const auto& getRecord) {
+        MeshletLodBvhNode result;
+        std::array<double, 3> lower{INFINITY, INFINITY, INFINITY};
+        std::array<double, 3> upper{-INFINITY, -INFINITY, -INFINITY};
+        bool infiniteRadius = false;
+        for (uint32_t index = 0; index < count; ++index) {
+            const auto record = getRecord(index);
+            result.maxError = std::max(result.maxError, record.maxError);
+            result.maxLevel = std::max(result.maxLevel, record.maxLevel);
+            result.flags |= record.flags;
+            infiniteRadius = infiniteRadius || !std::isfinite(record.sphere[3]);
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                lower[axis] = std::min(lower[axis], double(record.sphere[axis]) - record.sphere[3]);
+                upper[axis] = std::max(upper[axis], double(record.sphere[axis]) + record.sphere[3]);
+            }
+        }
+        if (infiniteRadius) {
+            result.sphere = getRecord(0).sphere;
+            result.sphere[3] = INFINITY;
+            return result;
+        }
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            result.sphere[axis] = static_cast<float>((lower[axis] + upper[axis]) * 0.5);
+        }
+        double radius = 0;
+        for (uint32_t index = 0; index < count; ++index) {
+            const auto sphere = getRecord(index).sphere;
+            radius = std::max(radius, std::hypot(double(result.sphere[0]) - sphere[0],
+                double(result.sphere[1]) - sphere[1], double(result.sphere[2]) - sphere[2]) + sphere[3]);
+        }
+        // Recompute about the rounded center, then round the radius outward.
+        // An unrepresentably large union is conservatively never pruned.
+        result.sphere[3] = radius > std::numeric_limits<float>::max() ? INFINITY :
+            (radius > 0 ? std::nextafter(static_cast<float>(radius), INFINITY) : 0);
+        return result;
+    };
+    const auto build = [&](const auto& self, uint32_t offset, uint32_t count) -> uint32_t {
+        const uint32_t index = static_cast<uint32_t>(nodes.size());
+        nodes.emplace_back();
+        MeshletLodBvhNode node;
+        if (count <= 4) {
+            node = aggregate(count, [&](uint32_t child) {
+                const auto& group = groups[offset + child];
+                return MeshletLodBvhNode{.sphere = group.sphere, .maxError = group.error,
+                    .maxLevel = group.level, .flags = group.flags};
+            });
+            node.groupCount = count;
+        } else {
+            std::array<uint32_t, 4> children{};
+            const uint32_t childCount = std::min(4u, (count - 1) / 4 + 1);
+            uint32_t end = offset + count;
+            for (uint32_t child = 0; child < childCount; ++child) {
+                const uint32_t childSize = count / childCount + (child < count % childCount ? 1u : 0u);
+                end -= childSize;
+                children[child] = self(self, end, childSize);
+            }
+            node = aggregate(childCount, [&](uint32_t child) { return nodes[children[child]]; });
+        }
+        node.groupOffset = offset;
+        node.escapeIndex = static_cast<uint32_t>(nodes.size());
+        nodes[index] = node;
+        return index;
+    };
+    if (!groups.empty()) { build(build, 0, static_cast<uint32_t>(groups.size())); }
+    return true;
+}
+
 bool buildMeshletLodMetadata(const scene::RenderPrimitive& primitive,
     std::vector<MeshletLodGroupRecord>& groups, std::string& reason)
 {
@@ -101,8 +262,10 @@ bool buildMeshletLodMetadata(const scene::RenderPrimitive& primitive,
     return true;
 }
 
-float meshletLodPixelError(const MeshletLodGroupRecord& group,
-    const GPUSceneGpuInstanceRecord& instance, const MeshletLodView& view)
+namespace {
+
+float meshletLodPixelErrorImpl(const MeshletLodGroupRecord& group,
+    const GPUSceneGpuInstanceRecord& instance, const MeshletLodView& view, float worldBoundsPadding)
 {
     const auto& m = instance.worldMatrix;
     float gram[3][3]{};
@@ -125,13 +288,42 @@ float meshletLodPixelError(const MeshletLodGroupRecord& group,
         z += center[i] * view.forward[i];
         distanceSquared += center[i] * center[i];
     }
-    const float radius = group.sphere[3] * scale + error;
+    const float radius = group.sphere[3] * scale + error + worldBoundsPadding;
     const float minZ = z - radius;
     if (minZ <= view.eye[3]) { return std::numeric_limits<float>::max(); }
     const float radial = std::sqrt(std::max(distanceSquared - z * z, 0.0f)) + radius;
     const float slope = radial / minZ;
     const float focal = view.projection[0] / std::max(2 * view.projection[1], 1e-6f);
     return error * focal / minZ * std::sqrt(1 + slope * slope);
+}
+
+float meshletLodBvhWorldBoundsPadding(const MeshletLodBvhNode& node,
+    const GPUSceneGpuInstanceRecord& instance, const MeshletLodView& view)
+{
+    const auto& m = instance.worldMatrix;
+    float magnitude = 0;
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        float coordinateMagnitude = 0;
+        for (uint32_t component = 0; component < 3; ++component) {
+            coordinateMagnitude += std::abs(m[component * 4 + axis]) *
+                (std::abs(node.sphere[component]) + node.sphere[3]);
+        }
+        coordinateMagnitude += std::abs(m[12 + axis]);
+        coordinateMagnitude += std::abs(view.eye[axis]);
+        magnitude += coordinateMagnitude;
+    }
+    // A transformed aggregate and its groups can round in opposite directions,
+    // especially when a large object/world origin cancels the camera position.
+    // Inflate only BVH bounds; the authored per-group selection stays exact.
+    return magnitude * (32.0f * std::numeric_limits<float>::epsilon());
+}
+
+} // namespace
+
+float meshletLodPixelError(const MeshletLodGroupRecord& group,
+    const GPUSceneGpuInstanceRecord& instance, const MeshletLodView& view)
+{
+    return meshletLodPixelErrorImpl(group, instance, view, 0);
 }
 
 bool meshletLodNeedsFine(const MeshletLodGroupRecord& group,
@@ -148,7 +340,8 @@ StreamMeshletLodReference selectStreamMeshletLodReference(
     std::span<const uint32_t> refinedGroups,
     std::span<const uint8_t> drawableGroups,
     const GPUSceneGpuInstanceRecord& instance, const MeshletLodView& view,
-    uint32_t manualLevel, uint32_t capacity, std::span<const uint8_t> availableGroups)
+    uint32_t manualLevel, uint32_t capacity, std::span<const uint8_t> availableGroups,
+    std::span<const MeshletLodBvhNode> bvh)
 {
     StreamMeshletLodReference result;
     const auto fail = [&](const char* reason) {
@@ -158,7 +351,7 @@ StreamMeshletLodReference selectStreamMeshletLodReference(
         std::fill(result.activeGroups.begin(), result.activeGroups.end(), uint8_t{0});
         return result;
     };
-    if (ranges.size() != groups.size() || drawableGroups.size() != groups.size() ||
+    if (groups.size() > UINT32_MAX || ranges.size() != groups.size() || drawableGroups.size() != groups.size() ||
         (!availableGroups.empty() && availableGroups.size() != groups.size())) {
         return fail("stream LOD metadata sizes disagree");
     }
@@ -184,22 +377,22 @@ StreamMeshletLodReference selectStreamMeshletLodReference(
         }
     }
     if (clusterEnd != refinedGroups.size()) { return fail("stream LOD group ranges omit clusters"); }
+    bool rootsDrawable = true;
     for (uint32_t group = 0; group < groups.size(); ++group) {
         if (((groups[group].flags & kMeshletLodTerminalGroup) != 0) != parents[group].empty()) {
             return fail("stream LOD terminal flags disagree with topology");
         }
+        rootsDrawable = rootsDrawable && (!parents[group].empty() || drawableGroups[group] != 0);
     }
+    if (!bvh.empty() && !validateMeshletLodBvh(groups, bvh)) { return fail("invalid stream LOD BVH"); }
     if ((instance.identity[3] & GPUSceneGpuInstanceVisible) == 0) { return result; }
 
-    bool rootsDrawable = true;
-    for (size_t reverse = groups.size(); reverse != 0; --reverse) {
-        const uint32_t group = static_cast<uint32_t>(reverse - 1);
-        const bool terminal = parents[group].empty();
-        rootsDrawable = rootsDrawable && (!terminal || drawableGroups[group] != 0);
+    const auto visitGroup = [&](uint32_t group) {
+        ++result.testedGroups;
         if (!meshletLodNeedsFine(groups[group], instance, view, manualLevel) ||
             !std::all_of(parents[group].begin(), parents[group].end(),
                 [&](uint32_t parent) { return result.activeGroups[parent] != 0; })) {
-            continue;
+            return;
         }
         if (drawableGroups[group] == 0) {
             if (availableGroups.empty() || availableGroups[group] == 0) {
@@ -207,6 +400,39 @@ StreamMeshletLodReference selectStreamMeshletLodReference(
             }
         } else {
             result.activeGroups[group] = 1;
+        }
+    };
+    if (bvh.empty()) {
+        for (size_t reverse = groups.size(); reverse != 0; --reverse) {
+            visitGroup(static_cast<uint32_t>(reverse - 1));
+        }
+    } else {
+        uint32_t index = 0;
+        while (index < bvh.size()) {
+            const auto& node = bvh[index];
+            ++result.visitedBvhNodes;
+            bool mayNeedFine = (node.flags & kMeshletLodTerminalGroup) != 0;
+            if (!mayNeedFine) {
+                if (manualLevel != UINT32_MAX) {
+                    mayNeedFine = node.maxLevel >= manualLevel;
+                } else {
+                    const MeshletLodGroupRecord bound{.sphere = node.sphere, .error = node.maxError};
+                    const float upperError = meshletLodPixelErrorImpl(bound, instance, view,
+                        meshletLodBvhWorldBoundsPadding(node, instance, view));
+                    const float target = view.projection[3];
+                    // The same margin is used by the GPU. Float rounding near
+                    // the cut boundary must only cause extra traversal.
+                    mayNeedFine = !(upperError < target - std::max(std::abs(target) * 1e-4f, 1e-5f));
+                }
+            }
+            if (!mayNeedFine) {
+                index = node.escapeIndex;
+                continue;
+            }
+            for (uint32_t reverse = node.groupCount; reverse != 0; --reverse) {
+                visitGroup(node.groupOffset + reverse - 1);
+            }
+            ++index;
         }
     }
     std::sort(result.requestedGroups.begin(), result.requestedGroups.end());

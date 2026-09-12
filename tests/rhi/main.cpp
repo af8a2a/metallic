@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Task/TaskSystem.h"
 
 #include <SDL3/SDL.h>
@@ -47,6 +48,7 @@ struct Options {
     bool enableValidation = true;
     bool enableStreamline = false;
     bool enableRealtime = false;
+    bool enableNsightCapture = false;
     std::filesystem::path outputDirectory = "rhi-test-output";
 };
 
@@ -59,6 +61,7 @@ void printRhiUsage()
         "  --rhi-validation         Enable Vulkan validation for RHI tests\n"
         "  --rhi-streamline         Enable Streamline, bindless heap and ray queries\n"
         "  --rhi-realtime           Enable the realtime raster + DLSS test device\n"
+        "  --rhi-nsight-capture     Inject Nsight Graphics before creating test devices\n"
         "\n"
         "GoogleTest options replace the old custom runner flags:\n"
         "  --gtest_list_tests       List registered tests\n"
@@ -87,6 +90,10 @@ bool parseArguments(int argc, char** argv, Options& options, std::vector<std::st
         if (argument == "--rhi-realtime") {
             options.enableRealtime = true;
             options.enableStreamline = true;
+            continue;
+        }
+        if (argument == "--rhi-nsight-capture") {
+            options.enableNsightCapture = true;
             continue;
         }
         if (argument == "--output-dir") {
@@ -361,6 +368,17 @@ int main(int argc, char** argv)
     std::vector<char*> gtestArgv = makeMutableArgv(gtestArguments);
     int gtestArgc = static_cast<int>(gtestArgv.size());
     ::testing::InitGoogleTest(&gtestArgc, gtestArgv.data());
+
+    render::profiling::NsightGraphicsCapture nsightCapture;
+    if (options.enableNsightCapture && !GTEST_FLAG_GET(list_tests)) {
+        std::string error;
+        if (!nsightCapture.initializeBeforeGraphics(
+                {.outputDirectory = options.outputDirectory / "nsight", .showHud = false}, error)) {
+            spdlog::error("RHI Nsight Graphics capture initialization failed: {}", error);
+            return 1;
+        }
+        spdlog::info("RHI Nsight Graphics capture injection enabled before test device creation");
+    }
 
     registerRhiTests();
 

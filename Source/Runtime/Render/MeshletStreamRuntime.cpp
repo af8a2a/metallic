@@ -1,4 +1,5 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 
 #include "Runtime/Render/MeshletStreamClas.h"
@@ -590,7 +591,7 @@ public:
         commandBuffer.bindBindlessHeap(bindlessHeap);
         commandBuffer.bindComputePipeline(*activeBuildPipeline_);
         commandBuffer.pushBindlessData(&push, sizeof(push));
-        const uint32_t groups = (threadCount + 63u) / 64u;
+        const uint32_t groups = threadCount / 64u + (threadCount % 64u != 0u ? 1u : 0u);
         commandBuffer.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u, 1);
         transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true);
         transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true);
@@ -2688,34 +2689,6 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
         return result;
     }
 
-    result = createAndPopulateHostStorageBuffer<MeshletStreamGpuPrimitive>(
-        device,
-        primitives.size(),
-        primitiveBuffer_,
-        log,
-        "MeshletStreamRuntime primitives",
-        [primitives](MeshletStreamGpuPrimitive& gpuPrimitive, size_t index) {
-            const scene::MeshletStreamPrimitiveInfo& primitive = primitives[index];
-            gpuPrimitive = MeshletStreamGpuPrimitive{
-                .lodLevelOffset = primitive.lodLevelOffset,
-                .lodLevelCount = primitive.lodLevelCount,
-                .pageOffset = primitive.pageOffset,
-                .pageCount = primitive.pageCount,
-                .fallbackPageOffset = primitive.fallbackPageOffset,
-                .fallbackPageCount = primitive.fallbackPageCount,
-                .groupOffset = primitive.groupOffset,
-                .groupCount = primitive.groupCount,
-                .fallbackGroupOffset = primitive.fallbackGroupOffset,
-                .fallbackGroupCount = primitive.fallbackGroupCount,
-                .materialIndex = primitive.materialIndex,
-                .nodeOffset = primitive.nodeOffset,
-                .nodeCount = primitive.nodeCount,
-            };
-        });
-    if (!result) {
-        return result;
-    }
-
     const std::span<const scene::MeshletStreamLodLevelInfo> lodLevels = asset_.lodLevels();
     result = createAndPopulateHostStorageBuffer<MeshletStreamGpuLodLevel>(
         device,
@@ -2762,12 +2735,71 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
         parentOffsets[index] = static_cast<uint32_t>(topology.size());
         topology.insert(topology.end(), list.begin(), list.end());
     }
+    // The BVH is derived from resident v8/v9 metadata once; geometry payloads
+    // and the on-disk asset format stay independent of selection acceleration.
+    std::vector<uint32_t> bvhOffsets(primitives.size()), bvhCounts(primitives.size());
+    std::vector<MeshletLodGroupRecord> lodGroups;
+    std::vector<MeshletLodBvhNode> bvh;
+    for (size_t index = 0; index < primitives.size(); ++index) {
+        const auto& primitive = primitives[index];
+        lodGroups.resize(primitive.groupCount);
+        for (uint32_t local = 0; local < primitive.groupCount; ++local) {
+            const auto& group = asset_.groups()[primitive.groupOffset + local];
+            auto& metric = lodGroups[local];
+            std::copy_n(group.boundsCenterRadius, 4, metric.sphere.begin());
+            metric.error = group.maxQuadricError;
+            metric.level = group.lodLevel;
+            metric.flags = group.flags;
+        }
+        if (!buildMeshletLodBvh(lodGroups, bvh, log)) {
+            log = "MeshletStreamRuntime LOD BVH: " + log;
+            return makeError(Error::InvalidArgument);
+        }
+        constexpr size_t kNodeWords = sizeof(MeshletLodBvhNode) / sizeof(uint32_t);
+        const uint64_t wordCount = bvh.size() * uint64_t(kNodeWords);
+        if (topology.size() + wordCount > UINT32_MAX) {
+            log = "MeshletStreamRuntime LOD BVH exceeds 32-bit addressing";
+            return makeError(Error::InvalidArgument);
+        }
+        bvhOffsets[index] = static_cast<uint32_t>(topology.size());
+        bvhCounts[index] = static_cast<uint32_t>(bvh.size());
+        topology.resize(topology.size() + static_cast<size_t>(wordCount));
+        if (!bvh.empty()) {
+            std::memcpy(topology.data() + bvhOffsets[index], bvh.data(), bvh.size() * sizeof(MeshletLodBvhNode));
+        }
+    }
+    result = createAndPopulateHostStorageBuffer<MeshletStreamGpuPrimitive>(
+        device, primitives.size(), primitiveBuffer_, log, "MeshletStreamRuntime primitives",
+        [primitives, &bvhOffsets, &bvhCounts](MeshletStreamGpuPrimitive& gpuPrimitive, size_t index) {
+            const auto& primitive = primitives[index];
+            gpuPrimitive = MeshletStreamGpuPrimitive{
+                .lodLevelOffset = primitive.lodLevelOffset,
+                .lodLevelCount = primitive.lodLevelCount,
+                .pageOffset = primitive.pageOffset,
+                .pageCount = primitive.pageCount,
+                .fallbackPageOffset = primitive.fallbackPageOffset,
+                .fallbackPageCount = primitive.fallbackPageCount,
+                .groupOffset = primitive.groupOffset,
+                .groupCount = primitive.groupCount,
+                .fallbackGroupOffset = primitive.fallbackGroupOffset,
+                .fallbackGroupCount = primitive.fallbackGroupCount,
+                .materialIndex = primitive.materialIndex,
+                .nodeOffset = primitive.nodeOffset,
+                .nodeCount = primitive.nodeCount,
+                .lodBvhOffset = bvhOffsets[index],
+                .lodBvhNodeCount = bvhCounts[index],
+            };
+        });
+    if (!result) { return result; }
+
     lodInstanceOffsetsOffset_ = static_cast<uint32_t>(topology.size());
     uint64_t stateWords = instances.size() * 4ull;
     for (const auto& instance : instances) {
         topology.push_back(static_cast<uint32_t>(stateWords));
         if (instance.primitiveIndex < primitives.size()) {
-            stateWords += primitives[instance.primitiveIndex].groupCount * 2ull;
+            // Active/mask pairs, sparse header and the previous/current active
+            // IDs. Only previous active entries need clearing each frame.
+            stateWords += 4ull + primitives[instance.primitiveIndex].groupCount * 3ull;
         }
         if (stateWords > UINT32_MAX || topology.size() > UINT32_MAX) {
             log = "MeshletStreamRuntime LOD frontier exceeds 32-bit addressing";
@@ -3046,27 +3078,41 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer)
     }
 
     MeshletStreamUserPush push = userPush();
+    const bool initializeState = lodStateBufferState_ == ResourceState::Undefined;
     transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true);
-    // Prefix chooses a complete terminal cut on overflow before any records
-    // are emitted. Each stage sees the complete result of its predecessor.
-    for (uint32_t phase : {kMeshletStreamActiveBuildResetPhase,
-             kMeshletStreamActiveBuildFrontierPhase, kMeshletStreamActiveBuildPrefixPhase,
-             kMeshletStreamActiveBuildEmitPhase, kMeshletStreamActiveBuildFinalizePhase}) {
+    const auto dispatchPhase = [&](uint32_t phase, uint32_t threadCount) {
         push.activeBuildPhase = phase;
-        const bool perInstance = phase == kMeshletStreamActiveBuildFrontierPhase ||
-            phase == kMeshletStreamActiveBuildEmitPhase;
         Result result = activeBuildPass_->dispatch(
-            commandBuffer, *bindlessHeap_, push, perInstance ? asset_.instanceCount() : 1u,
+            commandBuffer, *bindlessHeap_, push, threadCount,
             *activeGroupBuffer_, activeGroupBufferState_,
             *activeHeaderBuffer_, activeHeaderBufferState_,
             *pageTableBuffer_, pageTableState_, *requestBuffer_, requestBufferState_,
             *drawIndirectBuffer_, drawIndirectBufferState_,
             *traversalHeaderBuffer_, traversalHeaderBufferState_,
             *traversalWorkBuffer_, traversalWorkBufferState_);
+        if (result) {
+            transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true);
+        }
+        return result;
+    };
+    if (initializeState) {
+        // Device allocations have undefined contents. Initialize once before
+        // sparse clearing; subsequent frames touch only formerly active IDs.
+        const Result result = dispatchPhase(kMeshletStreamActiveBuildInitializeLodStatePhase,
+            static_cast<uint32_t>(lodStateBuffer_->desc().size / sizeof(uint32_t)));
+        if (!result) { return result; }
+    }
+    // Prefix chooses a complete terminal cut on overflow before any records
+    // are emitted. Each stage sees the complete result of its predecessor.
+    for (uint32_t phase : {kMeshletStreamActiveBuildResetPhase,
+             kMeshletStreamActiveBuildFrontierPhase, kMeshletStreamActiveBuildPrefixPhase,
+             kMeshletStreamActiveBuildEmitPhase, kMeshletStreamActiveBuildFinalizePhase}) {
+        const bool perInstance = phase == kMeshletStreamActiveBuildFrontierPhase ||
+            phase == kMeshletStreamActiveBuildEmitPhase;
+        Result result = dispatchPhase(phase, perInstance ? asset_.instanceCount() : 1u);
         if (!result) {
             return result;
         }
-        transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true);
     }
     return {};
 }
