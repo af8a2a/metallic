@@ -211,6 +211,15 @@ struct GPUDrivenStreamDeferredParams
     float4 previousUpProjection;
     float4 previousViewport;
     float4 previousClipOrtho;
+    float lodPixelError;
+    uint lodTopologyBuffer;
+    uint lodStateBuffer;
+    uint lodInstanceOffsetsOffset;
+    float4 renderEye;
+    float4 renderCenter;
+    float4 renderUpProjection;
+    float4 renderViewport;
+    float4 renderClipOrtho;
 };
 
 float3 safeNormalize(float3 value, float3 fallback)
@@ -434,6 +443,13 @@ float4 projectStreamDeferredPosition(
     float3 worldPosition,
     GPUDrivenStreamDeferredParams params)
 {
+    if (params.renderViewport.y > 0.0) {
+        params.eye = params.renderEye;
+        params.center = params.renderCenter;
+        params.upProjection = params.renderUpProjection;
+        params.viewport = params.renderViewport;
+        params.clipOrtho = params.renderClipOrtho;
+    }
     float3 forward = safeNormalize(
         params.center.xyz - params.eye.xyz,
         float3(0.0, 0.0, -1.0));
@@ -457,22 +473,31 @@ float4 projectStreamDeferredPosition(
     }
     ndcZ = params.clipOrtho.w > 0.5 ? 1.0 - ndcZ : ndcZ;
     float aspect = max(params.viewport.x, 0.001);
+    float4 clip;
     if (params.upProjection.w > 0.5) {
         float halfHeight = max(params.clipOrtho.z * 0.5, 0.0001);
-        return float4(
+        clip = float4(
             viewPosition.x / (halfHeight * aspect),
             viewPosition.y / halfHeight,
             ndcZ,
             1.0);
+    } else {
+        float fovRadians = clamp(params.viewport.w, 0.017453292, 3.12413936);
+        float yScale = 1.0 / tan(fovRadians * 0.5);
+        float w = viewPosition.z;
+        clip = float4(
+            viewPosition.x * yScale / aspect,
+            viewPosition.y * yScale,
+            ndcZ * w,
+            w);
     }
-    float fovRadians = clamp(params.viewport.w, 0.017453292, 3.12413936);
-    float yScale = 1.0 / tan(fovRadians * 0.5);
-    float w = viewPosition.z;
-    return float4(
-        viewPosition.x * yScale / aspect,
-        viewPosition.y * yScale,
-        ndcZ * w,
-        w);
+    if (params.renderViewport.y > 0.0) {
+        // The caller flips clip Y for Vulkan after this projection. Negate the
+        // Y jitter here to match the resident path's post-flip pixel offset.
+        clip.xy -= 2.0 * float2(params.renderEye.w, -params.renderCenter.w) /
+            max(params.renderViewport.yz, float2(1.0)) * clip.w;
+    }
+    return clip;
 }
 
 bool decodeStreamDeferredSurface(
@@ -1110,8 +1135,8 @@ bool decodeResidentVisibilitySurface(
 
     surface.materialIndex = instance.identity.y;
     surface.primitiveIndex = geometry.source.x;
-    surface.lodLevel = meshlet.lod.y;
-    surface.lodGroupIndex = meshlet.lod.x;
+    surface.lodLevel = meshlet.lod.x;
+    surface.lodGroupIndex = meshlet.lod.y;
     if (params.mode != kModeShaded && params.mode != kModeBaseColor) {
         return true;
     }

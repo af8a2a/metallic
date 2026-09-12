@@ -42,8 +42,14 @@ struct SceneLoadProgress {
 };
 
 struct SceneLoadOptions {
+    // Independent stage limits, clamped to available workers. Zero selects up
+    // to eight workers while leaving one worker for other tasks when possible.
     uint32_t decodeConcurrency = 0;
-    uint64_t maxDecodedBytesInFlight = 512ull * 1024ull * 1024ull;
+    // Estimated pixel working set for unfinished decode/mip jobs. Completed scene
+    // pixels and codec-internal scratch are excluded. Zero disables this limit;
+    // an image exceeding it runs alone. 1 GiB accommodates eight 4K RGBA decodes.
+    uint64_t maxDecodedBytesInFlight = 1024ull * 1024ull * 1024ull;
+    uint32_t mipConcurrency = 0;
 };
 
 using SceneLoadProgressCallback = std::function<bool(const SceneLoadProgress&)>;

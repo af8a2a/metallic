@@ -698,8 +698,8 @@ struct GPUDrivenPreviewGpuParams {
     uint32_t environmentVisible = 1;
     uint32_t materialCount = 1;
     uint32_t visibleMeshletCapacity = 0;
-    uint32_t shadingPadding1 = 0;
-    uint32_t shadingPadding2 = 0;
+    uint32_t lodSelectionBuffer = UINT32_MAX;
+    uint32_t lodSelectionEnabled = 0;
 };
 
 struct GPUDrivenPreviewUserPush {

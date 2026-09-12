@@ -1628,8 +1628,13 @@ public:
             !hasBoolRuntimeSetting(*gpuDrivenPreview, "freezeCullingCamera")) {
             return RhiTestResult::fail("VisibilityBufferPass missing visibility culling runtime settings");
         }
-        if (!hasBoolRuntimeSetting(*gpuDrivenStreamAsset, "enableGpuLodSelection")) {
-            return RhiTestResult::fail("GPUDrivenStreamAssetPass missing Bool runtime setting enableGpuLodSelection");
+        for (const auto* pass : {gpuDrivenPreview.get(), gpuDrivenStreamAsset.get()}) {
+            if (!hasBoolRuntimeSetting(*pass, "autoLod") ||
+                !hasRuntimeSetting(*pass, "lodPixelError", render::RenderGraphRuntimeSettingType::Float, false, false) ||
+                !hasRuntimeSetting(*pass, "lodBias", render::RenderGraphRuntimeSettingType::Float, false, false) ||
+                !hasRuntimeSetting(*pass, "lodLevel", render::RenderGraphRuntimeSettingType::Int, false, false)) {
+                return RhiTestResult::fail("Resident and stream passes must expose the shared runtime-only LOD controls");
+            }
         }
         if (!hasRuntimeSetting(
                 *streamlineDlssSr,
@@ -8035,7 +8040,9 @@ public:
         constexpr uint32_t kWidth = 256;
         constexpr uint32_t kHeight = 192;
         constexpr uint32_t kMaxActiveGroups = 64;
-        constexpr uint32_t kWarmupFrameCount = 16;
+        // Reach the finest cut through all dependency levels before asserting
+        // that both producers contain clusters eligible for software raster.
+        constexpr uint32_t kWarmupFrameCount = 128;
         constexpr uint64_t kPixelByteSize =
             static_cast<uint64_t>(kWidth) * kHeight * sizeof(uint32_t);
 
@@ -8158,10 +8165,11 @@ public:
                 {"streamSourceId", "stream"},
                 {"enableMeshletStreaming", true},
                 {"maxLockedFallbackPages", 4},
-                {"maxResidentPages", 16},
+                {"maxResidentPages", 64},
                 {"maxPageUploadsPerFrame", 4},
                 {"maxActiveGroups", kMaxActiveGroups},
                 {"mode", "meshlet"},
+                {"autoLod", false}, {"lodLevel", 0},
                 {"instanceFrustumCull", false},
                 {"instanceHzbCull", false},
                 {"meshletFrustumCull", false},

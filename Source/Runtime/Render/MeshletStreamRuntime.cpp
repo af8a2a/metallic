@@ -590,7 +590,8 @@ public:
         commandBuffer.bindBindlessHeap(bindlessHeap);
         commandBuffer.bindComputePipeline(*activeBuildPipeline_);
         commandBuffer.pushBindlessData(&push, sizeof(push));
-        commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1);
+        const uint32_t groups = (threadCount + 63u) / 64u;
+        commandBuffer.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u, 1);
         transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true);
         transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true);
         transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true);
@@ -868,79 +869,44 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     }
 
     const MeshletStreamStorage& residencyStorage = residency_.storage();
-    const uint64_t streamedPageReserveBytes =
-        residencyStorage.allocationSize(asset_.maxPagePayloadBytes());
-    const uint64_t lockedFallbackByteBudget = residencyStorage.capacityBytes() > streamedPageReserveBytes
-        ? residencyStorage.capacityBytes() - streamedPageReserveBytes
-        : 0;
-    uint64_t lockedFallbackPageBudget = desc.maxLockedFallbackPages;
-    if (maxResidentPages_ != 0) {
-        const uint32_t pageBudgetWithStreamingReserve = maxResidentPages_ > 1
-            ? maxResidentPages_ - 1
-            : 0;
-        lockedFallbackPageBudget = std::min<uint64_t>(
-            lockedFallbackPageBudget,
-            pageBudgetWithStreamingReserve);
-    }
-    lockedFallbackPageBudget = std::min<uint64_t>(
-        lockedFallbackPageBudget,
-        lockedFallbackByteBudget / residencyStorage.alignmentBytes());
-
+    // Every terminal branch belongs to the base cut, including branches
+    // that stopped simplifying before the primitive's coarsest level.
+    // Reserve hidden instances too, so later visibility changes remain safe.
     std::vector<uint32_t> fallbackPages;
     std::vector<uint32_t> lockedFallbackPrimitives;
-    fallbackPages.reserve(static_cast<size_t>(std::min<uint64_t>(
-        lockedFallbackPageBudget,
-        asset_.pageCount())));
-    lockedFallbackPrimitives.reserve(static_cast<size_t>(std::min<uint64_t>(
-        lockedFallbackPageBudget,
-        asset_.primitiveCount())));
-    const uint64_t fallbackPrimitiveCandidateBudget = std::min<uint64_t>(
-        asset_.primitiveCount(),
-        std::max<uint64_t>(lockedFallbackPageBudget, 1u) * 4u);
     std::unordered_set<uint32_t> consideredFallbackPrimitives;
-    consideredFallbackPrimitives.reserve(static_cast<size_t>(fallbackPrimitiveCandidateBudget));
+    uint64_t terminalInstanceCount = 0;
+    for (const auto& instance : asset_.instances()) {
+        if (instance.primitiveIndex >= asset_.primitiveCount()) {
+            continue;
+        }
+        terminalInstanceCount += asset_.primitiveTerminalGroups(instance.primitiveIndex).size();
+        if (!consideredFallbackPrimitives.insert(instance.primitiveIndex).second) {
+            continue;
+        }
+        lockedFallbackPrimitives.push_back(instance.primitiveIndex);
+        for (uint32_t groupIndex : asset_.primitiveTerminalGroups(instance.primitiveIndex)) {
+            fallbackPages.push_back(asset_.groups()[groupIndex].pageIndex);
+        }
+    }
+    std::sort(fallbackPages.begin(), fallbackPages.end());
+    fallbackPages.erase(std::unique(fallbackPages.begin(), fallbackPages.end()), fallbackPages.end());
     uint64_t lockedFallbackBytes = 0;
-    for (const scene::MeshletStreamInstanceInfo& instance : asset_.instances()) {
-        if (fallbackPages.size() == lockedFallbackPageBudget ||
-            lockedFallbackByteBudget - lockedFallbackBytes < residencyStorage.alignmentBytes() ||
-            consideredFallbackPrimitives.size() == fallbackPrimitiveCandidateBudget) {
-            break;
-        }
-        if (instance.visible == 0 ||
-            instance.primitiveIndex >= asset_.primitiveCount() ||
-            !consideredFallbackPrimitives.insert(instance.primitiveIndex).second) {
-            continue;
-        }
-        const uint32_t primitiveIndex = instance.primitiveIndex;
-        const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
-        if (primitive.fallbackPageOffset > asset_.pageCount() ||
-            primitive.fallbackPageCount > asset_.pageCount() - primitive.fallbackPageOffset) {
-            log = "MeshletStreamRuntime primitive fallback page range exceeds the asset page count";
-            return makeError(Error::Failure);
-        }
-
-        uint64_t primitiveFallbackBytes = 0;
-        for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
-            const uint32_t pageIndex = primitive.fallbackPageOffset + localPage;
-            const uint64_t pageBytes = residencyStorage.allocationSize(
-                asset_.pages()[pageIndex].uncompressedSize);
-            if (pageBytes == 0 ||
-                pageBytes > std::numeric_limits<uint64_t>::max() - primitiveFallbackBytes) {
-                log = "MeshletStreamRuntime primitive fallback page byte budget overflowed";
-                return makeError(Error::Failure);
-            }
-            primitiveFallbackBytes += pageBytes;
-        }
-        if (primitive.fallbackPageCount > lockedFallbackPageBudget - fallbackPages.size() ||
-            primitiveFallbackBytes > lockedFallbackByteBudget - lockedFallbackBytes) {
-            continue;
-        }
-
-        lockedFallbackPrimitives.push_back(primitiveIndex);
-        lockedFallbackBytes += primitiveFallbackBytes;
-        for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
-            fallbackPages.push_back(primitive.fallbackPageOffset + localPage);
-        }
+    for (uint32_t pageIndex : fallbackPages) {
+        lockedFallbackBytes += residencyStorage.allocationSize(asset_.pages()[pageIndex].uncompressedSize);
+    }
+    const bool needsStreamingReserve = fallbackPages.size() < asset_.pageCount();
+    const uint64_t streamedPageReserveBytes = needsStreamingReserve
+        ? residencyStorage.allocationSize(asset_.maxPagePayloadBytes()) : 0;
+    if (fallbackPages.size() > desc.maxLockedFallbackPages ||
+        (maxResidentPages_ != 0 && fallbackPages.size() + (needsStreamingReserve ? 1u : 0u) > maxResidentPages_) ||
+        lockedFallbackBytes + streamedPageReserveBytes > residencyStorage.capacityBytes() ||
+        terminalInstanceCount > desc.maxActiveGroups) {
+        log = "MeshletStreamRuntime budget cannot hold the complete terminal LOD cut (" +
+            std::to_string(fallbackPages.size()) + " pages, " +
+            std::to_string(lockedFallbackBytes) + " bytes, " +
+            std::to_string(terminalInstanceCount) + " instance groups) plus a streaming page";
+        return makeError(Error::InvalidArgument);
     }
     if (!residency_.lockFallbackPages(fallbackPages, reason)) {
         log = "MeshletStreamRuntime fallback residency initialization failed: " + reason;
@@ -1414,11 +1380,10 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         uint64_t fallbackScratchBytes = 0;
         fallbackBlasPrimitives_.reserve(lockedFallbackPrimitives.size());
         for (uint32_t primitiveIndex : lockedFallbackPrimitives) {
-            const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
             uint64_t primitiveReferences = 0;
-            for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
-                const uint32_t clusterCount =
-                    asset_.pages()[primitive.fallbackPageOffset + localPage].clusterCount;
+            for (uint32_t groupIndex : asset_.primitiveTerminalGroups(primitiveIndex)) {
+                const uint32_t pageIndex = asset_.groups()[groupIndex].pageIndex;
+                const uint32_t clusterCount = asset_.pages()[pageIndex].clusterCount;
                 if (clusterCount > std::numeric_limits<uint64_t>::max() - primitiveReferences) {
                     log = "MeshletStreamRuntime primitive fallback CLAS reference count overflowed";
                     return makeError(Error::InvalidArgument);
@@ -1456,7 +1421,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             const uint64_t storageOffset = alignUp(fallbackStorageBytes, bottomLevelAlignment);
             if (storageOffset > desc.maxFallbackBlasBytes ||
                 iter->second.accelerationStructureSize > desc.maxFallbackBlasBytes - storageOffset) {
-                continue;
+                log = "MeshletStreamRuntime maxFallbackBlasBytes cannot hold all terminal fallback BLASes";
+                return makeError(Error::OutOfMemory);
             }
             if (primitiveReferences > std::numeric_limits<uint64_t>::max() - totalFallbackReferences) {
                 log = "MeshletStreamRuntime total fallback CLAS reference count overflowed";
@@ -1906,6 +1872,14 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (!result) {
         return result;
     }
+    result = allocateAndWriteBuffer(*bindlessHeap_, *lodTopologyBuffer_, lodTopologyHandle_, log, "meshlet stream LOD topology");
+    if (!result) {
+        return result;
+    }
+    result = allocateAndWriteBuffer(*bindlessHeap_, *lodStateBuffer_, lodStateHandle_, log, "meshlet stream LOD frontier");
+    if (!result) {
+        return result;
+    }
     result = allocateAndWriteBuffer(*bindlessHeap_, *nodeBuffer_, nodeHandle_, log, "meshlet stream hierarchy nodes");
     if (!result) {
         return result;
@@ -2080,6 +2054,10 @@ void MeshletStreamRuntime::reset()
     primitiveBuffer_.reset();
     lodLevelBuffer_.reset();
     groupBuffer_.reset();
+    lodTopologyBuffer_.reset();
+    lodStateBuffer_.reset();
+    lodInstanceOffsetsOffset_ = 0;
+    lodStateBufferState_ = ResourceState::Undefined;
     nodeBuffer_.reset();
     drawIndirectBuffer_.reset();
     traversalHeaderBuffer_.reset();
@@ -2120,6 +2098,8 @@ void MeshletStreamRuntime::reset()
     primitiveHandle_ = {};
     lodLevelHandle_ = {};
     groupHandle_ = {};
+    lodTopologyHandle_ = {};
+    lodStateHandle_ = {};
     nodeHandle_ = {};
     drawIndirectHandle_ = {};
     traversalHeaderHandle_ = {};
@@ -2197,6 +2177,8 @@ bool MeshletStreamRuntime::ready() const
         primitiveBuffer_ != nullptr &&
         lodLevelBuffer_ != nullptr &&
         groupBuffer_ != nullptr &&
+        lodTopologyBuffer_ != nullptr &&
+        lodStateBuffer_ != nullptr &&
         nodeBuffer_ != nullptr &&
         drawIndirectBuffer_ != nullptr &&
         traversalHeaderBuffer_ != nullptr &&
@@ -2641,7 +2623,7 @@ uint32_t MeshletStreamRuntime::computeMaxActiveGroups(uint32_t capacity) const
     uint64_t total = 0;
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
     for (const scene::MeshletStreamInstanceInfo& instance : asset_.instances()) {
-        if (instance.visible == 0 || instance.primitiveIndex >= primitives.size()) {
+        if (instance.primitiveIndex >= primitives.size()) {
             continue;
         }
         const scene::MeshletStreamPrimitiveInfo& primitive = primitives[instance.primitiveIndex];
@@ -2756,6 +2738,58 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
         return result;
     }
 
+    const auto refinedGroups = asset_.refinedGroups();
+    std::vector<uint32_t> topology(refinedGroups.begin(), refinedGroups.end());
+    std::vector<std::vector<uint32_t>> parents(asset_.groupCount());
+    for (uint32_t owner = 0; owner < asset_.groupCount(); ++owner) {
+        const auto& group = asset_.groups()[owner];
+        for (uint32_t cluster = 0; cluster < group.clusterCount; ++cluster) {
+            const uint32_t refined = refinedGroups[group.clusterRefinedOffset + cluster];
+            if (refined != UINT32_MAX) {
+                parents[refined].push_back(owner);
+            }
+        }
+    }
+    std::vector<uint32_t> parentOffsets(parents.size());
+    for (size_t index = 0; index < parents.size(); ++index) {
+        auto& list = parents[index];
+        std::sort(list.begin(), list.end());
+        list.erase(std::unique(list.begin(), list.end()), list.end());
+        if (topology.size() + list.size() > UINT32_MAX) {
+            log = "MeshletStreamRuntime LOD topology exceeds 32-bit addressing";
+            return makeError(Error::InvalidArgument);
+        }
+        parentOffsets[index] = static_cast<uint32_t>(topology.size());
+        topology.insert(topology.end(), list.begin(), list.end());
+    }
+    lodInstanceOffsetsOffset_ = static_cast<uint32_t>(topology.size());
+    uint64_t stateWords = instances.size() * 4ull;
+    for (const auto& instance : instances) {
+        topology.push_back(static_cast<uint32_t>(stateWords));
+        if (instance.primitiveIndex < primitives.size()) {
+            stateWords += primitives[instance.primitiveIndex].groupCount * 2ull;
+        }
+        if (stateWords > UINT32_MAX || topology.size() > UINT32_MAX) {
+            log = "MeshletStreamRuntime LOD frontier exceeds 32-bit addressing";
+            return makeError(Error::InvalidArgument);
+        }
+    }
+    result = createAndPopulateHostStorageBuffer<uint32_t>(device, topology.size(),
+        lodTopologyBuffer_, log, "MeshletStreamRuntime LOD topology",
+        [&topology](uint32_t& word, size_t index) { word = topology[index]; });
+    if (!result) {
+        return result;
+    }
+    result = createNamedBuffer(device, BufferDesc{
+        .size = std::max<uint64_t>(stateWords, 1u) * sizeof(uint32_t),
+        .structureStride = sizeof(uint32_t),
+        .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+        .memoryLocation = MemoryLocation::Device,
+    }, lodStateBuffer_, log, "MeshletStreamRuntime LOD frontier");
+    if (!result) {
+        return result;
+    }
+
     const std::span<const scene::MeshletStreamGroupInfo> groups = asset_.groups();
     result = createAndPopulateHostStorageBuffer<MeshletStreamGpuGroup>(
         device,
@@ -2763,7 +2797,7 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
         groupBuffer_,
         log,
         "MeshletStreamRuntime groups",
-        [groups](MeshletStreamGpuGroup& gpuGroup, size_t index) {
+        [groups, &parents, &parentOffsets](MeshletStreamGpuGroup& gpuGroup, size_t index) {
             const scene::MeshletStreamGroupInfo& group = groups[index];
             gpuGroup = MeshletStreamGpuGroup{
                 .primitiveIndex = group.primitiveIndex,
@@ -2771,6 +2805,10 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
                 .lodLevel = group.lodLevel,
                 .clusterCount = group.clusterCount,
                 .maxQuadricError = group.maxQuadricError,
+                .clusterRefinedOffset = group.clusterRefinedOffset,
+                .flags = group.flags,
+                .parentOffset = parentOffsets[index],
+                .parentCount = static_cast<uint32_t>(parents[index].size()),
             };
             std::copy(
                 std::begin(group.boundsCenterRadius),
@@ -2900,15 +2938,15 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
     params.upProjection[0] = finiteOr(frame.camera.up.x, 0.0f);
     params.upProjection[1] = finiteOr(frame.camera.up.y, 1.0f);
     params.upProjection[2] = finiteOr(frame.camera.up.z, 0.0f);
-    params.upProjection[3] = 0.0f;
+    params.upProjection[3] = frame.camera.orthographic ? 1.0f : 0.0f;
     params.viewport[0] = aspect;
     params.viewport[1] = static_cast<float>(width);
     params.viewport[2] = static_cast<float>(height);
     params.viewport[3] = finiteOr(frame.camera.fovDegrees, 60.0f) * 0.017453292519943295f;
     params.clipOrtho[0] = finiteOr(frame.camera.znear, 0.1f);
     params.clipOrtho[1] = finiteOr(frame.camera.zfar, 1000.0f);
-    params.clipOrtho[2] = std::max(drawBounds_.radius(), 1.0f) * 2.0f;
-    params.clipOrtho[3] = kDefaultReversedZ ? 1.0f : 0.0f;
+    params.clipOrtho[2] = std::max(finiteOr(frame.camera.orthoHeight, 10.0f), 0.0001f);
+    params.clipOrtho[3] = frame.camera.reversedZ ? 1.0f : 0.0f;
     params.clearColor[0] = 0.015f;
     params.clearColor[1] = 0.018f;
     params.clearColor[2] = 0.024f;
@@ -2929,6 +2967,11 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
         ? kMeshletStreamNoDebugLodOverride
         : frame.selectedLodLevel;
     params.enableGpuLodSelection = frame.enableGpuLodSelection ? 1u : 0u;
+    params.lodPixelError = std::clamp(finiteOr(frame.lodPixelError, 1.5f), 0.05f, 16.0f) *
+        std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f));
+    params.lodTopologyBuffer = lodTopologyHandle_.index;
+    params.lodStateBuffer = lodStateHandle_.index;
+    params.lodInstanceOffsetsOffset = lodInstanceOffsetsOffset_;
     params.enableGpuUnloadRequests = 1u;
     params.sceneGroupCount = asset_.groupCount();
     params.maxPrimitiveGroupCount = maxPrimitiveGroupCount_;
@@ -2939,6 +2982,25 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
     params.blasClusterReferenceAddressHigh = static_cast<uint32_t>(blasClusterReferenceAddress_ >> 32u);
     params.blasClusterReferenceCapacity = blasClusterReferenceCapacity_;
     params.blasBuildCapacity = blasBuildCapacity_;
+    const auto& renderCamera = frame.useSeparateRenderCamera ? frame.renderCamera : frame.camera;
+    params.renderEye[0] = finiteOr(renderCamera.eye.x, 0.0f);
+    params.renderEye[1] = finiteOr(renderCamera.eye.y, 0.0f);
+    params.renderEye[2] = finiteOr(renderCamera.eye.z, 0.0f);
+    params.renderEye[3] = finiteOr(frame.jitterX, 0.0f);
+    params.renderCenter[0] = finiteOr(renderCamera.center.x, 0.0f);
+    params.renderCenter[1] = finiteOr(renderCamera.center.y, 0.0f);
+    params.renderCenter[2] = finiteOr(renderCamera.center.z, 0.0f);
+    params.renderCenter[3] = finiteOr(frame.jitterY, 0.0f);
+    params.renderUpProjection[0] = finiteOr(renderCamera.up.x, 0.0f);
+    params.renderUpProjection[1] = finiteOr(renderCamera.up.y, 1.0f);
+    params.renderUpProjection[2] = finiteOr(renderCamera.up.z, 0.0f);
+    params.renderUpProjection[3] = renderCamera.orthographic ? 1.0f : 0.0f;
+    std::copy_n(params.viewport, 4, params.renderViewport);
+    params.renderViewport[3] = finiteOr(renderCamera.fovDegrees, 60.0f) * 0.017453292519943295f;
+    params.renderClipOrtho[0] = finiteOr(renderCamera.znear, 0.1f);
+    params.renderClipOrtho[1] = finiteOr(renderCamera.zfar, 1000.0f);
+    params.renderClipOrtho[2] = std::max(finiteOr(renderCamera.orthoHeight, 10.0f), 0.0001f);
+    params.renderClipOrtho[3] = renderCamera.reversedZ ? 1.0f : 0.0f;
     const MeshletStreamGpuParams& previous = previousFrameParamsValid_
         ? previousFrameParams_
         : params;
@@ -2984,98 +3046,29 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer)
     }
 
     MeshletStreamUserPush push = userPush();
-    push.activeBuildPhase = kMeshletStreamActiveBuildResetPhase;
-    Result result = activeBuildPass_->dispatch(
-        commandBuffer,
-        *bindlessHeap_,
-        push,
-        1,
-        *activeGroupBuffer_,
-        activeGroupBufferState_,
-        *activeHeaderBuffer_,
-        activeHeaderBufferState_,
-        *pageTableBuffer_,
-        pageTableState_,
-        *requestBuffer_,
-        requestBufferState_,
-        *drawIndirectBuffer_,
-        drawIndirectBufferState_,
-        *traversalHeaderBuffer_,
-        traversalHeaderBufferState_,
-        *traversalWorkBuffer_,
-        traversalWorkBufferState_);
-    if (!result) {
-        return result;
+    transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true);
+    // Prefix chooses a complete terminal cut on overflow before any records
+    // are emitted. Each stage sees the complete result of its predecessor.
+    for (uint32_t phase : {kMeshletStreamActiveBuildResetPhase,
+             kMeshletStreamActiveBuildFrontierPhase, kMeshletStreamActiveBuildPrefixPhase,
+             kMeshletStreamActiveBuildEmitPhase, kMeshletStreamActiveBuildFinalizePhase}) {
+        push.activeBuildPhase = phase;
+        const bool perInstance = phase == kMeshletStreamActiveBuildFrontierPhase ||
+            phase == kMeshletStreamActiveBuildEmitPhase;
+        Result result = activeBuildPass_->dispatch(
+            commandBuffer, *bindlessHeap_, push, perInstance ? asset_.instanceCount() : 1u,
+            *activeGroupBuffer_, activeGroupBufferState_,
+            *activeHeaderBuffer_, activeHeaderBufferState_,
+            *pageTableBuffer_, pageTableState_, *requestBuffer_, requestBufferState_,
+            *drawIndirectBuffer_, drawIndirectBufferState_,
+            *traversalHeaderBuffer_, traversalHeaderBufferState_,
+            *traversalWorkBuffer_, traversalWorkBufferState_);
+        if (!result) {
+            return result;
+        }
+        transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true);
     }
-
-    push.activeBuildPhase = kMeshletStreamActiveBuildSeedPhase;
-    result = activeBuildPass_->dispatch(
-        commandBuffer,
-        *bindlessHeap_,
-        push,
-        traversalWorkerCount_,
-        *activeGroupBuffer_,
-        activeGroupBufferState_,
-        *activeHeaderBuffer_,
-        activeHeaderBufferState_,
-        *pageTableBuffer_,
-        pageTableState_,
-        *requestBuffer_,
-        requestBufferState_,
-        *drawIndirectBuffer_,
-        drawIndirectBufferState_,
-        *traversalHeaderBuffer_,
-        traversalHeaderBufferState_,
-        *traversalWorkBuffer_,
-        traversalWorkBufferState_);
-    if (!result) {
-        return result;
-    }
-
-    push.activeBuildPhase = kMeshletStreamActiveBuildRunPhase;
-    result = activeBuildPass_->dispatch(
-        commandBuffer,
-        *bindlessHeap_,
-        push,
-        traversalWorkerCount_,
-        *activeGroupBuffer_,
-        activeGroupBufferState_,
-        *activeHeaderBuffer_,
-        activeHeaderBufferState_,
-        *pageTableBuffer_,
-        pageTableState_,
-        *requestBuffer_,
-        requestBufferState_,
-        *drawIndirectBuffer_,
-        drawIndirectBufferState_,
-        *traversalHeaderBuffer_,
-        traversalHeaderBufferState_,
-        *traversalWorkBuffer_,
-        traversalWorkBufferState_);
-    if (!result) {
-        return result;
-    }
-
-    push.activeBuildPhase = kMeshletStreamActiveBuildFinalizePhase;
-    return activeBuildPass_->dispatch(
-        commandBuffer,
-        *bindlessHeap_,
-        push,
-        1,
-        *activeGroupBuffer_,
-        activeGroupBufferState_,
-        *activeHeaderBuffer_,
-        activeHeaderBufferState_,
-        *pageTableBuffer_,
-        pageTableState_,
-        *requestBuffer_,
-        requestBufferState_,
-        *drawIndirectBuffer_,
-        drawIndirectBufferState_,
-        *traversalHeaderBuffer_,
-        traversalHeaderBufferState_,
-        *traversalWorkBuffer_,
-        traversalWorkBufferState_);
+    return {};
 }
 
 Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
@@ -3193,10 +3186,9 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
             continue;
         }
         const uint32_t primitiveIndex = fallback.primitiveIndex;
-        const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
         bool ready = true;
-        for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
-            if (!clasPool_->pageHasClas(primitive.fallbackPageOffset + localPage)) {
+        for (uint32_t groupIndex : asset_.primitiveTerminalGroups(primitiveIndex)) {
+            if (!clasPool_->pageHasClas(asset_.groups()[groupIndex].pageIndex)) {
                 ready = false;
                 break;
             }
@@ -3226,11 +3218,10 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
     for (uint32_t fallbackIndex : readyFallbackIndices) {
         const FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
         const uint32_t primitiveIndex = fallback.primitiveIndex;
-        const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
         const uint64_t referenceOffset = fallback.referenceOffset;
         uint64_t writeOffset = referenceOffset;
-        for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
-            const uint32_t pageIndex = primitive.fallbackPageOffset + localPage;
+        for (uint32_t groupIndex : asset_.primitiveTerminalGroups(primitiveIndex)) {
+            const uint32_t pageIndex = asset_.groups()[groupIndex].pageIndex;
             const uint32_t clusterCount = asset_.pages()[pageIndex].clusterCount;
             for (uint32_t clusterIndex = 0; clusterIndex < clusterCount; ++clusterIndex) {
                 referenceData[writeOffset++] = clasPool_->clusterAddress(pageIndex, clusterIndex);
@@ -3406,6 +3397,7 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     add("pageTable", pageTableBuffer_.get(), pageTableState_, "StreamPageTableEntry");
     add("activeHeader", activeHeaderBuffer_.get(), activeHeaderBufferState_, "MeshletStreamGpuActiveHeader");
     add("activeGroups", activeGroupBuffer_.get(), activeGroupBufferState_, "MeshletStreamGpuActiveGroup");
+    add("lodState", lodStateBuffer_.get(), lodStateBufferState_, "u32");
     add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "VisibleClusterRecord");
 }
 

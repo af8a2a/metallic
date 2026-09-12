@@ -15,6 +15,14 @@ namespace metallic::render {
 
 inline constexpr uint32_t kScenePathTraceMaxMaterialTextures = 256;
 
+struct SceneUploadStats {
+    uint64_t submittedBatches = 0;
+    uint64_t completedBatches = 0;
+    uint64_t submittedBytes = 0;
+    uint32_t inFlightBatches = 0;
+    uint32_t peakInFlightBatches = 0;
+};
+
 class ScenePathTraceResources final {
 public:
     ScenePathTraceResources();
@@ -48,6 +56,7 @@ public:
     Result uploadMaterialTextures(CommandBuffer& commandBuffer);
     bool textureUploadsReady() const;
     bool gpuWorkComplete();
+    SceneUploadStats uploadStats() const;
 
     void clear();
     bool valid() const;

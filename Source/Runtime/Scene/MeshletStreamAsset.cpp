@@ -32,8 +32,9 @@ namespace {
 constexpr std::array<char, 8> kMeshletStreamMagic{'M', 'T', 'L', 'M', 'S', 'T', 'R', 'M'};
 constexpr std::array<char, 8> kMeshletStreamPartialMagic{'M', 'T', 'L', 'M', 'S', 'P', 'R', 'T'};
 constexpr std::array<char, 8> kMeshoptDecodeCacheMagic{'M', 'T', 'L', 'M', 'O', 'P', 'T', 'C'};
-constexpr uint32_t kMeshletStreamVersion = 8;
-constexpr uint32_t kMeshletStreamPartialVersion = 7;
+constexpr uint32_t kMeshletStreamVersion = 9;
+constexpr uint32_t kMeshletStreamLegacyVersion = 8;
+constexpr uint32_t kMeshletStreamPartialVersion = 8;
 constexpr uint32_t kMeshoptDecodeCacheVersion = 1;
 constexpr uint32_t kMeshletStreamEndian = 0x01020304;
 constexpr uint32_t kPayloadMagic = 0x4d535047u; // "GSPM"
@@ -66,7 +67,7 @@ struct MeshletStreamFileHeader {
     uint32_t reserved0 = 0;
     uint32_t lodLevelCount = 0;
     uint32_t groupCount = 0;
-    uint32_t reservedClusterRefCount = 0;
+    uint32_t reservedClusterRefCount = 0; // V9: number of resident cluster refinement indices.
     uint32_t nodeCount = 0;
     uint32_t pageCount = 0;
     uint32_t maxPagePayloadBytes = 0;
@@ -81,7 +82,7 @@ struct MeshletStreamFileHeader {
     uint64_t geometryOffset = 0;
     uint64_t lodLevelOffset = 0;
     uint64_t groupInfoOffset = 0;
-    uint64_t reservedClusterRefOffset = 0;
+    uint64_t reservedClusterRefOffset = 0; // V9: resident uint32_t refinement table.
     uint64_t nodeInfoOffset = 0;
     uint64_t pageInfoOffset = 0;
     uint64_t pageOffsetTableOffset = 0;
@@ -140,6 +141,9 @@ struct MeshoptDecodeCacheHeader {
 };
 
 static_assert(std::is_trivially_copyable_v<MeshletStreamFileHeader>);
+static_assert(sizeof(MeshletStreamFileHeader) == 216);
+static_assert(offsetof(MeshletStreamFileHeader, groupInfoOffset) == 152);
+static_assert(offsetof(MeshletStreamFileHeader, reservedClusterRefOffset) == 160);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPartialFileHeader>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPartialGeometryEntry>);
 static_assert(std::is_trivially_copyable_v<MeshoptDecodeCacheHeader>);
@@ -165,7 +169,12 @@ static_assert(offsetof(MeshletStreamPayloadCluster, refinedGroupIndex) == 32);
 static_assert(offsetof(MeshletStreamPayloadCluster, boundingSphere) == 48);
 static_assert(offsetof(MeshletStreamPayloadCluster, coneApexCutoff) == 64);
 static_assert(offsetof(MeshletStreamPayloadCluster, coneAxisLodError) == 80);
-static_assert(sizeof(MeshletStreamGroupInfo) == 36);
+static_assert(offsetof(MeshletStreamGroupInfo, clusterRefinedOffset) == 36);
+static_assert(sizeof(MeshletStreamGroupInfo) == 44);
+struct MeshletStreamLegacyGroupInfo {
+    uint32_t words[9];
+};
+static_assert(sizeof(MeshletStreamLegacyGroupInfo) == 36);
 static_assert(sizeof(MeshletStreamNodeInfo) == 48);
 
 bool meshletStreamBuildParamsMatch(const MeshletStreamFileHeader& header)
@@ -1000,6 +1009,83 @@ void copyMatrix(const float4x4& matrix, float outValues[16])
     }
 }
 
+bool validateStreamTopology(
+    std::span<const MeshletStreamPrimitiveInfo> primitives,
+    std::span<const MeshletStreamGroupInfo> groups,
+    std::span<const uint32_t> refinedGroups,
+    std::vector<uint32_t>& terminalGroups,
+    std::vector<uint32_t>& terminalOffsets,
+    bool validateFlags,
+    std::string& reason)
+{
+    std::vector<uint8_t> refined(groups.size(), 0);
+    uint64_t expectedClusterOffset = 0;
+    for (uint32_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        const MeshletStreamGroupInfo& group = groups[groupIndex];
+        if (group.clusterCount == 0 || group.clusterCount > kMeshletLodGroupSize ||
+            group.clusterRefinedOffset != expectedClusterOffset ||
+            group.clusterRefinedOffset > refinedGroups.size() ||
+            group.clusterCount > refinedGroups.size() - group.clusterRefinedOffset) {
+            reason = "streamasset group cluster refinement range is invalid";
+            return false;
+        }
+        expectedClusterOffset += group.clusterCount;
+        for (uint32_t cluster = 0; cluster < group.clusterCount; ++cluster) {
+            const uint32_t child = refinedGroups[group.clusterRefinedOffset + cluster];
+            if (child == kMeshletStreamInvalidGroupIndex) {
+                continue;
+            }
+            if (child >= groupIndex || groups[child].primitiveIndex != group.primitiveIndex ||
+                groups[child].lodLevel >= group.lodLevel ||
+                groups[child].maxQuadricError > group.maxQuadricError) {
+                reason = "streamasset refinement must reference an earlier lower LOD in the same primitive";
+                return false;
+            }
+            refined[child] = 1;
+        }
+    }
+    if (expectedClusterOffset != refinedGroups.size()) {
+        reason = "streamasset cluster refinement table size does not match group clusters";
+        return false;
+    }
+    terminalGroups.clear();
+    terminalOffsets.clear();
+    terminalOffsets.push_back(0);
+    uint64_t expectedGroupOffset = 0;
+    for (uint32_t primitiveIndex = 0; primitiveIndex < primitives.size(); ++primitiveIndex) {
+        const MeshletStreamPrimitiveInfo& primitive = primitives[primitiveIndex];
+        if (primitive.groupOffset != expectedGroupOffset || primitive.groupCount == 0 ||
+            primitive.groupOffset > groups.size() ||
+            primitive.groupCount > groups.size() - primitive.groupOffset) {
+            reason = "streamasset primitive topology range is invalid";
+            return false;
+        }
+        expectedGroupOffset += primitive.groupCount;
+        for (uint32_t local = 0; local < primitive.groupCount; ++local) {
+            const uint32_t groupIndex = primitive.groupOffset + local;
+            const MeshletStreamGroupInfo& group = groups[groupIndex];
+            const uint32_t expectedFlags = refined[groupIndex] == 0 ? kMeshletStreamGroupTerminal : 0;
+            if (group.primitiveIndex != primitiveIndex || (validateFlags && group.flags != expectedFlags)) {
+                reason = "streamasset group terminal flags or primitive ownership are invalid";
+                return false;
+            }
+            if (expectedFlags != 0) {
+                terminalGroups.push_back(groupIndex);
+            }
+        }
+        if (terminalGroups.size() == terminalOffsets.back()) {
+            reason = "streamasset primitive has no terminal group";
+            return false;
+        }
+        terminalOffsets.push_back(static_cast<uint32_t>(terminalGroups.size()));
+    }
+    if (expectedGroupOffset != groups.size()) {
+        reason = "streamasset primitive topology ranges do not cover all groups";
+        return false;
+    }
+    return true;
+}
+
 struct MeshletStreamBuildState {
     MeshletStreamFileHeader header;
     std::vector<MeshletStreamPrimitiveInfo> primitives;
@@ -1007,6 +1093,7 @@ struct MeshletStreamBuildState {
     std::vector<MeshletStreamGeometryInfo> geometries;
     std::vector<MeshletStreamLodLevelInfo> lodLevels;
     std::vector<MeshletStreamGroupInfo> groups;
+    std::vector<uint32_t> refinedGroups;
     std::vector<MeshletStreamNodeInfo> nodes;
     std::vector<MeshletStreamPageInfo> pages;
     std::vector<uint64_t> pageOffsets;
@@ -1457,6 +1544,8 @@ bool appendStreamPrimitivePages(
                 groupInfo.boundsCenterRadius[2] = group.boundingSphereCenter.z;
                 groupInfo.boundsCenterRadius[3] = group.boundingSphereRadius;
                 groupInfo.maxQuadricError = group.maxQuadricError;
+                groupInfo.clusterRefinedOffset = static_cast<uint32_t>(state.refinedGroups.size());
+                groupInfo.flags = kMeshletStreamGroupTerminal;
                 for (uint32_t clusterChild = 0; clusterChild < group.clusterCount; ++clusterChild) {
                     const MeshletCluster& cluster =
                         primitive.meshletLodClusters[group.clusterOffset + clusterChild];
@@ -1470,6 +1559,19 @@ bool appendStreamPrimitivePages(
                         reason = "primitive meshlet LOD cluster has invalid DAG metadata";
                         return false;
                     }
+                    const uint32_t refined = cluster.refinedGroupIndex == kInvalidSceneIndex
+                        ? kMeshletStreamInvalidGroupIndex
+                        : primitiveInfo.groupOffset + static_cast<uint32_t>(cluster.refinedGroupIndex);
+                    if (refined != kMeshletStreamInvalidGroupIndex) {
+                        if (refined >= state.groups.size() ||
+                            state.groups[refined].lodLevel >= lodLevelIndex ||
+                            state.groups[refined].maxQuadricError > groupInfo.maxQuadricError) {
+                            reason = "primitive meshlet LOD refinement is not a monotonic lower LOD";
+                            return false;
+                        }
+                        state.groups[refined].flags &= ~kMeshletStreamGroupTerminal;
+                    }
+                    state.refinedGroups.push_back(refined);
                 }
                 state.groups.push_back(groupInfo);
             }
@@ -1546,6 +1648,9 @@ bool appendStreamPrimitivePages(
             groupInfo.boundsCenterRadius[2] = center.z;
             groupInfo.boundsCenterRadius[3] = primitive.localBounds.radius();
             groupInfo.maxQuadricError = kMeshletStreamTerminalGroupError;
+            groupInfo.clusterRefinedOffset = static_cast<uint32_t>(state.refinedGroups.size());
+            groupInfo.flags = kMeshletStreamGroupTerminal;
+            state.refinedGroups.insert(state.refinedGroups.end(), clusterCount, kMeshletStreamInvalidGroupIndex);
             state.groups.push_back(groupInfo);
             firstCluster += clusterCount;
         }
@@ -1601,6 +1706,13 @@ bool finalizeStreamAssetBuild(std::ostream& stream, MeshletStreamBuildState& sta
         return false;
     }
 
+    std::vector<uint32_t> terminalGroups;
+    std::vector<uint32_t> terminalOffsets;
+    if (!validateStreamTopology(state.primitives, state.groups, state.refinedGroups,
+            terminalGroups, terminalOffsets, true, reason)) {
+        return false;
+    }
+
     if (state.instances.empty()) {
         for (uint32_t primitiveIndex = 0; primitiveIndex < state.primitives.size(); ++primitiveIndex) {
             MeshletStreamInstanceInfo instance;
@@ -1639,6 +1751,12 @@ bool finalizeStreamAssetBuild(std::ostream& stream, MeshletStreamBuildState& sta
     state.header.groupInfoOffset = static_cast<uint64_t>(stream.tellp());
     if (!writeArray(stream, state.groups) || !alignStream(stream, kFileAlignment)) {
         reason = "streamasset group directory write failed";
+        return false;
+    }
+    state.header.reservedClusterRefOffset = static_cast<uint64_t>(stream.tellp());
+    state.header.reservedClusterRefCount = static_cast<uint32_t>(state.refinedGroups.size());
+    if (!writeArray(stream, state.refinedGroups) || !alignStream(stream, kFileAlignment)) {
+        reason = "streamasset cluster refinement directory write failed";
         return false;
     }
     state.header.nodeInfoOffset = static_cast<uint64_t>(stream.tellp());
@@ -3382,6 +3500,7 @@ MeshletStreamPartialFileHeader makePartialBuildHeader(
     header.geometryCount = static_cast<uint32_t>(state.geometries.size());
     header.lodLevelCount = static_cast<uint32_t>(state.lodLevels.size());
     header.groupCount = static_cast<uint32_t>(state.groups.size());
+    header.reservedClusterRefCount = static_cast<uint32_t>(state.refinedGroups.size());
     header.nodeCount = static_cast<uint32_t>(state.nodes.size());
     header.pageCount = static_cast<uint32_t>(state.pages.size());
     header.pageOffsetCount = static_cast<uint32_t>(state.pageOffsets.size());
@@ -3530,6 +3649,14 @@ bool partialBuildStateRangesValid(
     const MeshletStreamBuildState& state,
     uint64_t payloadWriteOffset)
 {
+    std::vector<uint32_t> terminalGroups;
+    std::vector<uint32_t> terminalOffsets;
+    std::string topologyReason;
+    if (!validateStreamTopology(state.primitives, state.groups, state.refinedGroups,
+            terminalGroups, terminalOffsets, true, topologyReason)) {
+        return false;
+    }
+
     if (state.primitives.size() != state.geometries.size() ||
         state.pages.size() != state.groups.size() ||
         state.pages.size() != state.pageOffsets.size() ||
@@ -3558,7 +3685,6 @@ bool partialBuildStateRangesValid(
         }
     }
 
-    std::vector<uint8_t> primitiveHasTerminalGroup(state.primitives.size(), 0);
     for (uint32_t groupIndex = 0; groupIndex < state.groups.size(); ++groupIndex) {
         const MeshletStreamGroupInfo& group = state.groups[groupIndex];
         if (group.primitiveIndex >= state.primitives.size() ||
@@ -3580,13 +3706,6 @@ bool partialBuildStateRangesValid(
             page.clusterCount != group.clusterCount) {
             return false;
         }
-        if (group.maxQuadricError == kMeshletStreamTerminalGroupError) {
-            primitiveHasTerminalGroup[group.primitiveIndex] = 1;
-        }
-    }
-    if (std::find(primitiveHasTerminalGroup.begin(), primitiveHasTerminalGroup.end(), 0) !=
-        primitiveHasTerminalGroup.end()) {
-        return false;
     }
     if (!streamHierarchyValid(state.primitives, state.groups, state.nodes)) {
         return false;
@@ -3671,6 +3790,7 @@ bool savePartialBuildState(
         !writeArray(file, state.geometries) ||
         !writeArray(file, state.lodLevels) ||
         !writeArray(file, state.groups) ||
+        !writeArray(file, state.refinedGroups) ||
         !writeArray(file, state.nodes) ||
         !writeArray(file, state.pages) ||
         !writeArray(file, state.pageOffsets) ||
@@ -3787,6 +3907,7 @@ bool loadPartialBuildState(
         !addArrayByteSize(partialHeader.geometryCount, sizeof(MeshletStreamGeometryInfo), requiredPartialFileSize) ||
         !addArrayByteSize(partialHeader.lodLevelCount, sizeof(MeshletStreamLodLevelInfo), requiredPartialFileSize) ||
         !addArrayByteSize(partialHeader.groupCount, sizeof(MeshletStreamGroupInfo), requiredPartialFileSize) ||
+        !addArrayByteSize(partialHeader.reservedClusterRefCount, sizeof(uint32_t), requiredPartialFileSize) ||
         !addArrayByteSize(partialHeader.nodeCount, sizeof(MeshletStreamNodeInfo), requiredPartialFileSize) ||
         !addArrayByteSize(partialHeader.pageCount, sizeof(MeshletStreamPageInfo), requiredPartialFileSize) ||
         !addArrayByteSize(partialHeader.pageOffsetCount, sizeof(uint64_t), requiredPartialFileSize) ||
@@ -3806,6 +3927,7 @@ bool loadPartialBuildState(
         !readArray(file, partialHeader.geometryCount, loaded.geometries) ||
         !readArray(file, partialHeader.lodLevelCount, loaded.lodLevels) ||
         !readArray(file, partialHeader.groupCount, loaded.groups) ||
+        !readArray(file, partialHeader.reservedClusterRefCount, loaded.refinedGroups) ||
         !readArray(file, partialHeader.nodeCount, loaded.nodes) ||
         !readArray(file, partialHeader.pageCount, loaded.pages) ||
         !readArray(file, partialHeader.pageOffsetCount, loaded.pageOffsets) ||
@@ -4020,7 +4142,12 @@ struct MeshletStreamAsset::Impl {
     std::span<const MeshletStreamInstanceInfo> instances;
     std::span<const MeshletStreamGeometryInfo> geometries;
     std::span<const MeshletStreamLodLevelInfo> lodLevels;
+    std::vector<MeshletStreamGroupInfo> ownedGroups;
+    std::vector<uint32_t> legacyRefinedGroups;
+    std::vector<uint32_t> terminalGroups;
+    std::vector<uint32_t> terminalOffsets;
     std::span<const MeshletStreamGroupInfo> groups;
+    std::span<const uint32_t> refinedGroups;
     std::span<const MeshletStreamNodeInfo> nodes;
     std::span<const MeshletStreamPageInfo> pages;
     std::span<const uint64_t> pageOffsets;
@@ -4115,7 +4242,7 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
 
     std::memcpy(&impl->header, impl->data, sizeof(impl->header));
     if (std::memcmp(impl->header.magic, kMeshletStreamMagic.data(), kMeshletStreamMagic.size()) != 0 ||
-        impl->header.version != kMeshletStreamVersion ||
+        (impl->header.version != kMeshletStreamVersion && impl->header.version != kMeshletStreamLegacyVersion) ||
         impl->header.endian != kMeshletStreamEndian) {
         reason = "streamasset header magic or version is unsupported";
         return false;
@@ -4134,7 +4261,10 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
         !rangeWithin<MeshletStreamInstanceInfo>(impl->dataSize, impl->header.instanceOffset, impl->header.instanceCount) ||
         !rangeWithin<MeshletStreamGeometryInfo>(impl->dataSize, impl->header.geometryOffset, impl->header.geometryCount) ||
         !rangeWithin<MeshletStreamLodLevelInfo>(impl->dataSize, impl->header.lodLevelOffset, impl->header.lodLevelCount) ||
-        !rangeWithin<MeshletStreamGroupInfo>(impl->dataSize, impl->header.groupInfoOffset, impl->header.groupCount) ||
+        (impl->header.version == kMeshletStreamLegacyVersion
+            ? !rangeWithin<MeshletStreamLegacyGroupInfo>(impl->dataSize, impl->header.groupInfoOffset, impl->header.groupCount)
+            : (!rangeWithin<MeshletStreamGroupInfo>(impl->dataSize, impl->header.groupInfoOffset, impl->header.groupCount) ||
+                !rangeWithin<uint32_t>(impl->dataSize, impl->header.reservedClusterRefOffset, impl->header.reservedClusterRefCount))) ||
         !rangeWithin<MeshletStreamNodeInfo>(impl->dataSize, impl->header.nodeInfoOffset, impl->header.nodeCount) ||
         !rangeWithin<MeshletStreamPageInfo>(impl->dataSize, impl->header.pageInfoOffset, impl->header.pageCount) ||
         !rangeWithin<uint64_t>(impl->dataSize, impl->header.pageOffsetTableOffset, impl->header.pageCount) ||
@@ -4150,7 +4280,21 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
     impl->instances = makeSpan<MeshletStreamInstanceInfo>(impl->data, impl->header.instanceOffset, impl->header.instanceCount);
     impl->geometries = makeSpan<MeshletStreamGeometryInfo>(impl->data, impl->header.geometryOffset, impl->header.geometryCount);
     impl->lodLevels = makeSpan<MeshletStreamLodLevelInfo>(impl->data, impl->header.lodLevelOffset, impl->header.lodLevelCount);
-    impl->groups = makeSpan<MeshletStreamGroupInfo>(impl->data, impl->header.groupInfoOffset, impl->header.groupCount);
+    impl->ownedGroups.resize(impl->header.groupCount);
+    if (impl->header.version == kMeshletStreamLegacyVersion) {
+        const auto legacyGroups = makeSpan<MeshletStreamLegacyGroupInfo>(
+            impl->data, impl->header.groupInfoOffset, impl->header.groupCount);
+        for (size_t group = 0; group < legacyGroups.size(); ++group) {
+            std::memcpy(&impl->ownedGroups[group], &legacyGroups[group], sizeof(MeshletStreamLegacyGroupInfo));
+        }
+    } else {
+        const auto storedGroups = makeSpan<MeshletStreamGroupInfo>(
+            impl->data, impl->header.groupInfoOffset, impl->header.groupCount);
+        std::copy(storedGroups.begin(), storedGroups.end(), impl->ownedGroups.begin());
+        impl->refinedGroups = makeSpan<uint32_t>(
+            impl->data, impl->header.reservedClusterRefOffset, impl->header.reservedClusterRefCount);
+    }
+    impl->groups = impl->ownedGroups;
     impl->nodes = makeSpan<MeshletStreamNodeInfo>(impl->data, impl->header.nodeInfoOffset, impl->header.nodeCount);
     impl->pages = makeSpan<MeshletStreamPageInfo>(impl->data, impl->header.pageInfoOffset, impl->header.pageCount);
     impl->pageOffsets = makeSpan<uint64_t>(impl->data, impl->header.pageOffsetTableOffset, impl->header.pageCount);
@@ -4260,7 +4404,6 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
         }
     }
 
-    std::vector<uint8_t> primitiveHasTerminalGroup(impl->primitives.size(), 0);
     for (uint32_t groupIndex = 0; groupIndex < impl->groups.size(); ++groupIndex) {
         const MeshletStreamGroupInfo& group = impl->groups[groupIndex];
         if (group.primitiveIndex >= impl->primitives.size() ||
@@ -4284,14 +4427,6 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
             reason = "streamasset group directory does not match primitive/page directories";
             return false;
         }
-        if (group.maxQuadricError == kMeshletStreamTerminalGroupError) {
-            primitiveHasTerminalGroup[group.primitiveIndex] = 1;
-        }
-    }
-    if (std::find(primitiveHasTerminalGroup.begin(), primitiveHasTerminalGroup.end(), 0) !=
-        primitiveHasTerminalGroup.end()) {
-        reason = "streamasset primitive has no terminal fallback group";
-        return false;
     }
     if (!streamHierarchyValid(impl->primitives, impl->groups, impl->nodes)) {
         reason = "streamasset hierarchy node directory is invalid";
@@ -4333,6 +4468,44 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
         if (geometry.payloadFileOffset != expectedOffset || geometry.payloadFileSize != expectedSize) {
             reason = "streamasset geometry payload span does not match page directory";
             return false;
+        }
+    }
+
+    if (impl->header.version == kMeshletStreamLegacyVersion) {
+        // Legacy assets store DAG edges only in payloads. Recover them once at open;
+        // current assets keep payload decoding deferred until the page is requested.
+        std::vector<uint8_t> scratch;
+        for (MeshletStreamGroupInfo& group : impl->ownedGroups) {
+            const MeshletStreamPageInfo& page = impl->pages[group.pageIndex];
+            std::span<const uint8_t> decoded;
+            if (!decodeMeshletStreamPayloadForDevice(page,
+                    {impl->data + page.payloadOffset, static_cast<size_t>(page.payloadSize)},
+                    scratch, decoded, reason)) {
+                reason = "legacy streamasset topology recovery failed: " + reason;
+                return false;
+            }
+            MeshletStreamPayloadHeader header;
+            std::memcpy(&header, decoded.data(), sizeof(header));
+            group.clusterRefinedOffset = static_cast<uint32_t>(impl->legacyRefinedGroups.size());
+            for (uint32_t cluster = 0; cluster < header.clusterCount; ++cluster) {
+                MeshletStreamPayloadCluster payloadCluster;
+                std::memcpy(&payloadCluster,
+                    decoded.data() + header.clusterOffsetBytes + cluster * sizeof(payloadCluster),
+                    sizeof(payloadCluster));
+                impl->legacyRefinedGroups.push_back(payloadCluster.refinedGroupIndex);
+            }
+        }
+        impl->refinedGroups = impl->legacyRefinedGroups;
+    }
+    if (!validateStreamTopology(impl->primitives, impl->ownedGroups, impl->refinedGroups,
+            impl->terminalGroups, impl->terminalOffsets,
+            impl->header.version == kMeshletStreamVersion, reason)) {
+        return false;
+    }
+
+    if (impl->header.version == kMeshletStreamLegacyVersion) {
+        for (uint32_t groupIndex : impl->terminalGroups) {
+            impl->ownedGroups[groupIndex].flags = kMeshletStreamGroupTerminal;
         }
     }
 
@@ -4468,6 +4641,26 @@ std::span<const MeshletStreamLodLevelInfo> MeshletStreamAsset::lodLevels() const
 std::span<const MeshletStreamGroupInfo> MeshletStreamAsset::groups() const
 {
     return valid() ? impl_->groups : std::span<const MeshletStreamGroupInfo>{};
+}
+
+std::span<const uint32_t> MeshletStreamAsset::refinedGroups() const
+{
+    return valid() ? impl_->refinedGroups : std::span<const uint32_t>{};
+}
+
+std::span<const uint32_t> MeshletStreamAsset::terminalGroups() const
+{
+    return valid() ? std::span<const uint32_t>(impl_->terminalGroups) : std::span<const uint32_t>{};
+}
+
+std::span<const uint32_t> MeshletStreamAsset::primitiveTerminalGroups(uint32_t primitiveIndex) const
+{
+    if (!valid() || primitiveIndex >= impl_->primitives.size()) {
+        return {};
+    }
+    return std::span<const uint32_t>(impl_->terminalGroups).subspan(
+        impl_->terminalOffsets[primitiveIndex],
+        impl_->terminalOffsets[primitiveIndex + 1] - impl_->terminalOffsets[primitiveIndex]);
 }
 
 std::span<const MeshletStreamNodeInfo> MeshletStreamAsset::nodes() const

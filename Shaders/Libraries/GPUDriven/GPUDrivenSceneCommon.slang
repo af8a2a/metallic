@@ -181,8 +181,17 @@ struct GPUDrivenPreviewParams
     uint environmentVisible;
     uint materialCount;
     uint visibleMeshletCapacity;
-    uint shadingPadding1;
-    uint shadingPadding2;
+    uint lodSelectionBuffer;
+    uint lodSelectionEnabled;
 };
+
+uint residentLodRecordIndex(uint candidate, GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
+{
+    if (params.lodSelectionEnabled == 0u) { return params.meshletOffset + candidate; }
+    DescriptorHandle<StructuredBuffer<uint4>> selections =
+        DescriptorHandle<StructuredBuffer<uint4>>(uint2(push.bufferShaderIndexBase + params.lodSelectionBuffer, 0));
+    uint count = min(selections[0].x, selections[0].y);
+    return candidate < count ? selections[candidate + 1u].z : 0xffffffffu;
+}
 
 #endif

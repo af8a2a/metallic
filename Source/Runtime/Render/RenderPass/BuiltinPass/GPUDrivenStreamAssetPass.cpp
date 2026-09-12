@@ -3,6 +3,7 @@
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/HistoryResources.h"
+#include "Runtime/Render/RenderView.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
@@ -84,12 +85,20 @@ uint64_t uint64Property(const RenderGraphProperties& props, const char* key, uin
 
 uint32_t selectedLodProperty(const RenderGraphProperties& props)
 {
-    auto iter = props.find("selectedLodLevel");
+    auto iter = props.find("lodLevel");
+    if (iter == props.end() || !iter->is_number_integer()) {
+        iter = props.find("selectedLodLevel");
+    }
     if (iter == props.end() || !iter->is_number_integer()) {
         return 0;
     }
     const int64_t value = iter->get<int64_t>();
-    return value < 0 ? 0u : static_cast<uint32_t>(std::min<int64_t>(value, std::numeric_limits<uint32_t>::max()));
+    return static_cast<uint32_t>(std::clamp<int64_t>(value, 0, 31));
+}
+
+bool autoLodProperty(const RenderGraphProperties& props)
+{
+    return boolProperty(props, "autoLod", boolProperty(props, "enableGpuLodSelection", true));
 }
 
 uint32_t debugColorModeFromProperties(const RenderGraphProperties& props)
@@ -376,12 +385,14 @@ public:
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         return {
-            runtimeBoolSetting("enableGpuLodSelection", "GPU LOD", true),
+            runtimeBoolSetting("autoLod", "Auto Meshlet LOD", autoLodProperty(properties())),
+            runtimeFloatSetting("lodPixelError", "LOD Error (render px)", 1.5f, 0.05f, 16.0f),
+            runtimeFloatSetting("lodBias", "LOD Bias", 0.0f, -4.0f, 4.0f),
+            runtimeIntSetting("lodLevel", "Manual LOD (Auto Off)", static_cast<int32_t>(selectedLodProperty(properties())), 0, 31),
             runtimeBoolSetting("instanceFrustumCull", "Instance Frustum Cull", true),
             runtimeBoolSetting("instanceHzbCull", "Instance HZB Cull", true),
             runtimeBoolSetting("clusterFrustumCull", "Cluster Sphere / Frustum Cull", true),
             runtimeBoolSetting("clusterNormalConeCull", "Cluster Normal Cone Cull", true),
-            runtimeIntSetting("selectedLodLevel", "LOD", 0, 0, 31),
             runtimeEnumSetting(
                 "debugColorMode",
                 "Color",
@@ -460,17 +471,12 @@ public:
             }
         }
 
-        streamRuntime_.setDebugReadbackEnabled(context.debugReadback);
-        Result result = streamRuntime_.initialize(
-            *context.device,
-            runtimeDescFromProperties(properties()),
-            log);
-        if (!result) {
-            return result;
-        }
-        rtasVisualization_ = boolProperty(properties(), "rtasVisualization", false);
-        if (rtasVisualization_) {
-            if (!boolProperty(properties(), "enableClusterRtx", false)) {
+        const MeshletStreamRuntimeDesc runtimeDesc = runtimeDescFromProperties(properties());
+        const uint64_t sourceIdentity = runtimeScene != nullptr ? runtimeScene->resourceIdentity() : 0;
+        const uint64_t sourceContentRevision = runtimeScene != nullptr ? runtimeScene->contentRevision() : 0;
+        const bool rtasVisualization = boolProperty(properties(), "rtasVisualization", false);
+        if (rtasVisualization) {
+            if (!runtimeDesc.enableClusterRtx) {
                 log = "GPUDrivenStreamAssetPass RTAS visualization requires enableClusterRtx=true";
                 return makeError(Error::InvalidArgument);
             }
@@ -480,6 +486,41 @@ public:
                 return makeError(Error::Unsupported);
             }
         }
+
+        // Scene-binding refresh also recompiles for transform/visibility edits.
+        // Those edits update instance data; they must not evict resident pages,
+        // restart page uploads, or allocate another set of bindless handles.
+        if (compiled_ && device_ == context.device && gpuSceneView_.valid() &&
+            frameSlotCount_ == std::max(gpuSceneSubsystem_->frameSlotCount(), 1u) &&
+            streamRuntime_.ready() && compiledRuntimeDesc_ == runtimeDesc &&
+            compiledSourceIdentity_ == sourceIdentity &&
+            compiledSourceContentRevision_ == sourceContentRevision &&
+            compiledDebugReadback_ == context.debugReadback &&
+            compiledColorFormat_ == context.defaultFormat &&
+            rtasVisualization_ == rtasVisualization) {
+            Result result;
+            if (runtimeScene != nullptr) {
+                result = streamRuntime_.syncRuntimeScene(*runtimeScene, log);
+                if (!result) { return result; }
+            }
+            result = ensureFrameResources(context.width, context.height, context.subsystems());
+            if (!result) { return result; }
+            rtasVisualization_ = rtasVisualization;
+            hzbValid_ = false;
+            for (uint32_t slot = 0; slot < frameSlotCount_; ++slot) {
+                (void)gpuSceneSubsystem_->markViewHzbValid(gpuSceneView_, slot, false);
+            }
+            return {};
+        }
+
+        compiled_ = false;
+        rayQueryProgram_.clear();
+        streamRuntime_.setDebugReadbackEnabled(context.debugReadback);
+        Result result = streamRuntime_.initialize(*context.device, runtimeDesc, log);
+        if (!result) {
+            return result;
+        }
+        rtasVisualization_ = rtasVisualization;
 
         result = createMeshShader(*context.device, meshShader_, log);
         if (!result) {
@@ -543,24 +584,26 @@ public:
             return result;
         }
 
-        result = context.device->createGraphicsPipeline(
-            GraphicsPipelineDesc{
-                .meshShader = meshShader_.get(),
-                .fragmentShader = fragmentShader_.get(),
-                .colorFormat = Format::R32Uint,
-                .depthStencilFormat = Format::D32Sfloat,
-                .depthStencil = DepthStencilState{
-                    .depthTestEnable = true,
-                    .depthWriteEnable = true,
-                    .depthCompareOp = depthCompareOp(kDefaultReversedZ),
+        for (uint32_t reversedZ = 0; reversedZ < visibilityPipelines_.size(); ++reversedZ) {
+            result = context.device->createGraphicsPipeline(
+                GraphicsPipelineDesc{
+                    .meshShader = meshShader_.get(),
+                    .fragmentShader = fragmentShader_.get(),
+                    .colorFormat = Format::R32Uint,
+                    .depthStencilFormat = Format::D32Sfloat,
+                    .depthStencil = DepthStencilState{
+                        .depthTestEnable = true,
+                        .depthWriteEnable = true,
+                        .depthCompareOp = depthCompareOp(reversedZ != 0u),
+                    },
+                    .usesBindlessHeap = true,
                 },
-                .usesBindlessHeap = true,
-            },
-            visibilityPipeline_);
-        if (!result || visibilityPipeline_ == nullptr) {
-            log += resultMessage("createGraphicsPipeline(GPUDrivenStreamAsset visibility)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
+                visibilityPipelines_[reversedZ]);
+            if (!result || visibilityPipelines_[reversedZ] == nullptr) {
+                log += resultMessage("createGraphicsPipeline(GPUDrivenStreamAsset visibility)", result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
+            }
         }
 
         result = context.device->createComputePipeline(
@@ -791,6 +834,12 @@ public:
         }
 
         device_ = context.device;
+        compiledRuntimeDesc_ = runtimeDesc;
+        compiledSourceIdentity_ = sourceIdentity;
+        compiledSourceContentRevision_ = sourceContentRevision;
+        compiledDebugReadback_ = context.debugReadback;
+        compiledColorFormat_ = context.defaultFormat;
+        compiled_ = true;
         return {};
     }
 
@@ -850,7 +899,7 @@ public:
             context.streamer() == nullptr ||
             !streamRuntime_.ready() ||
             streamRuntime_.bindlessHeap() == nullptr ||
-            visibilityPipeline_ == nullptr ||
+            visibilityPipelines_[0] == nullptr || visibilityPipelines_[1] == nullptr ||
             deferredPipeline_ == nullptr ||
             compositePipeline_ == nullptr ||
             cullResetPipeline_ == nullptr ||
@@ -957,7 +1006,8 @@ public:
                     *visibility.view(),
                     depth,
                     GPUSceneCullPhase::Early,
-                    LoadOp::Clear);
+                    LoadOp::Clear,
+                    frame.camera.reversedZ);
             }
             if (result) {
                 transitionTexture(
@@ -987,7 +1037,8 @@ public:
                     *visibility.view(),
                     depth,
                     GPUSceneCullPhase::Late,
-                    LoadOp::Load);
+                    LoadOp::Load,
+                    frame.camera.reversedZ);
             }
             if (result) {
                 transitionTexture(
@@ -1186,12 +1237,11 @@ private:
             .cameraCut = cameraCut,
             .freezeCullingCamera = false,
         };
-        // The standalone stream path currently uses a perspective camera;
-        // consume the frame camera uploaded by traversal, with the same clip
-        // and FOV clamps used by its projection shader.
+        // Consume the same camera and projection uploaded for LOD selection.
         if (!std::isfinite(frame.camera.fovDegrees) ||
             !std::isfinite(frame.camera.znear) ||
-            !std::isfinite(frame.camera.zfar)) {
+            !std::isfinite(frame.camera.zfar) ||
+            !std::isfinite(frame.camera.orthoHeight)) {
             spdlog::error("[GPUDrivenStreamAssetPass] Light grid camera has non-finite projection parameters");
             return makeError(Error::InvalidArgument);
         }
@@ -1207,12 +1257,13 @@ private:
                 0.017453292f, 3.12413936f),
             .zNear = std::max(frame.camera.znear, 0.0001f),
             .zFar = std::max(frame.camera.zfar, std::max(frame.camera.znear, 0.0001f) + 0.0001f),
+            .orthoHeight = frame.camera.orthographic ? std::max(frame.camera.orthoHeight, 0.0001f) : 0.0f,
         };
         if (boolProperty(properties(), "instanceFrustumCull", true)) {
             prepareInfo.lightFrustumPlanes = gpuSceneLightFrustumPlanes(
                 lightGridDesc_.eye, lightGridDesc_.center, lightGridDesc_.up,
                 lightGridDesc_.aspect, lightGridDesc_.fovRadians,
-                lightGridDesc_.zNear, lightGridDesc_.zFar);
+                lightGridDesc_.zNear, lightGridDesc_.zFar, lightGridDesc_.orthoHeight);
         }
         if (!subsystem.prepareView(
                 gpuSceneView_,
@@ -1452,15 +1503,20 @@ private:
         const float fovDegrees = cameraFloat(camera, "fovDegrees", 60.0f);
         const float znear = cameraFloat(camera, "znear", 0.1f);
         const float zfar = cameraFloat(camera, "zfar", std::max(radius * 8.0f, znear + 100.0f));
-        const bool enableGpuLodSelection = boolProperty(context.properties(), "enableGpuLodSelection", true);
+        const bool enableGpuLodSelection = autoLodProperty(context.properties());
+        const auto projection = camera != nullptr ? camera->find("projection") : context.properties().end();
+        const bool orthographic = camera != nullptr && projection != camera->end() && projection->is_string() &&
+            (projection->get<std::string>() == "orthographic" || projection->get<std::string>() == "ortho");
 
-        return MeshletStreamFrameDesc{
+        MeshletStreamFrameDesc frame{
             .width = context.width(),
             .height = context.height(),
             .selectedLodLevel = enableGpuLodSelection
                 ? kMeshletStreamNoDebugLodOverride
                 : selectedLodProperty(context.properties()),
             .enableGpuLodSelection = enableGpuLodSelection,
+            .lodPixelError = cameraFloat(&context.properties(), "lodPixelError", 1.5f),
+            .lodBias = cameraFloat(&context.properties(), "lodBias", 0.0f),
             .debugColorMode = debugColorModeFromProperties(context.properties()),
             .camera = MeshletStreamCameraDesc{
                 .eye = eye,
@@ -1469,8 +1525,26 @@ private:
                 .fovDegrees = fovDegrees,
                 .znear = znear,
                 .zfar = zfar,
+                .orthographic = orthographic,
+                .reversedZ = camera != nullptr ? boolProperty(*camera, "reversedZ", kDefaultReversedZ) : kDefaultReversedZ,
+                .orthoHeight = cameraFloat(camera, "orthoHeight", 10.0f),
             },
         };
+        if (const ViewConstants* view = context.viewConstants()) {
+            const auto& current = view->current;
+            frame.camera.eye = float3(current.eye[0], current.eye[1], current.eye[2]);
+            frame.camera.center = float3(current.center[0], current.center[1], current.center[2]);
+            frame.camera.up = float3(current.upProjection[0], current.upProjection[1], current.upProjection[2]);
+            frame.camera.fovDegrees = current.viewport[3] * (180.0f / 3.14159265359f);
+            frame.camera.znear = current.clipOrtho[0];
+            frame.camera.zfar = current.clipOrtho[1];
+            frame.camera.orthographic = current.upProjection[3] > 0.5f;
+            frame.camera.orthoHeight = current.clipOrtho[2];
+            frame.camera.reversedZ = current.clipOrtho[3] > 0.5f;
+            frame.jitterX = view->jitter[0];
+            frame.jitterY = view->jitter[1];
+        }
+        return frame;
     }
 
     Result draw(
@@ -1478,7 +1552,8 @@ private:
         TextureView& visibility,
         TextureHandle depth,
         GPUSceneCullPhase phase,
-        LoadOp loadOp)
+        LoadOp loadOp,
+        bool reversedZ)
     {
         const Rect renderArea{
             .x = 0,
@@ -1498,7 +1573,7 @@ private:
             .state = ResourceState::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
-            .clearDepth = depthClearValue(kDefaultReversedZ),
+            .clearDepth = depthClearValue(reversedZ),
         };
         context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
@@ -1517,7 +1592,7 @@ private:
         context.commandBuffer().setScissor(renderArea);
         if (streamRuntime_.drawTaskCount() > 0) {
             context.commandBuffer().bindBindlessHeap(*streamRuntime_.bindlessHeap());
-            context.commandBuffer().bindGraphicsPipeline(*visibilityPipeline_);
+            context.commandBuffer().bindGraphicsPipeline(*visibilityPipelines_[reversedZ ? 1u : 0u]);
             MeshletStreamUserPush push = streamRuntime_.userPush();
             push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
             context.commandBuffer().pushBindlessData(&push, sizeof(push));
@@ -1642,7 +1717,7 @@ private:
         push.upProjection[0] = frame.camera.up.x;
         push.upProjection[1] = frame.camera.up.y;
         push.upProjection[2] = frame.camera.up.z;
-        push.upProjection[3] = 0.0f;
+        push.upProjection[3] = frame.camera.orthographic ? 1.0f : 0.0f;
         push.viewport[0] = static_cast<float>(std::max(context.width(), 1u)) /
             static_cast<float>(std::max(context.height(), 1u));
         push.viewport[1] = static_cast<float>(context.width());
@@ -1650,7 +1725,7 @@ private:
         push.viewport[3] = frame.camera.fovDegrees * 0.017453292519943295f;
         push.clipOrtho[0] = frame.camera.znear;
         push.clipOrtho[1] = frame.camera.zfar;
-        push.clipOrtho[2] = std::max(streamRuntime_.bounds().radius() * 2.0f, 0.001f);
+        push.clipOrtho[2] = std::max(frame.camera.orthoHeight, 0.0001f);
         push.clipOrtho[3] = 0.0f;
         push.mode = rtasGranularityFromProperties(context.properties());
         push.width = context.width();
@@ -1687,7 +1762,7 @@ private:
     std::unique_ptr<ShaderModule> cullResetShader_;
     std::unique_ptr<ShaderModule> instanceCullShader_;
     std::unique_ptr<ShaderModule> hzbShader_;
-    std::unique_ptr<GraphicsPipeline> visibilityPipeline_;
+    std::array<std::unique_ptr<GraphicsPipeline>, 2> visibilityPipelines_;
     std::unique_ptr<ComputePipeline> deferredPipeline_;
     std::unique_ptr<GraphicsPipeline> compositePipeline_;
     std::unique_ptr<ComputePipeline> cullResetPipeline_;
@@ -1719,6 +1794,12 @@ private:
     bool hzbValid_ = false;
     ComputeProgram rayQueryProgram_;
     bool rtasVisualization_ = false;
+    MeshletStreamRuntimeDesc compiledRuntimeDesc_;
+    uint64_t compiledSourceIdentity_ = 0;
+    uint64_t compiledSourceContentRevision_ = 0;
+    Format compiledColorFormat_ = Format::Rgba8Unorm;
+    bool compiledDebugReadback_ = false;
+    bool compiled_ = false;
 };
 
 std::unique_ptr<RenderGraphPass> createGPUDrivenStreamAssetPass()

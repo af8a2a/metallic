@@ -65,5 +65,12 @@ float4 visibilityBufferCompositeFragmentMain(
         return float4(1.0);
     }
     uint seed = params.mode == 3u ? packedVisibility : recordIndex + 1u;
+    if (params.mode == 2u && recordIndex < push.residentRecordCapacity) {
+        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> records =
+            DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.bufferShaderIndexBase + push.meshletDrawBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> clusters =
+            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.bufferShaderIndexBase + push.meshletBuffer, 0));
+        seed = clusters[records[recordIndex].clusterIndex].lod.x + 1u;
+    }
     return float4(visibilityHashColor(seed), 1.0);
 }

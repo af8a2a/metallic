@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime/Render/MeshletLod.h"
+
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/SceneLightResources.h"
@@ -163,7 +165,8 @@ struct alignas(16) GPUSceneGpuMeshletRecord {
     // Global meshlet-vertex word offset/count and packed-triangle word
     // offset/triangle count. Meshlet vertex values remain geometry-local.
     std::array<uint32_t, 4> ranges{};
-    // lodLevel, lodGroupIndex, reserved, reserved.
+    // lodLevel, global owner group, global refined group, reserved.
+    // UINT32_MAX group references mark base geometry without adaptive LOD.
     std::array<uint32_t, 4> lod{};
     std::array<float, 4> boundingSphere{};
     // cone apex xyz and cone cutoff.
@@ -293,6 +296,7 @@ struct GPUSceneRasterDrawRange {
 struct GPUSceneRasterDrawLayout {
     GPUSceneRasterDrawRange baseRange;
     std::vector<GPUSceneRasterDrawRange> lodRanges;
+    GPUSceneRasterDrawRange adaptiveRange;
     uint32_t maxRangeCount = 0;
     uint32_t drawSetGeneration = 0;
     uint64_t drawSetRevision = 0;
@@ -327,6 +331,7 @@ struct GPUSceneGlobalBufferViews {
     GPUSceneBufferView meshletVertices;
     GPUSceneBufferView meshletTriangleWords;
     GPUSceneBufferView descriptorRemap;
+    GPUSceneBufferView lodGroups;
     uint32_t drawSetGeneration = 0;
     uint64_t drawSetRevision = 0;
 
@@ -346,6 +351,7 @@ enum class GPUSceneGlobalBufferKind : uint8_t {
     MeshletVertices,
     MeshletTriangleWords,
     DescriptorRemap,
+    LodGroups,
     Count,
 };
 

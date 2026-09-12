@@ -63,6 +63,7 @@ struct GPUSceneCpuUploadData {
     std::vector<GPUSceneGpuVertexRecord> vertices;
     std::vector<uint32_t> indices;
     std::vector<GPUSceneGpuMeshletRecord> meshlets;
+    std::vector<MeshletLodGroupRecord> lodGroups;
     std::vector<GPUSceneGpuMeshletDrawRecord> meshletDraws;
     std::vector<uint32_t> meshletVertices;
     std::vector<uint32_t> meshletTriangleWords;
@@ -72,6 +73,7 @@ struct GPUSceneCpuUploadData {
 
 struct GPUSceneGeometryRasterRanges {
     GPUSceneRasterDrawRange baseRange;
+    GPUSceneRasterDrawRange adaptiveRange;
     std::vector<GPUSceneRasterDrawRange> lodRanges;
 };
 
@@ -135,7 +137,8 @@ GPUSceneRasterDrawRange appendMeshletRange(
     std::span<const uint8_t> meshletTriangles,
     uint32_t firstCluster,
     uint32_t clusterCount,
-    GPUSceneCpuUploadData& data)
+    GPUSceneCpuUploadData& data,
+    uint32_t groupOffset = kMeshletLodInvalidGroup)
 {
     GPUSceneRasterDrawRange range{
         .offset = gpuCount(data.meshlets.size()),
@@ -195,8 +198,10 @@ GPUSceneRasterDrawRange appendMeshletRange(
         };
         meshlet.lod = {
             cluster.lodLevel,
-            static_cast<uint32_t>(std::max(cluster.lodGroupIndex, 0)),
-            0,
+            groupOffset == kMeshletLodInvalidGroup ? kMeshletLodInvalidGroup :
+                groupOffset + static_cast<uint32_t>(cluster.lodGroupIndex),
+            groupOffset == kMeshletLodInvalidGroup || cluster.refinedGroupIndex < 0 ?
+                kMeshletLodInvalidGroup : groupOffset + static_cast<uint32_t>(cluster.refinedGroupIndex),
             0,
         };
         meshlet.boundingSphere = {
@@ -356,6 +361,12 @@ GPUSceneCpuUploadData buildGpuUploadData(
                 0,
                 gpuCount(primitive.meshletClusters.size()),
                 data);
+            std::vector<MeshletLodGroupRecord> groups;
+            std::string lodReason;
+            const bool validLod = buildMeshletLodMetadata(primitive, groups, lodReason);
+            const uint32_t groupOffset = validLod ? gpuCount(data.lodGroups.size()) : kMeshletLodInvalidGroup;
+            if (validLod) { data.lodGroups.insert(data.lodGroups.end(), groups.begin(), groups.end()); }
+            ranges.adaptiveRange.offset = gpuCount(data.meshlets.size());
             ranges.lodRanges.resize(primitive.meshletLodLevels.size());
             for (uint32_t lodLevel = 0;
                  lodLevel < primitive.meshletLodLevels.size();
@@ -369,7 +380,11 @@ GPUSceneCpuUploadData buildGpuUploadData(
                     primitive.meshletLodTriangles,
                     level.clusterOffset,
                     level.clusterCount,
-                    data);
+                    data, groupOffset);
+            }
+            ranges.adaptiveRange.count = gpuCount(data.meshlets.size()) - ranges.adaptiveRange.offset;
+            if (!validLod || ranges.adaptiveRange.count != primitive.meshletLodClusters.size()) {
+                ranges.adaptiveRange = ranges.baseRange;
             }
             gpu.payload = {
                 vertexOffset,
@@ -506,7 +521,7 @@ GPUSceneCpuUploadData buildGpuUploadData(
         data.drawKeys.push_back(key);
     }
 
-    const auto appendDrawRange = [&](uint32_t lodLevel, bool baseRange) {
+    const auto appendDrawRange = [&](uint32_t lodLevel, bool baseRange, bool adaptive = false) {
         GPUSceneRasterDrawRange range{
             .offset = gpuCount(data.meshletDraws.size()),
         };
@@ -518,7 +533,9 @@ GPUSceneCpuUploadData buildGpuUploadData(
             const GPUSceneGeometryRasterRanges& geometry =
                 geometryRanges[instance->geometry.index];
             const GPUSceneRasterDrawRange* geometryRange = nullptr;
-            if (baseRange) {
+            if (adaptive) {
+                geometryRange = &geometry.adaptiveRange;
+            } else if (baseRange) {
                 geometryRange = &geometry.baseRange;
             } else if (lodLevel < geometry.lodRanges.size()) {
                 geometryRange = &geometry.lodRanges[lodLevel];
@@ -554,6 +571,7 @@ GPUSceneCpuUploadData buildGpuUploadData(
     for (uint32_t lodLevel = 0; lodLevel < maxLodLevelCount; ++lodLevel) {
         data.rasterDrawLayout.lodRanges[lodLevel] = appendDrawRange(lodLevel, false);
     }
+    data.rasterDrawLayout.adaptiveRange = appendDrawRange(0, false, true);
     data.rasterDrawLayout.drawSetGeneration = drawSet.generation;
     data.rasterDrawLayout.drawSetRevision = drawSet.revision;
     return data;
@@ -614,6 +632,7 @@ struct GPUSceneSubsystem::GpuResources {
         result.meshletVertices = resource(GPUSceneGlobalBufferKind::MeshletVertices).sceneView(generation, revision);
         result.meshletTriangleWords = resource(GPUSceneGlobalBufferKind::MeshletTriangleWords).sceneView(generation, revision);
         result.descriptorRemap = resource(GPUSceneGlobalBufferKind::DescriptorRemap).sceneView(generation, revision);
+        result.lodGroups = resource(GPUSceneGlobalBufferKind::LodGroups).sceneView(generation, revision);
         result.drawSetGeneration = generation;
         result.drawSetRevision = revision;
         return result;
@@ -1563,6 +1582,9 @@ Result GPUSceneSubsystem::uploadFullScene(
             data.descriptorRemap,
             "descriptor remap");
     }
+    if (result) {
+        result = createResource(GPUSceneGlobalBufferKind::LodGroups, data.lodGroups, "LOD groups");
+    }
     if (!result) {
         return result;
     }
@@ -1758,6 +1780,7 @@ Result GPUSceneSubsystem::createBindings(
         &views.meshletVertices,
         &views.meshletTriangleWords,
         &views.descriptorRemap,
+        &views.lodGroups,
     };
     for (size_t index = 0; index < bufferViews.size(); ++index) {
         const GPUSceneBufferView& view = *bufferViews[index];

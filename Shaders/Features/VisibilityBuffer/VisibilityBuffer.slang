@@ -183,7 +183,7 @@ void visibilityBufferAmplificationMain(
         DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.bufferShaderIndexBase + push.meshletDrawBuffer, 0));
     GPUDrivenPreviewParams params = paramsHandle[0];
     uint localMeshletIndex = hybridFlatGroup(groupID) * kAmplificationGroupSize + groupThreadIndex;
-    uint meshletDrawIndex = params.meshletOffset + localMeshletIndex;
+    uint meshletDrawIndex = 0xffffffffu;
     bool visible;
     if (push.environmentSHBuffer != kInvalidTextureIndex) {
         DescriptorHandle<StructuredBuffer<uint>> bins =
@@ -199,6 +199,7 @@ void visibilityBufferAmplificationMain(
         DispatchMesh(count, 1, 1, g_AmplificationPayload);
         return;
     } else {
+        meshletDrawIndex = residentLodRecordIndex(localMeshletIndex, params, push);
         visible = residentClusterVisible(meshletDrawIndex, push);
         if (visible) { visible = visibleClusterDrawBucket(records[meshletDrawIndex]) == push.mipLevel; }
     }
@@ -467,6 +468,20 @@ groupshared uint g_PrebinVisible;
 groupshared uint g_PrebinHardware;
 
 [shader("compute")]
+[numthreads(1, 1, 1)]
+void visibilityClusterCountMain(uniform GPUDrivenPreviewPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> parameters =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+    GPUDrivenPreviewParams params = parameters[0];
+    DescriptorHandle<StructuredBuffer<uint4>> selections =
+        DescriptorHandle<StructuredBuffer<uint4>>(uint2(push.bufferShaderIndexBase + params.lodSelectionBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> bins =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.environmentSHBuffer, 0));
+    bins[12] = min(selections[0].x, params.meshletCount);
+}
+
+[shader("compute")]
 [numthreads(128, 1, 1)]
 void visibilityClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenPreviewPush push)
 {
@@ -476,7 +491,7 @@ void visibilityClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupInde
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.environmentSHBuffer, 0));
     RWStructuredBuffer<uint> bins = binHandle;
     GPUDrivenPreviewParams params = parameters[0];
-    uint index = params.meshletOffset + hybridFlatGroup(group);
+    uint index = residentLodRecordIndex(hybridFlatGroup(group), params, push);
     if (lane == 0u) {
         hybridClassifyCluster(bins, 0xffffffffu, index, hybridFlatGroup(group));
         g_PrebinVisible = residentClusterVisible(index, push) ? 1u : 0u;

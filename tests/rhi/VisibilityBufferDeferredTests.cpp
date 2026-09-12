@@ -43,6 +43,10 @@ public:
         lighting.exposureEV100 = 0;
         preview.setLighting(lighting);
         const uint32_t slider = sample.graph.findNode("Slider")->id;
+        // These checks compare attributes against the original ray-traced mesh.
+        // Keep both paths on identical geometry; adaptive cuts are tested separately.
+        sample.graph.setNodeRuntimeProperty(sample.graph.findNode("VBuffer")->id, "autoLod", false);
+        sample.graph.setNodeRuntimeProperty(sample.graph.findNode("VBuffer")->id, "lodLevel", 0);
         const uint32_t raster = sample.graph.findNode("VBuffer")->id;
         const uint32_t deferred = sample.graph.findNode("Deferred")->id;
         // A ray-primary path with identical direct OpenPBR lighting isolates the
@@ -210,6 +214,10 @@ public:
         const uint32_t reference = sample.graph.findNode("Reference")->id;
         const uint32_t deferred = sample.graph.findNode("Deferred")->id;
         const uint32_t slider = sample.graph.findNode("Slider")->id;
+        // These checks compare attributes against the original ray-traced mesh.
+        // Keep both paths on identical geometry; adaptive cuts are tested separately.
+        sample.graph.setNodeRuntimeProperty(sample.graph.findNode("VBuffer")->id, "autoLod", false);
+        sample.graph.setNodeRuntimeProperty(sample.graph.findNode("VBuffer")->id, "lodLevel", 0);
         sample.graph.findNode("Reference")->type = "SceneRealtimeLightingPass";
         sample.graph.markDirty();
         sample.graph.setNodeRuntimeProperty(deferred, "accumulate", false);

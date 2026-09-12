@@ -22,6 +22,15 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     add({"RGBA16F", 8, {{"r", "f16", 0}, {"g", "f16", 2}, {"b", "f16", 4}, {"a", "f16", 6}}});
     add({"RGBA32F", 16, {{"r", "f32", 0}, {"g", "f32", 4}, {"b", "f32", 8}, {"a", "f32", 12}}});
 #define DEBUG_FIELD(T, F) DebugFieldDesc{#F, "u32", static_cast<uint32_t>(offsetof(T, F))}
+    add({"MeshletLodSelectionHeader", 16, {{"count", "u32", 0}, {"capacity", "u32", 4},
+        {"candidateCount", "u32", 8}, {"overflow", "u32", 12}}});
+    add({"MeshletLodSelection", sizeof(MeshletLodSelection), {
+        DEBUG_FIELD(MeshletLodSelection, instanceIndex), DEBUG_FIELD(MeshletLodSelection, clusterIndex),
+        DEBUG_FIELD(MeshletLodSelection, recordIndex), DEBUG_FIELD(MeshletLodSelection, geometryIndex)}});
+    add({"MeshletLodGroupRecord", sizeof(MeshletLodGroupRecord), {
+        {"sphere", "f32", offsetof(MeshletLodGroupRecord, sphere), 4},
+        {"error", "f32", offsetof(MeshletLodGroupRecord, error)},
+        DEBUG_FIELD(MeshletLodGroupRecord, level), DEBUG_FIELD(MeshletLodGroupRecord, flags)}});
     static_assert(sizeof(VisibleClusterRecord) == 16 && offsetof(VisibleClusterRecord, flags) == 12);
     add({"VisibleClusterRecord", sizeof(VisibleClusterRecord), {
         DEBUG_FIELD(VisibleClusterRecord, clusterIndex), DEBUG_FIELD(VisibleClusterRecord, instanceIndex),
@@ -46,7 +55,9 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     add({"MeshletStreamGpuActiveHeader", sizeof(MeshletStreamGpuActiveHeader), {
         DEBUG_FIELD(MeshletStreamGpuActiveHeader, activeGroupCount), DEBUG_FIELD(MeshletStreamGpuActiveHeader, activeGroupCapacity),
         DEBUG_FIELD(MeshletStreamGpuActiveHeader, maxActiveGroupClusters), DEBUG_FIELD(MeshletStreamGpuActiveHeader, overflowCount),
-        DEBUG_FIELD(MeshletStreamGpuActiveHeader, frameIndex)}});
+        DEBUG_FIELD(MeshletStreamGpuActiveHeader, frameIndex),
+        {"terminalFallback", "u32", offsetof(MeshletStreamGpuActiveHeader, padding0)},
+        {"invalidCapacity", "u32", offsetof(MeshletStreamGpuActiveHeader, padding1)}}});
     static_assert(sizeof(MeshletStreamGpuActiveGroup) == 112 && offsetof(MeshletStreamGpuActiveGroup, world0) == 48);
     add({"MeshletStreamGpuActiveGroup", sizeof(MeshletStreamGpuActiveGroup), {
         DEBUG_FIELD(MeshletStreamGpuActiveGroup, pageDeviceOffsetBytes), DEBUG_FIELD(MeshletStreamGpuActiveGroup, pageIndex),
@@ -94,6 +105,7 @@ void gpuDrivenDebugCheckpoint(RenderGraphExecutionContext& context, std::string_
         global("instances", globals.instances, "GPUSceneGpuInstanceRecord");
         global("geometries", globals.geometries, "GPUSceneGpuGeometryRecord");
         global("meshlets", globals.meshlets, "GPUSceneGpuMeshletRecord");
+        global("lodGroups", globals.lodGroups, "MeshletLodGroupRecord");
         global("meshletDraws", globals.meshletDraws, "VisibleClusterRecord");
         global("drawInstanceIds", globals.drawInstanceIds, "u32");
         GPUSceneViewGpuResourcesView resources;

@@ -481,7 +481,8 @@ bool GPUSceneGlobalBufferViews::validFor(
         optionalBufferViewValidFor(meshletDraws, generation, revision) &&
         optionalBufferViewValidFor(meshletVertices, generation, revision) &&
         optionalBufferViewValidFor(meshletTriangleWords, generation, revision) &&
-        optionalBufferViewValidFor(descriptorRemap, generation, revision);
+        optionalBufferViewValidFor(descriptorRemap, generation, revision) &&
+        optionalBufferViewValidFor(lodGroups, generation, revision);
 }
 
 bool GPUSceneConsumerBindings::validFor(const GPUSceneGlobalBufferViews& views) const
@@ -505,6 +506,7 @@ bool GPUSceneConsumerBindings::validFor(const GPUSceneGlobalBufferViews& views) 
         &views.meshletVertices,
         &views.meshletTriangleWords,
         &views.descriptorRemap,
+        &views.lodGroups,
     };
     for (size_t index = 0; index < bufferViews.size(); ++index) {
         const bool required = !emptyBufferView(*bufferViews[index]);
@@ -1451,7 +1453,8 @@ bool GPUScene::setGlobalBufferViews(GPUSceneGlobalBufferViews views)
         !normalizeOptionalBufferView(views.meshletDraws, drawSet_.generation, drawSet_.revision) ||
         !normalizeOptionalBufferView(views.meshletVertices, drawSet_.generation, drawSet_.revision) ||
         !normalizeOptionalBufferView(views.meshletTriangleWords, drawSet_.generation, drawSet_.revision) ||
-        !normalizeOptionalBufferView(views.descriptorRemap, drawSet_.generation, drawSet_.revision)) {
+        !normalizeOptionalBufferView(views.descriptorRemap, drawSet_.generation, drawSet_.revision) ||
+        !normalizeOptionalBufferView(views.lodGroups, drawSet_.generation, drawSet_.revision)) {
         return false;
     }
     globalBufferViews_ = std::move(views);

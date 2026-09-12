@@ -132,6 +132,7 @@ public:
     // Bind before rendering; the scene must outlive the preview renderer.
     // This keeps scene-owned lighting and world overrides in the same scene.
     void bindRuntimeScene(const scene::Scene* scene);
+    void setDebugObserver(IRenderDebugObserver* observer);
     // Update a live camera without recompiling the graph or clearing HZB history.
     // The view must outlive the preview renderer.
     void bindRenderView(RenderView* view);

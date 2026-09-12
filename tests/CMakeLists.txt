@@ -224,6 +224,9 @@ add_executable(MetallicRhiTests
     rhi/FrameContextTests.cpp
     rhi/FinalBlitTests.cpp
     rhi/GPUSceneSubsystemTests.cpp
+    rhi/MeshletLodTests.cpp
+    rhi/StreamMeshletLodTests.cpp
+    rhi/StreamMeshletLodSceneTests.cpp
     rhi/HistoryResourcesTests.cpp
     rhi/ImportedVirtualLightTests.cpp
     rhi/LightGridDebugPassTests.cpp
@@ -240,6 +243,7 @@ add_executable(MetallicRhiTests
     rhi/ReGIRVirtualLightTests.cpp
     rhi/RenderGraphTests.cpp
     rhi/SceneBindingTests.cpp
+    rhi/SceneUploadTests.cpp
     rhi/RadianceCacheTests.cpp
     rhi/RenderingTests.cpp
     rhi/ResourceTests.cpp

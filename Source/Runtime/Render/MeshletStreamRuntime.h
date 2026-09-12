@@ -65,6 +65,9 @@ inline constexpr uint32_t kMeshletStreamActiveBuildBuildPhase = 1;
 inline constexpr uint32_t kMeshletStreamActiveBuildFinalizePhase = 2;
 inline constexpr uint32_t kMeshletStreamActiveBuildSeedPhase = 3;
 inline constexpr uint32_t kMeshletStreamActiveBuildRunPhase = 4;
+inline constexpr uint32_t kMeshletStreamActiveBuildFrontierPhase = 5;
+inline constexpr uint32_t kMeshletStreamActiveBuildPrefixPhase = 6;
+inline constexpr uint32_t kMeshletStreamActiveBuildEmitPhase = 7;
 inline constexpr uint32_t kMeshletStreamBlasInputResetPhase = 0;
 inline constexpr uint32_t kMeshletStreamBlasInputCountPhase = 1;
 inline constexpr uint32_t kMeshletStreamBlasInputSetupPhase = 2;
@@ -166,6 +169,10 @@ struct MeshletStreamGpuGroup {
     uint32_t clusterCount = 0;
     float boundsCenterRadius[4] = {};
     float maxQuadricError = 0.0f;
+    uint32_t clusterRefinedOffset = 0;
+    uint32_t flags = 0;
+    uint32_t parentOffset = 0;
+    uint32_t parentCount = 0;
 };
 
 struct MeshletStreamGpuNode {
@@ -269,6 +276,15 @@ struct MeshletStreamGpuParams {
     float previousUpProjection[4] = {};
     float previousViewport[4] = {};
     float previousClipOrtho[4] = {};
+    float lodPixelError = 1.5f;
+    uint32_t lodTopologyBuffer = UINT32_MAX;
+    uint32_t lodStateBuffer = UINT32_MAX;
+    uint32_t lodInstanceOffsetsOffset = 0;
+    float renderEye[4] = {};
+    float renderCenter[4] = {};
+    float renderUpProjection[4] = {};
+    float renderViewport[4] = {};
+    float renderClipOrtho[4] = {};
 };
 
 struct MeshletStreamGpuRasterBindings {
@@ -355,7 +371,7 @@ static_assert(sizeof(MeshletStreamGpuActiveGroup) == 112);
 static_assert(sizeof(MeshletStreamGpuInstance) == 96);
 static_assert(sizeof(MeshletStreamGpuPrimitive) == 64);
 static_assert(sizeof(MeshletStreamGpuLodLevel) == 32);
-static_assert(sizeof(MeshletStreamGpuGroup) == 36);
+static_assert(sizeof(MeshletStreamGpuGroup) == 52);
 static_assert(sizeof(MeshletStreamGpuNode) == 48);
 static_assert(sizeof(MeshletStreamGpuDrawIndirect) == 12);
 static_assert(sizeof(MeshletStreamGpuTraversalHeader) == 32);
@@ -364,7 +380,7 @@ static_assert(sizeof(MeshletStreamGpuBlasHeader) == 32);
 static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGpuParams) == 272);
+static_assert(sizeof(MeshletStreamGpuParams) == 368);
 static_assert(sizeof(MeshletStreamGpuRasterBindings) == 64);
 static_assert(sizeof(MeshletStreamUserPush) == 120);
 
@@ -391,6 +407,8 @@ struct MeshletStreamRuntimeDesc {
     uint64_t maxBlasBytes = 512ull * 1024ull * 1024ull;
     uint32_t maxBlasBuilds = kMeshletStreamDefaultMaxBlasBuilds;
     uint64_t maxFallbackBlasBytes = 512ull * 1024ull * 1024ull;
+
+    bool operator==(const MeshletStreamRuntimeDesc&) const = default;
 };
 
 struct MeshletStreamCameraDesc {
@@ -400,6 +418,9 @@ struct MeshletStreamCameraDesc {
     float fovDegrees = 60.0f;
     float znear = 0.1f;
     float zfar = 1000.0f;
+    bool orthographic = false;
+    bool reversedZ = true;
+    float orthoHeight = 10.0f;
 };
 
 struct MeshletStreamFrameDesc {
@@ -407,8 +428,14 @@ struct MeshletStreamFrameDesc {
     uint32_t height = 1;
     uint32_t selectedLodLevel = kMeshletStreamNoDebugLodOverride;
     bool enableGpuLodSelection = true;
+    float lodPixelError = 1.5f;
+    float lodBias = 0.0f;
     uint32_t debugColorMode = kMeshletStreamDebugPage;
     MeshletStreamCameraDesc camera;
+    MeshletStreamCameraDesc renderCamera;
+    bool useSeparateRenderCamera = false;
+    float jitterX = 0.0f;
+    float jitterY = 0.0f;
 };
 
 class MeshletStreamRuntime {
@@ -520,6 +547,8 @@ private:
     std::unique_ptr<Buffer> primitiveBuffer_;
     std::unique_ptr<Buffer> lodLevelBuffer_;
     std::unique_ptr<Buffer> groupBuffer_;
+    std::unique_ptr<Buffer> lodTopologyBuffer_;
+    std::unique_ptr<Buffer> lodStateBuffer_;
     std::unique_ptr<Buffer> nodeBuffer_;
     std::unique_ptr<Buffer> drawIndirectBuffer_;
     std::unique_ptr<Buffer> traversalHeaderBuffer_;
@@ -560,6 +589,10 @@ private:
     BindlessHandle primitiveHandle_;
     BindlessHandle lodLevelHandle_;
     BindlessHandle groupHandle_;
+    BindlessHandle lodTopologyHandle_;
+    BindlessHandle lodStateHandle_;
+    uint32_t lodInstanceOffsetsOffset_ = 0;
+    ResourceState lodStateBufferState_ = ResourceState::Undefined;
     BindlessHandle nodeHandle_;
     BindlessHandle drawIndirectHandle_;
     BindlessHandle traversalHeaderHandle_;

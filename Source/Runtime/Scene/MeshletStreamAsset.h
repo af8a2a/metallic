@@ -15,6 +15,7 @@ inline constexpr const char* kMeshletStreamAssetSuffix = ".meshstream.bin";
 inline constexpr uint32_t kMeshletStreamInvalidGroupIndex = std::numeric_limits<uint32_t>::max();
 inline constexpr uint32_t kMeshletStreamInvalidNodeIndex = std::numeric_limits<uint32_t>::max();
 inline constexpr float kMeshletStreamTerminalGroupError = std::numeric_limits<float>::max();
+inline constexpr uint32_t kMeshletStreamGroupTerminal = 1u;
 
 inline constexpr uint32_t kMeshletStreamPayloadAttributePosition = 1u << 0u;
 inline constexpr uint32_t kMeshletStreamPayloadAttributeNormal = 1u << 1u;
@@ -96,6 +97,8 @@ struct MeshletStreamGroupInfo {
     uint32_t clusterCount = 0;
     float boundsCenterRadius[4] = {};
     float maxQuadricError = 0.0f;
+    uint32_t clusterRefinedOffset = 0;
+    uint32_t flags = 0;
 };
 
 struct MeshletStreamNodeInfo {
@@ -215,6 +218,11 @@ public:
     std::span<const MeshletStreamGeometryInfo> geometries() const;
     std::span<const MeshletStreamLodLevelInfo> lodLevels() const;
     std::span<const MeshletStreamGroupInfo> groups() const;
+    // One global refined group index per cluster, independent of page residency.
+    std::span<const uint32_t> refinedGroups() const;
+    // Roots of every DAG branch, including branches that terminate at a finer LOD.
+    std::span<const uint32_t> terminalGroups() const;
+    std::span<const uint32_t> primitiveTerminalGroups(uint32_t primitiveIndex) const;
     std::span<const MeshletStreamNodeInfo> nodes() const;
     std::span<const MeshletStreamPageInfo> pages() const;
     std::span<const uint64_t> pagePayloadOffsets() const;

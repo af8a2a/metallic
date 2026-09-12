@@ -14,14 +14,18 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -2331,6 +2335,8 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
                 groupPayload.data() + groupHeader.clusterOffsetBytes);
         for (uint32_t clusterIndex = 0; clusterIndex < group.clusterCount; ++clusterIndex) {
             const uint32_t refinedGroupIndex = groupClusters[clusterIndex].refinedGroupIndex;
+            ASSERT_LT(group.clusterRefinedOffset + clusterIndex, asset.refinedGroups().size());
+            EXPECT_EQ(asset.refinedGroups()[group.clusterRefinedOffset + clusterIndex], refinedGroupIndex);
             if (refinedGroupIndex == metallic::scene::kMeshletStreamInvalidGroupIndex) {
                 foundOriginalCluster = true;
                 continue;
@@ -2343,6 +2349,27 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_TRUE(foundOriginalCluster);
     EXPECT_TRUE(foundRefinedCluster);
     EXPECT_TRUE(foundTerminalGroup);
+
+    // Terminal groups are the complete DAG root set, not a single coarsest LOD range.
+    std::vector<uint8_t> hasParent(asset.groupCount(), 0);
+    for (uint32_t refined : asset.refinedGroups()) {
+        if (refined != metallic::scene::kMeshletStreamInvalidGroupIndex) {
+            ASSERT_LT(refined, hasParent.size());
+            hasParent[refined] = 1;
+        }
+    }
+    std::vector<uint32_t> expectedTerminals;
+    for (uint32_t groupIndex = 0; groupIndex < asset.groupCount(); ++groupIndex) {
+        const bool terminal = hasParent[groupIndex] == 0;
+        EXPECT_EQ((asset.groups()[groupIndex].flags & metallic::scene::kMeshletStreamGroupTerminal) != 0, terminal);
+        if (terminal) {
+            expectedTerminals.push_back(groupIndex);
+        }
+    }
+    EXPECT_EQ(std::vector<uint32_t>(asset.terminalGroups().begin(), asset.terminalGroups().end()), expectedTerminals);
+    EXPECT_EQ(std::vector<uint32_t>(asset.primitiveTerminalGroups(0).begin(),
+        asset.primitiveTerminalGroups(0).end()), expectedTerminals);
+    EXPECT_TRUE(asset.primitiveTerminalGroups(asset.primitiveCount()).empty());
 
     ASSERT_LT(primitive.nodeOffset, asset.nodeCount());
     const metallic::scene::MeshletStreamNodeInfo& hierarchyRoot = asset.nodes()[primitive.nodeOffset];
@@ -2681,6 +2708,76 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_NE(reason.find("header"), std::string::npos) << reason;
     lazyValidationAsset.close();
     std::filesystem::remove(lazyValidationPath);
+
+    // V8 used a 36-byte group directory and carried refinement edges only in page payloads.
+    // Keep directory offsets fixed while repacking the prefix so both uncompressed and
+    // compressed legacy assets exercise the one-time topology reconstruction path.
+    const auto readAssetBytes = [](const std::filesystem::path& path) {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        std::vector<uint8_t> bytes(static_cast<size_t>(file.tellg()));
+        file.seekg(0);
+        file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        return bytes;
+    };
+    const auto writeAssetBytes = [](const std::filesystem::path& path, const std::vector<uint8_t>& bytes) {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        return file.good();
+    };
+    constexpr size_t kGroupDirectoryOffsetField = 152;
+    constexpr size_t kRefinedDirectoryOffsetField = 160;
+    for (const std::filesystem::path& sourcePath : {streamAssetPath, compressedStreamAssetPath}) {
+        std::vector<uint8_t> bytes = readAssetBytes(sourcePath);
+        uint64_t groupOffset = 0;
+        std::memcpy(&groupOffset, bytes.data() + kGroupDirectoryOffsetField, sizeof(groupOffset));
+        const uint32_t legacyVersion = 8;
+        const uint32_t noRefinedCount = 0;
+        const uint64_t noRefinedOffset = 0;
+        std::memcpy(bytes.data() + 8, &legacyVersion, sizeof(legacyVersion));
+        std::memcpy(bytes.data() + 80, &noRefinedCount, sizeof(noRefinedCount));
+        std::memcpy(bytes.data() + kRefinedDirectoryOffsetField, &noRefinedOffset, sizeof(noRefinedOffset));
+        for (uint32_t groupIndex = 0; groupIndex < asset.groupCount(); ++groupIndex) {
+            std::memcpy(bytes.data() + groupOffset + groupIndex * 36u, &asset.groups()[groupIndex], 36u);
+        }
+        const auto legacyPath = streamDirectory / "legacy_v8.meshstream.bin";
+        ASSERT_TRUE(writeAssetBytes(legacyPath, bytes));
+        metallic::scene::MeshletStreamAsset legacy;
+        ASSERT_TRUE(legacy.open(legacyPath, reason)) << reason;
+        EXPECT_TRUE(legacy.isCurrentForSource(gltfPath));
+        EXPECT_EQ(std::vector<uint32_t>(legacy.refinedGroups().begin(), legacy.refinedGroups().end()),
+            std::vector<uint32_t>(asset.refinedGroups().begin(), asset.refinedGroups().end()));
+        EXPECT_EQ(std::vector<uint32_t>(legacy.terminalGroups().begin(), legacy.terminalGroups().end()), expectedTerminals);
+        for (uint32_t groupIndex = 0; groupIndex < asset.groupCount(); ++groupIndex) {
+            EXPECT_EQ(legacy.groups()[groupIndex].clusterRefinedOffset, asset.groups()[groupIndex].clusterRefinedOffset);
+            EXPECT_EQ(legacy.groups()[groupIndex].flags, asset.groups()[groupIndex].flags);
+        }
+        legacy.close();
+        std::filesystem::remove(legacyPath);
+    }
+
+    // Invalid resident metadata must be rejected before any page is requested.
+    const std::vector<uint8_t> originalBytes = readAssetBytes(streamAssetPath);
+    uint64_t groupDirectoryOffset = 0;
+    uint64_t refinedDirectoryOffset = 0;
+    std::memcpy(&groupDirectoryOffset, originalBytes.data() + kGroupDirectoryOffsetField, sizeof(uint64_t));
+    std::memcpy(&refinedDirectoryOffset, originalBytes.data() + kRefinedDirectoryOffsetField, sizeof(uint64_t));
+    const auto rejectTopology = [&](size_t offset, uint32_t value) {
+        std::vector<uint8_t> bytes = originalBytes;
+        std::memcpy(bytes.data() + offset, &value, sizeof(value));
+        const auto corruptPath = streamDirectory / "invalid_topology.meshstream.bin";
+        ASSERT_TRUE(writeAssetBytes(corruptPath, bytes));
+        metallic::scene::MeshletStreamAsset corrupt;
+        EXPECT_FALSE(corrupt.open(corruptPath, reason));
+        EXPECT_FALSE(reason.empty());
+        corrupt.close();
+        std::filesystem::remove(corruptPath);
+    };
+    rejectTopology(refinedDirectoryOffset, 0u); // Self-reference, hence a cycle.
+    rejectTopology(groupDirectoryOffset + offsetof(metallic::scene::MeshletStreamGroupInfo, clusterRefinedOffset), 1u);
+    rejectTopology(groupDirectoryOffset + offsetof(metallic::scene::MeshletStreamGroupInfo, flags),
+        asset.groups().front().flags ^ metallic::scene::kMeshletStreamGroupTerminal);
+    rejectTopology(groupDirectoryOffset + offsetof(metallic::scene::MeshletStreamGroupInfo, clusterCount),
+        asset.groups().front().clusterCount + 1u);
 
     if constexpr (sizeof(void*) >= 8) {
         const std::filesystem::path largeSparsePath =
@@ -4440,6 +4537,73 @@ void waitForSceneLoad(metallic::scene::SceneLoadHandle& handle)
     ASSERT_TRUE(handle.complete());
 }
 
+class ImageTaskRecorder final : public metallic::task::ITaskEventSink {
+public:
+    void onGraphSubmitted(const metallic::task::TaskGraphSnapshot&) override {}
+
+    void onTaskStateChanged(const metallic::task::TaskNodeEvent& event) override
+    {
+        if (onEvent) {
+            onEvent(event);
+        }
+    }
+
+    void onGraphCompleted(const metallic::task::TaskGraphSnapshot& snapshot) override
+    {
+        if (snapshot.name == "SceneCpuPayload") {
+            std::lock_guard lock(mutex_);
+            snapshot_ = snapshot;
+            ready_.notify_all();
+        }
+    }
+
+    metallic::task::TaskGraphSnapshot waitForPayload()
+    {
+        std::unique_lock lock(mutex_);
+        EXPECT_TRUE(ready_.wait_for(lock, std::chrono::seconds(5), [this] {
+            return snapshot_.graphId != 0;
+        }));
+        return snapshot_;
+    }
+
+    std::function<void(const metallic::task::TaskNodeEvent&)> onEvent;
+
+private:
+    std::mutex mutex_;
+    std::condition_variable ready_;
+    metallic::task::TaskGraphSnapshot snapshot_;
+};
+
+std::filesystem::path writeImagePipelineScene(
+    const std::filesystem::path& directory,
+    const std::vector<std::array<uint32_t, 2>>& dimensions)
+{
+    std::filesystem::create_directories(directory);
+    const auto path = writeFullScene(directory);
+    nlohmann::json source;
+    {
+        std::ifstream file(path);
+        file >> source;
+    }
+    source["images"] = nlohmann::json::array();
+    for (size_t index = 0; index < dimensions.size(); ++index) {
+        const auto [width, height] = dimensions[index];
+        const std::string uri = std::to_string(index) + ".ppm";
+        std::ofstream file(directory / uri, std::ios::binary);
+        file << "P6\n" << width << ' ' << height << "\n255\n";
+        for (uint32_t y = 0; y < height; ++y) {
+            for (uint32_t x = 0; x < width; ++x) {
+                const std::array<uint8_t, 3> pixel{
+                    static_cast<uint8_t>(x * 8u), static_cast<uint8_t>(y * 16u), 64};
+                file.write(reinterpret_cast<const char*>(pixel.data()), pixel.size());
+            }
+        }
+        source["images"].push_back({{"uri", uri}});
+    }
+    writeTextFile(path, source.dump());
+    return path;
+}
+
 void testAsyncSceneLoad(const std::filesystem::path& directory)
 {
     const auto initialization = metallic::task::initializeTaskSystem({.workerCount = 2});
@@ -5663,6 +5827,216 @@ TEST(SceneEditing, PickerBvh)
 TEST(SceneLoading, AsyncProgressAndCancellation)
 {
     testAsyncSceneLoad(prepareOutputDirectory());
+}
+
+TEST(SceneLoading, ImageStageLimitsAndMipContents)
+{
+    using namespace metallic;
+    const std::vector<std::array<uint32_t, 2>> dimensions{
+        {4, 4}, {5, 1}, {1, 5}, {1, 1}, {2, 2}, {16, 4}, {4, 16}, {8, 8},
+    };
+    const auto path = writeImagePipelineScene(prepareOutputDirectory() / "image_pipeline", dimensions);
+    struct Configuration {
+        uint32_t workers;
+        scene::SceneLoadOptions options;
+    };
+    const std::array configurations{
+        Configuration{1, {.decodeConcurrency = 8, .maxDecodedBytesInFlight = 1, .mipConcurrency = 8}},
+        Configuration{4, {.decodeConcurrency = 2, .maxDecodedBytesInFlight = 0, .mipConcurrency = 1}},
+        Configuration{4, {.decodeConcurrency = 1, .maxDecodedBytesInFlight = 400, .mipConcurrency = 3}},
+        Configuration{4, {.decodeConcurrency = 8, .maxDecodedBytesInFlight = 128, .mipConcurrency = 8}},
+        Configuration{4, {}},
+    };
+    for (const auto& configuration : configurations) {
+        SCOPED_TRACE(::testing::Message() << "workers=" << configuration.workers
+            << " budget=" << configuration.options.maxDecodedBytesInFlight);
+        const auto initialization = task::initializeTaskSystem({.workerCount = configuration.workers});
+        ASSERT_TRUE(initialization.has_value()) << initialization.error().message;
+        struct ShutdownGuard {
+            ~ShutdownGuard() { task::shutdownTaskSystem(); }
+        } shutdownGuard;
+        auto recorder = std::make_shared<ImageTaskRecorder>();
+        // Force differently sized jobs to finish out of order, exercising reuse
+        // of memory reservations while other images are still in flight.
+        recorder->onEvent = [](const task::TaskNodeEvent& event) {
+            if (event.node.state == task::TaskState::Running && event.node.desc.name == "DecodeImage" &&
+                event.node.desc.userTag % 3 == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        };
+        const auto token = task::taskSystem().subscribe(recorder);
+        scene::SceneLoader loader;
+        auto handle = loader.request(path, configuration.options);
+        waitForSceneLoad(handle);
+        ASSERT_EQ(handle.progress().status, scene::SceneLoadStatus::Succeeded);
+        auto loaded = handle.takeResult();
+        ASSERT_NE(loaded, nullptr);
+        ASSERT_EQ(loaded->images().size(), dimensions.size());
+        for (size_t index = 0; index < dimensions.size(); ++index) {
+            const auto& image = loaded->images()[index];
+            EXPECT_TRUE(image.decodeAttempted);
+            EXPECT_TRUE(image.decodeWarning.empty()) << image.decodeWarning;
+            auto [width, height] = dimensions[index];
+            size_t expectedLevels = 1;
+            while (width > 1 || height > 1) {
+                width = std::max(width / 2u, 1u);
+                height = std::max(height / 2u, 1u);
+                ++expectedLevels;
+            }
+            ASSERT_EQ(image.decodedMips.size(), expectedLevels);
+            EXPECT_EQ(image.decodedMips.front().width, dimensions[index][0]);
+            EXPECT_EQ(image.decodedMips.front().height, dimensions[index][1]);
+            EXPECT_EQ(image.decodedMips.back().width, 1u);
+            EXPECT_EQ(image.decodedMips.back().height, 1u);
+        }
+        EXPECT_EQ(loaded->images()[0].decodedMips[1].pixels,
+            (std::vector<uint8_t>{4, 8, 64, 255, 20, 8, 64, 255, 4, 40, 64, 255, 20, 40, 64, 255}));
+        EXPECT_EQ(loaded->images()[0].decodedMips.back().pixels, (std::vector<uint8_t>{12, 24, 64, 255}));
+        EXPECT_EQ(loaded->images()[1].decodedMips.back().pixels, (std::vector<uint8_t>{12, 0, 64, 255}));
+        EXPECT_EQ(loaded->images()[2].decodedMips.back().pixels, (std::vector<uint8_t>{0, 24, 64, 255}));
+
+        const auto snapshot = recorder->waitForPayload();
+        EXPECT_TRUE(task::taskSystem().unsubscribe(token));
+        struct Change {
+            task::TaskClock::time_point time;
+            int decode = 0;
+            int mips = 0;
+            int64_t bytes = 0;
+        };
+        std::vector<Change> changes;
+        std::vector<const task::TaskNodeSnapshot*> decodes(dimensions.size());
+        std::vector<const task::TaskNodeSnapshot*> mips(dimensions.size());
+        const uint64_t limit = configuration.options.maxDecodedBytesInFlight;
+        for (const auto& node : snapshot.nodes) {
+            if (node.desc.name != "DecodeImage" && node.desc.name != "BuildImageMips") {
+                continue;
+            }
+            EXPECT_EQ(node.state, task::TaskState::Succeeded);
+            const size_t index = node.desc.userTag;
+            ASSERT_LT(index, dimensions.size());
+            const uint64_t estimate = uint64_t{8} * dimensions[index][0] * dimensions[index][1];
+            const int64_t reserved = static_cast<int64_t>(limit == 0 ? 0 : std::min(estimate, limit));
+            if (node.desc.name == "DecodeImage") {
+                EXPECT_EQ(decodes[index], nullptr);
+                decodes[index] = &node;
+                changes.push_back({node.startTime, 1, 0, reserved});
+                changes.push_back({node.finishTime, -1, 0, 0});
+            } else {
+                EXPECT_EQ(mips[index], nullptr);
+                mips[index] = &node;
+                changes.push_back({node.startTime, 0, 1, 0});
+                changes.push_back({node.finishTime, 0, -1, -reserved});
+            }
+        }
+        for (size_t index = 0; index < dimensions.size(); ++index) {
+            ASSERT_NE(decodes[index], nullptr);
+            ASSERT_NE(mips[index], nullptr);
+            EXPECT_LE(decodes[index]->finishTime, mips[index]->startTime);
+        }
+        std::sort(changes.begin(), changes.end(), [](const Change& left, const Change& right) {
+            return left.time != right.time ? left.time < right.time
+                : left.decode + left.mips < right.decode + right.mips;
+        });
+        int activeDecodes = 0;
+        int activeMips = 0;
+        int64_t bytesInFlight = 0;
+        const auto concurrencyLimit = [&configuration](uint32_t requested) {
+            return requested != 0 ? std::min(requested, configuration.workers)
+                : std::min(8u, std::max(configuration.workers - 1u, 1u));
+        };
+        for (const auto& change : changes) {
+            activeDecodes += change.decode;
+            activeMips += change.mips;
+            bytesInFlight += change.bytes;
+            EXPECT_GE(activeDecodes, 0);
+            EXPECT_GE(activeMips, 0);
+            EXPECT_GE(bytesInFlight, 0);
+            EXPECT_LE(activeDecodes, concurrencyLimit(configuration.options.decodeConcurrency));
+            EXPECT_LE(activeMips, concurrencyLimit(configuration.options.mipConcurrency));
+            EXPECT_LE(bytesInFlight, limit);
+        }
+        EXPECT_EQ(activeDecodes, 0);
+        EXPECT_EQ(activeMips, 0);
+        EXPECT_EQ(bytesInFlight, 0);
+    }
+}
+
+TEST(SceneLoading, CancelsBetweenImageDecodeAndMips)
+{
+    using namespace metallic;
+    const auto path = writeImagePipelineScene(prepareOutputDirectory() / "cancel_image_mips", {{16, 16}, {8, 8}});
+    const auto initialization = task::initializeTaskSystem({.workerCount = 1});
+    ASSERT_TRUE(initialization.has_value()) << initialization.error().message;
+    struct ShutdownGuard {
+        ~ShutdownGuard() { task::shutdownTaskSystem(); }
+    } shutdownGuard;
+    std::promise<scene::SceneLoadHandle> handlePromise;
+    const auto handleFuture = handlePromise.get_future().share();
+    auto cancelAccepted = std::make_shared<std::atomic_bool>(false);
+    auto recorder = std::make_shared<ImageTaskRecorder>();
+    recorder->onEvent = [handleFuture, cancelAccepted](const task::TaskNodeEvent& event) {
+        if (event.node.desc.name == "DecodeImage" && event.node.desc.userTag == 0 &&
+            event.node.state == task::TaskState::Succeeded) {
+            if (handleFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready) {
+                auto handle = handleFuture.get();
+                cancelAccepted->store(handle.cancel());
+            }
+        }
+    };
+    const auto token = task::taskSystem().subscribe(recorder);
+    scene::SceneLoader loader;
+    auto handle = loader.request(path, {.maxDecodedBytesInFlight = 1});
+    const std::weak_ptr<task::TaskSystem> systemLifetime = task::detail::tryAcquireTaskSystem();
+    handlePromise.set_value(handle);
+    waitForSceneLoad(handle);
+    const auto snapshot = recorder->waitForPayload();
+    EXPECT_TRUE(task::taskSystem().unsubscribe(token));
+    EXPECT_TRUE(cancelAccepted->load());
+    EXPECT_EQ(handle.progress().status, scene::SceneLoadStatus::Cancelled);
+    EXPECT_EQ(handle.takeResult(), nullptr);
+    size_t mipTasks = 0;
+    for (const auto& node : snapshot.nodes) {
+        if (node.desc.name == "BuildImageMips") {
+            ++mipTasks;
+            EXPECT_EQ(node.startTime, task::TaskClock::time_point{});
+        }
+    }
+    EXPECT_EQ(mipTasks, 2u);
+    task::shutdownTaskSystem();
+    // The cancelled handle may remain alive in the editor, but skipped image
+    // callbacks must not form a state/run cycle that retains their payloads.
+    EXPECT_TRUE(systemLifetime.expired());
+}
+
+TEST(SceneLoading, SuperSponzaImagesSmoke)
+{
+    if (std::getenv("METALLIC_TEST_SUPER_SPONZA_IMAGES") == nullptr) {
+        GTEST_SKIP() << "Set METALLIC_TEST_SUPER_SPONZA_IMAGES=1 to decode the 6 GiB image fixture";
+    }
+    const auto path = std::filesystem::path(PROJECT_SOURCE_DIR) /
+        "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf";
+    if (!std::filesystem::exists(path)) {
+        GTEST_SKIP() << "Super Sponza glTF fixture is not available";
+    }
+    const auto initialization = metallic::task::initializeTaskSystem();
+    ASSERT_TRUE(initialization.has_value()) << initialization.error().message;
+    struct ShutdownGuard {
+        ~ShutdownGuard() { metallic::task::shutdownTaskSystem(); }
+    } shutdownGuard;
+    metallic::scene::SceneLoader loader;
+    auto handle = loader.request(path);
+    waitForSceneLoad(handle);
+    EXPECT_EQ(handle.progress().status, metallic::scene::SceneLoadStatus::Succeeded);
+    const auto loaded = handle.takeResult();
+    ASSERT_NE(loaded, nullptr);
+    ASSERT_EQ(loaded->images().size(), 72u);
+    for (const auto& image : loaded->images()) {
+        EXPECT_TRUE(image.decodeWarning.empty()) << image.name << ": " << image.decodeWarning;
+        ASSERT_EQ(image.decodedMips.size(), 13u) << image.name;
+        EXPECT_EQ(image.decodedMips.front().width, 4096u);
+        EXPECT_EQ(image.decodedMips.front().height, 4096u);
+        EXPECT_EQ(image.decodedMips.back().pixels.size(), 4u);
+    }
 }
 
 TEST(SceneLoading, DefersExternalImagesAndPreservesEmbeddedImages)

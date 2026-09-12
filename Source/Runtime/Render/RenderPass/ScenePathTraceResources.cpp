@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -167,6 +168,10 @@ class SceneUploadStagingArena {
 public:
     static constexpr uint64_t kPageByteSize = 64ull * 1024ull * 1024ull;
 
+    SceneUploadStagingArena() = default;
+    SceneUploadStagingArena(SceneUploadStagingArena&&) noexcept = default;
+    SceneUploadStagingArena& operator=(SceneUploadStagingArena&&) noexcept = default;
+
     ~SceneUploadStagingArena()
     {
         clear();
@@ -183,6 +188,29 @@ public:
         std::string_view label)
     {
         if (data == nullptr || byteSize == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+        void* mapped = nullptr;
+        Result result = allocate(device, byteSize, alignment, outBuffer, outOffset, mapped, log, label);
+        if (!result) {
+            return result;
+        }
+        std::memcpy(mapped, data, static_cast<size_t>(byteSize));
+        outBuffer->flush(outOffset, byteSize);
+        return {};
+    }
+
+    Result allocate(
+        Device& device,
+        uint64_t byteSize,
+        uint64_t alignment,
+        std::shared_ptr<Buffer>& outBuffer,
+        uint64_t& outOffset,
+        void*& outMapped,
+        std::string& log,
+        std::string_view label)
+    {
+        if (byteSize == 0 || byteSize > std::numeric_limits<size_t>::max()) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -229,22 +257,32 @@ public:
             pages_.push_back(std::move(page));
         }
 
-        std::memcpy(
-            static_cast<uint8_t*>(selectedPage->mapped) + selectedOffset,
-            data,
-            static_cast<size_t>(byteSize));
-        selectedPage->buffer->flush(selectedOffset, byteSize);
         selectedPage->cursor = selectedOffset + byteSize;
         outBuffer = selectedPage->buffer;
         outOffset = selectedOffset;
+        outMapped = static_cast<uint8_t*>(selectedPage->mapped) + selectedOffset;
         return {};
     }
 
-    void reset()
+    SceneUploadStagingArena takeUsedPages()
     {
-        for (const std::unique_ptr<Page>& page : pages_) {
-            page->cursor = 0;
+        SceneUploadStagingArena used;
+        for (auto& page : pages_) {
+            if (page->cursor != 0) {
+                used.pages_.push_back(std::move(page));
+            }
         }
+        std::erase(pages_, nullptr);
+        return used;
+    }
+
+    void recycle(SceneUploadStagingArena&& completed)
+    {
+        for (auto& page : completed.pages_) {
+            page->cursor = 0;
+            pages_.push_back(std::move(page));
+        }
+        completed.pages_.clear();
     }
 
     void clear()
@@ -393,28 +431,6 @@ Result uploadStorageBuffer(
         });
     }
     return {};
-}
-
-Result createTextureUploadBuffer(
-    Device& device,
-    SceneUploadStagingArena& stagingArena,
-    const void* data,
-    uint64_t byteSize,
-    uint64_t alignment,
-    std::shared_ptr<Buffer>& outBuffer,
-    uint64_t& outOffset,
-    std::string& log,
-    std::string_view label)
-{
-    return stagingArena.upload(
-        device,
-        data,
-        byteSize,
-        alignment,
-        outBuffer,
-        outOffset,
-        log,
-        label);
 }
 
 uint32_t mipCountForDimensions(uint32_t width, uint32_t height)
@@ -621,7 +637,7 @@ Result createMaterialTexture(
     const uint64_t uploadAlignment = std::max<uint64_t>(
         device.capabilities().textureUploadBufferOffsetAlignment,
         1ull);
-    std::vector<uint8_t> packedMipData;
+    uint64_t allocationSize = 0;
     for (uint32_t mipIndex = 0; mipIndex < mipCount; ++mipIndex) {
         const uint32_t mipWidth = preparedMips != nullptr && !preparedMips->empty()
             ? (*preparedMips)[mipIndex].width
@@ -636,37 +652,43 @@ Result createMaterialTexture(
         upload.width = mipWidth;
         upload.height = mipHeight;
         upload.byteSize = rgba8ByteSize(mipWidth, mipHeight);
-        upload.bufferOffset = (packedMipData.size() + uploadAlignment - 1u) /
+        upload.bufferOffset = (allocationSize + uploadAlignment - 1u) /
             uploadAlignment * uploadAlignment;
         if (mipPixels.size() < upload.byteSize ||
             upload.bufferOffset > std::numeric_limits<size_t>::max() - upload.byteSize) {
             return makeError(Error::InvalidArgument);
         }
-        packedMipData.resize(static_cast<size_t>(upload.bufferOffset + upload.byteSize));
-        std::memcpy(
-            packedMipData.data() + upload.bufferOffset,
-            mipPixels.data(),
-            static_cast<size_t>(upload.byteSize));
+        allocationSize = upload.bufferOffset + upload.byteSize;
         outTexture.byteSize += upload.byteSize;
         outTexture.mipUploads.push_back(std::move(upload));
     }
 
-    std::string uploadLabel = "ScenePathTracePass packed texture upload ";
+    std::string uploadLabel = "ScenePathTracePass texture upload ";
     uploadLabel += std::string(label);
-    Result result = createTextureUploadBuffer(
+    void* mapped = nullptr;
+    Result result = stagingArena.allocate(
         device,
-        stagingArena,
-        packedMipData.data(),
-        packedMipData.size(),
+        allocationSize,
         uploadAlignment,
         outTexture.uploadBuffer,
         outTexture.uploadBufferOffset,
+        mapped,
         log,
         uploadLabel);
     if (!result) {
         return result;
     }
-    outTexture.uploadAllocationSize = packedMipData.size();
+    // Copy each existing mip directly to its final staging offset. There is no
+    // packed CPU vector to initialize, grow, or copy a second time.
+    for (size_t mipIndex = 0; mipIndex < mipCount; ++mipIndex) {
+        const auto& mipPixels = preparedMips != nullptr && !preparedMips->empty()
+            ? (*preparedMips)[mipIndex].pixels : generatedMipChain[mipIndex].pixels;
+        const auto& upload = outTexture.mipUploads[mipIndex];
+        std::memcpy(static_cast<uint8_t*>(mapped) + upload.bufferOffset,
+            mipPixels.data(), static_cast<size_t>(upload.byteSize));
+    }
+    outTexture.uploadBuffer->flush(outTexture.uploadBufferOffset, allocationSize);
+    outTexture.uploadAllocationSize = allocationSize;
 
     result = device.createTexture(
         TextureDesc{
@@ -1184,7 +1206,6 @@ struct ScenePathTraceResources::Impl {
         AccelerationStructure,
         Buffers,
         SubmitPartialUploads,
-        WaitForPartialUploads,
         SubmitUploads,
         WaitForGpu,
         Ready,
@@ -1193,6 +1214,23 @@ struct ScenePathTraceResources::Impl {
 
     static constexpr uint64_t kUploadBatchByteLimit = 64ull * 1024ull * 1024ull;
     static constexpr uint32_t kUploadBatchRegionLimit = 128;
+    static constexpr uint32_t kMaxUploadBatchesInFlight = 3;
+
+    struct UploadBatch {
+        SceneUploadStagingArena staging;
+        std::unique_ptr<CommandPool> uploadPool;
+        std::unique_ptr<CommandBuffer> uploadCommands;
+        std::unique_ptr<CommandPool> acquirePool;
+        std::unique_ptr<CommandBuffer> acquireCommands;
+        std::unique_ptr<Semaphore> timeline;
+        uint64_t completionValue = 0;
+        bool includesNeuralUploads = false;
+
+        bool complete() const
+        {
+            return completionValue == 0 || (timeline != nullptr && timeline->currentValue() >= completionValue);
+        }
+    };
 
     uint64_t pendingUploadByteSize() const
     {
@@ -1309,6 +1347,14 @@ struct ScenePathTraceResources::Impl {
     {
         const uint64_t batchByteSize = pendingUploadByteSize();
         const uint32_t batchRegionCount = pendingUploadRegionCount();
+        if (batchRegionCount == 0) {
+            return {};
+        }
+        // Keep submitted command buffers, timelines and staging alive even if
+        // creating or submitting the graphics acquire step subsequently fails.
+        auto& batch = uploadBatches.emplace_back(std::make_unique<UploadBatch>());
+        batch->staging = stagingArena.takeUsedPages();
+        batch->includesNeuralUploads = neuralTextures.pendingUploadRegionCount() != 0;
         // vkCmdConvertCooperativeVectorMatrixNV requires a graphics or compute
         // capable command buffer, so keep CoopVec weight conversion off a
         // transfer-only queue.
@@ -1320,40 +1366,40 @@ struct ScenePathTraceResources::Impl {
         }
         const bool requiresGraphicsAcquire = uploadQueue != &graphicsQueue;
 
-        Result result = device.createCommandPool(*uploadQueue, textureUploadCommandPool);
-        if (!result || textureUploadCommandPool == nullptr) {
+        Result result = device.createCommandPool(*uploadQueue, batch->uploadPool);
+        if (!result || batch->uploadPool == nullptr) {
             log += resultMessage("createCommandPool(scene texture uploads)", result);
             return result ? makeError(Error::Failure) : result;
         }
-        result = textureUploadCommandPool->createCommandBuffer(textureUploadCommandBuffer);
-        if (!result || textureUploadCommandBuffer == nullptr) {
+        result = batch->uploadPool->createCommandBuffer(batch->uploadCommands);
+        if (!result || batch->uploadCommands == nullptr) {
             log += resultMessage("createCommandBuffer(scene texture uploads)", result);
             return result ? makeError(Error::Failure) : result;
         }
         result = device.createSemaphore(
             SemaphoreDesc{.initialValue = 0},
-            textureUploadTimeline);
-        if (!result || textureUploadTimeline == nullptr) {
+            batch->timeline);
+        if (!result || batch->timeline == nullptr) {
             log += resultMessage("createSemaphore(scene uploads)", result);
             return result ? makeError(Error::Failure) : result;
         }
-        result = textureUploadCommandBuffer->begin();
+        result = batch->uploadCommands->begin();
         if (!result) {
             log += resultMessage("CommandBuffer::begin(scene texture uploads)", result);
             return result;
         }
         for (ScenePathTraceMaterialTexture& texture : materialTextures) {
-            result = uploadTexture(*textureUploadCommandBuffer, texture);
+            result = uploadTexture(*batch->uploadCommands, texture);
             if (!result) {
                 return result;
             }
         }
-        result = neuralTextures.recordUploads(*textureUploadCommandBuffer);
+        result = neuralTextures.recordUploads(*batch->uploadCommands);
         if (!result) {
             return result;
         }
         for (const ScenePathTraceBufferUpload& upload : bufferUploads) {
-            textureUploadCommandBuffer->copyBuffer(BufferCopyDesc{
+            batch->uploadCommands->copyBuffer(BufferCopyDesc{
                 .source = upload.stagingBuffer.get(),
                 .destination = upload.destination,
                 .sourceOffset = upload.sourceOffset,
@@ -1361,17 +1407,17 @@ struct ScenePathTraceResources::Impl {
             });
         }
         if (!requiresGraphicsAcquire) {
-            transitionUploadsForRendering(*textureUploadCommandBuffer);
+            transitionUploadsForRendering(*batch->uploadCommands);
         }
-        result = textureUploadCommandBuffer->end();
+        result = batch->uploadCommands->end();
         if (!result) {
             log += resultMessage("CommandBuffer::end(scene texture uploads)", result);
             return result;
         }
 
-        CommandBuffer* commandBuffers[] = {textureUploadCommandBuffer.get()};
+        CommandBuffer* commandBuffers[] = {batch->uploadCommands.get()};
         const SemaphoreSubmitDesc signal{
-            .semaphore = textureUploadTimeline.get(),
+            .semaphore = batch->timeline.get(),
             .value = 1,
             .stages = requiresGraphicsAcquire ? PipelineStageBits::Transfer : PipelineStageBits::AllCommands,
         };
@@ -1386,39 +1432,42 @@ struct ScenePathTraceResources::Impl {
             return result;
         }
 
-        textureUploadTimelineValue = 1;
-        textureUploadsSubmitted = true;
+        batch->completionValue = 1;
+        ++uploadStats.submittedBatches;
+        uploadStats.submittedBytes += batchByteSize;
+        uploadStats.inFlightBatches = static_cast<uint32_t>(uploadBatches.size());
+        uploadStats.peakInFlightBatches = std::max(uploadStats.peakInFlightBatches, uploadStats.inFlightBatches);
         if (requiresGraphicsAcquire) {
-            result = device.createCommandPool(graphicsQueue, textureAcquireCommandPool);
-            if (!result || textureAcquireCommandPool == nullptr) {
+            result = device.createCommandPool(graphicsQueue, batch->acquirePool);
+            if (!result || batch->acquirePool == nullptr) {
                 log += resultMessage("createCommandPool(scene upload acquire)", result);
                 return result ? makeError(Error::Failure) : result;
             }
-            result = textureAcquireCommandPool->createCommandBuffer(textureAcquireCommandBuffer);
-            if (!result || textureAcquireCommandBuffer == nullptr) {
+            result = batch->acquirePool->createCommandBuffer(batch->acquireCommands);
+            if (!result || batch->acquireCommands == nullptr) {
                 log += resultMessage("createCommandBuffer(scene upload acquire)", result);
                 return result ? makeError(Error::Failure) : result;
             }
-            result = textureAcquireCommandBuffer->begin();
+            result = batch->acquireCommands->begin();
             if (!result) {
                 log += resultMessage("CommandBuffer::begin(scene upload acquire)", result);
                 return result;
             }
-            transitionUploadsForRendering(*textureAcquireCommandBuffer);
-            result = textureAcquireCommandBuffer->end();
+            transitionUploadsForRendering(*batch->acquireCommands);
+            result = batch->acquireCommands->end();
             if (!result) {
                 log += resultMessage("CommandBuffer::end(scene upload acquire)", result);
                 return result;
             }
 
-            CommandBuffer* acquireCommandBuffers[] = {textureAcquireCommandBuffer.get()};
+            CommandBuffer* acquireCommandBuffers[] = {batch->acquireCommands.get()};
             const SemaphoreSubmitDesc wait{
-                .semaphore = textureUploadTimeline.get(),
+                .semaphore = batch->timeline.get(),
                 .value = 1,
                 .stages = PipelineStageBits::AllCommands,
             };
             const SemaphoreSubmitDesc acquireSignal{
-                .semaphore = textureUploadTimeline.get(),
+                .semaphore = batch->timeline.get(),
                 .value = 2,
                 .stages = PipelineStageBits::AllCommands,
             };
@@ -1434,47 +1483,56 @@ struct ScenePathTraceResources::Impl {
                 log += resultMessage("Queue::submit(scene upload acquire)", result);
                 return result;
             }
-            textureUploadTimelineValue = 2;
+            batch->completionValue = 2;
         }
+        // The batch arena owns every staging page until its acquire completes.
+        // Remove only this batch's pending uploads so later batches cannot
+        // record them again or have their data retired by an earlier batch.
+        for (auto& texture : materialTextures) {
+            if (texture.uploaded) {
+                texture.uploadBuffer.reset();
+            }
+        }
+        bufferUploads.clear();
         spdlog::info(
-            "[SceneResources] Submitted scene upload batch bytes={} regions={} queue={} independentCopy={}",
+            "[SceneResources] Submitted scene upload batch bytes={} regions={} queue={} independentCopy={} inFlight={}/{}",
             batchByteSize,
             batchRegionCount,
             uploadQueue->type() == QueueType::Copy ? "copy" : "graphics",
-            device.capabilities().independentCopyQueue);
+            device.capabilities().independentCopyQueue,
+            uploadBatches.size(), kMaxUploadBatchesInFlight);
         return {};
     }
 
     bool textureUploadsReady() const
     {
-        return !textureUploadsSubmitted ||
-            (textureUploadTimeline != nullptr &&
-                textureUploadTimeline->currentValue() >= textureUploadTimelineValue);
+        return std::all_of(uploadBatches.begin(), uploadBatches.end(), [](const auto& batch) {
+            return batch->complete();
+        });
     }
 
     void retireCompletedTextureUploads()
     {
-        if (!textureUploadsReady()) {
-            return;
+        while (!uploadBatches.empty() && uploadBatches.front()->complete()) {
+            auto& batch = *uploadBatches.front();
+            if (batch.includesNeuralUploads) {
+                neuralTextures.releaseUploadBuffers();
+            }
+            stagingArena.recycle(std::move(batch.staging));
+            if (batch.completionValue != 0) {
+                ++uploadStats.completedBatches;
+            }
+            uploadBatches.pop_front();
         }
-        for (ScenePathTraceMaterialTexture& texture : materialTextures) {
-            texture.uploadBuffer.reset();
-        }
-        neuralTextures.releaseUploadBuffers();
-        bufferUploads.clear();
-        stagingArena.reset();
-        textureUploadCommandBuffer.reset();
-        textureUploadCommandPool.reset();
-        textureAcquireCommandBuffer.reset();
-        textureAcquireCommandPool.reset();
-        textureUploadTimeline.reset();
-        textureUploadsSubmitted = false;
+        uploadStats.inFlightBatches = static_cast<uint32_t>(uploadBatches.size());
     }
 
     void waitForTextureUploads()
     {
-        if (textureUploadsSubmitted && textureUploadTimeline != nullptr && !textureUploadsReady()) {
-            (void)textureUploadTimeline->wait(textureUploadTimelineValue);
+        for (const auto& batch : uploadBatches) {
+            if (!batch->complete()) {
+                (void)batch->timeline->wait(batch->completionValue);
+            }
         }
         retireCompletedTextureUploads();
     }
@@ -1837,7 +1895,7 @@ struct ScenePathTraceResources::Impl {
 
     Result uploadMaterialTextures(CommandBuffer& commandBuffer)
     {
-        if (textureUploadsSubmitted) {
+        if (!uploadBatches.empty()) {
             (void)commandBuffer;
             retireCompletedTextureUploads();
             return {};
@@ -1858,6 +1916,8 @@ struct ScenePathTraceResources::Impl {
     void resetGpuBuffers()
     {
         waitForTextureUploads();
+        bufferUploads.clear();
+        stagingArena.clear();
         shadingVertexBuffer.reset();
         fallbackPositionBuffer.reset();
         indexBuffer.reset();
@@ -1877,6 +1937,7 @@ struct ScenePathTraceResources::Impl {
         drawBounds = scene::Bounds{};
         scenePath.clear();
         prepared = false;
+        uploadStats = {};
         asyncPrepareStage = AsyncPrepareStage::Idle;
         partialUploadResumeStage = AsyncPrepareStage::Idle;
         asyncScene = nullptr;
@@ -1962,13 +2023,8 @@ struct ScenePathTraceResources::Impl {
     size_t asyncTextureCursor = 0;
     std::array<TextureView*, kScenePathTraceMaxMaterialTextures> materialTextureViews{};
     uint32_t materialTextureCount = 0;
-    std::unique_ptr<CommandPool> textureUploadCommandPool;
-    std::unique_ptr<CommandBuffer> textureUploadCommandBuffer;
-    std::unique_ptr<CommandPool> textureAcquireCommandPool;
-    std::unique_ptr<CommandBuffer> textureAcquireCommandBuffer;
-    std::unique_ptr<Semaphore> textureUploadTimeline;
-    uint64_t textureUploadTimelineValue = 1;
-    bool textureUploadsSubmitted = false;
+    std::deque<std::unique_ptr<UploadBatch>> uploadBatches;
+    SceneUploadStats uploadStats;
     AsyncPrepareStage asyncPrepareStage = AsyncPrepareStage::Idle;
     AsyncPrepareStage partialUploadResumeStage = AsyncPrepareStage::Idle;
     const scene::Scene* asyncScene = nullptr;
@@ -2280,8 +2336,12 @@ Result ScenePathTraceResources::pumpPrepareAsync(
     const double budget = std::max(budgetMilliseconds, 0.1);
     Result result;
     while (sceneResourceElapsedMilliseconds(begin) < budget) {
+        impl_->retireCompletedTextureUploads();
         switch (impl_->asyncPrepareStage) {
         case Impl::AsyncPrepareStage::MaterialTextures: {
+            if (impl_->uploadBatches.size() >= Impl::kMaxUploadBatchesInFlight) {
+                return {};
+            }
             const uint64_t nextUploadBytes =
                 impl_->nextMaterialTextureUploadByteSize(*impl_->asyncScene);
             const uint32_t nextUploadRegions =
@@ -2315,7 +2375,7 @@ Result ScenePathTraceResources::pumpPrepareAsync(
                 impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::MaterialTextures;
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitPartialUploads;
             }
-            return {};
+            continue;
         }
         case Impl::AsyncPrepareStage::GpuPayload:
             if (!buildGpuScene(
@@ -2353,6 +2413,9 @@ Result ScenePathTraceResources::pumpPrepareAsync(
             return {};
         }
         case Impl::AsyncPrepareStage::Buffers: {
+            if (impl_->uploadBatches.size() >= Impl::kMaxUploadBatchesInFlight) {
+                return {};
+            }
             const void* data = nullptr;
             uint64_t byteSize = 0;
             uint32_t stride = 0;
@@ -2435,9 +2498,12 @@ Result ScenePathTraceResources::pumpPrepareAsync(
                 impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::Buffers;
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitPartialUploads;
             }
-            return {};
+            continue;
         }
         case Impl::AsyncPrepareStage::SubmitPartialUploads:
+            if (impl_->uploadBatches.size() >= Impl::kMaxUploadBatchesInFlight) {
+                return {};
+            }
             result = impl_->submitTextureUploads(
                 *impl_->device,
                 *impl_->graphicsQueue,
@@ -2446,21 +2512,14 @@ Result ScenePathTraceResources::pumpPrepareAsync(
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
                 return result;
             }
-            impl_->asyncPrepareStage = Impl::AsyncPrepareStage::WaitForPartialUploads;
             progress.phase = scene::SceneLoadPhase::GpuUpload;
-            progress.fraction = std::max(progress.fraction, 0.70f);
-            return {};
-        case Impl::AsyncPrepareStage::WaitForPartialUploads:
-            progress.phase = scene::SceneLoadPhase::GpuUpload;
-            progress.fraction = std::max(progress.fraction, 0.70f);
-            if (!impl_->textureUploadsReady()) {
-                return {};
-            }
-            impl_->retireCompletedTextureUploads();
             impl_->asyncPrepareStage = impl_->partialUploadResumeStage;
             impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::Idle;
-            return {};
+            continue;
         case Impl::AsyncPrepareStage::SubmitUploads:
+            if (impl_->uploadBatches.size() >= Impl::kMaxUploadBatchesInFlight) {
+                return {};
+            }
             result = impl_->submitTextureUploads(
                 *impl_->device,
                 *impl_->graphicsQueue,
@@ -2497,6 +2556,12 @@ Result ScenePathTraceResources::pumpPrepareAsync(
                 }
             }
             impl_->retireCompletedTextureUploads();
+            // All copy/acquire work has completed; keep no large idle staging
+            // pages attached to the prepared scene during normal rendering.
+            impl_->stagingArena.clear();
+            spdlog::info("[SceneResources] Uploads completed batches={} bytes={} peakInFlight={}/{}",
+                impl_->uploadStats.completedBatches, impl_->uploadStats.submittedBytes,
+                impl_->uploadStats.peakInFlightBatches, Impl::kMaxUploadBatchesInFlight);
             impl_->drawBounds = impl_->asyncScene->bounds();
             impl_->scenePath = impl_->asyncScenePath;
             impl_->sourceResourceIdentity = impl_->asyncSourceResourceIdentity;
@@ -2756,6 +2821,11 @@ const NeuralTextureResources& ScenePathTraceResources::neuralTextures() const
 bool ScenePathTraceResources::textureUploadsReady() const
 {
     return impl_->textureUploadsReady();
+}
+
+SceneUploadStats ScenePathTraceResources::uploadStats() const
+{
+    return impl_->uploadStats;
 }
 
 bool ScenePathTraceResources::gpuWorkComplete()

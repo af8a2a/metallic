@@ -2,6 +2,7 @@
 #include "../../Libraries/GPUDriven/HybridClusterBins.slang"
 #include "../../Libraries/GPUDriven/HybridRasterTriangle.slang"
 #include "../../Libraries/GPUDriven/ConservativeOcclusion.slang"
+#include "../../Libraries/GPUDriven/MeshletLodMetric.slang"
 
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
@@ -36,6 +37,9 @@ static const uint kActiveBuildPhaseBuild = 1u;
 static const uint kActiveBuildPhaseFinalize = 2u;
 static const uint kActiveBuildPhaseSeed = 3u;
 static const uint kActiveBuildPhaseRun = 4u;
+static const uint kActiveBuildPhaseFrontier = 5u;
+static const uint kActiveBuildPhasePrefix = 6u;
+static const uint kActiveBuildPhaseEmit = 7u;
 static const uint kBlasInputPhaseReset = 0u;
 static const uint kBlasInputPhaseCount = 1u;
 static const uint kBlasInputPhaseSetup = 2u;
@@ -205,6 +209,10 @@ struct GPUDrivenStreamAssetGroup
     float boundsCenterZ;
     float boundsRadius;
     float maxQuadricError;
+    uint clusterRefinedOffset;
+    uint flags;
+    uint parentOffset;
+    uint parentCount;
 };
 
 struct GPUDrivenStreamAssetNode
@@ -400,6 +408,15 @@ struct GPUDrivenStreamAssetParams
     float4 previousUpProjection;
     float4 previousViewport;
     float4 previousClipOrtho;
+    float lodPixelError;
+    uint lodTopologyBuffer;
+    uint lodStateBuffer;
+    uint lodInstanceOffsetsOffset;
+    float4 renderEye;
+    float4 renderCenter;
+    float4 renderUpProjection;
+    float4 renderViewport;
+    float4 renderClipOrtho;
 };
 
 struct GPUDrivenStreamAssetVertexOutput
@@ -464,6 +481,13 @@ float3 transformStreamNormal(
 
 float4 projectPosition(float3 worldPosition, GPUDrivenStreamAssetParams params)
 {
+    if (params.renderViewport.y > 0.0) {
+        params.eye = params.renderEye;
+        params.center = params.renderCenter;
+        params.upProjection = params.renderUpProjection;
+        params.viewport = params.renderViewport;
+        params.clipOrtho = params.renderClipOrtho;
+    }
     float3 forward = safeNormalize(params.center.xyz - params.eye.xyz, float3(0.0, 0.0, -1.0));
     float3 cameraUp = safeNormalize(params.upProjection.xyz, float3(0.0, 1.0, 0.0));
     float3 right = safeNormalize(cross(forward, cameraUp), float3(1.0, 0.0, 0.0));
@@ -483,21 +507,29 @@ float4 projectPosition(float3 worldPosition, GPUDrivenStreamAssetParams params)
 
     if (params.upProjection.w > 0.5) {
         float halfHeight = max(params.clipOrtho.z * 0.5, 0.0001);
-        return float4(
+        float4 clip = float4(
             viewPosition.x / (halfHeight * aspect),
             viewPosition.y / halfHeight,
             ndcZ,
             1.0);
+        if (params.renderViewport.y > 0.0) {
+            clip.xy -= 2.0 * float2(params.renderEye.w, -params.renderCenter.w) / params.renderViewport.yz * clip.w;
+        }
+        return clip;
     }
 
     float fovRadians = clamp(params.viewport.w, 0.017453292, 3.12413936);
     float yScale = 1.0 / tan(fovRadians * 0.5);
     float w = viewPosition.z;
-    return float4(
+    float4 clip = float4(
         viewPosition.x * yScale / aspect,
         viewPosition.y * yScale,
         ndcZ * w,
         w);
+    if (params.renderViewport.y > 0.0) {
+        clip.xy -= 2.0 * float2(params.renderEye.w, -params.renderCenter.w) / params.renderViewport.yz * clip.w;
+    }
+    return clip;
 }
 
 struct GPUDrivenStreamAssetCameraData
@@ -1763,10 +1795,179 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
     }
 }
 
+// The LOD topology is resident even when page payloads are absent. State has
+// four header words per instance (count, prefix, roots, ready), followed by
+// compact per-instance pairs (active group, selected cluster mask).
+void buildStreamLodFrontier(
+    uint instanceIndex,
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instances,
+    StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives,
+    StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
+    StructuredBuffer<uint> topology,
+    RWStructuredBuffer<uint> state,
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
+    RWStructuredBuffer<uint> requests,
+    GPUDrivenStreamAssetParams params)
+{
+    uint header = instanceIndex * 4u;
+    state[header] = 0u;
+    state[header + 1u] = 0u;
+    state[header + 2u] = 0u;
+    state[header + 3u] = 0u;
+    GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
+    if (instance.visible == 0u || instance.primitiveIndex >= params.scenePrimitiveCount) {
+        return;
+    }
+    GPUDrivenStreamAssetPrimitive primitive = primitives[instance.primitiveIndex];
+    uint base = topology[params.lodInstanceOffsetsOffset + instanceIndex];
+    bool rootsReady = true;
+    uint rootCount = 0u;
+    float3 delta = params.center.xyz - params.eye.xyz;
+    float3 forward = dot(delta, delta) > 1e-12 ? normalize(delta) : float3(0.0, 0.0, -1.0);
+    float4 lodEye = float4(params.eye.xyz, params.clipOrtho.x);
+    float4 lodForward = float4(forward, params.upProjection.w);
+    float4 lodProjection = float4(params.viewport.z, tan(params.viewport.w * 0.5),
+        params.clipOrtho.z, params.lodPixelError);
+    uint manualLevel = params.enableGpuLodSelection != 0u ? 0xffffffffu : params.selectedLodLevel;
+    // Asset validation guarantees refined < owner. The reverse order therefore
+    // evaluates every parent before its descendants, without a work queue cap.
+    for (uint remaining = primitive.groupCount; remaining != 0u; --remaining) {
+        uint localGroup = remaining - 1u;
+        GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + localGroup];
+        bool terminal = (group.flags & 1u) != 0u;
+        bool parentsActive = true;
+        for (uint parent = 0u; parent < group.parentCount; ++parent) {
+            uint parentId = topology[group.parentOffset + parent];
+            parentsActive = parentsActive && state[base + (parentId - primitive.groupOffset) * 2u] != 0u;
+        }
+        float4 sphere = float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius);
+        bool desired = meshletLodGroupNeedsFine(sphere, group.maxQuadricError,
+            group.lodLevel, group.flags, instance.world0, instance.world1, instance.world2,
+            instance.world3, lodEye, lodForward, lodProjection, manualLevel);
+        bool demanded = terminal || (parentsActive && desired);
+        if (demanded) {
+            if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) {
+                markStreamPageDemand(pageTable, params, group.pageIndex);
+            } else {
+                requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
+            }
+        }
+        bool drawable = groupPageDrawable(pageTable, params, group);
+        bool active = demanded && drawable;
+        state[base + localGroup * 2u] = active ? 1u : 0u;
+        state[base + localGroup * 2u + 1u] = 0u;
+        if (terminal) {
+            rootsReady = rootsReady && drawable;
+            ++rootCount;
+        }
+    }
+    // Publish only complete primitives. PendingUpload pages never replace
+    // their coarse ancestors, and an incomplete terminal cut stays unready.
+    uint selectedCount = 0u;
+    if (rootsReady) {
+        for (uint localGroup = 0u; localGroup < primitive.groupCount; ++localGroup) {
+            GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + localGroup];
+            uint mask = 0u;
+            if (state[base + localGroup * 2u] != 0u) {
+                for (uint cluster = 0u; cluster < group.clusterCount; ++cluster) {
+                    uint refined = topology[group.clusterRefinedOffset + cluster];
+                    if (refined == kInvalidClusterIndex ||
+                        state[base + (refined - primitive.groupOffset) * 2u] == 0u) {
+                        mask |= 1u << cluster;
+                    }
+                }
+            }
+            state[base + localGroup * 2u + 1u] = mask;
+            selectedCount += mask != 0u ? 1u : 0u;
+        }
+    }
+    state[header] = selectedCount;
+    state[header + 2u] = rootsReady ? rootCount : 0u;
+    state[header + 3u] = rootsReady ? 1u : 0u;
+}
+
+void prefixStreamLodFrontier(
+    RWStructuredBuffer<uint> state,
+    RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader,
+    GPUDrivenStreamAssetParams params)
+{
+    uint fineCount = 0u;
+    bool overflow = false;
+    for (uint instanceIndex = 0u; instanceIndex < params.sceneInstanceCount; ++instanceIndex) {
+        uint count = state[instanceIndex * 4u];
+        overflow = overflow || count > params.activeGroupCount - min(fineCount, params.activeGroupCount);
+        fineCount = min(fineCount, params.activeGroupCount) + min(count, params.activeGroupCount);
+    }
+    uint prefix = 0u;
+    for (uint instanceIndex = 0u; instanceIndex < params.sceneInstanceCount; ++instanceIndex) {
+        uint header = instanceIndex * 4u;
+        state[header + 1u] = prefix;
+        prefix += state[header + (overflow ? 2u : 0u)];
+    }
+    bool invalidCapacity = prefix > params.activeGroupCount;
+    activeHeader[0].activeGroupCount = invalidCapacity ? 0u : prefix;
+    activeHeader[0].overflowCount = invalidCapacity ? 2u : (overflow ? 1u : 0u);
+    activeHeader[0].padding0 = overflow ? 1u : 0u;
+    activeHeader[0].padding1 = invalidCapacity ? 1u : 0u;
+}
+
+void emitStreamLodFrontier(
+    uint instanceIndex,
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instances,
+    StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives,
+    StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
+    StructuredBuffer<uint> topology,
+    RWStructuredBuffer<uint> state,
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
+    RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups,
+    RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader,
+    GPUDrivenStreamAssetParams params)
+{
+    uint header = instanceIndex * 4u;
+    if (state[header + 3u] == 0u || activeHeader[0].padding1 != 0u) {
+        return;
+    }
+    GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
+    GPUDrivenStreamAssetPrimitive primitive = primitives[instance.primitiveIndex];
+    uint base = topology[params.lodInstanceOffsetsOffset + instanceIndex];
+    uint outputIndex = state[header + 1u];
+    bool fallback = activeHeader[0].padding0 != 0u;
+    for (uint localGroup = 0u; localGroup < primitive.groupCount; ++localGroup) {
+        GPUDrivenStreamAssetGroup source = groups[primitive.groupOffset + localGroup];
+        uint mask = state[base + localGroup * 2u + 1u];
+        if (fallback) {
+            mask = (source.flags & 1u) == 0u ? 0u :
+                (source.clusterCount == 32u ? 0xffffffffu : (1u << source.clusterCount) - 1u);
+        }
+        if (mask == 0u) {
+            continue;
+        }
+        GPUDrivenStreamAssetActiveGroup group;
+        group.pageDeviceOffsetBytes = streamPageDeviceOffset(pageTable[source.pageIndex]);
+        group.pageIndex = source.pageIndex;
+        group.clusterCount = source.clusterCount;
+        group.primitiveIndex = source.primitiveIndex;
+        group.lodLevel = source.lodLevel;
+        group.materialIndex = instance.materialIndex;
+        group.clusterSelectionMask = mask;
+        group.flags = kActiveGroupResident;
+        group.instanceIndex = instanceIndex;
+        group.gpuSceneInstanceIndex = instance.gpuSceneInstanceIndex;
+        group.padding1 = 0u;
+        group.padding2 = 0u;
+        group.world0 = instance.world0;
+        group.world1 = instance.world1;
+        group.world2 = instance.world2;
+        group.world3 = instance.world3;
+        activeGroups[outputIndex++] = group;
+    }
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThreadID, uniform GPUDrivenStreamAssetPush push)
 {
+    uint threadIndex = dispatchThreadID.x + dispatchThreadID.y * (65535u * 64u);
     DescriptorHandle<StructuredBuffer<uint>> pageHandle =
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
@@ -1812,8 +2013,30 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
 
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
+    if (push.activeBuildPhase >= kActiveBuildPhaseFrontier && push.activeBuildPhase <= kActiveBuildPhaseEmit) {
+        DescriptorHandle<StructuredBuffer<uint>> topologyHandle =
+            DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + params.lodTopologyBuffer, 0));
+        DescriptorHandle<RWStructuredBuffer<uint>> stateHandle =
+            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + params.lodStateBuffer, 0));
+        StructuredBuffer<uint> topology = topologyHandle;
+        RWStructuredBuffer<uint> state = stateHandle;
+        if (push.activeBuildPhase == kActiveBuildPhasePrefix) {
+            if (threadIndex == 0u) {
+                prefixStreamLodFrontier(state, activeHeader, params);
+            }
+        } else if (threadIndex < params.sceneInstanceCount) {
+            if (push.activeBuildPhase == kActiveBuildPhaseFrontier) {
+                buildStreamLodFrontier(threadIndex, instances, primitives, groups,
+                    topology, state, pageTable, requests, params);
+            } else {
+                emitStreamLodFrontier(threadIndex, instances, primitives, groups,
+                    topology, state, pageTable, activeGroups, activeHeader, params);
+            }
+        }
+        return;
+    }
     if (push.activeBuildPhase == kActiveBuildPhaseReset) {
-        if (dispatchThreadID.x == 0u) {
+        if (threadIndex == 0u) {
             GPUDrivenStreamAssetActiveHeader header;
             header.activeGroupCount = 0u;
             header.activeGroupCapacity = params.activeGroupCount;
@@ -1847,7 +2070,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     }
 
     if (push.activeBuildPhase == kActiveBuildPhaseFinalize) {
-        if (dispatchThreadID.x == 0u) {
+        if (threadIndex == 0u) {
             GPUDrivenStreamAssetActiveHeader header = activeHeader[0];
             if (params.sceneNodeCount != 0u) {
                 header.overflowCount += traversalHeader[0].overflowCount;
@@ -1867,10 +2090,10 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
 
     if (push.activeBuildPhase == kActiveBuildPhaseSeed) {
         uint workerCount = max(params.traversalWorkerCount, 1u);
-        if (dispatchThreadID.x >= workerCount) {
+        if (threadIndex >= workerCount) {
             return;
         }
-        for (uint instanceIndex = dispatchThreadID.x;
+        for (uint instanceIndex = threadIndex;
              instanceIndex < params.sceneInstanceCount;
              instanceIndex += workerCount) {
             GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
@@ -1911,7 +2134,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
 
     if (push.activeBuildPhase == kActiveBuildPhaseRun) {
         uint workerCount = max(params.traversalWorkerCount, 1u);
-        if (dispatchThreadID.x < workerCount) {
+        if (threadIndex < workerCount) {
             runActiveTraversalWorker(
                 activeGroups,
                 activeHeader,
@@ -1931,10 +2154,10 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
 
     if (params.sceneNodeCount != 0u) {
         uint workerCount = max(params.traversalWorkerCount, 1u);
-        if (dispatchThreadID.x >= workerCount) {
+        if (threadIndex >= workerCount) {
             return;
         }
-        for (uint instanceIndex = dispatchThreadID.x;
+        for (uint instanceIndex = threadIndex;
              instanceIndex < params.sceneInstanceCount;
              instanceIndex += workerCount) {
             GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
@@ -1958,7 +2181,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     if (params.maxPrimitiveGroupCount == 0u) {
         return;
     }
-    uint workItemIndex = dispatchThreadID.x;
+    uint workItemIndex = threadIndex;
     uint instanceIndex = workItemIndex / params.maxPrimitiveGroupCount;
     uint localGroupIndex = workItemIndex - instanceIndex * params.maxPrimitiveGroupCount;
     if (instanceIndex >= params.sceneInstanceCount) {

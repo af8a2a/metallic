@@ -123,7 +123,7 @@ void hybridClusterHistogramMain(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     uint block = hybridFlatGroup(group);
     uint item = block * kHybridBinBlockSize + lane;
     uint tag = 0xffffffffu;
-    if (item < push.inputClusterCount) { tag = bins[hybridCandidateBase(push.clusterCapacity) + item * 2u + 1u]; }
+    if (item < bins[12]) { tag = bins[hybridCandidateBase(push.clusterCapacity) + item * 2u + 1u]; }
     g_BinTags[lane] = tag;
     if (lane < kHybridBinCount) { g_BinCounts[lane] = 0u; }
     GroupMemoryBarrierWithGroupSync();
@@ -135,7 +135,7 @@ void hybridClusterHistogramMain(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     }
     GroupMemoryBarrierWithGroupSync();
     uint blockCapacity = (push.clusterCapacity + 127u) / 128u;
-    if (lane < kHybridBinCount && block < (push.inputClusterCount + 127u) / 128u) {
+    if (lane < kHybridBinCount && block < (bins[12] + 127u) / 128u) {
         bins[hybridBlockBase(push.clusterCapacity) + lane * blockCapacity + block] = g_BinCounts[lane];
     }
 }
@@ -149,7 +149,7 @@ void hybridClusterArgumentsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     DescriptorHandle<RWStructuredBuffer<uint>> args =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.clusterArgumentsBuffer, 0));
     uint bin = group.x;
-    uint blocks = (push.inputClusterCount + 127u) / 128u;
+    uint blocks = (bins[12] + 127u) / 128u;
     uint blocksPerLane = (blocks + 127u) / 128u;
     uint first = min(lane * blocksPerLane, blocks);
     uint end = min(first + blocksPerLane, blocks);
@@ -187,9 +187,9 @@ void hybridClusterScatterMain(uint3 group : SV_GroupID, uint lane : SV_GroupInde
 {
     uint block = hybridFlatGroup(group);
     uint item = block * kHybridBinBlockSize + lane;
-    if (item >= push.inputClusterCount) { return; }
     DescriptorHandle<RWStructuredBuffer<uint>> bins =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.clusterBuffer, 0));
+    if (item >= bins[12]) { return; }
     uint candidate = hybridCandidateBase(push.clusterCapacity) + item * 2u;
     uint bin = bins[candidate + 1u];
     if (bin >= kHybridBinCount) { return; }

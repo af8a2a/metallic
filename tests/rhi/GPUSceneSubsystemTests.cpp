@@ -147,6 +147,9 @@ scene::RenderPrimitive makeCanonicalRasterPrimitive()
         cluster(0, 0, 0, 0),
         cluster(1, 1, 3, 3),
     };
+    primitive.meshletLodClusters[1].refinedGroupIndex = 0;
+    primitive.meshletLodGroups[0].maxQuadricError = 0.25f;
+    primitive.meshletLodGroups[1].maxQuadricError = std::numeric_limits<float>::max();
     primitive.meshletLodVertices = {0, 1, 2, 0, 1, 2};
     primitive.meshletLodTriangles = {0, 1, 2, 0, 1, 2};
     return primitive;
@@ -1093,7 +1096,7 @@ public:
             kMeshletReadbackOffset + 3u * sizeof(render::GPUSceneGpuMeshletRecord);
         constexpr uint64_t kMaterialReadbackOffset =
             kMeshletDrawReadbackOffset +
-            6u * sizeof(render::GPUSceneGpuMeshletDrawRecord);
+            10u * sizeof(render::GPUSceneGpuMeshletDrawRecord);
         constexpr uint64_t kMeshletVertexReadbackOffset = kMaterialReadbackOffset;
         constexpr uint64_t kOpenPbrMaterialReadbackOffset =
             kMeshletVertexReadbackOffset + 9u * sizeof(uint32_t);
@@ -1146,12 +1149,13 @@ public:
                     return RhiTestResult::fail("GPUScene global buffer is not device-local Storage|TransferDestination");
                 }
             }
-            if (views.geometries.size != 2u * sizeof(render::GPUSceneGpuGeometryRecord) ||
+            if (views.lodGroups.size != 2u * sizeof(render::MeshletLodGroupRecord) ||
+                views.geometries.size != 2u * sizeof(render::GPUSceneGpuGeometryRecord) ||
                 views.vertices.size != 6u * sizeof(render::GPUSceneGpuVertexRecord) ||
                 views.indices.size != 6u * sizeof(uint32_t) ||
                 views.meshlets.size != 3u * sizeof(render::GPUSceneGpuMeshletRecord) ||
                 views.meshletDraws.size !=
-                    6u * sizeof(render::VisibleClusterRecord) ||
+                    10u * sizeof(render::VisibleClusterRecord) ||
                 views.meshletDraws.structureStride !=
                     sizeof(render::VisibleClusterRecord) ||
                 views.meshletVertices.size != 9u * sizeof(uint32_t) ||
@@ -1172,7 +1176,8 @@ public:
                 rasterLayout.lodRanges.size() != 2 ||
                 rasterLayout.lodRanges[0] != render::GPUSceneRasterDrawRange{2, 2} ||
                 rasterLayout.lodRanges[1] != render::GPUSceneRasterDrawRange{4, 2} ||
-                rasterLayout.maxRangeCount != 2) {
+                rasterLayout.adaptiveRange != render::GPUSceneRasterDrawRange{6, 4} ||
+                rasterLayout.maxRangeCount != 4) {
                 return RhiTestResult::fail(
                     "GPUScene base/LOD meshlet draw ranges are not stable or omitted BLEND");
             }
@@ -1286,7 +1291,7 @@ public:
         const auto* canonicalBytes = static_cast<const uint8_t*>(canonicalMapped);
         std::array<render::GPUSceneGpuGeometryRecord, 2> geometryRecords;
         std::array<render::GPUSceneGpuMeshletRecord, 3> meshletRecords;
-        std::array<render::GPUSceneGpuMeshletDrawRecord, 6> meshletDrawRecords;
+        std::array<render::GPUSceneGpuMeshletDrawRecord, 10> meshletDrawRecords;
         std::array<uint32_t, 9> meshletVertexRecords;
         std::array<render::GPUSceneGpuMaterialRecord, 2> materialRecords;
         std::array<
@@ -1342,6 +1347,8 @@ public:
                     1,
                 } ||
                 meshlet.lod[0] != (meshletIndex == 2 ? 1u : 0u) ||
+                meshlet.lod[1] != (meshletIndex == 0 ? UINT32_MAX : meshletIndex - 1u) ||
+                meshlet.lod[2] != (meshletIndex == 2 ? 0u : UINT32_MAX) ||
                 meshlet.boundingSphere[3] <= 0.0f ||
                 meshlet.coneAxisLodError[2] != 1.0f) {
                 return RhiTestResult::fail(

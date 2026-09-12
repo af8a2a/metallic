@@ -2,13 +2,15 @@
 
 #include "Runtime/Task/TaskSystem.h"
 
+#include <spdlog/spdlog.h>
+
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
 #include <algorithm>
 #include <atomic>
-#include <condition_variable>
+#include <deque>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -71,36 +73,41 @@ bool queryImageInfo(
     return false;
 }
 
-uint64_t estimatedDecodedByteSize(const SceneDocument& scene, size_t imageIndex)
+uint64_t saturatedAdd(uint64_t left, uint64_t right)
 {
-    if (imageIndex >= scene.images().size()) {
-        return 1;
+    return left + std::min(right, std::numeric_limits<uint64_t>::max() - left);
+}
+
+uint64_t estimatedImageWorkingBytes(const SceneDocument& scene, const RenderImage& image)
+{
+    const auto sourceBytes = [&scene](const auto& source) {
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        return queryImageInfo(scene, source, width, height, channels) && width > 0 && height > 0
+            ? rgba8ByteSize(static_cast<uint32_t>(width), static_cast<uint32_t>(height))
+            : std::max<uint64_t>(source.encodedData.size(), 1u);
+    };
+    if (!image.channelComposition.has_value()) {
+        const uint64_t baseBytes = sourceBytes(image);
+        // STB output and its vector copy coexist during decode. A complete mip
+        // chain (including a 1D chain) fits within this same two-base-level peak.
+        return saturatedAdd(baseBytes, baseBytes);
     }
-    const RenderImage& image = scene.images()[imageIndex];
-    int width = 0;
-    int height = 0;
-    int channels = 0;
-    size_t sourceCount = 1;
-    bool valid = false;
-    if (image.channelComposition.has_value()) {
-        sourceCount = std::max<size_t>(image.channelComposition->sources.size(), 1u);
-        for (const RenderImage::ChannelSource& source : image.channelComposition->sources) {
-            if (queryImageInfo(scene, source, width, height, channels)) {
-                valid = true;
-                break;
-            }
-        }
-    } else {
-        valid = queryImageInfo(scene, image, width, height, channels);
+
+    uint64_t retainedSourceBytes = 0;
+    uint64_t largestSourceBytes = 4;
+    uint64_t peakBytes = 0;
+    for (const auto& source : image.channelComposition->sources) {
+        const uint64_t bytes = sourceBytes(source);
+        peakBytes = std::max(peakBytes, saturatedAdd(retainedSourceBytes, saturatedAdd(bytes, bytes)));
+        retainedSourceBytes = saturatedAdd(retainedSourceBytes, bytes);
+        largestSourceBytes = std::max(largestSourceBytes, bytes);
     }
-    if (!valid || width <= 0 || height <= 0) {
-        return std::max<uint64_t>(image.encodedData.size(), 1u);
-    }
-    const uint64_t baseBytes = rgba8ByteSize(
-        static_cast<uint32_t>(width),
-        static_cast<uint32_t>(height));
-    const uint64_t workingBytes = baseBytes * static_cast<uint64_t>(sourceCount + 1u);
-    return workingBytes + baseBytes / 3u + 4u;
+    // Composition retains all sources and one target; the sources are released
+    // before mip generation. Use each source's dimensions, which may differ.
+    peakBytes = std::max(peakBytes, saturatedAdd(retainedSourceBytes, largestSourceBytes));
+    return std::max(peakBytes, saturatedAdd(largestSourceBytes, largestSourceBytes));
 }
 
 std::vector<uint8_t> buildNextMip(
@@ -222,10 +229,14 @@ LoadedImageSource loadImageSource(
     return result;
 }
 
-void appendMipChain(DecodedImageResult& result, RenderImage::Mip baseMip)
+void appendMipChain(
+    DecodedImageResult& result,
+    const std::atomic_bool& cancelled,
+    task::TaskContext& context)
 {
-    result.mips.push_back(std::move(baseMip));
-    while (result.mips.back().width > 1 || result.mips.back().height > 1) {
+    while (!result.mips.empty() &&
+        (result.mips.back().width > 1 || result.mips.back().height > 1) &&
+        !cancelled.load(std::memory_order_acquire) && !context.stopRequested()) {
         const RenderImage::Mip& source = result.mips.back();
         RenderImage::Mip mip;
         mip.width = std::max(source.width / 2u, 1u);
@@ -235,7 +246,7 @@ void appendMipChain(DecodedImageResult& result, RenderImage::Mip baseMip)
     }
 }
 
-DecodedImageResult decodeImage(const SceneDocument& scene, size_t imageIndex)
+DecodedImageResult decodeImageBase(const SceneDocument& scene, size_t imageIndex)
 {
     DecodedImageResult result;
     if (imageIndex >= scene.images().size()) {
@@ -298,7 +309,7 @@ DecodedImageResult decodeImage(const SceneDocument& scene, size_t imageIndex)
                 }
             }
         }
-        appendMipChain(result, std::move(baseMip));
+        result.mips.push_back(std::move(baseMip));
         return result;
     }
 
@@ -312,85 +323,99 @@ DecodedImageResult decodeImage(const SceneDocument& scene, size_t imageIndex)
     baseMip.width = loaded.width;
     baseMip.height = loaded.height;
     baseMip.pixels = std::move(loaded.pixels);
-    appendMipChain(result, std::move(baseMip));
+    result.mips.push_back(std::move(baseMip));
     return result;
 }
 
-struct DecodeThrottle {
-    explicit DecodeThrottle(uint32_t concurrency)
-        : concurrency(std::max(concurrency, 1u))
+// Encode memory admission in the graph instead of blocking TaskSystem workers.
+// Reserve the larger stage peak from decode through mip publication, so queued
+// base levels remain covered by the budget even when mip workers are busy.
+struct ImageTaskBudget {
+    struct Reservation {
+        task::TaskNodeHandle finish;
+        uint64_t bytes;
+    };
+
+    std::expected<void, task::TaskError> reserve(
+        task::TaskGraph& graph,
+        task::TaskNodeHandle start,
+        task::TaskNodeHandle finish,
+        uint64_t estimatedBytes)
     {
+        if (byteLimit == 0) {
+            return {};
+        }
+        // Oversized images consume the entire budget and therefore run alone.
+        const uint64_t bytes = std::min(std::max(estimatedBytes, uint64_t{1}), byteLimit);
+        if (reservedBytes > byteLimit - bytes) {
+            const auto nextBarrier = graph.addTask(
+                {.name = "ImageMemoryAvailable", .category = "SceneLoad"}, []() {});
+            if (barrier.valid()) {
+                if (auto dependency = graph.addDependency(barrier, nextBarrier); !dependency) {
+                    return dependency;
+                }
+            }
+            while (reservedBytes > byteLimit - bytes) {
+                const auto reservation = reservations.front();
+                if (auto dependency = graph.addDependency(reservation.finish, nextBarrier); !dependency) {
+                    return dependency;
+                }
+                reservedBytes -= reservation.bytes;
+                reservations.pop_front();
+            }
+            barrier = nextBarrier;
+        }
+        // Carry the entire release frontier forward. Depending only on the most
+        // recently retired image is unsafe when differently sized jobs finish
+        // out of order and reuse the same reserved bytes.
+        if (barrier.valid()) {
+            if (auto dependency = graph.addDependency(barrier, start); !dependency) {
+                return dependency;
+            }
+        }
+        reservedBytes += bytes;
+        reservations.push_back({finish, bytes});
+        return {};
     }
 
-    bool acquire(const std::atomic_bool& cancelled)
-    {
-        std::unique_lock lock(mutex);
-        while (active >= concurrency && !cancelled.load(std::memory_order_acquire)) {
-            condition.wait_for(lock, std::chrono::milliseconds(5));
-        }
-        if (cancelled.load(std::memory_order_acquire)) {
-            return false;
-        }
-        ++active;
-        return true;
-    }
-
-    void release()
-    {
-        {
-            std::lock_guard lock(mutex);
-            --active;
-        }
-        condition.notify_one();
-    }
-
-    std::mutex mutex;
-    std::condition_variable condition;
-    uint32_t concurrency = 1;
-    uint32_t active = 0;
+    uint64_t byteLimit = 0;
+    uint64_t reservedBytes = 0;
+    task::TaskNodeHandle barrier;
+    std::deque<Reservation> reservations;
 };
 
-struct DecodeByteThrottle {
-    explicit DecodeByteThrottle(uint64_t byteLimit)
-        : byteLimit(byteLimit)
+struct ImageStageMetrics {
+    std::atomic_uint32_t active{0};
+    std::atomic_uint32_t peak{0};
+    std::atomic_int64_t workNanoseconds{0};
+};
+
+struct ImageStageScope {
+    explicit ImageStageScope(ImageStageMetrics& metrics)
+        : metrics(metrics), begin(SceneLoadClock::now())
     {
+        const uint32_t active = metrics.active.fetch_add(1, std::memory_order_relaxed) + 1u;
+        uint32_t peak = metrics.peak.load(std::memory_order_relaxed);
+        while (peak < active &&
+            !metrics.peak.compare_exchange_weak(peak, active, std::memory_order_relaxed)) {
+        }
     }
 
-    bool acquire(uint64_t byteCount, const std::atomic_bool& cancelled)
+    ~ImageStageScope()
     {
-        if (byteLimit == 0) {
-            return !cancelled.load(std::memory_order_acquire);
-        }
-        std::unique_lock lock(mutex);
-        const uint64_t reservation = std::max<uint64_t>(byteCount, 1u);
-        while (!cancelled.load(std::memory_order_acquire)) {
-            const bool oversizedExclusive = reservation > byteLimit && bytesInUse == 0;
-            const bool fits = reservation <= byteLimit && bytesInUse <= byteLimit - reservation;
-            if (oversizedExclusive || fits) {
-                bytesInUse += reservation;
-                return true;
-            }
-            condition.wait_for(lock, std::chrono::milliseconds(5));
-        }
-        return false;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(SceneLoadClock::now() - begin);
+        metrics.workNanoseconds.fetch_add(elapsed.count(), std::memory_order_relaxed);
+        metrics.active.fetch_sub(1, std::memory_order_relaxed);
     }
 
-    void release(uint64_t byteCount)
-    {
-        if (byteLimit == 0) {
-            return;
-        }
-        {
-            std::lock_guard lock(mutex);
-            bytesInUse -= std::min(bytesInUse, std::max<uint64_t>(byteCount, 1u));
-        }
-        condition.notify_all();
-    }
+    ImageStageMetrics& metrics;
+    SceneLoadClock::time_point begin;
+};
 
-    std::mutex mutex;
-    std::condition_variable condition;
-    uint64_t byteLimit = 0;
-    uint64_t bytesInUse = 0;
+struct ImagePipelineMetrics {
+    ImageStageMetrics decode;
+    ImageStageMetrics mips;
+    SceneLoadClock::time_point begin;
 };
 
 } // namespace
@@ -441,6 +466,8 @@ void SceneLoadHandle::refreshTerminalState() const
         state_->progress.status = SceneLoadStatus::Cancelled;
         state_->progress.phase = SceneLoadPhase::Cancelled;
         state_->progress.currentItem.clear();
+        state_->candidate.reset();
+        state_->runs.clear();
         return;
     }
     const auto failed = std::find_if(snapshots.begin(), snapshots.end(), [](const auto& snapshot) {
@@ -449,6 +476,8 @@ void SceneLoadHandle::refreshTerminalState() const
     if (failed != snapshots.end()) {
         state_->progress.status = SceneLoadStatus::Failed;
         state_->progress.phase = SceneLoadPhase::Failed;
+        state_->candidate.reset();
+        state_->runs.clear();
         for (const task::TaskNodeSnapshot& node : failed->nodes) {
             if (!node.error.empty()) {
                 state_->progress.error = node.error;
@@ -495,17 +524,20 @@ bool SceneLoadHandle::cancel()
     if (state_ == nullptr) {
         return false;
     }
-    state_->cancelRequested.store(true, std::memory_order_release);
     std::vector<std::shared_ptr<task::TaskGraphRun>> runs;
     {
         std::lock_guard lock(state_->mutex);
         if (isTerminal(state_->progress.status)) {
             return false;
         }
+        state_->cancelRequested.store(true, std::memory_order_release);
         state_->progress.status = SceneLoadStatus::Cancelled;
         state_->progress.phase = SceneLoadPhase::Cancelled;
         state_->progress.currentItem.clear();
-        runs = state_->runs;
+        // Skipped task callbacks retain their captures. Break the state/run
+        // cycle so intermediate base levels are freed when the graph drains.
+        runs = std::move(state_->runs);
+        state_->candidate.reset();
     }
     for (const std::shared_ptr<task::TaskGraphRun>& run : runs) {
         if (run != nullptr) {
@@ -546,12 +578,12 @@ SceneLoadHandle SceneLoader::request(
         return SceneLoadHandle(std::move(state));
     }
 
+    const uint32_t workers = std::max(system->workerCount(), 1u);
+    const uint32_t automaticConcurrency = std::min(8u, std::max(workers - 1u, 1u));
     const uint32_t decodeConcurrency = options.decodeConcurrency != 0
-        ? options.decodeConcurrency
-        : std::min(8u, std::max(1u, system->workerCount() > 1 ? system->workerCount() - 1u : 1u));
-    auto decodeThrottle = std::make_shared<DecodeThrottle>(decodeConcurrency);
-    auto decodeByteThrottle = std::make_shared<DecodeByteThrottle>(options.maxDecodedBytesInFlight);
-    auto decodedImageCount = std::make_shared<std::atomic_size_t>(0);
+        ? std::min(options.decodeConcurrency, workers) : automaticConcurrency;
+    const uint32_t mipConcurrency = options.mipConcurrency != 0
+        ? std::min(options.mipConcurrency, workers) : automaticConcurrency;
 
     task::TaskGraph graph("SceneLoad");
     graph.addTask(
@@ -559,7 +591,7 @@ SceneLoadHandle SceneLoader::request(
             .name = "LoadSceneDocument",
             .category = "SceneLoad",
         },
-        [state, path, system, decodeThrottle, decodeByteThrottle, decodedImageCount](task::TaskContext& context) -> task::TaskOutcome {
+        [state, path, system, options, decodeConcurrency, mipConcurrency](task::TaskContext& context) -> task::TaskOutcome {
             auto candidate = std::make_shared<SceneDocument>();
             const SceneLoadProgressCallback callback =
                 [state, &context](const SceneLoadProgress& update) {
@@ -620,7 +652,7 @@ SceneLoadHandle SceneLoader::request(
                 state->progress.completedUnits = 0;
                 state->progress.totalUnits = candidate->hasDeferredMeshlets()
                     ? candidate->renderPrimitives().size()
-                    : candidate->images().size();
+                    : candidate->images().size() * 2u;
                 state->progress.currentItem.clear();
             }
 
@@ -675,7 +707,7 @@ SceneLoadHandle SceneLoader::request(
                         state->progress.phase = SceneLoadPhase::Images;
                         state->progress.fraction = std::max(state->progress.fraction, 0.40f);
                         state->progress.completedUnits = 0;
-                        state->progress.totalUnits = candidate->images().size();
+                        state->progress.totalUnits = candidate->images().size() * 2u;
                     }
                 });
             for (const task::TaskNodeHandle geometryTask : geometryTasks) {
@@ -685,68 +717,91 @@ SceneLoadHandle SceneLoader::request(
                 }
             }
 
+            auto metrics = std::make_shared<ImagePipelineMetrics>();
+            const auto imagesBegin = decodeGraph.addTask(
+                {.name = "BeginSceneImages", .category = "SceneLoad"},
+                [metrics]() { metrics->begin = SceneLoadClock::now(); });
+            if (auto dependency = decodeGraph.addDependency(geometryFinalize, imagesBegin); !dependency) {
+                return std::unexpected(dependency.error().message);
+            }
+            const auto completeImageStage = [state, candidate](size_t imageIndex, std::string_view stage) {
+                std::lock_guard lock(state->mutex);
+                if (!isTerminal(state->progress.status)) {
+                    state->progress.phase = SceneLoadPhase::Images;
+                    ++state->progress.completedUnits;
+                    state->progress.totalUnits = candidate->images().size() * 2u;
+                    state->progress.fraction = std::max(
+                        state->progress.fraction,
+                        0.40f + 0.25f * static_cast<float>(state->progress.completedUnits) /
+                            static_cast<float>(state->progress.totalUnits));
+                    state->progress.currentItem = std::string(stage) + candidate->images()[imageIndex].name;
+                    state->progress.elapsed = SceneLoadClock::now() - state->begin;
+                }
+            };
+
+            ImageTaskBudget budget{.byteLimit = options.maxDecodedBytesInFlight};
             std::vector<task::TaskNodeHandle> decodeTasks;
+            std::vector<task::TaskNodeHandle> mipTasks;
             decodeTasks.reserve(candidate->images().size());
+            mipTasks.reserve(candidate->images().size());
             for (size_t imageIndex = 0; imageIndex < candidate->images().size(); ++imageIndex) {
-                const uint64_t estimatedBytes = estimatedDecodedByteSize(*candidate, imageIndex);
-                const task::TaskNodeHandle decodeTask = decodeGraph.addTask(
-                    task::TaskDesc{
-                        .name = "DecodeImage",
-                        .category = "SceneLoad",
-                        .userTag = imageIndex,
-                    },
-                    [state,
-                     candidate,
-                     decodeThrottle,
-                     decodeByteThrottle,
-                     decodedImageCount,
-                     imageIndex,
-                     estimatedBytes]() {
-                        if (!decodeThrottle->acquire(state->cancelRequested)) {
+                const uint64_t estimatedBytes = estimatedImageWorkingBytes(*candidate, candidate->images()[imageIndex]);
+                auto decoded = std::make_shared<DecodedImageResult>();
+                const auto decodeTask = decodeGraph.addTask(
+                    {.name = "DecodeImage", .category = "SceneLoad", .userTag = imageIndex},
+                    [state, candidate, decoded, metrics, completeImageStage, imageIndex](task::TaskContext& context) {
+                        if (state->cancelRequested.load(std::memory_order_acquire) || context.stopRequested()) {
                             return;
                         }
-                        struct ReleaseGuard {
-                            std::shared_ptr<DecodeThrottle> throttle;
-                            ~ReleaseGuard() { throttle->release(); }
-                        } releaseGuard{decodeThrottle};
-
-                        if (!decodeByteThrottle->acquire(estimatedBytes, state->cancelRequested)) {
-                            return;
+                        {
+                            ImageStageScope scope(metrics->decode);
+                            *decoded = decodeImageBase(*candidate, imageIndex);
                         }
-                        struct ByteReleaseGuard {
-                            std::shared_ptr<DecodeByteThrottle> throttle;
-                            uint64_t byteCount = 0;
-                            ~ByteReleaseGuard() { throttle->release(byteCount); }
-                        } byteReleaseGuard{decodeByteThrottle, estimatedBytes};
-
-                        if (state->cancelRequested.load(std::memory_order_acquire)) {
-                            return;
-                        }
-                        DecodedImageResult decoded = decodeImage(*candidate, imageIndex);
-                        (void)candidate->setImageDecodeResult(
-                            imageIndex,
-                            std::move(decoded.mips),
-                            std::move(decoded.warning));
-                        const size_t completed = decodedImageCount->fetch_add(1, std::memory_order_acq_rel) + 1u;
-                        std::lock_guard lock(state->mutex);
-                        if (!isTerminal(state->progress.status)) {
-                            state->progress.status = SceneLoadStatus::Running;
-                            state->progress.phase = SceneLoadPhase::Images;
-                            state->progress.fraction = std::max(
-                                state->progress.fraction,
-                                0.40f + 0.25f * static_cast<float>(completed) /
-                                    static_cast<float>(candidate->images().size()));
-                            state->progress.completedUnits = completed;
-                            state->progress.totalUnits = candidate->images().size();
-                            state->progress.currentItem = candidate->images()[imageIndex].name;
-                            state->progress.elapsed = SceneLoadClock::now() - state->begin;
-                        }
+                        completeImageStage(imageIndex, "Decode: ");
                     });
-                decodeTasks.push_back(decodeTask);
-                const auto dependency = decodeGraph.addDependency(geometryFinalize, decodeTask);
-                if (!dependency) {
+                const auto mipTask = decodeGraph.addTask(
+                    {.name = "BuildImageMips", .category = "SceneLoad", .userTag = imageIndex},
+                    [state, candidate, decoded, metrics, completeImageStage, imageIndex](task::TaskContext& context) {
+                        if (state->cancelRequested.load(std::memory_order_acquire) || context.stopRequested()) {
+                            return;
+                        }
+                        {
+                            ImageStageScope scope(metrics->mips);
+                            appendMipChain(*decoded, state->cancelRequested, context);
+                        }
+                        if (state->cancelRequested.load(std::memory_order_acquire) || context.stopRequested()) {
+                            return;
+                        }
+                        // Publish only a complete chain; decoding never exposes a partial image.
+                        (void)candidate->setImageDecodeResult(
+                            imageIndex, std::move(decoded->mips), std::move(decoded->warning));
+                        completeImageStage(imageIndex, "Mips: ");
+                    });
+                if (auto dependency = decodeGraph.addDependency(imagesBegin, decodeTask); !dependency) {
                     return std::unexpected(dependency.error().message);
                 }
+                if (auto dependency = decodeGraph.addDependency(decodeTask, mipTask); !dependency) {
+                    return std::unexpected(dependency.error().message);
+                }
+                // Separate dependency lanes bound each stage without occupying
+                // a worker while waiting for a slot in the other stage.
+                if (imageIndex >= decodeConcurrency) {
+                    if (auto dependency = decodeGraph.addDependency(decodeTasks[imageIndex - decodeConcurrency], decodeTask);
+                        !dependency) {
+                        return std::unexpected(dependency.error().message);
+                    }
+                }
+                if (imageIndex >= mipConcurrency) {
+                    if (auto dependency = decodeGraph.addDependency(mipTasks[imageIndex - mipConcurrency], mipTask);
+                        !dependency) {
+                        return std::unexpected(dependency.error().message);
+                    }
+                }
+                if (auto reservation = budget.reserve(decodeGraph, decodeTask, mipTask, estimatedBytes); !reservation) {
+                    return std::unexpected(reservation.error().message);
+                }
+                decodeTasks.push_back(decodeTask);
+                mipTasks.push_back(mipTask);
             }
 
             const task::TaskNodeHandle finalizeTask = decodeGraph.addTask(
@@ -754,12 +809,22 @@ SceneLoadHandle SceneLoader::request(
                     .name = "FinalizeSceneImages",
                     .category = "SceneLoad",
                 },
-                [state, candidate]() {
+                [state, candidate, metrics, decodeConcurrency, mipConcurrency, options, system]() {
                     std::lock_guard lock(state->mutex);
                     if (state->cancelRequested.load(std::memory_order_acquire) ||
                         isTerminal(state->progress.status)) {
                         return;
                     }
+                    spdlog::info(
+                        "[SceneLoad] Images: count={}, elapsed={:.2f} ms, decode task sum={:.2f} ms, mip task sum={:.2f} ms, "
+                        "decode peak/limit={}/{}, mip peak/limit={}/{}, workers={}, working budget={} bytes (0=unlimited)",
+                        candidate->images().size(),
+                        std::chrono::duration<double, std::milli>(SceneLoadClock::now() - metrics->begin).count(),
+                        metrics->decode.workNanoseconds.load(std::memory_order_relaxed) / 1.0e6,
+                        metrics->mips.workNanoseconds.load(std::memory_order_relaxed) / 1.0e6,
+                        metrics->decode.peak.load(std::memory_order_relaxed), decodeConcurrency,
+                        metrics->mips.peak.load(std::memory_order_relaxed), mipConcurrency,
+                        system->workerCount(), options.maxDecodedBytesInFlight);
                     state->result = std::make_unique<SceneDocument>(std::move(*candidate));
                     state->candidate.reset();
                     state->progress.status = SceneLoadStatus::Succeeded;
@@ -770,8 +835,8 @@ SceneLoadHandle SceneLoader::request(
                     state->progress.currentItem.clear();
                     state->progress.elapsed = SceneLoadClock::now() - state->begin;
                 });
-            for (const task::TaskNodeHandle decodeTask : decodeTasks) {
-                const auto dependency = decodeGraph.addDependency(decodeTask, finalizeTask);
+            for (const task::TaskNodeHandle mipTask : mipTasks) {
+                const auto dependency = decodeGraph.addDependency(mipTask, finalizeTask);
                 if (!dependency) {
                     std::lock_guard lock(state->mutex);
                     state->progress.status = SceneLoadStatus::Failed;
@@ -780,8 +845,8 @@ SceneLoadHandle SceneLoader::request(
                     return std::unexpected(dependency.error().message);
                 }
             }
-            if (decodeTasks.empty()) {
-                const auto dependency = decodeGraph.addDependency(geometryFinalize, finalizeTask);
+            if (mipTasks.empty()) {
+                const auto dependency = decodeGraph.addDependency(imagesBegin, finalizeTask);
                 if (!dependency) {
                     return std::unexpected(dependency.error().message);
                 }
@@ -797,8 +862,13 @@ SceneLoadHandle SceneLoader::request(
             }
             {
                 std::lock_guard lock(state->mutex);
-                state->runs.push_back(
-                    std::make_shared<task::TaskGraphRun>(std::move(*submittedDecode)));
+                // Cancellation can race submission of the second graph.
+                if (state->cancelRequested.load(std::memory_order_acquire)) {
+                    (void)submittedDecode->requestStop();
+                } else {
+                    state->runs.push_back(
+                        std::make_shared<task::TaskGraphRun>(std::move(*submittedDecode)));
+                }
             }
             return {};
         });
