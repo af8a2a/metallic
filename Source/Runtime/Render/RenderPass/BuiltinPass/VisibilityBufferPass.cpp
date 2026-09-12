@@ -4096,7 +4096,6 @@ private:
         }
 
         outPositionBase = static_cast<uint32_t>(outVertices.size());
-        outVertices.reserve(outVertices.size() + primitive.positions.size());
         for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
             const float3& localPosition = primitive.positions[vertexIndex];
             const float3 localNormal = vertexIndex < primitive.normals.size()
@@ -4309,6 +4308,28 @@ private:
                 "[VisibilityBufferPass] {} geometry key payload conflict(s); preserving independent payloads",
                 geometryPlan.conflictingPayloadCount);
         }
+
+        // Reserve once for unique geometry; per-primitive reserve repeatedly relocates earlier vertices.
+        std::vector<bool> countedGeometries(geometryPlan.geometryCount, false);
+        size_t totalVertexCount = 0;
+        for (size_t sourceIndex = 0; sourceIndex < drawableSources.size(); ++sourceIndex) {
+            const uint32_t geometryIndex = geometryPlan.geometryIndices[sourceIndex];
+            if (geometryIndex >= countedGeometries.size()) {
+                log = "VisibilityBufferPass produced an invalid geometry dedup assignment";
+                return false;
+            }
+            if (countedGeometries[geometryIndex]) {
+                continue;
+            }
+            const size_t vertexCount = drawableSources[sourceIndex].primitive->positions.size();
+            if (vertexCount > std::numeric_limits<uint32_t>::max() - totalVertexCount) {
+                log = "VisibilityBufferPass scene is too large to address with uint32 vertex indices";
+                return false;
+            }
+            totalVertexCount += vertexCount;
+            countedGeometries[geometryIndex] = true;
+        }
+        outVertices.reserve(totalVertexCount);
 
         struct GeometryPayload {
             const scene::RenderPrimitive* primitive = nullptr;
