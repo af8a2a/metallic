@@ -271,6 +271,49 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(SuperSponzaUploadSmokeTest);
 
+class SponzaAsyncRtasTest final : public RhiTest {
+public:
+    SponzaAsyncRtasTest() { type = RhiTestType::Resource; name = "sponza_async_scene_rtas"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        if (!context.device.capabilities().rayTracingAccelerationStructure ||
+            !context.device.capabilities().opacityMicromap) {
+            return RhiTestResult::skip("Requires --rhi-realtime with OMM enabled");
+        }
+        const auto path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Sponza/glTF/Sponza.gltf";
+        std::string log;
+        scene::SceneLoader loader;
+        auto handle = loader.request(path);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (!handle.complete() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        auto loaded = handle.takeResult();
+        if (!loaded) { return RhiTestResult::fail("CPU load failed: " + handle.progress().error); }
+        render::ScenePathTraceResources resources;
+        UPLOAD_REQUIRE(resources.beginPrepareAsync(context.device, context.graphicsQueue,
+            {{"path", path.string()}}, *loaded, log));
+        scene::SceneLoadProgress progress;
+        bool complete = false;
+        while (!complete && std::chrono::steady_clock::now() < deadline) {
+            UPLOAD_REQUIRE(resources.pumpPrepareAsync(8.0, complete, progress, log));
+            // Also surfaces device loss when an asynchronous fence poll is not ready.
+            UPLOAD_REQUIRE(context.graphicsQueue.waitIdle());
+        }
+        if (!complete || !resources.valid() || !resources.gpuWorkComplete()) {
+            return RhiTestResult::fail("Sponza GPU preparation timed out: " + log);
+        }
+        const auto& stats = resources.accelerationStructure().stats();
+        if (stats.blasCount != 103 || stats.opacityMicromapCount != 10 ||
+            stats.opacityMicromapTriangleCount != 34908 || stats.compactionSavedBytes == 0) {
+            return RhiTestResult::fail("Sponza did not exercise OMM and BLAS compaction");
+        }
+        return RhiTestResult::pass("Sponza async upload, 10 OMMs, 103 BLASes, compaction and TLAS completed");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(SponzaAsyncRtasTest);
+
 #undef UPLOAD_REQUIRE
 } // namespace
 } // namespace metallic::tests

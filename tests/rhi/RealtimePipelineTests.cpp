@@ -2,6 +2,7 @@
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -158,15 +159,20 @@ private:
     render::ComputeProgram program_;
 };
 
-class RealtimePipelineTest final : public RhiTest {
+class RealtimePipelineTest : public RhiTest {
 public:
-    RealtimePipelineTest() { type = RhiTestType::Rendering; name = "realtime_clustered_dlss_pipeline"; }
+    explicit RealtimePipelineTest(bool sponza = false) : sponza_(sponza)
+    {
+        type = RhiTestType::Rendering;
+        name = sponza ? "gpu_driven_sponza_realtime_pipeline" : "realtime_clustered_dlss_pipeline";
+    }
 
     RhiTestResult run(RhiTestContext& context) override
     {
         render::RenderSampleLoadResult sample;
         std::string log;
-        if (!render::loadBuiltInRenderSample("realtime-lighting", sample, log) || !sample.desc.requiresStreamline) {
+        if (!render::loadBuiltInRenderSample(sponza_ ? "gpu-driven-sample" : "realtime-lighting", sample, log) ||
+            !sample.desc.requiresStreamline) {
             return realtimeFailure("Realtime sample metadata: " + log);
         }
         for (const auto& node : sample.graph.nodes()) {
@@ -210,7 +216,9 @@ public:
         executor.bindRenderWorld(&world);
         for (uint32_t variant = 0; variant < 3; ++variant) {
             const uint32_t width = variant == 2 ? 321 : 512, height = variant == 2 ? 217 : 384;
-            if (variant == 1) {
+            // Keep the Sponza regression on GPUDrivenSample's default NR-off
+            // configuration. The original realtime test covers optional NR.
+            if (variant == 1 && !sponza_) {
                 sample.graph.setNodeRuntimeProperty(sample.graph.findNode("DlssNr")->id, "enabled", true);
             }
             result = executor.compile(*device, sample.graph, width, height, log);
@@ -221,6 +229,13 @@ public:
                 executor.renderView()->setCamera(camera);
             }
             for (uint32_t frame = 0; frame < 12; ++frame) {
+                const bool captureFrame = sponza_ && context.nsightCapture != nullptr && variant == 0 && frame == 4;
+                if (captureFrame) {
+                    if (!context.nsightCapture->requestCapture({.explicitFrameBoundaries = true}, log) ||
+                        !context.nsightCapture->frameBoundary(context.graphicsQueue, nullptr, log)) {
+                        return realtimeFailure("Start Nsight frame capture: " + log);
+                    }
+                }
                 if (frame == 8) {
                     // One view update drives raster, lighting, guides and SR.
                     auto camera = executor.renderView()->camera();
@@ -229,6 +244,24 @@ public:
                 }
                 if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
                     !executor.waitForSubmittedWork()) { return realtimeFailure("Realtime frame execution failed"); }
+                if (captureFrame) {
+                    if (!context.nsightCapture->frameBoundary(context.graphicsQueue,
+                            executor.outputResource("FinalBlit.color")->texture, log)) {
+                        return realtimeFailure("End Nsight frame capture: " + log);
+                    }
+                    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                    auto capture = context.nsightCapture->poll();
+                    while (capture.state == render::profiling::NsightGraphicsCaptureState::CapturePending &&
+                        std::chrono::steady_clock::now() < deadline) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        capture = context.nsightCapture->poll();
+                    }
+                    if (capture.state != render::profiling::NsightGraphicsCaptureState::CaptureCompleted ||
+                        !std::filesystem::is_regular_file(capture.capturePath)) {
+                        return realtimeFailure("Nsight frame export failed or timed out: " + capture.message);
+                    }
+                    spdlog::info("Nsight replay regression capture: {}", capture.capturePath.string());
+                }
                 auto* buffer = executor.outputResource("Readback.guides")->buffer;
                 buffer->invalidate();
                 const auto* data = static_cast<const std::array<float, 4>*>(buffer->map());
@@ -264,9 +297,17 @@ public:
         }
         return RhiTestResult::pass("Raster/LightGrid/SH/HDRI/auto exposure/SR, optional NR, camera jitter and odd-size resize");
     }
+private:
+    bool sponza_ = false;
+};
+
+class GpuDrivenSponzaRealtimePipelineTest final : public RealtimePipelineTest {
+public:
+    GpuDrivenSponzaRealtimePipelineTest() : RealtimePipelineTest(true) {}
 };
 
 METALLIC_REGISTER_RHI_TEST(RealtimePipelineTest);
+METALLIC_REGISTER_RHI_TEST(GpuDrivenSponzaRealtimePipelineTest);
 METALLIC_REGISTER_RHI_TEST(EnvironmentPrefilterTest);
 
 

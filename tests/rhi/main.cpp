@@ -49,6 +49,9 @@ struct Options {
     bool enableStreamline = false;
     bool enableRealtime = false;
     bool enableNsightCapture = false;
+    bool exportNsightCapture = false;
+    bool enableAsyncCompute = false;
+    bool enableAftermath = false;
     std::filesystem::path outputDirectory = "rhi-test-output";
 };
 
@@ -62,6 +65,9 @@ void printRhiUsage()
         "  --rhi-streamline         Enable Streamline, bindless heap and ray queries\n"
         "  --rhi-realtime           Enable the realtime raster + DLSS test device\n"
         "  --rhi-nsight-capture     Inject Nsight Graphics before creating test devices\n"
+        "  --rhi-nsight-export      Also export a Sponza realtime frame for replay testing\n"
+        "  --rhi-async-compute      Enable an independent compute queue like the editor\n"
+        "  --rhi-aftermath          Enable Aftermath GPU crash diagnostics like the editor\n"
         "\n"
         "GoogleTest options replace the old custom runner flags:\n"
         "  --gtest_list_tests       List registered tests\n"
@@ -92,8 +98,17 @@ bool parseArguments(int argc, char** argv, Options& options, std::vector<std::st
             options.enableStreamline = true;
             continue;
         }
-        if (argument == "--rhi-nsight-capture") {
+        if (argument == "--rhi-nsight-capture" || argument == "--rhi-nsight-export") {
             options.enableNsightCapture = true;
+            options.exportNsightCapture |= argument == "--rhi-nsight-export";
+            continue;
+        }
+        if (argument == "--rhi-async-compute") {
+            options.enableAsyncCompute = true;
+            continue;
+        }
+        if (argument == "--rhi-aftermath") {
+            options.enableAftermath = true;
             continue;
         }
         if (argument == "--output-dir") {
@@ -164,8 +179,8 @@ const char* suiteNameFor(metallic::tests::RhiTestType type)
 
 class RhiTestEnvironment : public ::testing::Environment {
 public:
-    explicit RhiTestEnvironment(Options options)
-        : options_(std::move(options))
+    explicit RhiTestEnvironment(Options options, render::profiling::NsightGraphicsCapture* capture)
+        : options_(std::move(options)), nsightCapture_(capture)
     {
     }
 
@@ -191,11 +206,13 @@ public:
                 .enableRayTracingAccelerationStructure = options_.enableStreamline,
                 .enableRayQuery = options_.enableStreamline,
                 .enableStreamline = options_.enableStreamline,
+                .enableAftermath = options_.enableAftermath,
                 .validationSink = {.callback = [](void* data, const render::ValidationMessage& message) noexcept {
                     if (message.messageIdName != nullptr && std::strstr(message.messageIdName, "VUID-") != nullptr) {
                         ++*static_cast<std::atomic_uint*>(data);
                     }
                 }, .context = &validationMessageCount_},
+                .enableAsyncCompute = options_.enableAsyncCompute,
             },
             device_);
         if (!result) {
@@ -221,6 +238,7 @@ public:
                 .outputDirectory = options_.outputDirectory,
                 .enableValidation = options_.enableValidation,
                 .validationMessageCount = &validationMessageCount_,
+                .nsightCapture = nsightCapture_,
             });
     }
 
@@ -255,6 +273,7 @@ public:
 
 private:
     Options options_;
+    render::profiling::NsightGraphicsCapture* nsightCapture_ = nullptr;
     bool sdlInitialized_ = false;
     std::atomic_uint validationMessageCount_ = 0;
     std::unique_ptr<render::Device> device_;
@@ -382,7 +401,7 @@ int main(int argc, char** argv)
 
     registerRhiTests();
 
-    auto* environment = new RhiTestEnvironment(options);
+    auto* environment = new RhiTestEnvironment(options, options.exportNsightCapture ? &nsightCapture : nullptr);
     gEnvironment = environment;
     ::testing::AddGlobalTestEnvironment(environment);
 

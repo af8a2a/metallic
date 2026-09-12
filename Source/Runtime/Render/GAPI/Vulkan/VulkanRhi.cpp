@@ -662,7 +662,8 @@ Result makeExtMicromapAttachment(
     const RayTracingTriangleGeometryDesc& source,
     VkMicromapEXT micromap,
     std::vector<VkMicromapUsageEXT>& usages,
-    VkAccelerationStructureTrianglesOpacityMicromapEXT& attachment)
+    VkAccelerationStructureTrianglesOpacityMicromapEXT& attachment,
+    VkDeviceAddress identityIndexAddress = 0)
 {
     if (micromap == VK_NULL_HANDLE || source.opacityMicromapUsages == nullptr ||
         source.opacityMicromapUsageCount == 0) {
@@ -684,7 +685,11 @@ Result makeExtMicromapAttachment(
     }
     attachment = {
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_EXT,
-        .indexType = VK_INDEX_TYPE_NONE_KHR,
+        // Size queries use the same index type/stride as builds, without reading
+        // the address. Builds supply the retained identity buffer below.
+        .indexType = VK_INDEX_TYPE_UINT32,
+        .indexBuffer = {.deviceAddress = identityIndexAddress},
+        .indexStride = sizeof(uint32_t),
         .usageCountsCount = static_cast<uint32_t>(usages.size()),
         .pUsageCounts = usages.data(),
         .micromap = micromap,
@@ -2252,6 +2257,24 @@ struct VulkanEnabledFeatureChain {
             shaderDebugInfo != nullptr && std::strcmp(shaderDebugInfo, "0") == 0) {
             diagnosticsConfigCreateInfo.flags &= ~VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV;
         }
+        const bool nsightAftermath = selection.aftermath && profiling::NsightGraphicsCapture::vulkanInjectionActive();
+        // TODO(Nsight Aftermath): Restore automatic checkpoints after an updated
+        // capture runtime passes the injected Sponza OMM/BLAS compaction test.
+        // Nsight 2026.3.1 + driver 616.64 faults with Error_DMA_PageFault here;
+        // shader debug info and resource tracking remain enabled. See
+        // Documentation/NsightKhrOpacityMicromapInvestigation.md.
+        bool automaticCheckpoints = !nsightAftermath;
+        if (const char* checkpoints = std::getenv("METALLIC_AFTERMATH_AUTOMATIC_CHECKPOINTS")) {
+            if (std::strcmp(checkpoints, "0") == 0) { automaticCheckpoints = false; }
+            if (std::strcmp(checkpoints, "1") == 0) { automaticCheckpoints = true; }
+        }
+        if (!automaticCheckpoints) {
+            diagnosticsConfigCreateInfo.flags &= ~VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV;
+        }
+        if (nsightAftermath && !automaticCheckpoints) {
+            spdlog::warn("[Vulkan] Aftermath automatic checkpoints disabled during Nsight Graphics injection "
+                "to avoid the RTAS GPU page fault; crash dumps, resource tracking and shader debug info remain available");
+        }
 #endif
         vulkan11Features.shaderDrawParameters = VK_TRUE;
         vulkan12Features.descriptorIndexing = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
@@ -3016,6 +3039,21 @@ struct BufferImpl {
     void* mapped = nullptr;
 };
 
+struct MicromapIdentityIndexBuffer {
+    VmaAllocator allocator = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    VkDeviceAddress address = 0;
+    uint32_t triangleCount = 0;
+
+    ~MicromapIdentityIndexBuffer()
+    {
+        if (buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(allocator, buffer, allocation);
+        }
+    }
+};
+
 struct RayTracingAccelerationStructureImpl {
     DeviceImpl* device = nullptr;
     RayTracingAccelerationStructureDesc desc;
@@ -3023,6 +3061,8 @@ struct RayTracingAccelerationStructureImpl {
     VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
     VkMicromapEXT micromap = VK_NULL_HANDLE;
     VkDeviceAddress address = 0;
+    std::mutex micromapIndexMutex;
+    std::vector<std::unique_ptr<MicromapIdentityIndexBuffer>> micromapIndexBuffers;
 
     ~RayTracingAccelerationStructureImpl();
 };
@@ -3531,6 +3571,78 @@ std::vector<uint32_t> queueFamiliesForAccess(const DeviceImpl& device, QueueAcce
             : device.graphicsFamily);
     }
     return families;
+}
+
+Result ensureMicromapIdentityIndices(
+    RayTracingAccelerationStructureImpl& micromap,
+    uint32_t triangleCount,
+    VkDeviceAddress& address)
+{
+    address = 0;
+    if (triangleCount == 0 || micromap.micromap == VK_NULL_HANDLE) {
+        return makeError(Error::InvalidArgument);
+    }
+    // TODO(Nsight OMM replay): Remove explicit identity indices once Nsight
+    // restores VK_INDEX_TYPE_NONE_KHR attachments correctly. 2026.3.1 reads a
+    // null index-buffer record in both ngfx-replay and ngfx-rpc. See
+    // Documentation/NsightCaptureReplayInvestigation.md for removal criteria.
+    // EXT is selected only for capture injection. Keep each immutable allocation
+    // with the OMM, including older capacities used by in-flight BLAS builds.
+    std::scoped_lock lock(micromap.micromapIndexMutex);
+    for (const auto& indices : micromap.micromapIndexBuffers) {
+        if (indices->triangleCount >= triangleCount) {
+            address = indices->address;
+            return {};
+        }
+    }
+    DeviceImpl& device = *micromap.device;
+    const auto families = queueFamiliesForAccess(device, QueueAccessBits::Graphics | QueueAccessBits::Compute);
+    const VkBufferCreateInfo bufferInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = uint64_t(triangleCount) * sizeof(uint32_t),
+        .usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+            VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT,
+        .sharingMode = families.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = families.size() > 1 ? static_cast<uint32_t>(families.size()) : 0,
+        .pQueueFamilyIndices = families.size() > 1 ? families.data() : nullptr,
+    };
+    const auto allocationInfo = allocationInfoForMemory(MemoryLocation::HostUpload);
+    auto indices = std::make_unique<MicromapIdentityIndexBuffer>();
+    indices->allocator = device.allocator;
+    VkResult result = vmaCreateBuffer(device.allocator, &bufferInfo, &allocationInfo,
+        &indices->buffer, &indices->allocation, nullptr);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+    void* mapped = nullptr;
+    result = vmaMapMemory(device.allocator, indices->allocation, &mapped);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+    auto* values = static_cast<uint32_t*>(mapped);
+    for (uint32_t i = 0; i < triangleCount; ++i) {
+        values[i] = i;
+    }
+    result = vmaFlushAllocation(device.allocator, indices->allocation, 0, bufferInfo.size);
+    vmaUnmapMemory(device.allocator, indices->allocation);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+    // Flushed host writes precede submission of the recorded BLAS build; the
+    // queue submit performs the host-to-device domain operation.
+    const VkBufferDeviceAddressInfo addressInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = indices->buffer,
+    };
+    indices->address = vkGetBufferDeviceAddress(device.device, &addressInfo);
+    if (indices->address == 0) {
+        return makeError(Error::Failure);
+    }
+    indices->triangleCount = triangleCount;
+    address = indices->address;
+    micromap.micromapIndexBuffers.push_back(std::move(indices));
+    return {};
 }
 
 BindlessHeapImpl::~BindlessHeapImpl()
@@ -6250,8 +6362,15 @@ Result CommandBuffer::buildRayTracingAccelerationStructure(
                     return makeError(Error::InvalidArgument);
                 }
                 if (source.opacityMicromap->impl_->micromap != VK_NULL_HANDLE) {
+                    VkDeviceAddress identityIndexAddress = 0;
+                    const Result indexResult = detail::ensureMicromapIdentityIndices(
+                        *source.opacityMicromap->impl_, source.primitiveCount, identityIndexAddress);
+                    if (!indexResult) {
+                        return indexResult;
+                    }
                     const Result result = makeExtMicromapAttachment(source,
-                        source.opacityMicromap->impl_->micromap, extAttachmentUsages[index], extAttachments[index]);
+                        source.opacityMicromap->impl_->micromap, extAttachmentUsages[index], extAttachments[index],
+                        identityIndexAddress);
                     if (!result) {
                         return result;
                     }

@@ -79,6 +79,26 @@ KHR OMM and the injected build/capture/replay checks in that document pass.
 The RHI test runner can reproduce the capture path with
 `--rhi-nsight-capture --gtest_filter='*opacity_micromap*'`.
 
+The Nsight EXT path also supplies explicit UINT32 identity OMM indices to avoid
+the replayer's null dereference when restoring implicit indices. Buffers are
+retained by their OMM; ordinary KHR behavior is unchanged. Restart the rebuilt
+application and create a fresh capture, since existing files keep their original
+build parameters. See [replay evidence and removal TODO](NsightCaptureReplayInvestigation.md).
+To export a warmed-up Sponza frame without a window, run
+`MetallicRhiTests --rhi-realtime --rhi-async-compute --rhi-aftermath --rhi-nsight-export --rhi-no-validation --gtest_filter='*gpu_driven_sponza_realtime_pipeline' --output-dir .tmp/nsight-replay`.
+The runner prints the capture path under the output directory's `nsight` folder;
+verify it with `ngfx-replay --present-hidden --loop-count 3 --no-block-on-incompatibility <capture>`.
+
+Nsight Graphics injection also disables Aftermath automatic checkpoints by
+default to avoid a separately reproduced GPU page fault during Sponza BLAS
+compaction/TLAS preparation. Aftermath crash dumps, resource tracking and shader
+debug information remain available; ordinary runs keep automatic checkpoints.
+TODO(Nsight Aftermath): Restore checkpoints after a fixed capture runtime passes
+the regression. `METALLIC_AFTERMATH_AUTOMATIC_CHECKPOINTS=1` forces them on for
+that verification (`0` forces them off). The editor-equivalent headless check is
+`MetallicRhiTests --rhi-realtime --rhi-async-compute --rhi-aftermath --rhi-nsight-capture --rhi-no-validation --gtest_filter='*sponza_async_scene_rtas*:*gpu_driven_sponza_realtime_pipeline*'`.
+See the investigation document for the before/after evidence and cleanup fix.
+
 To disable this launch default, configure with
 `-DMETALLIC_DEFAULT_NSIGHT_CAPTURE=OFF`, or set the runtime environment variable
 `METALLIC_NSIGHT_GRAPHICS_CAPTURE=0`. An explicit `--nsight-capture` still takes

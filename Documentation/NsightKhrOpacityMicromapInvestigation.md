@@ -4,6 +4,11 @@ Investigation date: 2026-09-12. The original failure is documented below. A
 subsequent workaround selects an EXT OMM backend for Nsight Graphics, while
 ordinary execution retains KHR OMM.
 
+The later capture-open failure and `VK_NV_low_latency` revision warning are
+investigated separately in [Nsight capture replay](NsightCaptureReplayInvestigation.md).
+That reproduction isolates restoration of EXT OMM implicit indices, after
+capture and scene rendering have succeeded.
+
 ## Nsight EXT backend workaround
 
 **TODO(Nsight KHR OMM): Remove this temporary EXT workaround when Nsight Graphics
@@ -84,6 +89,90 @@ The recorded VUIDs are `uniformAndStorageBuffer16BitAccess-06332`,
 diagnostics were observed. Full logs use the corresponding report names with a
 `.log` suffix. These checks exercise real SDK injection and GPU builds/traversal;
 they do not include an editor frame capture or capture replay.
+
+## Follow-up: Aftermath automatic checkpoints and teardown
+
+The later GPUDrivenSample log at 2026-09-12 18:45:38 reports `DeviceLost` before
+the CPU crash in `QueueSubmissionTracker::~QueueSubmissionTracker`. Its dump,
+`.cache/aftermath/Metallic_Engine_Editor-50480-1.json`, records
+`Error_DMA_PageFault`, an engine reset, and no fault address. Symbolizing its
+application markers locates `SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission`
+(BLAS compaction/TLAS build). This is a separate failure after the EXT workaround
+has already bypassed the original KHR interceptor null dereference.
+
+The headless `sponza_async_scene_rtas` test reproduces the editor's 103 BLASes,
+10 OMMs for 34,908 alpha triangles, asynchronous uploads, compaction and TLAS.
+The new `--rhi-async-compute` and `--rhi-aftermath` switches cover the editor's
+independent compute queue and crash diagnostics; `--rhi-realtime` enables its
+Streamline/ray-query device configuration. Tests ran in separate processes:
+
+| Nsight injection | Aftermath | Diagnostic change | Async Sponza result |
+| --- | --- | --- | --- |
+| On, EXT OMM | Off | None | Pass, including independent compute |
+| Off, KHR OMM | On | None | Pass |
+| On, EXT OMM | On | None | `DeviceLost`, `Error_DMA_PageFault` |
+| On, EXT OMM | On | Shader debug information off | Same GPU fault |
+| On, EXT OMM | On | Resource tracking off | Same GPU fault |
+| On, EXT OMM | On | Automatic checkpoints off | Pass |
+
+The resource-tracking switch was used only in the diagnostic build. This isolates
+automatic checkpoints as the trigger in this tested combination of Nsight
+2026.3.1, driver 616.64 and Sponza. It does not establish the underlying NVIDIA
+implementation defect or claim every workload using both tools fails.
+
+When capture injection and Aftermath are both active, Metallic now disables only
+`VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV` by default.
+Aftermath crash-dump collection, shader debug information and resource tracking
+remain available. OMM, BLAS compaction and independent compute remain enabled.
+Ordinary execution retains its previous diagnostic flags. The startup log
+explicitly reports the adjusted diagnostics configuration.
+
+**TODO(Nsight Aftermath): Restore automatic checkpoints when an updated capture
+runtime passes this reproduction and the full Sponza realtime regression.**
+`METALLIC_AFTERMATH_AUTOMATIC_CHECKPOINTS=1` forces checkpoints on to verify a
+future fix; `0` forces them off. Record the tested Nsight/driver versions before
+removing this default adjustment. This TODO is independent of removing EXT OMM
+once Nsight supports KHR OMM.
+
+The secondary CPU crash was an application lifetime bug: `reset()` returned
+early on `DeviceLost`, leaving frame resources and timeline semaphores alive.
+`EditorApplication::shutdown()` then destroyed Device, and the tracker destructor
+retried the wait through its stale Device pointer. `RenderFrameContext::reset`,
+`QueueSubmissionTracker::reset` and `DeferredReleaseQueue::drain` now release
+their retained state on terminal device loss while preserving the error result.
+Retryable wait failures still preserve their state. This follows Vulkan's
+[lost-device resource lifetime rules](https://docs.vulkan.org/spec/latest/chapters/devsandqueues.html#devsandqueues-lost-device).
+
+`frame_device_lost_cleanup` drains real GPU work before injecting host wait
+results. It verifies that timeout preserves resources, device loss releases
+them, and repeated teardown does not access the discarded timeline. Together
+with `frame_completion_lifecycle`, it passed 2/2 tests. The final injected run
+also passed the async Sponza test and `gpu_driven_sponza_realtime_pipeline`
+(36 rendered frames, camera changes, depth convention and odd-size resize).
+The latter reuses the built-in GPUDrivenSample graph and Sponza scene. Its final
+configuration retains the sample's default NR-off setting; the original
+`realtime_clustered_dlss_pipeline` test continues to cover optional NR.
+Frame capture/replay and an interactive editor launch were not part of this run.
+
+Five focused frame lifetime, upload, multi-queue and submission tests also passed
+in `device-lost-final-lifetimes.json`. A broader ordinary KHR rendering control
+completed its rendering assertions but exited with `0xc0000005` in
+`sl.common.dll` during process teardown (`device-lost-final-khr.log`,
+`device-lost-default-khr.log`, and `khr-teardown-stack.log`). This also occurs
+with NR disabled, and is not accompanied by a new `DeviceLost` or GPU crash dump.
+Injected rendering runs logged a Streamline shutdown mini-dump but exited zero.
+**TODO(Streamline shutdown): Investigate this separate plugin teardown fault.**
+The tests do not establish a clean shutdown for all Streamline configurations;
+the automatic-checkpoint workaround addresses the reproduced RTAS GPU fault,
+and the frame reset fix addresses the reported stale-device semaphore wait.
+
+Local evidence is under `.tmp/rtas-relwithdebinfo/`: `sponza-aftermath-ext-before`,
+`sponza-aftermath-khr`, `sponza-aftermath-no-shader-debug`,
+`sponza-no-resource-tracking`, `sponza-no-checkpoints`, `device-lost-cleanup`,
+and `device-lost-final-ext`, with `.log` and `.json` reports. The final default
+pipeline run uses `device-lost-default-ext`. The reproduced dump
+is `.cache/aftermath/Metallic_RHI_Tests-56180-1.json`. Both RelWithDebInfo editor
+executables were rebuilt in `build-device-lost-final.log`.
 
 ## Finding
 

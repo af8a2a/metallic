@@ -231,13 +231,15 @@ Result RenderFrameContext::reset()
 {
     cancel();
     Result result = wait();
-    if (!result) {
+    if (!result && !hasError(result, Error::DeviceLost)) {
         return result;
     }
+    // Device loss is terminal: release while Device still exists instead of
+    // retrying these waits from a destructor after the owner tears Device down.
     resources_.clear();
     dependencies_.clear();
     completion_ = {};
-    return {};
+    return result;
 }
 
 void RenderFrameContext::retain(std::shared_ptr<void> resource)
@@ -359,7 +361,7 @@ Result QueueSubmissionTracker::wait(uint64_t timeoutNanoseconds) const
 Result QueueSubmissionTracker::reset()
 {
     Result result = wait();
-    if (result) {
+    if (result || hasError(result, Error::DeviceLost)) {
         lastSubmission_ = {};
         timeline_.reset();
         queue_ = nullptr;
@@ -387,14 +389,18 @@ void DeferredReleaseQueue::collect()
 
 Result DeferredReleaseQueue::drain()
 {
+    Result result;
     for (const Entry& entry : entries_) {
-        Result result = entry.completion.wait();
+        result = entry.completion.wait();
+        if (hasError(result, Error::DeviceLost)) {
+            break;
+        }
         if (!result) {
             return result;
         }
     }
     entries_.clear();
-    return {};
+    return result;
 }
 
 } // namespace metallic::render

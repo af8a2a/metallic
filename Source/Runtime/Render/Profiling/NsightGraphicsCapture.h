@@ -4,6 +4,11 @@
 #include <filesystem>
 #include <string>
 
+namespace metallic::render {
+class Queue;
+class Texture;
+} // namespace metallic::render
+
 namespace metallic::render::profiling {
 
 enum class NsightGraphicsCaptureState : uint8_t {
@@ -24,6 +29,8 @@ struct NsightGraphicsCaptureConfig {
 struct NsightGraphicsCaptureRequest {
     uint32_t framesBeforeStart = 0;
     uint32_t framesToCapture = 1;
+    // Offscreen tests delimit frames explicitly instead of presenting a window.
+    bool explicitFrameBoundaries = false;
 };
 
 struct NsightGraphicsCapturePollResult {
@@ -46,6 +53,7 @@ public:
 
     bool initializeBeforeGraphics(const NsightGraphicsCaptureConfig& config, std::string& error);
     bool requestCapture(const NsightGraphicsCaptureRequest& request, std::string& error);
+    bool frameBoundary(Queue& queue, Texture* output, std::string& error);
     NsightGraphicsCapturePollResult poll();
 
     NsightGraphicsCaptureState state() const;

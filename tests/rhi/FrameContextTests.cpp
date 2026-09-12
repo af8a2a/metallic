@@ -1,5 +1,6 @@
 #include "RhiTest.h"
 #include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -25,6 +26,19 @@ namespace {
 } while (false)
 
 constexpr uint64_t kWaitTimeout = 5'000'000'000ull;
+
+struct ScopedTimelineWaitResult {
+    PFN_vkWaitSemaphores original = vkWaitSemaphores;
+    static inline VkResult result = VK_SUCCESS;
+    static inline uint32_t calls = 0;
+    static VKAPI_ATTR VkResult VKAPI_CALL wait(VkDevice, const VkSemaphoreWaitInfo*, uint64_t)
+    {
+        ++calls;
+        return result;
+    }
+    ScopedTimelineWaitResult() { calls = 0; vkWaitSemaphores = wait; }
+    ~ScopedTimelineWaitResult() { vkWaitSemaphores = original; }
+};
 
 struct Commands {
     render::RenderFrameContext frame;
@@ -203,6 +217,59 @@ public:
         return RhiTestResult::pass();
     }
 };
+
+class FrameDeviceLostCleanupTest final : public RhiTest {
+public:
+    FrameDeviceLostCleanupTest() { type = RhiTestType::Command; name = "frame_device_lost_cleanup"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::QueueSubmissionTracker tracker;
+        Commands commands;
+        render::DeferredReleaseQueue deferred;
+        std::unique_ptr<render::Semaphore> gate;
+        FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
+        FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
+        FRAME_REQUIRE(context.device.createSemaphore(gate));
+        QueueDrain drain{context.graphicsQueue, gate.get()};
+        FRAME_REQUIRE(commands.begin(0));
+        auto retained = std::make_shared<uint32_t>(17);
+        auto retired = std::make_shared<uint32_t>(23);
+        const std::weak_ptr<uint32_t> retainedWeak = retained, retiredWeak = retired;
+        commands.frame.retain(std::move(retained));
+        deferred.retire(commands.frame.completion(), std::move(retired));
+        FRAME_REQUIRE(commands.submit(tracker, gate.get()));
+        FRAME_REQUIRE(gate->signal(1));
+        FRAME_REQUIRE(commands.frame.wait(kWaitTimeout));
+        FRAME_REQUIRE(commands.pool->reset());
+
+        // Drain actual GPU work first; inject only the host API result so the
+        // test covers terminal teardown without deliberately faulting the GPU.
+        ScopedTimelineWaitResult injected;
+        ScopedTimelineWaitResult::result = VK_TIMEOUT;
+        if (commands.frame.reset() || tracker.reset() || deferred.drain() ||
+            !commands.frame.completion().valid() || retainedWeak.expired() || retiredWeak.expired()) {
+            return RhiTestResult::fail("Retryable wait failure discarded pending lifetimes");
+        }
+        ScopedTimelineWaitResult::result = VK_ERROR_DEVICE_LOST;
+        if (!render::hasError(commands.frame.reset(), render::Error::DeviceLost) ||
+            !render::hasError(tracker.reset(), render::Error::DeviceLost) ||
+            !render::hasError(deferred.drain(), render::Error::DeviceLost) ||
+            commands.frame.completion().valid() || deferred.size() != 0 ||
+            !retainedWeak.expired() || !retiredWeak.expired()) {
+            return RhiTestResult::fail("Device loss did not release lifetimes while preserving the error");
+        }
+        const uint32_t waits = ScopedTimelineWaitResult::calls;
+        FRAME_REQUIRE(commands.frame.reset());
+        FRAME_REQUIRE(tracker.reset());
+        FRAME_REQUIRE(deferred.drain());
+        if (ScopedTimelineWaitResult::calls != waits) {
+            return RhiTestResult::fail("Repeated teardown accessed a discarded timeline");
+        }
+        return RhiTestResult::pass("Timeout preserves resources; device loss releases them and teardown is idempotent");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(FrameDeviceLostCleanupTest);
 
 class FrameUploadLifetimeTest : public RhiTest {
 public:

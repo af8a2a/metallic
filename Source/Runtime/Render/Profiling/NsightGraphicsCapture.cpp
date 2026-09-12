@@ -15,7 +15,9 @@
 #endif
 
 #if METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include <NGFX_GraphicsCapture_Vulkan.h>
+#include <NGFX_Vulkan.h>
 
 #include <cwchar>
 #endif
@@ -309,7 +311,8 @@ bool NsightGraphicsCapture::requestCapture(
 
     NGFX_GraphicsCapture_RequestCapture_Vulkan_Params captureParams{};
     captureParams.version = NGFX_GraphicsCapture_RequestCapture_Vulkan_Params_VER;
-    captureParams.delimiter = NGFX_GraphicsCapture_Delimiter_Present;
+    captureParams.delimiter = request.explicitFrameBoundaries
+        ? NGFX_GraphicsCapture_Delimiter_FrameBoundary : NGFX_GraphicsCapture_Delimiter_Present;
     captureParams.framesBeforeStart = request.framesBeforeStart;
     captureParams.framesToCapture = request.framesToCapture;
     result = NGFX_GraphicsCapture_RequestCapture_Vulkan(&captureParams);
@@ -324,6 +327,40 @@ bool NsightGraphicsCapture::requestCapture(
     lastError_.clear();
     state_ = NsightGraphicsCaptureState::CapturePending;
     return true;
+#endif
+}
+
+bool NsightGraphicsCapture::frameBoundary(Queue& queue, Texture* output, std::string& error)
+{
+    error.clear();
+#if METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE
+    if (state_ != NsightGraphicsCaptureState::Ready &&
+        state_ != NsightGraphicsCaptureState::CapturePending &&
+        state_ != NsightGraphicsCaptureState::CaptureCompleted) {
+        error = "Nsight Graphics capture is not ready for a frame boundary";
+        return false;
+    }
+    NGFX_FrameBoundary_Vulkan_Params params{};
+    params.version = NGFX_FrameBoundary_Vulkan_Params_VER;
+    params.queue = vulkan::nativeQueue(queue).queue;
+    NGFX_ResourceDescription_Vulkan resource{};
+    if (output != nullptr) {
+        resource.version = NGFX_ResourceDescription_Vulkan_VER;
+        resource.type = NGFX_ResourceType_Vulkan_VkImage;
+        resource.image = vulkan::nativeTexture(*output).image;
+        params.outputResources = &resource;
+        params.numOutputResources = 1;
+    }
+    const NGFX_Result result = NGFX_FrameBoundary_Vulkan(&params);
+    if (result != NGFX_Result_Success) {
+        return fail(ngfxError("NGFX_FrameBoundary_Vulkan", result), &error);
+    }
+    return true;
+#else
+    (void)queue;
+    (void)output;
+    error = "Nsight Graphics Capture SDK support was not compiled";
+    return false;
 #endif
 }
 

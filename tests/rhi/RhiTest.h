@@ -12,6 +12,10 @@
 #include <utility>
 #include <vector>
 
+namespace metallic::render::profiling {
+class NsightGraphicsCapture;
+} // namespace metallic::render::profiling
+
 namespace metallic::tests {
 
 enum class RhiTestType {
@@ -48,6 +52,7 @@ struct RhiTestContext {
     std::filesystem::path outputDirectory;
     bool enableValidation = false;
     std::atomic_uint* validationMessageCount = nullptr;
+    render::profiling::NsightGraphicsCapture* nsightCapture = nullptr;
 };
 
 class RhiTest {
