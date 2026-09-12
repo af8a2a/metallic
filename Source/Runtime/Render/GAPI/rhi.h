@@ -682,6 +682,10 @@ struct RayTracingTriangleGeometryDesc {
     RayTracingGeometryFlags flags = RayTracingGeometryFlags::Opaque;
     // One micromap triangle per geometry triangle. Keep alive with the BLAS.
     class RayTracingAccelerationStructure* opacityMicromap = nullptr;
+    // Histogram for these geometry triangles; required by the EXT OMM backend.
+    // Only read during size queries and command recording.
+    const OpacityMicromapUsage* opacityMicromapUsages = nullptr;
+    uint32_t opacityMicromapUsageCount = 0;
 };
 
 struct RayTracingAccelerationStructureBuildInputs {

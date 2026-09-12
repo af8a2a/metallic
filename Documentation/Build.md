@@ -69,6 +69,16 @@ information can make optimized OpenPBR shader compilation take minutes; use
 Capture export requires an installed
 Nsight Graphics SDK and runtime.
 
+When Nsight Graphics capture injection is active, opacity micromaps use the
+`VK_EXT_opacity_micromap` backend, including native EXT builds and shader support.
+Ordinary execution uses `VK_KHR_opacity_micromap`. This avoids the current capture
+interceptor's KHR OMM null-range crash while retaining OMM acceleration. See the
+[investigation and workaround](NsightKhrOpacityMicromapInvestigation.md).
+TODO(Nsight KHR OMM): Remove the temporary EXT path after Nsight Graphics supports
+KHR OMM and the injected build/capture/replay checks in that document pass.
+The RHI test runner can reproduce the capture path with
+`--rhi-nsight-capture --gtest_filter='*opacity_micromap*'`.
+
 To disable this launch default, configure with
 `-DMETALLIC_DEFAULT_NSIGHT_CAPTURE=OFF`, or set the runtime environment variable
 `METALLIC_NSIGHT_GRAPHICS_CAPTURE=0`. An explicit `--nsight-capture` still takes

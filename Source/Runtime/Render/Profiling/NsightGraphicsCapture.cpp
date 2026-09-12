@@ -1,6 +1,7 @@
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 
 #include <algorithm>
+#include <atomic>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -15,13 +16,18 @@
 
 #if METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE
 #include <NGFX_GraphicsCapture_Vulkan.h>
-#include <Windows.h>
 
 #include <cwchar>
 #endif
 
+#ifdef _WIN32
+#include <Windows.h>
+#endif
+
 namespace metallic::render::profiling {
 namespace {
+
+std::atomic_bool gVulkanCaptureInjected{false};
 
 #if METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE
 
@@ -143,6 +149,18 @@ bool NsightGraphicsCapture::compiledAvailable()
 #endif
 }
 
+bool NsightGraphicsCapture::vulkanInjectionActive()
+{
+    if (gVulkanCaptureInjected.load(std::memory_order_relaxed)) {
+        return true;
+    }
+#ifdef _WIN32
+    return GetModuleHandleW(L"ngfx-capture-interception.dll") != nullptr;
+#else
+    return false;
+#endif
+}
+
 std::filesystem::path NsightGraphicsCapture::defaultInstallationRoot()
 {
     return std::filesystem::path(METALLIC_NSIGHT_GRAPHICS_DEFAULT_INSTALLATION_ROOT);
@@ -236,6 +254,8 @@ bool NsightGraphicsCapture::initializeBeforeGraphics(
     if (result != NGFX_Result_Success) {
         return fail(ngfxError("NGFX_GraphicsCapture_Inject_Vulkan", result), &error);
     }
+    // Injection remains active even if subsequent activity initialization fails.
+    gVulkanCaptureInjected.store(true, std::memory_order_relaxed);
 
     NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params initializeParams{};
     initializeParams.version = NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params_VER;

@@ -92,14 +92,18 @@ public:
             binary.write(reinterpret_cast<const char*>(vertices), sizeof(vertices));
             binary.write(reinterpret_cast<const char*>(indices), sizeof(indices));
             std::ofstream gltf(path);
-            gltf << R"json({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
-                "nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1},"indices":2,"material":0}]}],
+            // Two distinct primitives exercise OMM scratch reuse and per-BLAS histograms.
+            gltf << R"json({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1]}],
+                "nodes":[{"mesh":0},{"mesh":1,"translation":[2,0,0]}],
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1},"indices":2,"material":0}]},
+                    {"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1},"indices":2,"material":1}]}],
                 "buffers":[{"uri":"mesh.bin","byteLength":104}],
                 "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":32},{"buffer":0,"byteOffset":80,"byteLength":24}],
                 "accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[0,0,2],"max":[1,1,2]},
                     {"bufferView":1,"componentType":5126,"count":4,"type":"VEC2"},{"bufferView":2,"componentType":5125,"count":6,"type":"SCALAR"}],
                 "images":[{"uri":"alpha.png"}],"textures":[{"source":0}],
-                "materials":[{"alphaMode":"MASK","alphaCutoff":0.5,"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}]
+                "materials":[{"alphaMode":"MASK","alphaCutoff":0.5,"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}},
+                    {"alphaMode":"MASK","pbrMetallicRoughness":{"baseColorFactor":[1,1,1,0]}}]
             })json";
         }
         std::vector<uint8_t> pixels(32 * 32 * 4, 255);
@@ -118,13 +122,13 @@ public:
         for (bool enable : {false, true}) {
             { std::ofstream restore(path); restore << originalGltf; }
             std::unique_ptr<render::Device> device;
-            const auto setup = render::createDevice({.applicationName = "KHR Opacity Micromap Test",
+            const auto setup = render::createDevice({.applicationName = "Opacity Micromap Test",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
                 .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
                 .enableOpacityMicromap = enable}, device);
             if (render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("ray queries unavailable"); }
             OMM_REQUIRE(setup);
-            if (enable && !device->capabilities().opacityMicromap) { return RhiTestResult::skip("fallback passed; KHR OMM unavailable"); }
+            if (enable && !device->capabilities().opacityMicromap) { return RhiTestResult::skip("fallback passed; OMM unavailable"); }
             if (!enable) {
                 render::RayTracingAccelerationStructureBuildSizes sizes;
                 const auto unavailable = device->queryRayTracingAccelerationStructureBuildSizes({.type = render::RayTracingAccelerationStructureType::OpacityMicromap}, sizes);
@@ -143,7 +147,7 @@ public:
                 if (!complete) { std::this_thread::yield(); }
             }
             OMM_EXPECT(complete && resources.valid(), "scene preparation timed out: " + log);
-            OMM_EXPECT(resources.accelerationStructure().stats().opacityMicromapCount == (enable ? 1u : 0u), "scene BLAS did not bake the expected OMM");
+            OMM_EXPECT(resources.accelerationStructure().stats().opacityMicromapCount == (enable ? 2u : 0u), "scene BLAS did not bake the expected OMMs");
             OMM_EXPECT(resources.accelerationStructure().stats().compactedBlasBytes != 0, "BLAS compaction was not exercised");
             const char* capabilities[] = {"spvRayQueryKHR"};
             render::ShaderCompileResult compiled;
@@ -155,6 +159,8 @@ public:
             std::vector<uint32_t> patched, twice;
             OMM_EXPECT(render::vulkan::enableOpacityMicromapSpirv(compiled.spirv, patched) && patched != compiled.spirv &&
                 render::vulkan::enableOpacityMicromapSpirv(patched, twice) && patched == twice, "RayQuery OMM mode missing or not idempotent");
+            OMM_EXPECT(render::vulkan::enableOpacityMicromapSpirv(compiled.spirv, patched, true) && patched != compiled.spirv &&
+                render::vulkan::enableOpacityMicromapSpirv(patched, twice, true) && patched == twice, "RayQuery EXT OMM capability missing or not idempotent");
             const render::ComputeProgramBindingDesc layout[] = {
                 {0, render::ComputeResourceBindingKind::AccelerationStructure}, {2}, {3}, {4}, {5}, {6},
                 {9, render::ComputeResourceBindingKind::SampledImage, render::kScenePathTraceMaxMaterialTextures}, {63}};
@@ -246,8 +252,9 @@ public:
                 }
             }
         }
-        OMM_EXPECT(ommCandidates < fallbackCandidates / 2, "OMM did not reduce shader alpha candidates");
-        return RhiTestResult::pass("KHR OMM visibility equals fallback after compaction/cutoff/UV/alpha/BLEND edits; candidates " +
+        OMM_EXPECT(ommCandidates < fallbackCandidates / 2, "OMM did not reduce shader alpha candidates: " +
+            std::to_string(fallbackCandidates) + " -> " + std::to_string(ommCandidates));
+        return RhiTestResult::pass("OMM visibility equals fallback after compaction/cutoff/UV/alpha/BLEND edits; candidates " +
             std::to_string(fallbackCandidates) + " -> " + std::to_string(ommCandidates));
     }
 };

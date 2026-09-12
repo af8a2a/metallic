@@ -717,7 +717,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
         ++micromapCount;
     }
     if (micromapCount != 0) {
-        spdlog::info("[OMM] Baked {} KHR micromaps for {} alpha triangles, {} AS bytes",
+        spdlog::info("[OMM] Baked {} micromaps for {} alpha triangles, {} storage bytes",
             micromapCount, micromapTriangleCount, micromapBytes);
     }
 
@@ -744,6 +744,8 @@ Result SceneAccelerationStructureBuilder::buildInternal(
             .primitiveCount = input.triangleCount,
             .flags = input.opaque ? RayTracingGeometryFlags::Opaque : RayTracingGeometryFlags::None,
             .opacityMicromap = impl_->micromaps[geometries.size()].get(),
+            .opacityMicromapUsages = micromapInputs[geometries.size()].usages,
+            .opacityMicromapUsageCount = micromapInputs[geometries.size()].usageCount,
         });
         RayTracingAccelerationStructureBuildSizes sizes;
         result = device.queryRayTracingAccelerationStructureBuildSizes(

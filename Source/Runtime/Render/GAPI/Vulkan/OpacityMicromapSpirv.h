@@ -3,22 +3,25 @@
 #include <algorithm>
 #include <cstring>
 #include <span>
+#include <string_view>
 #include <vector>
 #include <cstdint>
 
 namespace metallic::render::vulkan {
 
-// SPV_KHR_opacity_micromap, revision 4. Older Slang releases cannot emit the
-// KHR execution mode. Apply it to the final device-specific module, after any
-// compiler/cache lookup, and hash/register that exact binary with the driver.
-inline bool enableOpacityMicromapSpirv(std::span<const uint32_t> code, std::vector<uint32_t>& output)
+// Declare the device's OMM shader support: the legacy EXT capability, or the
+// KHR execution mode (revision 4) that older Slang releases cannot emit.
+// Patch after compiler/cache lookup and hash/register the final device binary.
+inline bool enableOpacityMicromapSpirv(
+    std::span<const uint32_t> code, std::vector<uint32_t>& output, bool useExt = false)
 {
     output.assign(code.begin(), code.end());
     if (code.size() < 5 || code[0] != 0x07230203u) {
         return false;
     }
     constexpr uint32_t kRayQuery = 4472;
-    constexpr uint32_t kOpacityCapability = 6032;
+    const uint32_t kOpacityCapability = useExt ? 5381 : 6032;
+    const std::string_view extension = useExt ? "SPV_EXT_opacity_micromap" : "SPV_KHR_opacity_micromap";
     constexpr uint32_t kOpacityMode = 6031;
     bool rayQuery = false;
     bool hasCapability = false;
@@ -37,9 +40,8 @@ inline bool enableOpacityMicromapSpirv(std::span<const uint32_t> code, std::vect
             hasCapability |= code[offset + 1] == kOpacityCapability;
             capabilitiesEnd = offset + count;
         } else if (op == 10) { // OpExtension
-            constexpr char kExtension[] = "SPV_KHR_opacity_micromap";
-            hasExtension |= (count - 1) * 4 >= sizeof(kExtension) &&
-                std::memcmp(code.data() + offset + 1, kExtension, sizeof(kExtension)) == 0;
+            hasExtension |= (count - 1) * 4 >= extension.size() + 1 &&
+                std::memcmp(code.data() + offset + 1, extension.data(), extension.size() + 1) == 0;
             extensionsEnd = offset + count;
         } else if (op == 15 && count >= 4) { // OpEntryPoint
             entryPoints.push_back(code[offset + 2]);
@@ -57,6 +59,21 @@ inline bool enableOpacityMicromapSpirv(std::span<const uint32_t> code, std::vect
         offset += count;
     }
     if (!rayQuery) {
+        return true;
+    }
+    if (useExt) {
+        // The legacy compiler path recognizes OMM traversal through the EXT
+        // capability. Do not emit the execution mode that requires the KHR feature.
+        if (!hasExtension) {
+            const size_t words = (extension.size() + 1 + 3) / 4;
+            std::vector<uint32_t> instruction(words + 1, 0);
+            instruction[0] = (uint32_t(words + 1) << 16) | 10u;
+            std::memcpy(instruction.data() + 1, extension.data(), extension.size());
+            output.insert(output.begin() + std::max(extensionsEnd, capabilitiesEnd), instruction.begin(), instruction.end());
+        }
+        if (!hasCapability) {
+            output.insert(output.begin() + capabilitiesEnd, {(2u << 16) | 17u, kOpacityCapability});
+        }
         return true;
     }
     std::erase_if(entryPoints, [&](uint32_t entry) {

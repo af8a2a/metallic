@@ -40,6 +40,8 @@ public:
     NsightGraphicsCapture();
 
     static bool compiledAvailable();
+    // Includes SDK injection and an externally loaded Nsight capture interceptor.
+    static bool vulkanInjectionActive();
     static std::filesystem::path defaultInstallationRoot();
 
     bool initializeBeforeGraphics(const NsightGraphicsCaptureConfig& config, std::string& error);
