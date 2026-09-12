@@ -357,10 +357,13 @@ struct DeviceDesc {
     bool enableStreamline = false;
     bool enableAftermath = false;
     ValidationSink validationSink;
+    // Optional separate compute queue; legacy callers keep their universal queue.
+    bool enableAsyncCompute = false;
 };
 
 struct DeviceCapabilities {
     bool independentCopyQueue = false;
+    bool independentComputeQueue = false;
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
     bool meshShader = false;
@@ -387,6 +390,8 @@ struct DeviceCapabilities {
     bool streamlineDlssSr = false;
     bool streamlineDlssRr = false;
     bool aftermath = false;
+    bool shaderBufferInt64Atomics = false;
+    uint32_t subPixelPrecisionBits = 0;
     bool shaderIntegerDotProduct = false;
     bool shaderImageGatherExtended = false;
     bool cooperativeVector = false;
@@ -1263,6 +1268,7 @@ public:
     Result submit(const QueueSubmitDesc& desc);
     Result waitIdle();
     QueueType type() const;
+    bool sameQueue(const Queue& other) const;
     uint32_t timestampValidBits() const;
     // Optional and non-blocking: Unsupported leaves ordinary timestamp timing usable.
     Result calibrateTimestamps(GpuClockCalibration& outCalibration) const;

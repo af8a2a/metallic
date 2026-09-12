@@ -2396,6 +2396,7 @@ bool EditorApplication::initializeRhi()
                 .enableStreamline = enableStreamline,
                 .enableAftermath = !smokeTest_,
                 .validationSink = debugRuntime_ ? debugRuntime_->validationSink() : render::ValidationSink{},
+                .enableAsyncCompute = true,
             },
             device_);
     }
@@ -6430,8 +6431,13 @@ bool EditorApplication::renderGraphPreview()
         .name = "RenderGraph Preview",
         .color = render::ColorValue{0.78f, 0.36f, 0.92f, 1.0f},
     });
-    render::Result result = graphExecutor_->execute(*frame.commandBuffer, &historyResources_);
+    render::Result result = graphExecutor_->execute(render::RenderGraphSubmitDesc{.graphicsQueue = graphicsQueue_,
+        .computeQueue = device_->getQueue(render::QueueType::Compute), .historyResources = &historyResources_});
     profiler_.addRenderGraphStats(graphExecutor_->executionStats());
+    if (result) { historyFrameIndex_ = graphExecutor_->executionStats().executionId + 1; }
+    if (smokeTest_ && result) {
+        spdlog::info("[Smoke] Async software raster branches: {}", graphExecutor_->executionStats().asyncComputeBranches);
+    }
     frame.commandBuffer->endDebugLabel();
     if (!result) {
         renderGraphStatus_ = std::string("RenderGraph execute failed: ") + render::resultToString(result);
@@ -6511,7 +6517,6 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             spdlog::error("commandBuffer begin failed with Result {}", render::resultToString(result));
             return false;
         }
-        historyResources_.beginFrame(historyFrameIndex_++);
     }
 
     bool frameLabelOpen = true;
@@ -6626,7 +6631,9 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
     render::CommandBuffer* commandBuffers[] = {frame.commandBuffer.get()};
     render::SwapchainSemaphoreSubmitDesc waitSemaphore{
         .semaphore = renderMainViewport ? frame.imageAvailable.get() : nullptr,
-        .stages = render::PipelineStageBits::ColorAttachment,
+        // This submission only presents the completed graph; also wait before
+        // the swapchain image's initial layout transition, not just its draws.
+        .stages = render::PipelineStageBits::AllCommands,
     };
     render::SwapchainSemaphoreSubmitDesc signalSemaphore{
         .semaphore = renderMainViewport ? renderFinishedSemaphores_[imageIndex].get() : nullptr,

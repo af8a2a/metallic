@@ -90,7 +90,11 @@ Result createNamedBuffer(
     std::string& log,
     std::string_view label)
 {
-    Result result = device.createBuffer(desc, outBuffer);
+    BufferDesc shared = desc;
+    if (hasFlag(shared.usage, BufferUsageBits::Storage)) {
+        shared.queueAccess = shared.queueAccess | QueueAccessBits::Graphics | QueueAccessBits::Compute;
+    }
+    Result result = device.createBuffer(shared, outBuffer);
     if (!result || outBuffer == nullptr) {
         log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
         log += '\n';
@@ -838,6 +842,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             .structureStride = 0,
             .usage = pageBufferUsage,
             .memoryLocation = MemoryLocation::Device,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
         },
         pageBuffer_);
     if (!result || pageBuffer_ == nullptr) {

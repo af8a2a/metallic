@@ -448,6 +448,14 @@ QueueType UnsafePass::queueType() const
     return QueueType::Graphics;
 }
 
+Result RenderGraphExecutionContext::parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics)
+{
+    if (!compute || !graphics) { return makeError(Error::InvalidArgument); }
+    if (parallelRecorder_) { return parallelRecorder_(*this, compute, graphics); }
+    Result result = compute(commandBuffer());
+    return result ? graphics(commandBuffer()) : result;
+}
+
 void RenderGraphExecutionContext::debugCheckpoint(std::string_view name,
     std::span<const DebugResourceBinding> privateResources, const RenderGraphProperties& values)
 {
@@ -464,7 +472,7 @@ void RenderGraphExecutionContext::debugCheckpoint(std::string_view name,
                 .metadata = {{"visibility", binding.visibility == RenderGraphFieldVisibility::Input ? "input" : "output"}}});
         }
     }
-    debugObserver_->boundary(commandBuffer_, name, debugPassId_, passName_, resources, values);
+    debugObserver_->boundary(*commandBuffer_, name, debugPassId_, passName_, resources, values);
 }
 
 TextureHandle::TextureHandle(RenderGraphResource* resource)
@@ -555,7 +563,7 @@ RenderGraphExecutionContext::RenderGraphExecutionContext(
     const scene::Scene* runtimeScene,
     RenderWorld* world,
     RenderSubsystemHost* subsystems)
-    : commandBuffer_(commandBuffer)
+    : commandBuffer_(&commandBuffer)
     , frameIndex_(frameIndex)
     , width_(width)
     , height_(height)

@@ -32,6 +32,7 @@ struct RenderGraphNodeExecutionStat {
 };
 
 struct RenderGraphExecutionStats {
+    uint32_t asyncComputeBranches = 0;
     uint64_t executionId = 0;
     double cpuMilliseconds = 0.0;
     double gpuMilliseconds = 0.0;
@@ -142,6 +143,7 @@ public:
     uint32_t width() const;
     uint32_t height() const;
     const std::string& lastLog() const;
+    const RenderGraphExecutionStats& executionStats() const;
     Result collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats);
 
 private:

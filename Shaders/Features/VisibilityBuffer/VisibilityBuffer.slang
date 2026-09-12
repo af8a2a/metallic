@@ -1,4 +1,6 @@
 #include "../../Libraries/GPUDriven/GPUDrivenCullingCommon.slang"
+#include "../../Libraries/GPUDriven/HybridClusterBins.slang"
+#include "../../Libraries/GPUDriven/HybridRasterTriangle.slang"
 
 #ifndef GPU_DRIVEN_AMPLIFICATION_WAVE_OPS
 #define GPU_DRIVEN_AMPLIFICATION_WAVE_OPS 1
@@ -99,12 +101,7 @@ float materialBaseColorAlpha(
         sampleImageBilinear(texture, transformMaterialUv(textureInfo, uv)).a;
 }
 
-[shader("amplification")]
-[numthreads(kAmplificationGroupSize, 1, 1)]
-void visibilityBufferAmplificationMain(
-    uint3 groupID : SV_GroupID,
-    uint groupThreadIndex : SV_GroupIndex,
-    uniform GPUDrivenPreviewPush push)
+bool residentClusterVisible(uint meshletDrawIndex, GPUDrivenPreviewPush push)
 {
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(
@@ -133,16 +130,13 @@ void visibilityBufferAmplificationMain(
     StructuredBuffer<GPUDrivenPreviewInstance> instances = instanceHandle;
     StructuredBuffer<uint> visibility = visibilityHandle;
 
-    uint localMeshletIndex =
-        groupID.x * kAmplificationGroupSize + groupThreadIndex;
-    uint meshletDrawIndex = params.meshletOffset + localMeshletIndex;
-    bool visible = localMeshletIndex < params.meshletCount;
+    bool visible = meshletDrawIndex >= params.meshletOffset &&
+        meshletDrawIndex - params.meshletOffset < params.meshletCount;
     if (visible) {
         VisibleClusterRecord meshletDraw = meshletDraws[meshletDrawIndex];
         visible = meshletDraw.instanceIndex < params.instanceCount &&
             visibleClusterSource(meshletDraw) == kVisibleClusterSourceResident &&
-            visibleClusterDrawBucket(meshletDraw) == push.mipLevel &&
-            push.mipLevel < kDrawBucketCount &&
+            visibleClusterDrawBucket(meshletDraw) < kDrawBucketCount &&
             (visibility[meshletDraw.instanceIndex] == 1u ||
                 (push.passIndex != 0u && visibility[meshletDraw.instanceIndex] == 3u));
         // Stream culling reuses the shared visibility state after resident
@@ -171,6 +165,42 @@ void visibilityBufferAmplificationMain(
                     visibility[meshletDraw.instanceIndex], params, push);
             }
         }
+    }
+
+    return visible;
+}
+
+[shader("amplification")]
+[numthreads(kAmplificationGroupSize, 1, 1)]
+void visibilityBufferAmplificationMain(
+    uint3 groupID : SV_GroupID,
+    uint groupThreadIndex : SV_GroupIndex,
+    uniform GPUDrivenPreviewPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> records =
+        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.bufferShaderIndexBase + push.meshletDrawBuffer, 0));
+    GPUDrivenPreviewParams params = paramsHandle[0];
+    uint localMeshletIndex = hybridFlatGroup(groupID) * kAmplificationGroupSize + groupThreadIndex;
+    uint meshletDrawIndex = params.meshletOffset + localMeshletIndex;
+    bool visible;
+    if (push.environmentSHBuffer != kInvalidTextureIndex) {
+        DescriptorHandle<StructuredBuffer<uint>> bins =
+            DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.environmentSHBuffer, 0));
+        visible = hybridBinRecord(bins, push.mipLevel, localMeshletIndex, meshletDrawIndex);
+        // A compact bin has no holes within a task group. Preserve lane order
+        // directly, including devices without full Wave32 task subgroups.
+        if (visible) { g_AmplificationPayload.meshletDrawIndices[groupThreadIndex] = meshletDrawIndex; }
+        GroupMemoryBarrierWithGroupSync();
+        uint liveCount = min(bins[push.mipLevel], bins[5]);
+        uint first = localMeshletIndex - groupThreadIndex;
+        uint count = min(kAmplificationGroupSize, liveCount - min(first, liveCount));
+        DispatchMesh(count, 1, 1, g_AmplificationPayload);
+        return;
+    } else {
+        visible = residentClusterVisible(meshletDrawIndex, push);
+        if (visible) { visible = visibleClusterDrawBucket(records[meshletDrawIndex]) == push.mipLevel; }
     }
 
     uint visibleCount = 0u;
@@ -230,6 +260,8 @@ void visibilityBufferAmplificationMain(
 
     DispatchMesh(visibleCount, 1u, 1u, g_AmplificationPayload);
 }
+
+groupshared float4 g_HybridClipPositions[kMaxMeshletVertices];
 
 [shader("mesh")]
 [numthreads(128, 1, 1)]
@@ -307,14 +339,20 @@ void visibilityBufferMeshMain(
                 float2(params.width, params.height) * position.w;
         }
         vertices[groupThreadIndex].position = position;
+#if !VISIBILITY_BUFFER_ALPHA_MASKED
+        g_HybridClipPositions[groupThreadIndex] = position;
+#endif
 #if VISIBILITY_BUFFER_ALPHA_MASKED
         vertices[groupThreadIndex].texcoord = vertex.texcoord.xy;
         vertices[groupThreadIndex].materialIndex = instance.identity.y;
 #endif
     }
 
+#if !VISIBILITY_BUFFER_ALPHA_MASKED
+    GroupMemoryBarrierWithGroupSync();
+#endif
     if (groupThreadIndex < triangleCount) {
-        triangles[groupThreadIndex] = uint3(
+        uint3 indices = uint3(
             loadPackedMeshletTriangleIndex(
                 meshletTriangles,
                 meshlet.ranges.z,
@@ -330,8 +368,17 @@ void visibilityBufferMeshMain(
                 meshlet.ranges.z,
                 groupThreadIndex,
                 2u));
-        primitives[groupThreadIndex].visibilityId =
-            packVisibilityId(meshletDrawIndex, groupThreadIndex);
+        uint visibilityId = packVisibilityId(meshletDrawIndex, groupThreadIndex);
+#if !VISIBILITY_BUFFER_ALPHA_MASKED
+        // Alpha-tested buckets keep their existing bilinear material coverage.
+        if (hybridEnqueueTriangle(g_HybridClipPositions[indices.x],
+            g_HybridClipPositions[indices.y], g_HybridClipPositions[indices.z], visibilityId,
+            (push.mipLevel & 1u) != 0u, push.deferredColorBuffer, push.bufferShaderIndexBase)) {
+            indices = uint3(0u);
+        }
+#endif
+        triangles[groupThreadIndex] = indices;
+        primitives[groupThreadIndex].visibilityId = visibilityId;
     }
 }
 
@@ -362,4 +409,127 @@ uint visibilityBufferMaskedFragmentMain(
         discard;
     }
     return input.visibilityId;
+}
+
+struct ResidentRasterCluster
+{
+    VisibleClusterRecord record;
+    GPUDrivenPreviewMeshlet meshlet;
+    GPUDrivenPreviewGeometry geometry;
+    GPUDrivenPreviewInstance instance;
+};
+
+ResidentRasterCluster residentRasterCluster(uint index, GPUDrivenPreviewPush push)
+{
+    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> records =
+        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.bufferShaderIndexBase + push.meshletDrawBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshlets =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.bufferShaderIndexBase + push.meshletBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewGeometry>> geometries =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewGeometry>>(uint2(push.bufferShaderIndexBase + push.transformBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.bufferShaderIndexBase + push.instanceBuffer, 0));
+    ResidentRasterCluster c;
+    c.record = records[index];
+    c.meshlet = meshlets[c.record.clusterIndex];
+    c.geometry = geometries[c.record.dataIndex];
+    c.instance = instances[c.record.instanceIndex];
+    return c;
+}
+
+float4 residentClusterClip(ResidentRasterCluster c, uint vertex, GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
+{
+    DescriptorHandle<StructuredBuffer<uint>> indices =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.meshletVertexBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vertices =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(uint2(push.bufferShaderIndexBase + push.positionBuffer, 0));
+    float3 world = transformPoint(instanceTransform(c.instance),
+        vertices[c.geometry.payload.x + indices[c.meshlet.ranges.x + vertex]].position.xyz);
+    float4 clip = projectPosition(world, push.projectWithCullingCamera != 0u ? cullingCamera(params) : renderCamera(params));
+    clip.y = -clip.y;
+    if (push.projectWithCullingCamera == 0u) {
+        clip.xy -= 2.0 * float2(params.renderEye.w, params.renderCenter.w) / float2(params.width, params.height) * clip.w;
+    }
+    return clip;
+}
+
+uint3 residentClusterTriangle(ResidentRasterCluster c, uint triangle, GPUDrivenPreviewPush push)
+{
+    DescriptorHandle<StructuredBuffer<uint>> words =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.meshletTriangleBuffer, 0));
+    return uint3(loadPackedMeshletTriangleIndex(words, c.meshlet.ranges.z, triangle, 0u),
+        loadPackedMeshletTriangleIndex(words, c.meshlet.ranges.z, triangle, 1u),
+        loadPackedMeshletTriangleIndex(words, c.meshlet.ranges.z, triangle, 2u));
+}
+
+groupshared ResidentRasterCluster g_PrebinCluster;
+groupshared uint g_PrebinVisible;
+groupshared uint g_PrebinHardware;
+
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void visibilityClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenPreviewPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> parameters =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> binHandle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.environmentSHBuffer, 0));
+    RWStructuredBuffer<uint> bins = binHandle;
+    GPUDrivenPreviewParams params = parameters[0];
+    uint index = params.meshletOffset + hybridFlatGroup(group);
+    if (lane == 0u) {
+        hybridClassifyCluster(bins, 0xffffffffu, index, hybridFlatGroup(group));
+        g_PrebinVisible = residentClusterVisible(index, push) ? 1u : 0u;
+        g_PrebinHardware = 0u;
+        if (g_PrebinVisible != 0u) {
+            g_PrebinCluster = residentRasterCluster(index, push);
+            if (g_PrebinCluster.meshlet.ranges.y == 0u || g_PrebinCluster.meshlet.ranges.y > 128u ||
+                g_PrebinCluster.meshlet.ranges.w == 0u || g_PrebinCluster.meshlet.ranges.w > 128u) { g_PrebinVisible = 0u; }
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (g_PrebinVisible == 0u) { return; }
+    uint bucket = visibleClusterDrawBucket(g_PrebinCluster.record);
+    if (bucket >= 2u) {
+        if (lane == 0u) { hybridClassifyCluster(bins, bucket, index, hybridFlatGroup(group)); }
+        return;
+    }
+    if (lane < g_PrebinCluster.meshlet.ranges.y) {
+        g_HybridClipPositions[lane] = residentClusterClip(g_PrebinCluster, lane, params, push);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane < g_PrebinCluster.meshlet.ranges.w) {
+        uint3 tri = residentClusterTriangle(g_PrebinCluster, lane, push);
+        if (any(tri >= g_PrebinCluster.meshlet.ranges.y)) {
+            InterlockedOr(g_PrebinHardware, 1u);
+        } else if (!hybridTriangleFits(g_HybridClipPositions[tri.x], g_HybridClipPositions[tri.y], g_HybridClipPositions[tri.z],
+                float2(params.width, params.height), asfloat(bins[8]))) { InterlockedOr(g_PrebinHardware, 1u); }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane == 0u) { hybridClassifyCluster(bins, g_PrebinHardware != 0u ? bucket : kHybridSoftwareBin, index, hybridFlatGroup(group)); }
+}
+
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void visibilityClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenPreviewPush push)
+{
+    DescriptorHandle<StructuredBuffer<uint>> bins =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.environmentSHBuffer, 0));
+    uint record;
+    if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> parameters =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+    GPUDrivenPreviewParams params = parameters[0];
+    if (lane == 0u) { g_PrebinCluster = residentRasterCluster(record, push); }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane < g_PrebinCluster.meshlet.ranges.y) {
+        g_HybridClipPositions[lane] = residentClusterClip(g_PrebinCluster, lane, params, push);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane < g_PrebinCluster.meshlet.ranges.w) {
+        uint3 tri = residentClusterTriangle(g_PrebinCluster, lane, push);
+        hybridRasterTriangle(g_HybridClipPositions[tri.x], g_HybridClipPositions[tri.y], g_HybridClipPositions[tri.z],
+            packVisibilityId(record, lane), (visibleClusterDrawBucket(g_PrebinCluster.record) & 1u) != 0u,
+            bins[6], bins[7], bins[9], bins[10], bins[11], push.bufferShaderIndexBase);
+    }
 }

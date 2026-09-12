@@ -1,4 +1,6 @@
 #include "../../Libraries/GPUDriven/GPUDrivenRasterCommon.slang"
+#include "../../Libraries/GPUDriven/HybridClusterBins.slang"
+#include "../../Libraries/GPUDriven/HybridRasterTriangle.slang"
 #include "../../Libraries/GPUDriven/ConservativeOcclusion.slang"
 
 static const uint kMaxMeshletVertices = 128;
@@ -91,6 +93,8 @@ struct GPUDrivenStreamAssetPush
     uint traversalPhase;
     uint activeBuildPhase;
     uint rasterBindingsBuffer;
+    uint hybridQueueBuffer;
+    uint hybridClusterBuffer;
 };
 
 struct GPUDrivenStreamAssetRasterBindings
@@ -2243,15 +2247,23 @@ void gpuDrivenStreamAssetBuildTlasInputMain(
     tlasInstances[instanceIndex] = output;
 }
 
-[shader("mesh")]
-[numthreads(1, 1, 1)]
-[outputtopology("triangle")]
-void gpuDrivenStreamAssetMeshMain(
-    uint3 groupID : SV_GroupID,
-    out vertices GPUDrivenStreamAssetVertexOutput vertices[kMaxMeshOutputVertices],
-    out indices uint3 triangles[kMeshletTriangleChunkSize],
-    uniform GPUDrivenStreamAssetPush push)
+struct StreamRasterCluster
 {
+    GPUDrivenStreamAssetParams params;
+    GPUDrivenStreamAssetActiveGroup group;
+    uint pageWord;
+    uint positionOffsetBytes;
+    uint vertexOffset;
+    uint vertexCount;
+    uint triangleCount;
+    uint triangleBaseByte;
+    uint recordIndex;
+};
+
+bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool publishRecord,
+    GPUDrivenStreamAssetPush push, out StreamRasterCluster output)
+{
+    output = (StreamRasterCluster)0;
     DescriptorHandle<StructuredBuffer<uint>> pageHandle =
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
@@ -2279,13 +2291,7 @@ void gpuDrivenStreamAssetMeshMain(
 
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
     GPUDrivenStreamAssetRasterBindings rasterBindings = rasterBindingsBuffer[0];
-    uint drawIndex = groupID.x;
-    if (drawIndex >= params.drawTaskCount) {
-        SetMeshOutputCounts(0, 0);
-        return;
-    }
-    uint localRecordIndex = drawIndex / kMeshletTriangleChunkCount;
-    uint chunkIndex = drawIndex - localRecordIndex * kMeshletTriangleChunkCount;
+    if (localRecordIndex >= params.drawTaskCount / kMeshletTriangleChunkCount) { return false; }
     uint recordCapacity = rasterBindings.visibleRecordCapacity != 0u
         ? rasterBindings.visibleRecordCapacity
         : params.drawTaskCount / kMeshletTriangleChunkCount;
@@ -2295,8 +2301,7 @@ void gpuDrivenStreamAssetMeshMain(
             rasterBindings.visibleRecordBase,
             recordCapacity,
             recordIndex)) {
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
 
     GPUDrivenStreamAssetActiveHeader header = activeHeader[0];
@@ -2305,8 +2310,7 @@ void gpuDrivenStreamAssetMeshMain(
     uint clusterIndex = localRecordIndex - activeGroupIndex * maxActiveGroupClusters;
     uint activeGroupCount = min(header.activeGroupCount, header.activeGroupCapacity);
     if (activeGroupIndex >= activeGroupCount) {
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
 
     GPUDrivenStreamAssetActiveGroup group = activeGroups[activeGroupIndex];
@@ -2314,22 +2318,19 @@ void gpuDrivenStreamAssetMeshMain(
         group.gpuSceneInstanceIndex == kInvalidClusterIndex ||
         clusterIndex >= group.clusterCount ||
         clusterIndex >= 32u) {
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
     if ((group.flags & kActiveGroupLoadRequest) != 0u) {
-        if (clusterIndex == 0u) {
+        if (testVisibility && clusterIndex == 0u) {
             requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
         }
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
     if ((group.flags & kActiveGroupUnloadRequest) != 0u) {
-        if (clusterIndex == 0u) {
+        if (testVisibility && clusterIndex == 0u) {
             requestStreamPageUnload(requests, params, group.pageIndex);
         }
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
 
     GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[group.pageIndex];
@@ -2338,16 +2339,14 @@ void gpuDrivenStreamAssetMeshMain(
     if (((group.clusterSelectionMask >> clusterIndex) & 1u) == 0u ||
         ((pageState != kStreamStateResident && pageState != kStreamStateLockedFallback) ||
         pageDeviceOffset == kInvalidStreamDeviceOffset)) {
-        if (clusterIndex == 0u) {
+        if (testVisibility && clusterIndex == 0u) {
             requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
         }
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
     if (params.pageBufferBytes < kPayloadHeaderBytes ||
         pageDeviceOffset > params.pageBufferBytes - kPayloadHeaderBytes) {
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
 
     uint pageWord = pageDeviceOffset / 4u;
@@ -2355,8 +2354,7 @@ void gpuDrivenStreamAssetMeshMain(
     if (payloadBytes < kPayloadHeaderBytes ||
         payloadBytes > params.pageBufferBytes ||
         pageDeviceOffset > params.pageBufferBytes - payloadBytes) {
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
     uint clusterCount = pageWords[pageWord + 2u];
     uint payloadVertexCount = pageWords[pageWord + 3u];
@@ -2366,8 +2364,7 @@ void gpuDrivenStreamAssetMeshMain(
     if (clusterIndex >= clusterCount ||
         (attributeFlags & kPayloadAttributePosition) == 0u ||
         positionFormat != kPayloadFormatFloat32x4) {
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
 
     uint clusterOffsetBytes = pageWords[pageWord + 9u];
@@ -2389,8 +2386,7 @@ void gpuDrivenStreamAssetMeshMain(
             triangleOffsetBytes,
             triangleIndexCount,
             payloadBytes)) {
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
     uint clusterWord = pageWord + clusterOffsetBytes / 4u +
         clusterIndex * kPayloadClusterWords;
@@ -2405,15 +2401,8 @@ void gpuDrivenStreamAssetMeshMain(
         clusterTriangleCount > kMaxMeshletTriangles ||
         triangleOffset > triangleIndexCount ||
         clusterTriangleCount > (triangleIndexCount - triangleOffset) / 3u) {
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
-    uint triangleStart = chunkIndex * kMeshletTriangleChunkSize;
-    if (triangleStart >= clusterTriangleCount) {
-        SetMeshOutputCounts(0, 0);
-        return;
-    }
-
     float3 localSphereCenter = float3(
         asfloat(pageWords[clusterWord + 12u]),
         asfloat(pageWords[clusterWord + 13u]),
@@ -2427,17 +2416,16 @@ void gpuDrivenStreamAssetMeshMain(
     float worldScale = conservativeTransformScale(group.world0.xyz, group.world1.xyz, group.world2.xyz);
     float worldSphereRadius = localSphereRadius * worldScale;
     GPUDrivenStreamAssetCameraData rasterCamera = currentStreamCamera(params);
-    if ((rasterBindings.cullingFlags & (1u << 2u)) != 0u &&
+    if (testVisibility && (rasterBindings.cullingFlags & (1u << 2u)) != 0u &&
         !streamSphereInsideFrustum(
             worldSphereCenter,
             worldSphereRadius,
             rasterCamera)) {
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
 
     float coneCutoff = asfloat(pageWords[clusterWord + 19u]);
-    if ((rasterBindings.cullingFlags & (1u << 3u)) != 0u && coneCutoff < 0.9999) {
+    if (testVisibility && (rasterBindings.cullingFlags & (1u << 3u)) != 0u && coneCutoff < 0.9999) {
         float3 localConeApex = float3(
             asfloat(pageWords[clusterWord + 16u]),
             asfloat(pageWords[clusterWord + 17u]),
@@ -2459,8 +2447,7 @@ void gpuDrivenStreamAssetMeshMain(
             worldConeApex - rasterCamera.eye.xyz,
             -worldConeAxis);
         if (dot(viewDirection, worldConeAxis) >= coneCutoff) {
-            SetMeshOutputCounts(0, 0);
-            return;
+            return false;
         }
     }
 
@@ -2469,10 +2456,9 @@ void gpuDrivenStreamAssetMeshMain(
             push.bufferShaderIndexBase + rasterBindings.instanceVisibilityBuffer,
             0));
     StructuredBuffer<uint> visibilityStates = visibilityStateHandle;
-    if (!streamClusterVisibleInOcclusionPhase(worldSphereCenter, worldSphereRadius,
+    if (testVisibility && !streamClusterVisibleInOcclusionPhase(worldSphereCenter, worldSphereRadius,
         visibilityStates[group.gpuSceneInstanceIndex], params, rasterBindings, push)) {
-        SetMeshOutputCounts(0, 0);
-        return;
+        return false;
     }
 
     DescriptorHandle<RWStructuredBuffer<VisibleClusterRecord>> visibleClusterHandle =
@@ -2480,7 +2466,7 @@ void gpuDrivenStreamAssetMeshMain(
             push.bufferShaderIndexBase + rasterBindings.visibleClusterBuffer,
             0));
     RWStructuredBuffer<VisibleClusterRecord> visibleClusters = visibleClusterHandle;
-    if (chunkIndex == 0u) {
+    if (publishRecord) {
         VisibleClusterRecord record;
         record.clusterIndex = clusterIndex;
         record.instanceIndex = group.gpuSceneInstanceIndex;
@@ -2489,50 +2475,135 @@ void gpuDrivenStreamAssetMeshMain(
         visibleClusters[localRecordIndex] = record;
     }
 
-    uint triangleCount = min(
-        clusterTriangleCount - triangleStart,
-        kMeshletTriangleChunkSize);
-    uint outputVertexCount = triangleCount * 3u;
-    SetMeshOutputCounts(outputVertexCount, triangleCount);
 
-    uint triangleBaseByte = pageDeviceOffset + triangleOffsetBytes + triangleOffset;
-    for (uint vertexIndex = 0; vertexIndex < kMaxMeshOutputVertices; ++vertexIndex) {
-        if (vertexIndex < outputVertexCount) {
-            uint chunkTriangleIndex = vertexIndex / 3u;
-            uint triangleCorner = vertexIndex % 3u;
-            uint meshletTriangleIndex = triangleStart + chunkTriangleIndex;
-            uint localVertexIndex = readPageByte(
-                pageWords,
-                triangleBaseByte + meshletTriangleIndex * 3u + triangleCorner);
-            if (localVertexIndex >= vertexCount) {
-                localVertexIndex = 0u;
-            }
-            uint positionWord = pageWord + positionOffsetBytes / 4u +
-                (vertexOffset + localVertexIndex) * 4u;
-            float3 localPosition = float3(
-                asfloat(pageWords[positionWord + 0u]),
-                asfloat(pageWords[positionWord + 1u]),
-                asfloat(pageWords[positionWord + 2u]));
-            float3 worldPosition =
-                group.world0.xyz * localPosition.x +
-                group.world1.xyz * localPosition.y +
-                group.world2.xyz * localPosition.z +
-                group.world3.xyz;
-            float4 projected = projectPosition(worldPosition, params);
-            projected.y = -projected.y;
-            vertices[vertexIndex].position = projected;
-            vertices[vertexIndex].visibilityId =
-                packVisibilityId(recordIndex, meshletTriangleIndex);
-        }
+    output.params = params;
+    output.group = group;
+    output.pageWord = pageWord;
+    output.positionOffsetBytes = positionOffsetBytes;
+    output.vertexOffset = vertexOffset;
+    output.vertexCount = vertexCount;
+    output.triangleCount = clusterTriangleCount;
+    output.triangleBaseByte = pageDeviceOffset + triangleOffsetBytes + triangleOffset;
+    output.recordIndex = recordIndex;
+    return true;
+}
+
+float4 streamClusterClip(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<uint>> pages =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
+    uint word = c.pageWord + c.positionOffsetBytes / 4u + (c.vertexOffset + vertex) * 4u;
+    float3 local = float3(asfloat(pages[word]), asfloat(pages[word + 1u]), asfloat(pages[word + 2u]));
+    float3 world = c.group.world0.xyz * local.x + c.group.world1.xyz * local.y +
+        c.group.world2.xyz * local.z + c.group.world3.xyz;
+    float4 clip = projectPosition(world, c.params);
+    clip.y = -clip.y;
+    return clip;
+}
+
+uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<uint>> pages =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
+    uint address = c.triangleBaseByte + triangle * 3u;
+    uint3 indices = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));
+    // Retain the existing malformed-index fallback in the stream HW decoder.
+    return uint3(indices.x < c.vertexCount ? indices.x : 0u,
+        indices.y < c.vertexCount ? indices.y : 0u, indices.z < c.vertexCount ? indices.z : 0u);
+}
+
+[shader("mesh")]
+[numthreads(1, 1, 1)]
+[outputtopology("triangle")]
+void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID,
+    out vertices GPUDrivenStreamAssetVertexOutput vertices[kMaxMeshOutputVertices],
+    out indices uint3 triangles[kMeshletTriangleChunkSize], uniform GPUDrivenStreamAssetPush push)
+{
+    uint draw = hybridFlatGroup(groupID);
+    uint record = draw / kMeshletTriangleChunkCount;
+    uint chunk = draw % kMeshletTriangleChunkCount;
+    bool prebinned = push.hybridClusterBuffer != 0xffffffffu;
+    if (prebinned) {
+        DescriptorHandle<StructuredBuffer<uint>> bins =
+            DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+        uint item = record;
+        if (!hybridBinRecord(bins, 0u, item, record)) { SetMeshOutputCounts(0, 0); return; }
     }
+    StreamRasterCluster c;
+    if (!loadStreamRasterCluster(record, !prebinned, !prebinned && chunk == 0u, push, c)) {
+        SetMeshOutputCounts(0, 0); return;
+    }
+    uint start = chunk * kMeshletTriangleChunkSize;
+    if (start >= c.triangleCount) { SetMeshOutputCounts(0, 0); return; }
+    uint count = min(c.triangleCount - start, kMeshletTriangleChunkSize);
+    SetMeshOutputCounts(count * 3u, count);
+    for (uint i = 0; i < count; ++i) {
+        uint3 indices = streamClusterTriangle(c, start + i, push);
+        float4 a = streamClusterClip(c, indices.x, push);
+        float4 b = streamClusterClip(c, indices.y, push);
+        float4 d = streamClusterClip(c, indices.z, push);
+        uint id = packVisibilityId(c.recordIndex, start + i);
+        vertices[i * 3u].position = a;
+        vertices[i * 3u + 1u].position = b;
+        vertices[i * 3u + 2u].position = d;
+        vertices[i * 3u].visibilityId = id;
+        vertices[i * 3u + 1u].visibilityId = id;
+        vertices[i * 3u + 2u].visibilityId = id;
+        bool queued = !prebinned && hybridEnqueueTriangle(a, b, d, id, false, push.hybridQueueBuffer, push.bufferShaderIndexBase);
+        triangles[i] = queued ? uint3(0u) : uint3(i * 3u, i * 3u + 1u, i * 3u + 2u);
+    }
+}
 
-    for (uint triangleIndex = 0; triangleIndex < kMeshletTriangleChunkSize; ++triangleIndex) {
-        if (triangleIndex < triangleCount) {
-            triangles[triangleIndex] = uint3(
-                triangleIndex * 3u,
-                triangleIndex * 3u + 1u,
-                triangleIndex * 3u + 2u);
-        }
+groupshared StreamRasterCluster g_StreamRasterCluster;
+groupshared float4 g_StreamRasterClip[128];
+groupshared uint g_StreamBinVisible;
+groupshared uint g_StreamBinHardware;
+
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<RWStructuredBuffer<uint>> handle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+    RWStructuredBuffer<uint> bins = handle;
+    uint record = hybridFlatGroup(group);
+    if (record >= bins[12]) { return; }
+    if (lane == 0u) {
+        hybridClassifyCluster(bins, 0xffffffffu, record, record);
+        g_StreamBinVisible = loadStreamRasterCluster(record, true, true, push, g_StreamRasterCluster) ? 1u : 0u;
+        g_StreamBinHardware = 0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (g_StreamBinVisible == 0u || g_StreamRasterCluster.triangleCount == 0u) { return; }
+    if (lane < g_StreamRasterCluster.vertexCount) { g_StreamRasterClip[lane] = streamClusterClip(g_StreamRasterCluster, lane, push); }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane < g_StreamRasterCluster.triangleCount) {
+        uint3 tri = streamClusterTriangle(g_StreamRasterCluster, lane, push);
+        if (!hybridTriangleFits(g_StreamRasterClip[tri.x], g_StreamRasterClip[tri.y], g_StreamRasterClip[tri.z],
+            float2(bins[6], bins[7]), asfloat(bins[8]))) { InterlockedOr(g_StreamBinHardware, 1u); }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane == 0u) { hybridClassifyCluster(bins, g_StreamBinHardware != 0u ? 0u : kHybridSoftwareBin, record, record); }
+}
+
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void streamClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<uint>> bins =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+    uint record;
+    if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
+    if (lane == 0u) { g_StreamBinVisible = loadStreamRasterCluster(record, false, false, push, g_StreamRasterCluster) ? 1u : 0u; }
+    GroupMemoryBarrierWithGroupSync();
+    if (g_StreamBinVisible == 0u) { return; }
+    if (lane < g_StreamRasterCluster.vertexCount) { g_StreamRasterClip[lane] = streamClusterClip(g_StreamRasterCluster, lane, push); }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane < g_StreamRasterCluster.triangleCount) {
+        uint3 tri = streamClusterTriangle(g_StreamRasterCluster, lane, push);
+        hybridRasterTriangle(g_StreamRasterClip[tri.x], g_StreamRasterClip[tri.y], g_StreamRasterClip[tri.z],
+            packVisibilityId(g_StreamRasterCluster.recordIndex, lane), false,
+            bins[6], bins[7], bins[9], bins[10], bins[11], push.bufferShaderIndexBase);
     }
 }
 

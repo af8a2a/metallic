@@ -8127,6 +8127,7 @@ public:
                 .enableSubgroupSizeControl = true,
                 .enableComputeFullSubgroups = true,
                 .preferredTaskSubgroupSize = 32,
+                .enableAsyncCompute = true,
             },
             device);
         if (!result) {
@@ -8147,6 +8148,7 @@ public:
         graph.setName("GPUDrivenMixedProducer");
         render::RenderDebugRuntime debugRuntime;
         debug::DebugValue debugJobs = debug::DebugValue::array();
+        debug::DebugValue clusterJobs = debug::DebugValue::array();
         graph.addNode(
             "VisibilityBufferPass",
             "GPUDriven",
@@ -8221,9 +8223,21 @@ public:
                 const auto queued = debugRuntime.core().dispatch({{"method", "gpu.probe"}, {"params", {{"batches", batches}}}});
                 if (queued["status"] != "ok") { return RhiTestResult::fail("Mixed debug capture enqueue: " + queued.dump()); }
                 debugJobs = queued["result"]["jobs"];
+                if (device->capabilities().shaderBufferInt64Atomics) {
+                    debug::DebugValue clusterBatches = debug::DebugValue::array();
+                    for (const char* point : {"AfterResidentEarlyBins", "AfterStreamEarlyBins", "AfterResidentLateBins", "AfterStreamLateBins"}) {
+                        clusterBatches.push_back({{"pass", "GPUDriven"}, {"checkpoint", point}, {"resources", {
+                            {{"id", "hybrid.GPUDriven.clusters"}, {"count", 16}},
+                            {{"id", "hybrid.GPUDriven.arguments"}, {"count", 15}}}}});
+                    }
+                    const auto clusters = debugRuntime.core().dispatch({{"method", "capture.batch"}, {"params", {{"batches", clusterBatches}}}});
+                    if (clusters["status"] != "ok") { return RhiTestResult::fail("Cluster capture enqueue: " + clusters.dump()); }
+                    clusterJobs = clusters["result"]["jobs"];
+                }
             }
             result = executor.execute(render::RenderGraphSubmitDesc{
                 .graphicsQueue = graphicsQueue,
+                .computeQueue = device->getQueue(render::QueueType::Compute),
             });
             if (result) {
                 result = executor.waitForSubmittedWork(5'000'000'000ull);
@@ -8232,6 +8246,9 @@ public:
                 return RhiTestResult::fail(
                     "mixed-producer warmup frame " +
                     std::to_string(frame) + " returned " + toString(result));
+            }
+            if (device->capabilities().independentComputeQueue && executor.executionStats().asyncComputeBranches < 4) {
+                return RhiTestResult::fail("Mixed resident/stream rendering did not fork both early and late software raster branches");
             }
             debugRuntime.poll();
         }
@@ -8250,6 +8267,27 @@ public:
             if (comparison["status"] != "ok" || comparison["result"]["value"] != true) {
                 return RhiTestResult::fail("GPU probe differs from checkpoint readback: " + comparison.dump());
             }
+        }
+        std::array<uint32_t, 2> softwareClusters{};
+        for (size_t jobIndex = 0; jobIndex < clusterJobs.size(); ++jobIndex) {
+            const auto job = clusterJobs[jobIndex].at("job");
+            std::array<uint32_t, 16> header{};
+            for (size_t i = 0; i < header.size(); ++i) {
+                const auto value = debugRuntime.core().dispatch({{"method", "eval"}, {"params", {
+                    {"job", job}, {"expression", "buffers[\"hybrid.GPUDriven.clusters\"][" + std::to_string(i) + "]"}}}});
+                if (value["status"] != "ok") { return RhiTestResult::fail("Cluster header capture: " + value.dump()); }
+                header[i] = value["result"]["value"].get<uint32_t>();
+            }
+            uint32_t total = 0;
+            for (size_t bin = 0; bin < 5; ++bin) { total += header[bin]; }
+            if (header[14] != 0 || total > header[12] || header[12] > header[5]) {
+                return RhiTestResult::fail("Real cluster bins overflowed their candidate capacity");
+            }
+            softwareClusters[jobIndex % 2] += header[4];
+        }
+        if (!clusterJobs.empty() && (softwareClusters[0] == 0 || softwareClusters[1] == 0)) {
+            return RhiTestResult::fail("Real resident/stream producers did not both use software cluster bins: " +
+                std::to_string(softwareClusters[0]) + "/" + std::to_string(softwareClusters[1]));
         }
         const auto residentRecord = debugRuntime.core().dispatch({{"method", "eval"}, {"params", {
             {"job", debugJobs.back().at("job")}, {"expression", "buffers[\"gpuScene.GPUDriven.meshletDraws\"][0].source.name"}}}});
@@ -8599,6 +8637,7 @@ public:
             if (!graph.setNodeRuntimeProperty(visualizationNodeId, "visualization", mode) ||
                 !graph.setNodeRuntimeProperty(
                     visualizationNodeId, "freezeCullingCamera", freezeCullingCamera) ||
+                !graph.setNodeRuntimeProperty(visualizationNodeId, "asyncSoftwareRaster", configuration % 2 == 0) ||
                 !executor.syncRuntimeProperties(graph)) {
                 return RhiTestResult::fail("could not switch mixed-producer visualization");
             }
@@ -8610,7 +8649,8 @@ public:
                 result = commandBuffer->begin();
             }
             if (result) {
-                result = executor.execute(*commandBuffer);
+                result = executor.execute(render::RenderGraphSubmitDesc{.graphicsQueue = graphicsQueue,
+                    .computeQueue = device->getQueue(render::QueueType::Compute)});
             }
             for (const char* outputName : {
                      "GPUDriven.color", "GPUDriven.visibility", "GPUDriven.depth"}) {
@@ -8648,8 +8688,20 @@ public:
                 return RhiTestResult::fail("could not read visualization surfaces");
             }
             if (currentVisibility != visibilityPixels || currentDepth != depthPixels) {
+                size_t idDiff = 0, depthDiff = 0, first = currentDepth.size();
+                float maxDepthDiff = 0;
+                for (size_t i = 0; i < currentDepth.size(); ++i) {
+                    idDiff += currentVisibility[i] != visibilityPixels[i];
+                    depthDiff += currentDepth[i] != depthPixels[i];
+                    maxDepthDiff = std::max(maxDepthDiff, std::abs(currentDepth[i] - depthPixels[i]));
+                    if (first == currentDepth.size() && currentVisibility[i] != visibilityPixels[i]) { first = i; }
+                }
                 return RhiTestResult::fail(
-                    std::string("visualization changed raw visibility/depth: ") + mode);
+                    std::string("visualization changed raw visibility/depth: ") + mode +
+                    " ids=" + std::to_string(idDiff) + " depths=" + std::to_string(depthDiff) +
+                    " maxDepthDiff=" + std::to_string(maxDepthDiff) +
+                    (first < currentDepth.size() ? " first=" + std::to_string(first) + " id=" +
+                        std::to_string(currentVisibility[first]) + "/" + std::to_string(visibilityPixels[first]) : ""));
             }
             for (size_t pixelIndex = 0; pixelIndex < displayPixels.size(); ++pixelIndex) {
                 if (std::string_view(mode) == "coverage" &&
@@ -8666,7 +8718,8 @@ public:
 
         (void)device->waitIdle();
         return RhiTestResult::pass(
-            "visualization preserves shared visibility/depth; residentPixels=" +
+            "software clusters resident/stream=" + std::to_string(softwareClusters[0]) + "/" + std::to_string(softwareClusters[1]) +
+            "; visualization preserves shared visibility/depth; residentPixels=" +
             std::to_string(residentPixelCount) +
             " streamPixels=" + std::to_string(streamPixelCount) +
             " residentRecords=" + std::to_string(residentRecordIds.size()) +

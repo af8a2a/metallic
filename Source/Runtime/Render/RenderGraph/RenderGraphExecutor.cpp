@@ -1405,6 +1405,10 @@ struct RenderGraphExecutor::Impl {
             Result result = slot->frame.wait(remaining());
             if (!result) { return result; }
         }
+        // Descriptor heap reserved ranges remain associated with executable
+        // command buffers even after GPU completion. Drop completed recordings
+        // before recompile/scene refresh can recycle their heap addresses.
+        for (const auto& slot : submissionSlots) { slot->commandBuffers.clear(); }
         hasSubmittedWork = false;
         // Also flush the last frames at shutdown/recompile; no additional wait
         // is introduced beyond the caller's existing completion wait above.
@@ -1672,7 +1676,8 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    Result executeNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex)
+    Result executeNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
+        const RenderGraphExecutionContext::ParallelRecorder& parallel = {})
     {
         std::vector<RenderGraphExecutionContext::Binding> bindings;
 
@@ -1770,6 +1775,21 @@ struct RenderGraphExecutor::Impl {
             .name = markerName.c_str(),
             .color = debugLabelColorFromArgb(markerColor),
         });
+        bool labelOpen = true;
+        if (parallel) {
+            context.parallelRecorder_ = [&](RenderGraphExecutionContext& current,
+                const RenderGraphExecutionContext::CommandRecorder& compute,
+                const RenderGraphExecutionContext::CommandRecorder& graphics) -> Result {
+                current.commandBuffer().endDebugLabel();
+                labelOpen = false;
+                const Result result = parallel(current, compute, graphics);
+                if (result) {
+                    current.commandBuffer().beginDebugLabel({.name = markerName.c_str(), .color = debugLabelColorFromArgb(markerColor)});
+                    labelOpen = true;
+                }
+                return result;
+            };
+        }
         bool gpuTimingRecorded = false;
         uint32_t gpuEndQuery = 0;
         if (activeGpuTimingSlot != nullptr && activeGpuTimingValid) {
@@ -1789,18 +1809,18 @@ struct RenderGraphExecutor::Impl {
         const auto cpuBegin = std::chrono::steady_clock::now();
         Result result = node.pass->execute(context);
         if (result && upload != nullptr) {
-            upload->flush(commandBuffer);
+            upload->flush(context.commandBuffer());
         }
         const auto cpuEnd = std::chrono::steady_clock::now();
-        if (gpuTimingRecorded) {
+        if (gpuTimingRecorded && result) {
             tracyGpuProfiler.endZone(activeGpuTimingSlot->profile);
-            Result timestampResult = commandBuffer.writeTimestamp(
+            Result timestampResult = context.commandBuffer().writeTimestamp(
                 *gpuTimestampQueryPool,
                 gpuEndQuery,
                 PipelineStageBits::BottomOfPipe);
             activeGpuTimingValid = timestampResult.has_value();
         }
-        commandBuffer.endDebugLabel();
+        if (labelOpen) { context.commandBuffer().endDebugLabel(); }
         lastExecutionStats.nodes.push_back(RenderGraphNodeExecutionStat{
             .id = node.id,
             .name = node.name,
@@ -2619,6 +2639,8 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     const auto abort = [&](Result failure) {
         impl_->recordingQueue = nullptr;
         impl_->historyResources = nullptr;
+        impl_->activeGpuTimingSlot = nullptr;
+        impl_->activeGpuTimingValid = false;
         const bool discardAll = slot.frame.recording();
         // Roll back in reverse recording order before destroying individual
         // command buffers; container destruction order is not transaction order.
@@ -2654,6 +2676,8 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     RenderUploadSubsystem* upload = impl_->uploadSubsystem();
     const auto requiredSubsystems = impl_->requiredSubsystemViews();
     std::vector<Impl::SubmissionSegment> segments;
+    const bool graphicsTimings = desc.graphicsQueue && std::all_of(impl_->executionList.begin(), impl_->executionList.end(),
+        [&](const auto& node) { return selectedQueue(selectedType(node)) == desc.graphicsQueue; });
     const auto beginSegment = [&](QueueType type) -> Result {
         Queue* queue = selectedQueue(type);
         CommandPool* pool = nullptr;
@@ -2674,7 +2698,11 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (!created) { return created; }
         segments.push_back({.queue = queue, .commandBuffer = commands});
         impl_->recordingQueue = queue;
-        if (segments.size() == 1) { return impl_->prepareView(*commands, frameIndex); }
+        if (segments.size() == 1) {
+            created = impl_->prepareView(*commands, frameIndex);
+            if (created && graphicsTimings) { impl_->beginGpuTiming(*commands); }
+            return created;
+        }
         return {};
     };
     const auto addDependency = [&](size_t destination, size_t source) {
@@ -2683,6 +2711,41 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             predecessors.push_back(source);
         }
     };
+    RenderGraphExecutionContext::ParallelRecorder parallel;
+    if (desc.computeQueue && desc.graphicsQueue && desc.computeQueue->type() != QueueType::Copy &&
+        !desc.computeQueue->sameQueue(*desc.graphicsQueue)) {
+        parallel = [&](RenderGraphExecutionContext& context,
+            const RenderGraphExecutionContext::CommandRecorder& compute,
+            const RenderGraphExecutionContext::CommandRecorder& graphics) -> Result {
+            const size_t producer = segments.size() - 1;
+            if (segments[producer].queue != desc.graphicsQueue ||
+                segments[producer].commandBuffer != &context.commandBuffer()) { return makeError(Error::InvalidArgument); }
+            Result result = segments[producer].commandBuffer->end();
+            if (!result) { return result; }
+            result = beginSegment(QueueType::Compute);
+            if (!result) { return result; }
+            const size_t software = segments.size() - 1;
+            addDependency(software, producer);
+            result = compute(*segments[software].commandBuffer);
+            if (result) { result = segments[software].commandBuffer->end(); }
+            if (!result) { return result; }
+            result = beginSegment(QueueType::Graphics);
+            if (!result) { return result; }
+            const size_t hardware = segments.size() - 1;
+            addDependency(hardware, producer); // Deliberately independent of software.
+            result = graphics(*segments[hardware].commandBuffer);
+            if (result) { result = segments[hardware].commandBuffer->end(); }
+            if (!result) { return result; }
+            result = beginSegment(QueueType::Graphics);
+            if (!result) { return result; }
+            const size_t join = segments.size() - 1;
+            addDependency(join, hardware);
+            addDependency(join, software);
+            context.commandBuffer_ = segments[join].commandBuffer;
+            ++impl_->lastExecutionStats.asyncComputeBranches;
+            return {};
+        };
+    }
     // The always-present scene resource registry/upload subsystem has no GPU
     // hooks. Explicit subsystem requirements get graphics prologue/epilogue
     // boundaries because their private resource accesses are not graph fields.
@@ -2728,7 +2791,8 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             if (previous != lastResourceUse.end()) { addDependency(index, previous->second); }
             lastResourceUse[name] = index;
         }
-        result = impl_->executeNode(*segments[index].commandBuffer, node, frameIndex);
+        result = impl_->executeNode(*segments[index].commandBuffer, node, frameIndex,
+            segments[index].queue == desc.graphicsQueue ? parallel : RenderGraphExecutionContext::ParallelRecorder{});
         if (!result) {
             if (subsystemCommands && beginSegment(QueueType::Graphics)) {
                 std::string cleanupLog;
@@ -2737,7 +2801,10 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             }
             return abort(result);
         }
-        result = segments[index].commandBuffer->end();
+        const size_t completedIndex = segments.size() - 1;
+        if (opaque) { orderingBoundary = completedIndex; }
+        for (auto& [name, last] : lastResourceUse) { if (last == index) { last = completedIndex; } }
+        result = segments[completedIndex].commandBuffer->end();
         if (!result) { return abort(result); }
     }
     if (subsystemCommands) {
@@ -2748,6 +2815,16 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         result = impl_->subsystemHost->recordPostGraph(*segments[index].commandBuffer,
             upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, log);
         if (!result) { return abort(result); }
+        if (graphicsTimings) { impl_->finishGpuTiming(*segments[index].commandBuffer, true); }
+        result = segments[index].commandBuffer->end();
+        if (!result) { return abort(result); }
+    }
+    if (!subsystemCommands && graphicsTimings) {
+        result = beginSegment(QueueType::Graphics);
+        if (!result) { return abort(result); }
+        const size_t index = segments.size() - 1;
+        for (size_t previous = 0; previous < index; ++previous) { addDependency(index, previous); }
+        impl_->finishGpuTiming(*segments[index].commandBuffer, true);
         result = segments[index].commandBuffer->end();
         if (!result) { return abort(result); }
     }
@@ -3025,6 +3102,11 @@ const RenderSubsystemHost* RenderGraphPreviewRenderer::subsystemHost() const
     return &impl_->subsystemHost;
 }
 
+const RenderGraphExecutionStats& RenderGraphPreviewRenderer::executionStats() const
+{
+    return impl_->executor.executionStats();
+}
+
 Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enableRayQuery, bool enableAftermath)
 {
     Result result = createDevice(
@@ -3045,6 +3127,7 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
             .enablePushDescriptor = enableRayQuery,
             .enableClusterAccelerationStructure = enableRayQuery,
             .enableAftermath = enableAftermath,
+            .enableAsyncCompute = true,
         },
         impl_->device);
     if (!result) {
@@ -3187,8 +3270,9 @@ Result RenderGraphPreviewRenderer::render(
         return result;
     }
 
-    impl_->historyResources.beginFrame(impl_->historyFrameIndex++);
-    result = impl_->executor.execute(*impl_->commandBuffer, &impl_->historyResources);
+    ++impl_->historyFrameIndex;
+    result = impl_->executor.execute(RenderGraphSubmitDesc{.graphicsQueue = impl_->graphicsQueue,
+        .computeQueue = impl_->device->getQueue(QueueType::Compute), .historyResources = &impl_->historyResources});
     if (!result) {
         return result;
     }

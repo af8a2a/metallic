@@ -615,6 +615,112 @@ public:
     }
 };
 
+std::vector<int> asyncBranchEvents;
+class FrameParallelBranchPass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferOutput("data").buffer(16).transferWrite();
+        return reflection;
+    }
+    render::Result compile(const render::RenderGraphCompileContext& context, std::string&) override
+    {
+        const auto result = context.device->createBuffer({.size = 16,
+            .usage = render::BufferUsageBits::TransferSource, .memoryLocation = render::MemoryLocation::HostUpload,
+            .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute}, input_);
+        if (!result) { return result; }
+        const uint32_t words[] = {11, 12, 21, 22};
+        void* mapped = input_->map();
+        if (!mapped) { return render::makeError(render::Error::Failure); }
+        std::memcpy(mapped, words, sizeof(words)); input_->flush(); input_->unmap();
+        return {};
+    }
+    render::Result execute(render::RenderGraphExecutionContext& context) override
+    {
+        const auto transaction = [](render::CommandBuffer& commands, int id) {
+            return commands.addSubmissionTransaction(std::make_shared<render::SubmissionTransaction>(
+                [id] { asyncBranchEvents.push_back(id); }, [id] { asyncBranchEvents.push_back(-id); }));
+        };
+        auto result = transaction(context.commandBuffer(), 1);
+        if (!result) { return result; }
+        auto* output = context.outputBuffer("data").buffer();
+        result = context.parallelCompute([&](render::CommandBuffer& commands) {
+            auto result = transaction(commands, 2);
+            if (!result) { return result; }
+            commands.copyBuffer({.source = input_.get(), .destination = output, .size = 8});
+            return properties().value("fail", 0) == 2 ? render::makeError(render::Error::Failure) : render::Result{};
+        }, [&](render::CommandBuffer& commands) {
+            auto result = transaction(commands, 3);
+            if (!result) { return result; }
+            commands.copyBuffer({.source = input_.get(), .destination = output, .sourceOffset = 8, .destinationOffset = 8, .size = 8});
+            return properties().value("fail", 0) == 3 ? render::makeError(render::Error::Failure) : render::Result{};
+        });
+        return result ? transaction(context.commandBuffer(), 4) : result;
+    }
+private:
+    std::unique_ptr<render::Buffer> input_;
+};
+
+class FrameParallelBranchTest final : public RhiTest {
+public:
+    FrameParallelBranchTest() { type = RhiTestType::Rendering; name = "frame_parallel_compute_join_and_cancellation"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        FRAME_REQUIRE(render::createDevice({.applicationName = "Async branch lifetime regression",
+            .enableValidation = context.enableValidation, .enableAsyncCompute = true}, device));
+        auto* graphics = device->getQueue(render::QueueType::Graphics);
+        auto* compute = device->getQueue(render::QueueType::Compute);
+        render::registerRenderGraphPassType("FrameParallelBranchPass", "Parallel branch test",
+            [] { return std::make_unique<FrameParallelBranchPass>(); });
+        render::RenderGraphExecutor executor;
+        std::string log;
+        for (bool parallel : {true, false}) {
+            for (int fail : {2, 3, 0}) {
+                render::RenderGraph graph;
+                graph.addNode("FrameParallelBranchPass", "Branches", {{"fail", fail}});
+                graph.markOutput("Branches.data");
+                FRAME_REQUIRE(executor.compile(*device, graph, 1, 1, log));
+                asyncBranchEvents.clear();
+                const auto result = executor.execute(render::RenderGraphSubmitDesc{.graphicsQueue = graphics,
+                    .computeQueue = parallel ? compute : graphics});
+                if (fail != 0) {
+                    const std::vector<int> expected = fail == 2 ? std::vector<int>{-2, -1} : std::vector<int>{-3, -2, -1};
+                    if (result || executor.compiled() || asyncBranchEvents != expected) {
+                        return RhiTestResult::fail("Failed branch submitted work or did not roll back the entire recording");
+                    }
+                    continue;
+                }
+                FRAME_REQUIRE(result);
+                FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+                if (asyncBranchEvents != std::vector<int>{1, 2, 3, 4} || executor.executionStats().asyncComputeBranches !=
+                    (parallel && device->capabilities().independentComputeQueue ? 1u : 0u)) {
+                    return RhiTestResult::fail("Parallel/aliased queue topology or transaction commit order was incorrect");
+                }
+                Commands consumer;
+                render::QueueSubmissionTracker tracker;
+                std::unique_ptr<render::Buffer> readback;
+                FRAME_REQUIRE(consumer.initialize(*device, *graphics));
+                FRAME_REQUIRE(tracker.initialize(*device, *graphics));
+                FRAME_REQUIRE(device->createBuffer({.size = 16, .usage = render::BufferUsageBits::TransferDestination,
+                    .memoryLocation = render::MemoryLocation::HostReadback}, readback));
+                FRAME_REQUIRE(consumer.begin(0));
+                FRAME_REQUIRE(executor.transitionOutput(*consumer.buffer, "Branches.data", render::ResourceState::TransferSource));
+                consumer.buffer->copyBuffer({.source = executor.outputResource("Branches.data")->buffer,
+                    .destination = readback.get(), .size = 16});
+                FRAME_REQUIRE(consumer.submit(tracker)); FRAME_REQUIRE(consumer.frame.wait(kWaitTimeout));
+                readback->invalidate(); const auto* words = static_cast<const uint32_t*>(readback->map());
+                const bool correct = words && words[0] == 11 && words[1] == 12 && words[2] == 21 && words[3] == 22;
+                readback->unmap();
+                if (!correct) { return RhiTestResult::fail("Join did not make both branch writes visible"); }
+            }
+        }
+        return RhiTestResult::pass("Independent and aliased queues, fork/join visibility, compute/HW recording failure and reverse transaction cancellation");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(FrameParallelBranchTest);
+
 class FrameGraphTransferPass final : public render::RenderGraphPass {
 public:
     bool supportsFrameOverlap() const override { return true; }

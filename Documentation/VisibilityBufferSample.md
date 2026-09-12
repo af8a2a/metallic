@@ -11,8 +11,10 @@ cmake-build-release-visual-studio\Source\MetallicGPUDrivenSample.exe --smoke-tes
 ## 帧内数据流
 
 ```text
-GPUScene → instance cull → Wave32 AS meshlet cull → MS + visibility PS
-                                                        ↓
+GPUScene → instance cull → compute cluster cull / stable bins
+                             ├─ HW bins → AS / MS + visibility PS
+                             └─ SW bin  → async compute atomic depth/ID
+                                                        ↓ merge
                                                  R32Uint ID + D32 depth
                                                         ↓
                           HZB → late cull/raster → final visibility/depth
@@ -23,15 +25,15 @@ GPUScene → instance cull → Wave32 AS meshlet cull → MS + visibility PS
 ```
 
 1. `GPUDrivenCulling.slang` 先用当前剔除相机执行实例视锥测试，再用上一帧相机与上一帧完整 HZB 判断早期绘制候选。历史 HZB 判为遮挡的实例只延后处理，不能直接丢弃。
-2. `VisibilityBuffer.slang` 的 amplification shader 每组处理 32 个 meshlet，执行 bucket、producer ownership、meshlet 视锥、normal-cone 和历史 HZB 测试。支持时请求完整 Wave32，并以 wave prefix/count 压缩 payload；不支持时保留 subgroup/groupshared fallback。
-3. Mesh shader 每组输出一个 meshlet 的共享顶点与索引（上限 128 vertices / 128 triangles），通过 per-primitive `SV_PrimitiveID` 输出可见性 ID。Opaque 变体仅输出 position；`VISIBILITY_BUFFER_ALPHA_MASKED=1` 变体另外输出 UV / material index 供 alpha test 使用。Fragment shader 只写入 `R32Uint` ID，不进行材质着色。
+2. `VisibilityBuffer.slang` 默认在 compute 中执行 producer ownership、meshlet 视锥、normal-cone 和历史 HZB 测试，并按整个 cluster 分类。GPU 稳定压缩输出四个硬件材质箱和一个软件箱。硬件箱由 amplification shader 每组消费 32 个 cluster；支持时请求完整 Wave32 并压缩 payload，不支持时保留 subgroup/groupshared fallback。
+3. 默认启用 [Hybrid Rasterizer](HybridRasterizer.md)：所有三角形都满足尺寸阈值的 cluster 直接 indirect dispatch compute 软光栅，再把原子 depth/ID 合并到相同附件；包含大三角形、需要裁剪的三角形或 alpha mask 的 cluster 继续走硬件。Mesh shader 每组输出一个 meshlet 的共享顶点与索引（上限 128 vertices / 128 triangles），通过 per-primitive `SV_PrimitiveID` 输出可见性 ID。Opaque 变体仅输出 position；`VISIBILITY_BUFFER_ALPHA_MASKED=1` 变体另外输出 UV / material index 供 alpha test 使用。Fragment shader 只写入 `R32Uint` ID，不进行材质着色。
 4. 深度附件使用 `D32Sfloat`。Opaque fragment 允许 early depth；masked fragment 先按 alpha cutoff discard，不能强制 early depth 写入。四个 raster bucket 分别覆盖 opaque/masked 与单面/双面材质，BLEND 暂不进入此路径。
 5. Compute 将第一阶段深度归约成当前 HZB：Reversed-Z 用 min，普通 Z 用 max。第二阶段用当前剔除相机和当前 HZB 重测被延后的实例及 meshlet，将恢复可见的 meshlet 补绘到同一 visibility/depth；早期已经绘制的 meshlet 不再重复绘制。
 6. 完整深度再生成下一帧 HZB，直接保留最终 `GPUDriven.visibility`（R32Uint）和 `GPUDriven.depth`（D32Sfloat），不执行属性重建或材质着色。
 7. 可选的 `VisibilityBufferComposite.slang` 直接读取原始 ID / depth，输出 `GPUDriven.color`（Rgba8Unorm）供视口调试显示，不改变原始输出。关闭可视化时只清空 color，不绘制全屏三角形。内置图将 `GPUDriven.color` 连接到 `FinalBlit.source`，样例的 `previewOutput` 为自动呈现输出 `FinalBlit.color`，JSON 的 `outputs` 数组为空。原始 visibility / depth 仍是节点输出，可供后续 Pass 使用；整数 ID 应先经过可视化再呈现。
 
 两阶段 meshlet 划分通过重算不变的早期遮挡条件完成，不需要有容量上限的延后候选追加队列。
-AS 仍在两个阶段扫描 meshlet，再压缩需要光栅化的 payload；它减少的是 MS/光栅工作，尚未改成只间接调度延后候选。
+默认由 compute 在两个阶段分类并生成稳定的硬件/软件列表，AS 仅间接消费对应硬件箱。`asyncSoftwareRaster=true` 时软件箱在独立 compute 队列执行，与硬件光栅重叠，在深度合并和 HZB 前通过 timeline semaphore 汇合；无独立队列时自动串行。`clusterPrebin=false` 保留 AS 扫描候选与 Mesh Shader 按三角形分流的对照路径。
 StreamAsset 的 cluster 使用同一阶段划分和保守遮挡规则。历史无效时全部通过早期遮挡测试，
 第二阶段始终读取本帧第一阶段构建的 HZB；相机切换、尺寸变化及场景修改沿用 GPUScene 的历史失效机制。
 
@@ -111,7 +113,7 @@ GPU 回归 `gpu_driven_cone_scale_invariance` 验证 16 组缩放/旋转下的�
 - Record 引用 `VisibleClusterRecord`，而不是直接引用 meshlet：record 同时确定实例、cluster、geometry/page 和 producer。Resident 与 stream 使用互不重叠的 record 地址区间。
 - `GPUDrivenRasterCommon.slang` 与 C++ `GPUDrivenRaster.h` 定义 ID 范围和记录格式。
 - `GPUDrivenSceneCommon.slang` 为剔除、光栅和材质重建共享同一 GPUScene / push / params 布局，避免重复声明发生 ABI 漂移。
-- 这里实现的是硬件 Mesh Shader visibility 路径：`R32Uint` ID + 固定功能深度附件。并未实现 Nanite 的软硬件混合光栅，也未引入它的 `uint64(depth, ID)` 原子竞争写入方式。
+- 默认启用 cluster 预分箱的软硬混合光栅：硬件保留 `R32Uint` ID + 固定功能深度附件，软件写入 `uint64(depth, ID)` 原子缓冲并合并到附件；详见 [Hybrid Rasterizer](HybridRasterizer.md)。
 
 ## 管线与固定剔除相机
 

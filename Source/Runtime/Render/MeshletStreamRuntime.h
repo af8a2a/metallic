@@ -346,6 +346,8 @@ struct MeshletStreamUserPush {
     uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
     uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
     uint32_t rasterBindingsBuffer = 0;
+    uint32_t hybridQueueBuffer = UINT32_MAX;
+    uint32_t hybridClusterBuffer = UINT32_MAX;
 };
 
 static_assert(sizeof(MeshletStreamGpuActiveHeader) == 32);
@@ -364,7 +366,7 @@ static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGpuParams) == 272);
 static_assert(sizeof(MeshletStreamGpuRasterBindings) == 64);
-static_assert(sizeof(MeshletStreamUserPush) == 112);
+static_assert(sizeof(MeshletStreamUserPush) == 120);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;

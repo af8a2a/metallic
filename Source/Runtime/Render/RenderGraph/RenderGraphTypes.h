@@ -232,7 +232,7 @@ private:
 
 class RenderGraphExecutionContext {
 public:
-    CommandBuffer& commandBuffer() const { return commandBuffer_; }
+    CommandBuffer& commandBuffer() const { return *commandBuffer_; }
     uint64_t frameIndex() const { return frameIndex_; }
     uint32_t width() const { return width_; }
     uint32_t height() const { return height_; }
@@ -263,6 +263,12 @@ public:
     BufferHandle outputBuffer(std::string_view fieldName) const;
     const BindlessHandle* bindlessResource(std::string_view fieldName) const;
     const BindlessHandle* bindlessInput(std::string_view fieldName) const;
+    using CommandRecorder = std::function<Result(CommandBuffer&)>;
+    bool supportsParallelCompute() const { return bool(parallelRecorder_); }
+    // Fork after current commands; run disjoint compute/graphics branches, then
+    // join before subsequent commands. Reacquire commandBuffer() after this call.
+    // Only declared shared resources may cross queues. No submission occurs here.
+    Result parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics);
     bool debugEnabled() const { return debugObserver_ != nullptr; }
     void debugCheckpoint(std::string_view name, std::span<const DebugResourceBinding> resources = {},
         const RenderGraphProperties& values = RenderGraphProperties::object());
@@ -291,7 +297,9 @@ private:
         RenderWorld* world,
         RenderSubsystemHost* subsystems);
 
-    CommandBuffer& commandBuffer_;
+    using ParallelRecorder = std::function<Result(RenderGraphExecutionContext&, const CommandRecorder&, const CommandRecorder&)>;
+    ParallelRecorder parallelRecorder_;
+    CommandBuffer* commandBuffer_ = nullptr;
     uint64_t frameIndex_ = 0;
     uint32_t width_ = 1;
     uint32_t height_ = 1;

@@ -3083,6 +3083,7 @@ struct DeviceImpl {
     uint32_t computeFamily = 0;
     uint32_t copyFamily = UINT32_MAX;
     uint32_t copyQueueIndex = UINT32_MAX;
+    uint32_t computeQueueIndex = 0;
     SDL_SharedObject* vulkanLoaderHandle = nullptr;
     bool sdlVulkanLoaded = false;
     bool validationEnabled = false;
@@ -3877,6 +3878,11 @@ Result Queue::submit(const QueueSubmitDesc& desc)
         }
     }
     return result;
+}
+
+bool Queue::sameQueue(const Queue& other) const
+{
+    return impl_ && other.impl_ && impl_->device == other.impl_->device && impl_->queue == other.impl_->queue;
 }
 
 Result Queue::waitIdle()
@@ -9355,6 +9361,16 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             }
         }
 
+        if (desc.enableAsyncCompute) {
+            for (uint32_t queueIndex = 0; queueIndex < queueFamilyCount; ++queueIndex) {
+                const VkQueueFlags flags = queueFamilies[queueIndex].queueFlags;
+                if (queueFamilies[queueIndex].queueCount != 0 &&
+                    (flags & VK_QUEUE_COMPUTE_BIT) != 0 && (flags & VK_QUEUE_GRAPHICS_BIT) == 0) {
+                    computeFamily = queueIndex;
+                    break;
+                }
+            }
+        }
         if (computeFamily == UINT32_MAX) {
             for (uint32_t queueIndex = 0; queueIndex < queueFamilyCount; ++queueIndex) {
                 if ((queueFamilies[queueIndex].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
@@ -9448,6 +9464,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         &selectedQueueFamilyCount,
         selectedQueueFamilies.data());
 
+    deviceImpl->computeQueueIndex = desc.enableAsyncCompute &&
+        deviceImpl->computeFamily == deviceImpl->graphicsFamily &&
+        selectedQueueFamilies[deviceImpl->computeFamily].queueCount > 1 ? 1u : 0u;
     deviceImpl->copyQueueIndex = UINT32_MAX;
     if (deviceImpl->copyFamily < selectedQueueFamilies.size()) {
         const bool copyUsesExistingQueue =
@@ -9455,8 +9474,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             deviceImpl->copyFamily == deviceImpl->computeFamily;
         if (!copyUsesExistingQueue) {
             deviceImpl->copyQueueIndex = 0;
-        } else if (selectedQueueFamilies[deviceImpl->copyFamily].queueCount > 1) {
-            deviceImpl->copyQueueIndex = 1;
+        } else {
+            const uint32_t used = deviceImpl->copyFamily == deviceImpl->computeFamily
+                ? deviceImpl->computeQueueIndex + 1u : 1u;
+            if (selectedQueueFamilies[deviceImpl->copyFamily].queueCount > used) { deviceImpl->copyQueueIndex = used; }
         }
     }
 
@@ -9477,12 +9498,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         }
     };
     requestQueues(deviceImpl->graphicsFamily, 1);
-    requestQueues(deviceImpl->computeFamily, 1);
+    requestQueues(deviceImpl->computeFamily, deviceImpl->computeQueueIndex + 1u);
     if (deviceImpl->copyQueueIndex != UINT32_MAX) {
         requestQueues(deviceImpl->copyFamily, deviceImpl->copyQueueIndex + 1);
     }
 
-    const std::array<float, 2> queuePriorities{1.0f, 1.0f};
+    const std::array<float, 3> queuePriorities{1.0f, 1.0f, 1.0f};
     std::vector<VkDeviceQueueCreateInfo> queueInfos;
     queueInfos.reserve(queueRequests.size());
     for (const QueueFamilyRequest& request : queueRequests) {
@@ -9496,9 +9517,23 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 
     VulkanEnabledFeatureChain enabledFeatureChain(selectedFeatures);
     std::vector<const char*> deviceExtensions = enabledDeviceExtensions(selectedFeatures);
+    const VulkanExtensionSet selectedDeviceExtensions = VulkanExtensionSet::query(deviceImpl->physicalDevice);
+#if defined(VK_NV_low_latency2) && defined(VK_KHR_present_id)
+    // Streamline's Reflex plugin can inject low_latency2 into vkCreateDevice.
+    // Supply its present-id dependency when the adapter exposes that extension.
+    if (deviceImpl->streamlineInitialized && selectedDeviceExtensions.has(VK_NV_LOW_LATENCY_2_EXTENSION_NAME)) {
+        if (selectedDeviceExtensions.has(VK_KHR_PRESENT_ID_EXTENSION_NAME)) {
+            deviceExtensions.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+        }
+#ifdef VK_KHR_present_id2
+        else if (selectedDeviceExtensions.has(VK_KHR_PRESENT_ID_2_EXTENSION_NAME)) {
+            deviceExtensions.push_back(VK_KHR_PRESENT_ID_2_EXTENSION_NAME);
+        }
+#endif
+    }
+#endif
     // Calibration is optional; never reject a GPU just because it lacks it.
-    const bool calibratedTimestamps = VulkanExtensionSet::query(deviceImpl->physicalDevice)
-        .has(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+    const bool calibratedTimestamps = selectedDeviceExtensions.has(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
     if (calibratedTimestamps) {
         deviceExtensions.push_back(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
     }
@@ -9709,6 +9744,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->partitionedAccelerationStructureEnabled =
         selectedFeatures.partitionedAccelerationStructure;
     deviceImpl->capabilities.aftermath = selectedFeatures.aftermath;
+    deviceImpl->capabilities.shaderBufferInt64Atomics =
+        selectedFeatures.shaderInt64 && selectedFeatures.shaderBufferInt64Atomics;
+    deviceImpl->capabilities.subPixelPrecisionBits = selectedProperties.limits.subPixelPrecisionBits;
     deviceImpl->capabilities.shaderIntegerDotProduct =
         selectedFeatures.shaderIntegerDotProduct;
     deviceImpl->capabilities.cooperativeVector = selectedFeatures.cooperativeVector;
@@ -9753,7 +9791,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         QueueType::Graphics);
 
     VkQueue computeQueue = VK_NULL_HANDLE;
-    vkGetDeviceQueue(deviceImpl->device, deviceImpl->computeFamily, 0, &computeQueue);
+    vkGetDeviceQueue(deviceImpl->device, deviceImpl->computeFamily, deviceImpl->computeQueueIndex, &computeQueue);
+    deviceImpl->capabilities.independentComputeQueue = computeQueue != graphicsQueue;
+    if (deviceImpl->capabilities.independentComputeQueue) {
+        spdlog::info("[Vulkan] Independent compute queue enabled: graphics family {}, compute family {} index {}",
+            deviceImpl->graphicsFamily, deviceImpl->computeFamily, deviceImpl->computeQueueIndex);
+    }
     deviceImpl->addQueue(
         computeQueue,
         deviceImpl->computeFamily,
