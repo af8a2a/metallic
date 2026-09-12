@@ -10,6 +10,8 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <algorithm>
+#include <fstream>
 
 namespace metallic {
 
@@ -97,6 +99,102 @@ bool EditorApplication::runDlssCameraSmokeTest()
             "Camera movement still invalidates non-reprojected accumulation")) { return false; }
     spdlog::info("[Smoke DLSS Camera] Passed 16 moving {} frames, shared view and explicit reset",
         rasterCamera ? "SR" : "RR");
+    return true;
+}
+
+bool EditorApplication::runVisibilityPreviewSmokeTest()
+{
+    const auto expect = [](bool condition, const char* message) {
+        if (!condition) { spdlog::error("[Smoke VBuffer Preview] {}", message); }
+        return condition;
+    };
+    const auto renderFrames = [&](uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            auto profileFrame = profiler_.beginFrame();
+            if (!waitForFrameSlotBeforeInput()) { return false; }
+            const render::vulkan::StreamlineFrameScope streamlineFrame;
+            if (!renderFrame() || !expect(viewportPreviewValid_, "Preview renders after switching")) { return false; }
+        }
+        return true;
+    };
+    auto* node = renderGraph_.findNode("VBuffer");
+    if (!expect(node != nullptr, "Graph has a VBuffer pass")) { return false; }
+    const uint32_t nodeId = node->id;
+    const std::string presentation = renderGraph_.presentationOutputName();
+    const size_t edgeCount = renderGraph_.edges().size();
+    viewportView_.setTemporalJitter(false);
+    if (!renderFrames(8)) { return false; }
+    const auto camera = viewportCameraProperties();
+    const auto select = [&](const char* mode) {
+        renderGraph_.setNodeRuntimeProperty(nodeId, "visualization", mode);
+        pendingVisibilityPreviewNodeId_ = nodeId;
+        // Switching away from DLSS also changes the viewport toolbar height;
+        // wait through the normal resize debounce before comparing images.
+        return renderFrames(8);
+    };
+    const auto readPixels = [&](std::vector<uint32_t>& pixels, const char* mode) {
+        if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { return false; }
+        auto* output = graphExecutor_->outputResource(activePreviewOutput_);
+        if (!expect(output != nullptr && output->desc.format == render::Format::Rgba8Unorm,
+                "Diagnostic is an RGBA8 output")) { return false; }
+        pixels.resize(size_t(output->desc.width) * output->desc.height);
+        std::unique_ptr<render::Buffer> readback;
+        render::RenderFrameContext frame;
+        render::QueueSubmissionTracker tracker;
+        std::unique_ptr<render::CommandPool> pool;
+        std::unique_ptr<render::CommandBuffer> commands;
+        if (!device_->createBuffer({.size = pixels.size() * sizeof(uint32_t),
+                .usage = render::BufferUsageBits::TransferDestination, .memoryLocation = render::MemoryLocation::HostReadback}, readback) ||
+            !device_->createCommandPool(*graphicsQueue_, pool) || !pool->createCommandBuffer(commands) ||
+            !tracker.initialize(*device_, *graphicsQueue_) || !frame.begin(0) || !commands->begin(&frame) ||
+            !graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::TransferSource)) { return false; }
+        commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
+            .width = output->desc.width, .height = output->desc.height});
+        if (!graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::ShaderRead) ||
+            !commands->end()) { return false; }
+        render::CommandBuffer* buffers[] = {commands.get()};
+        if (!tracker.submit({.commandBuffers = buffers, .commandBufferCount = 1}, frame) || !frame.wait()) { return false; }
+        readback->invalidate();
+        const void* mapped = readback->map();
+        if (!mapped) { return false; }
+        std::memcpy(pixels.data(), mapped, pixels.size() * sizeof(uint32_t));
+        readback->unmap();
+        if (const char* directory = std::getenv("METALLIC_SMOKE_TEST_OUTPUT_DIR")) {
+            std::filesystem::create_directories(directory);
+            std::ofstream file(std::filesystem::path(directory) / (std::string(mode) + ".ppm"), std::ios::binary);
+            file << "P6\n" << output->desc.width << ' ' << output->desc.height << "\n255\n";
+            for (uint32_t pixel : pixels) { file.write(reinterpret_cast<const char*>(&pixel), 3); }
+        }
+        return true;
+    };
+    std::vector<std::vector<uint32_t>> serialImages;
+    for (bool async : {false, true}) {
+        renderGraph_.setNodeRuntimeProperty(nodeId, "asyncSoftwareRaster", async);
+        size_t modeIndex = 0;
+        for (const char* mode : {"coverage", "meshlet", "triangle", "depth"}) {
+            if (!select(mode) || !expect(activePreviewOutput_ == "VBuffer.color", "Visualization selects its diagnostic output")) { return false; }
+            std::vector<uint32_t> pixels;
+            if (!expect(readPixels(pixels, mode), "Read diagnostic pixels")) { return false; }
+            if (modeIndex == 0) {
+                const size_t covered = std::count(pixels.begin(), pixels.end(), 0xffffffffu);
+                if (!expect(covered > 50, "Coverage displays white geometry")) { return false; }
+            } else if (!expect(pixels != serialImages[0], "ID/depth modes differ from coverage")) { return false; }
+            if (async) {
+                if (!expect(pixels == serialImages[modeIndex], "Serial and async diagnostics match")) { return false; }
+            } else { serialImages.push_back(std::move(pixels)); }
+            ++modeIndex;
+        }
+        if (!select("none") || !expect(activePreviewOutput_ == presentation, "Off restores the presentation output")) { return false; }
+    }
+    setActivePreviewOutput("Deferred.color");
+    if (!select("coverage") || !select("none") ||
+        !expect(activePreviewOutput_ == "Deferred.color", "Off restores a custom intermediate preview")) { return false; }
+    if (!select("meshlet")) { return false; }
+    setActivePreviewOutput(presentation);
+    if (!select("none") || !expect(activePreviewOutput_ == presentation, "Off preserves an explicit output selection") ||
+        !expect(viewportCameraProperties() == camera && renderGraph_.edges().size() == edgeCount &&
+            renderGraph_.presentationOutputName() == presentation, "Preview changes preserve camera and graph wiring")) { return false; }
+    spdlog::info("[Smoke VBuffer Preview] Passed four diagnostic images, serial/async equivalence, Off restore and manual output selection");
     return true;
 }
 

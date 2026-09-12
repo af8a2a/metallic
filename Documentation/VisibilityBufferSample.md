@@ -159,6 +159,8 @@ StreamAsset 目前不绘制固定剔除视图，且其光栅相机仅支持透�
 
 旧 `mode` 属性仍可读取；旧 Shaded / Base Color 回退为 Meshlet ID，不会重新启用材质着色。Depth 在固定剔除相机模式下仍显示观察相机深度，而非内部剔除深度。
 
+主窗口和 RenderGraphEditor 的 Runtime Settings 中选择 Visualization 时，视口自动显示该 pass 的 `.color` 调试输出；选择 Off 后恢复切换前的预览（通常为 FinalBlit 的最终着色结果，也可为手动选取的中间输出）。调试模式之间切换保留原返回目标；手动选择其他预览输出优先。切换在视口记录 ImGui 图像前应用，不修改图连接或最终呈现输出。
+
 ## 验证
 
 Shader 编译测试覆盖 Wave32 / atomic fallback 以及 opaque / masked 两种 MS，并检查 SPIR-V：opaque 不含用户 varying，masked 恰好导出 UV / material 两个 location。渲染测试覆盖 alpha 裁剪、固定相机、两阶段 HZB、奇数尺寸、五种可视化及环境光独立性，并读回验证 resident/stream 共用的原始 visibility/depth 不因可视化切换而改变。
@@ -175,3 +177,8 @@ cmake-build-release-visual-studio\tests\MetallicRhiTests.exe --rhi-validation --
 cmake-build-release-visual-studio\tests\MetallicRhiTests.exe --rhi-validation --filter render_graph_gpu_driven_alpha_mask_render
 cmake-build-release-visual-studio\tests\MetallicRhiTests.exe --rhi-validation --filter render_graph_gpu_driven_mixed_producer_render
 ```
+
+
+2026-09-12 编辑器可视化路由回归：`METALLIC_SMOKE_TEST_VBUFFER_PREVIEW=1` 在实时 pipeline 中运行 120 帧，读回 Coverage、Meshlet ID、Triangle ID、Depth 四种图像，对照串行/异步像素，检查 Off 恢复、手动预览优先及相机/图连接不变。测试通过且同步验证无错误。日志 `.tmp/VBufferPreviewSmokeFinal.log`；设置 `METALLIC_SMOKE_TEST_OUTPUT_DIR` 可保存实际读回图。
+
+同一回归在 `MetallicGPUDrivenSample` 默认仓库 Sponza 场景运行 120 帧通过，四种图像串行/异步逐像素一致；日志 `.tmp/VBufferSponzaSmoke.log`，图像 `.tmp/VBufferSponzaImages/`，无 VUID / SYNC 错误。主编辑器与 GPUDriven Sample 均已重新构建。

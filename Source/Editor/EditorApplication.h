@@ -53,6 +53,7 @@ private:
     bool runSliderDebugSmokeTest();
     bool runSceneSwitchSmokeTest();
     bool runDlssCameraSmokeTest();
+    bool runVisibilityPreviewSmokeTest();
     bool runMaterialInspectorSmokeTest();
     void drawDockspace();
     void drawPanels();
@@ -70,6 +71,7 @@ private:
     render::RenderGraphNode* activePreviewRenderGraphNode();
     render::RenderGraphProperties viewportCameraProperties() const;
     void initializeViewportView();
+    void updateVisibilityPreview(const render::RenderGraphNode& node);
     bool drawRuntimeSettingsForNode(
         render::RenderGraphNode& node,
         bool hideCameraSettings,
@@ -351,6 +353,9 @@ private:
     char graphOutputBuffer_[128] = "Bunny.color";
     char previewOutputBuffer_[128] = "Bunny.color";
     std::string activePreviewOutput_ = "Bunny.color";
+    uint32_t pendingVisibilityPreviewNodeId_ = 0;
+    std::string visibilityPreviewOutput_;
+    std::string visibilityPreviewReturnOutput_;
     std::string renderGraphStatus_;
     std::string sceneStatus_ = "No scene loaded.";
     std::string sceneAccelerationStructureStatus_ = "RTAS not built.";

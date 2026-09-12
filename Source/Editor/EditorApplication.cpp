@@ -2072,6 +2072,11 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_VBUFFER_PREVIEW")) {
+            const bool passed = runVisibilityPreviewSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_DLSS_CAMERA")) {
             const bool passed = runDlssCameraSmokeTest();
             shutdown();
@@ -3928,6 +3933,9 @@ render::RenderGraphProperties EditorApplication::viewportCameraProperties() cons
 
 void EditorApplication::initializeViewportView()
 {
+    pendingVisibilityPreviewNodeId_ = 0;
+    visibilityPreviewOutput_.clear();
+    visibilityPreviewReturnOutput_.clear();
     viewportView_.setCamera(render::ViewCamera{});
     auto properties = renderGraph_.viewProperties();
     if (properties.empty()) {
@@ -3945,6 +3953,34 @@ void EditorApplication::initializeViewportView()
     viewportView_.setCameraProperties(properties.value("camera", render::RenderGraphProperties::object()));
     viewportView_.setTemporalJitter(properties.value("temporalJitter", false));
     viewportView_.cameraCut();
+}
+
+void EditorApplication::updateVisibilityPreview(const render::RenderGraphNode& node)
+{
+    if (node.type != "VisibilityBufferPass") { return; }
+    const auto properties = effectiveNodeProperties(node);
+    const std::string mode = properties.value("visualization", "meshlet");
+    const std::string output = node.name + ".color";
+    if (mode == "none" || mode == "off") {
+        // Only undo our own preview switch; an explicit output selection wins.
+        if (visibilityPreviewOutput_ != output || activePreviewOutput_ != output) { return; }
+        std::string restore = visibilityPreviewReturnOutput_;
+        if (findRenderGraphNodeForOutput(renderGraph_, restore) == nullptr) {
+            restore = renderGraph_.firstOutputName();
+        }
+        visibilityPreviewOutput_.clear();
+        visibilityPreviewReturnOutput_.clear();
+        setActivePreviewOutput(std::move(restore));
+        return;
+    }
+
+    // Changing debug modes keeps the original return target, including custom
+    // intermediate previews. Graph edges and the presentation output stay intact.
+    const std::string restore = activePreviewOutput_ == visibilityPreviewOutput_
+        ? visibilityPreviewReturnOutput_ : activePreviewOutput_;
+    setActivePreviewOutput(output);
+    visibilityPreviewOutput_ = output;
+    visibilityPreviewReturnOutput_ = restore;
 }
 
 bool EditorApplication::drawRuntimeSettingsForNode(
@@ -4031,6 +4067,7 @@ bool EditorApplication::drawRuntimeSettingsForNode(
     bool invalidateHistory = false;
     bool rebuildGraph = false;
     bool cameraChanged = false;
+    bool visibilityChanged = false;
     ImGui::PushID(static_cast<int>(node.id));
     for (const render::RenderGraphRuntimeSetting& setting : settings) {
         if (hideCameraSettings && isCameraRuntimeSetting(setting)) {
@@ -4042,6 +4079,7 @@ bool EditorApplication::drawRuntimeSettingsForNode(
         if (drawRuntimeSettingControl(setting, runtimeSettingValue(node, setting), newValue)) {
             setNestedProperty(runtimeProperties, setting.key, std::move(newValue));
             changed = true;
+            visibilityChanged = visibilityChanged || (node.type == "VisibilityBufferPass" && setting.key == "visualization");
             invalidateHistory = invalidateHistory || setting.invalidateHistory;
             rebuildGraph = rebuildGraph || setting.rebuildGraph;
             cameraChanged = cameraChanged || isCameraRuntimeSetting(setting);
@@ -4071,6 +4109,7 @@ bool EditorApplication::drawRuntimeSettingsForNode(
         }
         viewportPreviewNeedsRender_ = true;
         renderGraphStatus_ = "Updated runtime setting";
+        if (visibilityChanged) { pendingVisibilityPreviewNodeId_ = node.id; }
     }
 
     return true;
@@ -5981,6 +6020,13 @@ void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& ma
 
 void EditorApplication::drawViewportPanel()
 {
+    // The graph editor is drawn after this panel. Apply its preview changes on
+    // the next frame, before ImGui records an image using the old descriptor.
+    if (pendingVisibilityPreviewNodeId_ != 0) {
+        const auto* node = renderGraph_.findNode(pendingVisibilityPreviewNodeId_);
+        pendingVisibilityPreviewNodeId_ = 0;
+        if (node != nullptr) { updateVisibilityPreview(*node); }
+    }
     ImGui::Begin("Viewport");
 
     const bool gizmoTransactionActive = inspectorTransformEditing_ ||
@@ -7441,6 +7487,9 @@ void EditorApplication::setActivePreviewOutput(std::string outputName)
         return;
     }
 
+    pendingVisibilityPreviewNodeId_ = 0;
+    visibilityPreviewOutput_.clear();
+    visibilityPreviewReturnOutput_.clear();
     activePreviewOutput_ = std::move(outputName);
     copyToBuffer(activePreviewOutput_, previewOutputBuffer_, sizeof(previewOutputBuffer_));
     if (graphExecutor_ != nullptr &&
