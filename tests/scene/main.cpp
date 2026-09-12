@@ -8,6 +8,7 @@
 #include "meshoptimizer.h"
 
 #include "json.hpp"
+#include "tiny_gltf.h"
 
 #include <gtest/gtest.h>
 
@@ -5662,4 +5663,97 @@ TEST(SceneEditing, PickerBvh)
 TEST(SceneLoading, AsyncProgressAndCancellation)
 {
     testAsyncSceneLoad(prepareOutputDirectory());
+}
+
+TEST(SceneLoading, DefersExternalImagesAndPreservesEmbeddedImages)
+{
+    const auto directory = prepareOutputDirectory() / "deferred_images";
+    std::filesystem::create_directories(directory);
+    const auto path = writeFullScene(directory);
+    // A one-pixel RGBA PNG with color (32, 64, 128, 255).
+    constexpr std::array<uint8_t, 70> kImageBytes{
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+        0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x50, 0x70, 0x68, 0xf8,
+        0x0f, 0x00, 0x03, 0x44, 0x01, 0xe0, 0x32, 0xaa, 0xbf, 0x84, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    };
+    const std::string imageData(reinterpret_cast<const char*>(kImageBytes.data()), kImageBytes.size());
+    writeTextFile(directory / "external.png", imageData);
+    writeTextFile(directory / "embedded.bin", imageData);
+    nlohmann::json source;
+    {
+        std::ifstream file(path, std::ios::binary);
+        file >> source;
+    }
+    source["buffers"].push_back({{"uri", "embedded.bin"}, {"byteLength", kImageBytes.size()}});
+    source["bufferViews"].push_back({{"buffer", 1}, {"byteOffset", 0}, {"byteLength", kImageBytes.size()}});
+    source["images"] = {
+        {{"uri", "external.png"}},
+        {{"bufferView", 2}, {"mimeType", "image/png"}},
+        {{"uri", "missing.png"}},
+    };
+    writeTextFile(path, source.dump(2));
+
+    // Observe real file reads in the runtime's tinygltf implementation, including
+    // a valid external image that would otherwise be eagerly read and discarded.
+    std::vector<std::string> filesRead;
+    tinygltf::TinyGLTF importer;
+    importer.SetImagesAsIs(true);
+    std::string error;
+    std::string warning;
+    ASSERT_TRUE(importer.SetFsCallbacks(tinygltf::FsCallbacks{
+        .FileExists = tinygltf::FileExists,
+        .ExpandFilePath = tinygltf::ExpandFilePath,
+        .ReadWholeFile = [&](std::vector<unsigned char>* bytes, std::string* message,
+                            const std::string& filename, void* userData) {
+            filesRead.push_back(std::filesystem::path(filename).filename().string());
+            return tinygltf::ReadWholeFile(bytes, message, filename, userData);
+        },
+        .WriteWholeFile = tinygltf::WriteWholeFile,
+        .GetFileSizeInBytes = tinygltf::GetFileSizeInBytes,
+        .user_data = nullptr,
+    }, &error)) << error;
+    tinygltf::Model model;
+    ASSERT_TRUE(importer.LoadASCIIFromFile(&model, &error, &warning, path.string())) << error;
+    EXPECT_EQ(filesRead, (std::vector<std::string>{"scene.gltf", "scene.bin", "embedded.bin"}));
+    EXPECT_TRUE(warning.empty()) << warning;
+    ASSERT_EQ(model.images.size(), 3u);
+    EXPECT_EQ(model.images[0].uri, "external.png");
+    EXPECT_TRUE(model.images[0].image.empty());
+    EXPECT_EQ(model.images[1].image, (std::vector<uint8_t>(kImageBytes.begin(), kImageBytes.end())));
+    EXPECT_EQ(model.images[2].uri, "missing.png");
+
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.load(path)) << scene.lastLoadResult().error;
+    ASSERT_EQ(scene.images().size(), 3u);
+    EXPECT_TRUE(scene.images()[0].encodedData.empty());
+    EXPECT_EQ(scene.images()[1].encodedData, model.images[1].image);
+
+    const auto initialization = metallic::task::initializeTaskSystem({.workerCount = 2});
+    ASSERT_TRUE(initialization.has_value()) << initialization.error().message;
+    struct ShutdownGuard {
+        ~ShutdownGuard() { metallic::task::shutdownTaskSystem(); }
+    } shutdownGuard;
+    metallic::scene::SceneLoader loader;
+    auto handle = loader.request(path);
+    waitForSceneLoad(handle);
+    EXPECT_EQ(handle.progress().status, metallic::scene::SceneLoadStatus::Succeeded);
+    const auto loaded = handle.takeResult();
+    ASSERT_NE(loaded, nullptr);
+    ASSERT_EQ(loaded->images().size(), 3u);
+    for (size_t imageIndex : {0u, 1u}) {
+        const auto& image = loaded->images()[imageIndex];
+        EXPECT_TRUE(image.decodeAttempted);
+        EXPECT_TRUE(image.decodeWarning.empty()) << image.decodeWarning;
+        ASSERT_EQ(image.decodedMips.size(), 1u);
+        EXPECT_EQ(image.decodedMips[0].width, 1u);
+        EXPECT_EQ(image.decodedMips[0].height, 1u);
+        EXPECT_EQ(image.decodedMips[0].pixels, (std::vector<uint8_t>{32, 64, 128, 255}));
+    }
+    const auto& missingImage = loaded->images()[2];
+    EXPECT_TRUE(missingImage.decodeAttempted);
+    EXPECT_TRUE(missingImage.decodedMips.empty());
+    EXPECT_FALSE(missingImage.decodeWarning.empty());
 }
