@@ -886,6 +886,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 .maxPageLoadsInFlight = desc.maxPageLoadsInFlight,
                 .measurePageLatency = desc.measurePageLatency,
                 .immediateGpuRequests = desc.lowLatencyRequests,
+                .completionDrivenUploads = desc.completionDrivenUploads,
             },
             reason)) {
         log = "MeshletStreamRuntime residency initialization failed: " + reason;
@@ -3614,6 +3615,8 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
             {"totalCancelledQueuedLoadCount", stats.totalCancelledQueuedLoadCount},
             {"totalPrefetchAdmitted", stats.totalPrefetchAdmitted}, {"totalPrefetchUsed", stats.totalPrefetchUsed},
             {"totalPrefetchDeferred", stats.totalPrefetchDeferred},
+            {"totalCancelledUploads", stats.totalCancelledUploads},
+            {"totalCompletionDrivenUploads", stats.totalCompletionDrivenUploads},
             {"totalCompletedPageLoadCount", stats.totalCompletedPageLoadCount},
             {"totalCompletedUploadCount", stats.totalCompletedUploadCount},
             {"totalPageLoadFailureCount", stats.totalPageLoadFailureCount},

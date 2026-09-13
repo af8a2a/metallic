@@ -423,6 +423,7 @@ struct MeshletStreamRuntimeDesc {
     bool viewDrivenPageDemand = true;
     bool measurePageLatency = true;
     bool lowLatencyRequests = true;
+    bool completionDrivenUploads = true;
     bool prefetchPages = true;
 
     bool operator==(const MeshletStreamRuntimeDesc&) const = default;

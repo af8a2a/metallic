@@ -1,4 +1,5 @@
 #include "Runtime/Render/MeshletStreamResidency.h"
+#include "Runtime/Render/GAPI/StreamUploadCompletion.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -269,6 +270,7 @@ bool MeshletStreamResidencyManager::initialize(
     asset_ = desc.asset;
     if (desc.measurePageLatency) { latency_ = std::make_unique<MeshletStreamLatencyTracker>(); }
     immediateGpuRequests_ = desc.immediateGpuRequests;
+    completionDrivenUploads_ = desc.completionDrivenUploads;
     maxResidentPages_ = desc.maxResidentPages;
     queuedFrameCount_ = std::max(desc.queuedFrameCount, 1u);
     unloadDelayFrames_ = std::max(desc.unloadDelayFrames, 1u);
@@ -306,6 +308,7 @@ void MeshletStreamResidencyManager::reset()
     pageLoader_.reset();
     latency_.reset();
     immediateGpuRequests_ = false;
+    completionDrivenUploads_ = true;
     asset_ = nullptr;
     storage_.reset();
     pages_.clear();
@@ -320,6 +323,7 @@ void MeshletStreamResidencyManager::reset()
         taskPages.clear();
     }
     storageTaskQueue_.reset();
+    storageCompletions_ = {};
     for (std::vector<uint32_t>& taskPages : storageTaskPages_) {
         taskPages.clear();
     }
@@ -386,36 +390,54 @@ void MeshletStreamResidencyManager::beginFrame()
     while (updateTaskQueue_.canPop(frameIndex_, true)) {
         const uint32_t taskIndex = updateTaskQueue_.pop();
         if (taskIndex < updateTaskPages_.size()) {
-            for (uint32_t pageIndex : updateTaskPages_[taskIndex]) {
-                auto pageIter = pages_.find(pageIndex);
-                if (pageIter == pages_.end()) {
-                    continue;
-                }
-                PageEntry& page = pageIter->second;
-                if (page.state != MeshletStreamPageResidencyState::PendingUpload ||
-                    page.taskIndex != taskIndex) {
-                    continue;
-                }
-                page.taskIndex = kInvalidStreamingTaskIndex;
-                setPageState(
-                    pageIndex,
-                    page.lockedFallback
-                        ? MeshletStreamPageResidencyState::LockedFallback
-                        : MeshletStreamPageResidencyState::Resident);
-                newlyResidentPages_.push_back(pageIndex);
-                page.residentSinceFrame = frameIndex_;
-                if (latency_) { latency_->complete(pageIndex, frameIndex_); }
-                ++stats_.frameCompletedUpdateCount;
-                ++stats_.frameCompletedUploadCount;
-                ++stats_.totalCompletedUpdateCount;
-                ++stats_.totalCompletedUploadCount;
-            }
+            completeUploadPages(updateTaskPages_[taskIndex], taskIndex);
             updateTaskPages_[taskIndex].clear();
         }
         updateTaskQueue_.releaseTaskIndex(taskIndex);
     }
 
-    if (storageTaskQueue_.canPop(frameIndex_, true)) {
+    while (!storageTaskQueue_.empty()) {
+        const uint32_t frontIndex = storageTaskQueue_.frontTaskIndex();
+        const auto completion = storageCompletions_[frontIndex];
+        if (completion) {
+            const bool cancelled = completion->isCancelled();
+            if (!cancelled && !completion->isComplete()) {
+                break;
+            }
+            uint32_t updateTaskIndex = kInvalidStreamingTaskIndex;
+            const uint32_t taskIndex = storageTaskQueue_.popWithDependent(updateTaskIndex);
+            if (cancelled) {
+                for (uint32_t pageIndex : storageTaskPages_[taskIndex]) {
+                    auto pageIter = pages_.find(pageIndex);
+                    if (pageIter == pages_.end() ||
+                        pageIter->second.state != MeshletStreamPageResidencyState::PendingUpload ||
+                        pageIter->second.taskIndex != taskIndex) {
+                        continue;
+                    }
+                    // No copy was submitted. Keep the bounded allocation and
+                    // request priority, and retry both demand and locked roots.
+                    pageIter->second.taskIndex = kInvalidStreamingTaskIndex;
+                    setPageState(pageIndex, MeshletStreamPageResidencyState::Unloaded);
+                    queueUpload(pageIndex);
+                    ++stats_.totalCancelledUploads;
+                }
+            } else {
+                stats_.totalCompletionDrivenUploads += storageTaskPages_[taskIndex].size();
+                completeUploadPages(storageTaskPages_[taskIndex], taskIndex);
+                ++stats_.frameCompletedStorageTaskCount;
+                ++stats_.totalCompletedStorageTaskCount;
+                ++stats_.frameScheduledUpdateCount;
+                ++stats_.totalScheduledUpdateCount;
+            }
+            storageTaskPages_[taskIndex].clear();
+            storageCompletions_[taskIndex].reset();
+            storageTaskQueue_.releaseTaskIndex(taskIndex);
+            updateTaskQueue_.releaseTaskIndex(updateTaskIndex);
+            continue;
+        }
+        if (!storageTaskQueue_.canPop(frameIndex_, true)) {
+            break;
+        }
         uint32_t dependentIndex = kInvalidStreamingTaskIndex;
         const uint32_t taskIndex = storageTaskQueue_.popWithDependent(dependentIndex);
         uint32_t updateTaskIndex = dependentIndex;
@@ -461,6 +483,8 @@ void MeshletStreamResidencyManager::beginFrame()
             }
         }
         storageTaskQueue_.releaseTaskIndex(taskIndex);
+        // Preserve the frame-delayed protocol for untracked legacy callers.
+        break;
     }
 
     while (unloadTaskQueue_.canPop(frameIndex_, true)) {
@@ -470,6 +494,30 @@ void MeshletStreamResidencyManager::beginFrame()
     }
 
     consumeReadyRequestTasks();
+}
+
+void MeshletStreamResidencyManager::completeUploadPages(
+    std::span<const uint32_t> pageIndices, uint32_t taskIndex)
+{
+    for (uint32_t pageIndex : pageIndices) {
+        auto pageIter = pages_.find(pageIndex);
+        if (pageIter == pages_.end()) { continue; }
+        PageEntry& page = pageIter->second;
+        if (page.state != MeshletStreamPageResidencyState::PendingUpload || page.taskIndex != taskIndex) {
+            continue;
+        }
+        page.taskIndex = kInvalidStreamingTaskIndex;
+        setPageState(pageIndex, page.lockedFallback
+            ? MeshletStreamPageResidencyState::LockedFallback
+            : MeshletStreamPageResidencyState::Resident);
+        newlyResidentPages_.push_back(pageIndex);
+        page.residentSinceFrame = frameIndex_;
+        if (latency_) { latency_->complete(pageIndex, frameIndex_); }
+        ++stats_.frameCompletedUpdateCount;
+        ++stats_.frameCompletedUploadCount;
+        ++stats_.totalCompletedUpdateCount;
+        ++stats_.totalCompletedUploadCount;
+    }
 }
 
 void MeshletStreamResidencyManager::consumeReadyRequestTasks()
@@ -1107,6 +1155,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
     }
 
     const uint32_t frameDelay = std::max(streamer.desc().queuedFrameCount, queuedFrameCount_);
+    storageCompletions_[taskIndex] = completionDrivenUploads_ ? streamer.pendingCopyCompletion() : nullptr;
     storageTaskQueue_.push(taskIndex, frameIndex_ + frameDelay, updateTaskIndex);
     if (asynchronousLoads) {
         schedulePageLoads();

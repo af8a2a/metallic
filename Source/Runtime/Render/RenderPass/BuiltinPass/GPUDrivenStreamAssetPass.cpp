@@ -254,6 +254,7 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
         .viewDrivenPageDemand = boolProperty(properties, "viewDrivenPageDemand", true),
         .measurePageLatency = boolProperty(properties, "measurePageLatency", true),
         .lowLatencyRequests = boolProperty(properties, "lowLatencyRequests", true),
+        .completionDrivenUploads = boolProperty(properties, "completionDrivenUploads", true),
         .prefetchPages = boolProperty(properties, "prefetchPages", true),
     };
 }

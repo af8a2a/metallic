@@ -1,4 +1,5 @@
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/StreamUploadCompletion.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 
@@ -130,6 +131,11 @@ struct StreamerImpl {
     explicit StreamerImpl(Device& streamerDevice)
         : device(&streamerDevice)
     {
+    }
+
+    ~StreamerImpl()
+    {
+        if (pendingCompletion) { pendingCompletion->submission_->cancel(); }
     }
 
     Result create(const StreamerDesc& streamerDesc)
@@ -516,9 +522,35 @@ struct StreamerImpl {
         return bufferOffset;
     }
 
+    std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion()
+    {
+        std::lock_guard lock(mutex);
+        if (activeFrame == nullptr || (bufferRequests.empty() && textureRequests.empty())) {
+            return {};
+        }
+        if (!pendingCompletion) {
+            pendingCompletion.reset(new StreamUploadCompletion(activeFrame->completion()));
+        }
+        return pendingCompletion;
+    }
+
     void copyStreamedData(CommandBuffer& commandBuffer)
     {
         std::lock_guard lock(mutex);
+        if (pendingCompletion) {
+            // Attach to the recording containing the copies, not an earlier pass
+            // segment. A failed attachment must not leave untracked GPU writes.
+            if (commandBuffer.frameContext() == nullptr ||
+                !pendingCompletion->completion_.sameSubmission(commandBuffer.frameContext()->completion()) ||
+                !commandBuffer.addSubmissionTransaction(pendingCompletion->submission_)) {
+                pendingCompletion->submission_->cancel();
+                pendingCompletion.reset();
+                bufferRequests.clear();
+                textureRequests.clear();
+                return;
+            }
+            pendingCompletion.reset();
+        }
         const profiling::NsightProfileRange copyMarker(
             profiling::NsightDomain::Render,
             "Upload Copies",
@@ -545,6 +577,10 @@ struct StreamerImpl {
     void endFrame()
     {
         std::lock_guard lock(mutex);
+        if (pendingCompletion) {
+            pendingCompletion->submission_->cancel();
+            pendingCompletion.reset();
+        }
         if (activeFrame != nullptr) {
             UploadSlot& slot = uploadSlots[frameIndex];
             slot.dynamicOffset = dynamicBufferOffset;
@@ -632,6 +668,7 @@ struct StreamerImpl {
     std::vector<UploadSlot> uploadSlots;
     RenderFrameContext* activeFrame = nullptr;
     bool completionTracked = false;
+    std::shared_ptr<StreamUploadCompletion> pendingCompletion;
     std::vector<BufferCopyRequest> bufferRequests;
     std::vector<TextureCopyRequest> textureRequests;
     std::vector<BufferGarbage> garbage;
@@ -698,6 +735,11 @@ uint64_t Streamer::streamConstantData(const void* data, uint64_t byteSize)
     return impl_ != nullptr
         ? impl_->streamConstantData(data, byteSize)
         : kInvalidStreamOffset;
+}
+
+std::shared_ptr<StreamUploadCompletion> Streamer::pendingCopyCompletion()
+{
+    return impl_ != nullptr ? impl_->pendingCopyCompletion() : nullptr;
 }
 
 void Streamer::copyStreamedData(CommandBuffer& commandBuffer)

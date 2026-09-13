@@ -203,6 +203,7 @@ struct MeshletStreamResidencyDesc {
     uint32_t maxPageLoadsInFlight = 0;
     bool measurePageLatency = false;
     bool immediateGpuRequests = false;
+    bool completionDrivenUploads = true;
 };
 
 struct MeshletStreamResidencyStats {
@@ -318,6 +319,8 @@ struct MeshletStreamResidencyStats {
     uint64_t totalPrefetchAdmitted = 0;
     uint64_t totalPrefetchUsed = 0;
     uint64_t totalPrefetchDeferred = 0;
+    uint64_t totalCancelledUploads = 0;
+    uint64_t totalCompletionDrivenUploads = 0;
 };
 
 class MeshletStreamResidencyManager {
@@ -400,6 +403,7 @@ private:
     bool allocatePageStorage(uint32_t pageIndex);
     bool scheduleUnload(uint32_t pageIndex, bool eviction);
     void completeUnloadTask(uint32_t taskIndex);
+    void completeUploadPages(std::span<const uint32_t> pageIndices, uint32_t taskIndex);
     void releasePageStorage(uint32_t pageIndex);
     void setPageState(uint32_t pageIndex, MeshletStreamPageResidencyState state);
     void queueUpload(uint32_t pageIndex);
@@ -426,6 +430,7 @@ private:
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> requestTaskUnloadPages_;
     StreamingTaskQueue storageTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> storageTaskPages_;
+    std::array<std::shared_ptr<StreamUploadCompletion>, kStreamingMaxActiveTasks> storageCompletions_;
     StreamingTaskQueue unloadTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> unloadTaskPages_;
     StreamingTaskQueue updateTaskQueue_;
@@ -455,6 +460,7 @@ private:
     uint32_t evictionAgeThresholdFrames_ = 1;
     uint32_t maxPageLoadsInFlight_ = 0;
     bool immediateGpuRequests_ = false;
+    bool completionDrivenUploads_ = true;
 };
 
 } // namespace metallic::render

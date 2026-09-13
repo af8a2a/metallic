@@ -374,10 +374,12 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         props["viewDrivenPageDemand"] = setting("METALLIC_MINIZORAH_VIEW_DEMAND", 1) != 0;
         props["prefetchPages"] = setting("METALLIC_MINIZORAH_PREFETCH", 1) != 0;
         props["lowLatencyRequests"] = setting("METALLIC_MINIZORAH_LOW_LATENCY", 1) != 0;
+        props["completionDrivenUploads"] = setting("METALLIC_MINIZORAH_COMPLETION_UPLOADS", 1) != 0;
         report["screenSpacePagePriority"] = props["screenSpacePagePriority"];
         report["viewDrivenPageDemand"] = props["viewDrivenPageDemand"];
         report["prefetchPages"] = props["prefetchPages"];
         report["lowLatencyRequests"] = props["lowLatencyRequests"];
+        report["completionDrivenUploads"] = props["completionDrivenUploads"];
         report["transitionChecks"] = transitionChecks;
         report["latencyOnly"] = latencyOnly;
         props["debugStreamingPages"] = false;
@@ -421,10 +423,14 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         };
         checkRoam(bool(preview.initialize(context.enableValidation, false, false)), preview.lastLog());
         preview.setDebugObserver(&observer);
-        for (uint32_t frame = 0; frame < 240 && !observer.latest.value("terminalReady", false); ++frame) {
+        const auto terminalStart = Clock::now();
+        uint32_t terminalFrames = 0;
+        for (; terminalFrames < 240 && !observer.latest.value("terminalReady", false); ++terminalFrames) {
             checkRoam(bool(preview.render(graph, 1920, 1080, "MaterialResolve.color", false)), preview.lastLog());
         }
         checkRoam(observer.latest.value("terminalReady", false), "Terminal pages did not become ready");
+        report["terminalReadyFrames"] = terminalFrames;
+        report["terminalReadyWallSeconds"] = std::chrono::duration<double>(Clock::now() - terminalStart).count();
         // Measure wall-clock request tails without interleaving expensive cut
         // readbacks/PNG saves; retain one final integrity/latency checkpoint.
         double nextCheckpoint = latencyOnly ? double(duration - 1u) : 0.0;

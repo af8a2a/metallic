@@ -1737,6 +1737,8 @@ class RenderFrameContext;
 class SubmissionTransaction;
 class GpuCompletionPoint;
 
+class StreamUploadCompletion;
+
 class Streamer {
 public:
     Streamer() = default;
@@ -1754,6 +1756,9 @@ public:
     BufferOffset streamTextureData(const StreamTextureDataDesc& desc);
     uint64_t streamConstantData(const void* data, uint64_t byteSize);
     Result beginFrame(RenderFrameContext& frame);
+    // Covers copies currently queued for the next flush. Returns null without
+    // beginFrame(frame), or when no copies are pending. See StreamUploadCompletion.h.
+    std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion();
     void copyStreamedData(CommandBuffer& commandBuffer);
     void endFrame();
 

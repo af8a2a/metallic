@@ -3,6 +3,7 @@
 #include "Runtime/Render/MeshletStreamClas.h"
 #include "Runtime/Render/MeshletStreamPageLoader.h"
 #include "Runtime/Render/MeshletStreamResidency.h"
+#include "Runtime/Render/GAPI/StreamUploadCompletion.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
 #include "Runtime/Render/StreamingTaskQueue.h"
@@ -2331,6 +2332,153 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(MeshletStreamFragmentedStorageTest);
+
+class StreamerMeshletUploadCompletionTest final : public RhiTest {
+public:
+    StreamerMeshletUploadCompletionTest() { type = RhiTestType::Command; name = "streamer_meshlet_upload_completion"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "completion.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        if (asset.pageCount() < 3) { return RhiTestResult::fail("Need three pages for completion batching"); }
+        MeshletStreamResidencyManager residency;
+        std::unique_ptr<Streamer> streamer;
+        std::unique_ptr<Buffer> destination;
+        std::unique_ptr<CommandPool> pool;
+        std::unique_ptr<CommandBuffer> commands, prefix;
+        std::unique_ptr<Semaphore> gate;
+        RenderFrameContext frame;
+        QueueSubmissionTracker tracker;
+        // Drain before destroying any resources, including on assertion failure.
+        struct Drain {
+            Queue& queue;
+            std::unique_ptr<Semaphore>& gate;
+            RenderFrameContext& frame;
+            ~Drain()
+            {
+                if (gate && gate->currentValue() < 1) { (void)gate->signal(1); }
+                frame.cancel();
+                (void)queue.waitIdle();
+            }
+        } drain{context.graphicsQueue, gate, frame};
+#define UPLOAD_REQUIRE(expression) \
+        if (!(expression)) { return RhiTestResult::fail("Upload completion: " #expression); }
+        UPLOAD_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
+        UPLOAD_REQUIRE(context.device.createStreamer(makeTestStreamerDesc(), streamer));
+        UPLOAD_REQUIRE(context.device.createCommandPool(context.graphicsQueue, pool));
+        UPLOAD_REQUIRE(pool->createCommandBuffer(commands));
+        UPLOAD_REQUIRE(pool->createCommandBuffer(prefix));
+        UPLOAD_REQUIRE(context.device.createSemaphore(gate));
+        const uint64_t capacity = alignStreamStorageBytes(asset.maxPagePayloadBytes()) * 4u;
+        UPLOAD_REQUIRE(context.device.createBuffer({.size = capacity,
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, destination));
+        uint64_t frameIndex = 0;
+        // Gate completion, drop an unflushed upload, cancel its recording, then
+        // cancel only the copy tail of a batch whose prefix has been accepted.
+        for (uint32_t scenario = 0; scenario < 6; ++scenario) {
+            std::string reason;
+            UPLOAD_REQUIRE(residency.initialize({.asset = &asset, .maxResidentBytes = capacity,
+                .maxResidentPages = 4, .queuedFrameCount = 8}, reason));
+            const uint32_t root = 0;
+            if (scenario == 2) { (void)residency.requestPage(root); }
+            else { UPLOAD_REQUIRE(residency.lockFallbackPages(std::span(&root, 1), reason)); }
+            const uint32_t pageCount = scenario == 4 ? 3u : 1u;
+            for (uint32_t page = 1; page < pageCount; ++page) { (void)residency.requestPage(page); }
+            const bool cancel = (scenario >= 1 && scenario <= 3) || scenario == 5;
+            for (uint32_t attempt = 0; attempt < (cancel ? 2u : 1u); ++attempt) {
+                UPLOAD_REQUIRE(frame.begin(++frameIndex));
+                UPLOAD_REQUIRE(pool->reset());
+                UPLOAD_REQUIRE(commands->begin(scenario == 5 && attempt == 0 ? nullptr : &frame));
+                UPLOAD_REQUIRE(streamer->beginFrame(frame));
+                residency.beginFrame();
+                for (uint32_t page = 0; page < pageCount; ++page) {
+                    UPLOAD_REQUIRE(residency.processUploads(*streamer, *destination, 1) == 1);
+                }
+                const auto receipt = streamer->pendingCopyCompletion();
+                UPLOAD_REQUIRE(receipt && !receipt->isComplete() && !receipt->isCancelled());
+                UPLOAD_REQUIRE(residency.residentPageCount() == 0);
+                if (scenario != 1 || attempt != 0) {
+                    const BufferBarrierDesc barrier{.buffer = destination.get(),
+                        .before = ResourceState::Undefined, .after = ResourceState::TransferDestination,
+                        .size = capacity};
+                    commands->barrier({.buffers = &barrier, .bufferCount = 1});
+                    commands->copyStreamedData(*streamer);
+                }
+                UPLOAD_REQUIRE(commands->end());
+                streamer->endFrame();
+                CommandBuffer* buffers[] = {commands.get()};
+                if (cancel && attempt == 0) {
+                    if (scenario == 3) {
+                        UPLOAD_REQUIRE(prefix->begin(&frame));
+                        UPLOAD_REQUIRE(prefix->end());
+                        CommandBuffer* prefixBuffers[] = {prefix.get()};
+                        GpuCompletionPoint prefixCompletion;
+                        UPLOAD_REQUIRE(tracker.submitSegment({.commandBuffers = prefixBuffers,
+                            .commandBufferCount = 1}, frame, prefixCompletion));
+                    }
+                    frame.cancel();
+                    if (scenario == 3) {
+                        UPLOAD_REQUIRE(frame.wait(5'000'000'000ull));
+                        UPLOAD_REQUIRE(frame.completion().isSubmitted() && frame.completion().isComplete());
+                    }
+                    UPLOAD_REQUIRE(receipt->isCancelled() && !receipt->isComplete());
+                    residency.beginFrame();
+                    UPLOAD_REQUIRE(residency.pageState(root) == MeshletStreamPageResidencyState::Unloaded);
+                    UPLOAD_REQUIRE(residency.queuedUploadCount() == 1 && residency.stats().totalCancelledUploads == 1);
+                    UPLOAD_REQUIRE(residency.newlyResidentPages().empty());
+                    continue;
+                }
+                const SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
+                UPLOAD_REQUIRE(tracker.submit({.waitSemaphores = scenario == 0 ? &wait : nullptr,
+                    .waitSemaphoreCount = scenario == 0 ? 1u : 0u,
+                    .commandBuffers = buffers, .commandBufferCount = 1}, frame));
+                if (scenario == 0) {
+                    // CPU frame age, recording and queue acceptance prove none
+                    // of the GPU copy's completion. No blocking wait is allowed.
+                    for (uint32_t cpuFrame = 0; cpuFrame < 16; ++cpuFrame) {
+                        residency.beginFrame();
+                        UPLOAD_REQUIRE(!receipt->isComplete() && residency.residentPageCount() == 0);
+                    }
+                    UPLOAD_REQUIRE(gate->signal(1));
+                }
+                UPLOAD_REQUIRE(frame.wait(5'000'000'000ull));
+                UPLOAD_REQUIRE(receipt->isComplete() && !receipt->isCancelled());
+                residency.beginFrame();
+                UPLOAD_REQUIRE(residency.residentPageCount() == pageCount);
+                UPLOAD_REQUIRE(residency.newlyResidentPages().size() == pageCount);
+                UPLOAD_REQUIRE(residency.pageState(root) == (scenario == 2
+                    ? MeshletStreamPageResidencyState::Resident : MeshletStreamPageResidencyState::LockedFallback));
+                UPLOAD_REQUIRE(residency.stats().availableStorageTaskCount == kStreamingMaxActiveTasks);
+                UPLOAD_REQUIRE(residency.stats().availableUpdateTaskCount == kStreamingMaxActiveTasks);
+                UPLOAD_REQUIRE(residency.stats().queuedUpdateTaskCount == 0);
+                std::vector<uint8_t> bytes(static_cast<size_t>(capacity));
+                UPLOAD_REQUIRE(readBufferBytes(*destination, bytes.data(), capacity));
+                for (uint32_t page = 0; page < pageCount; ++page) {
+                    const auto payload = asset.pagePayload(page);
+                    UPLOAD_REQUIRE(std::memcmp(bytes.data() + residency.deviceOffsetForPage(page),
+                        payload.data(), payload.size()) == 0);
+                }
+            }
+        }
+        // An owner can reset while the independent receipt is still pending.
+        std::string reason;
+        UPLOAD_REQUIRE(residency.initialize({.asset = &asset, .maxResidentBytes = capacity}, reason));
+        UPLOAD_REQUIRE(frame.begin(++frameIndex));
+        UPLOAD_REQUIRE(streamer->beginFrame(frame));
+        (void)residency.requestPage(0);
+        UPLOAD_REQUIRE(residency.processUploads(*streamer, *destination, 1) == 1);
+        const auto abandoned = streamer->pendingCopyCompletion();
+        residency.reset();
+        streamer.reset();
+        UPLOAD_REQUIRE(abandoned->isCancelled() && !abandoned->isComplete());
+        frame.cancel();
+#undef UPLOAD_REQUIRE
+        return RhiTestResult::pass("GPU gate, unflushed/cancelled/partial/mismatched submissions, demand/root retries, batch drain and reset");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletUploadCompletionTest);
 
 METALLIC_REGISTER_RHI_TEST(StreamingTaskQueueLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(MeshletStreamPageLoaderTaskGraphTest);
