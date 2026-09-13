@@ -17,6 +17,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <spdlog/spdlog.h>
 
 namespace metallic::render {
 namespace {
@@ -274,7 +275,8 @@ Result createSlangShaderModule(
 
 class MeshletStreamRuntime::UpdatePass {
 public:
-    Result initialize(Device& device, BindlessHeap& bindlessHeap, uint64_t updateByteSize, std::string& log)
+    Result initialize(Device& device, BindlessHeap& bindlessHeap, uint64_t updateByteSize, std::string& log,
+        PipelineCache* pipelineCache)
     {
         if (updateByteSize == 0) {
             return makeError(Error::InvalidArgument);
@@ -309,6 +311,7 @@ public:
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+                .pipelineCache = pipelineCache,
             },
             pageTableInitPipeline_);
         if (!result || pageTableInitPipeline_ == nullptr) {
@@ -333,6 +336,7 @@ public:
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+                .pipelineCache = pipelineCache,
             },
             updatePipeline_);
         if (!result || updatePipeline_ == nullptr) {
@@ -454,7 +458,7 @@ private:
 
 class MeshletStreamRuntime::TraversalPass {
 public:
-    Result initialize(Device& device, std::string& log)
+    Result initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
     {
         Result result = createSlangShaderModule(
             device,
@@ -472,6 +476,7 @@ public:
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+                .pipelineCache = pipelineCache,
             },
             traversalPipeline_);
         if (!result || traversalPipeline_ == nullptr) {
@@ -524,7 +529,7 @@ private:
 
 class MeshletStreamRuntime::ActiveBuildPass {
 public:
-    Result initialize(Device& device, std::string& log)
+    Result initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
     {
         profiling::CpuPhase phase("streamInit.activeShader");
         Result result = createSlangShaderModule(
@@ -544,6 +549,7 @@ public:
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+                .pipelineCache = pipelineCache,
             },
             activeBuildPipeline_);
         if (!result || activeBuildPipeline_ == nullptr) {
@@ -558,11 +564,14 @@ public:
         phase.next("streamInit.cooperativePipeline");
         result = device.createComputePipeline({.computeShader = cooperativeShader_.get(),
             .computeEntryPoint = "main", .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, cooperativePipeline_);
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush), .pipelineCache = pipelineCache}, cooperativePipeline_);
         if (!result) {
             log += resultMessage("createComputePipeline(MeshletStreamRuntime cooperative LOD)", result);
             return result;
         }
+        phase.next("streamInit.lodCacheStatus");
+        spdlog::info("[MeshletStreamRuntime] LOD PSO cache enabled={} activeHit={} cooperativeHit={}",
+            pipelineCache != nullptr, activeBuildPipeline_->pipelineCacheHit(), cooperativePipeline_->pipelineCacheHit());
         return {};
     }
 
@@ -632,7 +641,7 @@ private:
 
 class MeshletStreamRuntime::BlasInputPass {
 public:
-    Result initialize(Device& device, std::string& log)
+    Result initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
     {
         Result result = createSlangShaderModule(
             device,
@@ -650,6 +659,7 @@ public:
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+                .pipelineCache = pipelineCache,
             },
             blasInputPipeline_);
         if (!result || blasInputPipeline_ == nullptr) {
@@ -725,7 +735,7 @@ private:
 
 class MeshletStreamRuntime::TlasInputPass {
 public:
-    Result initialize(Device& device, std::string& log)
+    Result initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
     {
         Result result = createSlangShaderModule(
             device,
@@ -742,6 +752,7 @@ public:
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+                .pipelineCache = pipelineCache,
             },
             tlasInputPipeline_);
         if (!result || tlasInputPipeline_ == nullptr) {
@@ -795,7 +806,8 @@ MeshletStreamRuntime::~MeshletStreamRuntime()
     reset();
 }
 
-Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log)
+Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log,
+    PipelineCache* pipelineCache)
 {
     profiling::CpuPhase phase("streamInit.reset");
     reset();
@@ -2043,30 +2055,30 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
 
     phase.next("streamInit.updatePass");
     updatePass_ = std::make_unique<UpdatePass>();
-    result = updatePass_->initialize(device, *bindlessHeap_, updateByteSize, log);
+    result = updatePass_->initialize(device, *bindlessHeap_, updateByteSize, log, pipelineCache);
     if (!result) {
         return result;
     }
     phase.next("streamInit.traversalPass");
     traversalPass_ = std::make_unique<TraversalPass>();
-    result = traversalPass_->initialize(device, log);
+    result = traversalPass_->initialize(device, log, pipelineCache);
     if (!result) {
         return result;
     }
     phase.next("streamInit.activePass");
     activeBuildPass_ = std::make_unique<ActiveBuildPass>();
-    result = activeBuildPass_->initialize(device, log);
+    result = activeBuildPass_->initialize(device, log, pipelineCache);
     if (!result) {
         return result;
     }
     if (clasPool_ != nullptr) {
         blasInputPass_ = std::make_unique<BlasInputPass>();
-        result = blasInputPass_->initialize(device, log);
+        result = blasInputPass_->initialize(device, log, pipelineCache);
         if (!result) {
             return result;
         }
         tlasInputPass_ = std::make_unique<TlasInputPass>();
-        result = tlasInputPass_->initialize(device, log);
+        result = tlasInputPass_->initialize(device, log, pipelineCache);
         if (!result) {
             return result;
         }

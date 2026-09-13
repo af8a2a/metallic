@@ -839,6 +839,15 @@ public:
             return {};
         }
 
+        // Internal streaming/LOD pipelines are created before createPipelines().
+        // Keep one cache for the entire compile and save all entries together.
+        Result cacheResult = context.device->createPipelineCache(
+            PipelineCacheDesc{.filePath = kGPUDrivenPipelineCachePath}, pipelineCache_);
+        if (!cacheResult || pipelineCache_ == nullptr) {
+            log += resultMessage("createPipelineCache(VisibilityBufferPass)", cacheResult);
+            return cacheResult ? makeError(Error::Failure) : cacheResult;
+        }
+
         std::vector<GPUDrivenPreviewGpuVertex> vertices;
         std::vector<GPUDrivenPreviewGpuMeshlet> meshlets;
         std::vector<GPUDrivenPreviewGpuMeshletDraw> meshletDraws;
@@ -886,7 +895,7 @@ public:
                 previewStreamRuntimeDesc(
                     properties(),
                     requestedStreamSource.sourcePath),
-                log);
+                log, pipelineCache_.get());
             if (!streamResult) {
                 log = "VisibilityBufferPass stream integration failed: " + log;
                 return streamResult;
@@ -1910,15 +1919,6 @@ private:
             if (!result) { return result; }
         }
 
-        Result result = device.createPipelineCache(
-            PipelineCacheDesc{.filePath = kGPUDrivenPipelineCachePath},
-            pipelineCache_);
-        if (!result || pipelineCache_ == nullptr) {
-            log += resultMessage("createPipelineCache(VisibilityBufferPass)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
         auto createCompute = [&](ShaderModule& shader, std::unique_ptr<ComputePipeline>& pipeline, const char* label) {
             const auto pipelineBegin = GPUDrivenCompileClock::now();
             Result result = device.createComputePipeline(
@@ -1939,7 +1939,7 @@ private:
             return result;
         };
 
-        result = createCompute(*resetShader_, resetPipeline_, "reset");
+        Result result = createCompute(*resetShader_, resetPipeline_, "reset");
         if (!result) {
             return result;
         }

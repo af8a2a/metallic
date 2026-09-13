@@ -3,6 +3,7 @@
 #include "Runtime/Render/MeshletStreamClas.h"
 #include "Runtime/Render/MeshletStreamPageLoader.h"
 #include "Runtime/Render/MeshletStreamResidency.h"
+#include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/GAPI/StreamUploadCompletion.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
@@ -498,6 +499,78 @@ public:
         return RhiTestResult::pass();
     }
 };
+
+class StreamLodPipelineCacheTest : public RhiTest {
+public:
+    StreamLodPipelineCacheTest() { type = RhiTestType::Resource; name = "stream_lod_pipeline_cache_persistence"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        std::unique_ptr<Device> device;
+        const auto created = createDevice({.applicationName = "Metallic Stream LOD Cache Test",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .enableShaderObject = true}, device);
+        if (!created) {
+            return hasError(created, Error::Unsupported) ? RhiTestResult::skip("Bindless device unavailable")
+                : RhiTestResult::fail("Cannot create LOD cache test device");
+        }
+        const auto assetPath = context.outputDirectory / "lod_pipeline_cache.meshstream.bin";
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(assetPath, asset);
+        if (!built.passed) { return built; }
+        const auto cachePath = context.outputDirectory / "lod_pipeline_cache.pso";
+        std::error_code fileError;
+        std::filesystem::remove(cachePath, fileError);
+        if (fileError) { return RhiTestResult::fail("Cannot clear test pipeline cache: " + fileError.message()); }
+        const std::string cacheName = cachePath.string();
+        const MeshletStreamRuntimeDesc desc{
+            .sourcePath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf",
+            .streamAssetPath = assetPath,
+            .maxResidentBytes = 16ull << 20,
+            .maxResidentPages = 256,
+            .maxGpuPageRequests = 256,
+            .maxGpuPageUnloadRequests = 256,
+            .maxActiveGroups = 2048,
+            .maxTraversalWorkers = 64,
+            .maxTraversalWorkItems = 4096,
+            .queuedFrameCount = 2,
+        };
+        std::unique_ptr<PipelineCache> cache;
+        MeshletStreamRuntime runtime;
+        std::string log;
+        // Fresh runtime and cache objects: the warm pass must use serialized
+        // driver data and PSO keys, not retained pipeline objects.
+        for (uint32_t pass = 0; pass < 2; ++pass) {
+            auto result = device->createPipelineCache(
+                {.filePath = cacheName.c_str(), .saveOnDestroy = false}, cache);
+            if (!result || !cache) { return RhiTestResult::fail("Cannot create LOD test cache"); }
+            const auto expectedLoad = pass == 0 ? PipelineCacheLoadStatus::NotFound : PipelineCacheLoadStatus::Loaded;
+            if (cache->stats().loadStatus != expectedLoad) { return RhiTestResult::fail("LOD cache load status mismatch"); }
+            result = runtime.initialize(*device, desc, log, cache.get());
+            if (!result || !runtime.ready()) { return RhiTestResult::fail("LOD initialization failed: " + log); }
+            const auto stats = cache->stats();
+            // Page-table init/update, traversal, active build, cooperative LOD.
+            if (stats.sessionPsoCount != 5 || stats.hitCount != (pass == 0 ? 0 : 5) ||
+                stats.missCount != (pass == 0 ? 5 : 0)) {
+                return RhiTestResult::fail("An internal streaming/LOD pipeline bypassed the persistent cache");
+            }
+            result = cache->save();
+            if (!result || cache->stats().backendDataSize == 0) {
+                return RhiTestResult::fail("LOD cache did not serialize native pipeline data");
+            }
+            // Initialization does not retain the caller's cache pointer.
+            cache.reset();
+            runtime.reset();
+        }
+        const auto uncached = runtime.initialize(*device, desc, log);
+        if (!uncached || !runtime.ready()) {
+            return RhiTestResult::fail("Optional-cache compatibility failed: " + log);
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(StreamLodPipelineCacheTest);
 
 class StreamerBufferUploadTest : public RhiTest {
 public:

@@ -527,8 +527,14 @@ public:
 
         compiled_ = false;
         rayQueryProgram_.clear();
+        Result result = context.device->createPipelineCache(PipelineCacheDesc{
+            .filePath = PROJECT_SOURCE_DIR "/.cache/pso/GPUDrivenStreamAssetPass.pso"}, pipelineCache_);
+        if (!result || pipelineCache_ == nullptr) {
+            log += resultMessage("createPipelineCache(GPUDrivenStreamAssetPass)", result);
+            return result ? makeError(Error::Failure) : result;
+        }
         streamRuntime_.setDebugReadbackEnabled(context.debugReadback);
-        Result result = streamRuntime_.initialize(*context.device, runtimeDesc, log);
+        result = streamRuntime_.initialize(*context.device, runtimeDesc, log, pipelineCache_.get());
         if (!result) {
             return result;
         }
@@ -863,6 +869,11 @@ public:
         compiledStreamAssetOnly_ = streamAssetOnly;
         compiledDebugReadback_ = context.debugReadback;
         compiledColorFormat_ = context.defaultFormat;
+        const Result saveResult = pipelineCache_->save();
+        const PipelineCacheStats cacheStats = pipelineCache_->stats();
+        spdlog::info("[GPUDrivenStreamAssetPass] PSO cache hits={} misses={} stored={} bytes={}",
+            cacheStats.hitCount, cacheStats.missCount, cacheStats.storedPsoCount, cacheStats.backendDataSize);
+        if (!saveResult) { log += "Warning: GPUDrivenStreamAssetPass failed to save PSO cache\n"; }
         compiled_ = true;
         return {};
     }
@@ -1776,6 +1787,7 @@ private:
         });
     }
 
+    std::unique_ptr<PipelineCache> pipelineCache_;
     MeshletStreamRuntime streamRuntime_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;

@@ -2,7 +2,9 @@
 
 日期：2026-09-13。目标资产：`E:/metallic/Asset/MiniZorah/zorah_main_public.v2.gltf`。
 
-**当前进度：M1、M2、M3 已完成；M4 已接入同帧准入、自适应预取、GPU 完成后发布页面，并定位修正启动时上传暂存缓冲的分配放大。** 新增 CPU 阶段与 GPU 时钟对齐追踪，确认百毫秒长帧主要落在提交后、GPU 开始前；暂存倍增扩容将前 128 帧分配从 117～119 次降到 3 次。无追踪 60 秒路线最大同步帧从 237.636 降到 30.998 ms，请求墙钟 P95/P99 从 255/261 降到 101/132 ms，工作集差约 0.07%。首次建图仍约 5 秒，下一步优先处理 LOD 管线创建和场景 GPU 元数据准备；不把本轮结果当作全部设备或十分钟漫游的最大帧保证。见 [最新启动长帧定位](MiniZorahStartupStalls.md)、[冷启动发布优化](MiniZorahColdStart.md)、[预取与尾延迟](MiniZorahPrefetch.md)、[质量收敛](MiniZorahQuality.md)、[成本与收益调度](MiniZorahScreenBenefit.md)、[遍历与页面复用](MiniZorahRoamingOptimization.md)、[M4 初始基线](MiniZorahRoaming.md)、[M3 统一 VBuffer](MiniZorahVBuffer.md)。
+**当前进度：M1、M2、M3 已完成；M4 已接入同帧准入、自适应预取、GPU 完成后发布页面，修正上传暂存分配放大，并接通内部 LOD 持久化管线缓存。** VBuffer 内外层共用原有缓存，独立 StreamAsset 入口也可持久化内部管线。新进程命中后，两条主要 LOD 管线创建从约 1.89～2.06 秒降到 2.01～11.17 ms，首个离屏渲染调用降至 1.91～2.16 秒；首次填充仍约 5.52 秒。下一步优先拆分和优化约 1.0～1.2 秒的 GPU 元数据准备。16 项相关回归通过，稳定画面与上一版一致。见 [最新内部 LOD 缓存接入](MiniZorahLodPipelineCache.md)。
+
+上一轮暂存倍增扩容将前 128 帧分配从 117～119 次降到 3 次；无追踪 60 秒路线最大同步帧从 237.636 降到 30.998 ms，请求墙钟 P95/P99 从 255/261 降到 101/132 ms，工作集差约 0.07%。本次缓存接入只验证初始化收益，不将这些结果作为全部设备或十分钟漫游的最大帧保证。见 [启动长帧定位](MiniZorahStartupStalls.md)、[冷启动发布优化](MiniZorahColdStart.md)、[预取与尾延迟](MiniZorahPrefetch.md)、[质量收敛](MiniZorahQuality.md)、[成本与收益调度](MiniZorahScreenBenefit.md)、[遍历与页面复用](MiniZorahRoamingOptimization.md)、[M4 初始基线](MiniZorahRoaming.md)、[M3 统一 VBuffer](MiniZorahVBuffer.md)。
 
 上一轮需求策略曾通过 660 秒循环漫游：49,156 帧、132 个检查点，GPU P95 12.92 ms、同步帧 P95 18.38 ms；末轮进程本地显存峰值低于暖机周期。新需求策略本轮持续测试为 180 秒，不沿用旧版十分钟验收结论。
 

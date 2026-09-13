@@ -467,7 +467,10 @@ public:
     MeshletStreamRuntime(MeshletStreamRuntime&&) noexcept = delete;
     MeshletStreamRuntime& operator=(MeshletStreamRuntime&&) noexcept = delete;
 
-    Result initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log);
+    // The optional caller-owned cache is used only during initialization.
+    // Its owner handles persistence; no cache pointer survives this call.
+    Result initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log,
+        PipelineCache* pipelineCache = nullptr);
     Result syncRuntimeScene(const scene::Scene& scene, std::string& log);
     Result syncRuntimeScene(
         const scene::Scene& scene,
