@@ -314,7 +314,7 @@ GPUSceneCpuUploadData buildGpuUploadData(
 
         const scene::RenderPrimitive* sourcePrimitive =
             gpuScene.geometrySourcePrimitive(geometry.id);
-        if (sourcePrimitive != nullptr) {
+        if (sourcePrimitive != nullptr && sourcePrimitive->storage == scene::GeometryStorage::Resident) {
             const scene::RenderPrimitive& primitive = *sourcePrimitive;
             const uint32_t vertexOffset = gpuCount(data.vertices.size());
             for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
@@ -783,6 +783,7 @@ bool GPUSceneSubsystem::destroyView(GPUSceneViewId view)
     if (!scene_.destroyView(view)) {
         return false;
     }
+    visibilityStreams_.erase(viewResourceKey(view));
     const auto grids = lightGrids_.find(viewResourceKey(view));
     if (grids != lightGrids_.end()) {
         for (auto& grid : grids->second) {
@@ -1859,8 +1860,24 @@ Result GPUSceneSubsystem::prepareShaderReload(
     return {};
 }
 
+void GPUSceneSubsystem::publishVisibilityStream(GPUSceneViewId view, uint64_t frameIndex,
+    uint64_t sceneIdentity, MeshletStreamDeferredGpuResourcesView resources)
+{
+    visibilityStreams_[viewResourceKey(view)] = {frameIndex, sceneIdentity, resources};
+}
+
+const MeshletStreamDeferredGpuResourcesView* GPUSceneSubsystem::visibilityStream(
+    GPUSceneViewId view, uint64_t frameIndex, uint64_t sceneIdentity) const
+{
+    const auto found = visibilityStreams_.find(viewResourceKey(view));
+    return found != visibilityStreams_.end() && found->second.frameIndex == frameIndex &&
+        found->second.sceneIdentity == sceneIdentity && found->second.resources.valid()
+        ? &found->second.resources : nullptr;
+}
+
 void GPUSceneSubsystem::shutdown()
 {
+    visibilityStreams_.clear();
     if (pendingPublication_ != nullptr) { pendingPublication_->cancel(); }
     pendingPublication_.reset();
     scene_.invalidateGpuResources();

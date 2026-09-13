@@ -913,6 +913,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         log = "MeshletStreamRuntime fallback residency initialization failed: " + reason;
         return makeError(Error::Failure);
     }
+    lockedFallbackPages_ = std::move(fallbackPages);
 
     maxActiveGroups_ = computeMaxActiveGroups(desc.maxActiveGroups);
     maxActiveGroupClusters_ = asset_.maxPageClusters();
@@ -2139,6 +2140,7 @@ void MeshletStreamRuntime::reset()
     residentPageCapacity_ = 0;
     currentResidentPageCount_ = 0;
     maxResidentBytes_ = 0;
+    lockedFallbackPages_.clear();
     maxActiveGroups_ = 0;
     maxActiveGroupClusters_ = 0;
     maxPrimitiveGroupCount_ = 0;
@@ -3447,17 +3449,25 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "VisibleClusterRecord");
 }
 
-nlohmann::json MeshletStreamRuntime::debugSnapshot() const
+nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
 {
     using debug::DebugValue;
     const auto stats = residency_.stats();
+    const auto terminalResidentPages = std::count_if(lockedFallbackPages_.begin(), lockedFallbackPages_.end(),
+        [this](uint32_t page) { return residency_.pageResident(page); });
     DebugValue pages = DebugValue::array();
-    const uint32_t count = std::min(residency_.trackedPageCount(), 4096u);
+    const uint32_t count = includePages ? std::min(residency_.trackedPageCount(), 4096u) : 0u;
     for (uint32_t i = 0; i < count; ++i) {
         pages.push_back({{"index", i}, {"state", static_cast<uint32_t>(residency_.pageState(i))},
             {"deviceOffset", residency_.deviceOffsetForPage(i)}, {"deviceSize", residency_.deviceSizeForPage(i)}, {"age", residency_.pageAge(i)}});
     }
     return {{"generation", debugGeneration_}, {"frame", frameIndex_},
+        {"primitiveCount", asset_.primitiveCount()}, {"instanceCount", asset_.instanceCount()},
+        {"terminalPageCount", lockedFallbackPages_.size()}, {"terminalResidentPageCount", terminalResidentPages},
+        {"terminalReady", !lockedFallbackPages_.empty() && terminalResidentPages == lockedFallbackPages_.size()},
+        {"pageBufferBytes", maxResidentBytes_}, {"clusterRtxEnabled", clasPool_ != nullptr},
+        {"lodTopologyBytes", lodTopologyBuffer_ ? lodTopologyBuffer_->desc().size : 0},
+        {"lodStateBytes", lodStateBuffer_ ? lodStateBuffer_->desc().size : 0},
         {"requestSourceFrame", debugRequestSourceKnown_ ? DebugValue(debugRequestSourceFrame_) : DebugValue(nullptr)},
         {"pageCount", residency_.trackedPageCount()}, {"pages", std::move(pages)}, {"pagesTruncated", count < residency_.trackedPageCount()},
         {"stats", {{"residentPageCount", stats.residentPageCount}, {"pendingPageCount", stats.pendingPageCount},
@@ -3465,7 +3475,16 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot() const
             {"pendingPageLoadCount", stats.pendingPageLoadCount}, {"activePageLoadCount", stats.activePageLoadCount},
             {"pendingPatchCount", stats.pendingPatchCount}, {"frameGpuRequestCount", stats.frameGpuRequestCount},
             {"frameGpuRequestOverflowCount", stats.frameGpuRequestOverflowCount}, {"frameGpuInvalidRequestCount", stats.frameGpuInvalidRequestCount},
-            {"frameEvictedPageCount", stats.frameEvictedPageCount}, {"frameAllocationFailureCount", stats.frameAllocationFailureCount}}}};
+            {"frameEvictedPageCount", stats.frameEvictedPageCount}, {"frameAllocationFailureCount", stats.frameAllocationFailureCount},
+            {"frameEvictionScanCount", stats.frameEvictionScanCount}, {"frameEvictionCandidateTests", stats.frameEvictionCandidateTests},
+            {"frameAllocationDeferredCount", stats.frameAllocationDeferredCount}, {"frameAdmissionDeferredCount", stats.frameAdmissionDeferredCount},
+            {"frameUploadBytes", stats.frameUploadBytes}, {"totalUploadBytes", stats.totalUploadBytes},
+            {"totalEvictedPageCount", stats.totalEvictedPageCount}, {"totalCompletedUnloadCount", stats.totalCompletedUnloadCount},
+            {"totalCancelledQueuedLoadCount", stats.totalCancelledQueuedLoadCount},
+            {"totalCompletedPageLoadCount", stats.totalCompletedPageLoadCount},
+            {"totalCompletedUploadCount", stats.totalCompletedUploadCount},
+            {"totalPageLoadFailureCount", stats.totalPageLoadFailureCount},
+            {"totalGpuInvalidRequestCount", stats.totalGpuInvalidRequestCount}}}};
 }
 
 } // namespace metallic::render

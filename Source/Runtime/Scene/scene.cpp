@@ -48,7 +48,9 @@
 #include <functional>
 #include <ios>
 #include <limits>
+#include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -1251,7 +1253,8 @@ int emitClusterLodGroup(
 }
 
 template <typename Output>
-size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, Output& output)
+size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, Output& output,
+    const MeshletBuildOptions& options)
 {
     assert(mesh.vertex_attributes_stride % sizeof(float) == 0);
     assert(mesh.attribute_count * sizeof(float) <= mesh.vertex_attributes_stride);
@@ -1305,48 +1308,56 @@ size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, Output& output)
         };
         std::vector<TaskResult> results(groups.size());
         std::atomic_size_t nextTask{0};
+        std::exception_ptr taskFailure;
+        std::mutex failureMutex;
         const auto processTasks = [&]() {
-            for (;;) {
-                const size_t taskIndex = nextTask.fetch_add(1, std::memory_order_relaxed);
-                if (taskIndex >= groups.size()) {
-                    return;
-                }
+            try {
+                for (;;) {
+                    const size_t taskIndex = nextTask.fetch_add(1, std::memory_order_relaxed);
+                    if (taskIndex >= groups.size()) {
+                        return;
+                    }
 
-                const std::vector<int>& group = groups[taskIndex];
-                std::vector<unsigned int> merged;
-                merged.reserve(group.size() * config.max_triangles * 3u);
-                for (const int clusterIndex : group) {
-                    merged.insert(
-                        merged.end(),
-                        clusters[clusterIndex].indices.begin(),
-                        clusters[clusterIndex].indices.end());
-                }
+                    const std::vector<int>& group = groups[taskIndex];
+                    std::vector<unsigned int> merged;
+                    merged.reserve(group.size() * config.max_triangles * 3u);
+                    for (const int clusterIndex : group) {
+                        merged.insert(
+                            merged.end(),
+                            clusters[clusterIndex].indices.begin(),
+                            clusters[clusterIndex].indices.end());
+                    }
 
-                const size_t targetSize =
-                    static_cast<size_t>((merged.size() / 3u) * config.simplify_ratio) * 3u;
-                TaskResult& result = results[taskIndex];
+                    const size_t targetSize =
+                        static_cast<size_t>((merged.size() / 3u) * config.simplify_ratio) * 3u;
+                    TaskResult& result = results[taskIndex];
 #if MESHOPTIMIZER_VERSION >= 1020
-                result.bounds = clod::mergeGroups(clusters, group);
+                    result.bounds = clod::mergeGroups(clusters, group);
 #else
-                result.bounds = clod::boundsMerge(clusters, group);
+                    result.bounds = clod::boundsMerge(clusters, group);
 #endif
-                float error = 0.0f;
-                std::vector<unsigned int> simplified =
-                    clod::simplify(config, mesh, merged, locks, targetSize, &error);
-                if (simplified.size() > merged.size() * config.simplify_threshold) {
-                    result.bounds.error = FLT_MAX;
-                    result.terminal = true;
-                    continue;
-                }
+                    float error = 0.0f;
+                    std::vector<unsigned int> simplified =
+                        clod::simplify(config, mesh, merged, locks, targetSize, &error);
+                    if (simplified.size() > merged.size() * config.simplify_threshold) {
+                        result.bounds.error = FLT_MAX;
+                        result.terminal = true;
+                        continue;
+                    }
 
-                result.bounds.error = std::max(
-                    result.bounds.error * config.simplify_error_merge_previous,
-                    error) + error * config.simplify_error_merge_additive;
-                result.split = clod::clusterize(
-                    config,
-                    mesh,
-                    simplified.data(),
-                    simplified.size());
+                    result.bounds.error = std::max(
+                        result.bounds.error * config.simplify_error_merge_previous,
+                        error) + error * config.simplify_error_merge_additive;
+                    result.split = clod::clusterize(
+                        config,
+                        mesh,
+                        simplified.data(),
+                        simplified.size());
+                }
+            } catch (...) {
+                std::lock_guard lock(failureMutex);
+                if (!taskFailure) { taskFailure = std::current_exception(); }
+                nextTask.store(groups.size(), std::memory_order_relaxed);
             }
         };
 
@@ -1354,16 +1365,18 @@ size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, Output& output)
             std::max<size_t>(1u, std::thread::hardware_concurrency());
         const size_t workerCount = std::min(
             groups.size(),
-            std::max<size_t>(1u, hardwareThreads / 2u));
-        std::vector<std::thread> workers;
+            options.maxWorkers != 0 ? size_t(options.maxWorkers) :
+                std::max<size_t>(1u, hardwareThreads / 2u));
+        std::vector<std::jthread> workers;
         workers.reserve(workerCount > 0 ? workerCount - 1u : 0u);
         for (size_t workerIndex = 1; workerIndex < workerCount; ++workerIndex) {
             workers.emplace_back(processTasks);
         }
         processTasks();
-        for (std::thread& worker : workers) {
+        for (std::jthread& worker : workers) {
             worker.join();
         }
+        if (taskFailure) { std::rethrow_exception(taskFailure); }
 
         pending.clear();
         for (size_t taskIndex = 0; taskIndex < groups.size(); ++taskIndex) {
@@ -1376,12 +1389,14 @@ size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, Output& output)
                 result.bounds,
                 depth,
                 output);
+            // Once emitted, only the cluster's bounds/refinement metadata is
+            // needed. clear() retained every old LOD's index allocation, and
+            // terminal branches previously retained even their index contents.
+            for (const int clusterIndex : groups[taskIndex]) {
+                std::vector<unsigned int>().swap(clusters[clusterIndex].indices);
+            }
             if (result.terminal) {
                 continue;
-            }
-
-            for (const int clusterIndex : groups[taskIndex]) {
-                clusters[clusterIndex].indices.clear();
             }
             for (clod::Cluster& cluster : result.split) {
                 cluster.refined = refined;
@@ -1476,7 +1491,7 @@ bool buildMeshletClusters(RenderPrimitive& primitive)
     return true;
 }
 
-bool buildMeshletLods(RenderPrimitive& primitive)
+bool buildMeshletLods(RenderPrimitive& primitive, const MeshletBuildOptions& options = {})
 {
     clearMeshletLods(primitive);
 
@@ -1597,7 +1612,7 @@ bool buildMeshletLods(RenderPrimitive& primitive)
         return groupIndex;
     };
 
-    buildClusterLodParallel(config, mesh, outputGroup);
+    buildClusterLodParallel(config, mesh, outputGroup, options);
     if (!success ||
         primitive.meshletLodLevels.empty() ||
         primitive.meshletLodGroups.empty() ||
@@ -2622,7 +2637,8 @@ RenderCamera makeFallbackCamera(const Bounds& bounds)
 bool loadModel(
     const std::filesystem::path& filename,
     tinygltf::Model& model,
-    LoadResult& loadResult)
+    LoadResult& loadResult,
+    bool streamMetadata = false)
 {
     tinygltf::TinyGLTF loader;
     loader.SetImagesAsIs(true);
@@ -2631,6 +2647,73 @@ bool loadModel(
     std::string error;
     std::string warning;
     const std::string filenameString = filename.string();
+    if (streamMetadata) {
+        // Preserve the authored scene metadata through the normal glTF parser,
+        // but never open external geometry buffers or manufacture a CPU mesh.
+        // This initial stream-only contract is static, scalar-material glTF.
+        try {
+            if (lowerExtension(filename) != ".gltf") {
+                throw std::runtime_error("Stream metadata requires an external .gltf scene");
+            }
+            std::ifstream input(filename);
+            auto metadata = nlohmann::json::parse(input);
+            for (const char* field : {"images", "textures", "skins", "animations"}) {
+                if (metadata.contains(field) && !metadata[field].empty()) {
+                    throw std::runtime_error(std::string("Stream metadata does not yet support ") + field);
+                }
+            }
+            for (const auto& mesh : metadata.value("meshes", nlohmann::json::array())) {
+                for (const auto& primitive : mesh.at("primitives")) {
+                    if (primitive.value("mode", 4) != 4 || primitive.contains("targets")) {
+                        throw std::runtime_error("Stream metadata requires static triangle primitives");
+                    }
+                    const auto& position = metadata.at("accessors").at(
+                        primitive.at("attributes").at("POSITION").get<size_t>());
+                    const auto& indices = primitive.contains("indices")
+                        ? metadata.at("accessors").at(primitive.at("indices").get<size_t>()) : position;
+                    const uint64_t vertexCount = position.at("count").get<uint64_t>();
+                    const uint64_t indexCount = indices.at("count").get<uint64_t>();
+                    if (vertexCount < 3 || vertexCount > UINT32_MAX || indexCount < 3 ||
+                        indexCount > UINT32_MAX || indexCount % 3 != 0 ||
+                        position.at("min").size() != 3 || position.at("max").size() != 3) {
+                        throw std::runtime_error("Invalid stream primitive counts or POSITION bounds");
+                    }
+                    for (size_t axis = 0; axis < 3; ++axis) {
+                        const float lo = position.at("min").at(axis).get<float>();
+                        const float hi = position.at("max").at(axis).get<float>();
+                        if (!std::isfinite(lo) || !std::isfinite(hi) || lo > hi) {
+                            throw std::runtime_error("Invalid stream primitive POSITION bounds");
+                        }
+                    }
+                }
+            }
+            metadata.erase("buffers");
+            metadata.erase("bufferViews");
+            // Compression only governs the bufferViews removed above. Geometry
+            // is already cooked; the metadata projection has no compressed data.
+            for (const char* field : {"extensionsRequired", "extensionsUsed"}) {
+                if (metadata.contains(field)) {
+                    auto& extensions = metadata[field];
+                    extensions.erase(std::remove(extensions.begin(), extensions.end(),
+                        nlohmann::json("EXT_meshopt_compression")), extensions.end());
+                }
+            }
+            for (auto& accessor : metadata["accessors"]) {
+                accessor.erase("bufferView");
+                accessor.erase("byteOffset");
+                accessor.erase("sparse");
+            }
+            const std::string json = metadata.dump();
+            const bool ok = loader.LoadASCIIFromString(&model, &error, &warning,
+                json.data(), static_cast<unsigned int>(json.size()), filename.parent_path().string());
+            loadResult.error = std::move(error);
+            loadResult.warning = std::move(warning);
+            return ok;
+        } catch (const std::exception& exception) {
+            loadResult.error = exception.what();
+            return false;
+        }
+    }
     const bool ok = lowerExtension(filename) == ".glb"
         ? loader.LoadBinaryFromFile(&model, &error, &warning, filenameString)
         : loader.LoadASCIIFromFile(&model, &error, &warning, filenameString);
@@ -2682,9 +2765,9 @@ bool buildMeshletsForPrimitive(RenderPrimitive& primitive)
     return builtBaseMeshlets || builtLodMeshlets;
 }
 
-bool buildStreamMeshletsForPrimitive(RenderPrimitive& primitive)
+bool buildStreamMeshletsForPrimitive(RenderPrimitive& primitive, const MeshletBuildOptions& options)
 {
-    if (buildMeshletLods(primitive)) {
+    if (buildMeshletLods(primitive, options)) {
         return true;
     }
     return buildMeshletClusters(primitive);
@@ -3732,12 +3815,18 @@ bool Scene::loadUsdInternal(
     return true;
 }
 
+bool Scene::loadStreamMetadata(const std::filesystem::path& filename)
+{
+    return loadInternal(filename, {}, false, true);
+}
+
 bool Scene::loadInternal(
     const std::filesystem::path& filename,
     const SceneLoadProgressCallback& progressCallback,
-    bool deferMeshletBuild)
+    bool deferMeshletBuild,
+    bool streamMetadata)
 {
-    if (detail::isUsdScenePath(filename)) {
+    if (!streamMetadata && detail::isUsdScenePath(filename)) {
         return loadUsdInternal(filename, progressCallback, deferMeshletBuild);
     }
 
@@ -3771,7 +3860,7 @@ bool Scene::loadInternal(
 
     tinygltf::Model model;
     const auto tinyGltfBegin = SceneLoadClock::now();
-    if (!loadModel(filename, model, lastLoadResult_)) {
+    if (!loadModel(filename, model, lastLoadResult_, streamMetadata)) {
         logSceneLoadStep("tinygltf file import failed", tinyGltfBegin);
         if (lastLoadResult_.error.empty()) {
             lastLoadResult_.error = "tinygltf failed to load scene";
@@ -3779,6 +3868,7 @@ bool Scene::loadInternal(
         return false;
     }
     logSceneLoadStep("tinygltf file import", tinyGltfBegin);
+    streamGeometry_ = streamMetadata;
     if (!reportSceneLoadProgress(
             progressCallback,
             SceneLoadPhase::Parsing,
@@ -4154,100 +4244,113 @@ bool Scene::loadInternal(
                 primitive.materialIndex = gltfPrimitive.material;
                 primitive.mode = gltfPrimitive.mode;
 
-                const auto positionAccessorIter = gltfPrimitive.attributes.find("POSITION");
-                if (positionAccessorIter != gltfPrimitive.attributes.end() &&
-                    validIndex(positionAccessorIter->second, model.accessors.size())) {
-                    const tinygltf::Accessor& positionAccessor =
-                        model.accessors[static_cast<size_t>(positionAccessorIter->second)];
-                    primitive.vertexCount = positionAccessor.count;
-                    primitive.localBounds = accessorBounds(positionAccessor);
-                    primitive.positions = readPositionAccessor(model, positionAccessor);
-                }
-
-                const auto normalAccessorIter = gltfPrimitive.attributes.find("NORMAL");
-                if (normalAccessorIter != gltfPrimitive.attributes.end() &&
-                    validIndex(normalAccessorIter->second, model.accessors.size())) {
-                    primitive.normals = readPositionAccessor(
-                        model,
-                        model.accessors[static_cast<size_t>(normalAccessorIter->second)]);
-                    if (primitive.normals.size() != primitive.positions.size()) {
-                        primitive.normals.clear();
-                    } else {
-                        primitive.hasAuthoredNormals = true;
-                    }
-                }
-
-                const auto tangentAccessorIter = gltfPrimitive.attributes.find("TANGENT");
-                if (tangentAccessorIter != gltfPrimitive.attributes.end() &&
-                    validIndex(tangentAccessorIter->second, model.accessors.size())) {
-                    primitive.tangents = readFloat4Accessor(
-                        model,
-                        model.accessors[static_cast<size_t>(tangentAccessorIter->second)]);
-                    if (primitive.tangents.size() != primitive.positions.size()) {
-                        primitive.tangents.clear();
-                    } else {
-                        primitive.hasAuthoredTangents = true;
-                    }
-                }
-
-                const auto texcoordAccessorIter = gltfPrimitive.attributes.find("TEXCOORD_0");
-                if (texcoordAccessorIter != gltfPrimitive.attributes.end() &&
-                    validIndex(texcoordAccessorIter->second, model.accessors.size())) {
-                    primitive.texcoords0 = readFloat2Accessor(
-                        model,
-                        model.accessors[static_cast<size_t>(texcoordAccessorIter->second)]);
-                    if (primitive.texcoords0.size() != primitive.positions.size()) {
-                        primitive.texcoords0.clear();
-                    }
-                }
-
-                std::vector<float> rtxcrCurveRadii;
-                const auto radiusAccessorIter = gltfPrimitive.attributes.find("_RADIUS");
-                if (radiusAccessorIter != gltfPrimitive.attributes.end() &&
-                    validIndex(radiusAccessorIter->second, model.accessors.size())) {
-                    rtxcrCurveRadii = readFloatAccessor(
-                        model,
-                        model.accessors[static_cast<size_t>(radiusAccessorIter->second)]);
-                    if (rtxcrCurveRadii.size() != primitive.positions.size()) {
-                        rtxcrCurveRadii.clear();
-                    }
-                }
-
-                if (validIndex(gltfPrimitive.indices, model.accessors.size())) {
-                    const tinygltf::Accessor& indexAccessor =
-                        model.accessors[static_cast<size_t>(gltfPrimitive.indices)];
-                    primitive.indexCount = indexAccessor.count;
-                    primitive.indices = readIndexAccessor(model, indexAccessor);
+                if (streamMetadata) {
+                    primitive.storage = GeometryStorage::StreamAsset;
+                    const auto& position = model.accessors.at(gltfPrimitive.attributes.at("POSITION"));
+                    primitive.vertexCount = position.count;
+                    primitive.localBounds = accessorBounds(position);
+                    primitive.indexCount = gltfPrimitive.indices >= 0
+                        ? model.accessors.at(gltfPrimitive.indices).count : position.count;
+                    primitive.triangleCount = primitive.indexCount / 3;
+                    primitive.hasAuthoredNormals = gltfPrimitive.attributes.contains("NORMAL");
+                    primitive.hasAuthoredTangents = gltfPrimitive.attributes.contains("TANGENT");
                 } else {
-                    primitive.indexCount = primitive.vertexCount;
-                    primitive.indices.reserve(static_cast<size_t>(primitive.vertexCount));
-                    for (uint64_t index = 0; index < primitive.vertexCount; ++index) {
-                        primitive.indices.push_back(static_cast<uint32_t>(index));
+
+                    const auto positionAccessorIter = gltfPrimitive.attributes.find("POSITION");
+                    if (positionAccessorIter != gltfPrimitive.attributes.end() &&
+                        validIndex(positionAccessorIter->second, model.accessors.size())) {
+                        const tinygltf::Accessor& positionAccessor =
+                            model.accessors[static_cast<size_t>(positionAccessorIter->second)];
+                        primitive.vertexCount = positionAccessor.count;
+                        primitive.localBounds = accessorBounds(positionAccessor);
+                        primitive.positions = readPositionAccessor(model, positionAccessor);
                     }
-                }
-                bool convertedRtxcrCurve = false;
-#if METALLIC_HAS_RTXCR_GEOMETRY
-                if (validIndex(primitive.materialIndex, materials_.size()) &&
-                    materials_[static_cast<size_t>(primitive.materialIndex)].rtxcrHair &&
-                    !rtxcrCurveRadii.empty()) {
-                    convertedRtxcrCurve = convertRtxcrLinePrimitiveToDots(
-                        primitive,
-                        rtxcrCurveRadii);
-                }
-#endif
-                if (!convertedRtxcrCurve) {
-                    primitive.triangleCount = triangleCountForPrimitive(
-                        primitive.mode,
-                        primitive.indexCount);
-                    if (primitive.mode == TINYGLTF_MODE_LINE && !rtxcrCurveRadii.empty()) {
-                        appendWarning(
-                            lastLoadResult_.warning,
-                            "RTXCR curve primitive '" + primitive.name +
-                                "' could not be converted to DOTS geometry");
+
+                    const auto normalAccessorIter = gltfPrimitive.attributes.find("NORMAL");
+                    if (normalAccessorIter != gltfPrimitive.attributes.end() &&
+                        validIndex(normalAccessorIter->second, model.accessors.size())) {
+                        primitive.normals = readPositionAccessor(
+                            model,
+                            model.accessors[static_cast<size_t>(normalAccessorIter->second)]);
+                        if (primitive.normals.size() != primitive.positions.size()) {
+                            primitive.normals.clear();
+                        } else {
+                            primitive.hasAuthoredNormals = true;
+                        }
                     }
-                }
-                if (primitive.tangents.empty()) {
-                    generateTangents(primitive);
+
+                    const auto tangentAccessorIter = gltfPrimitive.attributes.find("TANGENT");
+                    if (tangentAccessorIter != gltfPrimitive.attributes.end() &&
+                        validIndex(tangentAccessorIter->second, model.accessors.size())) {
+                        primitive.tangents = readFloat4Accessor(
+                            model,
+                            model.accessors[static_cast<size_t>(tangentAccessorIter->second)]);
+                        if (primitive.tangents.size() != primitive.positions.size()) {
+                            primitive.tangents.clear();
+                        } else {
+                            primitive.hasAuthoredTangents = true;
+                        }
+                    }
+
+                    const auto texcoordAccessorIter = gltfPrimitive.attributes.find("TEXCOORD_0");
+                    if (texcoordAccessorIter != gltfPrimitive.attributes.end() &&
+                        validIndex(texcoordAccessorIter->second, model.accessors.size())) {
+                        primitive.texcoords0 = readFloat2Accessor(
+                            model,
+                            model.accessors[static_cast<size_t>(texcoordAccessorIter->second)]);
+                        if (primitive.texcoords0.size() != primitive.positions.size()) {
+                            primitive.texcoords0.clear();
+                        }
+                    }
+
+                    std::vector<float> rtxcrCurveRadii;
+                    const auto radiusAccessorIter = gltfPrimitive.attributes.find("_RADIUS");
+                    if (radiusAccessorIter != gltfPrimitive.attributes.end() &&
+                        validIndex(radiusAccessorIter->second, model.accessors.size())) {
+                        rtxcrCurveRadii = readFloatAccessor(
+                            model,
+                            model.accessors[static_cast<size_t>(radiusAccessorIter->second)]);
+                        if (rtxcrCurveRadii.size() != primitive.positions.size()) {
+                            rtxcrCurveRadii.clear();
+                        }
+                    }
+
+                    if (validIndex(gltfPrimitive.indices, model.accessors.size())) {
+                        const tinygltf::Accessor& indexAccessor =
+                            model.accessors[static_cast<size_t>(gltfPrimitive.indices)];
+                        primitive.indexCount = indexAccessor.count;
+                        primitive.indices = readIndexAccessor(model, indexAccessor);
+                    } else {
+                        primitive.indexCount = primitive.vertexCount;
+                        primitive.indices.reserve(static_cast<size_t>(primitive.vertexCount));
+                        for (uint64_t index = 0; index < primitive.vertexCount; ++index) {
+                            primitive.indices.push_back(static_cast<uint32_t>(index));
+                        }
+                    }
+                    bool convertedRtxcrCurve = false;
+    #if METALLIC_HAS_RTXCR_GEOMETRY
+                    if (validIndex(primitive.materialIndex, materials_.size()) &&
+                        materials_[static_cast<size_t>(primitive.materialIndex)].rtxcrHair &&
+                        !rtxcrCurveRadii.empty()) {
+                        convertedRtxcrCurve = convertRtxcrLinePrimitiveToDots(
+                            primitive,
+                            rtxcrCurveRadii);
+                    }
+    #endif
+                    if (!convertedRtxcrCurve) {
+                        primitive.triangleCount = triangleCountForPrimitive(
+                            primitive.mode,
+                            primitive.indexCount);
+                        if (primitive.mode == TINYGLTF_MODE_LINE && !rtxcrCurveRadii.empty()) {
+                            appendWarning(
+                                lastLoadResult_.warning,
+                                "RTXCR curve primitive '" + primitive.name +
+                                    "' could not be converted to DOTS geometry");
+                        }
+                    }
+                    if (primitive.tangents.empty()) {
+                        generateTangents(primitive);
+                    }
                 }
 
                 RenderNode renderNode;
@@ -4295,86 +4398,88 @@ bool Scene::loadInternal(
     }
     logSceneLoadStep("scene graph traversal and primitive extraction", sceneGraphBegin);
 
-    const std::filesystem::path meshletCachePath = meshletCachePathFor(filename_);
-    lastLoadResult_.meshletCachePath = meshletCachePath;
+    if (!streamMetadata) {
+        const std::filesystem::path meshletCachePath = meshletCachePathFor(filename_);
+        lastLoadResult_.meshletCachePath = meshletCachePath;
 
-    std::string meshletCacheReason;
-    const auto meshletCacheBegin = SceneLoadClock::now();
-    if (loadMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
-        deferredMeshletBuild_ = false;
-        lastLoadResult_.meshletCacheLoaded = true;
-        spdlog::info(
-            "[SceneLoad] Meshlet cache loaded '{}' in {:.2f} ms",
-            meshletCachePath.string(),
-            sceneLoadElapsedMilliseconds(meshletCacheBegin));
-        if (!reportSceneLoadProgress(
-                progressCallback,
-                SceneLoadPhase::Geometry,
-                0.40f,
-                renderPrimitives_.size(),
-                renderPrimitives_.size(),
-                "Meshlet cache")) {
-            return cancelLoad();
-        }
-    } else {
-        spdlog::info(
-            "[SceneLoad] Meshlet cache unavailable '{}' reason='{}' checked in {:.2f} ms",
-            meshletCachePath.string(),
-            meshletCacheReason,
-            sceneLoadElapsedMilliseconds(meshletCacheBegin));
-        if (!meshletCacheReason.empty()) {
-            appendWarning(lastLoadResult_.warning, "Meshlet cache ignored: " + meshletCacheReason);
-        }
-
-        if (deferMeshletBuild) {
-            deferredMeshletBuild_ = true;
+        std::string meshletCacheReason;
+        const auto meshletCacheBegin = SceneLoadClock::now();
+        if (loadMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
+            deferredMeshletBuild_ = false;
+            lastLoadResult_.meshletCacheLoaded = true;
+            spdlog::info(
+                "[SceneLoad] Meshlet cache loaded '{}' in {:.2f} ms",
+                meshletCachePath.string(),
+                sceneLoadElapsedMilliseconds(meshletCacheBegin));
             if (!reportSceneLoadProgress(
                     progressCallback,
                     SceneLoadPhase::Geometry,
-                    0.25f,
-                    0,
+                    0.40f,
                     renderPrimitives_.size(),
-                    "Meshlets queued")) {
+                    renderPrimitives_.size(),
+                    "Meshlet cache")) {
                 return cancelLoad();
             }
         } else {
-            const auto meshletBuildBegin = SceneLoadClock::now();
-            for (size_t primitiveIndex = 0; primitiveIndex < renderPrimitives_.size(); ++primitiveIndex) {
-                RenderPrimitive& primitive = renderPrimitives_[primitiveIndex];
-                buildMeshletClusters(primitive);
-                buildMeshletLods(primitive);
-                const float fraction = 0.25f + 0.15f * static_cast<float>(primitiveIndex + 1u) /
-                    static_cast<float>(std::max<size_t>(renderPrimitives_.size(), 1u));
+            spdlog::info(
+                "[SceneLoad] Meshlet cache unavailable '{}' reason='{}' checked in {:.2f} ms",
+                meshletCachePath.string(),
+                meshletCacheReason,
+                sceneLoadElapsedMilliseconds(meshletCacheBegin));
+            if (!meshletCacheReason.empty()) {
+                appendWarning(lastLoadResult_.warning, "Meshlet cache ignored: " + meshletCacheReason);
+            }
+
+            if (deferMeshletBuild) {
+                deferredMeshletBuild_ = true;
                 if (!reportSceneLoadProgress(
                         progressCallback,
                         SceneLoadPhase::Geometry,
-                        fraction,
-                        primitiveIndex + 1u,
+                        0.25f,
+                        0,
                         renderPrimitives_.size(),
-                        primitive.name)) {
+                        "Meshlets queued")) {
                     return cancelLoad();
                 }
-            }
-            logSceneLoadStep("meshlet build", meshletBuildBegin);
+            } else {
+                const auto meshletBuildBegin = SceneLoadClock::now();
+                for (size_t primitiveIndex = 0; primitiveIndex < renderPrimitives_.size(); ++primitiveIndex) {
+                    RenderPrimitive& primitive = renderPrimitives_[primitiveIndex];
+                    buildMeshletClusters(primitive);
+                    buildMeshletLods(primitive);
+                    const float fraction = 0.25f + 0.15f * static_cast<float>(primitiveIndex + 1u) /
+                        static_cast<float>(std::max<size_t>(renderPrimitives_.size(), 1u));
+                    if (!reportSceneLoadProgress(
+                            progressCallback,
+                            SceneLoadPhase::Geometry,
+                            fraction,
+                            primitiveIndex + 1u,
+                            renderPrimitives_.size(),
+                            primitive.name)) {
+                        return cancelLoad();
+                    }
+                }
+                logSceneLoadStep("meshlet build", meshletBuildBegin);
 
-            const auto meshletSaveBegin = SceneLoadClock::now();
-            if (saveMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
-                lastLoadResult_.meshletCacheSaved = true;
-                spdlog::info(
-                    "[SceneLoad] Meshlet cache saved '{}' in {:.2f} ms",
-                    meshletCachePath.string(),
-                    sceneLoadElapsedMilliseconds(meshletSaveBegin));
-            } else if (!meshletCacheReason.empty()) {
-                spdlog::warn(
-                    "[SceneLoad] Meshlet cache save failed '{}' reason='{}' in {:.2f} ms",
-                    meshletCachePath.string(),
-                    meshletCacheReason,
-                    sceneLoadElapsedMilliseconds(meshletSaveBegin));
-                appendWarning(lastLoadResult_.warning, "Meshlet cache save failed: " + meshletCacheReason);
+                const auto meshletSaveBegin = SceneLoadClock::now();
+                if (saveMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
+                    lastLoadResult_.meshletCacheSaved = true;
+                    spdlog::info(
+                        "[SceneLoad] Meshlet cache saved '{}' in {:.2f} ms",
+                        meshletCachePath.string(),
+                        sceneLoadElapsedMilliseconds(meshletSaveBegin));
+                } else if (!meshletCacheReason.empty()) {
+                    spdlog::warn(
+                        "[SceneLoad] Meshlet cache save failed '{}' reason='{}' in {:.2f} ms",
+                        meshletCachePath.string(),
+                        meshletCacheReason,
+                        sceneLoadElapsedMilliseconds(meshletSaveBegin));
+                    appendWarning(lastLoadResult_.warning, "Meshlet cache save failed: " + meshletCacheReason);
+                }
             }
         }
+        accumulateMeshletStats(renderPrimitives_, stats_);
     }
-    accumulateMeshletStats(renderPrimitives_, stats_);
 
     if (cameras_.empty()) {
         SceneObject fallbackCamera = sceneGraph_.createObject("Fallback Camera");
@@ -4988,6 +5093,7 @@ void Scene::syncSceneNodeProjection()
 
 void Scene::clearParsedData()
 {
+    streamGeometry_ = false;
     lighting_ = LightingSettings{};
     filename_.clear();
     sceneName_.clear();

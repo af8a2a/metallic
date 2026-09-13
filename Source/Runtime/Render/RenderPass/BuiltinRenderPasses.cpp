@@ -35,6 +35,8 @@ void registerBuiltInRenderGraphPasses()
         "FinalBlitPass",
         "Present a color texture; show a UV gradient when no usable source is connected",
         []() { return builtin_pass::createFinalBlitPass(); });
+    registerRenderGraphPassType("VisibilityBufferMaterialPass", "Resolve unified visibility using scalar materials without RTAS",
+        []() { return builtin_pass::createVisibilityBufferMaterialPass(); });
     registerRenderGraphPassType(
         "TriangleRasterPass",
         "Rasterize the built-in triangle shader",

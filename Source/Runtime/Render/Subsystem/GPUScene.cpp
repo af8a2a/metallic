@@ -150,6 +150,7 @@ uint64_t geometryFingerprint(const scene::RenderPrimitive& primitive)
 {
     uint64_t hash = kFnvOffsetBasis;
     hashValue(hash, primitive.mode);
+    hashValue(hash, primitive.storage);
     hashValue(hash, primitive.vertexCount);
     hashValue(hash, primitive.indexCount);
     hashValue(hash, primitive.triangleCount);
@@ -200,6 +201,7 @@ bool sameGeometryPayload(
     const scene::RenderPrimitive& rhs)
 {
     return lhs.mode == rhs.mode &&
+        lhs.storage == rhs.storage &&
         lhs.vertexCount == rhs.vertexCount &&
         lhs.indexCount == rhs.indexCount &&
         lhs.triangleCount == rhs.triangleCount &&
@@ -285,6 +287,17 @@ bool validateDrawablePrimitive(
     if (primitive.mode != 4) {
         diagnostic.reason = GPUSceneInvalidPrimitiveReason::UnsupportedMode;
         return false;
+    }
+    if (primitive.storage == scene::GeometryStorage::StreamAsset) {
+        if (primitive.vertexCount < 3 || !primitive.localBounds.valid || !primitive.positions.empty()) {
+            diagnostic.reason = GPUSceneInvalidPrimitiveReason::InsufficientVertices;
+            return false;
+        }
+        if (primitive.indexCount < 3 || primitive.indexCount % 3 != 0 || !primitive.indices.empty()) {
+            diagnostic.reason = GPUSceneInvalidPrimitiveReason::IndexCountNotMultipleOfThree;
+            return false;
+        }
+        return true;
     }
     if (primitive.positions.size() < 3) {
         diagnostic.reason = GPUSceneInvalidPrimitiveReason::InsufficientVertices;
@@ -388,12 +401,14 @@ const char* gpuSceneDrawBucketName(GPUSceneDrawBucket bucket)
     return "invalid";
 }
 
-GPUSceneDrawBucket classifyGPUSceneMaterial(const scene::RenderMaterial& material)
+GPUSceneDrawBucket classifyGPUSceneMaterial(const scene::RenderMaterial& material, bool constantAlphaOpaque)
 {
-    if (material.alphaMode == "BLEND") {
+    const bool effectiveOpaque = constantAlphaOpaque &&
+        material.baseColorTexture.textureIndex < 0 && material.baseColorFactor.w >= 1.0f;
+    if (material.alphaMode == "BLEND" && !effectiveOpaque) {
         return GPUSceneDrawBucket::Blend;
     }
-    if (material.alphaMode == "MASK") {
+    if (material.alphaMode == "MASK" && !(effectiveOpaque && material.alphaCutoff <= 1.0f)) {
         return material.doubleSided
             ? GPUSceneDrawBucket::MaskedDoubleSided
             : GPUSceneDrawBucket::MaskedSingleSided;
@@ -421,6 +436,7 @@ GPUSceneSourceView GPUSceneSourceView::fromScene(
         .externalRevision = externalRevision,
         .renderLights = scene.lights(),
         .virtualLights = virtualLights,
+        .constantAlphaOpaque = scene.hasStreamGeometry(),
     };
 }
 
@@ -665,7 +681,7 @@ Result GPUScene::rebuild(const GPUSceneSourceView& source, std::string& log)
             .id = id,
             .sourceMaterialIndex = static_cast<int32_t>(index),
             .material = material,
-            .bucket = classifyGPUSceneMaterial(material),
+            .bucket = classifyGPUSceneMaterial(material, source.constantAlphaOpaque),
             .payloadFingerprint = fingerprint,
         });
         materialForSourceMaterial_[index] = id;
@@ -820,6 +836,7 @@ Result GPUScene::rebuild(const GPUSceneSourceView& source, std::string& log)
     sourceVisibilityRevision_ = source.visibilityRevision;
     sourceExternalRevision_ = source.externalRevision;
     hasSource_ = true;
+    sourceConstantAlphaOpaque_ = source.constantAlphaOpaque;
     syncLights(source.renderLights, source.virtualLights);
     rebuildDrawSet();
     invalidateGpuResources();
@@ -836,7 +853,8 @@ Result GPUScene::rebuild(const GPUSceneSourceView& source, std::string& log)
 
 GPUSceneSyncResult GPUScene::sync(const GPUSceneSourceView& source)
 {
-    if (!hasSource_ || source.renderPrimitives.size() != primitiveFingerprints_.size() ||
+    if (!hasSource_ || source.constantAlphaOpaque != sourceConstantAlphaOpaque_ ||
+        source.renderPrimitives.size() != primitiveFingerprints_.size() ||
         source.materials.size() != materialFingerprints_.size() ||
         source.renderNodes.size() != renderNodeTopologyFingerprints_.size() ||
         source.lifetimeRevision != sourceLifetimeRevision_) {
@@ -986,6 +1004,16 @@ bool GPUSceneVisibleLightSet::validFor(uint32_t generation, uint64_t revision) c
 {
     return generation != 0 && revision != 0 &&
         sourceLightGeneration == generation && sourceLightRevision == revision;
+}
+
+void GPUScene::ensureDrawSet()
+{
+    if (drawSet_.generation == 0 || drawSet_.revision == 0) {
+        if (drawSetGeneration_ == 0) {
+            drawSetGeneration_ = advanceGeneration(drawSetGeneration_);
+        }
+        rebuildDrawSet();
+    }
 }
 
 void GPUScene::rebuildDrawSet()

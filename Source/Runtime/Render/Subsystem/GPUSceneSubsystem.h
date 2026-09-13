@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/ClusterLightGrid.h"
+#include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include <span>
@@ -166,6 +167,12 @@ public:
         GPUSceneViewId& view,
         std::string& log);
     bool destroyView(GPUSceneViewId view);
+    // Borrowed from the raster producer for consumers in this execution only.
+    // View generation and frame identity prevent reuse after resize/scene switch.
+    void publishVisibilityStream(GPUSceneViewId view, uint64_t frameIndex,
+        uint64_t sceneIdentity, MeshletStreamDeferredGpuResourcesView resources);
+    const MeshletStreamDeferredGpuResourcesView* visibilityStream(
+        GPUSceneViewId view, uint64_t frameIndex, uint64_t sceneIdentity) const;
     Result ensureViewGpuResources(
         GPUSceneViewId view,
         const GPUSceneViewDesc& desc,
@@ -321,6 +328,12 @@ private:
     std::shared_ptr<GpuResources> gpuResources_;
     std::shared_ptr<SubmissionTransaction> pendingPublication_;
     std::unordered_map<uint64_t, std::shared_ptr<ViewGpuResources>> viewGpuResources_;
+    struct VisibilityStreamSnapshot {
+        uint64_t frameIndex = 0;
+        uint64_t sceneIdentity = 0;
+        MeshletStreamDeferredGpuResourcesView resources;
+    };
+    std::unordered_map<uint64_t, VisibilityStreamSnapshot> visibilityStreams_;
     std::unordered_map<uint64_t, std::vector<std::shared_ptr<ClusterLightGrid>>> lightGrids_;
     uint64_t nextViewGpuResourceAllocationId_ = 1;
     GPUSceneGpuUploadStats gpuUploadStats_;

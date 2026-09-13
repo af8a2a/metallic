@@ -57,6 +57,9 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
     }
     const char* clusterEntries[] = {"hybridClusterResetMain", "hybridClusterHistogramMain",
         "hybridClusterArgumentsMain", "hybridClusterScatterMain"};
+    result = device.createBuffer({.size = 24, .structureStride = 4,
+        .usage = BufferUsageBits::Storage | BufferUsageBits::Indirect | BufferUsageBits::TransferSource}, candidateArguments_);
+    if (!result) { return result; }
     for (size_t i = 0; i < clusterShaders_.size(); ++i) {
         ShaderCompileResult shader;
         result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityHybridRaster",
@@ -167,19 +170,22 @@ Result VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& vis
 }
 
 Result VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
-    uint32_t producerPixelBuffer, uint32_t inputCount, bool stream)
+    uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact)
 {
     if (inputCount > push_.clusterCapacity) { return makeError(Error::InvalidArgument); }
     begin(commands, maxPixels, reversedZ);
     push_.producerPixelBuffer = producerPixelBuffer;
     push_.inputClusterCount = inputCount;
     push_.streamMode = stream ? 1u : 0u;
+    compactCandidates_ = compact;
     const BufferBarrierDesc barriers[] = {
         {.buffer = clusterBuffer_.get(), .before = clusterInitialized_ ? ResourceState::ShaderRead : ResourceState::Undefined,
             .after = ResourceState::General},
         {.buffer = clusterArguments_.get(), .before = clusterInitialized_ ? ResourceState::IndirectArgument : ResourceState::Undefined,
+            .after = ResourceState::General},
+        {.buffer = candidateArguments_.get(), .before = clusterInitialized_ ? ResourceState::IndirectArgument : ResourceState::Undefined,
             .after = ResourceState::General}};
-    commands.barrier({.buffers = barriers, .bufferCount = 2});
+    commands.barrier({.buffers = barriers, .bufferCount = 3});
     commands.bindComputePipeline(*clusterPipelines_[0]);
     commands.pushBindlessData(&push_, sizeof(push_));
     commands.dispatch(1);
@@ -188,7 +194,15 @@ Result VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, float 
     return {};
 }
 
-void VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
+void VisibilityHybridRasterizer::prepareClusterCandidates(CommandBuffer& commands)
+{
+    const BufferBarrierDesc barriers[] = {
+        {.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General},
+        {.buffer = candidateArguments_.get(), .before = ResourceState::General, .after = ResourceState::IndirectArgument}};
+    commands.barrier({.buffers = barriers, .bufferCount = 2});
+}
+
+Result VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
 {
     commands.beginDebugLabel({.name = "Hybrid raster: stable cluster bins"});
     BufferBarrierDesc barrier{.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General};
@@ -199,6 +213,10 @@ void VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
         commands.bindComputePipeline(*clusterPipelines_[i]);
         commands.pushBindlessData(&push_, sizeof(push_));
         if (i == 2) { commands.dispatch(5); }
+        else if (compactCandidates_) {
+            const Result result = commands.dispatchIndirect(*candidateArguments_, 12);
+            if (!result) { commands.endDebugLabel(); return result; }
+        }
         else if (blocks != 0) { commands.dispatch(std::min(blocks, kDispatchWidth), (blocks + kDispatchWidth - 1u) / kDispatchWidth); }
         commands.barrier({.buffers = &barrier, .bufferCount = 1});
     }
@@ -206,8 +224,13 @@ void VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
     commands.barrier({.buffers = &barrier, .bufferCount = 1});
     barrier = {.buffer = clusterArguments_.get(), .before = ResourceState::General, .after = ResourceState::IndirectArgument};
     commands.barrier({.buffers = &barrier, .bufferCount = 1});
+    if (!compactCandidates_) {
+        barrier = {.buffer = candidateArguments_.get(), .before = ResourceState::General, .after = ResourceState::IndirectArgument};
+        commands.barrier({.buffers = &barrier, .bufferCount = 1});
+    }
     clusterInitialized_ = true;
     commands.endDebugLabel();
+    return {};
 }
 
 } // namespace metallic::render

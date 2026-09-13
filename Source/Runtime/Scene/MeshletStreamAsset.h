@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <span>
 #include <string>
@@ -130,6 +131,9 @@ struct MeshletStreamPageInfo {
     uint32_t primitiveGroupOffset = 0;
     MeshletStreamBounds bounds;
     float maxQuadricError = 0.0f;
+    // Former tail padding in the unchanged 104-byte disk record. Initialize it
+    // explicitly so independent/resumed builds produce identical file bytes.
+    uint32_t reserved0 = 0;
 };
 
 struct MeshletStreamPayloadHeader {
@@ -252,6 +256,22 @@ struct MeshletStreamAssetOfflineBuildStats {
     uint32_t partialCheckpointCount = 0;
 };
 
+struct MeshletStreamCookProgress {
+    const char* phase = "";
+    uint32_t sourcePrimitiveIndex = 0;
+    uint32_t meshIndex = 0;
+    uint32_t primitiveIndex = 0;
+    uint32_t completedGeometries = 0;
+    uint64_t vertices = 0;
+    uint64_t triangles = 0;
+    uint64_t payloadBytes = 0;
+    uint64_t clusters = 0;
+    uint32_t groups = 0;
+    double decodeSeconds = 0;
+    double buildSeconds = 0;
+    double encodeSeconds = 0;
+};
+
 struct MeshletStreamAssetOfflineBuildDesc {
     std::filesystem::path sourcePath;
     std::filesystem::path outputPath;
@@ -259,6 +279,8 @@ struct MeshletStreamAssetOfflineBuildDesc {
     uint32_t maxNewGeometriesPerInvocation = 0;
     uint32_t partialCheckpointGeometryInterval = 64;
     MeshletStreamAssetOfflineBuildStats* stats = nullptr;
+    MeshletBuildOptions meshletOptions;
+    std::function<void(const MeshletStreamCookProgress&)> progress;
 };
 
 bool decodeMeshletStreamPayloadForDevice(

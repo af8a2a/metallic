@@ -227,6 +227,8 @@ add_executable(MetallicRhiTests
     rhi/MeshletLodTests.cpp
     rhi/StreamMeshletLodTests.cpp
     rhi/StreamMeshletLodSceneTests.cpp
+    rhi/MiniZorahStreamAssetTests.cpp
+    rhi/MiniZorahRoamingTests.cpp
     rhi/HistoryResourcesTests.cpp
     rhi/ImportedVirtualLightTests.cpp
     rhi/LightGridDebugPassTests.cpp
@@ -272,6 +274,7 @@ target_compile_definitions(MetallicRhiTests PRIVATE
 )
 
 if(WIN32)
+    target_link_libraries(MetallicRhiTests PRIVATE dxgi)
     target_compile_definitions(MetallicRhiTests PRIVATE NOMINMAX)
     target_compile_options(MetallicRhiTests PRIVATE /EHsc)
 

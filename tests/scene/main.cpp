@@ -4968,6 +4968,62 @@ TEST(SceneImport, MeshoptCompressedMeshletStreamAsset)
     testMeshoptCompressedMeshletStreamAsset(prepareOutputDirectory());
 }
 
+TEST(SceneImport, MeshletStreamCookWorkersProgressAndRecovery)
+{
+    namespace scene = metallic::scene;
+    const auto directory = prepareOutputDirectory() / "cook_workers_recovery";
+    std::filesystem::create_directories(directory);
+    const auto source = writeMeshletLodGridScene(directory, 2);
+    const auto referencePath = directory / "reference.meshstream.bin";
+    const auto resumedPath = directory / "resumed.meshstream.bin";
+    for (const auto& path : {referencePath, resumedPath}) {
+        std::filesystem::remove(path);
+        std::filesystem::remove(path.string() + ".partial");
+    }
+    std::string reason;
+    scene::MeshletStreamAssetOfflineBuildDesc desc{
+        .sourcePath = source,
+        .outputPath = referencePath,
+        .partialCheckpointGeometryInterval = 1,
+        .meshletOptions = {.maxWorkers = 1},
+    };
+    ASSERT_TRUE(scene::buildMeshletStreamAssetOffline(desc, reason)) << reason;
+
+    desc.outputPath = resumedPath;
+    desc.meshletOptions.maxWorkers = 4;
+    std::vector<std::string> phases;
+    desc.progress = [&](const scene::MeshletStreamCookProgress& progress) {
+        phases.emplace_back(progress.phase);
+        EXPECT_EQ(progress.sourcePrimitiveIndex, 0u);
+        if (phases.back() == "complete") {
+            EXPECT_EQ(progress.completedGeometries, 1u);
+            EXPECT_EQ(progress.triangles, 2048u);
+            EXPECT_GT(progress.groups, 1u);
+            EXPECT_GT(progress.payloadBytes, 0u);
+            EXPECT_GE(progress.decodeSeconds, 0.0);
+            EXPECT_GE(progress.buildSeconds, 0.0);
+            throw std::runtime_error("Simulated interruption after durable checkpoint");
+        }
+    };
+    EXPECT_THROW(scene::buildMeshletStreamAssetOffline(desc, reason), std::runtime_error);
+    EXPECT_EQ(phases, (std::vector<std::string>{"decode", "build", "encode", "complete"}));
+    ASSERT_TRUE(std::filesystem::exists(resumedPath.string() + ".partial"));
+    desc.progress = [&](const scene::MeshletStreamCookProgress& progress) {
+        EXPECT_EQ(progress.sourcePrimitiveIndex, 1u);
+    };
+    ASSERT_TRUE(scene::buildMeshletStreamAssetOffline(desc, reason)) << reason;
+    EXPECT_FALSE(std::filesystem::exists(resumedPath.string() + ".partial"));
+    const auto bytes = [](const std::filesystem::path& path) {
+        std::ifstream input(path, std::ios::binary);
+        return std::vector<char>(std::istreambuf_iterator<char>(input), {});
+    };
+    EXPECT_EQ(bytes(referencePath), bytes(resumedPath));
+    scene::MeshletStreamAsset asset;
+    ASSERT_TRUE(asset.open(resumedPath, reason)) << reason;
+    EXPECT_EQ(asset.geometryCount(), 2u);
+    EXPECT_EQ(asset.instanceCount(), 2u);
+}
+
 TEST(SceneImport, Materials)
 {
     testMaterialImport(prepareOutputDirectory());

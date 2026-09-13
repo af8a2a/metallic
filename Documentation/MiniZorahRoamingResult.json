@@ -1,0 +1,238 @@
+{
+  "date": "2026-09-13",
+  "milestone": "M4",
+  "status": "continuous_roaming_baseline_passed_performance_and_quality_open",
+  "device": "NVIDIA GeForce RTX 5070 Ti",
+  "configuration": "RelWithDebInfo",
+  "scene": "Asset/MiniZorah/zorah_main_public.v2.gltf",
+  "cook": "Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin",
+  "sample": "gpu-driven-minizorah-vbuffer",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "targetPixelError": 1.5,
+  "routePeriodSeconds": 60,
+  "vulkanValidation": true,
+  "asyncHybridRaster": true,
+  "normalConeCulling": false,
+  "timingScope": "Synchronous offscreen GPUDriven + MaterialResolve; timed frames exclude presentation blit and output/debug readback. Verification frames and image saves excluded. Not editor presentation FPS.",
+  "checks": [
+    "Full terminal residency",
+    "DAG cut reconstruction including shared parents",
+    "Visible/deferred instances retain a complete cut",
+    "Dense candidate count equals selected mask popcount",
+    "Page budget respected at checkpoints",
+    "No page load failures or invalid GPU requests",
+    "At most one eviction scan per frame at checkpoints",
+    "Ten-minute GPU memory plateau"
+  ],
+  "runs": {
+    "cruise": {
+      "rawReport": "build-relwithdebinfo/minizorah-m4/cruise/MiniZorahRoamingReport.json",
+      "rawReportSha256": "7ee50456d2f17a66da63433801a51db47ee91df8eb5588b88fab5fee9b2673d5",
+      "status": "passed",
+      "renderSeconds": 660.0268826000029,
+      "pageBudgetBytes": 1073741824,
+      "timedFrames": 34431,
+      "cutCheckpoints": 132,
+      "frameMilliseconds": {
+        "max": 247.9033,
+        "p50": 5.3814,
+        "p95": 68.9859,
+        "p99": 76.4506,
+        "samples": 34431
+      },
+      "gpuMilliseconds": {
+        "max": 199.144224,
+        "p50": 2.523584,
+        "p95": 61.358272,
+        "p99": 68.411008,
+        "samples": 34431
+      },
+      "cpuRecordMilliseconds": null,
+      "cpuTimingValid": false,
+      "maxSelectedClusters": 415386,
+      "candidateCapacity": 4194304,
+      "maxFineGroups": 20765,
+      "maxOverTargetRefinements": 12253,
+      "maxNearPlaneUnboundedRefinements": 8262,
+      "sampledPoolPeakBytes": 1028153344,
+      "sampledProcessLocalGpuPeakBytes": 2667962368,
+      "sampledProcessCommitPeakBytes": 4005568512,
+      "sampledWorkingSetPeakBytes": 4208316416,
+      "maxQueuedUploads": 2048,
+      "lastCheckpointSeconds": 655.0046713000031,
+      "lastCumulativeStats": {
+        "totalCancelledQueuedLoadCount": 22224,
+        "totalCompletedPageLoadCount": 1848804,
+        "totalCompletedUnloadCount": 1845629,
+        "totalCompletedUploadCount": 1848804,
+        "totalEvictedPageCount": 30862,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 77479478304
+      },
+      "gpuMemoryPlateau": {
+        "allowedGrowthBytes": 67108864,
+        "finalCyclePeakBytes": 2397757440,
+        "warmCyclePeakBytes": 2397757440
+      }
+    },
+    "regression": {
+      "rawReport": "build-relwithdebinfo/minizorah-m4/regression/MiniZorahRoamingReport.json",
+      "rawReportSha256": "c05946029ae4b0f93dbaad2a6b2253ffe7753015cb2152ae8dc0aae841f90e84",
+      "status": "passed",
+      "renderSeconds": 60.02581170000003,
+      "pageBudgetBytes": 67108864,
+      "timedFrames": 3750,
+      "cutCheckpoints": 12,
+      "frameMilliseconds": {
+        "max": 180.5338,
+        "p50": 21.1517,
+        "p95": 28.8982,
+        "p99": 30.4918,
+        "samples": 3750
+      },
+      "gpuMilliseconds": {
+        "max": 25.902976,
+        "p50": 17.127136,
+        "p95": 23.305504,
+        "p99": 24.45024,
+        "samples": 3750
+      },
+      "cpuRecordMilliseconds": {
+        "max": 11.1901,
+        "p50": 3.2909,
+        "p95": 6.0151,
+        "p99": 7.1859,
+        "samples": 3750
+      },
+      "cpuTimingValid": true,
+      "maxSelectedClusters": 73960,
+      "candidateCapacity": 4194304,
+      "maxFineGroups": 5893,
+      "maxOverTargetRefinements": 4655,
+      "maxNearPlaneUnboundedRefinements": 230,
+      "sampledPoolPeakBytes": 64814336,
+      "sampledProcessLocalGpuPeakBytes": 1501880320,
+      "sampledProcessCommitPeakBytes": 2948616192,
+      "sampledWorkingSetPeakBytes": 2128646144,
+      "maxQueuedUploads": 269,
+      "lastCheckpointSeconds": 55.00396640000005,
+      "lastCumulativeStats": {
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCompletedPageLoadCount": 156774,
+        "totalCompletedUnloadCount": 153599,
+        "totalCompletedUploadCount": 156774,
+        "totalEvictedPageCount": 35164,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 3376654400
+      },
+      "gpuMemoryPlateau": null
+    },
+    "stages": {
+      "rawReport": "build-relwithdebinfo/minizorah-m4/stages/MiniZorahRoamingReport.json",
+      "rawReportSha256": "555b963e16216bf434409706d5701e6f2dd0834439e2004468fa1d86113d43b7",
+      "status": "passed",
+      "renderSeconds": 60.04636639999984,
+      "pageBudgetBytes": 1073741824,
+      "timedFrames": 2891,
+      "cutCheckpoints": 12,
+      "frameMilliseconds": {
+        "max": 260.0274,
+        "p50": 5.9194,
+        "p95": 71.6128,
+        "p99": 78.1325,
+        "samples": 2891
+      },
+      "gpuMilliseconds": {
+        "max": 73.703264,
+        "p50": 2.725728,
+        "p95": 62.156704,
+        "p99": 71.119008,
+        "samples": 2891
+      },
+      "cpuRecordMilliseconds": {
+        "max": 34.6526,
+        "p50": 3.1749,
+        "p95": 9.3167,
+        "p99": 11.6482,
+        "samples": 2891
+      },
+      "cpuTimingValid": true,
+      "maxSelectedClusters": 333792,
+      "candidateCapacity": 4194304,
+      "maxFineGroups": 17216,
+      "maxOverTargetRefinements": 11709,
+      "maxNearPlaneUnboundedRefinements": 7420,
+      "sampledPoolPeakBytes": 829266432,
+      "sampledProcessLocalGpuPeakBytes": 2542067712,
+      "sampledProcessCommitPeakBytes": 3908284416,
+      "sampledWorkingSetPeakBytes": 3506933760,
+      "maxQueuedUploads": 1792,
+      "lastCheckpointSeconds": 55.00577879999985,
+      "lastCumulativeStats": {
+        "totalCancelledQueuedLoadCount": 1855,
+        "totalCompletedPageLoadCount": 148068,
+        "totalCompletedUnloadCount": 144893,
+        "totalCompletedUploadCount": 148068,
+        "totalEvictedPageCount": 1792,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 6079518160
+      },
+      "gpuMemoryPlateau": null,
+      "largestCheckpointPass": {
+        "seconds": 15.034469800000007,
+        "passGpuMilliseconds": {
+          "GPUDriven": 59.97728,
+          "MaterialResolve": 0.090304
+        },
+        "adjacentCheckpointGpuMilliseconds": {
+          "AfterEarlyCull": 0.429088,
+          "AfterLateCull": 8.734848,
+          "AfterPass": 0.591744,
+          "AfterStreamEarlyBins": 5.459584,
+          "AfterStreamLateBins": 4.985184,
+          "afterTraversalToEnd": 20.200448
+        },
+        "inferredPassStartToAfterTraversalMilliseconds": 39.776832
+      }
+    }
+  },
+  "regression": {
+    "passed": 31,
+    "failed": 0,
+    "seconds": 159.96,
+    "log": "build-relwithdebinfo/minizorah-m4/regression.log",
+    "filter": "*streamer_meshlet*:*meshlet_lod_stream*:*hybrid_*:*gpu_scene*:RhiRendering.stream_metadata_*:RhiRendering.render_graph_gpu_driven_mixed_producer_render:RhiRendering.render_graph_scene_binding_contract:RhiRendering.visibility_buffer_async_scene_handoff:RhiRendering.minizorah_vbuffer:RhiRendering.minizorah_roaming"
+  },
+  "builtTargets": [
+    "MetallicRhiTests",
+    "MetallicGPUDrivenSample",
+    "Metallic"
+  ],
+  "nsightTrace": {
+    "status": "failed_no_export",
+    "version": "2026.3.1",
+    "log": "build-relwithdebinfo/minizorah-m4/nsight.log",
+    "error": "GPU Trace capture failed; refusing to summarize stale export tables. stderr: <empty>"
+  },
+  "limitations": [
+    "GPU P95 exceeds the 33.3 ms target; target pixel error is not converged.",
+    "The 660-second run CPU fields are invalid zeros from the old GPU-slot sampler. Corrected direct CPU sampling is used in both final 60-second runs.",
+    "The final optional raster-binding sentinel fix protects independent traversal fixtures; MiniZorah binds raster metadata and follows the same runtime branch as the long run.",
+    "Quality counts describe conservative refinements of the emitted cut, including occluded and shared-parent-constrained detail; they are not pixels or purely missing pages, and are not directly comparable across cuts.",
+    "Memory peaks are sampled at five-second checkpoints and include CPU metadata used by the test validator.",
+    "Checkpoint GPU intervals include snapshot copies and barriers; pass start to AfterTraversal is inferred and includes page updates and active-cut preparation, not one isolated shader.",
+    "Cumulative upload/unload totals stop at the final checkpoint, not the exact last timed frame.",
+    "No successful Nsight GPU Trace was exported in this run."
+  ],
+  "next": [
+    "Split page patch/frontier/prefix/emit GPU timings and introduce cooperative traversal where measured.",
+    "Prioritize page demand by hierarchy visibility and screen-error benefit; measure request-to-drawable latency and repeat uploads.",
+    "Repeat identical-budget quality and frame-time acceptance before closing M4 performance."
+  ]
+}

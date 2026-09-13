@@ -1,0 +1,264 @@
+{
+  "milestone": "M3 unified VBuffer",
+  "date": "2026-09-12",
+  "status": "passed",
+  "sample": "gpu-driven-minizorah-vbuffer",
+  "command": "build-relwithdebinfo/Source/MetallicGPUDrivenSample.exe --minizorah-vbuffer",
+  "source": "E:/metallic/Asset/MiniZorah/zorah_main_public.v2.gltf",
+  "cache": "E:/metallic/Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin",
+  "geometryCount": 3163,
+  "instanceCount": 19144,
+  "sourceMaterialCount": 3283,
+  "doubleSidedInstanceCount": 7099,
+  "effectiveOpaqueBlendInstances": 606,
+  "gpuRootCoverage": {
+    "header": {
+      "activeGroupCapacity": 131072,
+      "activeGroupCount": 19144,
+      "frameIndex": 23,
+      "invalidCapacity": 0,
+      "maxActiveGroupClusters": 32,
+      "overflowCount": 0,
+      "terminalFallback": 0
+    },
+    "verifiedInstances": 19144
+  },
+  "baseColorValidation": {
+    "checkedPixels": 2023008,
+    "maxByteError": 0
+  },
+  "hardwareHybridComparison": {
+    "asyncComputeBranches": 4,
+    "coverageMismatch": 0,
+    "idMismatch": 42,
+    "interiorIdMismatch": 0,
+    "pixels": 2073600
+  },
+  "residentVertexBytes": 0,
+  "residentMeshletDrawBytes": 0,
+  "rtasEnabled": false,
+  "frames": 202,
+  "firstPixelSeconds": 10.5924821,
+  "terminalReadySeconds": 13.1284424,
+  "peakProcessCommitBytes": 4377743360,
+  "peakWorkingSetBytes": 2304184320,
+  "resizeReleaseReopen": "passed",
+  "sceneGraphBuildMilliseconds": 38.99,
+  "previousSceneGraphBuildMilliseconds": 29123.96,
+  "cases": [
+    {
+      "name": "original",
+      "camera": {
+        "center": [
+          46.38051,
+          5.7994967,
+          0.5308178
+        ],
+        "eye": [
+          55.34291,
+          6.4527273,
+          0.32432523
+        ],
+        "fovDegrees": 60,
+        "reversedZ": true,
+        "up": [
+          0,
+          1,
+          0
+        ],
+        "zfar": 29999.998,
+        "znear": 0.020000003
+      },
+      "coveredPixels": 2032100,
+      "image": "E:/metallic/build-relwithdebinfo/minizorah-m3/verified/MiniZorahVBuffer-original.png",
+      "activeHeader": {
+        "activeGroupCapacity": 131072,
+        "activeGroupCount": 25307,
+        "frameIndex": 79,
+        "invalidCapacity": 0,
+        "maxActiveGroupClusters": 32,
+        "overflowCount": 0,
+        "terminalFallback": 0
+      },
+      "streaming": {
+        "terminalReady": true,
+        "stats": {
+          "activePageLoadCount": 0,
+          "frameAllocationFailureCount": 0,
+          "frameEvictedPageCount": 0,
+          "frameGpuInvalidRequestCount": 0,
+          "frameGpuRequestCount": 2340,
+          "frameGpuRequestOverflowCount": 0,
+          "freeResidentBytes": 781144064,
+          "pendingPageCount": 768,
+          "pendingPageLoadCount": 0,
+          "pendingPatchCount": 0,
+          "queuedUploadCount": 1663,
+          "residentPageCount": 12349,
+          "totalCompletedPageLoadCount": 13917,
+          "totalCompletedUploadCount": 12381,
+          "totalGpuInvalidRequestCount": 0,
+          "totalPageLoadFailureCount": 0,
+          "usedResidentBytes": 292597760
+        }
+      }
+    },
+    {
+      "name": "far",
+      "camera": {
+        "center": [
+          -6237.6484375,
+          5291.46533203125,
+          -2003.25390625
+        ],
+        "eye": [
+          147484.625,
+          112897.0625,
+          151719.03125
+        ],
+        "fovDegrees": 60,
+        "reversedZ": true,
+        "up": [
+          0,
+          1,
+          0
+        ],
+        "zfar": 384305.6875,
+        "znear": 76.86114501953125
+      },
+      "coveredPixels": 47648,
+      "image": "E:/metallic/build-relwithdebinfo/minizorah-m3/verified/MiniZorahVBuffer-far.png",
+      "activeHeader": {
+        "activeGroupCapacity": 131072,
+        "activeGroupCount": 19144,
+        "frameIndex": 129,
+        "invalidCapacity": 0,
+        "maxActiveGroupClusters": 32,
+        "overflowCount": 0,
+        "terminalFallback": 0
+      },
+      "streaming": {
+        "terminalReady": true,
+        "stats": {
+          "activePageLoadCount": 0,
+          "frameAllocationFailureCount": 0,
+          "frameEvictedPageCount": 0,
+          "frameGpuInvalidRequestCount": 0,
+          "frameGpuRequestCount": 0,
+          "frameGpuRequestOverflowCount": 0,
+          "freeResidentBytes": 750941440,
+          "pendingPageCount": 0,
+          "pendingPageLoadCount": 0,
+          "pendingPatchCount": 0,
+          "queuedUploadCount": 0,
+          "residentPageCount": 15404,
+          "totalCompletedPageLoadCount": 15577,
+          "totalCompletedUploadCount": 15577,
+          "totalGpuInvalidRequestCount": 0,
+          "totalPageLoadFailureCount": 0,
+          "usedResidentBytes": 322800384
+        }
+      }
+    },
+    {
+      "name": "near",
+      "camera": {
+        "center": [
+          46.38051,
+          5.7994967,
+          0.5308178
+        ],
+        "eye": [
+          52.65419006347656,
+          6.256758213043213,
+          0.38627299666404724
+        ],
+        "fovDegrees": 60,
+        "reversedZ": true,
+        "up": [
+          0,
+          1,
+          0
+        ],
+        "zfar": 29999.998,
+        "znear": 0.020000003
+      },
+      "coveredPixels": 2024363,
+      "image": "E:/metallic/build-relwithdebinfo/minizorah-m3/verified/MiniZorahVBuffer-near.png",
+      "activeHeader": {
+        "activeGroupCapacity": 131072,
+        "activeGroupCount": 51033,
+        "frameIndex": 179,
+        "invalidCapacity": 0,
+        "maxActiveGroupClusters": 32,
+        "overflowCount": 0,
+        "terminalFallback": 0
+      },
+      "streaming": {
+        "terminalReady": true,
+        "stats": {
+          "activePageLoadCount": 0,
+          "frameAllocationFailureCount": 335,
+          "frameEvictedPageCount": 0,
+          "frameGpuInvalidRequestCount": 0,
+          "frameGpuRequestCount": 10253,
+          "frameGpuRequestOverflowCount": 0,
+          "freeResidentBytes": 315136,
+          "pendingPageCount": 768,
+          "pendingPageLoadCount": 0,
+          "pendingPatchCount": 0,
+          "queuedUploadCount": 9228,
+          "residentPageCount": 23446,
+          "totalCompletedPageLoadCount": 25305,
+          "totalCompletedUploadCount": 23769,
+          "totalGpuInvalidRequestCount": 0,
+          "totalPageLoadFailureCount": 0,
+          "usedResidentBytes": 1073426688
+        }
+      }
+    }
+  ],
+  "m2Comparison": {
+    "cameraAndCut": "authored camera, fixed terminal cut, HZB disabled",
+    "m2Covered": 2022851,
+    "m3Covered": 2023008,
+    "m2OnlyPixels": 0,
+    "m3OnlyPixels": 157,
+    "differentIds": 45832,
+    "allDifferencesOnM3DoubleSidedMaterials": true,
+    "m2Report": "E:\\metallic\\build-relwithdebinfo\\minizorah-m3\\m2-reference\\MiniZorahFirstFrameReport.json"
+  },
+  "validation": {
+    "residentMixedMaterialConsumer": "passed; identical baseColor pixels, including nonzero stream record base",
+    "materialConsumerLog": "E:/metallic/build-relwithdebinfo/minizorah-m3/consumer-contract.log",
+    "vulkanValidation": true,
+    "independentComputeQueue": true,
+    "rhiPassed": 15,
+    "sceneGraphPassed": 11,
+    "rhiTests": [
+      "RhiCommand.gpu_scene_global_gpu_resources",
+      "RhiCommand.gpu_scene_view_gpu_resources",
+      "RhiCommand.gpu_scene_submission_recovery",
+      "RhiRendering.visibility_buffer_async_scene_handoff",
+      "RhiRendering.meshlet_lod_stream_scene_runtime_cut",
+      "RhiRendering.streamasset_only_first_frame",
+      "RhiRendering.stream_metadata_vbuffer",
+      "RhiRendering.stream_metadata_contract",
+      "RhiRendering.render_graph_sample_load",
+      "RhiRendering.render_graph_gpu_driven_streamasset_pass_smoke",
+      "RhiRendering.render_graph_gpu_driven_mixed_producer_render",
+      "RhiRendering.render_graph_scene_binding_contract",
+      "RhiValidation.gpu_scene_world_light_sync",
+      "RhiResource.gpu_scene_cpu_core",
+      "RhiResource.gpu_scene_source_override_lease"
+    ],
+    "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-m3\\verified\\MiniZorahVBufferFirstFrameReport.json",
+    "rhiLog": "E:\\metallic\\build-relwithdebinfo\\minizorah-m3\\regression.log",
+    "sceneGraphLog": "E:\\metallic\\build-relwithdebinfo\\minizorah-m3\\scene-graph.log"
+  },
+  "limitations": [
+    "OS file cache was not flushed; timing includes shader/PSO rebuilds and failed PSO persistence warnings.",
+    "Scalar directional material preview; no textures, OpenPBR RTAS lighting, shadows or reflections.",
+    "Near view remains unconverged at the 1 GiB page budget; queued pages and allocation failures belong to M4."
+  ]
+}

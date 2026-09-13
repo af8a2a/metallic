@@ -314,6 +314,11 @@ void MeshletStreamResidencyManager::reset()
     pendingPages_.clear();
     newlyResidentPages_.clear();
     newlyUnloadedPages_.clear();
+    evictionCandidates_.clear();
+    evictionCandidateCursor_ = 0;
+    evictionCandidatesBuilt_ = false;
+    evictionAgeRejected_ = false;
+    frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
     requestMarks_.clear();
     unloadRequestMarks_.clear();
     patches_.clear();
@@ -335,6 +340,11 @@ void MeshletStreamResidencyManager::beginFrame()
     newlyResidentPages_.clear();
     newlyUnloadedPages_.clear();
     resetFrameStats();
+    evictionCandidates_.clear();
+    evictionCandidateCursor_ = 0;
+    evictionCandidatesBuilt_ = false;
+    evictionAgeRejected_ = false;
+    frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
 
     while (updateTaskQueue_.canPop(frameIndex_, true)) {
         const uint32_t taskIndex = updateTaskQueue_.pop();
@@ -447,6 +457,24 @@ void MeshletStreamResidencyManager::beginFrame()
                 }
             }
             std::vector<uint32_t>& taskPages = requestTaskPages_[latestTaskIndex];
+            // Refresh the complete batch before reclaiming stale, unissued I/O.
+            // Already submitted loads/uploads retain their completion lifetime.
+            for (uint32_t pageIndex : taskPages) {
+                const auto found = pages_.find(pageIndex);
+                if (found != pages_.end()) { found->second.lastUsedFrame = frameIndex_; }
+            }
+            std::erase_if(uploadQueue_, [this](uint32_t pageIndex) {
+                const auto found = pages_.find(pageIndex);
+                if (found == pages_.end()) { return true; }
+                if (!found->second.lockedFallback &&
+                    pageAge(pageIndex) > uint64_t(queuedFrameCount_) * 2u + 2u) {
+                    releasePageStorage(pageIndex);
+                    ++stats_.frameCancelledQueuedLoadCount;
+                    ++stats_.totalCancelledQueuedLoadCount;
+                    return true;
+                }
+                return false;
+            });
             for (auto iter = taskPages.rbegin(); iter != taskPages.rend(); ++iter) {
                 const uint32_t pageIndex = *iter;
                 if (pageIndex >= pageCount_) {
@@ -549,6 +577,14 @@ bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
         return false;
     }
 
+    // Reserve memory only for a bounded window of upcoming I/O. Terminal
+    // allocations are admitted by lockFallbackPages independently of this cap.
+    if (!pageAllocated(pageIndex) && pageLoader_.ready() &&
+        queuedUploadCount() >= uint64_t(maxPageLoadsInFlight_) * 2u) {
+        ++stats_.frameAdmissionDeferredCount;
+        if (inserted) { pages_.erase(pageIter); }
+        return false;
+    }
     if (!pageAllocated(pageIndex) && !allocatePageStorage(pageIndex)) {
         if (inserted) {
             pages_.erase(pageIter);
@@ -556,6 +592,7 @@ bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
         return false;
     }
     if (!page.queued) {
+        page.firstRequestFrame = frameIndex_;
         queueUpload(pageIndex);
     }
     return false;
@@ -686,6 +723,18 @@ uint32_t MeshletStreamResidencyManager::processUploads(
     }
 
     const bool asynchronousLoads = pageLoader_.ready();
+    // Roots first, then recently demanded pages, with aging within a live
+    // request batch. For equal age, prefer the cheaper payload. stable_sort
+    // preserves request order when priorities are equal.
+    std::stable_sort(uploadQueue_.begin(), uploadQueue_.end(), [this](uint32_t a, uint32_t b) {
+        const auto ia = pages_.find(a), ib = pages_.find(b);
+        if (ia == pages_.end() || ib == pages_.end()) { return ia != pages_.end(); }
+        const PageEntry& pa = ia->second; const PageEntry& pb = ib->second;
+        if (pa.lockedFallback != pb.lockedFallback) { return pa.lockedFallback; }
+        if (pa.lastUsedFrame != pb.lastUsedFrame) { return pa.lastUsedFrame > pb.lastUsedFrame; }
+        if (pa.firstRequestFrame != pb.firstRequestFrame) { return pa.firstRequestFrame < pb.firstRequestFrame; }
+        return pa.deviceSizeBytes < pb.deviceSizeBytes;
+    });
     auto schedulePageLoads = [this]() {
         while (!uploadQueue_.empty() &&
             static_cast<uint64_t>(pageLoader_.outstandingCount()) + preparedPageLoads_.size() <
@@ -857,6 +906,8 @@ uint32_t MeshletStreamResidencyManager::processUploads(
         ++uploadCount;
         ++stats_.frameScheduledUploadCount;
         ++stats_.totalScheduledUploadCount;
+        stats_.frameUploadBytes += chunk.size;
+        stats_.totalUploadBytes += chunk.size;
     }
 
     if (uploadCount == 0) {
@@ -1038,14 +1089,32 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
     }
 
     const scene::MeshletStreamPageInfo& assetPage = asset_->pages()[pageIndex];
-    const uint64_t requiredBytes = storage_.allocationSize(assetPage.uncompressedSize);
     const bool pageBudgetReached = maxResidentPages_ != 0 && activePages_.size() >= maxResidentPages_;
     const bool storageBudgetReached = !storage_.canAllocate(assetPage.uncompressedSize);
     if (pageBudgetReached || storageBudgetReached) {
-        uint64_t oldestFrame = std::numeric_limits<uint64_t>::max();
         uint32_t evictPage = UINT32_MAX;
-        bool rejectedByAge = false;
-        for (uint32_t candidate : residentPages_) {
+        if (!evictionCandidatesBuilt_) {
+            evictionCandidatesBuilt_ = true;
+            ++stats_.frameEvictionScanCount;
+            for (uint32_t candidate : residentPages_) {
+                ++stats_.frameEvictionCandidateTests;
+                const PageEntry& entry = pages_.at(candidate);
+                if (entry.lockedFallback || !streamableEvictionState(entry.state)) { continue; }
+                if (pageAge(candidate) < evictionAgeThresholdFrames_) {
+                    evictionAgeRejected_ = true;
+                    continue;
+                }
+                evictionCandidates_.push_back(candidate);
+            }
+            std::sort(evictionCandidates_.begin(), evictionCandidates_.end(), [this](uint32_t a, uint32_t b) {
+                const auto ageA = pages_.at(a).lastUsedFrame, ageB = pages_.at(b).lastUsedFrame;
+                return ageA != ageB ? ageA < ageB : a < b;
+            });
+        }
+        // At most 256 evictions per frame; one delayed-free task batches them.
+        // Retrying after an exhausted scan/task budget is constant time.
+        while (evictionCandidateCursor_ < evictionCandidates_.size() && stats_.frameEvictedPageCount < 256u) {
+            const uint32_t candidate = evictionCandidates_[evictionCandidateCursor_++];
             const auto candidateIter = pages_.find(candidate);
             if (candidateIter == pages_.end()) {
                 continue;
@@ -1056,21 +1125,17 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
                 !streamableEvictionState(entry.state)) {
                 continue;
             }
-            if (storageBudgetReached && storage_.freeBytes() + entry.allocationBytes < requiredBytes) {
-                continue;
-            }
             const uint64_t age = pageAge(candidate);
             if (age < evictionAgeThresholdFrames_) {
-                rejectedByAge = true;
+                evictionAgeRejected_ = true;
                 continue;
             }
-            if (entry.lastUsedFrame < oldestFrame) {
-                oldestFrame = entry.lastUsedFrame;
-                evictPage = candidate;
-            }
+            evictPage = candidate;
+            break;
         }
         if (evictPage == UINT32_MAX) {
-            if (rejectedByAge) {
+            ++stats_.frameAllocationDeferredCount;
+            if (evictionAgeRejected_) {
                 ++stats_.frameEvictionAgeRejectedCount;
                 ++stats_.totalEvictionAgeRejectedCount;
             }
@@ -1081,6 +1146,7 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
             return false;
         }
         if (!scheduleUnload(evictPage, true)) {
+            evictionCandidateCursor_ = evictionCandidates_.size();
             ++stats_.frameResidentBudgetFailureCount;
             ++stats_.totalResidentBudgetFailureCount;
             ++stats_.frameAllocationFailureCount;
@@ -1135,7 +1201,8 @@ bool MeshletStreamResidencyManager::scheduleUnload(uint32_t pageIndex, bool evic
         return true;
     }
 
-    const uint32_t taskIndex = unloadTaskQueue_.acquireTaskIndex();
+    const bool newTask = frameUnloadTaskIndex_ == kInvalidStreamingTaskIndex;
+    const uint32_t taskIndex = newTask ? unloadTaskQueue_.acquireTaskIndex() : frameUnloadTaskIndex_;
     if (taskIndex == kInvalidStreamingTaskIndex) {
         ++stats_.frameUnloadTaskFailureCount;
         ++stats_.totalUnloadTaskFailureCount;
@@ -1147,12 +1214,15 @@ bool MeshletStreamResidencyManager::scheduleUnload(uint32_t pageIndex, bool evic
     }
 
     std::vector<uint32_t>& taskPages = unloadTaskPages_[taskIndex];
-    taskPages.clear();
+    if (newTask) { taskPages.clear(); }
     taskPages.push_back(pageIndex);
     page.taskIndex = taskIndex;
     page.queued = false;
     setPageState(pageIndex, MeshletStreamPageResidencyState::PendingUnload);
-    unloadTaskQueue_.push(taskIndex, frameIndex_ + unloadDelayFrames_);
+    if (newTask) {
+        frameUnloadTaskIndex_ = taskIndex;
+        unloadTaskQueue_.push(taskIndex, frameIndex_ + unloadDelayFrames_);
+    }
     ++stats_.frameScheduledUnloadCount;
     ++stats_.totalScheduledUnloadCount;
     return true;
@@ -1369,6 +1439,12 @@ void MeshletStreamResidencyManager::resetFrameStats()
     stats_.frameTransferBudgetFailureCount = 0;
     stats_.frameEvictedPageCount = 0;
     stats_.frameAllocationFailureCount = 0;
+    stats_.frameEvictionScanCount = 0;
+    stats_.frameEvictionCandidateTests = 0;
+    stats_.frameAllocationDeferredCount = 0;
+    stats_.frameUploadBytes = 0;
+    stats_.frameAdmissionDeferredCount = 0;
+    stats_.frameCancelledQueuedLoadCount = 0;
     stats_.frameScheduledPageLoadCount = 0;
     stats_.frameCompletedPageLoadCount = 0;
     stats_.framePageLoadFailureCount = 0;

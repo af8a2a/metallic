@@ -559,6 +559,40 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
+class GPUDrivenMiniZorahSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "gpu-driven-minizorah"; }
+    std::string_view name() const override { return "GPUDriven / MiniZorah"; }
+    std::string_view category() const override { return "GPUDriven"; }
+    std::string_view description() const override
+    {
+        return "Complete MiniZorah cooked geometry with bounded streaming, the authored camera and no resident scene import.";
+    }
+    std::string scenePath() const override { return "Asset/MiniZorah/zorah_main_public.v2.gltf"; }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_minizorah.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        return RenderSampleEnvironmentDesc{.enabled = false};
+    }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
+class GPUDrivenMiniZorahVBufferSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "gpu-driven-minizorah-vbuffer"; }
+    std::string_view name() const override { return "GPUDriven / MiniZorah VBuffer"; }
+    std::string_view category() const override { return "GPUDriven"; }
+    std::string_view description() const override { return "MiniZorah streamed geometry with global GPUScene identity and scalar material resolve."; }
+    std::string scenePath() const override { return "Asset/MiniZorah/zorah_main_public.v2.gltf"; }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_minizorah_vbuffer.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override { return RenderSampleEnvironmentDesc{.enabled = false}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class GPUDrivenTerrainP0Sample final : public RenderSample {
 public:
     std::string_view id() const override { return "gpu-driven-terrain-p0"; }
@@ -703,6 +737,8 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const LookDevABeautifulGameSample lookDevABeautifulGame;
     static const PathTracingDlssNrSample pathTracingDlssNr;
     static const GPUDrivenVisibilitySample gpuDrivenVisibility;
+    static const GPUDrivenMiniZorahSample gpuDrivenMiniZorah;
+    static const GPUDrivenMiniZorahVBufferSample gpuDrivenMiniZorahVBuffer;
     return {
         &realtimeLighting,
         &lightGridDebug,
@@ -724,6 +760,8 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenVisibility,
         &gpuDrivenUsdSample(),
         &gpuDrivenStreamAssetSample(),
+        &gpuDrivenMiniZorah,
+        &gpuDrivenMiniZorahVBuffer,
         &gpuDrivenTerrainP0Sample(),
         &gpuDrivenTerrainP1UnifiedSample(),
         &gpuDrivenRtasVisualizationSample(),

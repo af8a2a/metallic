@@ -83,12 +83,15 @@ Result SceneResourceManager::resolveScene(
     }
     impl_->collectRetired();
     const std::filesystem::path scenePath = propertyPath(properties, "path");
+    const bool streamMetadata = properties.value("streamAssetOnly", false);
     outScene = runtimeSceneForPath(runtimeScene, scenePath);
-    if (outScene != nullptr) {
+    if (outScene != nullptr && (!properties.contains("streamAssetOnly") ||
+        outScene->hasStreamGeometry() == streamMetadata)) {
         return {};
     }
 
-    const std::string key = normalizedScenePath(scenePath).generic_string();
+    const std::string key = normalizedScenePath(scenePath).generic_string() +
+        (streamMetadata ? "#stream-metadata" : "#resident");
     const auto found = impl_->scenes.find(key);
     if (found != impl_->scenes.end()) {
         outScene = found->second.get();
@@ -97,7 +100,7 @@ Result SceneResourceManager::resolveScene(
 
     auto loadedScene = std::make_shared<scene::SceneDocument>();
     const std::filesystem::path resolvedPath = normalizedScenePath(scenePath);
-    if (!loadedScene->load(resolvedPath)) {
+    if (!(streamMetadata ? loadedScene->loadStreamMetadata(resolvedPath) : loadedScene->load(resolvedPath))) {
         const std::string& detail = loadedScene->documentWarning().empty()
             ? loadedScene->lastLoadResult().error
             : loadedScene->documentWarning();
@@ -133,6 +136,10 @@ Result SceneResourceManager::acquire(
     Result sceneResult = resolveScene(properties, runtimeScene, resolvedScene, log);
     if (!sceneResult) {
         return sceneResult;
+    }
+    if (resolvedScene->hasStreamGeometry()) {
+        log = "SceneResourceManager cannot build resident geometry or RTAS from StreamAsset metadata";
+        return makeError(Error::InvalidArgument);
     }
 
     const std::filesystem::path scenePath = propertyPath(properties, "path");
@@ -203,6 +210,10 @@ Result SceneResourceManager::beginAcquireAsync(
     std::shared_ptr<SceneResourceSnapshot>& outSnapshot,
     std::string& log)
 {
+    if (runtimeScene.hasStreamGeometry()) {
+        log = "SceneResourceManager cannot build resident geometry or RTAS from StreamAsset metadata";
+        return makeError(Error::InvalidArgument);
+    }
     if (impl_ == nullptr) {
         impl_ = std::make_shared<Impl>();
     }

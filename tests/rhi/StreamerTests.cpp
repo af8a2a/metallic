@@ -1969,6 +1969,13 @@ public:
             return RhiTestResult::fail("age filter did not reject eviction of a young resident page");
         }
 
+        for (uint32_t retry = 0; retry < 10000; ++retry) { (void)residency.requestPage(requestedPage); }
+        stats = residency.stats();
+        if (stats.frameEvictionScanCount != 1 || stats.frameEvictionCandidateTests != stats.residentPageCount ||
+            stats.frameAllocationDeferredCount != 10001 || residency.pageAllocated(requestedPage)) {
+            return RhiTestResult::fail("budget pressure repeated an eviction scan or lost age protection");
+        }
+
         while (residency.pageAge(residentPage) < kAgeThreshold) {
             residency.beginFrame();
         }
@@ -2005,6 +2012,45 @@ public:
         return RhiTestResult::pass();
     }
 };
+
+class StreamerMeshletBatchedUnloadTest final : public RhiTest {
+public:
+    StreamerMeshletBatchedUnloadTest() { type = RhiTestType::Command; name = "streamer_meshlet_batched_unload"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "batched_unload.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        const auto roots = fallbackPagesFor(asset);
+        auto pages = nonFallbackPagesFor(asset, roots);
+        if (pages.size() < 8) { return RhiTestResult::skip("Requires eight streamable pages"); }
+        pages.resize(8);
+        render::MeshletStreamResidencyManager residency;
+        std::string reason;
+        if (!residency.initialize({.asset = &asset,
+                .maxResidentBytes = pageStorageBytes(asset, roots) + pageStorageBytes(asset, pages)}, reason) ||
+            !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
+        residency.beginFrame();
+        for (uint32_t page : pages) { (void)residency.requestPage(page); }
+        for (uint32_t page : pages) {
+            if (!residency.pageAllocated(page) || !residency.unloadPage(page)) {
+                return RhiTestResult::fail("Batch unload exhausted the task ring");
+            }
+        }
+        if (residency.stats().queuedUnloadTaskCount != 1 || residency.stats().frameScheduledUnloadCount != pages.size()) {
+            return RhiTestResult::fail("Same-frame unloads were not batched");
+        }
+        residency.beginFrame();
+        for (uint32_t page : pages) {
+            if (residency.pageAllocated(page)) { return RhiTestResult::fail("Batch was not retired after the delayed free"); }
+        }
+        for (uint32_t root : roots) {
+            if (!residency.pageAllocated(root) || residency.unloadPage(root)) { return RhiTestResult::fail("Batch lost a locked root"); }
+        }
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletBatchedUnloadTest);
 
 METALLIC_REGISTER_RHI_TEST(StreamingTaskQueueLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(MeshletStreamPageLoaderTaskGraphTest);

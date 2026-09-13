@@ -820,6 +820,10 @@ public:
 
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        if (context.runtimeScene != nullptr && context.runtimeScene->hasStreamGeometry()) {
+            log = "This ray-traced consumer requires resident geometry; use VisibilityBufferMaterialPass for scalar StreamAsset shading";
+            return makeError(Error::Unsupported);
+        }
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
             log = "ScenePathTracePass requires a device and graphics queue";
             return makeError(Error::InvalidArgument);

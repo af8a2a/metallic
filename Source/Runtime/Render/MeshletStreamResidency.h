@@ -253,6 +253,14 @@ struct MeshletStreamResidencyStats {
     uint32_t frameTransferBudgetFailureCount = 0;
     uint32_t frameEvictedPageCount = 0;
     uint32_t frameAllocationFailureCount = 0;
+    uint32_t frameEvictionScanCount = 0;
+    uint32_t frameEvictionCandidateTests = 0;
+    uint32_t frameAllocationDeferredCount = 0;
+    uint64_t frameUploadBytes = 0;
+    uint64_t totalUploadBytes = 0;
+    uint32_t frameAdmissionDeferredCount = 0;
+    uint32_t frameCancelledQueuedLoadCount = 0;
+    uint64_t totalCancelledQueuedLoadCount = 0;
     uint32_t frameScheduledPageLoadCount = 0;
     uint32_t frameCompletedPageLoadCount = 0;
     uint32_t framePageLoadFailureCount = 0;
@@ -338,6 +346,7 @@ public:
 private:
     struct PageEntry {
         uint64_t lastUsedFrame = 0;
+        uint64_t firstRequestFrame = 0;
         uint32_t deviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
         uint32_t allocationBytes = 0;
         uint32_t deviceSizeBytes = 0;
@@ -349,7 +358,7 @@ private:
         MeshletStreamPageResidencyState state = MeshletStreamPageResidencyState::Unloaded;
         uint8_t padding0 = 0;
     };
-    static_assert(sizeof(PageEntry) == 40);
+    static_assert(sizeof(PageEntry) == 48);
 
     using PagePositionMember = uint32_t PageEntry::*;
 
@@ -391,6 +400,11 @@ private:
     std::vector<uint32_t> pendingPages_;
     std::vector<uint32_t> newlyResidentPages_;
     std::vector<uint32_t> newlyUnloadedPages_;
+    std::vector<uint32_t> evictionCandidates_;
+    size_t evictionCandidateCursor_ = 0;
+    bool evictionCandidatesBuilt_ = false;
+    bool evictionAgeRejected_ = false;
+    uint32_t frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
     std::unordered_set<uint32_t> requestMarks_;
     std::unordered_set<uint32_t> unloadRequestMarks_;
     std::vector<StreamPageTablePatch> patches_;

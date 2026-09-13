@@ -503,6 +503,11 @@ bool SceneGraph::unsetParent(SceneEntity childEntity)
 
 bool SceneGraph::setRoots(std::span<const SceneEntity> roots)
 {
+    // Importers commonly select the complete, already ordered root set. Avoid
+    // quadratic ancestry checks for this no-op (MiniZorah has 16,988 roots).
+    if (std::equal(roots.begin(), roots.end(), roots_.begin(), roots_.end())) {
+        return false;
+    }
     std::vector<SceneEntity> uniqueRoots;
     uniqueRoots.reserve(roots.size());
     for (const SceneEntity entity : roots) {

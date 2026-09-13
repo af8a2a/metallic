@@ -1,0 +1,552 @@
+{
+  "milestone": "M2",
+  "date": "2026-09-12",
+  "status": "passed",
+  "device": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "driver": "616.64",
+    "reportedTotalMiB": 16303
+  },
+  "cache": "E:/metallic/Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin",
+  "source": "E:/metallic/Asset/MiniZorah/zorah_main_public.v2.gltf",
+  "primitives": 3163,
+  "instances": 19144,
+  "terminalPages": 3163,
+  "gpuRootCoverage": {
+    "header": {
+      "activeGroupCapacity": 131072,
+      "activeGroupCount": 19144,
+      "frameIndex": 23,
+      "invalidCapacity": 0,
+      "maxActiveGroupClusters": 32,
+      "overflowCount": 0,
+      "terminalFallback": 0
+    },
+    "verifiedInstances": 19144
+  },
+  "residentGPUSceneInstances": 0,
+  "residentGPUSceneGeometries": 0,
+  "residentGPUSceneMaterials": 0,
+  "clusterRtxEnabled": false,
+  "profile": {
+    "autoBuildStreamAsset": false,
+    "autoLod": true,
+    "camera": {
+      "center": [
+        46.38051,
+        5.7994967,
+        0.5308178
+      ],
+      "eye": [
+        55.34291,
+        6.4527273,
+        0.32432523
+      ],
+      "fovDegrees": 60,
+      "reversedZ": true,
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "zfar": 29999.998,
+      "znear": 0.020000003
+    },
+    "clusterFrustumCull": true,
+    "clusterNormalConeCull": false,
+    "debugColorMode": "shaded",
+    "enableClusterRtx": false,
+    "instanceFrustumCull": true,
+    "instanceHzbCull": true,
+    "lodPixelError": 1.5,
+    "maxActiveGroups": 131072,
+    "maxGpuPageRequests": 65536,
+    "maxGpuPageUnloadRequests": 65536,
+    "maxLockedFallbackPages": 4096,
+    "maxPageLoadsInFlight": 1024,
+    "maxPageUploadsPerFrame": 256,
+    "maxResidentBytes": 1073741824,
+    "maxResidentPages": 0,
+    "maxTraversalWorkItems": 1048576,
+    "maxTraversalWorkers": 1024,
+    "pageLoadConcurrency": 4,
+    "path": "Asset/MiniZorah/zorah_main_public.v2.gltf",
+    "streamAssetOnly": true,
+    "streamAssetPath": "Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin"
+  },
+  "width": 1920,
+  "height": 1080,
+  "gpuMemoryObservation": {
+    "beforeMiB": 10685,
+    "duringMiB": 12906,
+    "note": "Global NVIDIA samples; not an isolated process peak."
+  },
+  "validation": {
+    "relatedRegressionTestsPassed": 9,
+    "vulkanValidationEnabled": true,
+    "loggedVulkanErrors": 0,
+    "cacheState": "OS file cache not flushed"
+  },
+  "runs": [
+    {
+      "name": "cold",
+      "firstPixelSeconds": 5.6238675,
+      "terminalReadySeconds": 7.7818809,
+      "firstRenderCompleteSeconds": 5.0923571,
+      "metadataCheckSeconds": 0.6565874,
+      "peakProcessCommitBytes": 4091396096,
+      "peakWorkingSetBytes": 2053509120,
+      "elapsedSeconds": 35.4635132,
+      "frames": 173,
+      "report": "../build-relwithdebinfo/minizorah-m2/cold/MiniZorahFirstFrameReport.json",
+      "views": [
+        {
+          "name": "original",
+          "camera": {
+            "center": [
+              46.38051,
+              5.7994967,
+              0.5308178
+            ],
+            "eye": [
+              55.34291,
+              6.4527273,
+              0.32432523
+            ],
+            "fovDegrees": 60,
+            "reversedZ": true,
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "zfar": 29999.998,
+            "znear": 0.020000003
+          },
+          "coveredPixels": 2032808,
+          "activeHeader": {
+            "activeGroupCapacity": 131072,
+            "activeGroupCount": 25445,
+            "frameIndex": 72,
+            "invalidCapacity": 0,
+            "maxActiveGroupClusters": 32,
+            "overflowCount": 0,
+            "terminalFallback": 0
+          },
+          "streaming": {
+            "clusterRtxEnabled": false,
+            "frame": 72,
+            "generation": 1,
+            "instanceCount": 19144,
+            "lodStateBytes": 162274640,
+            "lodTopologyBytes": 170438640,
+            "pageBufferBytes": 1073741824,
+            "pageCount": 14410,
+            "pagesTruncated": true,
+            "pass": "GPUDriven",
+            "primitiveCount": 3163,
+            "requestSourceFrame": 71,
+            "stats": {
+              "activePageLoadCount": 0,
+              "frameAllocationFailureCount": 0,
+              "frameEvictedPageCount": 0,
+              "frameGpuInvalidRequestCount": 0,
+              "frameGpuRequestCount": 2198,
+              "frameGpuRequestOverflowCount": 0,
+              "freeResidentBytes": 795637248,
+              "pendingPageCount": 768,
+              "pendingPageLoadCount": 0,
+              "pendingPatchCount": 0,
+              "queuedUploadCount": 1499,
+              "residentPageCount": 12143,
+              "totalCompletedPageLoadCount": 13685,
+              "totalCompletedUploadCount": 12149,
+              "totalGpuInvalidRequestCount": 0,
+              "totalPageLoadFailureCount": 0,
+              "usedResidentBytes": 278104576
+            },
+            "terminalPageCount": 3163,
+            "terminalReady": true,
+            "terminalResidentPageCount": 3163
+          },
+          "image": "E:/metallic/build-relwithdebinfo/minizorah-m2/cold/MiniZorah-original.png"
+        },
+        {
+          "name": "far",
+          "camera": {
+            "center": [
+              -6237.6484375,
+              5291.46533203125,
+              -2003.25390625
+            ],
+            "eye": [
+              147484.625,
+              112897.0625,
+              151719.03125
+            ],
+            "fovDegrees": 60,
+            "reversedZ": true,
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "zfar": 384305.6875,
+            "znear": 76.86114501953125
+          },
+          "coveredPixels": 47995,
+          "activeHeader": {
+            "activeGroupCapacity": 131072,
+            "activeGroupCount": 19144,
+            "frameIndex": 122,
+            "invalidCapacity": 0,
+            "maxActiveGroupClusters": 32,
+            "overflowCount": 0,
+            "terminalFallback": 0
+          },
+          "streaming": {
+            "clusterRtxEnabled": false,
+            "frame": 122,
+            "generation": 1,
+            "instanceCount": 19144,
+            "lodStateBytes": 162274640,
+            "lodTopologyBytes": 170438640,
+            "pageBufferBytes": 1073741824,
+            "pageCount": 15137,
+            "pagesTruncated": true,
+            "pass": "GPUDriven",
+            "primitiveCount": 3163,
+            "requestSourceFrame": 121,
+            "stats": {
+              "activePageLoadCount": 0,
+              "frameAllocationFailureCount": 0,
+              "frameEvictedPageCount": 0,
+              "frameGpuInvalidRequestCount": 0,
+              "frameGpuRequestCount": 0,
+              "frameGpuRequestOverflowCount": 0,
+              "freeResidentBytes": 760495872,
+              "pendingPageCount": 0,
+              "pendingPageLoadCount": 0,
+              "pendingPatchCount": 0,
+              "queuedUploadCount": 0,
+              "residentPageCount": 15134,
+              "totalCompletedPageLoadCount": 15281,
+              "totalCompletedUploadCount": 15281,
+              "totalGpuInvalidRequestCount": 0,
+              "totalPageLoadFailureCount": 0,
+              "usedResidentBytes": 313245952
+            },
+            "terminalPageCount": 3163,
+            "terminalReady": true,
+            "terminalResidentPageCount": 3163
+          },
+          "image": "E:/metallic/build-relwithdebinfo/minizorah-m2/cold/MiniZorah-far.png"
+        },
+        {
+          "name": "near",
+          "camera": {
+            "center": [
+              46.38051,
+              5.7994967,
+              0.5308178
+            ],
+            "eye": [
+              52.65419006347656,
+              6.256758213043213,
+              0.38627299666404724
+            ],
+            "fovDegrees": 60,
+            "reversedZ": true,
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "zfar": 29999.998,
+            "znear": 0.020000003
+          },
+          "coveredPixels": 2024988,
+          "activeHeader": {
+            "activeGroupCapacity": 131072,
+            "activeGroupCount": 51234,
+            "frameIndex": 172,
+            "invalidCapacity": 0,
+            "maxActiveGroupClusters": 32,
+            "overflowCount": 0,
+            "terminalFallback": 0
+          },
+          "streaming": {
+            "clusterRtxEnabled": false,
+            "frame": 172,
+            "generation": 1,
+            "instanceCount": 19144,
+            "lodStateBytes": 162274640,
+            "lodTopologyBytes": 170438640,
+            "pageBufferBytes": 1073741824,
+            "pageCount": 32832,
+            "pagesTruncated": true,
+            "pass": "GPUDriven",
+            "primitiveCount": 3163,
+            "requestSourceFrame": 171,
+            "stats": {
+              "activePageLoadCount": 0,
+              "frameAllocationFailureCount": 0,
+              "frameEvictedPageCount": 0,
+              "frameGpuInvalidRequestCount": 0,
+              "frameGpuRequestCount": 9561,
+              "frameGpuRequestOverflowCount": 0,
+              "freeResidentBytes": 16879616,
+              "pendingPageCount": 768,
+              "pendingPageLoadCount": 0,
+              "pendingPatchCount": 0,
+              "queuedUploadCount": 8885,
+              "residentPageCount": 23176,
+              "totalCompletedPageLoadCount": 25009,
+              "totalCompletedUploadCount": 23473,
+              "totalGpuInvalidRequestCount": 0,
+              "totalPageLoadFailureCount": 0,
+              "usedResidentBytes": 1056862208
+            },
+            "terminalPageCount": 3163,
+            "terminalReady": true,
+            "terminalResidentPageCount": 3163
+          },
+          "image": "E:/metallic/build-relwithdebinfo/minizorah-m2/cold/MiniZorah-near.png"
+        }
+      ]
+    },
+    {
+      "name": "warm",
+      "firstPixelSeconds": 5.5860971,
+      "terminalReadySeconds": 7.7239672,
+      "firstRenderCompleteSeconds": 5.0710772,
+      "metadataCheckSeconds": 0.3950791,
+      "peakProcessCommitBytes": 4064694272,
+      "peakWorkingSetBytes": 2095276032,
+      "elapsedSeconds": 34.8984767,
+      "frames": 173,
+      "report": "../build-relwithdebinfo/minizorah-m2/warm/MiniZorahFirstFrameReport.json",
+      "views": [
+        {
+          "name": "original",
+          "camera": {
+            "center": [
+              46.38051,
+              5.7994967,
+              0.5308178
+            ],
+            "eye": [
+              55.34291,
+              6.4527273,
+              0.32432523
+            ],
+            "fovDegrees": 60,
+            "reversedZ": true,
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "zfar": 29999.998,
+            "znear": 0.020000003
+          },
+          "coveredPixels": 2032808,
+          "activeHeader": {
+            "activeGroupCapacity": 131072,
+            "activeGroupCount": 25433,
+            "frameIndex": 72,
+            "invalidCapacity": 0,
+            "maxActiveGroupClusters": 32,
+            "overflowCount": 0,
+            "terminalFallback": 0
+          },
+          "streaming": {
+            "clusterRtxEnabled": false,
+            "frame": 72,
+            "generation": 1,
+            "instanceCount": 19144,
+            "lodStateBytes": 162274640,
+            "lodTopologyBytes": 170438640,
+            "pageBufferBytes": 1073741824,
+            "pageCount": 14416,
+            "pagesTruncated": true,
+            "pass": "GPUDriven",
+            "primitiveCount": 3163,
+            "requestSourceFrame": 71,
+            "stats": {
+              "activePageLoadCount": 0,
+              "frameAllocationFailureCount": 0,
+              "frameEvictedPageCount": 0,
+              "frameGpuInvalidRequestCount": 0,
+              "frameGpuRequestCount": 2205,
+              "frameGpuRequestOverflowCount": 0,
+              "freeResidentBytes": 795485184,
+              "pendingPageCount": 768,
+              "pendingPageLoadCount": 0,
+              "pendingPatchCount": 0,
+              "queuedUploadCount": 1501,
+              "residentPageCount": 12147,
+              "totalCompletedPageLoadCount": 13689,
+              "totalCompletedUploadCount": 12153,
+              "totalGpuInvalidRequestCount": 0,
+              "totalPageLoadFailureCount": 0,
+              "usedResidentBytes": 278256640
+            },
+            "terminalPageCount": 3163,
+            "terminalReady": true,
+            "terminalResidentPageCount": 3163
+          },
+          "image": "E:/metallic/build-relwithdebinfo/minizorah-m2/warm/MiniZorah-original.png"
+        },
+        {
+          "name": "far",
+          "camera": {
+            "center": [
+              -6237.6484375,
+              5291.46533203125,
+              -2003.25390625
+            ],
+            "eye": [
+              147484.625,
+              112897.0625,
+              151719.03125
+            ],
+            "fovDegrees": 60,
+            "reversedZ": true,
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "zfar": 384305.6875,
+            "znear": 76.86114501953125
+          },
+          "coveredPixels": 47995,
+          "activeHeader": {
+            "activeGroupCapacity": 131072,
+            "activeGroupCount": 19144,
+            "frameIndex": 122,
+            "invalidCapacity": 0,
+            "maxActiveGroupClusters": 32,
+            "overflowCount": 0,
+            "terminalFallback": 0
+          },
+          "streaming": {
+            "clusterRtxEnabled": false,
+            "frame": 122,
+            "generation": 1,
+            "instanceCount": 19144,
+            "lodStateBytes": 162274640,
+            "lodTopologyBytes": 170438640,
+            "pageBufferBytes": 1073741824,
+            "pageCount": 15151,
+            "pagesTruncated": true,
+            "pass": "GPUDriven",
+            "primitiveCount": 3163,
+            "requestSourceFrame": 121,
+            "stats": {
+              "activePageLoadCount": 0,
+              "frameAllocationFailureCount": 0,
+              "frameEvictedPageCount": 0,
+              "frameGpuInvalidRequestCount": 0,
+              "frameGpuRequestCount": 0,
+              "frameGpuRequestOverflowCount": 0,
+              "freeResidentBytes": 760369152,
+              "pendingPageCount": 0,
+              "pendingPageLoadCount": 0,
+              "pendingPatchCount": 0,
+              "queuedUploadCount": 0,
+              "residentPageCount": 15148,
+              "totalCompletedPageLoadCount": 15295,
+              "totalCompletedUploadCount": 15295,
+              "totalGpuInvalidRequestCount": 0,
+              "totalPageLoadFailureCount": 0,
+              "usedResidentBytes": 313372672
+            },
+            "terminalPageCount": 3163,
+            "terminalReady": true,
+            "terminalResidentPageCount": 3163
+          },
+          "image": "E:/metallic/build-relwithdebinfo/minizorah-m2/warm/MiniZorah-far.png"
+        },
+        {
+          "name": "near",
+          "camera": {
+            "center": [
+              46.38051,
+              5.7994967,
+              0.5308178
+            ],
+            "eye": [
+              52.65419006347656,
+              6.256758213043213,
+              0.38627299666404724
+            ],
+            "fovDegrees": 60,
+            "reversedZ": true,
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "zfar": 29999.998,
+            "znear": 0.020000003
+          },
+          "coveredPixels": 2024975,
+          "activeHeader": {
+            "activeGroupCapacity": 131072,
+            "activeGroupCount": 49936,
+            "frameIndex": 172,
+            "invalidCapacity": 0,
+            "maxActiveGroupClusters": 32,
+            "overflowCount": 0,
+            "terminalFallback": 0
+          },
+          "streaming": {
+            "clusterRtxEnabled": false,
+            "frame": 172,
+            "generation": 1,
+            "instanceCount": 19144,
+            "lodStateBytes": 162274640,
+            "lodTopologyBytes": 170438640,
+            "pageBufferBytes": 1073741824,
+            "pageCount": 32749,
+            "pagesTruncated": true,
+            "pass": "GPUDriven",
+            "primitiveCount": 3163,
+            "requestSourceFrame": 171,
+            "stats": {
+              "activePageLoadCount": 0,
+              "frameAllocationFailureCount": 0,
+              "frameEvictedPageCount": 0,
+              "frameGpuInvalidRequestCount": 0,
+              "frameGpuRequestCount": 9481,
+              "frameGpuRequestOverflowCount": 0,
+              "freeResidentBytes": 22828800,
+              "pendingPageCount": 768,
+              "pendingPageLoadCount": 0,
+              "pendingPatchCount": 0,
+              "queuedUploadCount": 8788,
+              "residentPageCount": 23190,
+              "totalCompletedPageLoadCount": 25023,
+              "totalCompletedUploadCount": 23487,
+              "totalGpuInvalidRequestCount": 0,
+              "totalPageLoadFailureCount": 0,
+              "usedResidentBytes": 1050913024
+            },
+            "terminalPageCount": 3163,
+            "terminalReady": true,
+            "terminalResidentPageCount": 3163
+          },
+          "image": "E:/metallic/build-relwithdebinfo/minizorah-m2/warm/MiniZorah-near.png"
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "M2 verifies complete terminal coverage and first frames, not 1.5 px convergence or interactive frame time.",
+    "OS file cache was not flushed. Startup timings include metadata validation, Vulkan initialization and debug readback.",
+    "Near-view upload queues remain nonempty; the 1 GiB page pool is almost full.",
+    "GPUScene instance identity and source material shading in unified VBuffer remain M3 work."
+  ]
+}

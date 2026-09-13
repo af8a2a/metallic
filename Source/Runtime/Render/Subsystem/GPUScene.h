@@ -62,7 +62,7 @@ inline constexpr size_t kGPUSceneRasterDrawBucketCount =
     static_cast<size_t>(GPUSceneDrawBucket::Blend);
 
 const char* gpuSceneDrawBucketName(GPUSceneDrawBucket bucket);
-GPUSceneDrawBucket classifyGPUSceneMaterial(const scene::RenderMaterial& material);
+GPUSceneDrawBucket classifyGPUSceneMaterial(const scene::RenderMaterial& material, bool constantAlphaOpaque = false);
 
 struct GPUSceneDrawKey {
     GPUSceneDrawBucket bucket = GPUSceneDrawBucket::OpaqueSingleSided;
@@ -218,6 +218,7 @@ struct GPUSceneSourceView {
     uint64_t externalRevision = 0;
     std::span<const scene::RenderLight> renderLights;
     std::span<const scene::PunctualLight> virtualLights;
+    bool constantAlphaOpaque = false;
 
     static GPUSceneSourceView fromScene(
         const scene::Scene& scene,
@@ -534,6 +535,9 @@ public:
     ~GPUScene() = default;
 
     void setDefaultFrameSlotCount(uint32_t frameSlotCount);
+    // Establish a valid empty DrawSet for source-independent GPU views.
+    // Does not import geometry or create a source/material record.
+    void ensureDrawSet();
     Result rebuild(const GPUSceneSourceView& source, std::string& log);
     GPUSceneSyncResult sync(const GPUSceneSourceView& source);
     // Also supports worlds containing only virtual lights, without a Scene.
@@ -654,6 +658,7 @@ private:
     uint64_t sourceVisibilityRevision_ = 0;
     uint64_t sourceExternalRevision_ = 0;
     bool hasSource_ = false;
+    bool sourceConstantAlphaOpaque_ = false;
 };
 
 } // namespace metallic::render

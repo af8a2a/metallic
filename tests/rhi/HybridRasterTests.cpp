@@ -282,7 +282,7 @@ public:
             if (test.count != 0) {
                 commands->dispatch(std::min(test.count, 65535u), (test.count + 65534u) / 65535u);
             }
-            rasterizer.finishClusterBins(*commands);
+            HYBRID_REQUIRE(rasterizer.finishClusterBins(*commands));
             const BufferBarrierDesc barriers[] = {
                 {.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},
                 {.buffer = &rasterizer.clusterArguments(), .before = ResourceState::IndirectArgument, .after = ResourceState::TransferSource}};

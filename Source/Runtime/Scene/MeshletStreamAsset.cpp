@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -1112,6 +1113,7 @@ struct MeshletStreamPartialBuildContext {
     uint32_t newGeometryCount = 0;
     uint32_t geometriesSinceCheckpoint = 0;
     MeshletStreamAssetOfflineBuildStats* stats = nullptr;
+    const MeshletStreamAssetOfflineBuildDesc* desc = nullptr;
     bool paused = false;
 };
 
@@ -3985,6 +3987,21 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
             }
 
             RenderPrimitive primitive;
+            using CookClock = std::chrono::steady_clock;
+            const auto started = CookClock::now();
+            MeshletStreamCookProgress progress{
+                .phase = "decode",
+                .sourcePrimitiveIndex = sourceRenderPrimitiveIndex,
+                .meshIndex = static_cast<uint32_t>(meshIndex),
+                .primitiveIndex = static_cast<uint32_t>(primitiveIndex),
+                .completedGeometries = static_cast<uint32_t>(state.primitives.size()),
+            };
+            const auto notify = [&]() {
+                if (partialContext && partialContext->desc && partialContext->desc->progress) {
+                    partialContext->desc->progress(progress);
+                }
+            };
+            notify();
             if (!loadRenderPrimitiveForStreamAssetBuilder(
                     source,
                     static_cast<int32_t>(meshIndex),
@@ -3998,7 +4015,27 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
                 continue;
             }
 
-            buildStreamMeshletsForPrimitive(primitive);
+            const auto decoded = CookClock::now();
+            progress.decodeSeconds = std::chrono::duration<double>(decoded - started).count();
+            progress.vertices = primitive.positions.size();
+            progress.triangles = primitive.triangleCount;
+            progress.phase = "build";
+            notify();
+            if (!buildStreamMeshletsForPrimitive(primitive,
+                    partialContext && partialContext->desc ?
+                        partialContext->desc->meshletOptions : MeshletBuildOptions{})) {
+                reason = "streamasset meshlet construction failed for source primitive " +
+                    std::to_string(sourceRenderPrimitiveIndex);
+                return false;
+            }
+            const auto built = CookClock::now();
+            progress.buildSeconds = std::chrono::duration<double>(built - decoded).count();
+            progress.clusters = primitive.meshletLodClusters.empty() ?
+                primitive.meshletClusters.size() : primitive.meshletLodClusters.size();
+            progress.groups = static_cast<uint32_t>(primitive.meshletLodGroups.size());
+            progress.phase = "encode";
+            notify();
+            const auto payloadStart = stream.tellp();
             int32_t streamPrimitiveIndex = kInvalidSceneIndex;
             if (!appendStreamPrimitivePages(
                     stream,
@@ -4033,6 +4070,11 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
                         return false;
                     }
                 }
+                progress.encodeSeconds = std::chrono::duration<double>(CookClock::now() - built).count();
+                progress.payloadBytes = static_cast<uint64_t>(stream.tellp() - payloadStart);
+                progress.completedGeometries = static_cast<uint32_t>(state.primitives.size());
+                progress.phase = "complete";
+                notify();
             }
         }
     }
@@ -4986,6 +5028,7 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
         .maxNewGeometriesPerInvocation = desc.maxNewGeometriesPerInvocation,
         .checkpointGeometryInterval = desc.partialCheckpointGeometryInterval,
         .stats = desc.stats,
+        .desc = &desc,
     };
     if (!buildStreamAssetGeometryPayloadsFromGltf(
             stream,

@@ -90,5 +90,6 @@ Asset/MeshletCache/
 *.meshopt-cache/
 cache/
 Asset/SuperSponza/
+Asset/MiniZorah/
 Captures/NsightGraphics/
 Captures/*.tracy

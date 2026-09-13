@@ -1,4 +1,4 @@
-#include "../../Libraries/GPUDriven/GPUDrivenRasterCommon.slang"
+#include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
 #include "../../Libraries/GPUDriven/HybridClusterBins.slang"
 #include "../../Libraries/GPUDriven/HybridRasterTriangle.slang"
 #include "../../Libraries/GPUDriven/ConservativeOcclusion.slang"
@@ -120,6 +120,10 @@ struct GPUDrivenStreamAssetRasterBindings
     uint width;
     uint height;
     uint visibleInstanceCounterBuffer;
+    uint gpuSceneInstanceBuffer;
+    uint padding0;
+    uint padding1;
+    uint padding2;
 };
 
 struct GPUDrivenStreamAssetActiveHeader
@@ -424,6 +428,7 @@ struct GPUDrivenStreamAssetVertexOutput
 {
     float4 position : SV_Position;
     nointerpolation uint visibilityId : TEXCOORD0;
+    nointerpolation uint doubleSided : TEXCOORD1;
 };
 
 struct GPUDrivenStreamAssetFullscreenOutput
@@ -1942,7 +1947,8 @@ void buildStreamLodFrontier(
     RWStructuredBuffer<uint> state,
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
     RWStructuredBuffer<uint> requests,
-    GPUDrivenStreamAssetParams params)
+    GPUDrivenStreamAssetParams params,
+    GPUDrivenStreamAssetPush push)
 {
     uint header = instanceIndex * 4u;
     state[header] = 0u;
@@ -1954,6 +1960,18 @@ void buildStreamLodFrontier(
         return;
     }
     GPUDrivenStreamAssetPrimitive primitive = primitives[instance.primitiveIndex];
+    // Frustum rejection is current-frame and independent of HZB history. Keep
+    // the ordinary state clearing below, so a returning instance cannot reuse
+    // stale parent reachability. Manual cut/debug and RT traversal stay intact.
+    if (params.enableGpuLodSelection != 0u && push.rasterBindingsBuffer != 0xffffffffu) {
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindings =
+            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
+        if ((bindings[0].cullingFlags & 1u) != 0u &&
+            !streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
+                max(instance.boundsCenterRadius.w, 0.000001), currentStreamCamera(params))) {
+            instance.visible = 0u;
+        }
+    }
     if (primitive.lodBvhNodeCount != 0u) {
         buildStreamLodBvhFrontier(instanceIndex, instance, primitive, groups,
             topology, state, pageTable, requests, params);
@@ -2028,29 +2046,44 @@ void buildStreamLodFrontier(
     state[header + 3u] = rootsReady ? 1u : 0u;
 }
 
+groupshared uint2 g_StreamLodPrefix[64];
+
 void prefixStreamLodFrontier(
     RWStructuredBuffer<uint> state,
     RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader,
-    GPUDrivenStreamAssetParams params)
+    GPUDrivenStreamAssetParams params, uint lane)
 {
-    uint fineCount = 0u;
-    bool overflow = false;
-    for (uint instanceIndex = 0u; instanceIndex < params.sceneInstanceCount; ++instanceIndex) {
-        uint count = state[instanceIndex * 4u];
-        overflow = overflow || count > params.activeGroupCount - min(fineCount, params.activeGroupCount);
-        fineCount = min(fineCount, params.activeGroupCount) + min(count, params.activeGroupCount);
+    uint perLane = (params.sceneInstanceCount + 63u) / 64u;
+    uint first = min(lane * perLane, params.sceneInstanceCount);
+    uint end = min(first + perLane, params.sceneInstanceCount);
+    uint limit = params.activeGroupCount + 1u;
+    uint2 total = 0u;
+    for (uint i = first; i < end; ++i) {
+        total = min(total + min(uint2(state[i * 4u], state[i * 4u + 2u]), limit), limit);
     }
-    uint prefix = 0u;
-    for (uint instanceIndex = 0u; instanceIndex < params.sceneInstanceCount; ++instanceIndex) {
+    g_StreamLodPrefix[lane] = total;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint stride = 1u; stride < 64u; stride *= 2u) {
+        uint2 previous = lane >= stride ? g_StreamLodPrefix[max(lane, stride) - stride] : uint2(0u);
+        GroupMemoryBarrierWithGroupSync();
+        g_StreamLodPrefix[lane] = min(g_StreamLodPrefix[lane] + previous, limit);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    bool overflow = g_StreamLodPrefix[63].x > params.activeGroupCount;
+    uint prefix = lane == 0u ? 0u : g_StreamLodPrefix[max(lane, 1u) - 1u][overflow ? 1u : 0u];
+    for (uint instanceIndex = first; instanceIndex < end; ++instanceIndex) {
         uint header = instanceIndex * 4u;
         state[header + 1u] = prefix;
         prefix += state[header + (overflow ? 2u : 0u)];
     }
-    bool invalidCapacity = prefix > params.activeGroupCount;
-    activeHeader[0].activeGroupCount = invalidCapacity ? 0u : prefix;
-    activeHeader[0].overflowCount = invalidCapacity ? 2u : (overflow ? 1u : 0u);
-    activeHeader[0].padding0 = overflow ? 1u : 0u;
-    activeHeader[0].padding1 = invalidCapacity ? 1u : 0u;
+    if (lane == 63u) {
+        uint count = g_StreamLodPrefix[63][overflow ? 1u : 0u];
+        bool invalidCapacity = count > params.activeGroupCount;
+        activeHeader[0].activeGroupCount = invalidCapacity ? 0u : count;
+        activeHeader[0].overflowCount = invalidCapacity ? 2u : (overflow ? 1u : 0u);
+        activeHeader[0].padding0 = overflow ? 1u : 0u;
+        activeHeader[0].padding1 = invalidCapacity ? 1u : 0u;
+    }
 }
 
 void emitStreamLodFrontier(
@@ -2175,13 +2208,11 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
             state.GetDimensions(wordCount, stride);
             if (threadIndex < wordCount) { state[threadIndex] = 0u; }
         } else if (push.activeBuildPhase == kActiveBuildPhasePrefix) {
-            if (threadIndex == 0u) {
-                prefixStreamLodFrontier(state, activeHeader, params);
-            }
+            prefixStreamLodFrontier(state, activeHeader, params, threadIndex);
         } else if (threadIndex < params.sceneInstanceCount) {
             if (push.activeBuildPhase == kActiveBuildPhaseFrontier) {
                 buildStreamLodFrontier(threadIndex, instances, primitives, groups,
-                    topology, state, pageTable, requests, params);
+                    topology, state, pageTable, requests, params, push);
             } else {
                 emitStreamLodFrontier(threadIndex, instances, primitives, groups,
                     topology, state, pageTable, activeGroups, activeHeader, params);
@@ -2635,6 +2666,7 @@ struct StreamRasterCluster
     uint triangleCount;
     uint triangleBaseByte;
     uint recordIndex;
+    uint instanceFlags;
 };
 
 bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool publishRecord,
@@ -2691,6 +2723,17 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     }
 
     GPUDrivenStreamAssetActiveGroup group = activeGroups[activeGroupIndex];
+    uint instanceFlags = 0u;
+    if (rasterBindings.gpuSceneInstanceBuffer != 0xffffffffu) {
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances =
+            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(
+                push.bufferShaderIndexBase + rasterBindings.gpuSceneInstanceBuffer, 0));
+        StructuredBuffer<GPUDrivenPreviewInstance> instanceBuffer = instances;
+        uint count, stride;
+        instanceBuffer.GetDimensions(count, stride);
+        if (group.gpuSceneInstanceIndex >= count) { return false; }
+        instanceFlags = instances[group.gpuSceneInstanceIndex].identity.w;
+    }
     if (group.pageIndex >= params.scenePageCount ||
         group.gpuSceneInstanceIndex == kInvalidClusterIndex ||
         clusterIndex >= group.clusterCount ||
@@ -2802,7 +2845,8 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     }
 
     float coneCutoff = asfloat(pageWords[clusterWord + 19u]);
-    if (testVisibility && (rasterBindings.cullingFlags & (1u << 3u)) != 0u && coneCutoff < 0.9999) {
+    if (testVisibility && (instanceFlags & 2u) == 0u &&
+        (rasterBindings.cullingFlags & (1u << 3u)) != 0u && coneCutoff < 0.9999) {
         float3 localConeApex = float3(
             asfloat(pageWords[clusterWord + 16u]),
             asfloat(pageWords[clusterWord + 17u]),
@@ -2849,6 +2893,7 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
         record.instanceIndex = group.gpuSceneInstanceIndex;
         record.dataIndex = activeGroupIndex;
         record.flags = kVisibleClusterSourceStreamPage << kVisibleClusterSourceShift;
+        record.flags |= ((instanceFlags & 2u) != 0u ? 1u : 0u) | ((instanceFlags & 4u) != 0u ? 2u : 0u);
         visibleClusters[localRecordIndex] = record;
     }
 
@@ -2862,6 +2907,7 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     output.triangleCount = clusterTriangleCount;
     output.triangleBaseByte = pageDeviceOffset + triangleOffsetBytes + triangleOffset;
     output.recordIndex = recordIndex;
+    output.instanceFlags = instanceFlags;
     return true;
 }
 
@@ -2926,7 +2972,10 @@ void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID,
         vertices[i * 3u].visibilityId = id;
         vertices[i * 3u + 1u].visibilityId = id;
         vertices[i * 3u + 2u].visibilityId = id;
-        bool queued = !prebinned && hybridEnqueueTriangle(a, b, d, id, false, push.hybridQueueBuffer, push.bufferShaderIndexBase);
+        vertices[i * 3u].doubleSided = (c.instanceFlags & 2u) != 0u;
+        vertices[i * 3u + 1u].doubleSided = (c.instanceFlags & 2u) != 0u;
+        vertices[i * 3u + 2u].doubleSided = (c.instanceFlags & 2u) != 0u;
+        bool queued = !prebinned && hybridEnqueueTriangle(a, b, d, id, (c.instanceFlags & 2u) != 0u, push.hybridQueueBuffer, push.bufferShaderIndexBase);
         triangles[i] = queued ? uint3(0u) : uint3(i * 3u, i * 3u + 1u, i * 3u + 2u);
     }
 }
@@ -2936,6 +2985,66 @@ groupshared float4 g_StreamRasterClip[128];
 groupshared uint g_StreamBinVisible;
 groupshared uint g_StreamBinHardware;
 
+groupshared uint g_StreamCandidatePrefix[128];
+
+// A stable expansion preserves equal-depth submission order and the original
+// record namespace. Work and scratch writes scale with the active cut, while
+// the capacity-sized record/list storage remains an explicit budget.
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void streamClusterPrepareMain(uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> headers =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.bufferShaderIndexBase + push.activeHeaderBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> bins =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> args =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridQueueBuffer, 0));
+    GPUDrivenStreamAssetActiveHeader header = headers[0];
+    uint count = min(header.activeGroupCount, header.activeGroupCapacity);
+    uint perLane = (count + 127u) / 128u;
+    uint first = min(lane * perLane, count), end = min(first + perLane, count);
+    uint total = 0u;
+    for (uint i = first; i < end; ++i) { total += countbits(groups[i].clusterSelectionMask); }
+    g_StreamCandidatePrefix[lane] = total;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint stride = 1u; stride < 128u; stride *= 2u) {
+        uint previous = lane >= stride ? g_StreamCandidatePrefix[max(lane, stride) - stride] : 0u;
+        GroupMemoryBarrierWithGroupSync();
+        g_StreamCandidatePrefix[lane] += previous;
+        GroupMemoryBarrierWithGroupSync();
+    }
+    uint offset = lane == 0u ? 0u : g_StreamCandidatePrefix[max(lane, 1u) - 1u];
+    uint capacity = bins[5];
+    for (uint i = first; i < end; ++i) {
+        uint mask = groups[i].clusterSelectionMask;
+        while (mask != 0u) {
+            uint cluster = firstbitlow(mask);
+            if (offset < capacity) {
+                uint slot = hybridCandidateBase(capacity) + offset * 2u;
+                bins[slot] = i * header.maxActiveGroupClusters + cluster;
+                bins[slot + 1u] = 0xffffffffu;
+            }
+            ++offset;
+            mask &= mask - 1u;
+        }
+    }
+    if (lane == 127u) {
+        uint candidates = min(g_StreamCandidatePrefix[127], capacity);
+        bins[12] = candidates;
+        bins[14] = g_StreamCandidatePrefix[127] - candidates;
+        args[0] = min(candidates, kHybridDispatchWidth);
+        args[1] = max(1u, (candidates + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
+        args[2] = 1u;
+        uint blocks = (candidates + 127u) / 128u;
+        args[3] = min(blocks, kHybridDispatchWidth);
+        args[4] = max(1u, (blocks + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
+        args[5] = 1u;
+    }
+}
+
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
@@ -2943,10 +3052,11 @@ void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, u
     DescriptorHandle<RWStructuredBuffer<uint>> handle =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
     RWStructuredBuffer<uint> bins = handle;
-    uint record = hybridFlatGroup(group);
-    if (record >= bins[12]) { return; }
+    uint candidate = hybridFlatGroup(group);
+    if (candidate >= bins[12]) { return; }
+    uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
     if (lane == 0u) {
-        hybridClassifyCluster(bins, 0xffffffffu, record, record);
+        hybridClassifyCluster(bins, 0xffffffffu, record, candidate);
         g_StreamBinVisible = loadStreamRasterCluster(record, true, true, push, g_StreamRasterCluster) ? 1u : 0u;
         g_StreamBinHardware = 0u;
     }
@@ -2960,7 +3070,7 @@ void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, u
             float2(bins[6], bins[7]), asfloat(bins[8]))) { InterlockedOr(g_StreamBinHardware, 1u); }
     }
     GroupMemoryBarrierWithGroupSync();
-    if (lane == 0u) { hybridClassifyCluster(bins, g_StreamBinHardware != 0u ? 0u : kHybridSoftwareBin, record, record); }
+    if (lane == 0u) { hybridClassifyCluster(bins, g_StreamBinHardware != 0u ? 0u : kHybridSoftwareBin, record, candidate); }
 }
 
 [shader("compute")]
@@ -2979,7 +3089,7 @@ void streamClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
     if (lane < g_StreamRasterCluster.triangleCount) {
         uint3 tri = streamClusterTriangle(g_StreamRasterCluster, lane, push);
         hybridRasterTriangle(g_StreamRasterClip[tri.x], g_StreamRasterClip[tri.y], g_StreamRasterClip[tri.z],
-            packVisibilityId(g_StreamRasterCluster.recordIndex, lane), false,
+            packVisibilityId(g_StreamRasterCluster.recordIndex, lane), (g_StreamRasterCluster.instanceFlags & 2u) != 0u,
             bins[6], bins[7], bins[9], bins[10], bins[11], push.bufferShaderIndexBase);
     }
 }
@@ -3442,7 +3552,9 @@ void gpuDrivenStreamAssetApplyUpdatesMain(uint3 dispatchThreadID : SV_DispatchTh
 }
 
 [shader("fragment")]
-uint gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, uniform GPUDrivenStreamAssetPush push) : SV_Target0
+uint gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, bool frontFace : SV_IsFrontFace,
+    uniform GPUDrivenStreamAssetPush push) : SV_Target0
 {
+    if (!frontFace && input.doubleSided == 0u) { discard; }
     return input.visibilityId;
 }

@@ -152,7 +152,8 @@ void gpuDrivenDebugCheckpoint(RenderGraphExecutionContext& context, std::string_
                 binding.metadata["validity"] = "Sparse storage; capacity is not a live record count";
             }
         }
-        values["streaming"] = {{"instances", DebugValue::array({streaming->debugSnapshot()})}};
+        values["streaming"] = {{"instances", DebugValue::array({streaming->debugSnapshot(
+            context.properties().value("debugStreamingPages", true))})}};
         values["streaming"]["instances"][0]["pass"] = context.passName();
     }
     context.debugCheckpoint(checkpoint, bindings, values);

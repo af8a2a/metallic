@@ -128,7 +128,8 @@ public:
 
     Result initialize(bool enableValidation = false, bool enableRayQuery = false, bool enableAftermath = true);
     Result render(RenderGraph& graph, uint32_t width, uint32_t height);
-    Result render(RenderGraph& graph, uint32_t width, uint32_t height, std::string_view outputName);
+    // Disabling readback still completes the frame, but leaves pixels() empty.
+    Result render(RenderGraph& graph, uint32_t width, uint32_t height, std::string_view outputName, bool readback = true);
     // Bind before rendering; the scene must outlive the preview renderer.
     // This keeps scene-owned lighting and world overrides in the same scene.
     void bindRuntimeScene(const scene::Scene* scene);

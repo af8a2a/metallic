@@ -1,0 +1,103 @@
+{
+  "auditDate": "2026-09-12",
+  "source": "E:\\metallic\\Asset\\MiniZorah\\zorah_main_public.v2.gltf",
+  "method": "Read glTF JSON metadata and binary file size only; no binary geometry decoding, cooking, rendering, or runtime performance measurement. Triangle totals count source primitives, without welding or content-based deduplication. Active scene traversal retains mesh instancing.",
+  "sourceGltfBytes": 10366362,
+  "sourceBinBytes": 10001629940,
+  "buffers": [
+    {
+      "uri": "zorah_main_public.v2.bin",
+      "byteLength": 10001629940
+    },
+    {
+      "byteLength": 31690629768
+    }
+  ],
+  "extensionsRequired": [
+    "EXT_meshopt_compression"
+  ],
+  "counts": {
+    "nodes": 16988,
+    "meshes": 2068,
+    "materials": 3283,
+    "textures": 0,
+    "images": 0,
+    "animations": 0,
+    "skins": 0,
+    "accessors": 6326,
+    "bufferViews": 4776
+  },
+  "activeSceneNodes": 16988,
+  "sourcePrimitives": 3163,
+  "primitiveInstances": 19144,
+  "sourceTriangles": 1627207159,
+  "instancedTriangles": 18937042387,
+  "summedSourcePositionAccessorVertices": 1050863072,
+  "attributes": {
+    "POSITION": 3163
+  },
+  "decodedCompressedBufferViewBytes": 31690629036,
+  "largestDecodedBufferViewBytes": 384655308,
+  "leafClusterLowerBoundAt128Triangles": 12714054,
+  "instancedLeafClusterLowerBoundAt128Triangles": 147955116,
+  "usedMaterialIds": 2882,
+  "primitiveInstancesByDeclaredAlphaMode": {
+    "OPAQUE": 15733,
+    "MASK": 2805,
+    "BLEND": 606
+  },
+  "allUsedMaterialsHaveUnitBaseAlpha": true,
+  "allUsedMasksPassConstantAlpha": true,
+  "largestSourcePrimitives": [
+    {
+      "meshIndex": 2018,
+      "primitiveIndex": 0,
+      "triangles": 32054609,
+      "vertices": 16005261,
+      "instanceCount": 1,
+      "exampleNodeName": "SM_ThroneRoom_Stairs_A1_1"
+    },
+    {
+      "meshIndex": 1967,
+      "primitiveIndex": 0,
+      "triangles": 29657518,
+      "vertices": 14928416,
+      "instanceCount": 1,
+      "exampleNodeName": "SM_StoneFloor_Round_A1_01"
+    },
+    {
+      "meshIndex": 2023,
+      "primitiveIndex": 0,
+      "triangles": 28031551,
+      "vertices": 14337242,
+      "instanceCount": 6,
+      "exampleNodeName": "SM_ThroneRoom_WallArchGrate_A1_4"
+    },
+    {
+      "meshIndex": 579,
+      "primitiveIndex": 0,
+      "triangles": 22738614,
+      "vertices": 11989644,
+      "instanceCount": 10,
+      "exampleNodeName": "SM_Courtyard_Ceiling_A1_Bended_1"
+    },
+    {
+      "meshIndex": 645,
+      "primitiveIndex": 0,
+      "triangles": 19841337,
+      "vertices": 10095976,
+      "instanceCount": 1,
+      "exampleNodeName": "SM_Courtyard_Interior_Floor_Sewer_A1"
+    },
+    {
+      "meshIndex": 1949,
+      "primitiveIndex": 0,
+      "triangles": 19461216,
+      "vertices": 9791458,
+      "instanceCount": 365,
+      "exampleNodeName": "SM_StoneFloor_6m_A1_303"
+    }
+  ],
+  "mountainNodes": 50,
+  "mountainInstancedTriangles": 1999963
+}

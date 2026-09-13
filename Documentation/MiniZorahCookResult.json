@@ -1,0 +1,214 @@
+{
+  "allPagesDeviceBytesAligned256": 60657643008,
+  "asset": "E:\\metallic\\Asset\\MeshletCache\\MiniZorahCook\\MiniZorah.meshstream.bin",
+  "checkpointsThisInvocation": 396,
+  "clustersAllLods": 33020491,
+  "directoryBytes": 421920120,
+  "elapsedSecondsThisInvocation": 3077.5834851,
+  "fileBytes": 60916791801,
+  "formatVersion": 9,
+  "groups": 1356959,
+  "instances": 19144,
+  "levels": {
+    "0": {
+      "clusters": 16086545,
+      "deviceBytes": 29510080768,
+      "pages": 652669,
+      "storedBytes": 29431749200,
+      "triangles": 1627207159
+    },
+    "1": {
+      "clusters": 8316457,
+      "deviceBytes": 15257641472,
+      "pages": 338076,
+      "storedBytes": 15217138400,
+      "triangles": 812153084
+    },
+    "2": {
+      "clusters": 4234213,
+      "deviceBytes": 7791343872,
+      "pages": 173378,
+      "storedBytes": 7770574080,
+      "triangles": 405403196
+    },
+    "3": {
+      "clusters": 2139058,
+      "deviceBytes": 3954140416,
+      "pages": 87924,
+      "storedBytes": 3943568208,
+      "triangles": 202357245
+    },
+    "4": {
+      "clusters": 1092498,
+      "deviceBytes": 2020272384,
+      "pages": 45097,
+      "storedBytes": 2014858432,
+      "triangles": 100990142
+    },
+    "5": {
+      "clusters": 564137,
+      "deviceBytes": 1037455360,
+      "pages": 23971,
+      "storedBytes": 1034582768,
+      "triangles": 50388836
+    },
+    "6": {
+      "clusters": 290122,
+      "deviceBytes": 535980800,
+      "pages": 13222,
+      "storedBytes": 534394448,
+      "triangles": 25126709
+    },
+    "7": {
+      "clusters": 147463,
+      "deviceBytes": 275165184,
+      "pages": 7559,
+      "storedBytes": 274264400,
+      "triangles": 12520253
+    },
+    "8": {
+      "clusters": 75001,
+      "deviceBytes": 138976768,
+      "pages": 4788,
+      "storedBytes": 138403856,
+      "triangles": 6229711
+    },
+    "9": {
+      "clusters": 37523,
+      "deviceBytes": 68418816,
+      "pages": 3391,
+      "storedBytes": 67992384,
+      "triangles": 3092727
+    },
+    "10": {
+      "clusters": 18882,
+      "deviceBytes": 34156288,
+      "pages": 2368,
+      "storedBytes": 33872000,
+      "triangles": 1515142
+    },
+    "11": {
+      "clusters": 9641,
+      "deviceBytes": 17636096,
+      "pages": 1842,
+      "storedBytes": 17410864,
+      "triangles": 739399
+    },
+    "12": {
+      "clusters": 4897,
+      "deviceBytes": 8907776,
+      "pages": 1239,
+      "storedBytes": 8768192,
+      "triangles": 350825
+    },
+    "13": {
+      "clusters": 2218,
+      "deviceBytes": 4130304,
+      "pages": 593,
+      "storedBytes": 4062976,
+      "triangles": 160982
+    },
+    "14": {
+      "clusters": 1095,
+      "deviceBytes": 1998336,
+      "pages": 412,
+      "storedBytes": 1945504,
+      "triangles": 73773
+    },
+    "15": {
+      "clusters": 497,
+      "deviceBytes": 901888,
+      "pages": 274,
+      "storedBytes": 868464,
+      "triangles": 32697
+    },
+    "16": {
+      "clusters": 168,
+      "deviceBytes": 302336,
+      "pages": 98,
+      "storedBytes": 289744,
+      "triangles": 11718
+    },
+    "17": {
+      "clusters": 58,
+      "deviceBytes": 103936,
+      "pages": 41,
+      "storedBytes": 98544,
+      "triangles": 3925
+    },
+    "18": {
+      "clusters": 17,
+      "deviceBytes": 28672,
+      "pages": 16,
+      "storedBytes": 27472,
+      "triangles": 1048
+    },
+    "19": {
+      "clusters": 1,
+      "deviceBytes": 1536,
+      "pages": 1,
+      "storedBytes": 1456,
+      "triangles": 54
+    }
+  },
+  "maxPagePayloadBytes": 74688,
+  "maxSourceRangeReadBytesThisInvocation": 110229866,
+  "maxWorkers": 4,
+  "minimumResidentBytesIncludingOneStreamPage": 5806336,
+  "pages": 1356959,
+  "payloadValidation": "all-pages",
+  "peakProcessCommitBytes": 4455763968,
+  "peakWorkingSetBytes": 10030624768,
+  "primitives": 3163,
+  "processMemoryBudgetBytes": 6442450944,
+  "runtimeFrontierStateBytes": 162274640,
+  "source": "E:\\metallic\\Asset\\MiniZorah\\zorah_main_public.v2.gltf",
+  "sourceRangeReadBytesThisInvocation": 10001623004,
+  "status": "complete",
+  "storedPayloadBytes": 60494871392,
+  "terminalInstanceClusters": 19144,
+  "terminalInstanceGroups": 19144,
+  "terminalPageBytesAligned256": 5731584,
+  "terminalPageCount": 3163,
+  "trianglesAllLods": 3248358625,
+  "manifest": "E:\\metallic\\Asset\\MeshletCache\\MiniZorahCook\\MiniZorah.manifest.json",
+  "sourceGltfSha256": "79bad3a90125618cf2edd9b3815373e9bae94cb3cf5a917d346409c8174f7acd",
+  "manifestSha256": "e9acc39d4c93e83aee8d2aec7084a6ce80abb780dffb4c74e41e597ba9524452",
+  "sourceTriangles": 1627207159,
+  "instancedSourceTriangles": 18937042387,
+  "sourceCoverageValidation": "all-primitives-and-instance-counts",
+  "cookEventValidation": "all-source-primitives",
+  "meshoptTemporaryCacheRemoved": true,
+  "milestone": "M1",
+  "completedDate": "2026-09-12",
+  "exitCode": 0,
+  "buildConfiguration": {
+    "cmakeBuildType": "RelWithDebInfo",
+    "compression": "none",
+    "checkpointGeometryInterval": 8,
+    "sourceBaselineCommit": "d27edb5ed68b8dbc402cb9d60969f0ef855af98a",
+    "includesUncommittedM1Changes": true,
+    "executableSha256": "89d951d6841ca4382069bfacc0f6bcc2aebb590e76716c4f00ff25323bffc0cd"
+  },
+  "stages": {
+    "geometryCompleteSeconds": 2963.7907398,
+    "sumDecodeSeconds": 149.215377,
+    "sumMeshletAndSimplifySeconds": 2560.5008563,
+    "sumEncodeAndCheckpointSeconds": 250.0083036,
+    "finalizationOpenAndPayloadValidationSeconds": 113.79274529999975,
+    "peakWorkingSetBytesAtGeometryCallbacks": 3812065280
+  },
+  "temporaryDiskObservation": {
+    "sampledPeakBytes": 31562322674,
+    "description": "Meshopt decode cache plus checkpoint; approximately one-minute samples beginning during the cook. This is an observed lower bound, not an exact peak. Temporary cache and checkpoint removed on success."
+  },
+  "regression": {
+    "passed": 5,
+    "failed": 0,
+    "recoveryAndWorkerCountByteEquality": true,
+    "logs": [
+      "build-relwithdebinfo/minizorah-m1/scene-tests.xml",
+      "build-relwithdebinfo/minizorah-m1/persistence-tests.xml"
+    ]
+  }
+}

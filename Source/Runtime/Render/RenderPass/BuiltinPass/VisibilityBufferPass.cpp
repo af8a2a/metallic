@@ -758,6 +758,11 @@ public:
         const scene::Scene* runtimeScene = runtimeSceneForPath(
             context.runtimeScene,
             scenePathFromProperties(properties()));
+        if (runtimeScene != nullptr && boolProperty(&properties(), "streamAssetOnly", false) &&
+            !runtimeScene->hasStreamGeometry()) {
+            log = "VisibilityBufferPass streamAssetOnly requires a metadata scene; select sceneBinding=asset to load it";
+            return makeError(Error::InvalidArgument);
+        }
         if (runtimeScene == nullptr && context.sceneResourceManager != nullptr) {
             Result sceneResult = context.sceneResourceManager->resolveScene(
                 properties(), context.runtimeScene, runtimeScene, log);
@@ -809,7 +814,7 @@ public:
             ? runtimeScene->contentRevision()
             : 0;
         if (visibilityPipelines_[0] != nullptr &&
-            drawTaskCount_ > 0 &&
+            (drawTaskCount_ > 0 || streamEnabled_) &&
             compiledScene_ == runtimeScene &&
             sceneResourceIdentity_ == runtimeResourceIdentity &&
             sceneLifetimeRevision_ == runtimeLifetimeRevision &&
@@ -905,7 +910,7 @@ public:
         lodLevelRanges_ = std::move(lodLevelRanges);
         drawTaskCount_ = maxMeshletRangeCount(baseMeshletRange_, lodLevelRanges_);
         instanceCount_ = static_cast<uint32_t>(instances.size());
-        if (drawTaskCount_ == 0 || instanceCount_ == 0) {
+        if ((drawTaskCount_ == 0 && !streamEnabled_) || instanceCount_ == 0) {
             log = "VisibilityBufferPass found no drawable meshlet instances";
             return makeError(Error::Failure);
         }
@@ -1104,7 +1109,7 @@ public:
             compositePipeline_ == nullptr ||
             cullingTargets_.visibilityView == nullptr ||
             cullingTargets_.depthView == nullptr ||
-            drawTaskCount_ == 0 ||
+            (drawTaskCount_ == 0 && !streamEnabled_) ||
             (streamEnabled_ &&
                 (context.streamer() == nullptr ||
                     !streamRuntime_.ready() ||
@@ -1446,6 +1451,8 @@ public:
                 return result;
             }
         }
+        gpuSceneSubsystem->publishVisibilityStream(gpuSceneView_, context.frameIndex(), sceneResourceIdentity_,
+            streamEnabled_ ? streamRuntime_.deferredGpuResources() : MeshletStreamDeferredGpuResourcesView{});
         ++frameIndex_;
         gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? &streamRuntime_ : nullptr, 1, residentRecordCapacity_);
         return {};
@@ -1509,6 +1516,9 @@ private:
         streamHybridQueueHandle_ = {};
         streamHybridClusterHandle_ = {};
         streamHybridPixelHandle_ = {};
+        streamCandidateArgumentsHandle_ = {};
+        streamClusterPrepareShader_.reset();
+        streamClusterPreparePipeline_.reset();
         streamClusterBinShader_.reset();
         streamClusterRasterShader_.reset();
         streamClusterBinPipeline_.reset();
@@ -1516,6 +1526,7 @@ private:
         streamVisibilityImageHandle_ = {};
         streamDepthImageHandle_ = {};
         streamInstanceVisibilityHandle_ = {};
+        streamGPUSceneInstanceHandle_ = {};
         streamVisibleInstanceIdsHandle_ = {};
         streamVisibleInstanceCounterHandle_ = {};
         streamHzbHandles_ = {};
@@ -1564,8 +1575,10 @@ private:
         };
 
         Result result = allocateBuffer(streamHybridQueueHandle_, "hybrid queue");
+        if (result) { result = allocateBuffer(streamGPUSceneInstanceHandle_, "GPUScene instances"); }
         if (result) { result = allocateBuffer(streamHybridClusterHandle_, "hybrid clusters"); }
         if (result) { result = allocateBuffer(streamHybridPixelHandle_, "hybrid pixels"); }
+        if (result) { result = allocateBuffer(streamCandidateArgumentsHandle_, "cluster candidate arguments"); }
         if (result) { result = allocateImage(streamVisibilityImageHandle_, "visibility"); }
         if (result) {
             result = allocateImage(streamDepthImageHandle_, "depth");
@@ -1974,6 +1987,10 @@ private:
         };
         if (hybridRasterizer_) {
             result = createShader(device, kMeshletStreamShaderModuleName,
+                "streamClusterPrepareMain", false, streamClusterPrepareShader_, log);
+            if (result) { result = createStreamCompute(*streamClusterPrepareShader_, streamClusterPreparePipeline_, "cluster candidates"); }
+            if (!result) { return result; }
+            result = createShader(device, kMeshletStreamShaderModuleName,
                 "streamClusterBinMain", false, streamClusterBinShader_, log);
             if (result) { result = createStreamCompute(*streamClusterBinShader_, streamClusterBinPipeline_, "cluster bin"); }
             if (result) { result = createShader(device, kMeshletStreamShaderModuleName,
@@ -2000,7 +2017,7 @@ private:
             .colorFormat = Format::R32Uint,
             .depthStencilFormat = Format::D32Sfloat,
             .rasterization = RasterizationState{
-                .cullMode = CullMode::Back,
+                .cullMode = CullMode::None,
                 .frontFace = FrontFace::CounterClockwise,
             },
             .depthStencil = DepthStencilState{
@@ -2147,12 +2164,12 @@ private:
             log = "VisibilityBufferPass requires current GPUScene raster buffers and layout";
             return makeError(Error::InvalidArgument);
         }
-        if (layout.maxRangeCount == 0 || subsystem.instances().empty() ||
+        if ((layout.maxRangeCount == 0 && !streamEnabled_) || subsystem.instances().empty() ||
             subsystem.materials().empty()) {
             log = "VisibilityBufferPass GPUScene raster layout has no drawable instances";
             return makeError(Error::Failure);
         }
-        if (views.meshletDraws.structureStride != sizeof(VisibleClusterRecord) ||
+        if ((views.meshletDraws.size != 0 && views.meshletDraws.structureStride != sizeof(VisibleClusterRecord)) ||
             views.meshletDraws.size % sizeof(VisibleClusterRecord) != 0 ||
             views.meshletDraws.size / sizeof(VisibleClusterRecord) >
                 std::numeric_limits<uint32_t>::max()) {
@@ -2531,7 +2548,8 @@ private:
             result = commandBuffer.dispatchIndirect(residentLods_[activeFrameSlot_]->arguments());
             if (!result) { commandBuffer.endDebugLabel(); return result; }
             commandBuffer.endDebugLabel();
-            hybridRasterizer_->finishClusterBins(commandBuffer);
+            result = hybridRasterizer_->finishClusterBins(commandBuffer);
+            if (!result) { return result; }
             if (!projectWithCullingCamera) {
                 debugClusterBins(context, passIndex == 0 ? "AfterResidentEarlyBins" : "AfterResidentLateBins");
             }
@@ -2804,6 +2822,9 @@ private:
 
     Result syncRuntimeGeometry(const scene::Scene* runtimeScene)
     {
+        if (compiledScene_ != nullptr && compiledScene_->hasStreamGeometry()) {
+            runtimeScene = compiledScene_;
+        }
         runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
         if (runtimeScene == nullptr) {
             return {};
@@ -2853,6 +2874,9 @@ private:
     {
         if (!streamEnabled_) {
             return {};
+        }
+        if (compiledScene_ != nullptr && compiledScene_->hasStreamGeometry()) {
+            runtimeScene = compiledScene_;
         }
         runtimeScene = runtimeSceneForPath(
             runtimeScene,
@@ -2914,6 +2938,10 @@ private:
             streamOwnerMask_[instance.index] = 1u;
             ++mappedCount;
         }
+        if (runtimeScene->hasStreamGeometry() && mappedCount != subsystem.instances().size()) {
+            log = "VisibilityBufferPass stream metadata contains instances without cooked geometry";
+            return makeError(Error::InvalidArgument);
+        }
         result = streamRuntime_.syncGPUSceneInstanceMapping(mapping);
         if (!result) {
             log = "VisibilityBufferPass failed to upload the stream GPUScene mapping";
@@ -2972,10 +3000,14 @@ private:
         }
 
         BindlessHeap& heap = *streamRuntime_.bindlessHeap();
+        Result instanceBinding = heap.writeBufferView(streamGPUSceneInstanceHandle_,
+            *subsystem.globalBufferViews().instances.view);
+        if (!instanceBinding) { return instanceBinding; }
         if (hybridRasterizer_) {
             Result hybridResult = heap.writeStorageBuffer(streamHybridQueueHandle_, hybridRasterizer_->queueBuffer());
             if (hybridResult) { hybridResult = heap.writeStorageBuffer(streamHybridClusterHandle_, hybridRasterizer_->clusterBuffer()); }
             if (hybridResult) { hybridResult = heap.writeStorageBuffer(streamHybridPixelHandle_, hybridRasterizer_->pixelBuffer()); }
+            if (hybridResult) { hybridResult = heap.writeStorageBuffer(streamCandidateArgumentsHandle_, hybridRasterizer_->candidateArguments()); }
             if (!hybridResult) { return hybridResult; }
         }
         Result result = heap.writeSampledImage(
@@ -3040,6 +3072,7 @@ private:
                 .height = frameHeight_,
                 .visibleInstanceCounterBuffer =
                     streamVisibleInstanceCounterHandle_.index,
+                .gpuSceneInstanceBuffer = streamGPUSceneInstanceHandle_.index,
             });
         if (!result || streamOwnerMaskBuffer_ == nullptr) {
             return result ? makeError(Error::InvalidArgument) : result;
@@ -3196,15 +3229,27 @@ private:
         if (prebin) {
             const uint32_t count = streamRuntime_.visibleClusterCapacity();
             result = hybridRasterizer_->beginClusters(commandBuffer,
-                softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.index, count, true);
+                softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.index, count, true, true);
             if (!result) { return result; }
             commandBuffer.bindBindlessHeap(*streamRuntime_.bindlessHeap());
+            commandBuffer.beginDebugLabel({.name = "Hybrid raster: compact stream candidates"});
+            commandBuffer.bindComputePipeline(*streamClusterPreparePipeline_);
+            // The prepare entry uses this otherwise unused handle for its two
+            // indirect dispatches; raster entries retain the queue contract.
+            push.hybridQueueBuffer = streamCandidateArgumentsHandle_.index;
+            commandBuffer.pushBindlessData(&push, sizeof(push));
+            commandBuffer.dispatch(1);
+            hybridRasterizer_->prepareClusterCandidates(commandBuffer);
+            push.hybridQueueBuffer = UINT32_MAX;
+            commandBuffer.endDebugLabel();
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify stream clusters"});
             commandBuffer.bindComputePipeline(*streamClusterBinPipeline_);
             commandBuffer.pushBindlessData(&push, sizeof(push));
-            dispatchClusterCandidates(commandBuffer, count);
+            result = commandBuffer.dispatchIndirect(hybridRasterizer_->candidateArguments());
             commandBuffer.endDebugLabel();
-            hybridRasterizer_->finishClusterBins(commandBuffer);
+            if (!result) { return result; }
+            result = hybridRasterizer_->finishClusterBins(commandBuffer);
+            if (!result) { return result; }
             debugClusterBins(context, phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyBins" : "AfterStreamLateBins");
 
         } else if (hybridRasterEnabled()) {
@@ -4295,6 +4340,16 @@ private:
         outLodLevelRanges.clear();
         outBounds = loadedScene.bounds();
         outTransforms = buildSceneGpuTransforms(loadedScene);
+        if (loadedScene.hasStreamGeometry()) {
+            if (!previewStreamEnabled(properties)) {
+                log = "VisibilityBufferPass stream metadata requires a cooked StreamAsset";
+                return false;
+            }
+            // Global instance and material tables are uploaded by GPUScene.
+            // A stream-only scene has no resident raster records or LOD copies.
+            outInstances.resize(loadedScene.renderNodes().size());
+            return !outInstances.empty();
+        }
 
         struct DrawableSource {
             const scene::RenderPrimitive* primitive = nullptr;
@@ -4752,6 +4807,9 @@ private:
     BindlessHandle hybridPixelHandle_;
     BindlessHandle streamHybridClusterHandle_;
     BindlessHandle streamHybridPixelHandle_;
+    BindlessHandle streamCandidateArgumentsHandle_;
+    std::unique_ptr<ShaderModule> streamClusterPrepareShader_;
+    std::unique_ptr<ComputePipeline> streamClusterPreparePipeline_;
     std::unique_ptr<ShaderModule> clusterBinShader_;
     std::unique_ptr<ShaderModule> clusterCountShader_;
     std::unique_ptr<ShaderModule> clusterRasterShader_;
@@ -4788,6 +4846,7 @@ private:
     BindlessHandle cullingDepthImageHandle_;
     std::vector<BindlessHandle> materialTextureHandles_;
     BindlessHandle streamOwnerMaskHandle_;
+    BindlessHandle streamGPUSceneInstanceHandle_;
     BindlessHandle streamVisibilityImageHandle_;
     BindlessHandle streamDepthImageHandle_;
     BindlessHandle streamInstanceVisibilityHandle_;

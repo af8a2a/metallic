@@ -123,12 +123,15 @@ struct SceneNode {
     bool visible = true;
 };
 
+enum class GeometryStorage { Resident, StreamAsset };
+
 struct RenderPrimitive {
     std::string name;
     int32_t meshIndex = kInvalidSceneIndex;
     int32_t primitiveIndex = kInvalidSceneIndex;
     int32_t materialIndex = kInvalidSceneIndex;
     int32_t mode = 4;
+    GeometryStorage storage = GeometryStorage::Resident;
     uint64_t vertexCount = 0;
     uint64_t indexCount = 0;
     uint64_t triangleCount = 0;
@@ -249,7 +252,11 @@ struct RenderMaterial {
 };
 
 bool buildMeshletsForPrimitive(RenderPrimitive& primitive);
-bool buildStreamMeshletsForPrimitive(RenderPrimitive& primitive);
+struct MeshletBuildOptions {
+    // Zero preserves the normal importer worker limit. Does not change geometry.
+    uint32_t maxWorkers = 0;
+};
+bool buildStreamMeshletsForPrimitive(RenderPrimitive& primitive, const MeshletBuildOptions& options = {});
 
 struct RenderCamera {
     SceneEntity object = kNullSceneEntity;
@@ -324,6 +331,9 @@ public:
     bool loadDeferredMeshlets(
         const std::filesystem::path& filename,
         const SceneLoadProgressCallback& progressCallback);
+    // Static glTF metadata only: the matching StreamAsset owns geometry bytes.
+    bool loadStreamMetadata(const std::filesystem::path& filename);
+    bool hasStreamGeometry() const { return streamGeometry_; }
     bool compose(
         std::vector<SceneSourceDesc> sources,
         std::string& error,
@@ -421,7 +431,8 @@ private:
     bool loadInternal(
         const std::filesystem::path& filename,
         const SceneLoadProgressCallback& progressCallback,
-        bool deferMeshletBuild);
+        bool deferMeshletBuild,
+        bool streamMetadata = false);
     bool loadUsdInternal(
         const std::filesystem::path& filename,
         const SceneLoadProgressCallback& progressCallback,
@@ -456,6 +467,7 @@ private:
     std::vector<DeferredMeshletCacheTarget> deferredMeshletCacheTargets_;
     std::vector<uint8_t> deferredMeshletBuildMask_;
     bool deferredMeshletBuild_ = false;
+    bool streamGeometry_ = false;
     uint64_t resourceIdentity_ = 0;
     uint64_t materialRevision_ = 0;
 };

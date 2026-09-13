@@ -12,6 +12,7 @@ constexpr const char* kGPUDrivenSampleId = metallic::render::kDefaultGPUDrivenSa
 constexpr const char* kGPUDrivenVisibilitySampleId = metallic::render::kGPUDrivenVisibilitySampleId;
 constexpr const char* kGPUDrivenUsdSampleId = "gpu-driven-usd";
 constexpr const char* kGPUDrivenStreamAssetSampleId = "gpu-driven-streamasset";
+constexpr const char* kGPUDrivenMiniZorahSampleId = "gpu-driven-minizorah";
 constexpr const char* kGPUDrivenTerrainP0SampleId = "gpu-driven-terrain-p0";
 constexpr const char* kGPUDrivenTerrainP1SampleId = "gpu-driven-terrain-p1-unified";
 constexpr const char* kGPUDrivenRtasVisualizationSampleId = "gpu-driven-rtas-visualization";
@@ -27,6 +28,8 @@ void printUsage()
         "  --visibility-buffer          Load visibility-buffer diagnostics without lighting\n"
         "  --usd                        Load Super Sponza through OpenUSD\n"
         "  --streamasset                Load the default meshlet StreamAsset variant\n"
+        "  --minizorah                  Load the complete cooked MiniZorah scene\n"
+        "  --minizorah-vbuffer          Load MiniZorah through unified VBuffer and scalar materials\n"
         "  --terrain-p0                 Load the generated Houdini height-field StreamAsset\n"
         "  --terrain-p1                 Load the unified GPUScene/StreamAsset terrain pipeline\n"
         "  --legacy-preloaded           Alias for the visibility-buffer variant\n"
@@ -61,6 +64,14 @@ int main(int argc, char** argv)
         }
         if (argument == "--streamasset") {
             sampleId = kGPUDrivenStreamAssetSampleId;
+            continue;
+        }
+        if (argument == "--minizorah") {
+            sampleId = kGPUDrivenMiniZorahSampleId;
+            continue;
+        }
+        if (argument == "--minizorah-vbuffer") {
+            sampleId = "gpu-driven-minizorah-vbuffer";
             continue;
         }
         if (argument == "--debug-control") {

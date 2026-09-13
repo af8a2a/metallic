@@ -88,6 +88,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/LightGridDebugPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/CopyColorPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/FinalBlitPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferMaterialPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/AutoExposurePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SliderDebugPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPass.cpp
@@ -300,6 +301,17 @@ endif()
 target_link_libraries(MetallicRuntimeRender PUBLIC
     MetallicRuntimeScene
 )
+
+# CPU-only offline cooker. Avoids editor/Vulkan/RTAS startup and can be built
+# independently while processing assets larger than resident scene memory.
+add_executable(MetallicMeshletCook Tools/MeshletCookMain.cpp)
+target_link_libraries(MetallicMeshletCook PRIVATE MetallicRuntimeScene)
+if(WIN32)
+    target_compile_definitions(MetallicMeshletCook PRIVATE NOMINMAX)
+    target_link_libraries(MetallicMeshletCook PRIVATE Psapi)
+endif()
+metallic_copy_openusd_runtime(MetallicMeshletCook)
+metallic_copy_spdlog_runtime(MetallicMeshletCook)
 
 # Apply the launch default to every executable that shares the editor shell.
 set_property(SOURCE Editor/EditorApplication.cpp APPEND PROPERTY COMPILE_DEFINITIONS

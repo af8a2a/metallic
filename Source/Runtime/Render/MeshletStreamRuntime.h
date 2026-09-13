@@ -308,6 +308,10 @@ struct MeshletStreamGpuRasterBindings {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t visibleInstanceCounterBuffer = 0;
+    uint32_t gpuSceneInstanceBuffer = UINT32_MAX;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
 };
 
 // Non-owning resources required by a unified deferred consumer. The stream
@@ -363,7 +367,7 @@ struct MeshletStreamUserPush {
     uint32_t tlasInstanceBuffer = 0;
     uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
     uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
-    uint32_t rasterBindingsBuffer = 0;
+    uint32_t rasterBindingsBuffer = UINT32_MAX;
     uint32_t hybridQueueBuffer = UINT32_MAX;
     uint32_t hybridClusterBuffer = UINT32_MAX;
 };
@@ -383,7 +387,7 @@ static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGpuParams) == 368);
-static_assert(sizeof(MeshletStreamGpuRasterBindings) == 64);
+static_assert(sizeof(MeshletStreamGpuRasterBindings) == 80);
 static_assert(sizeof(MeshletStreamUserPush) == 120);
 
 struct MeshletStreamRuntimeDesc {
@@ -484,7 +488,7 @@ public:
     const MeshletStreamResidencyManager& residency() const { return residency_; }
     void setDebugReadbackEnabled(bool enabled) { debugReadbackEnabled_ = enabled; }
     void appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& prefix) const;
-    nlohmann::json debugSnapshot() const;
+    nlohmann::json debugSnapshot(bool includePages = true) const;
     MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }
 
 private:
@@ -637,6 +641,7 @@ private:
     uint32_t residentPageCapacity_ = 0;
     uint32_t currentResidentPageCount_ = 0;
     uint64_t maxResidentBytes_ = 0;
+    std::vector<uint32_t> lockedFallbackPages_;
     uint32_t maxActiveGroups_ = 0;
     uint32_t maxActiveGroupClusters_ = 0;
     uint32_t maxPrimitiveGroupCount_ = 0;

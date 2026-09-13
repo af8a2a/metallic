@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <span>
 #include <string>
 #include <vector>
@@ -333,7 +334,11 @@ struct GPUDrivenStreamAssetRetiredFrameResources {
 
 class GPUDrivenStreamAssetPass final : public UnsafePass {
 public:
-    RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
+    RenderGraphSceneDependency sceneDependency() const override
+    {
+        return {boolProperty(properties(), "streamAssetOnly", false)
+            ? RenderGraphSceneSource::None : RenderGraphSceneSource::World};
+    }
 
     ~GPUDrivenStreamAssetPass() override
     {
@@ -443,10 +448,10 @@ public:
             gpuSceneView_ = {};
         }
 
-        const scene::Scene* runtimeScene = runtimeSceneForPath(
-            context.runtimeScene,
-            scenePathFromProperties(properties()));
-        if (runtimeScene == nullptr && context.sceneResourceManager != nullptr) {
+        const bool streamAssetOnly = boolProperty(properties(), "streamAssetOnly", false);
+        const scene::Scene* runtimeScene = streamAssetOnly ? nullptr : runtimeSceneForPath(
+            context.runtimeScene, scenePathFromProperties(properties()));
+        if (!streamAssetOnly && runtimeScene == nullptr && context.sceneResourceManager != nullptr) {
             Result sceneResult = context.sceneResourceManager->resolveScene(
                 properties(),
                 context.runtimeScene,
@@ -495,6 +500,7 @@ public:
             streamRuntime_.ready() && compiledRuntimeDesc_ == runtimeDesc &&
             compiledSourceIdentity_ == sourceIdentity &&
             compiledSourceContentRevision_ == sourceContentRevision &&
+            compiledStreamAssetOnly_ == streamAssetOnly &&
             compiledDebugReadback_ == context.debugReadback &&
             compiledColorFormat_ == context.defaultFormat &&
             rtasVisualization_ == rtasVisualization) {
@@ -519,6 +525,17 @@ public:
         Result result = streamRuntime_.initialize(*context.device, runtimeDesc, log);
         if (!result) {
             return result;
+        }
+        if (streamAssetOnly) {
+            gpuSceneSubsystem_->scene().ensureDrawSet();
+            // This pass owns its visibility-state slots. Cache instance IDs are
+            // stable within the asset; no resident GPUScene geometry is needed.
+            std::vector<uint32_t> mapping(streamRuntime_.asset().instanceCount());
+            std::iota(mapping.begin(), mapping.end(), 0u);
+            result = streamRuntime_.syncGPUSceneInstanceMapping(mapping);
+            if (!result) { return result; }
+            spdlog::info("[GPUDrivenStreamAssetPass] Cache-only scene: {} geometries, {} instances; ordinary Scene/RTAS import bypassed",
+                streamRuntime_.asset().primitiveCount(), streamRuntime_.asset().instanceCount());
         }
         rtasVisualization_ = rtasVisualization;
 
@@ -837,6 +854,7 @@ public:
         compiledRuntimeDesc_ = runtimeDesc;
         compiledSourceIdentity_ = sourceIdentity;
         compiledSourceContentRevision_ = sourceContentRevision;
+        compiledStreamAssetOnly_ = streamAssetOnly;
         compiledDebugReadback_ = context.debugReadback;
         compiledColorFormat_ = context.defaultFormat;
         compiled_ = true;
@@ -851,9 +869,8 @@ public:
             !gpuSceneView_.valid()) {
             return makeError(Error::InvalidArgument);
         }
-        const scene::Scene* runtimeScene = runtimeSceneForPath(
-            context.runtimeScene(),
-            scenePathFromProperties(context.properties()));
+        const scene::Scene* runtimeScene = compiledStreamAssetOnly_ ? nullptr : runtimeSceneForPath(
+            context.runtimeScene(), scenePathFromProperties(context.properties()));
         if (runtimeScene != nullptr) {
             std::string syncLog;
             Result syncResult = streamRuntime_.syncRuntimeScene(*runtimeScene, syncLog);
@@ -863,31 +880,31 @@ public:
             }
         }
 
-        std::vector<uint32_t> gpuSceneInstanceMapping(
-            streamRuntime_.asset().instances().size(),
-            std::numeric_limits<uint32_t>::max());
-        uint32_t mappedInstanceCount = 0;
-        for (size_t instanceIndex = 0;
-             instanceIndex < streamRuntime_.asset().instances().size();
-             ++instanceIndex) {
-            const GPUSceneInstanceId gpuSceneInstance =
-                gpuSceneSubsystem->instanceForRenderNode(
-                    streamRuntime_.asset().instances()[instanceIndex].renderNodeIndex);
-            if (gpuSceneInstance.valid()) {
-                gpuSceneInstanceMapping[instanceIndex] = gpuSceneInstance.index;
-                ++mappedInstanceCount;
+        Result result;
+        if (!compiledStreamAssetOnly_) {
+            std::vector<uint32_t> gpuSceneInstanceMapping(
+                streamRuntime_.asset().instances().size(),
+                std::numeric_limits<uint32_t>::max());
+            uint32_t mappedInstanceCount = 0;
+            for (size_t instanceIndex = 0;
+                 instanceIndex < streamRuntime_.asset().instances().size();
+                 ++instanceIndex) {
+                const GPUSceneInstanceId gpuSceneInstance =
+                    gpuSceneSubsystem->instanceForRenderNode(
+                        streamRuntime_.asset().instances()[instanceIndex].renderNodeIndex);
+                if (gpuSceneInstance.valid()) {
+                    gpuSceneInstanceMapping[instanceIndex] = gpuSceneInstance.index;
+                    ++mappedInstanceCount;
+                }
             }
-        }
-        if (!gpuSceneInstanceMapping.empty() && mappedInstanceCount == 0) {
-            spdlog::warn(
-                "[GPUDrivenStreamAssetPass] GPUScene mapping is empty for {} stream instances (GPUScene instances={})",
-                gpuSceneInstanceMapping.size(),
-                gpuSceneSubsystem->instances().size());
-        }
-        Result result = streamRuntime_.syncGPUSceneInstanceMapping(
-            gpuSceneInstanceMapping);
-        if (!result) {
-            return result;
+            if (!gpuSceneInstanceMapping.empty() && mappedInstanceCount == 0) {
+                spdlog::warn(
+                    "[GPUDrivenStreamAssetPass] GPUScene mapping is empty for {} stream instances (GPUScene instances={})",
+                    gpuSceneInstanceMapping.size(),
+                    gpuSceneSubsystem->instances().size());
+            }
+            result = streamRuntime_.syncGPUSceneInstanceMapping(gpuSceneInstanceMapping);
+            if (!result) { return result; }
         }
 
         TextureHandle color = context.outputTexture("color");
@@ -1799,6 +1816,7 @@ private:
     uint64_t compiledSourceContentRevision_ = 0;
     Format compiledColorFormat_ = Format::Rgba8Unorm;
     bool compiledDebugReadback_ = false;
+    bool compiledStreamAssetOnly_ = false;
     bool compiled_ = false;
 };
 

@@ -3168,7 +3168,7 @@ Result RenderGraphPreviewRenderer::render(
     RenderGraph& graph,
     uint32_t newWidth,
     uint32_t newHeight,
-    std::string_view outputName)
+    std::string_view outputName, bool readback)
 {
     if (impl_->device == nullptr ||
         impl_->graphicsQueue == nullptr ||
@@ -3244,11 +3244,22 @@ Result RenderGraphPreviewRenderer::render(
         return makeError(Error::Unsupported);
     }
 
+    if (!readback) {
+        ++impl_->historyFrameIndex;
+        result = impl_->executor.execute(RenderGraphSubmitDesc{.graphicsQueue = impl_->graphicsQueue,
+            .computeQueue = impl_->device->getQueue(QueueType::Compute), .historyResources = &impl_->historyResources});
+        if (result) { result = impl_->executor.waitForSubmittedWork(); }
+        impl_->pixels.clear();
+        impl_->width = outputWidth;
+        impl_->height = outputHeight;
+        return result;
+    }
     result = impl_->ensureReadback(outputWidth, outputHeight, outputTexelByteSize);
     if (!result) {
         return result;
     }
 
+    impl_->pixels.resize(static_cast<size_t>(outputWidth) * outputHeight);
     result = impl_->frameContext.begin(impl_->historyFrameIndex);
     if (!result) {
         return result;
