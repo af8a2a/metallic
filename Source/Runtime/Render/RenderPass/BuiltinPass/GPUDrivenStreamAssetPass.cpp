@@ -434,9 +434,12 @@ public:
         if (context.device == nullptr) {
             return makeError(Error::InvalidArgument);
         }
+        // Slang emits the Geometry capability for fragment SV_PrimitiveID,
+        // including IDs supplied by a mesh shader primitive output.
         if (!context.device->capabilities().meshShader ||
+            !context.device->capabilities().geometryShader ||
             !context.device->capabilities().bindlessDescriptorHeap) {
-            log = "GPUDrivenStreamAssetPass requires meshShader and bindlessDescriptorHeap capabilities";
+            log = "GPUDrivenStreamAssetPass requires meshShader, geometryShader, and bindlessDescriptorHeap capabilities";
             return makeError(Error::Unsupported);
         }
 
@@ -966,17 +969,26 @@ public:
         if (!result) {
             return result;
         }
-        result = streamRuntime_.cmdBeginFrame(context.commandBuffer(), *context.streamer(), frame);
+        {
+            auto profile = context.profileScope("Stream Begin");
+            result = streamRuntime_.cmdBeginFrame(context.commandBuffer(), *context.streamer(), frame);
+        }
         if (!result) {
             return result;
         }
         if (rtasVisualization_) {
-            result = streamRuntime_.cmdPreTraversal(context.commandBuffer(), frame);
+            {
+                auto profile = context.profileScope("Stream traversal / RTAS");
+                result = streamRuntime_.cmdPreTraversal(context.commandBuffer(), frame);
+            }
             if (!result) {
                 return result;
             }
             gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, UINT32_MAX);
-            result = drawRayQuery(context, color, frame);
+            {
+                auto profile = context.profileScope("Ray query");
+                result = drawRayQuery(context, color, frame);
+            }
         } else {
             bool cameraCut = false;
             if (HistoryResourceManager* historyResources = context.historyResources()) {
@@ -1021,27 +1033,36 @@ public:
             // Stream traversal currently also publishes the per-frame camera and
             // scene params consumed by the cull kernels. P2 can split that upload
             // from traversal so the early instance state also prunes page demand.
-            result = streamRuntime_.cmdPreTraversal(context.commandBuffer(), frame);
+            {
+                auto profile = context.profileScope("Stream traversal / RTAS");
+                result = streamRuntime_.cmdPreTraversal(context.commandBuffer(), frame);
+            }
             if (!result) {
                 return result;
             }
             gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, UINT32_MAX);
-            result = dispatchInstanceCull(
-                context.commandBuffer(),
-                GPUSceneCullPhase::Early);
+            {
+                auto profile = context.profileScope("Early Instance cull");
+                result = dispatchInstanceCull(
+                    context.commandBuffer(),
+                    GPUSceneCullPhase::Early);
+            }
             if (!result) {
                 return result;
             }
             gpuDrivenDebugCheckpoint(context, "AfterEarlyCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, 0);
             result = streamRuntime_.cmdPrepareVisibility(context.commandBuffer());
             if (result) {
-                result = draw(
-                    context,
-                    *visibility.view(),
-                    depth,
-                    GPUSceneCullPhase::Early,
-                    LoadOp::Clear,
-                    frame.camera.reversedZ);
+                {
+                    auto profile = context.profileScope("Early Hardware raster");
+                    result = draw(
+                        context,
+                        *visibility.view(),
+                        depth,
+                        GPUSceneCullPhase::Early,
+                        LoadOp::Clear,
+                        frame.camera.reversedZ);
+                }
             }
             if (result) {
                 transitionTexture(
@@ -1049,7 +1070,10 @@ public:
                     *depth.texture(),
                     ResourceState::DepthStencilAttachment,
                     ResourceState::ShaderRead);
-                result = buildHzb(context.commandBuffer());
+                {
+                    auto profile = context.profileScope("Early HZB");
+                    result = buildHzb(context.commandBuffer());
+                }
             }
             if (result) {
                 transitionTexture(
@@ -1057,22 +1081,28 @@ public:
                     *depth.texture(),
                     ResourceState::ShaderRead,
                     ResourceState::DepthStencilAttachment);
-                result = dispatchInstanceCull(
-                    context.commandBuffer(),
-                    GPUSceneCullPhase::Late);
+                {
+                    auto profile = context.profileScope("Late Instance cull");
+                    result = dispatchInstanceCull(
+                        context.commandBuffer(),
+                        GPUSceneCullPhase::Late);
+                }
             }
             if (result) {
                 gpuDrivenDebugCheckpoint(context, "AfterLateCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, 1);
                 result = streamRuntime_.cmdPrepareVisibility(context.commandBuffer());
             }
             if (result) {
-                result = draw(
-                    context,
-                    *visibility.view(),
-                    depth,
-                    GPUSceneCullPhase::Late,
-                    LoadOp::Load,
-                    frame.camera.reversedZ);
+                {
+                    auto profile = context.profileScope("Late Hardware raster");
+                    result = draw(
+                        context,
+                        *visibility.view(),
+                        depth,
+                        GPUSceneCullPhase::Late,
+                        LoadOp::Load,
+                        frame.camera.reversedZ);
+                }
             }
             if (result) {
                 transitionTexture(
@@ -1080,10 +1110,16 @@ public:
                     *depth.texture(),
                     ResourceState::DepthStencilAttachment,
                     ResourceState::ShaderRead);
-                result = buildHzb(context.commandBuffer());
+                {
+                    auto profile = context.profileScope("Late HZB");
+                    result = buildHzb(context.commandBuffer());
+                }
             }
             if (result) {
-                result = dispatchDeferred(context, visibility);
+                {
+                    auto profile = context.profileScope("Deferred shading");
+                    result = dispatchDeferred(context, visibility);
+                }
             }
             if (result) {
                 transitionTexture(
@@ -1091,7 +1127,10 @@ public:
                     *depth.texture(),
                     ResourceState::ShaderRead,
                     ResourceState::DepthStencilAttachment);
-                result = drawComposite(context, color);
+                {
+                    auto profile = context.profileScope("Composite");
+                    result = drawComposite(context, color);
+                }
             }
             if (result) {
                 hzbValid_ = true;
@@ -1106,11 +1145,18 @@ public:
         if (!result) {
             return result;
         }
-        result = streamRuntime_.cmdPostTraversal(context.commandBuffer());
+        {
+            auto profile = context.profileScope("Stream feedback");
+            result = streamRuntime_.cmdPostTraversal(context.commandBuffer());
+        }
         if (!result) {
             return result;
         }
-        result = streamRuntime_.cmdEndFrame(context.commandBuffer());
+        {
+            auto profile = context.profileScope("Stream End");
+            result = streamRuntime_.cmdEndFrame(context.commandBuffer());
+        }
+        if (result) { context.publishStreamingProfile(streamRuntime_.profilingStats()); }
         if (result) { gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, rtasVisualization_ ? UINT32_MAX : 1); }
         return result;
     }

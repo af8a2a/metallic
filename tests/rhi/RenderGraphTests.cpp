@@ -7321,6 +7321,7 @@ public:
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
                 .enableMeshShader = true,
+                .enableGeometryShader = true,
                 .enableRayQuery = true,
                 .enableClusterAccelerationStructure = true,
             },

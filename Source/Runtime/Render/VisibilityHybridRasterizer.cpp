@@ -1,4 +1,5 @@
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
+#include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include <algorithm>
 #include <cmath>
@@ -57,7 +58,8 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
     }
     const char* clusterEntries[] = {"hybridClusterResetMain", "hybridClusterHistogramMain",
         "hybridClusterArgumentsMain", "hybridClusterScatterMain"};
-    result = device.createBuffer({.size = 24, .structureStride = 4,
+    // Classification, stable bins, and active-group count/scatter dispatches.
+    result = device.createBuffer({.size = 36, .structureStride = 4,
         .usage = BufferUsageBits::Storage | BufferUsageBits::Indirect | BufferUsageBits::TransferSource}, candidateArguments_);
     if (!result) { return result; }
     for (size_t i = 0; i < clusterShaders_.size(); ++i) {
@@ -200,6 +202,52 @@ void VisibilityHybridRasterizer::prepareClusterCandidates(CommandBuffer& command
         {.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General},
         {.buffer = candidateArguments_.get(), .before = ResourceState::General, .after = ResourceState::IndirectArgument}};
     commands.barrier({.buffers = barriers, .bufferCount = 2});
+}
+
+Result VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffer& commands,
+    ComputePipeline& pipeline, MeshletStreamUserPush push)
+{
+    commands.bindComputePipeline(pipeline);
+    // The prepare entry uses activeBuildPhase for setup/count/prefix/scatter.
+    // Only the small block-count prefix stays on a single workgroup.
+    for (uint32_t phase = 0; phase < 4; ++phase) {
+        push.activeBuildPhase = phase;
+        commands.pushBindlessData(&push, sizeof(push));
+        if (phase == 0 || phase == 2) {
+            commands.dispatch(1);
+            prepareClusterCandidates(commands);
+        } else {
+            const Result result = commands.dispatchIndirect(*candidateArguments_, kCandidateBuildArgumentsOffset);
+            if (!result) { return result; }
+            const BufferBarrierDesc barriers[] = {
+                {.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General},
+                {.buffer = candidateArguments_.get(), .before = ResourceState::IndirectArgument,
+                    .after = ResourceState::General}};
+            // Prefix rewrites arguments after count. Scatter only publishes
+            // candidate slots, leaving arguments ready for classification.
+            commands.barrier({.buffers = barriers, .bufferCount = phase == 1 ? 2u : 1u});
+        }
+    }
+    return {};
+}
+
+Result VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
+    ComputePipeline& pipeline, MeshletStreamUserPush push)
+{
+    commands.bindComputePipeline(pipeline);
+    push.activeBuildPhase = 0;
+    commands.pushBindlessData(&push, sizeof(push));
+    const Result result = commands.dispatchIndirect(*candidateArguments_, 12);
+    if (!result) { return result; }
+    const BufferBarrierDesc barriers[] = {
+        {.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General},
+        {.buffer = candidateArguments_.get(), .before = ResourceState::IndirectArgument, .after = ResourceState::General}};
+    commands.barrier({.buffers = barriers, .bufferCount = 2});
+    push.activeBuildPhase = 1;
+    commands.pushBindlessData(&push, sizeof(push));
+    commands.dispatch(1);
+    prepareClusterCandidates(commands);
+    return {};
 }
 
 Result VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)

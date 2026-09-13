@@ -1,0 +1,157 @@
+{
+  "colorMismatches": 0,
+  "height": 1080,
+  "lodPixelError": 1.5,
+  "matchedColorSamples": 3224838,
+  "poses": [
+    {
+      "identities": 11830,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-meshlet-0.png",
+      "matchedColorSamples": 278557,
+      "mode": "meshlet",
+      "previousIdentities": 0,
+      "remappedInstanceRecords": 0,
+      "sharedIdentities": 0,
+      "yawDegrees": 0.0
+    },
+    {
+      "identities": 11521,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-meshlet-1.png",
+      "matchedColorSamples": 288674,
+      "mode": "meshlet",
+      "previousIdentities": 11830,
+      "remappedInstanceRecords": 14415,
+      "sharedIdentities": 9755,
+      "yawDegrees": -3.0
+    },
+    {
+      "identities": 11819,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-meshlet-2.png",
+      "matchedColorSamples": 288480,
+      "mode": "meshlet",
+      "previousIdentities": 11521,
+      "remappedInstanceRecords": 11291,
+      "sharedIdentities": 8618,
+      "yawDegrees": 3.0
+    },
+    {
+      "identities": 11830,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-meshlet-3.png",
+      "matchedColorSamples": 290387,
+      "mode": "meshlet",
+      "previousIdentities": 11819,
+      "remappedInstanceRecords": 14896,
+      "sharedIdentities": 9591,
+      "yawDegrees": 0.0
+    },
+    {
+      "identities": 118035,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-triangle-0.png",
+      "matchedColorSamples": 172352,
+      "mode": "triangle",
+      "previousIdentities": 0,
+      "remappedInstanceRecords": 0,
+      "sharedIdentities": 0,
+      "yawDegrees": 0.0
+    },
+    {
+      "identities": 121199,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-triangle-1.png",
+      "matchedColorSamples": 218199,
+      "mode": "triangle",
+      "previousIdentities": 118035,
+      "remappedInstanceRecords": 48111,
+      "sharedIdentities": 48958,
+      "yawDegrees": -3.0
+    },
+    {
+      "identities": 117361,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-triangle-2.png",
+      "matchedColorSamples": 236297,
+      "mode": "triangle",
+      "previousIdentities": 121199,
+      "remappedInstanceRecords": 37446,
+      "sharedIdentities": 41701,
+      "yawDegrees": 3.0
+    },
+    {
+      "identities": 118035,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-triangle-3.png",
+      "matchedColorSamples": 290387,
+      "mode": "triangle",
+      "previousIdentities": 117361,
+      "remappedInstanceRecords": 52081,
+      "sharedIdentities": 51468,
+      "yawDegrees": 0.0
+    },
+    {
+      "identities": 17,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-lod-0.png",
+      "matchedColorSamples": 290370,
+      "mode": "lod",
+      "previousIdentities": 0,
+      "remappedInstanceRecords": 0,
+      "sharedIdentities": 0,
+      "yawDegrees": 0.0
+    },
+    {
+      "identities": 17,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-lod-1.png",
+      "matchedColorSamples": 290440,
+      "mode": "lod",
+      "previousIdentities": 17,
+      "remappedInstanceRecords": 14415,
+      "sharedIdentities": 17,
+      "yawDegrees": -3.0
+    },
+    {
+      "identities": 17,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-lod-2.png",
+      "matchedColorSamples": 290308,
+      "mode": "lod",
+      "previousIdentities": 17,
+      "remappedInstanceRecords": 11291,
+      "sharedIdentities": 17,
+      "yawDegrees": 3.0
+    },
+    {
+      "identities": 17,
+      "image": "E:/metallic/build-relwithdebinfo/visibility-stability/final/MiniZorah-lod-3.png",
+      "matchedColorSamples": 290387,
+      "mode": "lod",
+      "previousIdentities": 17,
+      "remappedInstanceRecords": 14896,
+      "sharedIdentities": 17,
+      "yawDegrees": 0.0
+    }
+  ],
+  "remappedInstanceRecords": 218842,
+  "status": "passed",
+  "width": 1920,
+  "date": "2026-09-13",
+  "identity": "Resident global meshlet index; stream logical page index + page-local cluster index; triangle mode adds local triangle index; LOD mode uses actual level",
+  "notes": [
+    "Camera yaw 0,-3,+3,0 degrees with fixed eye; samples every seventh pixel.",
+    "Matched color samples include repeated identities within and across images; they are not unique meshlets.",
+    "Remapped instance records are summed across three modes and adjacent poses; they are not globally unique instances.",
+    "Visible identity overlap changes with frustum coverage, LOD selection and screen sampling; unchanged identities retain their colors."
+  ],
+  "validation": {
+    "passed": 13,
+    "skipped": 0,
+    "durationMilliseconds": 52822,
+    "vulkanValidationDiagnostics": 0,
+    "log": "E:/metallic/build-relwithdebinfo/visibility-stability/final.log",
+    "syntheticModes": 6,
+    "miniZorahModePosePairs": 12,
+    "buildTargets": [
+      "Metallic",
+      "MetallicGPUDrivenSample",
+      "MetallicRhiTests"
+    ]
+  },
+  "sourceSha256": {
+    "Shaders/Features/VisibilityBuffer/VisibilityBufferComposite.slang": "a1243f9de988d283ce614424800234e28de33c18c8394a9df1ffc814198ff2e7",
+    "Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp": "315a13cbae64439357b034c6c87c7d534e779149156a02c83ceba49dce1e79c2"
+  }
+}

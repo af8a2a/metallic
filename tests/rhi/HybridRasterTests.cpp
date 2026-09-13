@@ -300,7 +300,7 @@ public:
             bool valid = bins[5] == capacity && bins[12] == test.count && bins[14] == 0u;
             for (size_t bin = 0; bin < 5; ++bin) {
                 const uint32_t count = static_cast<uint32_t>(expected[bin].size());
-                const uint32_t groups = bin == 4 ? count : test.stream ? count * 2u : (count + 31u) / 32u;
+                const uint32_t groups = bin == 4 ? count : test.stream ? count : (count + 31u) / 32u;
                 valid = valid && bins[bin] == count && args[bin * 3u] == std::min(groups, 65535u) &&
                     args[bin * 3u + 1u] == std::max(1u, (groups + 65534u) / 65535u) && args[bin * 3u + 2u] == 1u;
                 valid = valid && std::equal(expected[bin].begin(), expected[bin].end(), bins + 16u + bin * capacity);

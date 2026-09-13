@@ -45,10 +45,10 @@ public:
     std::map<std::string, std::unique_ptr<Buffer>> copies;
     Device* device = nullptr;
     std::unique_ptr<TimestampQueryPool> timestamps;
-    static constexpr std::array<std::string_view, 20> stages = {"BeforeStreamUpdates", "AfterStreamUpdates",
+    static constexpr std::array<std::string_view, 22> stages = {"BeforeStreamUpdates", "AfterStreamUpdates",
         "AfterStreamFrontier", "AfterStreamPrefix", "AfterStreamEmit", "AfterStreamPrefetch", "AfterTraversal", "AfterEarlyCull",
-        "AfterStreamEarlyCandidates", "AfterStreamEarlyClassify", "AfterStreamEarlyBins", "AfterStreamEarlyRaster", "AfterStreamEarlyResolve",
-        "AfterLateCull", "AfterStreamLateCandidates", "AfterStreamLateClassify", "AfterStreamLateBins", "AfterStreamLateRaster", "AfterStreamLateResolve", "AfterPass"};
+        "AfterStreamEarlyCandidates", "AfterStreamEarlyClusterCull", "AfterStreamEarlyClassify", "AfterStreamEarlyBins", "AfterStreamEarlyRaster", "AfterStreamEarlyResolve",
+        "AfterLateCull", "AfterStreamLateCandidates", "AfterStreamLateClusterCull", "AfterStreamLateClassify", "AfterStreamLateBins", "AfterStreamLateRaster", "AfterStreamLateResolve", "AfterPass"};
     void compiled(Json) override {}
     void beginExecution(Device& d, debug::DebugEvidenceStamp, RenderSubsystemHost*) override { device = &d; }
     void endExecution(bool) override {}

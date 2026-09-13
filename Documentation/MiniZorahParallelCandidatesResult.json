@@ -1,0 +1,482 @@
+{
+  "configuration": {
+    "resolution": [
+      1920,
+      1080
+    ],
+    "pageBudgetMiB": 1024,
+    "targetPixelError": 1.5,
+    "asyncCompute": true,
+    "validation": true,
+    "scope": "Synchronous offscreen GPUDriven + MaterialResolve, no present; startup compilation and checkpoint readbacks excluded from timed frames. Clocks not locked."
+  },
+  "runs": {
+    "baseline-fixed-0": {
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-candidates\\baseline-fixed-0\\MiniZorahRoamingReport.json",
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 23.307424,
+        "p50": 9.762144,
+        "p95": 10.840288,
+        "p99": 11.5296,
+        "samples": 716
+      },
+      "frameMilliseconds": {
+        "max": 26.9396,
+        "p50": 13.881,
+        "p95": 16.2691,
+        "p99": 17.8818,
+        "samples": 716
+      },
+      "cpuRecordMilliseconds": {
+        "max": 11.0767,
+        "p50": 3.7876,
+        "p95": 5.682,
+        "p99": 7.5203,
+        "samples": 716
+      },
+      "checkpointCount": 11,
+      "imagesSha256": {
+        "roam-0.png": "3b7deae37d8b26c0aa5f890dff41d23bfd7e5c330f6eed4afcda543f3576970c",
+        "roam-1.png": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4",
+        "roam-2.png": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4",
+        "roam-3.png": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4",
+        "roam-4.png": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4",
+        "roam-5.png": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4"
+      },
+      "firstConvergedSeconds": 1.0013358999999997
+    },
+    "baseline-fixed-15": {
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-candidates\\baseline-fixed-15\\MiniZorahRoamingReport.json",
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 10.864704,
+        "p50": 8.43056,
+        "p95": 9.264928,
+        "p99": 9.585728,
+        "samples": 808
+      },
+      "frameMilliseconds": {
+        "max": 17.7996,
+        "p50": 12.3313,
+        "p95": 13.8713,
+        "p99": 14.8784,
+        "samples": 808
+      },
+      "cpuRecordMilliseconds": {
+        "max": 7.8112,
+        "p50": 3.6571,
+        "p95": 4.8325,
+        "p99": 6.2504,
+        "samples": 808
+      },
+      "checkpointCount": 11,
+      "imagesSha256": {
+        "roam-0.png": "6b89731da3fd973ee00be64f190bb38e22ead6882c5656b5d906c298dfa77999",
+        "roam-1.png": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75",
+        "roam-2.png": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75",
+        "roam-3.png": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75",
+        "roam-4.png": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75",
+        "roam-5.png": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75"
+      },
+      "firstConvergedSeconds": 0.5023914
+    },
+    "baseline-roam-60": {
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-candidates\\baseline-roam-60\\MiniZorahRoamingReport.json",
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 115.988256,
+        "p50": 9.121632,
+        "p95": 11.298656,
+        "p99": 12.38304,
+        "samples": 4485
+      },
+      "frameMilliseconds": {
+        "max": 122.54,
+        "p50": 13.8752,
+        "p95": 17.9773,
+        "p99": 20.7261,
+        "samples": 4485
+      },
+      "cpuRecordMilliseconds": {
+        "max": 29.1189,
+        "p50": 4.6979,
+        "p95": 7.4816,
+        "p99": 9.2247,
+        "samples": 4485
+      },
+      "checkpointCount": 60,
+      "imagesSha256": {
+        "roam-0.png": "4e3dbb305b36b7d44c6d1a685877f25b0999d979d4155fe25018ab6f752a6d0f",
+        "roam-1.png": "9a2b65960e2fa0b33722c42987f8ac92f0febe7e6da84f337c959952f62037bd",
+        "roam-10.png": "32b8606270851df601207ec22bebedd529f664f584f10ce121dd2751d7976b8b",
+        "roam-15.png": "8862f6e477bd3147fd277e98469139296a9827fbfb815aadd57986f5c5f1ca9a",
+        "roam-2.png": "5859b36c41bd82e745219cac8a8f16cba1b24081af09994d334a11243c728217",
+        "roam-20.png": "67a0bbe438bfaef64b8f9ea542e40e3c446172b4abb66d1db2d28da4c472bb8c",
+        "roam-21.png": "dc6dd36b2f2bff177985be9291fc7b44ad1e8bac83b1524baeff343d72c79c64",
+        "roam-22.png": "dc6dd36b2f2bff177985be9291fc7b44ad1e8bac83b1524baeff343d72c79c64",
+        "roam-25.png": "df1426626252f564eb94b53f2afb2ca6d473152ad6fca82c0cea161238eded03",
+        "roam-26.png": "59932f0d598cef6abe476b3d38fe3ffe322e1495f360d4f39d19ad870956fc38",
+        "roam-27.png": "acb8bb30c9253afa8ca5daef6a70dd63c03b15ed7a8a08512d881c7d46b7cb43",
+        "roam-30.png": "d46d5595e1b018551d8c8df704719e769f1a242e67b1896dfc4410368b12ee93",
+        "roam-31.png": "0b56c0eef5d0b300ac80aa29b0d80bb3ad798130407351c934bc4c86044f3aa4",
+        "roam-32.png": "9cddeb1d6f67a0ed839985f77ce426237ca714fb1b809f680e2c44c822685e75",
+        "roam-35.png": "b9f0999dca1f87c9bca309aac7b213fcdc679e6ea7dcb0032405ac8b97ad4567",
+        "roam-40.png": "1904953c6d3495c0d50129343a972ab610833e2ef51324d294c78d9c08a2247a",
+        "roam-45.png": "0f770e9e43c6611f1c5f32f7767a78f9de4ae713c424f3c4001a918e9b02c36d",
+        "roam-5.png": "9e70252fbbbe76f1dc5493a118d763520bb98227ac46fd48457f0cf827fe0258",
+        "roam-50.png": "dc6dd36b2f2bff177985be9291fc7b44ad1e8bac83b1524baeff343d72c79c64",
+        "roam-51.png": "dc6dd36b2f2bff177985be9291fc7b44ad1e8bac83b1524baeff343d72c79c64",
+        "roam-52.png": "dc6dd36b2f2bff177985be9291fc7b44ad1e8bac83b1524baeff343d72c79c64",
+        "roam-55.png": "5635442bcc49acb45e189eeee05498504d31bb214cf5de7a14d524c9b3bade31",
+        "roam-56.png": "097bb0eca108bc5961163ae51ef41a9d9a616fc1470cd4f57397631b921ff8b7",
+        "roam-57.png": "912ca1856542122caac61840351fb7a92382cee1229c50ed5db70e821f24d3a2"
+      },
+      "firstConvergedSeconds": 0.512181
+    },
+    "parallel-fixed-0": {
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-candidates\\parallel-fixed-0\\MiniZorahRoamingReport.json",
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 12.49008,
+        "p50": 8.047328,
+        "p95": 9.0904,
+        "p99": 9.398912,
+        "samples": 864
+      },
+      "frameMilliseconds": {
+        "max": 19.7663,
+        "p50": 11.525,
+        "p95": 12.9823,
+        "p99": 13.7378,
+        "samples": 864
+      },
+      "cpuRecordMilliseconds": {
+        "max": 13.7872,
+        "p50": 3.1384,
+        "p95": 4.4384,
+        "p99": 5.6278,
+        "samples": 864
+      },
+      "checkpointCount": 11,
+      "imagesSha256": {
+        "roam-0.png": "eb9ada2d1ee6b12f5662c63de2d46a522e4b6d27f6cb6ed2eebbc7f68383723e",
+        "roam-1.png": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4",
+        "roam-2.png": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4",
+        "roam-3.png": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4",
+        "roam-4.png": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4",
+        "roam-5.png": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4"
+      },
+      "firstConvergedSeconds": 0.5076363
+    },
+    "parallel-fixed-15": {
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-candidates\\parallel-fixed-15\\MiniZorahRoamingReport.json",
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 9.504352,
+        "p50": 7.144512,
+        "p95": 8.189376,
+        "p99": 8.507712,
+        "samples": 942
+      },
+      "frameMilliseconds": {
+        "max": 14.6452,
+        "p50": 10.5551,
+        "p95": 11.9522,
+        "p99": 13.0598,
+        "samples": 942
+      },
+      "cpuRecordMilliseconds": {
+        "max": 8.2589,
+        "p50": 3.0464,
+        "p95": 4.4051,
+        "p99": 6.0557,
+        "samples": 942
+      },
+      "checkpointCount": 11,
+      "imagesSha256": {
+        "roam-0.png": "8fd80d34db2ba3253e0d861e003d307b03e1347745adafa3ac707b6e4cb42456",
+        "roam-1.png": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75",
+        "roam-2.png": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75",
+        "roam-3.png": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75",
+        "roam-4.png": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75",
+        "roam-5.png": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75"
+      },
+      "firstConvergedSeconds": 0.5029623999999999
+    },
+    "parallel-roam-60": {
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-candidates\\parallel-roam-60\\MiniZorahRoamingReport.json",
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 11.020768,
+        "p50": 7.536096,
+        "p95": 9.0944,
+        "p99": 9.692352,
+        "samples": 5748
+      },
+      "frameMilliseconds": {
+        "max": 24.3064,
+        "p50": 11.3338,
+        "p95": 13.4751,
+        "p99": 14.9056,
+        "samples": 5748
+      },
+      "cpuRecordMilliseconds": {
+        "max": 10.6135,
+        "p50": 3.6207,
+        "p95": 5.1201,
+        "p99": 6.4789,
+        "samples": 5748
+      },
+      "checkpointCount": 60,
+      "imagesSha256": {
+        "roam-0.png": "c4dc80b73004b4d80aafcf5bd8acc6e51e133a2b6be4c7fc2b77be0504c24f9c",
+        "roam-1.png": "00575e35bbdd29367e8dbff3f2b36396ddeb3e7a98cbb1195e0ab810395cea2e",
+        "roam-10.png": "e225320ed4ba7368ed265d77b91ebdb6dc135c5c4f5dc3b8167f87289450167f",
+        "roam-15.png": "7cb54831dc1e1f9aebaf1c3d28952f5a8c9c27da9c4eff4d86491f6dc5d95c3d",
+        "roam-2.png": "e10b48df9ec078eb9577b3947aaf5da1cc36d3cf3da00d69c642f77957fb5e05",
+        "roam-20.png": "67a0bbe438bfaef64b8f9ea542e40e3c446172b4abb66d1db2d28da4c472bb8c",
+        "roam-21.png": "dc6dd36b2f2bff177985be9291fc7b44ad1e8bac83b1524baeff343d72c79c64",
+        "roam-22.png": "dc6dd36b2f2bff177985be9291fc7b44ad1e8bac83b1524baeff343d72c79c64",
+        "roam-25.png": "6ece2f0041f8b090d36f8010f61386064de16a0216845c87ac96bdeda5468082",
+        "roam-26.png": "02976e1dd7025308abdcc49850718890a6f40a09877f8bdacff0f6d41545147b",
+        "roam-27.png": "a9bddc61981e59225d30e4d3ca9b46eb27c0e8daa6e7ca5db3b456f1b478431e",
+        "roam-30.png": "e8ff223a2de4635652cc588b864604e36fe0d789ed7d8e4f2e047b46c91a7054",
+        "roam-31.png": "7d452f5eeca3aa5054ac2c10f4502a784f4f8d3eb8279c818fb0ef5b003d7bf2",
+        "roam-32.png": "aba876aec09abacb4cb33e5da397810fb6caaebdb1f5877e3bcd6f49b5df461c",
+        "roam-35.png": "b6878779e24e0ca041a7e61ee2f028b285f367d5ea230ae8ebeb5bd22d28ba21",
+        "roam-40.png": "5b381e3772e3c7405168cf5d5c3f23f27ceaf323966a9812a66cbf2f836147c9",
+        "roam-45.png": "9099dd7533403e3b4e5882e3682a9196e722e17eb1fe513995aa6745c0114dbe",
+        "roam-5.png": "289cc82d47b6d0d546c19a7139f6cf201171a943cc2b0d6e1bb0c72df22b3804",
+        "roam-50.png": "dc6dd36b2f2bff177985be9291fc7b44ad1e8bac83b1524baeff343d72c79c64",
+        "roam-51.png": "dc6dd36b2f2bff177985be9291fc7b44ad1e8bac83b1524baeff343d72c79c64",
+        "roam-52.png": "dc6dd36b2f2bff177985be9291fc7b44ad1e8bac83b1524baeff343d72c79c64",
+        "roam-55.png": "2b3904890c3298c8c6d3424456431bb858902bb970c3ab684bc2eeae2f5a4267",
+        "roam-56.png": "1beb8e6b9904c507afa357d41bdb93b6dbb317d99d0e1007fc9462333a3993f8",
+        "roam-57.png": "7dd238586b9be5fca1c27a48f61c7d57ea6d15a5e16f033425c87088d4d65673"
+      },
+      "firstConvergedSeconds": 0.5101374999999999
+    }
+  },
+  "fixedComparisons": [
+    {
+      "viewSeconds": 0,
+      "matchingCutCounts": true,
+      "identicalPng": true,
+      "samples": [
+        {
+          "kind": "baseline",
+          "checkpointSeconds": 5.008553599999996,
+          "earlyCandidatesMs": 0.752704,
+          "lateCandidatesMs": 0.801856,
+          "totalCandidatesMs": 1.55456,
+          "cut": {
+            "activeGroups": 22891,
+            "candidateCapacity": 4194304,
+            "capacityFallback": false,
+            "earlyCandidates": 226893,
+            "earlyHardware": 42879,
+            "earlySoftware": 24354,
+            "fineGroups": 13968,
+            "lateCandidates": 80778,
+            "lateHardware": 0,
+            "lateSoftware": 0,
+            "maxFiniteRefinementErrorPixels": 6266.07177734375,
+            "maxVisibleRefinementErrorPixels": 1.4999207258224487,
+            "nearPlaneUnboundedRefinements": 456,
+            "overTargetRefinements": 1484,
+            "selectedClusters": 248855,
+            "verifiedInstances": 13782,
+            "visibleOverTargetRefinements": 0,
+            "visibleUnboundedRefinements": 0
+          },
+          "camera": {
+            "center": [
+              46.38050842285156,
+              5.7994967,
+              0.5308178067207336
+            ],
+            "eye": [
+              55.34291076660156,
+              6.4527273,
+              0.32432523369789124
+            ],
+            "fovDegrees": 60,
+            "reversedZ": true,
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "zfar": 29999.998,
+            "znear": 0.020000003
+          }
+        },
+        {
+          "kind": "parallel",
+          "checkpointSeconds": 5.005706799999998,
+          "earlyCandidatesMs": 0.280576,
+          "lateCandidatesMs": 0.244736,
+          "totalCandidatesMs": 0.525312,
+          "cut": {
+            "activeGroups": 22891,
+            "candidateCapacity": 4194304,
+            "capacityFallback": false,
+            "earlyCandidates": 226893,
+            "earlyHardware": 42879,
+            "earlySoftware": 24354,
+            "fineGroups": 13968,
+            "lateCandidates": 80778,
+            "lateHardware": 0,
+            "lateSoftware": 0,
+            "maxFiniteRefinementErrorPixels": 6266.07177734375,
+            "maxVisibleRefinementErrorPixels": 1.4999207258224487,
+            "nearPlaneUnboundedRefinements": 456,
+            "overTargetRefinements": 1484,
+            "selectedClusters": 248855,
+            "verifiedInstances": 13782,
+            "visibleOverTargetRefinements": 0,
+            "visibleUnboundedRefinements": 0
+          },
+          "camera": {
+            "center": [
+              46.38050842285156,
+              5.7994967,
+              0.5308178067207336
+            ],
+            "eye": [
+              55.34291076660156,
+              6.4527273,
+              0.32432523369789124
+            ],
+            "fovDegrees": 60,
+            "reversedZ": true,
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "zfar": 29999.998,
+            "znear": 0.020000003
+          }
+        }
+      ],
+      "candidateReductionPct": 66.20831617949774
+    },
+    {
+      "viewSeconds": 15,
+      "matchingCutCounts": true,
+      "identicalPng": true,
+      "samples": [
+        {
+          "kind": "baseline",
+          "checkpointSeconds": 5.0054194,
+          "earlyCandidatesMs": 0.680992,
+          "lateCandidatesMs": 0.723744,
+          "totalCandidatesMs": 1.4047360000000002,
+          "cut": {
+            "activeGroups": 20265,
+            "candidateCapacity": 4194304,
+            "capacityFallback": false,
+            "earlyCandidates": 187000,
+            "earlyHardware": 40334,
+            "earlySoftware": 24356,
+            "fineGroups": 12256,
+            "lateCandidates": 57137,
+            "lateHardware": 0,
+            "lateSoftware": 0,
+            "maxFiniteRefinementErrorPixels": 42315.90234375,
+            "maxVisibleRefinementErrorPixels": 1.4999721050262451,
+            "nearPlaneUnboundedRefinements": 454,
+            "overTargetRefinements": 1937,
+            "selectedClusters": 213532,
+            "verifiedInstances": 12514,
+            "visibleOverTargetRefinements": 0,
+            "visibleUnboundedRefinements": 0
+          },
+          "camera": {
+            "center": [
+              43.99748611450195,
+              5.7994967,
+              2.7553915977478027
+            ],
+            "eye": [
+              52.64362716674805,
+              6.4527273,
+              0.38651639223098755
+            ],
+            "fovDegrees": 60,
+            "reversedZ": true,
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "zfar": 29999.998,
+            "znear": 0.020000003
+          }
+        },
+        {
+          "kind": "parallel",
+          "checkpointSeconds": 5.003705200000002,
+          "earlyCandidatesMs": 0.261088,
+          "lateCandidatesMs": 0.235552,
+          "totalCandidatesMs": 0.49663999999999997,
+          "cut": {
+            "activeGroups": 20265,
+            "candidateCapacity": 4194304,
+            "capacityFallback": false,
+            "earlyCandidates": 187000,
+            "earlyHardware": 40334,
+            "earlySoftware": 24356,
+            "fineGroups": 12256,
+            "lateCandidates": 57137,
+            "lateHardware": 0,
+            "lateSoftware": 0,
+            "maxFiniteRefinementErrorPixels": 42315.90234375,
+            "maxVisibleRefinementErrorPixels": 1.4999721050262451,
+            "nearPlaneUnboundedRefinements": 454,
+            "overTargetRefinements": 1937,
+            "selectedClusters": 213532,
+            "verifiedInstances": 12514,
+            "visibleOverTargetRefinements": 0,
+            "visibleUnboundedRefinements": 0
+          },
+          "camera": {
+            "center": [
+              43.99748611450195,
+              5.7994967,
+              2.7553915977478027
+            ],
+            "eye": [
+              52.64362716674805,
+              6.4527273,
+              0.38651639223098755
+            ],
+            "fovDegrees": 60,
+            "reversedZ": true,
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "zfar": 29999.998,
+            "znear": 0.020000003
+          }
+        }
+      ],
+      "candidateReductionPct": 64.64531413731834
+    }
+  ],
+  "roamingGpuReductionPct": {
+    "p50": 17.382152667417415,
+    "p95": 19.50901062922882,
+    "p99": 21.728816187301337
+  },
+  "limitations": [
+    "Roaming follows rendered wall time. Frame counts, residency arrivals and intermediate cuts differ; whole-run changes are not isolated kernel speedups.",
+    "The baseline roaming maximum had an outlier; its removal is not attributed solely to candidate expansion.",
+    "Candidate checkpoint intervals include surrounding preparation; they are not Nsight kernel-only durations, and differ from the earlier editor capture configuration.",
+    "Default sandbox benchmark runs could not save PSO caches. Compilation occurs before the measured route; writable-cache validation is covered by the separate regression run."
+  ]
+}

@@ -310,6 +310,10 @@ struct RenderGraphExecutor::Impl {
 
     using ResolvedTextureExtentMap = std::unordered_map<std::string, ResolvedTextureExtent>;
 
+    struct TimerRef {
+        uint32_t queue = UINT32_MAX;
+        uint32_t begin = 0;
+    };
     struct GpuTimingSlot {
         uint32_t firstQuery = 0;
         uint32_t queryCount = 0;
@@ -317,6 +321,10 @@ struct RenderGraphExecutor::Impl {
         GpuCompletionPoint completion;
         RenderGraphExecutionStats stats;
         profiling::GpuProfileFrame profile;
+        std::array<uint32_t, 3> used{};
+        TimerRef frameTimer;
+        std::vector<TimerRef> nodeTimers;
+        std::vector<std::vector<TimerRef>> sectionTimers;
     };
 
     static constexpr uint32_t kGpuTimingSlotCount = 3;
@@ -354,7 +362,7 @@ struct RenderGraphExecutor::Impl {
     GpuCompletionPoint lastSubmittedCompletion;
     Queue* recordingQueue = nullptr;
     std::unordered_map<RenderGraphResource*, Queue*> resourceQueues;
-    std::unique_ptr<TimestampQueryPool> gpuTimestampQueryPool;
+    std::array<std::unique_ptr<TimestampQueryPool>, 3> gpuTimestampQueryPools;
     std::array<GpuTimingSlot, kGpuTimingSlotCount> gpuTimingSlots;
     std::vector<RenderGraphExecutionStats> completedGpuExecutionStats;
     GpuTimingSlot* activeGpuTimingSlot = nullptr;
@@ -363,6 +371,8 @@ struct RenderGraphExecutor::Impl {
     profiling::TracyGpuProfiler tracyGpuProfiler;
     RenderGraphExecutionStats lastExecutionStats;
     uint64_t executionFrameIndex = 0;
+    uint64_t profilingGeneration = 0;
+    inline static std::atomic_uint64_t nextProfilingGeneration{1};
     std::vector<GpuCompletionPoint> externalCompletions;
     std::array<uint64_t, 5> recordedSceneStamp{};
     bool hasSubmittedWork = false;
@@ -1423,209 +1433,172 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
+    uint32_t timingQueueIndex() const
+    {
+        const auto type = recordingQueue ? recordingQueue->type() : QueueType::Graphics;
+        return type == QueueType::Compute ? 1u : type == QueueType::Copy ? 2u : 0u;
+    }
+
     void initializeGpuTiming(Device& graphDevice)
     {
-        gpuTimestampQueryPool.reset();
+        profilingGeneration = nextProfilingGeneration.fetch_add(1, std::memory_order_relaxed);
+        for (auto& pool : gpuTimestampQueryPools) { pool.reset(); }
         gpuTimingSlots = {};
         completedGpuExecutionStats.clear();
         activeGpuTimingSlot = nullptr;
         nextGpuTimingSlot = 0;
         activeGpuTimingValid = false;
-
-        Queue* graphicsQueue = graphDevice.getQueue(QueueType::Graphics);
-        if (executionList.empty() ||
-            graphicsQueue == nullptr ||
-            !graphDevice.capabilities().timestampQueries ||
-            graphicsQueue->timestampValidBits() == 0) {
-            return;
+        if (executionList.empty() || !graphDevice.capabilities().timestampQueries) { return; }
+        // Bounded dynamic scope space per queue, in addition to every pass and frame.
+        const uint64_t perSlot = (executionList.size() + 1ull) * 2ull + 512ull;
+        if (perSlot * kGpuTimingSlotCount > UINT32_MAX) { return; }
+        constexpr std::array types{QueueType::Graphics, QueueType::Compute, QueueType::Copy};
+        for (uint32_t i = 0; i < types.size(); ++i) {
+            auto* queue = graphDevice.getQueue(types[i]);
+            if (!queue || queue->timestampValidBits() == 0) { continue; }
+            const auto result = graphDevice.createTimestampQueryPool(*queue,
+                {.queryCount = uint32_t(perSlot * kGpuTimingSlotCount)}, gpuTimestampQueryPools[i]);
+            if (!result) { gpuTimestampQueryPools[i].reset(); }
         }
-
-        const uint64_t queriesPerSlot64 = (static_cast<uint64_t>(executionList.size()) + 1ull) * 2ull;
-        const uint64_t totalQueryCount64 = queriesPerSlot64 * kGpuTimingSlotCount;
-        if (queriesPerSlot64 > std::numeric_limits<uint32_t>::max() ||
-            totalQueryCount64 > std::numeric_limits<uint32_t>::max()) {
-            spdlog::warn("[RenderGraph] GPU timing disabled because the timestamp query count is too large");
-            return;
+        for (uint32_t i = 0; i < kGpuTimingSlotCount; ++i) {
+            gpuTimingSlots[i].firstQuery = i * uint32_t(perSlot);
+            gpuTimingSlots[i].queryCount = uint32_t(perSlot);
         }
+    }
 
-        const uint32_t queriesPerSlot = static_cast<uint32_t>(queriesPerSlot64);
-        Result result = graphDevice.createTimestampQueryPool(
-            *graphicsQueue,
-            TimestampQueryPoolDesc{.queryCount = static_cast<uint32_t>(totalQueryCount64)},
-            gpuTimestampQueryPool);
-        if (!result || gpuTimestampQueryPool == nullptr) {
-            spdlog::warn(
-                "[RenderGraph] GPU timestamp queries are unavailable: {}",
-                resultToString(result));
-            gpuTimestampQueryPool.reset();
-            return;
+    TimerRef beginInterval(CommandBuffer& commands)
+    {
+        if (!activeGpuTimingSlot || !activeGpuTimingValid) { return {}; }
+        auto& slot = *activeGpuTimingSlot;
+        const uint32_t queue = timingQueueIndex();
+        auto* pool = gpuTimestampQueryPools[queue].get();
+        if (!pool) { return {}; }
+        auto& used = slot.used[queue];
+        if (used + 2 > slot.queryCount) { lastExecutionStats.profilingOverflow = true; return {}; }
+        TimerRef timer{queue, used};
+        used += 2;
+        if (!commands.writeTimestamp(*pool, slot.firstQuery + timer.begin, PipelineStageBits::BottomOfPipe)) {
+            activeGpuTimingValid = false; return {};
         }
+        return timer;
+    }
 
-        for (uint32_t slotIndex = 0; slotIndex < kGpuTimingSlotCount; ++slotIndex) {
-            gpuTimingSlots[slotIndex].firstQuery = slotIndex * queriesPerSlot;
-            gpuTimingSlots[slotIndex].queryCount = queriesPerSlot;
+    void endInterval(CommandBuffer& commands, TimerRef timer)
+    {
+        if (!activeGpuTimingSlot || !activeGpuTimingValid || timer.queue == UINT32_MAX) { return; }
+        if (!commands.writeTimestamp(*gpuTimestampQueryPools[timer.queue],
+            activeGpuTimingSlot->firstQuery + timer.begin + 1, PipelineStageBits::BottomOfPipe)) {
+            activeGpuTimingValid = false;
         }
     }
 
     Result resolveGpuTimings()
     {
-        if (gpuTimestampQueryPool == nullptr) {
-            return {};
-        }
-
-        // The ring can wrap while older submissions are still pending. Publish
-        // in execution order so the viewer never mistakes that for clock wrap.
-        std::array<GpuTimingSlot*, kGpuTimingSlotCount> orderedSlots;
-        for (size_t index = 0; index < gpuTimingSlots.size(); ++index) {
-            orderedSlots[index] = &gpuTimingSlots[index];
-        }
-        std::sort(orderedSlots.begin(), orderedSlots.end(), [](const auto* left, const auto* right) {
-            return left->stats.executionId < right->stats.executionId;
-        });
-        for (GpuTimingSlot* orderedSlot : orderedSlots) {
-            GpuTimingSlot& slot = *orderedSlot;
-            if (!slot.pending || slot.queryCount == 0) {
-                continue;
-            }
+        std::array<GpuTimingSlot*, kGpuTimingSlotCount> ordered;
+        for (size_t i = 0; i < ordered.size(); ++i) { ordered[i] = &gpuTimingSlots[i]; }
+        std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) { return a->stats.executionId < b->stats.executionId; });
+        for (auto* entry : ordered) {
+            auto& slot = *entry;
+            if (!slot.pending) { continue; }
             if (slot.completion.isCancelled()) {
-                slot.pending = false;
-                slot.stats = {};
-                slot.profile = {};
-                continue;
+                slot.pending = false; slot.stats = {}; slot.profile = {}; continue;
             }
-            if (slot.completion.valid() && !slot.completion.isComplete()) {
-                break;
+            if (slot.completion.valid() && !slot.completion.isComplete()) { break; }
+            std::array<std::vector<TimestampQueryResult>, 3> values;
+            bool ready = true;
+            for (uint32_t q = 0; q < values.size(); ++q) {
+                if (!slot.used[q]) { continue; }
+                values[q].resize(slot.used[q]);
+                const auto result = gpuTimestampQueryPools[q]->readResults(slot.firstQuery, slot.used[q], values[q].data());
+                if (!result) { return result; }
+                ready &= std::all_of(values[q].begin(), values[q].end(), [](const auto& v) { return v.available; });
             }
-
-            std::vector<TimestampQueryResult> queryResults(slot.queryCount);
-            Result result = gpuTimestampQueryPool->readResults(
-                slot.firstQuery,
-                slot.queryCount,
-                queryResults.data());
-            if (!result) {
-                return result;
+            if (!ready) { break; }
+            const auto resolve = [&](TimerRef timer, double& ms, bool& available) {
+                if (timer.queue == UINT32_MAX) { return; }
+                const auto& data = values[timer.queue];
+                ms = gpuTimestampQueryPools[timer.queue]->durationMilliseconds(data[timer.begin].value, data[timer.begin + 1].value);
+                available = true;
+            };
+            resolve(slot.frameTimer, slot.stats.gpuMilliseconds, slot.stats.gpuTimingAvailable);
+            for (size_t n = 0; n < slot.stats.nodes.size(); ++n) {
+                auto& node = slot.stats.nodes[n];
+                resolve(slot.nodeTimers[n], node.gpuMilliseconds, node.gpuTimingAvailable);
+                for (size_t i = 0; i < node.sections.size(); ++i) {
+                    resolve(slot.sectionTimers[n][i], node.sections[i].gpuMilliseconds, node.sections[i].gpuTimingAvailable);
+                }
             }
-            if (!std::all_of(
-                    queryResults.begin(),
-                    queryResults.end(),
-                    [](const TimestampQueryResult& value) { return value.available; })) {
-                break;
+            // Preserve the existing Tracy graphics envelope; never mix queue clocks
+            // or misrepresent concurrent compute intervals as serialized graphics zones.
+            if (slot.frameTimer.queue == 0 && std::all_of(slot.nodeTimers.begin(), slot.nodeTimers.end(),
+                [](auto timer) { return timer.queue == 0; })) {
+                std::vector<TimestampQueryResult> tracy{values[0][slot.frameTimer.begin], values[0][slot.frameTimer.begin + 1]};
+                for (auto timer : slot.nodeTimers) {
+                    tracy.push_back(values[0][timer.begin]); tracy.push_back(values[0][timer.begin + 1]);
+                }
+                tracyGpuProfiler.publish(slot.profile, tracy, device->capabilities().timestampPeriodNanoseconds);
             }
-
-            const size_t timedNodeCount = std::min(
-                slot.stats.nodes.size(),
-                queryResults.size() / 2 - 1);
-            for (size_t nodeIndex = 0; nodeIndex < timedNodeCount; ++nodeIndex) {
-                RenderGraphNodeExecutionStat& node = slot.stats.nodes[nodeIndex];
-                const TimestampQueryResult& begin = queryResults[2 + nodeIndex * 2];
-                const TimestampQueryResult& end = queryResults[3 + nodeIndex * 2];
-                node.gpuMilliseconds = gpuTimestampQueryPool->durationMilliseconds(
-                    begin.value,
-                    end.value);
-                node.gpuTimingAvailable = true;
-            }
-            if (timedNodeCount > 0) {
-                slot.stats.gpuMilliseconds = gpuTimestampQueryPool->durationMilliseconds(
-                    queryResults.front().value,
-                    queryResults[1].value);
-                slot.stats.gpuTimingAvailable = true;
-            }
-
-            tracyGpuProfiler.publish(slot.profile, queryResults, device->capabilities().timestampPeriodNanoseconds);
             if (auto* trace = profiling::CpuPhaseTrace::active;
-                trace && trace->gpuSpans.size() < profiling::CpuPhaseTrace::kMaxFrames) {
+                trace && trace->gpuSpans.size() < profiling::CpuPhaseTrace::kMaxFrames && slot.frameTimer.queue == 0) {
                 GpuClockCalibration calibration;
                 const auto before = profiling::CpuPhaseTrace::Clock::now();
                 const auto* queue = device->getQueue(QueueType::Graphics);
                 const auto calibrated = queue ? queue->calibrateTimestamps(calibration) : makeError(Error::Unsupported);
                 const auto after = profiling::CpuPhaseTrace::Clock::now();
                 if (calibrated) {
-                    trace->gpuSpans.push_back({slot.stats.executionId, queryResults.front().value, queryResults[1].value,
+                    trace->gpuSpans.push_back({slot.stats.executionId, values[0][slot.frameTimer.begin].value, values[0][slot.frameTimer.begin + 1].value,
                         calibration.gpuTimestamp, device->capabilities().timestampPeriodNanoseconds,
-                        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            before + (after - before) / 2 - trace->origin).count()),
-                        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(after - before).count()),
-                        calibration.maxDeviationNanoseconds});
+                        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(before + (after - before) / 2 - trace->origin).count()),
+                        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(after - before).count()), calibration.maxDeviationNanoseconds});
                 }
             }
             slot.profile = {};
             completedGpuExecutionStats.push_back(std::move(slot.stats));
-            slot.stats = {};
-            slot.pending = false;
+            slot.stats = {}; slot.pending = false;
         }
         return {};
     }
 
-    void beginGpuTiming(CommandBuffer& commandBuffer)
+    void beginGpuTiming(CommandBuffer& commands)
     {
-        activeGpuTimingSlot = nullptr;
-        activeGpuTimingValid = false;
-        if (gpuTimestampQueryPool == nullptr) {
-            return;
-        }
-
-        Result resolveResult = resolveGpuTimings();
-        if (!resolveResult) {
-            spdlog::warn(
-                "[RenderGraph] Failed to resolve GPU timestamp queries: {}",
-                resultToString(resolveResult));
-            return;
-        }
-
+        activeGpuTimingSlot = nullptr; activeGpuTimingValid = false;
+        if (!gpuTimestampQueryPools[0]) { return; }
+        const auto resolved = resolveGpuTimings();
+        if (!resolved) { return; }
         for (uint32_t offset = 0; offset < kGpuTimingSlotCount; ++offset) {
-            const uint32_t slotIndex = (nextGpuTimingSlot + offset) % kGpuTimingSlotCount;
-            GpuTimingSlot& slot = gpuTimingSlots[slotIndex];
-            if (slot.pending) {
-                continue;
+            const uint32_t index = (nextGpuTimingSlot + offset) % kGpuTimingSlotCount;
+            auto& slot = gpuTimingSlots[index];
+            if (slot.pending) { continue; }
+            slot.stats = {}; slot.profile = {}; slot.used = {};
+            slot.nodeTimers.clear(); slot.sectionTimers.clear();
+            activeGpuTimingSlot = &slot; activeGpuTimingValid = true;
+            slot.completion = commands.frameContext() ? commands.frameContext()->completion() : GpuCompletionPoint{};
+            // vkCmdResetQueryPool cannot run on a transfer-only queue. Reset every
+            // queue's range in this graphics prologue; all branches depend on it.
+            for (const auto& pool : gpuTimestampQueryPools) {
+                if (pool && !commands.resetTimestampQueries(*pool, slot.firstQuery, slot.queryCount)) {
+                    activeGpuTimingValid = false;
+                }
             }
-
-            Result resetResult = commandBuffer.resetTimestampQueries(
-                *gpuTimestampQueryPool,
-                slot.firstQuery,
-                slot.queryCount);
-            if (!resetResult) {
-                return;
-            }
-            slot.stats = {};
-            slot.profile = {};
-            if (Queue* queue = device->getQueue(QueueType::Graphics)) {
-                tracyGpuProfiler.beginFrame(*queue, slot.profile);
-            }
-            if (!commandBuffer.writeTimestamp(*gpuTimestampQueryPool, slot.firstQuery,
-                    PipelineStageBits::BottomOfPipe)) {
-                slot.profile = {};
-                return;
-            }
-            activeGpuTimingSlot = &slot;
-            slot.completion = commandBuffer.frameContext() != nullptr
-                ? commandBuffer.frameContext()->completion() : GpuCompletionPoint{};
-            activeGpuTimingValid = true;
-            nextGpuTimingSlot = (slotIndex + 1) % kGpuTimingSlotCount;
+            slot.frameTimer = beginInterval(commands);
+            if (auto* queue = device->getQueue(QueueType::Graphics)) { tracyGpuProfiler.beginFrame(*queue, slot.profile); }
+            nextGpuTimingSlot = (index + 1) % kGpuTimingSlotCount;
             return;
         }
     }
 
-    void finishGpuTiming(CommandBuffer& commandBuffer, bool completed)
+    void finishGpuTiming(CommandBuffer& commands, bool completed)
     {
-        if (activeGpuTimingSlot == nullptr) {
-            return;
-        }
-
+        if (!activeGpuTimingSlot) { return; }
+        endInterval(commands, activeGpuTimingSlot->frameTimer);
         tracyGpuProfiler.endFrame(activeGpuTimingSlot->profile);
-        const Result endResult = commandBuffer.writeTimestamp(*gpuTimestampQueryPool,
-            activeGpuTimingSlot->firstQuery + 1, PipelineStageBits::BottomOfPipe);
-        if (completed && endResult &&
-            activeGpuTimingValid &&
-            (lastExecutionStats.nodes.size() + 1) * 2 == activeGpuTimingSlot->queryCount) {
+        if (completed && activeGpuTimingValid) {
             activeGpuTimingSlot->stats = lastExecutionStats;
             activeGpuTimingSlot->pending = true;
         } else {
-            activeGpuTimingSlot->stats = {};
-            activeGpuTimingSlot->profile = {};
-            activeGpuTimingSlot->pending = false;
+            activeGpuTimingSlot->stats = {}; activeGpuTimingSlot->profile = {}; activeGpuTimingSlot->pending = false;
         }
-        activeGpuTimingSlot = nullptr;
-        activeGpuTimingValid = false;
+        activeGpuTimingSlot = nullptr; activeGpuTimingValid = false;
     }
 
     Result prepareCommandPool(SubmissionSlot& slot, QueueType type, Queue& queue, CommandPool*& out)
@@ -1803,6 +1776,9 @@ struct RenderGraphExecutor::Impl {
                 current.commandBuffer().endDebugLabel();
                 labelOpen = false;
                 const Result result = parallel(current, compute, graphics);
+                // A failed fork may leave current pointing at an ended producer.
+                // Outer RAII scopes must not emit timestamps into that recording.
+                if (!result) { activeGpuTimingValid = false; }
                 if (result) {
                     current.commandBuffer().beginDebugLabel({.name = markerName.c_str(), .color = debugLabelColorFromArgb(markerColor)});
                     labelOpen = true;
@@ -1810,43 +1786,38 @@ struct RenderGraphExecutor::Impl {
                 return result;
             };
         }
-        bool gpuTimingRecorded = false;
-        uint32_t gpuEndQuery = 0;
-        if (activeGpuTimingSlot != nullptr && activeGpuTimingValid) {
-            const uint32_t gpuBeginQuery = activeGpuTimingSlot->firstQuery +
-                2u + static_cast<uint32_t>(lastExecutionStats.nodes.size()) * 2u;
-            gpuEndQuery = gpuBeginQuery + 1u;
-            Result timestampResult = commandBuffer.writeTimestamp(
-                *gpuTimestampQueryPool,
-                gpuBeginQuery,
-                PipelineStageBits::BottomOfPipe);
-            gpuTimingRecorded = timestampResult.has_value();
-            activeGpuTimingValid = gpuTimingRecorded;
-            if (gpuTimingRecorded) {
-                tracyGpuProfiler.beginZone(activeGpuTimingSlot->profile, markerName);
-            }
+        const size_t nodeIndex = lastExecutionStats.nodes.size();
+        lastExecutionStats.nodes.push_back({.id = node.id, .name = node.name, .type = node.type,
+            .queue = recordingQueue ? recordingQueue->type() : QueueType::Graphics});
+        const TimerRef passTimer = beginInterval(commandBuffer);
+        if (activeGpuTimingSlot) {
+            activeGpuTimingSlot->nodeTimers.push_back(passTimer);
+            activeGpuTimingSlot->sectionTimers.emplace_back();
+            tracyGpuProfiler.beginZone(activeGpuTimingSlot->profile, markerName);
         }
+        context.beginProfile_ = [&, nodeIndex](CommandBuffer& commands, std::string_view name, uint32_t parent) {
+            auto& sections = lastExecutionStats.nodes[nodeIndex].sections;
+            if (sections.size() >= 256) { lastExecutionStats.profilingOverflow = true; return UINT32_MAX; }
+            const uint32_t index = uint32_t(sections.size());
+            sections.push_back({.name = std::string(name), .parent = parent,
+                .queue = recordingQueue ? recordingQueue->type() : QueueType::Graphics});
+            const TimerRef timer = beginInterval(commands);
+            if (activeGpuTimingSlot) { activeGpuTimingSlot->sectionTimers[nodeIndex].push_back(timer); }
+            return index;
+        };
+        context.endProfile_ = [&, nodeIndex](CommandBuffer& commands, uint32_t index, double cpuMs) {
+            lastExecutionStats.nodes[nodeIndex].sections[index].cpuMilliseconds = cpuMs;
+            if (activeGpuTimingSlot) { endInterval(commands, activeGpuTimingSlot->sectionTimers[nodeIndex][index]); }
+        };
+        context.streamingProfile_ = [&](SceneStreamingProfile sample) { lastExecutionStats.streaming.push_back(std::move(sample)); };
         const auto cpuBegin = std::chrono::steady_clock::now();
         Result result = node.pass->execute(context);
-        if (result && upload != nullptr) {
-            upload->flush(context.commandBuffer());
-        }
-        const auto cpuEnd = std::chrono::steady_clock::now();
-        if (gpuTimingRecorded && result) {
-            tracyGpuProfiler.endZone(activeGpuTimingSlot->profile);
-            Result timestampResult = context.commandBuffer().writeTimestamp(
-                *gpuTimestampQueryPool,
-                gpuEndQuery,
-                PipelineStageBits::BottomOfPipe);
-            activeGpuTimingValid = timestampResult.has_value();
-        }
+        if (result && upload != nullptr) { upload->flush(context.commandBuffer()); }
+        lastExecutionStats.nodes[nodeIndex].cpuMilliseconds = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - cpuBegin).count();
+        if (activeGpuTimingSlot) { tracyGpuProfiler.endZone(activeGpuTimingSlot->profile); }
+        if (result) { endInterval(context.commandBuffer(), passTimer); }
         if (labelOpen) { context.commandBuffer().endDebugLabel(); }
-        lastExecutionStats.nodes.push_back(RenderGraphNodeExecutionStat{
-            .id = node.id,
-            .name = node.name,
-            .type = node.type,
-            .cpuMilliseconds = std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count(),
-        });
         if (result && debugObserver && !context.debugAfterPassPublished_) { context.debugCheckpoint("AfterPass"); }
         return result;
     }
@@ -2421,7 +2392,7 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
         impl_->historyResources = nullptr;
         return result;
     }
-    impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex};
+    impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex, .graphGeneration = impl_->profilingGeneration};
     impl_->beginGpuTiming(commandBuffer);
     const auto cpuBegin = std::chrono::steady_clock::now();
     for (Impl::CompiledNode& node : impl_->executionList) {
@@ -2658,10 +2629,15 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     impl_->recordedSceneStamp = sceneStamp;
     impl_->historyResources = desc.historyResources;
     const auto cpuBegin = std::chrono::steady_clock::now();
-    impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex};
+    impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex, .graphGeneration = impl_->profilingGeneration};
     const auto updateCpuTime = [&]() {
         impl_->lastExecutionStats.cpuMilliseconds = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - cpuBegin).count();
+        for (auto& timing : impl_->gpuTimingSlots) {
+            if (timing.pending && timing.stats.executionId == frameIndex) {
+                timing.stats.cpuMilliseconds = impl_->lastExecutionStats.cpuMilliseconds;
+            }
+        }
     };
     const auto abort = [&](Result failure) {
         impl_->recordingQueue = nullptr;
@@ -2705,8 +2681,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     RenderUploadSubsystem* upload = impl_->uploadSubsystem();
     const auto requiredSubsystems = impl_->requiredSubsystemViews();
     std::vector<Impl::SubmissionSegment> segments;
-    const bool graphicsTimings = desc.graphicsQueue && std::all_of(impl_->executionList.begin(), impl_->executionList.end(),
-        [&](const auto& node) { return selectedQueue(selectedType(node)) == desc.graphicsQueue; });
+    const bool graphicsTimings = desc.graphicsQueue && impl_->gpuTimestampQueryPools[0];
     const auto beginSegment = [&](QueueType type) -> Result {
         Queue* queue = selectedQueue(type);
         CommandPool* pool = nullptr;
@@ -2795,8 +2770,15 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (!result) { return abort(result); }
     }
 
+    // A graphics start/join pair measures elapsed graph time even with independent
+    // compute/copy passes. Each pass and inner scope uses its own queue's pool.
+    if (!subsystemCommands && graphicsTimings) {
+        result = beginSegment(QueueType::Graphics);
+        if (result) { result = segments.back().commandBuffer->end(); }
+        if (!result) { return abort(result); }
+    }
     std::unordered_map<std::string, size_t> lastResourceUse;
-    size_t orderingBoundary = subsystemCommands ? 0 : SIZE_MAX;
+    size_t orderingBoundary = segments.empty() ? SIZE_MAX : 0;
     for (auto& node : impl_->executionList) {
         result = beginSegment(selectedType(node));
         if (!result) { return abort(result); }

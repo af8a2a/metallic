@@ -1,5 +1,8 @@
 #pragma once
 
+#include "Runtime/Render/Profiling/RenderGraphProfile.h"
+#include <chrono>
+
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/RenderView.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
@@ -277,6 +280,33 @@ public:
     // join before subsequent commands. Reacquire commandBuffer() after this call.
     // Only declared shared resources may cross queues. No submission occurs here.
     Result parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics);
+    // GPU intervals use the command buffer's actual queue. Outer scopes follow
+    // commandBuffer() across a fork/join; branch scopes bind their explicit buffer.
+    class ProfileScope {
+    public:
+        ProfileScope() = default;
+        ProfileScope(RenderGraphExecutionContext& context, std::string_view name, CommandBuffer* commands);
+        ~ProfileScope();
+        ProfileScope(ProfileScope&& other) noexcept;
+        ProfileScope& operator=(ProfileScope&& other) noexcept;
+        ProfileScope(const ProfileScope&) = delete;
+        ProfileScope& operator=(const ProfileScope&) = delete;
+        void end();
+        void next(std::string_view name);
+    private:
+        RenderGraphExecutionContext* context_ = nullptr;
+        CommandBuffer* commands_ = nullptr;
+        uint32_t index_ = UINT32_MAX;
+        uint32_t parent_ = UINT32_MAX;
+        std::chrono::steady_clock::time_point begin_;
+    };
+    ProfileScope profileScope(std::string_view name) { return {*this, name, nullptr}; }
+    ProfileScope profileScope(CommandBuffer& commands, std::string_view name) { return {*this, name, &commands}; }
+    void publishStreamingProfile(SceneStreamingProfile sample)
+    {
+        sample.passName = passName_;
+        if (streamingProfile_) { streamingProfile_(std::move(sample)); }
+    }
     bool debugEnabled() const { return debugObserver_ != nullptr; }
     void debugCheckpoint(std::string_view name, std::span<const DebugResourceBinding> resources = {},
         const RenderGraphProperties& values = RenderGraphProperties::object());
@@ -307,6 +337,10 @@ private:
 
     using ParallelRecorder = std::function<Result(RenderGraphExecutionContext&, const CommandRecorder&, const CommandRecorder&)>;
     ParallelRecorder parallelRecorder_;
+    std::function<uint32_t(CommandBuffer&, std::string_view, uint32_t)> beginProfile_;
+    std::function<void(CommandBuffer&, uint32_t, double)> endProfile_;
+    std::function<void(SceneStreamingProfile)> streamingProfile_;
+    uint32_t profileParent_ = UINT32_MAX;
     CommandBuffer* commandBuffer_ = nullptr;
     uint64_t frameIndex_ = 0;
     uint32_t width_ = 1;

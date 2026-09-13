@@ -1,0 +1,90 @@
+{
+  "status": "passed",
+  "date": "2026-09-13",
+  "scene": "MiniZorah",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "lodPixelError": 1.5,
+  "frames": 180,
+  "asyncComputeTimed": true,
+  "debugObserverEnabled": false,
+  "geometryBudgetMiB": 1024.0,
+  "geometryFinalMiB": 363.53759765625,
+  "residentPages": 14732,
+  "totalPages": 1356959,
+  "peakRequestsPerFrame": 2653,
+  "uploadMiBObserved": 361.8367919921875,
+  "evictionsObserved": 0,
+  "graphGpuMeanMs": 4.478155911111111,
+  "roamingStages": [
+    {
+      "scope": "Stream traversal",
+      "gpuMeanMs": 1.5259317333333333,
+      "samples": 120
+    },
+    {
+      "scope": "LOD frontier",
+      "gpuMeanMs": 0.9902754666666667,
+      "samples": 120
+    },
+    {
+      "scope": "Prefetch",
+      "gpuMeanMs": 0.3892290666666667,
+      "samples": 120
+    },
+    {
+      "scope": "Stream early / Candidates",
+      "gpuMeanMs": 0.08661626666666666,
+      "samples": 120
+    },
+    {
+      "scope": "Stream early / Cluster cull",
+      "gpuMeanMs": 0.042319466666666666,
+      "samples": 120
+    },
+    {
+      "scope": "Stream early / Soft/hard classification",
+      "gpuMeanMs": 0.31105626666666664,
+      "samples": 120
+    },
+    {
+      "scope": "Stream early / Software raster",
+      "gpuMeanMs": 0.8495149333333334,
+      "samples": 120
+    },
+    {
+      "scope": "Stream early / Hardware raster",
+      "gpuMeanMs": 0.6073578666666667,
+      "samples": 120
+    },
+    {
+      "scope": "Early HZB",
+      "gpuMeanMs": 0.05673706666666667,
+      "samples": 120
+    },
+    {
+      "scope": "Late HZB",
+      "gpuMeanMs": 0.052248,
+      "samples": 120
+    }
+  ],
+  "gpuScope": "RenderGraph elapsed interval; excludes editor UI/presentation. Concurrent and nested scopes overlap.",
+  "sampling": "180 frames including startup; stage means use frames 60-179. Shared GPU; not a performance comparison.",
+  "rawReport": "E:\\metallic\\build-relwithdebinfo\\profiler-streaming\\final\\MiniZorahProfiler.json",
+  "screenshots": {
+    "Table": "E:\\metallic\\build-relwithdebinfo\\profiler-streaming\\final\\Profiler-Table.png",
+    "Streaming": "E:\\metallic\\build-relwithdebinfo\\profiler-streaming\\final\\Profiler-Streaming.png",
+    "LineChart": "E:\\metallic\\build-relwithdebinfo\\profiler-streaming\\final\\Profiler-LineChart.png",
+    "BarChart": "E:\\metallic\\build-relwithdebinfo\\profiler-streaming\\final\\Profiler-BarChart.png"
+  },
+  "validation": {
+    "distinctTestsPassed": 15,
+    "finalProfilingTests": 8,
+    "renderingRegressionTests": 6,
+    "standaloneStreamingTests": 2,
+    "vulkanVuidOrSyncErrors": 0,
+    "existingNotice": "OMM shader-alpha fallback with older validation layers in rendering regression"
+  }
+}

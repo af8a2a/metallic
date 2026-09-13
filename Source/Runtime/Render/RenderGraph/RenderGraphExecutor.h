@@ -29,15 +29,20 @@ struct RenderGraphNodeExecutionStat {
     double cpuMilliseconds = 0.0;
     double gpuMilliseconds = 0.0;
     bool gpuTimingAvailable = false;
+    QueueType queue = QueueType::Graphics;
+    std::vector<RenderGraphProfileSection> sections;
 };
 
 struct RenderGraphExecutionStats {
     uint32_t asyncComputeBranches = 0;
     uint64_t executionId = 0;
+    uint64_t graphGeneration = 0;
     double cpuMilliseconds = 0.0;
     double gpuMilliseconds = 0.0;
     bool gpuTimingAvailable = false;
     std::vector<RenderGraphNodeExecutionStat> nodes;
+    std::vector<SceneStreamingProfile> streaming;
+    bool profilingOverflow = false;
 };
 
 class RenderGraphExecutor {

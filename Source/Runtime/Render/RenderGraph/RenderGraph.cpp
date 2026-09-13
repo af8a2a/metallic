@@ -456,6 +456,47 @@ Result RenderGraphExecutionContext::parallelCompute(const CommandRecorder& compu
     return result ? graphics(commandBuffer()) : result;
 }
 
+RenderGraphExecutionContext::ProfileScope::ProfileScope(
+    RenderGraphExecutionContext& context, std::string_view name, CommandBuffer* commands)
+    : context_(&context), commands_(commands), parent_(context.profileParent_)
+{
+    next(name);
+}
+
+RenderGraphExecutionContext::ProfileScope::~ProfileScope() { end(); }
+
+RenderGraphExecutionContext::ProfileScope::ProfileScope(ProfileScope&& other) noexcept
+    : context_(std::exchange(other.context_, nullptr)), commands_(other.commands_),
+      index_(other.index_), parent_(other.parent_), begin_(other.begin_) {}
+
+RenderGraphExecutionContext::ProfileScope& RenderGraphExecutionContext::ProfileScope::operator=(ProfileScope&& other) noexcept
+{
+    if (this != &other) {
+        end();
+        context_ = std::exchange(other.context_, nullptr);
+        commands_ = other.commands_; index_ = other.index_; parent_ = other.parent_; begin_ = other.begin_;
+    }
+    return *this;
+}
+
+void RenderGraphExecutionContext::ProfileScope::end()
+{
+    if (!context_ || index_ == UINT32_MAX) { return; }
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin_).count();
+    context_->endProfile_(commands_ ? *commands_ : context_->commandBuffer(), index_, ms);
+    context_->profileParent_ = parent_;
+    index_ = UINT32_MAX;
+}
+
+void RenderGraphExecutionContext::ProfileScope::next(std::string_view name)
+{
+    end();
+    if (!context_ || !context_->beginProfile_) { return; }
+    index_ = context_->beginProfile_(commands_ ? *commands_ : context_->commandBuffer(), name, parent_);
+    if (index_ != UINT32_MAX) { context_->profileParent_ = index_; }
+    begin_ = std::chrono::steady_clock::now();
+}
+
 void RenderGraphExecutionContext::debugCheckpoint(std::string_view name,
     std::span<const DebugResourceBinding> privateResources, const RenderGraphProperties& values)
 {

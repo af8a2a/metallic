@@ -32,6 +32,8 @@ public:
         bool gpuTimingAvailable = false;
         uint64_t renderGraphExecutionId = UINT64_MAX;
         uint32_t renderGraphNodeId = UINT32_MAX;
+        uint32_t renderGraphSectionIndex = UINT32_MAX;
+        render::QueueType queue = render::QueueType::Graphics;
         size_t parent = 0;
         std::vector<size_t> children;
         Clock::time_point beginTime;
@@ -39,7 +41,21 @@ public:
 
     struct Frame {
         std::vector<Node> nodes;
+        uint64_t index = 0;
+        bool profilingOverflow = false;
     };
+
+    struct StreamingHistory {
+        std::string passName;
+        std::string assetPath;
+        uint64_t generation = 0;
+        std::vector<render::SceneStreamingProfile> samples;
+    };
+
+    // Latest completed GPU sample keeps CPU/GPU rows on the same execution.
+    const Frame& displayFrame() const;
+    const std::vector<Frame>& history() const { return history_; }
+    const std::vector<StreamingHistory>& streamingHistory() const { return streamingHistory_; }
 
     class FrameScope {
     public:
@@ -93,6 +109,16 @@ private:
     std::vector<size_t> stack_;
     Frame latestFrame_;
     std::vector<Frame> history_;
+    uint64_t frameIndex_ = 0;
+    uint64_t graphGeneration_ = UINT64_MAX;
+    bool currentOverflow_ = false;
+    bool detailed_ = false;
+    bool streamingShowBudget_ = false;
+    int chartMetric_ = 1;
+    std::vector<std::string> chartPath_;
+    std::string selectedStream_;
+    std::vector<render::SceneStreamingProfile> currentStreaming_;
+    std::vector<StreamingHistory> streamingHistory_;
 };
 
 } // namespace metallic

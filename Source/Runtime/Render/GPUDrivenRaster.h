@@ -6,6 +6,19 @@
 
 namespace metallic::render {
 
+// Fullscreen debug consumer only; descriptor indices use its own bindless heap.
+struct VisibilityBufferCompositeUserPush {
+    uint32_t paramsBuffer = 0;
+    uint32_t visibilityImage = 0;
+    uint32_t depthImage = 0;
+    uint32_t residentRecords = 0;
+    uint32_t meshletBuffer = 0;
+    uint32_t residentRecordCapacity = 0;
+    uint32_t streamRecords = UINT32_MAX;
+    uint32_t streamGroups = UINT32_MAX;
+};
+static_assert(sizeof(VisibilityBufferCompositeUserPush) == 32);
+
 // CPU-authored metadata accompanying visibility/depth. Consumers reconstruct
 // from the actual raster camera, including when the culling camera is frozen.
 struct alignas(16) VisibilityBufferFrameInfo {

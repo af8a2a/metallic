@@ -1,0 +1,433 @@
+{
+  "date": "2026-09-13",
+  "gpu": "RTX 5070 Ti",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "pageBudgetBytes": 1073741824,
+  "targetPixelError": 1.5,
+  "scope": "StreamAsset hardware mesh output; prebinned one workgroup per cluster; unbinned two chunk slots preserved",
+  "timingNotes": [
+    "HW and SW overlap. AfterStreamEarlyRaster is the combined interval, not isolated HW kernel time.",
+    "Baseline fixed view 0 had pronounced long-frame variation; exclude it from speedup comparisons.",
+    "GPU clocks were not locked; roaming follows wall time and does not replay identical intermediate cuts.",
+    "Roaming P99 regressed from 5.771104 to 25.295136 ms; tail-latency improvement is not established.",
+    "GPU utilization was observed at about 73% after Metallic test processes exited. Background contention is present, but individual spikes were not attributed."
+  ],
+  "cases": {
+    "baseline-fixed-0": {
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 59.62976,
+        "p50": 5.866112,
+        "p95": 38.114848,
+        "p99": 40.659712,
+        "samples": 429
+      },
+      "frameMilliseconds": {
+        "max": 73.512,
+        "p50": 12.8207,
+        "p95": 43.8609,
+        "p99": 46.0011,
+        "samples": 429
+      },
+      "cpuRecordMilliseconds": {
+        "max": 14.8489,
+        "p50": 3.8721,
+        "p95": 6.3891,
+        "p99": 7.4003,
+        "samples": 429
+      },
+      "timingScope": "Synchronous GPUDriven + MaterialResolve offscreen graph; no presentation blit, output/debug readback on timed frames; excludes checkpoint verification",
+      "firstConvergedSeconds": 1.5279398,
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-indexed-hardware\\baseline-fixed-0\\MiniZorahRoamingReport.json",
+      "checkpoints": 11,
+      "finalCut": {
+        "activeGroups": 22891,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 226893,
+        "earlyHardware": 42879,
+        "earlySoftware": 24354,
+        "fineGroups": 13968,
+        "lateCandidates": 80778,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 6266.07177734375,
+        "maxVisibleRefinementErrorPixels": 1.4999207258224487,
+        "nearPlaneUnboundedRefinements": 456,
+        "overTargetRefinements": 1484,
+        "selectedClusters": 248855,
+        "verifiedInstances": 13782,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "stableCheckpointSamples": 6,
+      "stableCheckpointMedianMs": {
+        "AfterEarlyCull": 0.423456,
+        "AfterLateCull": 0.106432,
+        "AfterPass": 0.093392,
+        "AfterStreamEarlyBins": 0.03176,
+        "AfterStreamEarlyCandidates": 10.811088,
+        "AfterStreamEarlyClassify": 0.30499200000000004,
+        "AfterStreamEarlyClusterCull": 0.043312,
+        "AfterStreamEarlyRaster": 5.751264,
+        "AfterStreamEarlyResolve": 0.044544,
+        "AfterStreamEmit": 0.060192,
+        "AfterStreamFrontier": 1.0189439999999998,
+        "AfterStreamLateBins": 0.031344000000000004,
+        "AfterStreamLateCandidates": 0.695872,
+        "AfterStreamLateClassify": 0.009216,
+        "AfterStreamLateClusterCull": 0.033792,
+        "AfterStreamLateRaster": 0.38484799999999997,
+        "AfterStreamLateResolve": 0.022368,
+        "AfterStreamPrefetch": 0.01208,
+        "AfterStreamPrefix": 0.064864,
+        "AfterStreamUpdates": 0.0031999999999999997,
+        "AfterTraversal": 0.006176,
+        "afterTraversalToEnd": 27.153936
+      },
+      "imageSha256": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4"
+    },
+    "indexed-fixed-0": {
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 6.17888,
+        "p50": 3.598016,
+        "p95": 4.42464,
+        "p99": 4.948896,
+        "samples": 1456
+      },
+      "frameMilliseconds": {
+        "max": 14.7576,
+        "p50": 6.7338,
+        "p95": 8.1343,
+        "p99": 9.1596,
+        "samples": 1456
+      },
+      "cpuRecordMilliseconds": {
+        "max": 9.0105,
+        "p50": 2.7694,
+        "p95": 4.0381,
+        "p99": 5.0715,
+        "samples": 1456
+      },
+      "timingScope": "Synchronous GPUDriven + MaterialResolve offscreen graph; no presentation blit, output/debug readback on timed frames; excludes checkpoint verification",
+      "firstConvergedSeconds": 0.5038951999999999,
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-indexed-hardware\\indexed-fixed-0\\MiniZorahRoamingReport.json",
+      "checkpoints": 11,
+      "finalCut": {
+        "activeGroups": 22891,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 226893,
+        "earlyHardware": 42879,
+        "earlySoftware": 24354,
+        "fineGroups": 13968,
+        "lateCandidates": 80778,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 6266.07177734375,
+        "maxVisibleRefinementErrorPixels": 1.4999207258224487,
+        "nearPlaneUnboundedRefinements": 456,
+        "overTargetRefinements": 1484,
+        "selectedClusters": 248855,
+        "verifiedInstances": 13782,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "stableCheckpointSamples": 6,
+      "stableCheckpointMedianMs": {
+        "AfterEarlyCull": 0.400464,
+        "AfterLateCull": 0.088752,
+        "AfterPass": 0.087456,
+        "AfterStreamEarlyBins": 0.031439999999999996,
+        "AfterStreamEarlyCandidates": 0.45056,
+        "AfterStreamEarlyClassify": 0.29944000000000004,
+        "AfterStreamEarlyClusterCull": 0.04096,
+        "AfterStreamEarlyRaster": 0.9148160000000001,
+        "AfterStreamEarlyResolve": 0.026304,
+        "AfterStreamEmit": 0.06448000000000001,
+        "AfterStreamFrontier": 1.052304,
+        "AfterStreamLateBins": 0.037040000000000003,
+        "AfterStreamLateCandidates": 0.241664,
+        "AfterStreamLateClassify": 0.008848,
+        "AfterStreamLateClusterCull": 0.034816,
+        "AfterStreamLateRaster": 0.08592,
+        "AfterStreamLateResolve": 0.02224,
+        "AfterStreamPrefetch": 0.012095999999999999,
+        "AfterStreamPrefix": 0.064512,
+        "AfterStreamUpdates": 0.00248,
+        "AfterTraversal": 0.005696,
+        "afterTraversalToEnd": 2.796688
+      },
+      "imageSha256": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4"
+    },
+    "baseline-fixed-15": {
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 6.827552,
+        "p50": 4.019136,
+        "p95": 4.533408,
+        "p99": 4.839008,
+        "samples": 1471
+      },
+      "frameMilliseconds": {
+        "max": 13.1665,
+        "p50": 6.7058,
+        "p95": 7.5051,
+        "p99": 9.084,
+        "samples": 1471
+      },
+      "cpuRecordMilliseconds": {
+        "max": 8.3435,
+        "p50": 2.4391,
+        "p95": 3.2921,
+        "p99": 4.887,
+        "samples": 1471
+      },
+      "timingScope": "Synchronous GPUDriven + MaterialResolve offscreen graph; no presentation blit, output/debug readback on timed frames; excludes checkpoint verification",
+      "firstConvergedSeconds": 0.5040933000000001,
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-indexed-hardware\\baseline-fixed-15\\MiniZorahRoamingReport.json",
+      "checkpoints": 11,
+      "finalCut": {
+        "activeGroups": 20265,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 187000,
+        "earlyHardware": 40334,
+        "earlySoftware": 24356,
+        "fineGroups": 12256,
+        "lateCandidates": 57137,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 42315.90234375,
+        "maxVisibleRefinementErrorPixels": 1.4999721050262451,
+        "nearPlaneUnboundedRefinements": 454,
+        "overTargetRefinements": 1937,
+        "selectedClusters": 213532,
+        "verifiedInstances": 12514,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "stableCheckpointSamples": 6,
+      "stableCheckpointMedianMs": {
+        "AfterEarlyCull": 0.417872,
+        "AfterLateCull": 0.09926399999999999,
+        "AfterPass": 0.080288,
+        "AfterStreamEarlyBins": 0.031792,
+        "AfterStreamEarlyCandidates": 0.36508799999999997,
+        "AfterStreamEarlyClassify": 0.264848,
+        "AfterStreamEarlyClusterCull": 0.037872,
+        "AfterStreamEarlyRaster": 1.4061759999999999,
+        "AfterStreamEarlyResolve": 0.03296,
+        "AfterStreamEmit": 0.058352,
+        "AfterStreamFrontier": 1.042688,
+        "AfterStreamLateBins": 0.034367999999999996,
+        "AfterStreamLateCandidates": 0.252576,
+        "AfterStreamLateClassify": 0.008912,
+        "AfterStreamLateClusterCull": 0.027632,
+        "AfterStreamLateRaster": 0.073136,
+        "AfterStreamLateResolve": 0.022272,
+        "AfterStreamPrefetch": 0.012015999999999999,
+        "AfterStreamPrefix": 0.064288,
+        "AfterStreamUpdates": 0.0020959999999999998,
+        "AfterTraversal": 0.0058720000000000005,
+        "afterTraversalToEnd": 3.292816
+      },
+      "imageSha256": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75"
+    },
+    "indexed-fixed-15": {
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 5.327616,
+        "p50": 3.81104,
+        "p95": 4.435904,
+        "p99": 4.736256,
+        "samples": 1344
+      },
+      "frameMilliseconds": {
+        "max": 103.599,
+        "p50": 7.1397,
+        "p95": 8.8,
+        "p99": 11.0677,
+        "samples": 1344
+      },
+      "cpuRecordMilliseconds": {
+        "max": 77.5701,
+        "p50": 2.993,
+        "p95": 4.7801,
+        "p99": 6.3793,
+        "samples": 1344
+      },
+      "timingScope": "Synchronous GPUDriven + MaterialResolve offscreen graph; no presentation blit, output/debug readback on timed frames; excludes checkpoint verification",
+      "firstConvergedSeconds": 0.5047512999999999,
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-indexed-hardware\\indexed-fixed-15\\MiniZorahRoamingReport.json",
+      "checkpoints": 11,
+      "finalCut": {
+        "activeGroups": 20265,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 187000,
+        "earlyHardware": 40334,
+        "earlySoftware": 24356,
+        "fineGroups": 12256,
+        "lateCandidates": 57137,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 42315.90234375,
+        "maxVisibleRefinementErrorPixels": 1.4999721050262451,
+        "nearPlaneUnboundedRefinements": 454,
+        "overTargetRefinements": 1937,
+        "selectedClusters": 213532,
+        "verifiedInstances": 12514,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "stableCheckpointSamples": 6,
+      "stableCheckpointMedianMs": {
+        "AfterEarlyCull": 0.39264,
+        "AfterLateCull": 0.09401599999999999,
+        "AfterPass": 0.08168,
+        "AfterStreamEarlyBins": 0.031264,
+        "AfterStreamEarlyCandidates": 0.502304,
+        "AfterStreamEarlyClassify": 0.263152,
+        "AfterStreamEarlyClusterCull": 0.038912,
+        "AfterStreamEarlyRaster": 0.8880319999999999,
+        "AfterStreamEarlyResolve": 0.026688,
+        "AfterStreamEmit": 0.057936,
+        "AfterStreamFrontier": 0.992864,
+        "AfterStreamLateBins": 0.029392,
+        "AfterStreamLateCandidates": 0.264336,
+        "AfterStreamLateClassify": 0.008816000000000001,
+        "AfterStreamLateClusterCull": 0.034192,
+        "AfterStreamLateRaster": 0.08592,
+        "AfterStreamLateResolve": 0.022144,
+        "AfterStreamPrefetch": 0.012015999999999999,
+        "AfterStreamPrefix": 0.063696,
+        "AfterStreamUpdates": 0.002288,
+        "AfterTraversal": 0.0057280000000000005,
+        "afterTraversalToEnd": 2.773664
+      },
+      "imageSha256": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75"
+    },
+    "baseline-roam-60": {
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 7.502848,
+        "p50": 4.387488,
+        "p95": 5.306304,
+        "p99": 5.771104,
+        "samples": 7769
+      },
+      "frameMilliseconds": {
+        "max": 22.2974,
+        "p50": 7.7952,
+        "p95": 9.4153,
+        "p99": 10.4876,
+        "samples": 7769
+      },
+      "cpuRecordMilliseconds": {
+        "max": 12.1164,
+        "p50": 3.3086,
+        "p95": 4.8143,
+        "p99": 5.7654,
+        "samples": 7769
+      },
+      "timingScope": "Synchronous GPUDriven + MaterialResolve offscreen graph; no presentation blit, output/debug readback on timed frames; excludes checkpoint verification",
+      "firstConvergedSeconds": 0.5070286,
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-indexed-hardware\\baseline-roam-60\\MiniZorahRoamingReport.json",
+      "checkpoints": 60,
+      "finalCut": {
+        "activeGroups": 20543,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 197799,
+        "earlyHardware": 40180,
+        "earlySoftware": 23543,
+        "fineGroups": 12280,
+        "lateCandidates": 68852,
+        "lateHardware": 105,
+        "lateSoftware": 299,
+        "maxFiniteRefinementErrorPixels": 96659.109375,
+        "maxVisibleRefinementErrorPixels": 1.499959945678711,
+        "nearPlaneUnboundedRefinements": 457,
+        "overTargetRefinements": 1425,
+        "selectedClusters": 214044,
+        "verifiedInstances": 12834,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      }
+    },
+    "indexed-roam-60": {
+      "status": "passed",
+      "gpuMilliseconds": {
+        "max": 75.3648,
+        "p50": 3.85792,
+        "p95": 4.616128,
+        "p99": 25.295136,
+        "samples": 7488
+      },
+      "frameMilliseconds": {
+        "max": 123.4211,
+        "p50": 7.3496,
+        "p95": 9.0627,
+        "p99": 31.3131,
+        "samples": 7488
+      },
+      "cpuRecordMilliseconds": {
+        "max": 11.7246,
+        "p50": 3.3647,
+        "p95": 4.998,
+        "p99": 5.9429,
+        "samples": 7488
+      },
+      "timingScope": "Synchronous GPUDriven + MaterialResolve offscreen graph; no presentation blit, output/debug readback on timed frames; excludes checkpoint verification",
+      "firstConvergedSeconds": 0.5083866,
+      "report": "E:\\metallic\\build-relwithdebinfo\\minizorah-indexed-hardware\\indexed-roam-60\\MiniZorahRoamingReport.json",
+      "checkpoints": 60,
+      "finalCut": {
+        "activeGroups": 20492,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 196817,
+        "earlyHardware": 40168,
+        "earlySoftware": 23498,
+        "fineGroups": 12226,
+        "lateCandidates": 68946,
+        "lateHardware": 362,
+        "lateSoftware": 411,
+        "maxFiniteRefinementErrorPixels": 54233.98046875,
+        "maxVisibleRefinementErrorPixels": 1.4999653100967407,
+        "nearPlaneUnboundedRefinements": 457,
+        "overTargetRefinements": 1412,
+        "selectedClusters": 213033,
+        "verifiedInstances": 12836,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      }
+    }
+  },
+  "validation": {
+    "fixedViews": "bit-identical PNGs and identical converged cuts",
+    "roaming": "baseline and indexed passed all 60 checkpoints",
+    "rasterEquivalence": "24 configurations / 48 GPU draws, visibility and depth bit-identical; final Vulkan validation clean",
+    "relatedRegressions": {
+      "passed": 21,
+      "skipped": 0,
+      "durationMilliseconds": 104882,
+      "vulkanValidationDiagnostics": 0,
+      "log": "E:\\metallic\\build-relwithdebinfo\\minizorah-indexed-hardware\\final-regression.log"
+    },
+    "buildTargets": [
+      "MetallicGPUDrivenSample",
+      "Metallic",
+      "MetallicRhiTests"
+    ]
+  },
+  "sourceSha256": {
+    "Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang": "346275bfe2a8f88363f988286d81ca0f56bec8ec2f745f129b89beb040353c67",
+    "Shaders/Features/VisibilityBuffer/VisibilityHybridRaster.slang": "9d52cf1596660cb660abb20451d30d480992014f7fe4b7ffdae23055a67b9069"
+  }
+}

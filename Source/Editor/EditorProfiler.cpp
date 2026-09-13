@@ -13,7 +13,7 @@
 namespace metallic {
 namespace {
 
-constexpr size_t kProfilerHistorySize = 240;
+constexpr size_t kProfilerHistorySize = 500;
 constexpr float kPi = 3.14159265358979323846f;
 
 ImU32 imguiColor(uint32_t rgba)
@@ -25,257 +25,339 @@ ImU32 imguiColor(uint32_t rgba)
     return IM_COL32(r, g, b, a);
 }
 
-double nodeValueByPath(const EditorProfiler::Frame& frame, const std::vector<std::string>& path)
+const EditorProfiler::Node* nodeByPath(const EditorProfiler::Frame& frame, const std::vector<std::string>& path)
 {
-    if (frame.nodes.empty()) {
-        return 0.0;
+    if (frame.nodes.empty()) { return nullptr; }
+    size_t index = 0;
+    for (const auto& part : path) {
+        const auto& children = frame.nodes[index].children;
+        const auto iter = std::find_if(children.begin(), children.end(), [&](size_t child) { return frame.nodes[child].name == part; });
+        if (iter == children.end()) { return nullptr; }
+        index = *iter;
     }
-    size_t nodeIndex = 0;
-    for (const std::string& part : path) {
-        const auto& children = frame.nodes[nodeIndex].children;
-        const auto iter = std::find_if(
-            children.begin(),
-            children.end(),
-            [&](size_t childIndex) {
-                return frame.nodes[childIndex].name == part;
-            });
-        if (iter == children.end()) {
-            return 0.0;
-        }
-        nodeIndex = *iter;
-    }
-    return frame.nodes[nodeIndex].cpuMilliseconds;
+    return &frame.nodes[index];
+}
+
+double sampleValue(const EditorProfiler::Node* node, bool gpu)
+{
+    return node && (!gpu || node->gpuTimingAvailable)
+        ? (gpu ? node->gpuMilliseconds : node->cpuMilliseconds) : std::numeric_limits<double>::quiet_NaN();
 }
 
 struct Aggregate {
     double average = 0.0;
-    double minimum = 0.0;
+    double minimum = std::numeric_limits<double>::max();
     double maximum = 0.0;
     size_t count = 0;
 };
 
-Aggregate aggregateByPath(const std::vector<EditorProfiler::Frame>& history, const std::vector<std::string>& path)
+Aggregate aggregateByPath(const std::vector<EditorProfiler::Frame>& history, const std::vector<std::string>& path, bool gpu)
 {
-    Aggregate aggregate;
-    double total = 0.0;
-    double minimum = std::numeric_limits<double>::max();
-    double maximum = 0.0;
-    for (const EditorProfiler::Frame& frame : history) {
-        const double value = nodeValueByPath(frame, path);
-        if (value <= 0.0) {
-            continue;
-        }
-        total += value;
-        minimum = std::min(minimum, value);
-        maximum = std::max(maximum, value);
-        ++aggregate.count;
+    Aggregate result;
+    for (const auto& frame : history) {
+        const double value = sampleValue(nodeByPath(frame, path), gpu);
+        if (!std::isfinite(value)) { continue; }
+        result.average += value;
+        result.minimum = std::min(result.minimum, value);
+        result.maximum = std::max(result.maximum, value);
+        ++result.count;
     }
-
-    if (aggregate.count > 0) {
-        aggregate.average = total / static_cast<double>(aggregate.count);
-        aggregate.minimum = minimum;
-        aggregate.maximum = maximum;
-    }
-    return aggregate;
+    if (result.count) { result.average /= double(result.count); }
+    return result;
 }
 
-void drawDuration(double milliseconds)
+void drawDuration(double value, bool available = true)
 {
-    if (milliseconds <= 0.0) {
-        ImGui::TextDisabled("--");
-        return;
-    }
-    ImGui::Text("%.3f", milliseconds);
+    if (available && std::isfinite(value)) { ImGui::Text("%.3f", value); }
+    else { ImGui::TextDisabled("--"); }
 }
 
-void drawProfilerTableNode(
-    const EditorProfiler::Frame& frame,
-    const std::vector<EditorProfiler::Frame>& history,
-    size_t nodeIndex,
-    std::vector<std::string>& path,
-    uint32_t depth)
+const char* queueName(render::QueueType queue)
 {
-    const EditorProfiler::Node& node = frame.nodes[nodeIndex];
-    const bool hasChildren = !node.children.empty();
+    return queue == render::QueueType::Compute ? "Compute" : queue == render::QueueType::Copy ? "Copy" : "Graphics";
+}
+
+void drawProfilerTableNode(const EditorProfiler::Frame& frame, const std::vector<EditorProfiler::Frame>& history,
+    size_t index, std::vector<std::string>& path, uint32_t depth, bool detailed)
+{
+    const auto& node = frame.nodes[index];
+    const bool children = !node.children.empty();
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_SpanFullWidth;
-    if (!hasChildren) {
-        flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_Bullet | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-    } else if (depth < 2) {
-        flags |= ImGuiTreeNodeFlags_DefaultOpen;
-    }
-
+    if (!children) { flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_Bullet | ImGuiTreeNodeFlags_NoTreePushOnOpen; }
+    else if (depth < 4) { flags |= ImGuiTreeNodeFlags_DefaultOpen; }
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::PushStyleColor(ImGuiCol_Text, imguiColor(node.color));
-    const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(nodeIndex), flags, "%s", node.name.c_str());
+    const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(index + 1), flags, "%s", node.name.c_str());
     ImGui::PopStyleColor();
-
-    const Aggregate aggregate = aggregateByPath(history, path);
-    ImGui::TableNextColumn();
-    drawDuration(node.cpuMilliseconds);
-    ImGui::TableNextColumn();
-    if (node.gpuTimingAvailable) {
-        ImGui::Text("%.3f", node.gpuMilliseconds);
-    } else {
-        ImGui::TextDisabled("--");
+    const auto gpu = aggregateByPath(history, path, true);
+    const auto cpu = aggregateByPath(history, path, false);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("CPU samples: %zu | GPU samples: %zu\nGPU results arrive after completion; missing queries are excluded.\nNested / concurrent intervals must not be added together.", cpu.count, gpu.count);
     }
+    ImGui::TableNextColumn(); drawDuration(gpu.average, gpu.count != 0);
+    ImGui::TableNextColumn(); drawDuration(cpu.average, cpu.count != 0);
     ImGui::TableNextColumn();
-    drawDuration(aggregate.average);
-    ImGui::TableNextColumn();
-    drawDuration(aggregate.minimum);
-    ImGui::TableNextColumn();
-    drawDuration(aggregate.maximum);
-
-    if (open && hasChildren) {
-        for (size_t childIndex : node.children) {
-            path.push_back(frame.nodes[childIndex].name);
-            drawProfilerTableNode(frame, history, childIndex, path, depth + 1);
+    if (node.renderGraphExecutionId != UINT64_MAX) { ImGui::TextUnformatted(node.renderGraphNodeId == UINT32_MAX ? "Envelope" : queueName(node.queue)); }
+    else { ImGui::TextDisabled("CPU"); }
+    if (detailed) {
+        ImGui::TableNextColumn(); drawDuration(node.gpuMilliseconds, node.gpuTimingAvailable);
+        ImGui::TableNextColumn(); drawDuration(gpu.minimum, gpu.count != 0);
+        ImGui::TableNextColumn(); drawDuration(gpu.maximum, gpu.count != 0);
+        ImGui::TableNextColumn(); drawDuration(node.cpuMilliseconds);
+        ImGui::TableNextColumn(); drawDuration(cpu.minimum, cpu.count != 0);
+        ImGui::TableNextColumn(); drawDuration(cpu.maximum, cpu.count != 0);
+    }
+    if (open && children) {
+        for (const size_t child : node.children) {
+            path.push_back(frame.nodes[child].name);
+            drawProfilerTableNode(frame, history, child, path, depth + 1, detailed);
             path.pop_back();
         }
         ImGui::TreePop();
     }
 }
 
-void drawProfilerTable(const EditorProfiler::Frame& frame, const std::vector<EditorProfiler::Frame>& history)
+void drawProfilerTable(const EditorProfiler::Frame& frame, const std::vector<EditorProfiler::Frame>& history, bool detailed)
 {
-    if (frame.nodes.empty()) {
-        ImGui::TextDisabled("No profiler samples yet.");
-        return;
+    if (frame.nodes.empty()) { ImGui::TextDisabled("No profiler samples yet."); return; }
+    if (!ImGui::BeginTable("ProfilerTable", detailed ? 10 : 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX, ImVec2(0, 0))) { return; }
+    ImGui::TableSetupColumn("Timer", ImGuiTableColumnFlags_WidthStretch, 300);
+    for (const char* label : {"GPU avg ms", "CPU avg ms", "Queue"}) { ImGui::TableSetupColumn(label, ImGuiTableColumnFlags_WidthFixed, 90); }
+    if (detailed) {
+        for (const char* label : {"GPU last", "GPU min", "GPU max", "CPU last", "CPU min", "CPU max"}) {
+            ImGui::TableSetupColumn(label, ImGuiTableColumnFlags_WidthFixed, 85);
+        }
     }
-
-    if (!ImGui::BeginTable(
-            "ProfilerTable",
-            6,
-            ImGuiTableFlags_Borders |
-                ImGuiTableFlags_RowBg |
-                ImGuiTableFlags_Resizable |
-                ImGuiTableFlags_ScrollY,
-            ImVec2(0.0f, 0.0f))) {
-        return;
-    }
-
-    ImGui::TableSetupColumn("Timer", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("Last CPU ms", ImGuiTableColumnFlags_WidthFixed, 92.0f);
-    ImGui::TableSetupColumn("Last GPU ms", ImGuiTableColumnFlags_WidthFixed, 92.0f);
-    ImGui::TableSetupColumn("Avg", ImGuiTableColumnFlags_WidthFixed, 72.0f);
-    ImGui::TableSetupColumn("Min", ImGuiTableColumnFlags_WidthFixed, 72.0f);
-    ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_WidthFixed, 72.0f);
+    ImGui::TableSetupScrollFreeze(1, 1);
     ImGui::TableHeadersRow();
-
     std::vector<std::string> path;
-    drawProfilerTableNode(frame, history, 0, path, 0);
+    drawProfilerTableNode(frame, history, 0, path, 0, detailed);
     ImGui::EndTable();
 }
 
-void drawBarChart(const EditorProfiler::Frame& frame)
+struct PlotSeries {
+    std::string name;
+    ImU32 color;
+    std::vector<double> values;
+};
+
+// NaN means unavailable, producing a gap rather than a misleading zero sample.
+void drawHistoryPlot(const char* title, const std::vector<uint64_t>& frames, const std::vector<PlotSeries>& series,
+    const char* unit, float height, bool stacked = false, double reference = 0.0)
 {
-    if (frame.nodes.empty() || frame.nodes[0].children.empty()) {
-        ImGui::TextDisabled("No profiler samples yet.");
-        return;
-    }
-
-    const EditorProfiler::Node& root = frame.nodes[0];
-    const float width = ImGui::GetContentRegionAvail().x;
-    const float height = 34.0f;
+    ImGui::PushID(title);
+    ImGui::TextUnformatted(title);
+    if (frames.empty()) { ImGui::TextDisabled("No samples."); ImGui::PopID(); return; }
+    const float width = std::max(ImGui::GetContentRegionAvail().x, 120.0f);
     const ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    drawList->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), IM_COL32(18, 18, 18, 255));
-    drawList->AddRect(pos, ImVec2(pos.x + width, pos.y + height), IM_COL32(100, 100, 100, 160));
-
-    const double total = std::max(root.cpuMilliseconds, 0.001);
-    float cursorX = pos.x;
-    for (size_t childIndex : root.children) {
-        const EditorProfiler::Node& child = frame.nodes[childIndex];
-        const float fraction = static_cast<float>(std::max(child.cpuMilliseconds, 0.0) / total);
-        const float segmentWidth = std::max(width * fraction, child.cpuMilliseconds > 0.0 ? 1.0f : 0.0f);
-        const ImVec2 min(cursorX, pos.y);
-        const ImVec2 max(std::min(cursorX + segmentWidth, pos.x + width), pos.y + height);
-        drawList->AddRectFilled(min, max, imguiColor(child.color));
-        if (segmentWidth > 58.0f) {
-            drawList->AddText(ImVec2(min.x + 5.0f, min.y + 9.0f), IM_COL32_WHITE, child.name.c_str());
+    const ImVec2 lo(pos.x + 55, pos.y + 8), hi(pos.x + width - 10, pos.y + height - 24);
+    auto* draw = ImGui::GetWindowDrawList();
+    ImGui::InvisibleButton("plot", ImVec2(width, height));
+    draw->AddRectFilled(lo, hi, IM_COL32(25, 27, 31, 255));
+    double maximum = reference;
+    for (size_t i = 0; i < frames.size(); ++i) {
+        double sum = 0;
+        for (const auto& line : series) {
+            if (i >= line.values.size() || !std::isfinite(line.values[i])) { continue; }
+            sum = stacked ? sum + line.values[i] : std::max(sum, line.values[i]);
         }
-        cursorX += segmentWidth;
+        maximum = std::max(maximum, sum);
     }
-    ImGui::Dummy(ImVec2(width, height + 8.0f));
-
-    if (ImGui::BeginTable("ProfilerBarLegend", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
-        ImGui::TableSetupColumn("Section", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-        ImGui::TableSetupColumn("Share", ImGuiTableColumnFlags_WidthFixed, 72.0f);
-        ImGui::TableHeadersRow();
-        for (size_t childIndex : root.children) {
-            const EditorProfiler::Node& child = frame.nodes[childIndex];
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(imguiColor(child.color)), "%s", child.name.c_str());
-            ImGui::TableNextColumn();
-            ImGui::Text("%.3f", child.cpuMilliseconds);
-            ImGui::TableNextColumn();
-            ImGui::Text("%.1f%%", child.cpuMilliseconds * 100.0 / total);
+    maximum = std::max(maximum * 1.08, 1.0);
+    const auto xAt = [&](size_t i) {
+        return lo.x + (hi.x - lo.x) * float(frames[i] - frames.front()) / float(std::max<uint64_t>(frames.back() - frames.front(), 1));
+    };
+    const auto yAt = [&](double value) { return hi.y - float(std::clamp(value / maximum, 0.0, 1.0)) * (hi.y - lo.y); };
+    char text[96];
+    for (int grid = 0; grid <= 4; ++grid) {
+        const double value = maximum * grid / 4;
+        const float y = yAt(value);
+        draw->AddLine(ImVec2(lo.x, y), ImVec2(hi.x, y), IM_COL32(80, 82, 88, 100));
+        std::snprintf(text, sizeof(text), "%.1f", value);
+        draw->AddText(ImVec2(pos.x, y - 6), IM_COL32(190, 190, 195, 255), text);
+    }
+    std::vector<double> base(frames.size(), 0);
+    for (const auto& line : series) {
+        for (size_t i = 0; i < frames.size(); ++i) {
+            if (i >= line.values.size() || !std::isfinite(line.values[i])) { continue; }
+            const double value = line.values[i];
+            const ImVec2 point(xAt(i), yAt(base[i] + value));
+            if (i && std::isfinite(line.values[i - 1])) {
+                const ImVec2 previous(xAt(i - 1), yAt(base[i - 1] + line.values[i - 1]));
+                if (stacked) {
+                    // Adjacent filled spans share an edge; antialiasing each one
+                    // produces vertical seams in otherwise constant memory usage.
+                    const auto flags = draw->Flags;
+                    draw->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+                    draw->AddQuadFilled(previous, point, ImVec2(point.x, yAt(base[i])),
+                        ImVec2(previous.x, yAt(base[i - 1])), (line.color & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 170));
+                    draw->Flags = flags;
+                }
+                draw->AddLine(previous, point, line.color, 1.5f);
+            } else { draw->AddCircleFilled(point, 2, line.color); }
         }
-        ImGui::EndTable();
+        if (stacked) {
+            for (size_t i = 0; i < frames.size(); ++i) { if (std::isfinite(line.values[i])) { base[i] += line.values[i]; } }
+        }
+    }
+    if (reference > 0) {
+        const float y = yAt(reference);
+        for (float x = lo.x; x < hi.x; x += 9) { draw->AddLine(ImVec2(x, y), ImVec2(std::min(x + 5, hi.x), y), IM_COL32(235, 215, 135, 200)); }
+    }
+    std::snprintf(text, sizeof(text), "%llu", static_cast<unsigned long long>(frames.front()));
+    draw->AddText(ImVec2(lo.x, hi.y + 4), IM_COL32_WHITE, text);
+    std::snprintf(text, sizeof(text), "frame %llu", static_cast<unsigned long long>(frames.back()));
+    draw->AddText(ImVec2(std::max(lo.x, hi.x - ImGui::CalcTextSize(text).x), hi.y + 4), IM_COL32_WHITE, text);
+    if (ImGui::IsItemHovered()) {
+        const double fraction = std::clamp(double((ImGui::GetIO().MousePos.x - lo.x) / (hi.x - lo.x)), 0.0, 1.0);
+        const auto target = frames.front() + uint64_t(fraction * double(frames.back() - frames.front()));
+        auto it = std::lower_bound(frames.begin(), frames.end(), target);
+        size_t i = it == frames.end() ? frames.size() - 1 : size_t(it - frames.begin());
+        if (i && target - frames[i - 1] < frames[i] - target) { --i; }
+        draw->AddLine(ImVec2(xAt(i), lo.y), ImVec2(xAt(i), hi.y), IM_COL32(255, 255, 255, 160));
+        ImGui::BeginTooltip();
+        ImGui::Text("Frame %llu", static_cast<unsigned long long>(frames[i]));
+        for (const auto& line : series) {
+            if (std::isfinite(line.values[i])) { ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(line.color), "%s: %.3f %s", line.name.c_str(), line.values[i], unit); }
+            else { ImGui::TextDisabled("%s: pending / unavailable", line.name.c_str()); }
+        }
+        if (reference > 0) { ImGui::Text("Capacity / budget: %.1f %s", reference, unit); }
+        ImGui::EndTooltip();
+    }
+    const float legendRight = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    for (size_t i = 0; i < series.size(); ++i) {
+        if (i && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + ImGui::CalcTextSize(series[i].name.c_str()).x < legendRight) {
+            ImGui::SameLine();
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, series[i].color);
+        ImGui::TextWrapped("%s", series[i].name.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::PopID();
+}
+
+std::vector<std::string> nodePath(const EditorProfiler::Frame& frame, size_t index)
+{
+    std::vector<std::string> path;
+    while (index && index < frame.nodes.size()) { path.push_back(frame.nodes[index].name); index = frame.nodes[index].parent; }
+    std::reverse(path.begin(), path.end());
+    return path;
+}
+
+const EditorProfiler::Node* chooseChartScope(const EditorProfiler::Frame& frame, int& metric, std::vector<std::string>& path)
+{
+    ImGui::SetNextItemWidth(120);
+    ImGui::Combo("Metric", &metric, "CPU\0GPU\0");
+    const auto* selected = nodeByPath(frame, path);
+    if (!selected || (metric == 1 && selected->renderGraphExecutionId == UINT64_MAX)) {
+        for (size_t i = 0; i < frame.nodes.size(); ++i) {
+            if (frame.nodes[i].renderGraphExecutionId != UINT64_MAX) { path = nodePath(frame, i); selected = &frame.nodes[i]; break; }
+        }
+    }
+    ImGui::SetNextItemWidth(-65);
+    if (ImGui::BeginCombo("Scope", selected ? selected->name.c_str() : "Frame")) {
+        for (size_t i = 0; i < frame.nodes.size(); ++i) {
+            const auto& node = frame.nodes[i];
+            if (metric == 1 && node.renderGraphExecutionId == UINT64_MAX) { continue; }
+            auto candidate = nodePath(frame, i);
+            std::string label = "Frame";
+            for (const auto& part : candidate) { label += " / " + part; }
+            if (ImGui::Selectable(label.c_str(), candidate == path)) { path = std::move(candidate); selected = &node; }
+        }
+        ImGui::EndCombo();
+    }
+    return selected;
+}
+
+void drawTimingCharts(const EditorProfiler::Frame& frame, const std::vector<EditorProfiler::Frame>& history,
+    int& metric, std::vector<std::string>& path, bool lines)
+{
+    const auto* selected = chooseChartScope(frame, metric, path);
+    if (!selected) { return; }
+    const bool gpu = metric == 1;
+    ImGui::TextDisabled("Elapsed ms; nested and concurrent GPU intervals overlap.");
+    std::vector<std::pair<std::vector<std::string>, const EditorProfiler::Node*>> paths{{path, selected}};
+    for (auto child : selected->children) {
+        auto childPath = path; childPath.push_back(frame.nodes[child].name);
+        paths.push_back({std::move(childPath), &frame.nodes[child]});
+    }
+    if (lines) {
+        std::vector<uint64_t> frames;
+        for (const auto& sample : history) { frames.push_back(sample.index); }
+        std::vector<PlotSeries> series;
+        for (const auto& [p, node] : paths) {
+            PlotSeries line{node->name, imguiColor(node->color), {}};
+            for (const auto& sample : history) { line.values.push_back(sampleValue(nodeByPath(sample, p), gpu)); }
+            series.push_back(std::move(line));
+        }
+        drawHistoryPlot(gpu ? "GPU history (ms)" : "CPU history (ms)", frames, series, "ms",
+            std::max(160.0f, ImGui::GetContentRegionAvail().y - 95));
+    } else {
+        double max = 0.001;
+        for (const auto& [p, node] : paths) { max = std::max(max, aggregateByPath(history, p, gpu).average); }
+        for (const auto& [p, node] : paths) {
+            const auto avg = aggregateByPath(history, p, gpu);
+            ImGui::TextUnformatted(node->name.c_str());
+            char label[64];
+            if (avg.count) { std::snprintf(label, sizeof(label), "%.3f ms (%zu samples)", avg.average, avg.count); }
+            else { std::snprintf(label, sizeof(label), "pending / unavailable"); }
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, imguiColor(node->color));
+            ImGui::ProgressBar(float(avg.average / max), ImVec2(-1, 20), label);
+            ImGui::PopStyleColor();
+        }
     }
 }
 
-void drawLineChart(const EditorProfiler::Frame& frame, const std::vector<EditorProfiler::Frame>& history)
+void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources, std::string& selected, bool& showBudget)
 {
-    if (frame.nodes.empty() || history.empty()) {
-        ImGui::TextDisabled("No profiler samples yet.");
-        return;
+    if (sources.empty()) { ImGui::TextDisabled("The current scene has no meshlet streaming runtime."); return; }
+    auto it = std::find_if(sources.begin(), sources.end(), [&](const auto& source) { return source.passName == selected; });
+    if (it == sources.end()) { it = sources.begin(); selected = it->passName; }
+    if (ImGui::BeginCombo("Source", selected.c_str())) {
+        for (const auto& source : sources) { if (ImGui::Selectable(source.passName.c_str(), source.passName == selected)) { selected = source.passName; } }
+        ImGui::EndCombo();
     }
-
-    const float width = ImGui::GetContentRegionAvail().x;
-    const float height = std::max(180.0f, ImGui::GetContentRegionAvail().y - 48.0f);
-    const ImVec2 pos = ImGui::GetCursorScreenPos();
-    const ImVec2 size(width, height);
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    drawList->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), IM_COL32(18, 18, 18, 255));
-    drawList->AddRect(pos, ImVec2(pos.x + size.x, pos.y + size.y), IM_COL32(100, 100, 100, 160));
-
-    double maxValue = 0.0;
-    for (const EditorProfiler::Frame& sample : history) {
-        maxValue = std::max(maxValue, sample.nodes.empty() ? 0.0 : sample.nodes[0].cpuMilliseconds);
+    it = std::find_if(sources.begin(), sources.end(), [&](const auto& source) { return source.passName == selected; });
+    ImGui::TextWrapped("Asset: %s", it->assetPath.c_str());
+    if (it->samples.empty()) { return; }
+    const auto& last = it->samples.back();
+    constexpr double mib = 1024.0 * 1024.0;
+    ImGui::Text("Geometry %.1f / %.1f MiB | Resident %u / %u pages", last.geometryUsedBytes / mib,
+        last.geometryBudgetBytes / mib, last.residentPages, last.totalPages);
+    if (last.clasEnabled) { ImGui::Text("CLAS %.1f / %.1f MiB", last.clasUsedBytes / mib, last.clasCapacityBytes / mib); }
+    else { ImGui::TextDisabled("CLAS: disabled for this rendering path"); }
+    ImGui::Text("Pending pages %u | I/O queued %u, active %u | Upload pipeline %u", last.pendingPages, last.ioQueued, last.ioActive, last.uploadQueued);
+    ImGui::Text("Requests %u | Completed uploads %u | Evictions %u | Upload %.3f MiB/frame", last.requests, last.uploads, last.evictions, last.uploadBytes / mib);
+    if (last.feedbackFrame == UINT64_MAX) { ImGui::TextDisabled("Feedback: pending"); }
+    else { ImGui::TextDisabled("Stream frame %llu | Feedback frame %llu (age %llu)",
+        static_cast<unsigned long long>(last.frameIndex), static_cast<unsigned long long>(last.feedbackFrame),
+        static_cast<unsigned long long>(last.frameIndex >= last.feedbackFrame ? last.frameIndex - last.feedbackFrame : 0)); }
+    if (last.requestOverflows || last.allocationFailures || last.loadFailures) {
+        ImGui::TextColored(ImVec4(1, .65f, .2f, 1), "Request overflow %u | Allocation failures %u | Total I/O failures %llu",
+            last.requestOverflows, last.allocationFailures, static_cast<unsigned long long>(last.loadFailures));
     }
-    maxValue = std::max(maxValue, 0.001);
-
-    auto plotPath = [&](const std::vector<std::string>& path, uint32_t color) {
-        if (history.size() < 2) {
-            return;
-        }
-        ImVec2 previous;
-        bool hasPrevious = false;
-        for (size_t index = 0; index < history.size(); ++index) {
-            const double value = path.empty()
-                ? (history[index].nodes.empty() ? 0.0 : history[index].nodes[0].cpuMilliseconds)
-                : nodeValueByPath(history[index], path);
-            const float x = pos.x + (static_cast<float>(index) / static_cast<float>(history.size() - 1)) * size.x;
-            const float y = pos.y + size.y - static_cast<float>(std::clamp(value / maxValue, 0.0, 1.0)) * size.y;
-            const ImVec2 point(x, y);
-            if (hasPrevious) {
-                drawList->AddLine(previous, point, imguiColor(color), 2.0f);
-            }
-            previous = point;
-            hasPrevious = true;
-        }
-    };
-
-    plotPath({}, 0xffffffffu);
-    const EditorProfiler::Node& root = frame.nodes[0];
-    for (size_t childIndex : root.children) {
-        plotPath({frame.nodes[childIndex].name}, frame.nodes[childIndex].color);
+    ImGui::TextDisabled("CPU-visible counters; requests refer to completed GPU feedback. Upload pipeline includes I/O.");
+    std::vector<uint64_t> frames;
+    std::vector<PlotSeries> memory{{"Geometry", IM_COL32(64, 218, 100, 255), {}}, {"CLAS", IM_COL32(75, 151, 250, 255), {}}};
+    std::vector<PlotSeries> pages{{"Requests", IM_COL32(255, 211, 92, 255), {}}, {"Uploads", IM_COL32(92, 217, 161, 255), {}}, {"Evictions", IM_COL32(246, 123, 123, 255), {}}};
+    std::vector<PlotSeries> uploads{{"Upload MiB/frame", IM_COL32(104, 178, 248, 255), {}}};
+    std::vector<PlotSeries> pending{{"Pending pages", IM_COL32(255, 211, 92, 255), {}}, {"I/O queued", IM_COL32(246, 123, 123, 255), {}}, {"I/O active", IM_COL32(104, 178, 248, 255), {}}};
+    for (const auto& sample : it->samples) {
+        frames.push_back(sample.frameIndex);
+        memory[0].values.push_back(sample.geometryUsedBytes / mib); memory[1].values.push_back(sample.clasUsedBytes / mib);
+        pages[0].values.push_back(sample.requests); pages[1].values.push_back(sample.uploads); pages[2].values.push_back(sample.evictions);
+        uploads[0].values.push_back(sample.uploadBytes / mib);
+        pending[0].values.push_back(sample.pendingPages); pending[1].values.push_back(sample.ioQueued); pending[2].values.push_back(sample.ioActive);
     }
-
-    char label[64] = {};
-    std::snprintf(label, sizeof(label), "%.2f ms", maxValue);
-    drawList->AddText(ImVec2(pos.x + 6.0f, pos.y + 5.0f), IM_COL32(220, 220, 220, 255), label);
-    ImGui::Dummy(size);
-
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(IM_COL32_WHITE), "Frame");
-    for (size_t childIndex : root.children) {
-        ImGui::SameLine();
-        const EditorProfiler::Node& child = frame.nodes[childIndex];
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(imguiColor(child.color)), "%s", child.name.c_str());
-    }
+    if (!last.clasEnabled) { memory.pop_back(); }
+    ImGui::Checkbox("Include capacity in memory chart", &showBudget);
+    drawHistoryPlot("Streaming memory (MiB)", frames, memory, "MiB", 200, true,
+        showBudget ? (last.geometryBudgetBytes + last.clasCapacityBytes) / mib : 0.0);
+    drawHistoryPlot("Page traffic (pages/frame)", frames, pages, "pages", 170);
+    drawHistoryPlot("Upload traffic (MiB/frame)", frames, uploads, "MiB", 150);
+    drawHistoryPlot("Streaming backlog (pages)", frames, pending, "pages", 150);
 }
 
 void drawPieSlice(
@@ -365,8 +447,14 @@ void applyRenderGraphGpuStats(
                 return stat.id == node.renderGraphNodeId;
             });
         if (iter != stats.nodes.end()) {
-            node.gpuMilliseconds = iter->gpuMilliseconds;
-            node.gpuTimingAvailable = iter->gpuTimingAvailable;
+            if (node.renderGraphSectionIndex == UINT32_MAX) {
+                node.gpuMilliseconds = iter->gpuMilliseconds;
+                node.gpuTimingAvailable = iter->gpuTimingAvailable;
+            } else if (node.renderGraphSectionIndex < iter->sections.size()) {
+                const auto& section = iter->sections[node.renderGraphSectionIndex];
+                node.gpuMilliseconds = section.gpuMilliseconds;
+                node.gpuTimingAvailable = section.gpuTimingAvailable;
+            }
         }
     }
 }
@@ -439,6 +527,8 @@ EditorProfiler::FrameScope EditorProfiler::beginFrame()
     }
 
     currentNodes_.clear();
+    currentStreaming_.clear();
+    currentOverflow_ = false;
     stack_.clear();
     frameActive_ = true;
     beginSection("Frame", 0xffffffffu);
@@ -459,11 +549,18 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
         return;
     }
 
+    if (graphGeneration_ != stats.graphGeneration) {
+        history_.clear();
+        latestFrame_ = {};
+        graphGeneration_ = stats.graphGeneration;
+    }
+    currentStreaming_.insert(currentStreaming_.end(), stats.streaming.begin(), stats.streaming.end());
+    currentOverflow_ |= stats.profilingOverflow;
     const size_t parent = stack_.empty() ? 0 : stack_.back();
     const size_t group = addFinishedSection(
         parent,
-        "RenderGraph Passes",
-        colorFromName("RenderGraph Passes"),
+        "RenderGraph GPU envelope",
+        colorFromName("RenderGraph GPU envelope"),
         stats.cpuMilliseconds);
     currentNodes_[group].gpuMilliseconds = stats.gpuMilliseconds;
     currentNodes_[group].gpuTimingAvailable = stats.gpuTimingAvailable;
@@ -478,20 +575,43 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
         currentNodes_[nodeIndex].gpuTimingAvailable = stat.gpuTimingAvailable;
         currentNodes_[nodeIndex].renderGraphExecutionId = stats.executionId;
         currentNodes_[nodeIndex].renderGraphNodeId = stat.id;
+        currentNodes_[nodeIndex].queue = stat.queue;
+        std::vector<size_t> sectionNodes;
+        for (uint32_t i = 0; i < stat.sections.size(); ++i) {
+            const auto& section = stat.sections[i];
+            const size_t sectionParent = section.parent < sectionNodes.size() ? sectionNodes[section.parent] : nodeIndex;
+            const size_t child = addFinishedSection(sectionParent, section.name, colorFromName(section.name), section.cpuMilliseconds);
+            auto& node = currentNodes_[child];
+            node.gpuMilliseconds = section.gpuMilliseconds;
+            node.gpuTimingAvailable = section.gpuTimingAvailable;
+            node.renderGraphExecutionId = stats.executionId;
+            node.renderGraphNodeId = stat.id;
+            node.renderGraphSectionIndex = i;
+            node.queue = section.queue;
+            sectionNodes.push_back(child);
+        }
     }
 }
 
 void EditorProfiler::updateRenderGraphGpuStats(const render::RenderGraphExecutionStats& stats)
 {
-    if (!stats.gpuTimingAvailable) {
-        return;
-    }
-
+    if (stats.graphGeneration != graphGeneration_) { return; }
     applyRenderGraphGpuStats(currentNodes_, stats);
     applyRenderGraphGpuStats(latestFrame_.nodes, stats);
     for (Frame& frame : history_) {
         applyRenderGraphGpuStats(frame.nodes, stats);
     }
+}
+
+const EditorProfiler::Frame& EditorProfiler::displayFrame() const
+{
+    if (std::none_of(latestFrame_.nodes.begin(), latestFrame_.nodes.end(), [](const auto& node) {
+        return node.renderGraphExecutionId != UINT64_MAX;
+    })) { return latestFrame_; }
+    for (auto it = history_.rbegin(); it != history_.rend(); ++it) {
+        if (std::any_of(it->nodes.begin(), it->nodes.end(), [](const auto& node) { return node.gpuTimingAvailable; })) { return *it; }
+    }
+    return latestFrame_;
 }
 
 bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graphicsCapture)
@@ -501,7 +621,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
     }
 
     bool captureRequested = false;
-    ImGui::SetNextWindowSize(ImVec2(520.0f, 360.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(820.0f, 560.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Profiler", open)) {
         ImGui::End();
         return false;
@@ -549,21 +669,40 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
     }
     ImGui::Separator();
 
+    ImGui::Checkbox("Detailed", &detailed_);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear history")) { history_.clear(); for (auto& source : streamingHistory_) { source.samples.clear(); } }
+    const auto& frame = displayFrame();
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu / %zu frames", history_.size(), kProfilerHistorySize);
+    const bool hasGpu = std::any_of(frame.nodes.begin(), frame.nodes.end(), [](const auto& node) { return node.gpuTimingAvailable; });
+    if (hasGpu) { ImGui::TextDisabled("GPU completed: editor frame %llu (%llu frames behind)",
+        static_cast<unsigned long long>(frame.index), static_cast<unsigned long long>(latestFrame_.index - frame.index)); }
+    else { ImGui::TextDisabled("GPU queries pending / unavailable"); }
+    ImGui::TextDisabled("GPU envelope covers RenderGraph; editor UI and presentation are outside this interval.");
+    if (frame.profilingOverflow) { ImGui::TextColored(ImVec4(1, .65f, .2f, 1), "Profiler scope budget exceeded; some GPU intervals unavailable."); }
     if (ImGui::BeginTabBar("ProfilerTabs")) {
         if (ImGui::BeginTabItem("Table")) {
-            drawProfilerTable(latestFrame_, history_);
+            drawProfilerTable(frame, history_, detailed_);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("BarChart")) {
-            drawBarChart(latestFrame_);
+            drawTimingCharts(frame, history_, chartMetric_, chartPath_, false);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("LineChart")) {
-            drawLineChart(latestFrame_, history_);
+            drawTimingCharts(frame, history_, chartMetric_, chartPath_, true);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("PieChart")) {
-            drawPieChart(latestFrame_);
+            ImGui::TextDisabled("CPU frame sections only; GPU intervals can overlap.");
+            drawPieChart(frame);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Streaming")) {
+            ImGui::BeginChild("StreamingScroll", ImVec2(0, 0));
+            drawStreaming(streamingHistory_, selectedStream_, streamingShowBudget_);
+            ImGui::EndChild();
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -634,6 +773,28 @@ void EditorProfiler::endFrame()
         endSection(stack_.back());
     }
 
+    latestFrame_.index = frameIndex_++;
+    latestFrame_.profilingOverflow = currentOverflow_;
+    // Remove sources no longer present, including a switch to a non-streaming scene.
+    std::erase_if(streamingHistory_, [&](const auto& source) {
+        return std::none_of(currentStreaming_.begin(), currentStreaming_.end(), [&](const auto& sample) {
+            return sample.passName == source.passName && sample.assetPath == source.assetPath && sample.generation == source.generation;
+        });
+    });
+    for (auto& sample : currentStreaming_) {
+        auto it = std::find_if(streamingHistory_.begin(), streamingHistory_.end(), [&](const auto& source) {
+            return source.passName == sample.passName && source.assetPath == sample.assetPath && source.generation == sample.generation;
+        });
+        if (it == streamingHistory_.end()) {
+            streamingHistory_.push_back({sample.passName, sample.assetPath, sample.generation, {}});
+            it = std::prev(streamingHistory_.end());
+        }
+        auto& samples = it->samples;
+        if (!samples.empty() && sample.frameIndex < samples.back().frameIndex) { samples.clear(); }
+        if (!samples.empty() && sample.frameIndex == samples.back().frameIndex) { samples.back() = std::move(sample); }
+        else { samples.push_back(std::move(sample)); }
+        if (samples.size() > kProfilerHistorySize) { samples.erase(samples.begin()); }
+    }
     latestFrame_.nodes = currentNodes_;
     history_.push_back(latestFrame_);
     if (history_.size() > kProfilerHistorySize) {

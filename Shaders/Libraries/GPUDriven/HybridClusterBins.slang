@@ -8,7 +8,8 @@ static const uint kHybridBinHeaderWords = 16u;
 static const uint kHybridDispatchWidth = 65535u;
 
 // Header: five counters, capacity, width, height, maxPixels, reversedZ,
-// subpixelBits, producer pixel descriptor, candidate count, reserved, overflow, reserved.
+// subpixelBits, producer pixel descriptor, candidate count, max group clusters,
+// overflow, active group count (the last group fields are stream-only).
 // Lists contain original record indices, never a reordered visibility namespace.
 uint hybridFlatGroup(uint3 group)
 {
@@ -27,6 +28,12 @@ static const uint kHybridBinBlockSize = 128u;
 uint hybridCandidateBase(uint capacity) { return kHybridBinHeaderWords + kHybridBinCount * capacity; }
 uint hybridRankBase(uint capacity) { return hybridCandidateBase(capacity) + 2u * capacity; }
 uint hybridBlockBase(uint capacity) { return hybridRankBase(capacity) + capacity; }
+
+// Stream culling aliases four of the five output-list words per capacity
+// item with compact classification work (candidate, vertex base, counts,
+// triangle base). Header word 0 temporarily counts this work. Stable binning
+// consumes original candidate tags and overwrites both regions afterwards.
+uint hybridStreamClassifyBase(uint item) { return kHybridBinHeaderWords + 4u * item; }
 
 // Per-active-group retry masks for stream early/late culling. At most capacity groups.
 uint hybridRetryBase(uint capacity) { return hybridBlockBase(capacity) + ((capacity + 127u) / 128u) * kHybridBinCount; }

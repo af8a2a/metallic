@@ -5271,7 +5271,7 @@ Result CommandBuffer::resetTimestampQueries(
     if (impl_ == nullptr ||
         queryPool.impl_ == nullptr ||
         impl_->device != queryPool.impl_->device ||
-        queryPool.impl_->queueFamilyIndex != impl_->queueFamilyIndex ||
+        (impl_->queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0 ||
         queryCount == 0 ||
         firstQuery >= queryPool.impl_->desc.queryCount ||
         queryCount > queryPool.impl_->desc.queryCount - firstQuery) {

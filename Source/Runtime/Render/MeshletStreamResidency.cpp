@@ -1264,7 +1264,7 @@ uint32_t MeshletStreamResidencyManager::queuedUploadCount() const
         : static_cast<uint32_t>(count);
 }
 
-MeshletStreamResidencyStats MeshletStreamResidencyManager::stats() const
+MeshletStreamResidencyStats MeshletStreamResidencyManager::stats(bool detailed) const
 {
     MeshletStreamResidencyStats result = stats_;
     result.frameIndex = frameIndex_;
@@ -1274,7 +1274,7 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats() const
     result.maxResidentBytes = storage_.capacityBytes();
     result.usedResidentBytes = storage_.usedBytes();
     result.freeResidentBytes = storage_.freeBytes();
-    result.largestFreeBlockBytes = storage_.largestFreeBlockBytes();
+    result.largestFreeBlockBytes = detailed ? storage_.largestFreeBlockBytes() : 0;
     result.storageAllocationCount = storage_.allocationCount();
     result.storageFreeBlockCount = storage_.freeBlockCount();
     result.usedSlotCount = static_cast<uint32_t>(activePages_.size());
@@ -1302,9 +1302,11 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats() const
     result.queuedUpdateTaskCount = updateTaskQueue_.queuedTaskCount();
     result.availableUpdateTaskCount = updateTaskQueue_.availableTaskCount();
     result.pendingPatchCount = static_cast<uint32_t>(patches_.size());
-    result.oldestActiveAge = oldestAge(activePages_);
-    result.oldestResidentAge = oldestAge(residentPages_);
-    result.oldestPendingAge = oldestAge(pendingPages_);
+    if (detailed) {
+        result.oldestActiveAge = oldestAge(activePages_);
+        result.oldestResidentAge = oldestAge(residentPages_);
+        result.oldestPendingAge = oldestAge(pendingPages_);
+    }
     return result;
 }
 

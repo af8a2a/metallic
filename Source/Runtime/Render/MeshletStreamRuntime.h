@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GPUDrivenRaster.h"
+#include "Runtime/Render/Profiling/RenderGraphProfile.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/MeshletStreamResidency.h"
@@ -506,6 +507,7 @@ public:
     void setDebugReadbackEnabled(bool enabled) { debugReadbackEnabled_ = enabled; }
     void appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& prefix) const;
     nlohmann::json debugSnapshot(bool includePages = true) const;
+    SceneStreamingProfile profilingStats() const;
     MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }
 
 private:

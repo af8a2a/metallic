@@ -6,6 +6,8 @@
 
 namespace metallic::render {
 
+struct MeshletStreamUserPush;
+
 // GPU cluster classification/compaction, micropolygon rasterization and depth
 // resolve, with the triangle-queue path retained for runtime comparisons.
 class VisibilityHybridRasterizer {
@@ -17,7 +19,13 @@ public:
         Texture& depthTexture, TextureView& depth, bool softwareRasterized = false);
     Result beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
         uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact = false);
-    void prepareClusterCandidates(CommandBuffer& commands);
+    // beginClusters and the producer heap/bindings must be ready first.
+    Result prepareStreamClusterCandidates(CommandBuffer& commands, ComputePipeline& pipeline,
+        MeshletStreamUserPush push);
+    // Batch metadata culling, then dispatch geometry classification only for
+    // survivors. Both kernels share the producer's bindless heap.
+    Result cullStreamClusters(CommandBuffer& commands, ComputePipeline& pipeline,
+        MeshletStreamUserPush push);
     Buffer& candidateArguments() const { return *candidateArguments_; }
     Result finishClusterBins(CommandBuffer& commands);
     Buffer& clusterBuffer() const { return *clusterBuffer_; }
@@ -25,12 +33,14 @@ public:
     uint32_t clusterCapacity() const { return push_.clusterCapacity; }
     static constexpr uint32_t kDispatchWidth = 65535;
     static constexpr uint32_t kSoftwareBin = 4;
+    static constexpr uint32_t kCandidateBuildArgumentsOffset = 24;
     Buffer& queueBuffer() const { return *buffers_[0]; }
     Buffer& pixelBuffer() const { return *buffers_[1]; }
     uint32_t width() const { return push_.width; }
     uint32_t height() const { return push_.height; }
 
 private:
+    void prepareClusterCandidates(CommandBuffer& commands);
     struct Push {
         uint32_t queueBuffer = 0;
         uint32_t pixelBuffer = 0;

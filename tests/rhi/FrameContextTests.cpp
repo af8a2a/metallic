@@ -772,6 +772,7 @@ public:
     }
     render::Result execute(render::RenderGraphExecutionContext& context) override
     {
+        auto parentProfile = context.profileScope("Fork/join");
         const auto transaction = [](render::CommandBuffer& commands, int id) {
             return commands.addSubmissionTransaction(std::make_shared<render::SubmissionTransaction>(
                 [id] { asyncBranchEvents.push_back(id); }, [id] { asyncBranchEvents.push_back(-id); }));
@@ -780,11 +781,13 @@ public:
         if (!result) { return result; }
         auto* output = context.outputBuffer("data").buffer();
         result = context.parallelCompute([&](render::CommandBuffer& commands) {
+            auto profile = context.profileScope(commands, "Compute branch");
             auto result = transaction(commands, 2);
             if (!result) { return result; }
             commands.copyBuffer({.source = input_.get(), .destination = output, .size = 8});
             return properties().value("fail", 0) == 2 ? render::makeError(render::Error::Failure) : render::Result{};
         }, [&](render::CommandBuffer& commands) {
+            auto profile = context.profileScope(commands, "Graphics branch");
             auto result = transaction(commands, 3);
             if (!result) { return result; }
             commands.copyBuffer({.source = input_.get(), .destination = output, .sourceOffset = 8, .destinationOffset = 8, .size = 8});
@@ -828,6 +831,26 @@ public:
                 }
                 FRAME_REQUIRE(result);
                 FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+                std::vector<render::RenderGraphExecutionStats> timings;
+                FRAME_REQUIRE(executor.collectCompletedGpuExecutionStats(timings));
+                if (device->capabilities().timestampQueries) {
+                    if (timings.size() != 1 || !timings[0].gpuTimingAvailable || timings[0].nodes.size() != 1 ||
+                        timings[0].nodes[0].sections.size() != 3) {
+                        return RhiTestResult::fail("fork/join timings missing or cancelled recording leaked a sample");
+                    }
+                    const auto& sections = timings[0].nodes[0].sections;
+                    const auto expectedQueue = parallel ? compute->type() : graphics->type();
+                    if (sections[1].queue != expectedQueue || sections[2].queue != graphics->type() ||
+                        sections[0].parent != UINT32_MAX || sections[1].parent != 0 || sections[2].parent != 0) {
+                        return RhiTestResult::fail("fork/join profiling lost queue or parent identity");
+                    }
+                    for (const auto& section : sections) {
+                        if (!section.gpuTimingAvailable || section.gpuMilliseconds < 0 ||
+                            section.gpuMilliseconds > timings[0].gpuMilliseconds + 0.01) {
+                            return RhiTestResult::fail("fork/join section timing unavailable or outside graph envelope");
+                        }
+                    }
+                }
                 if (asyncBranchEvents != std::vector<int>{1, 2, 3, 4} || executor.executionStats().asyncComputeBranches !=
                     (parallel && device->capabilities().independentComputeQueue ? 1u : 0u)) {
                     return RhiTestResult::fail("Parallel/aliased queue topology or transaction commit order was incorrect");
@@ -876,6 +899,7 @@ public:
     }
     render::Result execute(render::RenderGraphExecutionContext& context) override
     {
+        auto profile = context.profileScope("Transfer");
         if (properties().value("fail", false)) { return render::makeError(render::Error::Failure); }
         auto* output = context.outputBuffer("data").buffer();
         if (properties().value("copy", false)) {
@@ -1033,6 +1057,7 @@ public:
     FrameCrossQueueGraphTest() { type = RhiTestType::Rendering; name = "frame_cross_queue_graph_dependencies"; }
     RhiTestResult run(RhiTestContext& context) override
     {
+        const auto validationBefore = context.validationMessageCount ? context.validationMessageCount->load() : 0u;
         auto* compute = context.device.getQueue(render::QueueType::Compute);
         auto* copy = context.device.getQueue(render::QueueType::Copy);
         if (compute == nullptr || copy == nullptr) { return RhiTestResult::skip("compute/copy queue unavailable"); }
@@ -1064,6 +1089,27 @@ public:
             .computeQueue = compute, .copyQueue = copy, .historyResources = &history};
         for (uint32_t index = 0; index < 6; ++index) { FRAME_REQUIRE(executor.execute(submit)); }
         FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+        std::vector<render::RenderGraphExecutionStats> timings;
+        FRAME_REQUIRE(executor.collectCompletedGpuExecutionStats(timings));
+        if (context.device.capabilities().timestampQueries) {
+            if (timings.size() != 6) { return RhiTestResult::fail("mixed queue query ring lost completed frames"); }
+            for (const auto& frame : timings) {
+                if (!frame.gpuTimingAvailable || frame.cpuMilliseconds <= 0) {
+                    return RhiTestResult::fail("mixed queue graph frame timings missing");
+                }
+                for (const auto& node : frame.nodes) {
+                    const auto* queue = context.device.getQueue(node.queue);
+                    if (queue->timestampValidBits() && (!node.gpuTimingAvailable || node.gpuMilliseconds > frame.gpuMilliseconds + 0.01)) {
+                        return RhiTestResult::fail("mixed queue pass timing missing or outside frame envelope");
+                    }
+                    for (const auto& section : node.sections) {
+                        if (queue->timestampValidBits() && !section.gpuTimingAvailable) {
+                            return RhiTestResult::fail("mixed queue inner scope timing missing");
+                        }
+                    }
+                }
+            }
+        }
         for (const auto* name : {"Graphics.data", "FanOut.data"}) {
             std::array<uint32_t, 4> actual{};
             if (!readWords(*executor.outputResource(name)->buffer, actual.data(), actual.size()) ||
@@ -1109,6 +1155,9 @@ public:
         FRAME_REQUIRE(executor.compile(context.device, render::RenderGraph::createDefaultTriangleGraph(), 16, 16, log));
         FRAME_REQUIRE(executor.execute(submit));
         FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+        if (context.validationMessageCount && context.validationMessageCount->load() != validationBefore) {
+            return RhiTestResult::fail("mixed queue profiling emitted Vulkan validation messages");
+        }
         return RhiTestResult::pass();
     }
 };

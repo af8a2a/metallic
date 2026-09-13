@@ -362,7 +362,8 @@ public:
     std::span<const uint32_t> newlyResidentPages() const { return newlyResidentPages_; }
     std::span<const uint32_t> newlyUnloadedPages() const { return newlyUnloadedPages_; }
     const MeshletStreamStorage& storage() const { return storage_; }
-    MeshletStreamResidencyStats stats() const;
+    // Detailed mode scans page ages and allocator free blocks.
+    MeshletStreamResidencyStats stats(bool detailed = true) const;
     MeshletStreamLatencySnapshot latencySnapshot() const { return latency_ ? latency_->snapshot() : MeshletStreamLatencySnapshot{}; }
     uint32_t availablePrefetchRequests() const
     {

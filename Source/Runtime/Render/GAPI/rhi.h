@@ -1791,6 +1791,8 @@ public:
     Result end();
     void beginDebugLabel(const DebugLabelDesc& desc);
     void endDebugLabel();
+    // Reset on a graphics/compute queue, including pools written by another queue.
+    // The caller must order that queue after the reset before writing timestamps.
     Result resetTimestampQueries(
         TimestampQueryPool& queryPool,
         uint32_t firstQuery,

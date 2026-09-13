@@ -3527,10 +3527,9 @@ void MeshletStreamRuntime::consumeGpuRequestReadback()
 
     const auto* header = static_cast<const StreamRequestBufferHeader*>(mapped);
     recentGpuRequestCount_ = header->loadCounter;
-    if (debugReadbackEnabled_) {
-        debugRequestSourceFrame_ = header->frameIndex;
-        debugRequestSourceKnown_ = true;
-    }
+    // This header is already consumed for residency even when debug capture is off.
+    debugRequestSourceFrame_ = header->frameIndex;
+    debugRequestSourceKnown_ = true;
     const uint32_t loadCapacity = std::min(header->maxLoadRequests, maxGpuPageRequests_);
     const uint32_t unloadCapacity = std::min(header->maxUnloadRequests, maxGpuPageUnloadRequests_);
     const uint32_t loadCount = std::min(header->loadCounter, loadCapacity);
@@ -3589,6 +3588,39 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     add("activeGroups", activeGroupBuffer_.get(), activeGroupBufferState_, "MeshletStreamGpuActiveGroup");
     add("lodState", lodStateBuffer_.get(), lodStateBufferState_, "u32");
     add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "VisibleClusterRecord");
+}
+
+SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
+{
+    const auto stats = residency_.stats(false);
+    SceneStreamingProfile result;
+    result.assetPath = asset_.path().generic_string();
+    result.generation = debugGeneration_;
+    result.frameIndex = frameIndex_;
+    result.feedbackFrame = debugRequestSourceKnown_ ? debugRequestSourceFrame_ : UINT64_MAX;
+    result.geometryUsedBytes = stats.usedResidentBytes;
+    result.geometryBudgetBytes = stats.maxResidentBytes;
+    result.totalPages = stats.pageCount;
+    result.residentPages = stats.residentPageCount;
+    result.pendingPages = stats.pendingPageCount;
+    result.ioQueued = stats.pendingPageLoadCount;
+    result.ioActive = stats.activePageLoadCount;
+    result.uploadQueued = stats.queuedUploadCount;
+    result.requests = stats.frameGpuRequestCount;
+    result.uploads = stats.frameCompletedUploadCount;
+    result.evictions = stats.frameEvictedPageCount;
+    result.requestOverflows = stats.frameGpuRequestOverflowCount;
+    result.allocationFailures = stats.frameAllocationFailureCount;
+    result.uploadBytes = stats.frameUploadBytes;
+    result.totalUploadBytes = stats.totalUploadBytes;
+    result.loadFailures = stats.totalPageLoadFailureCount;
+    result.clasEnabled = clasPool_ && clasPool_->ready();
+    if (result.clasEnabled) {
+        const auto clas = clasPool_->stats();
+        result.clasUsedBytes = clas.usedStorageBytes;
+        result.clasCapacityBytes = clas.storageBytes;
+    }
+    return result;
 }
 
 nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const

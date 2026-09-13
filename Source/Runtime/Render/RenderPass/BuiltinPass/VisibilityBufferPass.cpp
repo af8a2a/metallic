@@ -581,6 +581,9 @@ struct GPUDrivenPreviewBindingBundle {
     BindlessHandle cullingDepthImageHandle;
     std::vector<BindlessHandle> materialTextureHandles;
     BindlessHandle streamOwnerMaskHandle;
+    BindlessHandle streamDebugRecordsHandle;
+    BindlessHandle streamDebugGroupsHandle;
+    MeshletStreamDeferredGpuResourcesView streamDebugResources;
 };
 
 struct GPUDrivenPreviewRetiredViewResources {
@@ -618,8 +621,8 @@ public:
     {
         std::vector<std::string> points{"AfterEarlyCull", "AfterLateCull", "AfterPass",
             "AfterResidentLod", "AfterResidentEarlyBins", "AfterResidentLateBins"};
-        if (streamEnabled_) { points.insert(points.end(), {"AfterStreamEarlyCandidates", "AfterStreamEarlyClassify", "AfterStreamEarlyBins", "AfterStreamEarlyRaster", "AfterStreamEarlyResolve",
-            "AfterStreamLateCandidates", "AfterStreamLateClassify", "AfterStreamLateBins", "AfterStreamLateRaster", "AfterStreamLateResolve"}); }
+        if (streamEnabled_) { points.insert(points.end(), {"AfterStreamEarlyCandidates", "AfterStreamEarlyClusterCull", "AfterStreamEarlyClassify", "AfterStreamEarlyBins", "AfterStreamEarlyRaster", "AfterStreamEarlyResolve",
+            "AfterStreamLateCandidates", "AfterStreamLateClusterCull", "AfterStreamLateClassify", "AfterStreamLateBins", "AfterStreamLateRaster", "AfterStreamLateResolve"}); }
         if (streamEnabled_) { points.insert(points.begin(), {"BeforeStreamUpdates", "AfterStreamUpdates",
             "AfterStreamFrontier", "AfterStreamPrefix", "AfterStreamEmit", "AfterStreamPrefetch", "AfterTraversal"}); }
         return points;
@@ -1167,10 +1170,13 @@ public:
                 spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
                 return result;
             }
-            result = streamRuntime_.cmdBeginFrame(
-                context.commandBuffer(),
-                *context.streamer(),
-                streamFrame);
+            {
+                auto profile = context.profileScope("Stream Begin");
+                result = streamRuntime_.cmdBeginFrame(
+                    context.commandBuffer(),
+                    *context.streamer(),
+                    streamFrame);
+            }
             if (!result) {
                 return result;
             }
@@ -1258,9 +1264,17 @@ public:
             // LOD selection and resident culling share the camera just uploaded
             // by updateParamsBuffer, including a frozen camera and its projection.
             streamFrame = streamFrameDesc(context);
+            auto traversalProfile = context.profileScope("Stream traversal");
+            auto phaseProfile = context.profileScope("Traversal setup");
             result = streamRuntime_.cmdPreTraversal(
                 context.commandBuffer(),
                 streamFrame, [&](std::string_view checkpoint) {
+                    if (checkpoint == "BeforeStreamUpdates") { phaseProfile.next("Page updates"); }
+                    else if (checkpoint == "AfterStreamUpdates") { phaseProfile.next("LOD frontier"); }
+                    else if (checkpoint == "AfterStreamFrontier") { phaseProfile.next("LOD prefix"); }
+                    else if (checkpoint == "AfterStreamPrefix") { phaseProfile.next("LOD emit"); }
+                    else if (checkpoint == "AfterStreamEmit") { phaseProfile.next("Prefetch"); }
+                    else if (checkpoint == "AfterStreamPrefetch") { phaseProfile.next("Traversal finalize"); }
                     gpuDrivenDebugCheckpoint(context, checkpoint, gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_,
                         &streamRuntime_, UINT32_MAX, residentRecordCapacity_);
                 });
@@ -1272,12 +1286,18 @@ public:
         if (streamEnabled_) {
             gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, UINT32_MAX, residentRecordCapacity_);
         }
-        result = uploadAlphaTestTextures(context.commandBuffer());
+        {
+            auto profile = context.profileScope("Alpha texture upload");
+            result = uploadAlphaTestTextures(context.commandBuffer());
+        }
         if (!result) {
             return result;
         }
         context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
-        result = initializeInternalBuffers(context.commandBuffer());
+        {
+            auto profile = context.profileScope("Initialize / light grid");
+            result = initializeInternalBuffers(context.commandBuffer());
+        }
         if (!result) {
             return result;
         }
@@ -1294,10 +1314,13 @@ public:
         lodView.projection = {previousParams_.viewport[2], std::tan(previousParams_.viewport[3] * 0.5f),
             previousParams_.clipOrtho[2], error * std::exp2(bias)};
         const auto& slot = activeFrameResources();
-        result = residentLods_[activeFrameSlot_]->record(context.commandBuffer(), *bindlessHeap_,
-            gpuSceneBindings_, lodView, adaptiveMeshletRange_, instanceCount_, lodGroupCount_,
-            slot.lodSelectionHandle, slot.lodArgumentsHandle, slot.lodScratchHandle,
-            autoLodFromProperties(properties()) ? UINT32_MAX : lodLevelFromProperties(properties()));
+        {
+            auto profile = context.profileScope("Resident LOD");
+            result = residentLods_[activeFrameSlot_]->record(context.commandBuffer(), *bindlessHeap_,
+                gpuSceneBindings_, lodView, adaptiveMeshletRange_, instanceCount_, lodGroupCount_,
+                slot.lodSelectionHandle, slot.lodArgumentsHandle, slot.lodScratchHandle,
+                autoLodFromProperties(properties()) ? UINT32_MAX : lodLevelFromProperties(properties()));
+        }
         if (!result) { return result; }
         if (context.debugEnabled()) {
             const std::string prefix = "lod." + context.passName() + ".";
@@ -1314,6 +1337,7 @@ public:
                 {"targetPixels", lodView.projection[3]}, {"candidateCount", adaptiveMeshletRange_.count}}}});
         }
 
+        auto earlyCullProfile = context.profileScope("Early instance cull");
         result = dispatchCulling(context.commandBuffer(), 0);
         if (!result) {
             return result;
@@ -1326,6 +1350,7 @@ public:
                 return result;
             }
         }
+        earlyCullProfile.end();
         gpuDrivenDebugCheckpoint(context, "AfterEarlyCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? &streamRuntime_ : nullptr, 0, residentRecordCapacity_);
         if (freezeCullingCamera_) {
             result = drawVisibility(
@@ -1341,7 +1366,7 @@ public:
                 *cullingTargets_.depth,
                 ResourceState::DepthStencilAttachment,
                 ResourceState::ShaderRead);
-            result = buildHzb(context.commandBuffer());
+            { auto profile = context.profileScope("Early HZB"); result = buildHzb(context.commandBuffer()); }
             if (!result) {
                 return result;
             }
@@ -1378,13 +1403,14 @@ public:
                 }
             }
             transitionTexture(context.commandBuffer(), *depth.texture(), ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
-            result = buildHzb(context.commandBuffer());
+            { auto profile = context.profileScope("Early HZB"); result = buildHzb(context.commandBuffer()); }
             if (!result) {
                 return result;
             }
             transitionTexture(context.commandBuffer(), *depth.texture(), ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
         }
 
+        auto lateCullProfile = context.profileScope("Late instance cull");
         result = dispatchCulling(context.commandBuffer(), 1);
         if (!result) {
             return result;
@@ -1397,6 +1423,7 @@ public:
                 return result;
             }
         }
+        lateCullProfile.end();
         gpuDrivenDebugCheckpoint(context, "AfterLateCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? &streamRuntime_ : nullptr, 1, residentRecordCapacity_);
         if (freezeCullingCamera_) {
             result = drawVisibility(
@@ -1444,14 +1471,22 @@ public:
             transitionTexture(context.commandBuffer(), *cullingTargets_.depth,
                 ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
         }
-        result = buildHzb(context.commandBuffer());
+        { auto profile = context.profileScope("Late HZB"); result = buildHzb(context.commandBuffer()); }
         if (!result) { return result; }
         if (freezeCullingCamera_) {
             transitionTexture(context.commandBuffer(), *cullingTargets_.depth,
                 ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
         }
+        // Debug colors now consume the records written by stream rasterization.
+        if (streamEnabled_) {
+            result = streamRuntime_.cmdPrepareDeferred(context.commandBuffer());
+            if (!result) { return result; }
+        }
         // Display the final IDs/depth while the images are shader-readable.
-        drawComposite(context.commandBuffer(), color);
+        {
+            auto profile = context.profileScope("Debug composite");
+            drawComposite(context.commandBuffer(), color);
+        }
         transitionTexture(context.commandBuffer(), *visibility.texture(), ResourceState::ShaderRead, ResourceState::ColorAttachment);
         transitionTexture(context.commandBuffer(), *depth.texture(), ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
         hzbValid_ = true;
@@ -1462,15 +1497,22 @@ public:
             return makeError(Error::Failure);
         }
         if (streamEnabled_) {
-            result = streamRuntime_.cmdPostTraversal(context.commandBuffer());
+            {
+                auto profile = context.profileScope("Stream feedback");
+                result = streamRuntime_.cmdPostTraversal(context.commandBuffer());
+            }
             if (!result) {
                 return result;
             }
-            result = streamRuntime_.cmdEndFrame(context.commandBuffer());
+            {
+                auto profile = context.profileScope("Stream End");
+                result = streamRuntime_.cmdEndFrame(context.commandBuffer());
+            }
             if (!result) {
                 return result;
             }
         }
+        if (streamEnabled_) { context.publishStreamingProfile(streamRuntime_.profilingStats()); }
         gpuSceneSubsystem->publishVisibilityStream(gpuSceneView_, context.frameIndex(), sceneResourceIdentity_,
             streamEnabled_ ? streamRuntime_.deferredGpuResources() : MeshletStreamDeferredGpuResourcesView{});
         ++frameIndex_;
@@ -1540,8 +1582,10 @@ private:
         streamClusterPrepareShader_.reset();
         streamClusterPreparePipeline_.reset();
         streamClusterBinShader_.reset();
+        streamClusterCullShader_.reset();
         streamClusterRasterShader_.reset();
         streamClusterBinPipeline_.reset();
+        streamClusterCullPipeline_.reset();
         streamClusterRasterPipeline_.reset();
         streamVisibilityImageHandle_ = {};
         streamDepthImageHandle_ = {};
@@ -1551,6 +1595,9 @@ private:
         streamVisibleInstanceCounterHandle_ = {};
         streamHzbHandles_ = {};
         streamOwnerMaskHandle_ = {};
+        streamDebugRecordsHandle_ = {};
+        streamDebugGroupsHandle_ = {};
+        streamDebugResources_ = {};
         streamOwnerMaskBuffer_.reset();
         streamEnabled_ = false;
         compiledStreamAssetPath_.clear();
@@ -2002,6 +2049,10 @@ private:
             if (result) { result = createStreamCompute(*streamClusterPrepareShader_, streamClusterPreparePipeline_, "cluster candidates"); }
             if (!result) { return result; }
             result = createShader(device, kMeshletStreamShaderModuleName,
+                "streamClusterCullMain", false, streamClusterCullShader_, log);
+            if (result) { result = createStreamCompute(*streamClusterCullShader_, streamClusterCullPipeline_, "cluster cull"); }
+            if (!result) { return result; }
+            result = createShader(device, kMeshletStreamShaderModuleName,
                 "streamClusterBinMain", false, streamClusterBinShader_, log);
             if (result) { result = createStreamCompute(*streamClusterBinShader_, streamClusterBinPipeline_, "cluster bin"); }
             if (result) { result = createShader(device, kMeshletStreamShaderModuleName,
@@ -2311,7 +2362,12 @@ private:
             !ownerMaskLayoutChanged) {
             return subsystem.createBindings(*bindlessHeap_, gpuSceneBindings_, log);
         }
-        if (!clusterCapacityChanged && !remapLayoutChanged &&
+        const auto streamDebugResources = streamEnabled_
+            ? streamRuntime_.deferredGpuResources() : MeshletStreamDeferredGpuResourcesView{};
+        const bool streamDebugBindingsChanged =
+            streamDebugResources.visibleClusterBuffer != streamDebugResources_.visibleClusterBuffer ||
+            streamDebugResources.activeGroupBuffer != streamDebugResources_.activeGroupBuffer;
+        if (!clusterCapacityChanged && !remapLayoutChanged && !streamDebugBindingsChanged &&
             !ownerMaskLayoutChanged &&
             gpuSceneBindings_.validFor(views)) {
             return {};
@@ -2516,6 +2572,8 @@ private:
         LoadOp loadOp,
         bool projectWithCullingCamera = false)
     {
+        auto rasterProfile = context.profileScope(projectWithCullingCamera ? (passIndex == 0 ? "Frozen resident early" : "Frozen resident late") :
+            (passIndex == 0 ? "Resident early" : "Resident late"));
         CommandBuffer& commandBuffer = context.commandBuffer();
         transitionTexture(commandBuffer, visibilityTexture, ResourceState::ColorAttachment, ResourceState::ColorAttachment);
         transitionTexture(commandBuffer, depthTexture, ResourceState::DepthStencilAttachment, ResourceState::DepthStencilAttachment);
@@ -2542,6 +2600,7 @@ private:
         };
         const bool prebin = clusterPrebinEnabled();
         if (prebin) {
+            auto binProfile = context.profileScope("Soft/hard classification");
             Result result = hybridRasterizer_->beginClusters(commandBuffer,
                 softwareRasterMaxPixels(), reversedZ, hybridPixelHandle_.index, activeMeshletCount_, false);
             if (!result) { return result; }
@@ -2559,6 +2618,7 @@ private:
             result = commandBuffer.dispatchIndirect(residentLods_[activeFrameSlot_]->arguments());
             if (!result) { commandBuffer.endDebugLabel(); return result; }
             commandBuffer.endDebugLabel();
+            binProfile.next("Stable bins");
             result = hybridRasterizer_->finishClusterBins(commandBuffer);
             if (!result) { return result; }
             if (!projectWithCullingCamera) {
@@ -2571,6 +2631,7 @@ private:
             context.supportsParallelCompute();
         const auto software = [&](CommandBuffer& commands) -> Result {
             if (!prebin) { return {}; }
+            auto profile = context.profileScope(commands, "Software raster");
             const BufferBarrierDesc acquires[] = {
                 {.buffer = &hybridRasterizer_->clusterBuffer(), .before = ResourceState::ShaderRead,
                     .after = ResourceState::ShaderRead, .acquireFromQueue = true},
@@ -2590,6 +2651,7 @@ private:
             return result;
         };
         const auto hardware = [&](CommandBuffer& commands) -> Result {
+            auto profile = context.profileScope(commands, "Hardware raster");
             commands.beginDebugLabel({.name = "Hybrid raster: resident hardware clusters"});
             commands.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
@@ -2631,6 +2693,7 @@ private:
             if (rasterResult) { rasterResult = hardware(commandBuffer); }
         }
         if (!rasterResult) { return rasterResult; }
+        auto mergeProfile = context.profileScope("Raster merge");
         return hybridRasterEnabled() ? hybridRasterizer_->resolve(context.commandBuffer(), visibilityTexture, visibility, depthTexture, depth, prebin) : Result{};
     }
 
@@ -2734,9 +2797,17 @@ private:
         // not run a final viewport HZB dispatch to restore this pass's heap.
         commandBuffer.bindBindlessHeap(*bindlessHeap_);
         commandBuffer.bindGraphicsPipeline(*compositePipeline_);
-        GPUDrivenPreviewUserPush push = makePush();
-        // Frozen HZB depth belongs to the culling camera, not the debug viewport.
-        push.depthImage = depthImageHandle_.index;
+        const VisibilityBufferCompositeUserPush push{
+            .paramsBuffer = activeFrameResources().paramsHandle.index,
+            .visibilityImage = visibilityImageHandle_.index,
+            // Frozen HZB depth belongs to the culling camera, not the debug viewport.
+            .depthImage = depthImageHandle_.index,
+            .residentRecords = gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].index,
+            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].index,
+            .residentRecordCapacity = residentRecordCapacity_,
+            .streamRecords = streamEnabled_ ? streamDebugRecordsHandle_.index : kGPUDrivenInvalidBindlessIndex,
+            .streamGroups = streamEnabled_ ? streamDebugGroupsHandle_.index : kGPUDrivenInvalidBindlessIndex,
+        };
         commandBuffer.pushBindlessData(&push, sizeof(push));
         if (previousParams_.mode != kVisibilityModeNone) {
             commandBuffer.draw(3);
@@ -3200,6 +3271,7 @@ private:
         GPUSceneCullPhase phase,
         LoadOp loadOp)
     {
+        auto rasterProfile = context.profileScope(phase == GPUSceneCullPhase::Early ? "Stream early" : "Stream late");
         CommandBuffer& commandBuffer = context.commandBuffer();
         if (!streamEnabled_ || streamVisibilityPipeline_ == nullptr ||
             streamRuntime_.bindlessHeap() == nullptr) {
@@ -3238,22 +3310,28 @@ private:
         push.hybridClusterBuffer = prebin ? streamHybridClusterHandle_.index : UINT32_MAX;
         push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
         if (prebin) {
+            auto binProfile = context.profileScope("Candidates");
             const uint32_t count = streamRuntime_.visibleClusterCapacity();
             result = hybridRasterizer_->beginClusters(commandBuffer,
                 softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.index, count, true, true);
             if (!result) { return result; }
             commandBuffer.bindBindlessHeap(*streamRuntime_.bindlessHeap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: compact stream candidates"});
-            commandBuffer.bindComputePipeline(*streamClusterPreparePipeline_);
-            // The prepare entry uses this otherwise unused handle for its two
+            // The prepare entry uses this otherwise unused handle for its
             // indirect dispatches; raster entries retain the queue contract.
             push.hybridQueueBuffer = streamCandidateArgumentsHandle_.index;
-            commandBuffer.pushBindlessData(&push, sizeof(push));
-            commandBuffer.dispatch(1);
-            hybridRasterizer_->prepareClusterCandidates(commandBuffer);
+            result = hybridRasterizer_->prepareStreamClusterCandidates(commandBuffer, *streamClusterPreparePipeline_, push);
+            commandBuffer.endDebugLabel();
+            if (!result) { return result; }
+            context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyCandidates" : "AfterStreamLateCandidates");
+            binProfile.next("Cluster cull");
+            commandBuffer.beginDebugLabel({.name = "Hybrid raster: cull stream clusters"});
+            result = hybridRasterizer_->cullStreamClusters(commandBuffer, *streamClusterCullPipeline_, push);
             push.hybridQueueBuffer = UINT32_MAX;
             commandBuffer.endDebugLabel();
-            context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyCandidates" : "AfterStreamLateCandidates");
+            if (!result) { return result; }
+            context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClusterCull" : "AfterStreamLateClusterCull");
+            binProfile.next("Soft/hard classification");
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify stream clusters"});
             commandBuffer.bindComputePipeline(*streamClusterBinPipeline_);
             commandBuffer.pushBindlessData(&push, sizeof(push));
@@ -3261,6 +3339,7 @@ private:
             commandBuffer.endDebugLabel();
             if (!result) { return result; }
             context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClassify" : "AfterStreamLateClassify");
+            binProfile.next("Stable bins");
             result = hybridRasterizer_->finishClusterBins(commandBuffer);
             if (!result) { return result; }
             debugClusterBins(context, phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyBins" : "AfterStreamLateBins");
@@ -3272,6 +3351,7 @@ private:
             context.supportsParallelCompute();
         const auto software = [&](CommandBuffer& commands) -> Result {
             if (!prebin) { return {}; }
+            auto profile = context.profileScope(commands, "Software raster");
             const BufferBarrierDesc acquires[] = {
                 {.buffer = &hybridRasterizer_->clusterBuffer(), .before = ResourceState::ShaderRead,
                     .after = ResourceState::ShaderRead, .acquireFromQueue = true},
@@ -3291,6 +3371,7 @@ private:
             return result;
         };
         const auto hardware = [&](CommandBuffer& commands) -> Result {
+            auto profile = context.profileScope(commands, "Hardware raster");
             commands.beginDebugLabel({.name = "Hybrid raster: stream hardware clusters"});
             commands.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
@@ -3326,6 +3407,7 @@ private:
             if (rasterResult) { rasterResult = hardware(commandBuffer); }
         }
         if (!rasterResult) { return rasterResult; }
+        auto mergeProfile = context.profileScope("Raster merge");
         context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyRaster" : "AfterStreamLateRaster");
         result = hybridRasterEnabled() ? hybridRasterizer_->resolve(context.commandBuffer(), visibilityTexture, visibility, depthTexture, depth, prebin) : Result{};
         context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyResolve" : "AfterStreamLateResolve");
@@ -3601,7 +3683,7 @@ private:
                 .maxSampledImages = 3u + static_cast<uint32_t>(materialTextures_.size()),
                 .maxBuffers = 7u + frameSlotCount_ * 11u +
                     static_cast<uint32_t>(kGPUSceneGlobalBufferKindCount) +
-                    (streamEnabled_ ? 1u : 0u),
+                    (streamEnabled_ ? 3u : 0u),
             },
             bundle.heap);
         if (!result || bundle.heap == nullptr) {
@@ -3732,6 +3814,18 @@ private:
         result = bindBuffer(*bundle.hzbSpdCounterBuffer, bundle.hzbSpdCounterHandle, "SPD HZB counter");
         if (!result) { return result; }
         if (streamEnabled_) {
+            bundle.streamDebugResources = streamRuntime_.deferredGpuResources();
+            if (!bundle.streamDebugResources.valid()) {
+                log = "VisibilityBufferPass stream debug resources are unavailable";
+                return makeError(Error::InvalidArgument);
+            }
+            result = bindBuffer(*bundle.streamDebugResources.visibleClusterBuffer,
+                bundle.streamDebugRecordsHandle, "stream debug records");
+            if (result) {
+                result = bindBuffer(*bundle.streamDebugResources.activeGroupBuffer,
+                    bundle.streamDebugGroupsHandle, "stream debug groups");
+            }
+            if (!result) { return result; }
             if (streamOwnerMask_.empty()) {
                 log = "VisibilityBufferPass stream ownership mask is empty";
                 return makeError(Error::InvalidArgument);
@@ -3894,6 +3988,9 @@ private:
         cullingDepthImageHandle_ = bundle.cullingDepthImageHandle;
         materialTextureHandles_ = std::move(bundle.materialTextureHandles);
         streamOwnerMaskHandle_ = bundle.streamOwnerMaskHandle;
+        streamDebugRecordsHandle_ = bundle.streamDebugRecordsHandle;
+        streamDebugGroupsHandle_ = bundle.streamDebugGroupsHandle;
+        streamDebugResources_ = bundle.streamDebugResources;
         for (size_t frameSlot = 0; frameSlot < bundle.frameSlots.size(); ++frameSlot) {
             GPUDrivenPreviewFrameSlotResources& resources = frameSlotResources_[frameSlot];
             const GPUDrivenPreviewFrameSlotBindings& bindings = bundle.frameSlots[frameSlot];
@@ -4830,11 +4927,13 @@ private:
     std::unique_ptr<ShaderModule> clusterCountShader_;
     std::unique_ptr<ShaderModule> clusterRasterShader_;
     std::unique_ptr<ShaderModule> streamClusterBinShader_;
+    std::unique_ptr<ShaderModule> streamClusterCullShader_;
     std::unique_ptr<ShaderModule> streamClusterRasterShader_;
     std::unique_ptr<ComputePipeline> clusterBinPipeline_;
     std::unique_ptr<ComputePipeline> clusterCountPipeline_;
     std::unique_ptr<ComputePipeline> clusterRasterPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterBinPipeline_;
+    std::unique_ptr<ComputePipeline> streamClusterCullPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterRasterPipeline_;
     BindlessHandle streamHybridQueueHandle_;
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
@@ -4862,6 +4961,9 @@ private:
     BindlessHandle cullingDepthImageHandle_;
     std::vector<BindlessHandle> materialTextureHandles_;
     BindlessHandle streamOwnerMaskHandle_;
+    BindlessHandle streamDebugRecordsHandle_;
+    BindlessHandle streamDebugGroupsHandle_;
+    MeshletStreamDeferredGpuResourcesView streamDebugResources_;
     BindlessHandle streamGPUSceneInstanceHandle_;
     BindlessHandle streamVisibilityImageHandle_;
     BindlessHandle streamDepthImageHandle_;

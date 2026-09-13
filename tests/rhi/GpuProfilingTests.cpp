@@ -89,6 +89,66 @@ public:
     }
 };
 
+class ProfileBudgetPass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferOutput("data").buffer(16).transferWrite();
+        return reflection;
+    }
+    render::Result execute(render::RenderGraphExecutionContext& context) override
+    {
+        auto parent = context.profileScope("Parent");
+        for (uint32_t i = 0; i < context.properties().value("scopes", 300u); ++i) {
+            auto scope = context.profileScope("Child");
+        }
+        return {};
+    }
+};
+
+class GpuProfileBudgetTest final : public RhiTest {
+public:
+    GpuProfileBudgetTest() { type = RhiTestType::Command; name = "gpu_profiling_scope_budget"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        if (!context.device.capabilities().timestampQueries) { return RhiTestResult::skip("timestamp queries unavailable"); }
+        render::registerRenderGraphPassType("ProfileBudgetPass", "Profiling scope budget test", [] { return std::make_unique<ProfileBudgetPass>(); });
+        render::RenderGraph graph;
+        const auto first = graph.addNode("ProfileBudgetPass", "First")->id;
+        graph.addNode("ProfileBudgetPass", "Tail", {{"scopes", 1}});
+        graph.markOutput("First.data"); graph.markOutput("Tail.data");
+        render::RenderGraphExecutor executor;
+        std::string log;
+        auto result = executor.compile(context.device, graph, 1, 1, log);
+        if (!result) { return RhiTestResult::fail(log); }
+        for (uint32_t f = 0; f < 8; ++f) {
+            const bool overflow = f % 2 == 0;
+            graph.setNodeRuntimeProperty(first, "scopes", overflow ? 300 : 2);
+            executor.syncRuntimeProperties(graph);
+            result = executor.execute({.graphicsQueue = &context.graphicsQueue});
+            if (result) { result = executor.waitForSubmittedWork(5'000'000'000ull); }
+            if (!result) { return RhiTestResult::fail(toString(result)); }
+            std::vector<render::RenderGraphExecutionStats> completed;
+            result = executor.collectCompletedGpuExecutionStats(completed);
+            if (!result || completed.size() != 1 || !completed[0].gpuTimingAvailable || completed[0].profilingOverflow != overflow) {
+                return RhiTestResult::fail("scope overflow lost frame timing or contaminated a later ring slot");
+            }
+            const auto& frame = completed[0];
+            if (frame.nodes[0].sections.size() != (overflow ? 256u : 3u)) { return RhiTestResult::fail("scope metadata did not respect budget"); }
+            for (const auto& node : frame.nodes) {
+                if (!node.gpuTimingAvailable) { return RhiTestResult::fail("scope budget lost pass timing"); }
+                for (const auto& section : node.sections) {
+                    if (section.parent != UINT32_MAX && section.parent >= node.sections.size()) { return RhiTestResult::fail("invalid parent after scope overflow"); }
+                    if (!overflow && !section.gpuTimingAvailable) { return RhiTestResult::fail("normal frame scope timing unavailable after overflow"); }
+                }
+            }
+        }
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(GpuProfileBudgetTest);
+
 METALLIC_REGISTER_RHI_TEST(GpuClockCalibrationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGpuProfilingTest);
 

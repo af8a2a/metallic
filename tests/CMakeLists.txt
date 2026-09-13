@@ -221,6 +221,8 @@ add_executable(MetallicRhiTests
     rhi/ClusterLightGridTests.cpp
     rhi/CommandSubmissionTests.cpp
     rhi/GpuProfilingTests.cpp
+    rhi/EditorProfilerTests.cpp
+    "${CMAKE_SOURCE_DIR}/Source/Editor/EditorProfiler.cpp"
     rhi/FrameContextTests.cpp
     rhi/FinalBlitTests.cpp
     rhi/GPUSceneSubsystemTests.cpp
@@ -237,6 +239,11 @@ add_executable(MetallicRhiTests
     rhi/RealtimePipelineTests.cpp
     rhi/EnvironmentPrefilterTests.cpp
     rhi/HybridRasterTests.cpp
+    rhi/StreamClusterCandidateTests.cpp
+    rhi/StreamClusterClassificationTests.cpp
+    rhi/StreamIndexedMeshTests.cpp
+    rhi/VisibilityDebugStabilityTests.cpp
+    rhi/MiniZorahDebugStabilityTests.cpp
     rhi/GPUDrivenCullingTests.cpp
     rhi/HzbSpdTests.cpp
     rhi/RenderViewTests.cpp
@@ -265,6 +272,7 @@ target_include_directories(MetallicRhiTests PRIVATE
 )
 
 target_link_libraries(MetallicRhiTests PRIVATE
+    imgui
     metallic::sdl3
     MetallicRuntimeRender
     GTest::gtest

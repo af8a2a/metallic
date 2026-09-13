@@ -8,7 +8,6 @@ static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
 static const uint kMeshletTriangleChunkSize = 64u;
 static const uint kMeshletTriangleChunkCount = 2u;
-static const uint kMaxMeshOutputVertices = kMeshletTriangleChunkSize * 3u;
 static const uint kPayloadHeaderBytes = 112u;
 static const uint kPayloadClusterBytes = 96u;
 static const uint kPayloadClusterWords = kPayloadClusterBytes / 4u;
@@ -443,8 +442,13 @@ struct GPUDrivenStreamAssetParams
 struct GPUDrivenStreamAssetVertexOutput
 {
     float4 position : SV_Position;
-    nointerpolation uint visibilityId : TEXCOORD0;
     nointerpolation uint doubleSided : TEXCOORD1;
+};
+
+// IDs vary per triangle, so they must not use a shared vertex's flat attribute.
+struct GPUDrivenStreamAssetPrimitiveOutput
+{
+    uint visibilityId : SV_PrimitiveID;
 };
 
 struct GPUDrivenStreamAssetFullscreenOutput
@@ -3306,17 +3310,23 @@ uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStrea
 groupshared StreamRasterCluster g_StreamMeshCluster;
 groupshared uint g_StreamMeshValid;
 
+// Prebinned clusters emit their complete indexed mesh in one workgroup.
+// The legacy unbinned queue path retains its two 64-triangle draw slots.
+groupshared float4 g_StreamMeshClip[kMaxMeshletVertices];
+
 [shader("mesh")]
 [numthreads(64, 1, 1)]
 [outputtopology("triangle")]
 void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex,
-    out vertices GPUDrivenStreamAssetVertexOutput vertices[kMaxMeshOutputVertices],
-    out indices uint3 triangles[kMeshletTriangleChunkSize], uniform GPUDrivenStreamAssetPush push)
+    out vertices GPUDrivenStreamAssetVertexOutput vertices[kMaxMeshletVertices],
+    out indices uint3 triangles[kMaxMeshletTriangles],
+    out primitives GPUDrivenStreamAssetPrimitiveOutput primitives[kMaxMeshletTriangles],
+    uniform GPUDrivenStreamAssetPush push)
 {
     uint draw = hybridFlatGroup(groupID);
-    uint record = draw / kMeshletTriangleChunkCount;
-    uint chunk = draw % kMeshletTriangleChunkCount;
     bool prebinned = push.hybridClusterBuffer != 0xffffffffu;
+    uint record = prebinned ? draw : draw / kMeshletTriangleChunkCount;
+    uint chunk = prebinned ? 0u : draw % kMeshletTriangleChunkCount;
     if (prebinned) {
         DescriptorHandle<StructuredBuffer<uint>> bins =
             DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
@@ -3333,25 +3343,27 @@ void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_Gro
     StreamRasterCluster c = g_StreamMeshCluster;
     uint start = chunk * kMeshletTriangleChunkSize;
     if (start >= c.triangleCount) { SetMeshOutputCounts(0, 0); return; }
-    uint count = min(c.triangleCount - start, kMeshletTriangleChunkSize);
-    SetMeshOutputCounts(count * 3u, count);
+    uint count = prebinned ? c.triangleCount : min(c.triangleCount - start, kMeshletTriangleChunkSize);
+    SetMeshOutputCounts(c.vertexCount, count);
+    bool queueTriangles = !prebinned && push.hybridQueueBuffer != 0xffffffffu;
+    for (uint vertex = lane; vertex < c.vertexCount; vertex += 64u) {
+        float4 clip = streamClusterClip(c, vertex, push);
+        vertices[vertex].position = clip;
+        vertices[vertex].doubleSided = (c.instanceFlags & 2u) != 0u;
+        if (queueTriangles) { g_StreamMeshClip[vertex] = clip; }
+    }
+    if (queueTriangles) { GroupMemoryBarrierWithGroupSync(); }
     for (uint i = lane; i < count; i += 64u) {
         uint3 indices = streamClusterTriangle(c, start + i, push);
-        float4 a = streamClusterClip(c, indices.x, push);
-        float4 b = streamClusterClip(c, indices.y, push);
-        float4 d = streamClusterClip(c, indices.z, push);
         uint id = packVisibilityId(c.recordIndex, start + i);
-        vertices[i * 3u].position = a;
-        vertices[i * 3u + 1u].position = b;
-        vertices[i * 3u + 2u].position = d;
-        vertices[i * 3u].visibilityId = id;
-        vertices[i * 3u + 1u].visibilityId = id;
-        vertices[i * 3u + 2u].visibilityId = id;
-        vertices[i * 3u].doubleSided = (c.instanceFlags & 2u) != 0u;
-        vertices[i * 3u + 1u].doubleSided = (c.instanceFlags & 2u) != 0u;
-        vertices[i * 3u + 2u].doubleSided = (c.instanceFlags & 2u) != 0u;
-        bool queued = !prebinned && hybridEnqueueTriangle(a, b, d, id, (c.instanceFlags & 2u) != 0u, push.hybridQueueBuffer, push.bufferShaderIndexBase);
-        triangles[i] = queued ? uint3(0u) : uint3(i * 3u, i * 3u + 1u, i * 3u + 2u);
+        bool queued = false;
+        if (queueTriangles) {
+            queued = hybridEnqueueTriangle(g_StreamMeshClip[indices.x], g_StreamMeshClip[indices.y],
+                g_StreamMeshClip[indices.z], id, (c.instanceFlags & 2u) != 0u,
+                push.hybridQueueBuffer, push.bufferShaderIndexBase);
+        }
+        triangles[i] = queued ? uint3(0u) : indices;
+        primitives[i].visibilityId = id;
     }
 }
 
@@ -3374,12 +3386,28 @@ uint streamPhaseCandidateMask(GPUDrivenStreamAssetActiveGroup group, uint index,
     return state == 1u ? group.clusterSelectionMask & bins[hybridRetryBase(bins[5]) + index] : 0u;
 }
 
-// A stable expansion preserves equal-depth submission order and the original
-// record namespace. Work and scratch writes scale with the active cut, while
-// the capacity-sized record/list storage remains an explicit budget.
+uint streamCandidateInclusiveScan(uint value, uint lane)
+{
+    g_StreamCandidatePrefix[lane] = value;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint stride = 1u; stride < 128u; stride *= 2u) {
+        uint previous = lane >= stride ? g_StreamCandidatePrefix[max(lane, stride) - stride] : 0u;
+        GroupMemoryBarrierWithGroupSync();
+        g_StreamCandidatePrefix[lane] += previous;
+        GroupMemoryBarrierWithGroupSync();
+    }
+    return g_StreamCandidatePrefix[lane];
+}
+
+// Setup/count/prefix/scatter use activeBuildPhase, independently of the
+// early/late traversalPhase. Count and scatter scale with the actual active
+// group count, not the capacity. Original group/cluster order and IDs survive.
+// Before classification, bin 0 stores group masks, rank storage holds each
+// group's block-local offset, and block storage holds counts/global offsets.
+// All three regions are dead until stable binning, which overwrites them.
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamClusterPrepareMain(uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+void streamClusterPrepareMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> headers =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.bufferShaderIndexBase + push.activeHeaderBuffer, 0));
@@ -3393,48 +3421,126 @@ void streamClusterPrepareMain(uint lane : SV_GroupIndex, uniform GPUDrivenStream
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
     DescriptorHandle<StructuredBuffer<uint>> visibility =
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + bindingHandle[0].instanceVisibilityBuffer, 0));
-    bool early = push.traversalPhase == 0u;
-    GPUDrivenStreamAssetActiveHeader header = headers[0];
-    uint count = min(header.activeGroupCount, header.activeGroupCapacity);
-    uint perLane = (count + 127u) / 128u;
-    uint first = min(lane * perLane, count), end = min(first + perLane, count);
-    uint total = 0u;
-    for (uint i = first; i < end; ++i) { total += countbits(streamPhaseCandidateMask(groups[i], i, bins, visibility, early)); }
-    g_StreamCandidatePrefix[lane] = total;
-    GroupMemoryBarrierWithGroupSync();
-    for (uint stride = 1u; stride < 128u; stride *= 2u) {
-        uint previous = lane >= stride ? g_StreamCandidatePrefix[max(lane, stride) - stride] : 0u;
-        GroupMemoryBarrierWithGroupSync();
-        g_StreamCandidatePrefix[lane] += previous;
-        GroupMemoryBarrierWithGroupSync();
-    }
-    uint offset = lane == 0u ? 0u : g_StreamCandidatePrefix[max(lane, 1u) - 1u];
     uint capacity = bins[5];
-    for (uint i = first; i < end; ++i) {
-        uint mask = streamPhaseCandidateMask(groups[i], i, bins, visibility, early);
+    if (push.activeBuildPhase == 0u) {
+        if (lane == 0u) {
+            GPUDrivenStreamAssetActiveHeader header = headers[0];
+            // The stream producer guarantees activeGroupCapacity <= capacity.
+            uint count = min(header.activeGroupCount, header.activeGroupCapacity);
+            bins[13] = header.maxActiveGroupClusters;
+            bins[15] = count;
+            uint blocks = (count + 127u) / 128u;
+            args[6] = min(blocks, kHybridDispatchWidth);
+            args[7] = max(1u, (blocks + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
+            args[8] = 1u;
+        }
+        return;
+    }
+
+    uint count = bins[15];
+    uint blocks = (count + 127u) / 128u;
+    uint blockBase = hybridBlockBase(capacity);
+    if (push.activeBuildPhase == 2u) {
+        uint perLane = (blocks + 127u) / 128u;
+        uint first = min(lane * perLane, blocks), end = min(first + perLane, blocks);
+        uint total = 0u;
+        for (uint block = first; block < end; ++block) { total += bins[blockBase + block]; }
+        uint offset = streamCandidateInclusiveScan(total, lane) - total;
+        for (uint block = first; block < end; ++block) {
+            uint blockCount = bins[blockBase + block];
+            bins[blockBase + block] = offset;
+            offset += blockCount;
+        }
+        if (lane == 127u) {
+            uint candidates = min(g_StreamCandidatePrefix[127], capacity);
+            bins[12] = candidates;
+            bins[14] = g_StreamCandidatePrefix[127] - candidates;
+            args[0] = min(candidates, kHybridDispatchWidth);
+            args[1] = max(1u, (candidates + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
+            args[2] = 1u;
+            uint candidateBlocks = (candidates + 127u) / 128u;
+            args[3] = min(candidateBlocks, kHybridDispatchWidth);
+            args[4] = max(1u, (candidateBlocks + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
+            args[5] = 1u;
+        }
+        return;
+    }
+
+    uint block = hybridFlatGroup(groupID);
+    if (block >= blocks) { return; }
+    uint index = block * 128u + lane;
+    if (push.activeBuildPhase == 1u) {
+        uint mask = 0u;
+        if (index < count) {
+            mask = streamPhaseCandidateMask(groups[index], index, bins, visibility, push.traversalPhase == 0u);
+        }
+        uint localCount = countbits(mask);
+        uint offset = streamCandidateInclusiveScan(localCount, lane) - localCount;
+        if (index < count) {
+            bins[kHybridBinHeaderWords + index] = mask;
+            bins[hybridRankBase(capacity) + index] = offset;
+        }
+        if (lane == 127u) { bins[blockBase + block] = g_StreamCandidatePrefix[127]; }
+    } else if (push.activeBuildPhase == 3u && index < count) {
+        uint mask = bins[kHybridBinHeaderWords + index];
+        uint offset = bins[blockBase + block] + bins[hybridRankBase(capacity) + index];
         while (mask != 0u) {
             uint cluster = firstbitlow(mask);
             if (offset < capacity) {
                 uint slot = hybridCandidateBase(capacity) + offset * 2u;
-                bins[slot] = i * header.maxActiveGroupClusters + cluster;
+                bins[slot] = index * bins[13] + cluster;
                 bins[slot + 1u] = 0xffffffffu;
             }
             ++offset;
             mask &= mask - 1u;
         }
     }
-    if (lane == 127u) {
-        uint candidates = min(g_StreamCandidatePrefix[127], capacity);
-        bins[12] = candidates;
-        bins[13] = header.maxActiveGroupClusters;
-        bins[14] = g_StreamCandidatePrefix[127] - candidates;
-        args[0] = min(candidates, kHybridDispatchWidth);
-        args[1] = max(1u, (candidates + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
-        args[2] = 1u;
-        uint blocks = (candidates + 127u) / 128u;
-        args[3] = min(blocks, kHybridDispatchWidth);
-        args[4] = max(1u, (blocks + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
-        args[5] = 1u;
+}
+
+// One lane validates/culls one candidate. Survivors carry only the geometry
+// decode fields needed by classification, in the still-unused bin list storage.
+// A wave reserves one range; its scheduling order is intentionally irrelevant:
+// classifiers write back to original candidate slots before stable binning.
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void streamClusterCullMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<RWStructuredBuffer<uint>> handle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+    RWStructuredBuffer<uint> bins = handle;
+    if (push.activeBuildPhase == 1u) {
+        if (lane == 0u) {
+            DescriptorHandle<RWStructuredBuffer<uint>> args =
+                DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridQueueBuffer, 0));
+            uint count = bins[0];
+            args[0] = min(count, kHybridDispatchWidth);
+            args[1] = max(1u, (count + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
+            args[2] = 1u;
+        }
+        return;
+    }
+    uint candidate = hybridFlatGroup(group) * 128u + lane;
+    StreamRasterCluster cluster = (StreamRasterCluster)0;
+    bool visible = false;
+    if (candidate < bins[12]) {
+        uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
+        bool retryLate;
+        visible = loadStreamRasterCluster(record, true, true, push, cluster, retryLate) && cluster.triangleCount != 0u;
+        if (push.traversalPhase == 0u && retryLate) {
+            InterlockedOr(bins[hybridRetryBase(bins[5]) + record / bins[13]], 1u << (record % bins[13]));
+        }
+    }
+    uint count = WaveActiveCountBits(visible);
+    uint offset = WavePrefixCountBits(visible);
+    uint base = 0u;
+    if (WaveIsFirstLane() && count != 0u) { InterlockedAdd(bins[0], count, base); }
+    base = WaveReadLaneFirst(base);
+    if (visible) {
+        uint item = hybridStreamClassifyBase(base + offset);
+        bins[item] = candidate;
+        bins[item + 1u] = cluster.pageWord + cluster.positionOffsetBytes / 4u + cluster.vertexOffset * 4u;
+        bins[item + 2u] = cluster.vertexCount | (cluster.triangleCount << 16u);
+        bins[item + 3u] = cluster.triangleBaseByte;
     }
 }
 
@@ -3445,27 +3551,36 @@ void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, u
     DescriptorHandle<RWStructuredBuffer<uint>> handle =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
     RWStructuredBuffer<uint> bins = handle;
-    uint candidate = hybridFlatGroup(group);
-    if (candidate >= bins[12]) { return; }
+    uint work = hybridFlatGroup(group);
+    if (work >= bins[0]) { return; }
+    uint item = hybridStreamClassifyBase(work);
+    uint candidate = bins[item];
     uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
     if (lane == 0u) {
-        hybridClassifyCluster(bins, 0xffffffffu, record, candidate);
-        bool retryLate;
-        g_StreamBinVisible = loadStreamRasterCluster(record, true, true, push, g_StreamRasterCluster, retryLate) ? 1u : 0u;
-        if (push.traversalPhase == 0u && retryLate) {
-            InterlockedOr(bins[hybridRetryBase(bins[5]) + record / bins[13]], 1u << (record % bins[13]));
-        }
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> params =
+            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups =
+            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
+        g_StreamRasterCluster = (StreamRasterCluster)0;
+        g_StreamRasterCluster.params = params[0];
+        g_StreamRasterCluster.group = groups[record / bins[13]];
+        g_StreamRasterCluster.pageWord = bins[item + 1u];
+        g_StreamRasterCluster.vertexCount = bins[item + 2u] & 0xffffu;
+        g_StreamRasterCluster.triangleCount = bins[item + 2u] >> 16u;
+        g_StreamRasterCluster.triangleBaseByte = bins[item + 3u];
         g_StreamBinHardware = 0u;
     }
     GroupMemoryBarrierWithGroupSync();
-    if (g_StreamBinVisible == 0u || g_StreamRasterCluster.triangleCount == 0u) { return; }
     if (lane < g_StreamRasterCluster.vertexCount) { g_StreamRasterClip[lane] = streamClusterClip(g_StreamRasterCluster, lane, push); }
     GroupMemoryBarrierWithGroupSync();
+    bool hardware = false;
     if (lane < g_StreamRasterCluster.triangleCount) {
         uint3 tri = streamClusterTriangle(g_StreamRasterCluster, lane, push);
-        if (!hybridTriangleFits(g_StreamRasterClip[tri.x], g_StreamRasterClip[tri.y], g_StreamRasterClip[tri.z],
-            float2(bins[6], bins[7]), asfloat(bins[8]))) { InterlockedOr(g_StreamBinHardware, 1u); }
+        hardware = !hybridTriangleFits(g_StreamRasterClip[tri.x], g_StreamRasterClip[tri.y], g_StreamRasterClip[tri.z],
+            float2(bins[6], bins[7]), asfloat(bins[8]));
     }
+    bool waveHardware = WaveActiveAnyTrue(hardware);
+    if (WaveIsFirstLane() && waveHardware) { InterlockedOr(g_StreamBinHardware, 1u); }
     GroupMemoryBarrierWithGroupSync();
     if (lane == 0u) { hybridClassifyCluster(bins, g_StreamBinHardware != 0u ? 0u : kHybridSoftwareBin, record, candidate); }
 }
@@ -3949,9 +4064,10 @@ void gpuDrivenStreamAssetApplyUpdatesMain(uint3 dispatchThreadID : SV_DispatchTh
 }
 
 [shader("fragment")]
-uint gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, bool frontFace : SV_IsFrontFace,
+uint gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, uint visibilityId : SV_PrimitiveID,
+    bool frontFace : SV_IsFrontFace,
     uniform GPUDrivenStreamAssetPush push) : SV_Target0
 {
     if (!frontFace && input.doubleSided == 0u) { discard; }
-    return input.visibilityId;
+    return visibilityId;
 }
