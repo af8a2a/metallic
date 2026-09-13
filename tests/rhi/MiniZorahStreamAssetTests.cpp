@@ -63,6 +63,7 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
     const std::string label = std::string(miniZorah ? "MiniZorah" : "StreamOnlyBunny") + (unified ? "VBuffer" : "");
     Json report{{"status", "running"}, {"cases", Json::array()}, {"cacheState", "OS file cache not flushed"}};
     StreamStartupObserver observer;
+    RenderView viewport;
     RenderGraphPreviewRenderer preview;
     const auto started = Clock::now();
     const auto seconds = [&]() { return std::chrono::duration<double>(Clock::now() - started).count(); };
@@ -94,6 +95,8 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
             require(loadBuiltInRenderSample(unified ? "gpu-driven-minizorah-vbuffer" : "gpu-driven-minizorah", sample, log), log);
             require(!sample.desc.loadSceneInEditor && !sample.desc.requiresStreamline, "MiniZorah startup must skip resident import and DLSS");
             graph = std::move(sample.graph);
+            require(viewport.setCameraProperties(graph.viewProperties().at("camera")), "Invalid MiniZorah viewport camera");
+            preview.bindRenderView(&viewport);
             const auto& props = graph.findNode("GPUDriven")->properties;
             source = std::filesystem::path(PROJECT_SOURCE_DIR) / props.at("path").get<std::string>();
             cache = std::filesystem::path(PROJECT_SOURCE_DIR) / props.at("streamAssetPath").get<std::string>();
@@ -336,7 +339,7 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
         std::fflush(stdout);
         graph.setNodeRuntimeProperty(node, "autoLod", true);
         graph.setNodeRuntimeProperty(node, "lodPixelError", 1.5f);
-        const auto originalCamera = graph.findNode(node)->properties.at("camera");
+        const auto originalCamera = miniZorah ? graph.viewProperties().at("camera") : graph.findNode(node)->properties.at("camera");
         const float3 center = worldBounds.center();
         const float radius = std::max(worldBounds.radius(), 1.0f);
         report["worldBounds"] = {{"min", {worldBounds.min.x, worldBounds.min.y, worldBounds.min.z}},
@@ -357,7 +360,11 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
         }
         for (const auto& camera : cameras) {
             report["currentCamera"] = camera;
-            graph.setNodeRuntimeProperty(node, "camera", camera.at("camera"));
+            if (miniZorah) {
+                require(viewport.setCameraProperties(camera.at("camera")), "Viewport camera update rejected");
+            } else {
+                graph.setNodeRuntimeProperty(node, "camera", camera.at("camera"));
+            }
             for (uint32_t frame = 0; frame < (miniZorah ? 48u : 16u); ++frame) { renderFrame(); }
             const auto job = captureHeader(false);
             const auto active = read(job, "streaming.GPUDriven.activeHeader").at(0);

@@ -167,6 +167,33 @@ bool buildMeshletLodBvh(std::span<const MeshletLodGroupRecord> groups,
     return true;
 }
 
+bool buildMeshletLodTiles(std::span<const MeshletLodGroupRecord> groups,
+    std::vector<MeshletLodBvhNode>& tiles, std::string& reason)
+{
+    tiles.clear();
+    reason.clear();
+    if (groups.size() > UINT32_MAX) {
+        reason = "too many meshlet LOD groups for cooperative tile indices";
+        return false;
+    }
+    std::vector<MeshletLodBvhNode> nodes;
+    for (size_t end = groups.size(); end != 0;) {
+        size_t first = end - 1;
+        while (first != 0 && end - first < 64 && groups[first - 1].level == groups[end - 1].level) { --first; }
+        if (first != 0 && groups[first - 1].level > groups[first].level) {
+            reason = "cooperative LOD groups must be sorted by level";
+            return false;
+        }
+        if (!buildMeshletLodBvh(groups.subspan(first, end - first), nodes, reason)) { return false; }
+        auto tile = nodes.front();
+        tile.groupOffset = static_cast<uint32_t>(first);
+        tile.groupCount = static_cast<uint32_t>(end - first);
+        tiles.push_back(tile);
+        end = first;
+    }
+    return true;
+}
+
 bool buildMeshletLodMetadata(const scene::RenderPrimitive& primitive,
     std::vector<MeshletLodGroupRecord>& groups, std::string& reason)
 {

@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -42,6 +43,7 @@ inline constexpr const char* kMeshletStreamPageTableInitEntryPoint = "gpuDrivenS
 inline constexpr const char* kMeshletStreamUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
 inline constexpr const char* kMeshletStreamTraversalEntryPoint = "gpuDrivenStreamAssetTraversalMain";
 inline constexpr const char* kMeshletStreamActiveBuildEntryPoint = "gpuDrivenStreamAssetBuildActiveMain";
+inline constexpr const char* kMeshletStreamCooperativeBuildEntryPoint = "streamCooperativeLodMain";
 inline constexpr const char* kMeshletStreamBlasInputEntryPoint = "gpuDrivenStreamAssetBuildBlasInputMain";
 inline constexpr const char* kMeshletStreamTlasInputEntryPoint = "gpuDrivenStreamAssetBuildTlasInputMain";
 
@@ -150,7 +152,7 @@ struct MeshletStreamGpuPrimitive {
     // Word offset in resident LOD topology and count of preorder BVH nodes.
     uint32_t lodBvhOffset = 0;
     uint32_t lodBvhNodeCount = 0;
-    uint32_t padding4 = 0;
+    uint32_t lodTileOffset = UINT32_MAX;
 };
 
 struct MeshletStreamGpuLodLevel {
@@ -413,6 +415,7 @@ struct MeshletStreamRuntimeDesc {
     uint64_t maxBlasBytes = 512ull * 1024ull * 1024ull;
     uint32_t maxBlasBuilds = kMeshletStreamDefaultMaxBlasBuilds;
     uint64_t maxFallbackBlasBytes = 512ull * 1024ull * 1024ull;
+    bool screenSpacePagePriority = true;
 
     bool operator==(const MeshletStreamRuntimeDesc&) const = default;
 };
@@ -469,7 +472,9 @@ public:
     RayTracingAccelerationStructure* accelerationStructure() const;
 
     Result cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame);
-    Result cmdPreTraversal(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame);
+    using TraversalCheckpoint = std::function<void(std::string_view)>;
+    Result cmdPreTraversal(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame,
+        const TraversalCheckpoint& checkpoint = {});
     Result cmdPostTraversal(CommandBuffer& commandBuffer);
     Result cmdEndFrame(CommandBuffer& commandBuffer);
 
@@ -519,7 +524,7 @@ private:
     Result applyPageTablePatches(CommandBuffer& commandBuffer);
     Result clearRequestBuffer(CommandBuffer& commandBuffer);
     Result dispatchTraversal(CommandBuffer& commandBuffer, uint32_t threadCount, uint32_t traversalPhase);
-    Result buildActiveTable(CommandBuffer& commandBuffer);
+    Result buildActiveTable(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
     Result buildBlasInputs(CommandBuffer& commandBuffer);
     Result cmdBuildBlas(CommandBuffer& commandBuffer);
     Result cmdBuildFallbackBlas(CommandBuffer& commandBuffer);
@@ -636,6 +641,7 @@ private:
     uint32_t maxResidentPages_ = 0;
     uint32_t maxPageUploadsPerFrame_ = 0;
     uint32_t maxGpuPageRequests_ = 0;
+    bool screenSpacePagePriority_ = false;
     uint32_t maxGpuPageUnloadRequests_ = 0;
     uint32_t maxUpdatePatches_ = 0;
     uint32_t residentPageCapacity_ = 0;

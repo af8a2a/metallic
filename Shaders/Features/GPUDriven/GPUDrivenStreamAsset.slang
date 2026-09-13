@@ -32,6 +32,8 @@ static const uint kActiveGroupLoadRequest = 1u << 1u;
 static const uint kActiveGroupUnloadRequest = 1u << 2u;
 static const uint kTraversalPhaseLoad = 0u;
 static const uint kTraversalPhaseUnload = 1u;
+static const uint kTraversalPhaseClearPriority = 2u;
+static const uint kTraversalPhaseGatherPriority = 3u;
 static const uint kActiveBuildPhaseReset = 0u;
 static const uint kActiveBuildPhaseBuild = 1u;
 static const uint kActiveBuildPhaseFinalize = 2u;
@@ -65,6 +67,8 @@ static const uint kStreamRequestInvalidPageCounterWord = 7u;
 static const uint kStreamRequestLastLoadOverflowFrameWord = 8u;
 static const uint kStreamRequestLastUnloadOverflowFrameWord = 9u;
 static const uint kStreamRequestLastInvalidPageFrameWord = 10u;
+static const uint kStreamRequestLoadPriorityOffsetWord = 11u;
+static const uint kStreamRequestPriorityTableOffsetWord = 12u;
 
 struct GPUDrivenStreamAssetPush
 {
@@ -188,7 +192,7 @@ struct GPUDrivenStreamAssetPrimitive
     uint nodeCount;
     uint lodBvhOffset;
     uint lodBvhNodeCount;
-    uint padding4;
+    uint lodTileOffset;
 };
 
 struct GPUDrivenStreamAssetLodLevel
@@ -619,6 +623,30 @@ bool streamSphereInsideFrustum(
         abs(viewCenter.y) <= viewCenter.z * tanY + radiusY;
 }
 
+// A scheduling heuristic, not a replacement for the conservative LOD cut.
+// Offscreen dependencies remain requested with zero benefit. Shared pages use
+// the maximum instance benefit, independently of request-list deduplication.
+float streamGroupScreenBenefit(GPUDrivenStreamAssetGroup group, GPUDrivenStreamAssetInstance instance,
+    GPUDrivenStreamAssetParams params, float4 eye, float4 direction, float4 projection)
+{
+    float3 a = instance.world0.xyz, b = instance.world1.xyz, c = instance.world2.xyz;
+    float ab = abs(dot(a, b)), ac = abs(dot(a, c)), bc = abs(dot(b, c));
+    float scale = sqrt(max(dot(a, a) + ab + ac, max(dot(b, b) + ab + bc, dot(c, c) + ac + bc)));
+    float4 sphere = float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius);
+    float3 center = a * sphere.x + b * sphere.y + c * sphere.z + instance.world3.xyz;
+    float radius = (sphere.w + group.maxQuadricError) * scale;
+    if (!streamSphereInsideFrustum(center, radius, currentStreamCamera(params))) { return 0.0; }
+    float pixelsPerUnit = direction.w != 0.0 ? projection.x / max(projection.z, 1e-6) :
+        projection.x / max(2.0 * projection.y, 1e-6) /
+            max(dot(center - eye.xyz, direction.xyz) - radius, max(eye.w, 1e-6));
+    float pixelRadius = min(radius * pixelsPerUnit, max(params.viewport.y, params.viewport.z));
+    float area = min(3.14159265 * pixelRadius * pixelRadius, params.viewport.y * params.viewport.z);
+    float error = meshletLodProjectedError(sphere, group.maxQuadricError, instance.world0, instance.world1,
+        instance.world2, instance.world3, eye, direction, projection);
+    float excess = clamp(error / max(projection.w, 1e-6) - 1.0, 1.0, 64.0);
+    return clamp(max(area, 1.0) * excess, 0.0, 1e9);
+}
+
 uint streamMipDimension(uint baseDimension, uint mipLevel)
 {
     uint dimension = max(baseDimension, 1u);
@@ -701,8 +729,9 @@ bool streamSphereOccluded(
 }
 
 bool streamClusterVisibleInOcclusionPhase(float3 center, float radius, uint instanceState,
-    GPUDrivenStreamAssetParams params, GPUDrivenStreamAssetRasterBindings bindings, GPUDrivenStreamAssetPush push)
+    GPUDrivenStreamAssetParams params, GPUDrivenStreamAssetRasterBindings bindings, GPUDrivenStreamAssetPush push, out bool retryLate)
 {
+    retryLate = false;
     bool early = push.traversalPhase == 0u;
     if ((bindings.cullingFlags & (1u << 4u)) == 0u) {
         return instanceState == (early ? 1u : 3u);
@@ -711,7 +740,7 @@ bool streamClusterVisibleInOcclusionPhase(float3 center, float radius, uint inst
     uint currentHzb = params.frameIndex & 1u;
     bool deferred = instanceState == 3u || (bindings.hzbValid != 0u &&
         streamSphereOccluded(center, radius, previousStreamCamera(params), bindings, push, currentHzb ^ 1u));
-    if (early) { return !deferred; }
+    if (early) { retryLate = deferred; return !deferred; }
     return deferred && !streamSphereOccluded(center, radius, currentStreamCamera(params), bindings, push, currentHzb);
 }
 
@@ -1678,6 +1707,9 @@ void runActiveTraversalWorker(
 [numthreads(64, 1, 1)]
 void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThreadID, uniform GPUDrivenStreamAssetPush push)
 {
+    uint rowBase = dispatchThreadID.y * (65535u * 64u);
+    if (dispatchThreadID.x > 0xffffffffu - rowBase) { return; }
+    uint threadIndex = dispatchThreadID.x + rowBase;
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instanceHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(push.bufferShaderIndexBase + push.instanceBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>> primitiveHandle =
@@ -1705,8 +1737,23 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
     RWStructuredBuffer<uint> requests = requestHandle;
 
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
+    if (push.traversalPhase == kTraversalPhaseClearPriority) {
+        uint table = requests[kStreamRequestPriorityTableOffsetWord];
+        if (table != 0u && threadIndex < params.scenePageCount) { requests[table + threadIndex] = 0u; }
+        return;
+    }
+    if (push.traversalPhase == kTraversalPhaseGatherPriority) {
+        uint table = requests[kStreamRequestPriorityTableOffsetWord];
+        uint output = requests[kStreamRequestLoadPriorityOffsetWord];
+        uint count = min(requests[kStreamRequestLoadCounterWord], requests[kStreamRequestMaxLoadsWord]);
+        if (table != 0u && output != 0u && threadIndex < count) {
+            uint page = requests[kStreamRequestHeaderWords + threadIndex];
+            requests[output + threadIndex] = page < params.scenePageCount ? requests[table + page] : 0u;
+        }
+        return;
+    }
     if (push.traversalPhase == kTraversalPhaseUnload) {
-        uint residentPageIndex = dispatchThreadID.x;
+        uint residentPageIndex = threadIndex;
         if (residentPageIndex >= push.activeBuildPhase || params.enableGpuUnloadRequests == 0u) {
             return;
         }
@@ -1728,10 +1775,10 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
 
     if (params.sceneNodeCount != 0u) {
         uint workerCount = max(params.traversalWorkerCount, 1u);
-        if (dispatchThreadID.x >= workerCount) {
+        if (threadIndex >= workerCount) {
             return;
         }
-        for (uint instanceIndex = dispatchThreadID.x;
+        for (uint instanceIndex = threadIndex;
              instanceIndex < params.sceneInstanceCount;
              instanceIndex += workerCount) {
             GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
@@ -1752,7 +1799,7 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
     if (params.maxPrimitiveGroupCount == 0u) {
         return;
     }
-    uint workItemIndex = dispatchThreadID.x;
+    uint workItemIndex = threadIndex;
     uint instanceIndex = workItemIndex / params.maxPrimitiveGroupCount;
     uint localGroupIndex = workItemIndex - instanceIndex * params.maxPrimitiveGroupCount;
     if (instanceIndex >= params.sceneInstanceCount) {
@@ -2139,6 +2186,211 @@ void emitStreamLodFrontier(
         group.world2 = instance.world2;
         group.world3 = instance.world3;
         activeGroups[outputIndex++] = group;
+    }
+}
+
+groupshared uint g_CooperativeWaveCounts[64];
+groupshared uint g_CooperativeRoots;
+groupshared uint g_CooperativeMissingRoots;
+
+// Stable workgroup scan, with no fixed subgroup size assumption.
+uint streamCooperativePrefix(uint value, uint lane, out uint total)
+{
+    uint wave = lane / WaveGetLaneCount();
+    uint waves = (64u + WaveGetLaneCount() - 1u) / WaveGetLaneCount();
+    uint prefix = WavePrefixSum(value);
+    uint sum = WaveActiveSum(value);
+    if (WaveIsFirstLane()) { g_CooperativeWaveCounts[wave] = sum; }
+    GroupMemoryBarrierWithGroupSync();
+    total = 0u;
+    for (uint i = 0u; i < waves; ++i) {
+        uint count = g_CooperativeWaveCounts[i];
+        if (i < wave) { prefix += count; }
+        total += count;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    return prefix;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_GroupIndex,
+    uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+    GPUDrivenStreamAssetParams params = paramsHandle[0];
+    uint instanceIndex = workgroup.x + workgroup.y * 65535u;
+    if (instanceIndex >= params.sceneInstanceCount) { return; }
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instances =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(push.bufferShaderIndexBase + push.instanceBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>> primitives =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(uint2(push.bufferShaderIndexBase + push.primitiveBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>> groups =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(uint2(push.bufferShaderIndexBase + push.groupBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint>> topology =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + params.lodTopologyBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> state =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + params.lodStateBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTable =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.bufferShaderIndexBase + push.pageTableBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> requests =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.requestBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroups =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader>> activeHeader =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.bufferShaderIndexBase + push.activeHeaderBuffer, 0));
+    GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
+    uint header = instanceIndex * 4u;
+    if (instance.primitiveIndex >= params.scenePrimitiveCount) {
+        if (lane < 4u) { state[header + lane] = 0u; }
+        return;
+    }
+    GPUDrivenStreamAssetPrimitive primitive = primitives[instance.primitiveIndex];
+    if (primitive.lodTileOffset == 0xffffffffu) {
+        if (lane == 0u) {
+            if (push.activeBuildPhase == kActiveBuildPhaseFrontier) {
+                buildStreamLodFrontier(instanceIndex, instances, primitives, groups, topology, state, pageTable, requests, params, push);
+            } else {
+                emitStreamLodFrontier(instanceIndex, instances, primitives, groups, topology, state, pageTable, activeGroups, activeHeader, params);
+            }
+        }
+        return;
+    }
+    uint base = topology[params.lodInstanceOffsetsOffset + instanceIndex];
+    uint sparse = base + primitive.groupCount * 2u;
+    if (push.activeBuildPhase == kActiveBuildPhaseEmit) {
+        if (state[header + 3u] == 0u || activeHeader[0].padding1 != 0u) { return; }
+        uint count = state[sparse];
+        uint output = state[header + 1u];
+        bool fallback = activeHeader[0].padding0 != 0u;
+        for (uint first = 0u; first < count; first += 64u) {
+            uint index = first + lane;
+            GPUDrivenStreamAssetGroup source;
+            uint mask = 0u;
+            if (index < count) {
+                uint localGroup = state[sparse + 4u + count - 1u - index];
+                source = groups[primitive.groupOffset + localGroup];
+                mask = state[base + localGroup * 2u + 1u];
+                if (fallback) { mask = (source.flags & 1u) == 0u ? 0u :
+                    (source.clusterCount == 32u ? 0xffffffffu : (1u << source.clusterCount) - 1u); }
+            }
+            uint emitted;
+            uint offset = streamCooperativePrefix(mask != 0u ? 1u : 0u, lane, emitted);
+            if (mask != 0u) {
+                GPUDrivenStreamAssetActiveGroup group;
+                group.pageDeviceOffsetBytes = streamPageDeviceOffset(pageTable[source.pageIndex]);
+                group.pageIndex = source.pageIndex;
+                group.clusterCount = source.clusterCount;
+                group.primitiveIndex = source.primitiveIndex;
+                group.lodLevel = source.lodLevel;
+                group.materialIndex = instance.materialIndex;
+                group.clusterSelectionMask = mask;
+                group.flags = kActiveGroupResident;
+                group.instanceIndex = instanceIndex;
+                group.gpuSceneInstanceIndex = instance.gpuSceneInstanceIndex;
+                group.padding1 = 0u; group.padding2 = 0u;
+                group.world0 = instance.world0; group.world1 = instance.world1;
+                group.world2 = instance.world2; group.world3 = instance.world3;
+                activeGroups[output + offset] = group;
+            }
+            output += emitted;
+        }
+        return;
+    }
+
+    uint previousCount = state[sparse];
+    GroupMemoryBarrierWithGroupSync();
+    for (uint index = lane; index < previousCount; index += 64u) {
+        uint localGroup = state[sparse + 4u + index];
+        state[base + localGroup * 2u] = 0u;
+        state[base + localGroup * 2u + 1u] = 0u;
+    }
+    if (lane < 4u) { state[header + lane] = 0u; state[sparse + lane] = 0u; }
+    if (lane == 0u) { g_CooperativeRoots = 0u; g_CooperativeMissingRoots = 0u; }
+    AllMemoryBarrierWithGroupSync();
+    if (params.enableGpuLodSelection != 0u && push.rasterBindingsBuffer != 0xffffffffu) {
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindings =
+            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
+        if ((bindings[0].cullingFlags & 1u) != 0u && !streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
+                max(instance.boundsCenterRadius.w, 0.000001), currentStreamCamera(params))) { instance.visible = 0u; }
+    }
+    if (instance.visible == 0u) { return; }
+    float3 delta = params.center.xyz - params.eye.xyz;
+    float3 forward = dot(delta, delta) > 1e-12 ? normalize(delta) : float3(0.0, 0.0, -1.0);
+    float4 eye = float4(params.eye.xyz, params.clipOrtho.x);
+    float4 direction = float4(forward, params.upProjection.w);
+    float4 projection = float4(params.viewport.z, tan(params.viewport.w * 0.5), params.clipOrtho.z, params.lodPixelError);
+    uint manual = params.enableGpuLodSelection != 0u ? 0xffffffffu : params.selectedLodLevel;
+    uint count = 0u, tested = 0u;
+    uint tiles = topology[primitive.lodTileOffset];
+    for (uint tile = 0u; tile < tiles; ++tile) {
+        uint offset = primitive.lodTileOffset + 1u + tile * 10u;
+        if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual)) { continue; }
+        uint tileCount = topology[offset + 9u];
+        uint localGroup = topology[offset + 8u] + tileCount - 1u - min(lane, tileCount - 1u);
+        bool active = false;
+        if (lane < tileCount) {
+            GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + localGroup];
+            bool terminal = (group.flags & 1u) != 0u;
+            bool parentsActive = true;
+            for (uint parent = 0u; parent < group.parentCount; ++parent) {
+                uint id = topology[group.parentOffset + parent];
+                parentsActive = parentsActive && state[base + (id - primitive.groupOffset) * 2u] != 0u;
+            }
+            bool desired = meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
+                group.maxQuadricError, group.lodLevel, group.flags, instance.world0, instance.world1,
+                instance.world2, instance.world3, eye, direction, projection, manual);
+            bool demanded = terminal || (parentsActive && desired);
+            if (demanded) {
+                if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { markStreamPageDemand(pageTable, params, group.pageIndex); }
+                else {
+                    uint table = requests[kStreamRequestPriorityTableOffsetWord];
+                    if (table != 0u) {
+                        float benefit = streamGroupScreenBenefit(group, instance, params, eye, direction, projection);
+                        InterlockedMax(requests[table + group.pageIndex], asuint(benefit));
+                    }
+                    requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
+                }
+            }
+            bool drawable = groupPageDrawable(pageTable, params, group);
+            active = demanded && drawable;
+            if (active) { state[base + localGroup * 2u] = 1u; }
+            if (terminal) {
+                InterlockedAdd(g_CooperativeRoots, 1u);
+                if (!drawable) { InterlockedOr(g_CooperativeMissingRoots, 1u); }
+            }
+        }
+        uint added;
+        uint rank = streamCooperativePrefix(active ? 1u : 0u, lane, added);
+        if (active) { state[sparse + 4u + count + rank] = localGroup; }
+        count += added;
+        tested += tileCount;
+        // Each tile belongs to one LOD level. All parents have strictly higher
+        // levels, so no lane in this tile depends on another lane's result.
+        AllMemoryBarrierWithGroupSync();
+    }
+    uint selected = 0u;
+    if (g_CooperativeMissingRoots == 0u) {
+        for (uint index = lane; index < count; index += 64u) {
+            uint localGroup = state[sparse + 4u + index];
+            GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + localGroup];
+            uint mask = 0u;
+            for (uint cluster = 0u; cluster < group.clusterCount; ++cluster) {
+                uint refined = topology[group.clusterRefinedOffset + cluster];
+                if (refined == kInvalidClusterIndex || state[base + (refined - primitive.groupOffset) * 2u] == 0u) { mask |= 1u << cluster; }
+            }
+            state[base + localGroup * 2u + 1u] = mask;
+            selected += mask != 0u ? 1u : 0u;
+        }
+    }
+    uint totalSelected;
+    streamCooperativePrefix(selected, lane, totalSelected);
+    if (lane == 0u) {
+        state[sparse] = count; state[sparse + 1u] = tiles; state[sparse + 2u] = tested;
+        state[header] = totalSelected;
+        state[header + 2u] = g_CooperativeMissingRoots == 0u ? g_CooperativeRoots : 0u;
+        state[header + 3u] = g_CooperativeMissingRoots == 0u ? 1u : 0u;
     }
 }
 
@@ -2670,8 +2922,9 @@ struct StreamRasterCluster
 };
 
 bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool publishRecord,
-    GPUDrivenStreamAssetPush push, out StreamRasterCluster output)
+    GPUDrivenStreamAssetPush push, out StreamRasterCluster output, out bool retryLate)
 {
+    retryLate = false;
     output = (StreamRasterCluster)0;
     DescriptorHandle<StructuredBuffer<uint>> pageHandle =
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
@@ -2878,7 +3131,7 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
             0));
     StructuredBuffer<uint> visibilityStates = visibilityStateHandle;
     if (testVisibility && !streamClusterVisibleInOcclusionPhase(worldSphereCenter, worldSphereRadius,
-        visibilityStates[group.gpuSceneInstanceIndex], params, rasterBindings, push)) {
+        visibilityStates[group.gpuSceneInstanceIndex], params, rasterBindings, push, retryLate)) {
         return false;
     }
 
@@ -2935,10 +3188,13 @@ uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStrea
         indices.y < c.vertexCount ? indices.y : 0u, indices.z < c.vertexCount ? indices.z : 0u);
 }
 
+groupshared StreamRasterCluster g_StreamMeshCluster;
+groupshared uint g_StreamMeshValid;
+
 [shader("mesh")]
-[numthreads(1, 1, 1)]
+[numthreads(64, 1, 1)]
 [outputtopology("triangle")]
-void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID,
+void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex,
     out vertices GPUDrivenStreamAssetVertexOutput vertices[kMaxMeshOutputVertices],
     out indices uint3 triangles[kMeshletTriangleChunkSize], uniform GPUDrivenStreamAssetPush push)
 {
@@ -2952,15 +3208,19 @@ void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID,
         uint item = record;
         if (!hybridBinRecord(bins, 0u, item, record)) { SetMeshOutputCounts(0, 0); return; }
     }
-    StreamRasterCluster c;
-    if (!loadStreamRasterCluster(record, !prebinned, !prebinned && chunk == 0u, push, c)) {
-        SetMeshOutputCounts(0, 0); return;
+    if (lane == 0u) {
+        bool retryLate;
+        g_StreamMeshValid = loadStreamRasterCluster(record, !prebinned, !prebinned && chunk == 0u,
+            push, g_StreamMeshCluster, retryLate) ? 1u : 0u;
     }
+    GroupMemoryBarrierWithGroupSync();
+    if (g_StreamMeshValid == 0u) { SetMeshOutputCounts(0, 0); return; }
+    StreamRasterCluster c = g_StreamMeshCluster;
     uint start = chunk * kMeshletTriangleChunkSize;
     if (start >= c.triangleCount) { SetMeshOutputCounts(0, 0); return; }
     uint count = min(c.triangleCount - start, kMeshletTriangleChunkSize);
     SetMeshOutputCounts(count * 3u, count);
-    for (uint i = 0; i < count; ++i) {
+    for (uint i = lane; i < count; i += 64u) {
         uint3 indices = streamClusterTriangle(c, start + i, push);
         float4 a = streamClusterClip(c, indices.x, push);
         float4 b = streamClusterClip(c, indices.y, push);
@@ -2987,6 +3247,18 @@ groupshared uint g_StreamBinHardware;
 
 groupshared uint g_StreamCandidatePrefix[128];
 
+uint streamPhaseCandidateMask(GPUDrivenStreamAssetActiveGroup group, uint index,
+    RWStructuredBuffer<uint> bins, StructuredBuffer<uint> visibility, bool early)
+{
+    uint state = visibility[group.gpuSceneInstanceIndex];
+    if (early) {
+        bins[hybridRetryBase(bins[5]) + index] = 0u;
+        return state == 1u ? group.clusterSelectionMask : 0u;
+    }
+    if (state == 3u) { return group.clusterSelectionMask; }
+    return state == 1u ? group.clusterSelectionMask & bins[hybridRetryBase(bins[5]) + index] : 0u;
+}
+
 // A stable expansion preserves equal-depth submission order and the original
 // record namespace. Work and scratch writes scale with the active cut, while
 // the capacity-sized record/list storage remains an explicit budget.
@@ -3002,12 +3274,17 @@ void streamClusterPrepareMain(uint lane : SV_GroupIndex, uniform GPUDrivenStream
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<uint>> args =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridQueueBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindingHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint>> visibility =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + bindingHandle[0].instanceVisibilityBuffer, 0));
+    bool early = push.traversalPhase == 0u;
     GPUDrivenStreamAssetActiveHeader header = headers[0];
     uint count = min(header.activeGroupCount, header.activeGroupCapacity);
     uint perLane = (count + 127u) / 128u;
     uint first = min(lane * perLane, count), end = min(first + perLane, count);
     uint total = 0u;
-    for (uint i = first; i < end; ++i) { total += countbits(groups[i].clusterSelectionMask); }
+    for (uint i = first; i < end; ++i) { total += countbits(streamPhaseCandidateMask(groups[i], i, bins, visibility, early)); }
     g_StreamCandidatePrefix[lane] = total;
     GroupMemoryBarrierWithGroupSync();
     for (uint stride = 1u; stride < 128u; stride *= 2u) {
@@ -3019,7 +3296,7 @@ void streamClusterPrepareMain(uint lane : SV_GroupIndex, uniform GPUDrivenStream
     uint offset = lane == 0u ? 0u : g_StreamCandidatePrefix[max(lane, 1u) - 1u];
     uint capacity = bins[5];
     for (uint i = first; i < end; ++i) {
-        uint mask = groups[i].clusterSelectionMask;
+        uint mask = streamPhaseCandidateMask(groups[i], i, bins, visibility, early);
         while (mask != 0u) {
             uint cluster = firstbitlow(mask);
             if (offset < capacity) {
@@ -3034,6 +3311,7 @@ void streamClusterPrepareMain(uint lane : SV_GroupIndex, uniform GPUDrivenStream
     if (lane == 127u) {
         uint candidates = min(g_StreamCandidatePrefix[127], capacity);
         bins[12] = candidates;
+        bins[13] = header.maxActiveGroupClusters;
         bins[14] = g_StreamCandidatePrefix[127] - candidates;
         args[0] = min(candidates, kHybridDispatchWidth);
         args[1] = max(1u, (candidates + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
@@ -3057,7 +3335,11 @@ void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, u
     uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
     if (lane == 0u) {
         hybridClassifyCluster(bins, 0xffffffffu, record, candidate);
-        g_StreamBinVisible = loadStreamRasterCluster(record, true, true, push, g_StreamRasterCluster) ? 1u : 0u;
+        bool retryLate;
+        g_StreamBinVisible = loadStreamRasterCluster(record, true, true, push, g_StreamRasterCluster, retryLate) ? 1u : 0u;
+        if (push.traversalPhase == 0u && retryLate) {
+            InterlockedOr(bins[hybridRetryBase(bins[5]) + record / bins[13]], 1u << (record % bins[13]));
+        }
         g_StreamBinHardware = 0u;
     }
     GroupMemoryBarrierWithGroupSync();
@@ -3081,7 +3363,7 @@ void streamClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
-    if (lane == 0u) { g_StreamBinVisible = loadStreamRasterCluster(record, false, false, push, g_StreamRasterCluster) ? 1u : 0u; }
+    if (lane == 0u) { bool retryLate; g_StreamBinVisible = loadStreamRasterCluster(record, false, false, push, g_StreamRasterCluster, retryLate) ? 1u : 0u; }
     GroupMemoryBarrierWithGroupSync();
     if (g_StreamBinVisible == 0u) { return; }
     if (lane < g_StreamRasterCluster.vertexCount) { g_StreamRasterClip[lane] = streamClusterClip(g_StreamRasterCluster, lane, push); }

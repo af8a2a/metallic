@@ -2,7 +2,9 @@
 
 日期：2026-09-13。目标资产：`E:/metallic/Asset/MiniZorah/zorah_main_public.v2.gltf`。
 
-**当前进度：M1、M2、M3 已完成；M4 持续漫游和预算稳定性基线通过，交互帧时及质量收敛尚未达标。** 完整场景 1 GiB 页池巡航 660 秒、34,431 帧、132 次 cut 检查通过，GPU P95 为 61.36 ms；下一步仍在 M4 内优化遍历和页面调度。见 [M4 实现与验收](MiniZorahRoaming.md)、[M3 统一 VBuffer](MiniZorahVBuffer.md)。
+**当前进度：M1、M2、M3 已完成；M4 已加入并行 mesh 输出、early/late 候选复用与屏幕收益页面排序，1.5 px 质量收敛仍开放。** 最新 1 GiB、60 秒路线 GPU P95 为 12.98 ms、同步离屏帧 P95 为 19.20 ms，34 项回归通过。64 MiB 的收益开关对照显示上传量下降，但 1 GiB 档上传有所增加；不能以性能替代质量验收。这些指标不是编辑器呈现 FPS。见 [最新成本与收益调度验收](MiniZorahScreenBenefit.md)、[上一轮遍历与页面复用](MiniZorahRoamingOptimization.md)、[M4 初始基线](MiniZorahRoaming.md)、[M3 统一 VBuffer](MiniZorahVBuffer.md)。
+
+最终版本另通过 660 秒循环漫游：49,156 帧、132 个检查点，GPU P95 12.92 ms、同步帧 P95 18.38 ms；末轮进程本地显存峰值低于暖机周期，未持续增长。
 
 路线最初依据实际 glTF 元数据、Metallic 实现、本机 Unreal Engine 5.7.4 Nanite 源码和已有回归日志制定。资产统计见 [MiniZorahAssetAudit.json](MiniZorahAssetAudit.json)，全量 cook 和完整场景首帧实测见 [MiniZorahCook.md](MiniZorahCook.md)、[MiniZorahFirstFrame.md](MiniZorahFirstFrame.md)。当前优先级已根据 M3 统一入口与 M4 长测更新。
 
@@ -39,7 +41,7 @@
 | 统一 VBuffer 的纯流式入口 | M3 已加入 metadata Scene 与明确的 StreamAsset geometry ownership；空 resident layout、全局 ID、独立标量材质 resolve 均已验收 | 已完成 |
 | 默认根页上限太小 | 每 primitive 至少需要一个 terminal group/page；完整保留 3,163 个 primitive 时，下界已超过示例的 `maxLockedFallbackPages=1024` | cook 后自动生成根集合及 byte/page/candidate 准入报告 |
 | 流式分类按容量发起工作 | M4 已将默认混合路径改为稳定紧凑候选和 GPU indirect dispatch；缓冲预留容量不变 | 已完成实际数量派发，继续测分箱成本 |
-| BVH 遍历长尾 | M4 已将当前视锥前移，prefix 改为 64 线程；实例内部仍串行，近景遍历/cut 准备区间约 40 ms | 细分 GPU 阶段，推进层级需求裁剪和协作遍历 |
+| BVH 遍历长尾 | 已实现每实例 64 线程、按 LOD 分块协作；近景 frontier / emit 从 40.17 / 4.50 ms 降到 1.44 / 0.157 ms | 继续减少不可见细节的需求和分类/光栅成本 |
 | 驻留几何尚未采用紧凑编码 | 源文件 meshopt 压缩不等于运行时页压缩；现有页仅 None/ByteRle，CPU 解压为设备格式，位置使用 float4 | 用 cook 数据判断是否将位置压缩提前为硬门槛 |
 
 源码入口：[GPUScene](../Source/Runtime/Render/Subsystem/GPUSceneSubsystem.cpp)、[ID 上限](../Source/Runtime/Render/GPUDrivenRaster.h)、[VBuffer 与间接派发](../Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp)、[根集合预算验证](../Source/Runtime/Render/MeshletStreamRuntime.cpp)、[frontier、并行 prefix 与候选展开](../Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang)。
@@ -122,15 +124,15 @@ M1 实测：完整 terminal 集合为 **3,163 页、5.47 MiB 对齐 payload**，
 
 ### M4：在固定预算下持续漫游
 
-已完成实际候选派发、实例视锥前移、并行 prefix，以及 CPU 批量淘汰/退避、有界 I/O 接纳和基础请求排序。1 GiB 的 660 秒巡航与 64 MiB 的 60 秒压力路线通过，最终 31 项回归通过。暖圈与最后一圈进程 local 显存峰值均为 2.23 GiB；GPU P95 61.36 ms、1.5 px 未收敛，性能条件保持开放。[详细结果](MiniZorahRoaming.md)
+已完成实际候选派发、视锥前移、并行 prefix、协作 frontier/emit、CPU 批量退避、有界 I/O 和 GPU 需求驱动的驻留复用。本轮继续实现并行硬件 mesh 输出、late 重试 mask 和收益排序，最新 34 项回归通过。[最新结果](MiniZorahScreenBenefit.md)；以下条目保留任务分解，第 5 项已接入收益调度，精确可见收益、延迟度量与质量收敛仍需推进。
 
 1. **实际候选数量驱动光栅。** 将 active group mask 展开为紧凑 cluster 工作列表，生成实际 count 和 indirect arguments。分类、前缀、散射、清零应随有效数量而不是预留容量增长；原始记录映射和容量回退继续正确。
 2. **把实例剔除前移。** 全部 16,988 个 node 都是场景根节点，不能依赖源层级天然提供场景空间树。先得到可见/待复测实例，再进行重的 LOD frontier。上一帧 HZB 拒绝者必须留入本帧 late 阶段，不能永久跳过。
-3. **并行 prefix 与协作遍历。** 先替换实例 prefix 的单线程双扫描；再对最大楼梯和高复用地板测单实例遍历长尾，决定采用 wave/workgroup 协作或分阶段工作队列。不要用破坏共享父组依赖的无序追加替换现有逻辑。
+3. **并行 prefix 与协作遍历。** 实例 prefix 已并行化；frontier/emit 改为每实例 64 线程，按 LOD 层级的保守 tile 协作处理。稳定前缀保留原始 group ID 顺序，层间屏障保留共享父组依赖，完整 terminal 回退不变。继续从实际分类/光栅耗时判断下一步工作组织。
 4. **将层级可见性与流式需求关联。** 比较误差 BVH 与额外空间 BVH 的访问成本，保守执行视锥/HZB 剪枝；不可见细节不应持续抢占眼前页面的上传预算。保持 LOD 替换有效性与本视图绘制可见性分离：一个父组不可见，不代表共享子组失去合法父关系。
-5. **按收益调度页面。** 已有页面去重、异步加载、帧完成与 eviction 机制继续使用。新增优先级考虑可见性、像素误差超额、请求年龄和代价；测 request→drawable 延迟、每帧上传字节、驻留命中率和反复装卸。保留 ancestor payload 的现策略先作正确性基线；只有其内存成本阻碍目标收敛时，再实现依赖安装/撤销，避免盲目释放祖先造成覆盖破坏。
+5. **按收益调度页面——已接入。** GPU 以投影面积乘误差超额估计收益，共享页取实例最大值；CPU 以解压后字节和有界等待年龄排序准入、I/O 与就绪上传。根页与完整 fallback 继续保留，旧反馈格式和开关对照可用。接下来测 request→drawable 延迟和精确可见收益，联动每帧上传、驻留命中和反复装卸；只有 ancestor payload 阻碍目标收敛时才实现依赖安装/撤销。
 
-M2 发现的 CPU 重复淘汰扫描已修复：同帧 10,000 次重复请求只构建一次候选表，卸载按帧批量进入延迟任务。最终 64 MiB 路线 CPU 记录 P95 为 6.02 ms，1 GiB 诊断路线为 9.32 ms。基础排序仍未使用屏幕收益；长测累计上传 72.16 GiB，反复装卸需要继续处理。
+M2 的 CPU 重复淘汰扫描和上一轮的碎片空闲列表重复失败扫描已修复。GPU 未使用页留在预算内缓存，仅在压力下回收已确认的冷页，根页和近期需求得到保护。当前已使用屏幕误差收益；其收益与预算有关：本轮 64 MiB 对照上传减少约 19%，1 GiB 对照则增加约 18%，后续必须同时评估质量与工作集切换成本。
 
 当前 frontier 虽然稀疏清理/emit，仍为实例预留 `32 + 12 × groupCount` 字节状态；共享 BVH 每节点 40 B。必须以 M1 的实际 group 数与实例分布核算，不能把“稀疏访问”当成“稀疏分配”。如果常驻 topology/state 本身越界，状态压缩或工作集化也成为本阶段前置条件。
 
@@ -151,7 +153,7 @@ M2 发现的 CPU 重复淘汰扫描已修复：同帧 10,000 次重复请求只�
 | Nanite 架构方向 | Metallic 当前状态 | 本次路线 |
 | --- | --- | --- |
 | 层级几何与视角 LOD | 已有 clod、合法 cut、BVH 误差剪枝 | 保留核心算法，验证十亿级构建成本 |
-| 工作量随可见细节增长 | 纯流式入口避免常驻展开，默认混合分类按实际数量派发；实例内遍历仍串行 | M4，优先优化遍历长尾 |
+| 工作量随可见细节增长 | 纯流式入口、实际候选派发与按 LOD 层级的工作组协作已落地 | M4，继续推进层级可见性需求与分类/光栅效率 |
 | 虚拟几何与资源预算 | 统一入口、完整 terminal、固定预算持续运行已验证，页面反复装卸仍较多 | M4，改善驻留收益与需求调度 |
 | 紧凑编码与流式优先级 | 浮点 payload、CPU 解压、请求无屏幕收益优先级 | M4/M5，由实际工作集决定是否前移 |
 | 小三角形光栅 | 已有稳定分箱、软件光栅及异步 HW/SW；两套深度再合并 | M4 后测瓶颈，暂不重做统一原子目标 |
@@ -169,6 +171,8 @@ M2 发现的 CPU 重复淘汰扫描已修复：同帧 10,000 次重复请求只�
 | PR 2（实现与验收已完成，未创建 PR） | MiniZorah 独立 stream sample，manifest 驱动预算和固定相机，明确关闭普通 Scene/RTAS | 完整 GPU 根覆盖、两个独立进程首帧、三个视角、512 MiB 压力测试及 9 项相关回归通过 |
 | PR 3（实现与验收已完成，未创建 PR） | 统一 VBuffer 的纯流式场景/GPUScene ownership 入口 | resident 几何零展开，实例/材质映射及 HW/SW 对照正确 |
 | PR 4（持续运行基线已验证，未创建 PR） | 实际候选派发、并行 prefix、视锥前移、CPU 批量退避、漫游验证与阶段计时 | 660 秒预算/cut 完整性通过，交互帧时与质量条件仍开放 |
-| PR 5 | 协作遍历、层级需求可见性、屏幕收益排序和必要的压缩 | 降低约 40 ms 的遍历/cut 准备区间与重复上传，再验收质量和帧时 |
+| PR 5（协作遍历与驻留复用已实现，未创建 PR） | 协作 frontier/emit、GPU 冷页反馈与碎片分配检查缓存 | 219 组 GPU/reference cut 对照、33 项回归、660 秒长测通过；同步帧 P95 32.68 ms，累计上传下降 69% |
+| PR 6（分类/光栅与收益排序已实现，未创建 PR） | 并行 mesh 输出、late 重试候选、逐页屏幕收益与准入/I/O/上传排序 | 34 项回归、1 GiB 和 64 MiB 漫游；质量与 CPU/装卸权衡见最新报告 |
+| PR 7 | early 分类/候选准备、层级需求可见性、依赖收益传播和必要的压缩 | 在完整粗 cut 和帧时基线上继续验收质量收敛与切换成本 |
 
-M1–M3 的完整 cook、独立首帧和统一 VBuffer 已落地，M4 已具备可重复的持续漫游基线。接下来细分页更新/frontier/prefix/emit 的 GPU 时间，推进协作遍历与按可见误差收益调度页面；压缩顺序由实际工作集和收敛成本决定。不能把 64 MiB 档较粗的细节与较低帧时当成质量验收通过，也不能从 Bunny 的遍历剪枝结果外推 MiniZorah 的 FPS。
+M1–M3 的完整 cook、独立首帧和统一 VBuffer 已落地。M4 已优化 frontier/emit、页面复用、光栅和 late 分类，并接入屏幕收益排序。当前 GPU 瓶颈主要是 early 分类和候选准备，稳定分箱本身只占几十微秒。接下来完善层级可见性与质量度量，并依据工作集决定压缩顺序。不能把 64 MiB 档较粗的细节与较低帧时当成质量验收通过，也不能从 Bunny 的结果外推 MiniZorah 的 FPS。

@@ -1,12 +1,18 @@
 {
     "name": "GPUDrivenMiniZorahVBuffer", "version": 1,
+    "view": {
+        "camera": {
+            "eye": [55.34291, 6.4527273, 0.32432523], "center": [46.38051, 5.7994967, 0.5308178],
+            "up": [0, 1, 0], "fovDegrees": 60, "znear": 0.020000003, "zfar": 29999.998, "reversedZ": true
+        }
+    },
     "nodes": [
         {
             "id": 1, "name": "GPUDriven", "type": "VisibilityBufferPass", "position": {"x": 320, "y": 280},
             "properties": {
                 "path": "Asset/MiniZorah/zorah_main_public.v2.gltf",
                 "streamAssetPath": "Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin",
-                "sceneBinding": "asset", "streamAssetOnly": true, "enableMeshletStreaming": true,
+                "sceneBinding": "asset", "viewBinding": "global", "streamAssetOnly": true, "enableMeshletStreaming": true,
                 "autoBuildStreamAsset": false, "enableClusterRtx": false,
                 "maxResidentBytes": 1073741824, "maxResidentPages": 0, "maxLockedFallbackPages": 4096,
                 "maxActiveGroups": 131072, "maxPageUploadsPerFrame": 256, "maxPageLoadsInFlight": 1024,

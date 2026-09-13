@@ -437,7 +437,9 @@ private:
         StreamLodFixture fixture{large};
         const uint32_t kGroupCount = static_cast<uint32_t>(fixture.groups.size());
         const uint32_t kRequestCapacity = kGroupCount + 2;
-        const uint32_t kRequestWords = 16 + kRequestCapacity * 2;
+        const uint32_t kPriorityOffset = 16 + kRequestCapacity * 2;
+        const uint32_t kPriorityTable = kPriorityOffset + kRequestCapacity;
+        const uint32_t kRequestWords = kPriorityTable + kGroupCount;
         std::vector<MeshletStreamGpuGroup> groups(kGroupCount);
         std::vector<uint32_t> topology = fixture.refined;
         for (uint32_t group = 0; group < kGroupCount; ++group) {
@@ -475,6 +477,13 @@ private:
         const size_t bvhWords = nodes.size() * sizeof(MeshletLodBvhNode) / sizeof(uint32_t);
         topology.resize(topology.size() + bvhWords);
         std::memcpy(topology.data() + primitive.lodBvhOffset, nodes.data(), bvhWords * sizeof(uint32_t));
+        std::vector<MeshletLodBvhNode> tiles;
+        if (!buildMeshletLodTiles(fixture.groups, tiles, reason)) { return RhiTestResult::fail(reason); }
+        primitive.lodTileOffset = static_cast<uint32_t>(topology.size());
+        topology.push_back(static_cast<uint32_t>(tiles.size()));
+        const size_t tileWords = tiles.size() * sizeof(MeshletLodBvhNode) / sizeof(uint32_t);
+        topology.resize(topology.size() + tileWords);
+        std::memcpy(topology.data() + primitive.lodTileOffset + 1, tiles.data(), tileWords * sizeof(uint32_t));
         enum BufferIndex { Instance, Primitive, Groups, Params, Topology, State, PageTable,
             Requests, ActiveGroups, Header, Arguments, Dummy, BufferCount };
         const uint32_t strides[] = {sizeof(MeshletStreamGpuInstance), sizeof(primitive), sizeof(MeshletStreamGpuGroup),
@@ -525,6 +534,26 @@ private:
         std::unique_ptr<ComputePipeline> pipeline;
         STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .computeEntryPoint = "main",
             .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, pipeline));
+        ShaderCompileResult cooperativeCompiled;
+        const auto cooperativeCompile = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
+            .entryPointName = kMeshletStreamCooperativeBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, cooperativeCompiled);
+        if (!cooperativeCompile) { return RhiTestResult::fail(cooperativeCompiled.diagnostics); }
+        std::unique_ptr<ShaderModule> cooperativeShader;
+        STREAM_LOD_REQUIRE(device->createShaderModule({.code = cooperativeCompiled.spirv.data(),
+            .byteSize = cooperativeCompiled.spirv.size() * 4}, cooperativeShader));
+        std::unique_ptr<ComputePipeline> cooperativePipeline;
+        STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = cooperativeShader.get(), .computeEntryPoint = "main",
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, cooperativePipeline));
+        ShaderCompileResult traversalCompiled;
+        STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
+            .entryPointName = kMeshletStreamTraversalEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, traversalCompiled));
+        std::unique_ptr<ShaderModule> traversalShader;
+        STREAM_LOD_REQUIRE(device->createShaderModule({.code = traversalCompiled.spirv.data(),
+            .byteSize = traversalCompiled.spirv.size() * 4}, traversalShader));
+        std::unique_ptr<ComputePipeline> traversalPipeline;
+        STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = traversalShader.get(), .computeEntryPoint = "main",
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, traversalPipeline));
+        uint32_t positivePriorities = 0;
         MeshletStreamUserPush push;
         push.instanceBuffer = handles[Instance].index;
         push.primitiveBuffer = handles[Primitive].index;
@@ -558,9 +587,10 @@ private:
         STREAM_LOD_REQUIRE(pool->createCommandBuffer(commands));
         STREAM_LOD_REQUIRE(device->createFence(false, fence));
         const uint32_t caseCount = large ? 36u : 37u;
-        for (uint32_t frame = 0; frame < caseCount * 2; ++frame) {
+        for (uint32_t frame = 0; frame < caseCount * 3; ++frame) {
             const uint32_t test = frame % caseCount;
             const bool useBvh = frame >= caseCount;
+            const bool cooperative = frame >= caseCount * 2;
             primitive.lodBvhNodeCount = useBvh ? static_cast<uint32_t>(nodes.size()) : 0;
             uint32_t manual, capacity;
             std::vector<uint8_t> available;
@@ -571,7 +601,7 @@ private:
                 fixture.drawable, fixture.instance, fixture.view, manual, UINT32_MAX, available,
                 useBvh ? std::span<const MeshletLodBvhNode>(nodes) : std::span<const MeshletLodBvhNode>{});
             const std::string caseLabel = std::string(large ? "511 groups, " : "shared parents, ") +
-                (useBvh ? "BVH, case " : "linear, case ") + std::to_string(test);
+                (cooperative ? "cooperative, case " : useBvh ? "BVH, case " : "linear, case ") + std::to_string(test);
             MeshletStreamGpuInstance instance;
             instance.visible = fixture.instance.identity[3] != 0;
             instance.gpuSceneInstanceIndex = 17;
@@ -585,8 +615,11 @@ private:
             params.upProjection[1] = 1;
             params.upProjection[3] = fixture.view.forward[3];
             params.viewport[2] = fixture.view.projection[0];
+            params.viewport[0] = 1.f;
+            params.viewport[1] = params.viewport[2];
             params.viewport[3] = 2 * std::atan(fixture.view.projection[1]);
             params.clipOrtho[0] = fixture.view.eye[3];
+            params.clipOrtho[1] = 1000000.f;
             params.clipOrtho[2] = fixture.view.projection[2];
             params.lodPixelError = fixture.view.projection[3];
             params.lodTopologyBuffer = handles[Topology].index;
@@ -619,6 +652,9 @@ private:
             requests[0] = kRequestCapacity;
             requests[1] = kRequestCapacity;
             requests[4] = params.frameIndex;
+            requests[11] = cooperative ? kPriorityOffset : 0u;
+            requests[12] = cooperative ? kPriorityTable : 0u;
+            std::fill(requests.begin() + kPriorityTable, requests.end(), 0x7fc00000u);
             if (!upload(Instance, &instance, sizeof(instance)) || !upload(Params, &params, sizeof(params)) ||
                 !upload(Primitive, &primitive, sizeof(primitive)) ||
                 !upload(PageTable, pages.data(), sizes[PageTable]) || !upload(Requests, requests.data(), sizes[Requests])) {
@@ -633,6 +669,13 @@ private:
             }
             commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
             commands->bindBindlessHeap(*heap);
+            if (cooperative) {
+                commands->bindComputePipeline(*traversalPipeline);
+                push.traversalPhase = 2u;
+                commands->pushBindlessData(&push, sizeof(push));
+                commands->dispatch((kGroupCount + 63u) / 64u, 1, 1);
+                commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
+            }
             commands->bindComputePipeline(*pipeline);
             if (frame == caseCount) {
                 // The compatibility linear path predates sparse state. Run
@@ -644,10 +687,18 @@ private:
                 commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
             }
             for (uint32_t phase : {0u, 5u, 6u, 7u, 2u}) {
+                commands->bindComputePipeline(cooperative && (phase == 5u || phase == 7u) ? *cooperativePipeline : *pipeline);
                 push.activeBuildPhase = phase;
                 commands->pushBindlessData(&push, sizeof(push));
                 commands->dispatch(1, 1, 1);
                 for (auto& barrier : barriers) { barrier.before = ResourceState::General; }
+                commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
+            }
+            if (cooperative) {
+                commands->bindComputePipeline(*traversalPipeline);
+                push.traversalPhase = 3u;
+                commands->pushBindlessData(&push, sizeof(push));
+                commands->dispatch((kRequestCapacity + 63u) / 64u, 1, 1);
                 commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
             }
             for (uint32_t index = 0; index < std::size(outputs); ++index) {
@@ -706,6 +757,24 @@ private:
                 return RhiTestResult::fail("stream frontier request overflow or invalid page");
             }
             std::vector<uint32_t> requested(requests.begin() + 16, requests.begin() + 16 + requests[2]);
+            if (cooperative) {
+                for (uint32_t index = 0; index < requests[2]; ++index) {
+                    const uint32_t bits = requests[kPriorityOffset + index];
+                    float value;
+                    std::memcpy(&value, &bits, sizeof(value));
+                    if (!std::isfinite(value) || value < 0.f || value > 1e9f ||
+                        bits != requests[kPriorityTable + requested[index]]) {
+                        return RhiTestResult::fail("GPU page priority clear/aggregate/gather mismatch");
+                    }
+                    positivePriorities += value > 0.f;
+                }
+                for (uint32_t page = 0; page < kGroupCount; ++page) {
+                    if (std::find(requested.begin(), requested.end(), page) == requested.end() &&
+                        requests[kPriorityTable + page] != 0u) {
+                        return RhiTestResult::fail("Unused page retained a stale screen benefit");
+                    }
+                }
+            }
             std::sort(requested.begin(), requested.end());
             if (actual != expected.selectedClusters || requested != expected.requestedGroups ||
                 (expected.valid && bool(header.padding0) != expected.capacityFallback) ||
@@ -715,7 +784,7 @@ private:
                     " clusters, actual " + std::to_string(actual.size()));
             }
             const uint32_t stats = 4 + kGroupCount * 2;
-            if (useBvh && (state[stats] > kGroupCount || state[stats + 1] != expectedState.visitedBvhNodes ||
+            if (useBvh && !cooperative && (state[stats] > kGroupCount || state[stats + 1] != expectedState.visitedBvhNodes ||
                 state[stats + 2] != expectedState.testedGroups)) {
                 return RhiTestResult::fail("GPU/CPU BVH traversal statistics mismatch: " + caseLabel +
                     ", visited " + std::to_string(state[stats + 1]) + "/" + std::to_string(expectedState.visitedBvhNodes) +
@@ -747,7 +816,8 @@ private:
                 }
             }
         }
-        return RhiTestResult::pass("146 linear/BVH GPU-reference cuts, including 511-group hierarchy pruning, sparse state reuse, fine/coarse and hidden/shown transitions, missing/reloaded pages and capacity fallback");
+        if (positivePriorities == 0) { return RhiTestResult::fail("Visible requests never generated screen benefit"); }
+        return RhiTestResult::pass("219 linear/BVH/cooperative GPU-reference cuts, priority clear/gather, 511-group pruning, sparse state reuse, camera/residency transitions and capacity fallback");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLodGpuTest);

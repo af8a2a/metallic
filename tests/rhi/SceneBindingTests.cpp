@@ -13,6 +13,7 @@ struct SceneProbeState {
     bool failConsumer = false;
     std::unordered_map<std::string, uint64_t> identities;
     std::unordered_map<std::string, bool> views;
+    std::unordered_map<std::string, render::RenderGraphProperties> cameras;
 };
 SceneProbeState probe;
 
@@ -57,6 +58,7 @@ public:
         ++probe.executions;
         if (hasView_ != (context.viewConstants() != nullptr)) { return render::makeError(render::Error::Failure); }
         probe.views[context.passName()] = hasView_;
+        if (hasView_) { probe.cameras[context.passName()] = context.properties().at("camera"); }
         if (context.runtimeScene() == nullptr || identity_ != context.runtimeScene()->resourceIdentity() ||
             materialRevision_ != context.runtimeScene()->materialRevision() ||
             render::runtimeSceneForPath(context.runtimeScene(), context.properties().value("path", "")) == nullptr) {
@@ -93,6 +95,12 @@ public:
             render::RenderGraph graph;
             graph.addNode("SceneBindingProbeRoot", "Root", {{"path", firstPath.string()}});
             graph.addNode("SceneBindingProbeRoot", "Independent", {{"path", secondPath.string()}, {"sceneBinding", "asset"}});
+            graph.addNode("SceneBindingProbeRoot", "ViewportAsset", {{"path", secondPath.string()},
+                {"sceneBinding", "asset"}, {"viewBinding", "global"}, {"camera", {{"eye", {99, 0, 0}}}}});
+            graph.addNode("SceneBindingProbeConsumer", "ViewportConsumer", {});
+            graph.addEdge("ViewportAsset.value", "ViewportConsumer.first");
+            graph.addEdge("ViewportAsset.value", "ViewportConsumer.second");
+            graph.markOutput("ViewportConsumer.value");
             graph.addNode("SceneBindingProbeConsumer", "Consumer", {{"path", "deliberately-missing-asset.glb"}});
             graph.addEdge("Root.value", "Consumer.first");
             graph.addEdge("Root.value", "Consumer.second");
@@ -144,7 +152,20 @@ public:
             if (!probe.views["Root"] || !probe.views["Consumer"] || probe.views["Independent"]) {
                 return RhiTestResult::fail("World and independent asset view bindings");
             }
+            if (!probe.views["ViewportAsset"] || !probe.views["ViewportConsumer"] ||
+                probe.identities["ViewportAsset"] != probe.identities["Independent"] ||
+                probe.identities["ViewportConsumer"] != probe.identities["Independent"]) {
+                return RhiTestResult::fail("Explicit global view must preserve asset scene ownership and consumer inheritance");
+            }
             const uint32_t stableCompiles = probe.compiles;
+            auto movedCamera = view.camera();
+            movedCamera.eye[0] += 1.f;
+            movedCamera.center[0] += .25f;
+            if (!view.setCamera(movedCamera) || !renderFrame() || probe.compiles != stableCompiles ||
+                probe.cameras["ViewportAsset"] != view.cameraProperties() ||
+                probe.cameras["ViewportConsumer"] != view.cameraProperties()) {
+                return RhiTestResult::fail("Asset and resolve must follow viewport translation/rotation without recompiling");
+            }
             if (!renderFrame() || probe.compiles != stableCompiles) { return RhiTestResult::fail("Unchanged scene was recompiled"); }
             // Same object and path, new document identity, no graph dirty or rebind call.
             if (!first.load(firstPath) || !renderFrame() || !matches(first.resourceIdentity())) {

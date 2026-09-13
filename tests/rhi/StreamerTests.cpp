@@ -1696,6 +1696,60 @@ public:
     }
 };
 
+class StreamerMeshletScreenPriorityTest : public RhiTest {
+public:
+    StreamerMeshletScreenPriorityTest() { type = RhiTestType::Command; name = "streamer_meshlet_screen_priority"; }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "screen_priority.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        const auto roots = fallbackPagesFor(asset);
+        auto pages = nonFallbackPagesFor(asset, roots);
+        if (roots.empty() || pages.size() < 2) { return RhiTestResult::skip("Needs two streamable pages"); }
+        std::sort(pages.begin(), pages.end(), [&](uint32_t a, uint32_t b) {
+            return asset.pages()[a].uncompressedSize < asset.pages()[b].uncompressedSize;
+        });
+        const uint32_t small = pages.front(), large = pages.back();
+        const uint64_t bytes = pageStorageBytes(asset, roots) + pageStorageBytes(asset, large);
+        const auto verify = [&](std::span<const uint32_t> ids, std::span<const float> benefits,
+                                uint32_t winner) -> std::string {
+            MeshletStreamResidencyManager residency;
+            std::string reason;
+            if (!residency.initialize({.asset = &asset, .maxResidentBytes = bytes,
+                    .maxResidentPages = static_cast<uint32_t>(roots.size() + 1), .queuedFrameCount = 2}, reason) ||
+                !residency.lockFallbackPages(roots, reason)) { return reason; }
+            (void)residency.consumeGpuRequests({.loadPageIds = ids, .loadPriorities = benefits});
+            residency.beginFrame();
+            if (!residency.pageAllocated(winner) || residency.pageAllocated(winner == small ? large : small)) {
+                return "Screen benefit did not choose the sole streamable admission slot";
+            }
+            for (uint32_t root : roots) {
+                if (!residency.pageAllocated(root)) { return "Priority displaced a locked fallback"; }
+            }
+            return {};
+        };
+        const uint32_t ids[] = {large, small, large};
+        const float duplicateMax[] = {1.f, 10.f, 1000000.f};
+        std::string reason = verify(ids, duplicateMax, large);
+        if (!reason.empty()) { return RhiTestResult::fail(reason); }
+        const uint32_t two[] = {large, small};
+        const float equal[] = {100.f, 100.f};
+        reason = verify(two, equal, small);
+        if (!reason.empty()) { return RhiTestResult::fail("Benefit per byte: " + reason); }
+        const float invalid[] = {std::numeric_limits<float>::quiet_NaN(), 100.f};
+        reason = verify(two, invalid, small);
+        if (!reason.empty()) { return RhiTestResult::fail("Non-finite feedback: " + reason); }
+        const float shortScores[] = {100.f};
+        reason = verify(two, shortScores, large);
+        if (!reason.empty()) { return RhiTestResult::fail("Short feedback: " + reason); }
+        return RhiTestResult::pass("Shared-page maximum, benefit per byte, roots, NaN and short feedback");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletScreenPriorityTest);
+
 class StreamerMeshletResidencyGpuRequestUnloadOverflowTest : public RhiTest {
 public:
     StreamerMeshletResidencyGpuRequestUnloadOverflowTest()
@@ -2051,6 +2105,125 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletBatchedUnloadTest);
+
+class StreamerMeshletDemandCacheTest final : public RhiTest {
+public:
+    StreamerMeshletDemandCacheTest() { type = RhiTestType::Command; name = "streamer_meshlet_demand_cache"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "demand_cache.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        const auto roots = fallbackPagesFor(asset);
+        auto pages = nonFallbackPagesFor(asset, roots);
+        if (pages.size() < 3) { return RhiTestResult::skip("Requires three streamable pages"); }
+        pages.resize(3);
+        MeshletStreamResidencyManager residency;
+        std::string reason;
+        if (!residency.initialize({.asset = &asset,
+                .maxResidentBytes = pageStorageBytes(asset, roots) + pageStorageBytes(asset, pages),
+                .maxResidentPages = static_cast<uint32_t>(roots.size() + 2), .queuedFrameCount = 1,
+                .unloadDelayFrames = 1, .evictionAgeThresholdFrames = 1}, reason) ||
+            !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
+        std::unique_ptr<Streamer> streamer;
+        auto result = context.device.createStreamer(makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096), streamer);
+        if (!result) { return RhiTestResult::fail(toString(result)); }
+        std::unique_ptr<Buffer> destination;
+        result = context.device.createBuffer({.size = residency.pageBufferSize(),
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, destination);
+        if (!result) { return RhiTestResult::fail(toString(result)); }
+        residency.beginFrame();
+        (void)residency.requestPage(pages[0]); (void)residency.requestPage(pages[1]);
+        const auto uploads = static_cast<uint32_t>(roots.size() + 2);
+        if (residency.processUploads(*streamer, *destination, uploads) != uploads) {
+            return RhiTestResult::fail("Cannot prepare demand-cache residents");
+        }
+        for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
+        if (!residency.pageResident(pages[0]) || !residency.pageResident(pages[1])) {
+            return RhiTestResult::fail("Demand-cache setup is not resident");
+        }
+        const std::array<uint32_t, 1> firstUnused{pages[0]};
+        (void)residency.consumeGpuRequests({.unloadPageIds = firstUnused, .unloadRequestCounter = 1,
+            .residentDemandFeedback = true});
+        if (residency.stats().queuedUnloadTaskCount != 0 || residency.stats().frameCachedUnusedPageCount != 1) {
+            return RhiTestResult::fail("Unused feedback eagerly unloaded cached geometry");
+        }
+        residency.beginFrame();
+        // An empty complete batch means the previously unused page is needed
+        // again. Returning to it must neither reload nor leave it evictable.
+        (void)residency.consumeGpuRequests(StreamGpuRequestBatch{.residentDemandFeedback = true});
+        if (residency.pageAge(pages[0]) != 0 || !residency.requestPage(pages[0]) ||
+            residency.stats().totalScheduledUploadCount != uploads || residency.queuedUploadCount() != 0) {
+            return RhiTestResult::fail("Returning demand did not reuse its cached payload");
+        }
+        residency.beginFrame();
+        (void)residency.requestPage(pages[2]);
+        if (residency.stats().frameEvictedPageCount != 0 || residency.pageAllocated(pages[2])) {
+            return RhiTestResult::fail("Budget pressure evicted demanded geometry");
+        }
+        residency.beginFrame();
+        // Even when feedback is truncated, only the explicitly cold page may
+        // be reclaimed; omission cannot make the returning page a victim.
+        const std::array<uint32_t, 1> secondUnused{pages[1]};
+        (void)residency.consumeGpuRequests({.unloadPageIds = secondUnused, .unloadRequestCounter = 2,
+            .unloadOverflowCounter = 1, .residentDemandFeedback = true});
+        (void)residency.requestPage(pages[2]);
+        if (!residency.pageResident(pages[0]) || residency.pageState(pages[1]) != MeshletStreamPageResidencyState::PendingUnload ||
+            residency.stats().frameEvictedPageCount != 1 || residency.pageAllocated(pages[2])) {
+            return RhiTestResult::fail("Budget victim ignored demand feedback or delayed release");
+        }
+        residency.beginFrame();
+        (void)residency.requestPage(pages[2]);
+        if (!residency.pageAllocated(pages[2]) || residency.pageAllocated(pages[1])) {
+            return RhiTestResult::fail("Cached victim was not recycled after completion");
+        }
+        for (uint32_t page : roots) {
+            if (!residency.pageResident(page) || residency.unloadPage(page)) { return RhiTestResult::fail("Demand cache lost a root"); }
+        }
+        if (!residency.unloadPage(pages[0])) { return RhiTestResult::fail("Explicit unload no longer works"); }
+        return RhiTestResult::pass("Cache reuse, empty/truncated demand feedback, hot-page protection and delayed budget eviction");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletDemandCacheTest);
+
+class MeshletStreamFragmentedStorageTest final : public RhiTest {
+public:
+    MeshletStreamFragmentedStorageTest() { type = RhiTestType::Validation; name = "streamer_meshlet_fragmented_storage"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::MeshletStreamStorage storage;
+        std::string reason;
+        if (!storage.initialize(4096u * 256u, 256, reason)) { return RhiTestResult::fail(reason); }
+        std::vector<render::MeshletStreamStorageAllocation> pages;
+        for (uint32_t i = 0; i < 4096; ++i) {
+            pages.push_back(storage.allocate(256));
+            if (!pages.back().valid()) { return RhiTestResult::fail("Cannot fill fragmented storage"); }
+        }
+        for (uint32_t i = 0; i < pages.size(); i += 2) { storage.release(pages[i]); }
+        for (uint32_t retry = 0; retry < 10000; ++retry) {
+            if (storage.canAllocate(257) || storage.allocate(257).valid() || storage.largestFreeBlockBytes() != 256) {
+                return RhiTestResult::fail("Fragmented free bytes were mistaken for a contiguous allocation");
+            }
+        }
+        storage.release(pages[1]);
+        if (!storage.canAllocate(768) || storage.largestFreeBlockBytes() != 768) {
+            return RhiTestResult::fail("Coalescing did not invalidate the free-block bound");
+        }
+        const auto merged = storage.allocate(768);
+        if (!merged.valid() || merged.offset != 0 || storage.canAllocate(512) ||
+            storage.canAllocate(UINT64_MAX) || storage.allocate(UINT64_MAX).valid()) {
+            return RhiTestResult::fail("Allocation left a stale bound or accepted overflowing alignment");
+        }
+        storage.release(merged);
+        if (!storage.canAllocate(768)) { return RhiTestResult::fail("Released range did not become allocatable"); }
+        if (!storage.initialize(512, 256, reason) || storage.largestFreeBlockBytes() != 512) {
+            return RhiTestResult::fail("Storage reset retained old free-block bounds");
+        }
+        return RhiTestResult::pass("Fragmentation, repeated misses, coalescing, allocation, overflow and reset");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MeshletStreamFragmentedStorageTest);
 
 METALLIC_REGISTER_RHI_TEST(StreamingTaskQueueLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(MeshletStreamPageLoaderTaskGraphTest);

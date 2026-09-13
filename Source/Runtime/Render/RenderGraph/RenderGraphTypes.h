@@ -29,6 +29,14 @@ class SceneResourceManager;
 
 using RenderGraphProperties = nlohmann::json;
 
+// Asset scenes retain their legacy local camera unless they explicitly opt in
+// to the shared viewport. Scene ownership and camera ownership are independent.
+inline bool renderGraphUsesLocalView(const RenderGraphProperties& properties)
+{
+    return properties.value("viewBinding",
+        properties.value("sceneBinding", "world") == "asset" ? "local" : "global") == "local";
+}
+
 enum class RenderGraphFieldVisibility : uint8_t {
     Input,
     Output,

@@ -20,7 +20,7 @@ HDRI 镜面预过滤参考 Unreal `ReflectionEnvironmentShaders.usf` 的 PDF 驱
 
 该修复验证：上述 3 项预过滤测试及环境异步快照、提交恢复、2 项 photometric、SH 数学共 8 项回归通过；`build-relwithdebinfo/Source/LookDev.exe --sample realtime-lighting --smoke-test` 配合 `METALLIC_SMOKE_TEST_DLSS_CAMERA=1` 通过 16 帧 SR 相机移动、共享视图及显式 Reset，并正常退出。测试日志和同视角修复前后图保存在本地 `.cache/bright-spots/`。
 
-视图的所有权参考 Unreal `SceneView.h` 中每个 `FSceneView` 的 `ViewUniformBuffer`：共享范围是一个视图，不是整个进程的单例。运行时可调用 `executor.bindRenderView(&view)` 并在录制下一帧前更新相机；多个 executor 各自保存帧历史。未绑定外部 View 时，具有顶层 `view` 的图会创建自己的 RenderView。编辑器只在加载旧图时从旧 `camera` 属性导入一次；旧 pass 的参数 ABI 通过执行上下文适配，节点原始属性不会随视口运动改变。`sceneBinding: asset` 或 `viewBinding: local` 保留独立相机。`rasterInfo` 继续用于验证场景身份和光栅资源，旧 SR 图仍可启用 `useRasterCamera` 兼容路径。
+视图的所有权参考 Unreal `SceneView.h` 中每个 `FSceneView` 的 `ViewUniformBuffer`：共享范围是一个视图，不是整个进程的单例。运行时可调用 `executor.bindRenderView(&view)` 并在录制下一帧前更新相机；多个 executor 各自保存帧历史。未绑定外部 View 时，具有顶层 `view` 的图会创建自己的 RenderView。编辑器只在加载旧图时从旧 `camera` 属性导入一次；旧 pass 的参数 ABI 通过执行上下文适配，节点原始属性不会随视口运动改变。`sceneBinding: asset` 默认保留独立相机，显式设置 `viewBinding: global` 可使独立资产跟随视口；`viewBinding: local` 选择局部相机，场景输入消费者继承 producer 的局部视图约束。MiniZorah 两个入口使用顶层 `view.camera` 保存原始视点并跟随共享视口，场景仍独立加载。`rasterInfo` 继续用于验证场景身份和光栅资源，旧 SR 图仍可启用 `useRasterCamera` 兼容路径。
 
 统一视图回归：`MetallicRhiTests --filter render_view_shared_constants_history --rhi-validation` 检查 GPU 数据共享、纯旋转、上一帧数据、切镜、resize、序列化及多视图隔离。编辑器回归使用环境变量 `METALLIC_SMOKE_TEST_SAMPLE=realtime-lighting`、`METALLIC_SMOKE_TEST_DLSS_CAMERA=1` 运行 `Metallic --smoke-test`，检查 16 帧平移/旋转和显式 DLSS Reset。
 

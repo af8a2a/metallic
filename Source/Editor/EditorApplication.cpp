@@ -3942,7 +3942,7 @@ void EditorApplication::initializeViewportView()
         // Import legacy graph cameras once. Viewport input never targets a pass.
         for (const auto& node : renderGraph_.nodes()) {
             const auto legacy = effectiveNodeProperties(node);
-            if (legacy.value("sceneBinding", "world") == "asset") { continue; }
+            if (render::renderGraphUsesLocalView(legacy)) { continue; }
             if (!properties.contains("camera") && legacy.contains("camera")) {
                 properties["camera"] = legacy["camera"];
             }
@@ -4015,8 +4015,7 @@ bool EditorApplication::drawRuntimeSettingsForNode(
             break;
         }
     }
-    hideCameraSettings = hideCameraSettings ||
-        (effective.value("sceneBinding", "world") != "asset" && effective.value("viewBinding", "global") != "local");
+    hideCameraSettings = hideCameraSettings || !render::renderGraphUsesLocalView(effective);
     if (!hasVisibleRuntimeSettings(settings, hideCameraSettings)) {
         if (showEmptyMessage) {
             ImGui::TextDisabled("No runtime settings for this pass.");

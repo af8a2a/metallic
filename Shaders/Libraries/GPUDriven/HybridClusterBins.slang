@@ -28,6 +28,9 @@ uint hybridCandidateBase(uint capacity) { return kHybridBinHeaderWords + kHybrid
 uint hybridRankBase(uint capacity) { return hybridCandidateBase(capacity) + 2u * capacity; }
 uint hybridBlockBase(uint capacity) { return hybridRankBase(capacity) + capacity; }
 
+// Per-active-group retry masks for stream early/late culling. At most capacity groups.
+uint hybridRetryBase(uint capacity) { return hybridBlockBase(capacity) + ((capacity + 127u) / 128u) * kHybridBinCount; }
+
 // Classification writes one unique slot per input. Stable GPU compaction keeps
 // equal-depth hardware primitives in the original submission order.
 void hybridClassifyCluster(RWStructuredBuffer<uint> bins, uint bin, uint record, uint candidate)

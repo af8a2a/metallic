@@ -2,11 +2,13 @@
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/MeshletLod.h"
+#include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderSample.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -42,8 +44,10 @@ public:
     std::map<std::string, std::unique_ptr<Buffer>> copies;
     Device* device = nullptr;
     std::unique_ptr<TimestampQueryPool> timestamps;
-    static constexpr std::array<std::string_view, 6> stages = {"AfterTraversal", "AfterEarlyCull", "AfterStreamEarlyBins",
-        "AfterLateCull", "AfterStreamLateBins", "AfterPass"};
+    static constexpr std::array<std::string_view, 19> stages = {"BeforeStreamUpdates", "AfterStreamUpdates",
+        "AfterStreamFrontier", "AfterStreamPrefix", "AfterStreamEmit", "AfterTraversal", "AfterEarlyCull",
+        "AfterStreamEarlyCandidates", "AfterStreamEarlyClassify", "AfterStreamEarlyBins", "AfterStreamEarlyRaster", "AfterStreamEarlyResolve",
+        "AfterLateCull", "AfterStreamLateCandidates", "AfterStreamLateClassify", "AfterStreamLateBins", "AfterStreamLateRaster", "AfterStreamLateResolve", "AfterPass"};
     void compiled(Json) override {}
     void beginExecution(Device& d, debug::DebugEvidenceStamp, RenderSubsystemHost*) override { device = &d; }
     void endExecution(bool) override {}
@@ -57,10 +61,10 @@ public:
         if (stage != stages.end()) {
             if (!timestamps) {
                 checkRoam(bool(device->createTimestampQueryPool(*device->getQueue(QueueType::Graphics),
-                    {.queryCount = 6}, timestamps)), "Cannot allocate checkpoint timestamps");
+                    {.queryCount = static_cast<uint32_t>(stages.size())}, timestamps)), "Cannot allocate checkpoint timestamps");
             }
             const uint32_t index = static_cast<uint32_t>(stage - stages.begin());
-            if (index == 0) { checkRoam(bool(commands.resetTimestampQueries(*timestamps, 0, 6)), "Cannot reset checkpoint timestamps"); }
+            if (index == 0) { checkRoam(bool(commands.resetTimestampQueries(*timestamps, 0, static_cast<uint32_t>(stages.size()))), "Cannot reset checkpoint timestamps"); }
             checkRoam(bool(commands.writeTimestamp(*timestamps, index, PipelineStageBits::BottomOfPipe)), "Cannot timestamp checkpoint");
         }
         for (const auto& resource : resources) {
@@ -72,9 +76,16 @@ public:
                 size = resource.size != 0 ? resource.size : resource.buffer->desc().size; key = "groups";
             } else if (checkpoint == "AfterEarlyCull" && resource.id.ends_with(".instanceVisibility")) {
                 size = resource.size != 0 ? resource.size : resource.buffer->desc().size; key = "instances";
+            } else if (checkpoint == "AfterLateCull" && resource.id.ends_with(".instanceVisibility")) {
+                size = resource.size != 0 ? resource.size : resource.buffer->desc().size; key = "lateInstances";
             } else if ((checkpoint == "AfterStreamEarlyBins" || checkpoint == "AfterStreamLateBins") &&
                 resource.id == "hybrid.GPUDriven.clusters") {
                 size = 64; key = std::string(checkpoint);
+            } else if (checkpoint == "AfterPass" && resource.id == "GPUDriven.rasterInfo") {
+                size = sizeof(VisibilityBufferFrameInfo); key = "rasterInfo";
+            } else if (checkpoint == "AfterPass" && (resource.id == "streaming.GPUDriven.requestHeader" ||
+                resource.id == "streaming.GPUDriven.loadPriorities")) {
+                size = resource.size; key = resource.id;
             }
             if (size == 0 || !resource.buffer) { continue; }
             auto& buffer = copies[key];
@@ -102,16 +113,33 @@ public:
         buffer->unmap();
         return result;
     }
+    Json readPagePriorities()
+    {
+        const auto header = read<StreamRequestBufferHeader>("streaming.GPUDriven.requestHeader").front();
+        if (header.loadPriorityOffset == 0) { return {{"enabled", false}}; }
+        const auto priorities = read<float>("streaming.GPUDriven.loadPriorities");
+        const uint32_t count = std::min(header.loadCounter, header.maxLoadRequests);
+        checkRoam(count <= priorities.size(), "Page benefit feedback exceeded its buffer");
+        uint32_t positive = 0;
+        float maximum = 0.f;
+        for (uint32_t i = 0; i < count; ++i) {
+            checkRoam(std::isfinite(priorities[i]) && priorities[i] >= 0.f && priorities[i] <= 1e9f,
+                "Non-finite screen benefit reached the readback");
+            positive += priorities[i] > 0.f;
+            maximum = std::max(maximum, priorities[i]);
+        }
+        return {{"enabled", true}, {"requests", count}, {"positive", positive}, {"maximumBenefit", maximum}};
+    }
     Json readTimings()
     {
-        std::array<TimestampQueryResult, 6> values{};
-        checkRoam(timestamps && bool(timestamps->readResults(0, 6, values.data())), "Cannot read checkpoint timestamps");
+        std::array<TimestampQueryResult, stages.size()> values{};
+        checkRoam(timestamps && bool(timestamps->readResults(0, static_cast<uint32_t>(values.size()), values.data())), "Cannot read checkpoint timestamps");
         Json result;
         for (uint32_t i = 0; i < values.size(); ++i) {
             checkRoam(values[i].available, "Incomplete checkpoint timestamp");
             if (i != 0) { result[std::string(stages[i])] = timestamps->durationMilliseconds(values[i-1].value, values[i].value); }
         }
-        result["afterTraversalToEnd"] = timestamps->durationMilliseconds(values[0].value, values[5].value);
+        result["afterTraversalToEnd"] = timestamps->durationMilliseconds(values[5].value, values.back().value);
         return result;
     }
 };
@@ -163,8 +191,10 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
     const auto rows = observer.read<MeshletStreamGpuActiveGroup>("groups");
     checkRoam(header.activeGroupCount <= rows.size() && header.overflowCount < 2, "Invalid/empty capacity fallback");
     const auto instanceStates = observer.read<uint32_t>("instances");
+    const auto lateInstanceStates = observer.read<uint32_t>("lateInstances");
     std::vector<std::map<uint32_t, uint32_t>> selected(asset.instanceCount());
     uint64_t clusters = 0, fineGroups = 0;
+    uint64_t earlyCandidates = 0, lateCandidateLimit = 0, recoveredCandidates = 0;
     for (uint32_t i = 0; i < header.activeGroupCount; ++i) {
         const auto& row = rows[i];
         checkRoam(row.instanceIndex < selected.size() && row.pageIndex < asset.pageCount() &&
@@ -176,6 +206,13 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
         checkRoam(selected[row.instanceIndex].emplace(groupId, row.clusterSelectionMask).second, "Duplicate selected group");
         checkRoam(asset.instances()[row.instanceIndex].primitiveIndex == row.primitiveIndex, "Instance identity mismatch");
         clusters += std::popcount(row.clusterSelectionMask);
+        checkRoam(row.gpuSceneInstanceIndex < instanceStates.size() && row.gpuSceneInstanceIndex < lateInstanceStates.size(),
+            "Missing candidate instance state");
+        const auto clusterCount = std::popcount(row.clusterSelectionMask);
+        if (instanceStates[row.gpuSceneInstanceIndex] == 1u) { earlyCandidates += clusterCount; }
+        const auto lateState = lateInstanceStates[row.gpuSceneInstanceIndex];
+        if (lateState == 1u || lateState == 3u) { lateCandidateLimit += clusterCount; }
+        if (lateState == 3u) { recoveredCandidates += clusterCount; }
         fineGroups += (asset.groups()[groupId].flags & 1u) == 0u;
     }
     uint32_t verified = 0;
@@ -247,10 +284,12 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
     }
     const auto early = observer.read<uint32_t>("AfterStreamEarlyBins");
     const auto late = observer.read<uint32_t>("AfterStreamLateBins");
-    checkRoam(early[12] == clusters && late[12] == clusters && early[14] == 0 && late[14] == 0,
-        "Compact candidate count differs from the selected cut");
+    checkRoam(early[12] == earlyCandidates && late[12] >= recoveredCandidates && late[12] <= lateCandidateLimit &&
+        early[14] == 0 && late[14] == 0 && early[0] + early[4] <= early[12] && late[0] + late[4] <= late[12],
+        "Phase candidates disagree with visible/recovered instances or overflowed");
     return {{"verifiedInstances", verified}, {"activeGroups", header.activeGroupCount}, {"fineGroups", fineGroups},
-        {"selectedClusters", clusters}, {"candidateCapacity", early[5]}, {"earlyHardware", early[0]},
+        {"selectedClusters", clusters}, {"earlyCandidates", early[12]}, {"lateCandidates", late[12]},
+        {"candidateCapacity", early[5]}, {"earlyHardware", early[0]},
         {"earlySoftware", early[4]}, {"lateHardware", late[0]}, {"lateSoftware", late[4]},
         {"capacityFallback", header.overflowCount != 0}, {"overTargetRefinements", overTarget},
         {"nearPlaneUnboundedRefinements", unbounded}, {"maxFiniteRefinementErrorPixels", maxFiniteError}};
@@ -286,6 +325,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         {"timingScope", "Synchronous GPUDriven + MaterialResolve offscreen graph; no presentation blit, output/debug readback on timed frames; excludes checkpoint verification"},
         {"samples", Json::array()}};
     RoamingObserver observer;
+    RenderView viewport;
     RenderGraphPreviewRenderer preview;
     std::vector<double> frameTimes, gpuTimes, cpuTimes;
     double elapsed = 0;
@@ -311,8 +351,14 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         const auto node = graph.findNode("GPUDriven")->id;
         auto& props = graph.findNode(node)->properties;
         props["maxResidentBytes"] = budget;
+        props["screenSpacePagePriority"] = setting("METALLIC_MINIZORAH_PAGE_PRIORITY", 1) != 0;
+        report["screenSpacePagePriority"] = props["screenSpacePagePriority"];
         props["debugStreamingPages"] = false;
-        const Json original = props.at("camera");
+        const Json original = graph.viewProperties().at("camera");
+        checkRoam(props.value("viewBinding", "") == "global" && viewport.setCameraProperties(original),
+            "MiniZorah must initialize a shared viewport camera");
+        preview.bindRenderView(&viewport);
+        report["cameraControl"] = "Shared RenderView, same as editor viewport input";
         scene::MeshletStreamAsset asset;
         checkRoam(asset.open(std::filesystem::path(PROJECT_SOURCE_DIR) / props.at("streamAssetPath").get<std::string>(), log), log);
         scene::Bounds bounds;
@@ -354,11 +400,19 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         uint64_t maxFineGroups = 0, maxDeferred = 0;
         while (elapsed < duration) {
             const auto camera = cameraAt(elapsed);
-            graph.setNodeRuntimeProperty(node, "camera", camera);
+            checkRoam(viewport.setCameraProperties(camera), "Viewport rejected roaming camera");
             if (elapsed >= nextCheckpoint) {
                 observer.capture = true;
                 preview.setDebugObserver(&observer);
                 checkRoam(bool(preview.render(graph, 1920, 1080, "GPUDriven.visibility")), preview.lastLog());
+                const auto rasterInfo = observer.read<VisibilityBufferFrameInfo>("rasterInfo").at(0);
+                for (uint32_t axis = 0; axis < 3; ++axis) {
+                    checkRoam(std::abs(rasterInfo.eye[axis] - camera.at("eye")[axis].get<float>()) < 1e-5f &&
+                        std::abs(rasterInfo.center[axis] - camera.at("center")[axis].get<float>()) < 1e-5f,
+                        "Viewport position/rotation did not reach the rendered camera");
+                }
+                checkRoam(!graph.findNode(node)->runtimeProperties.contains("camera"),
+                    "Roaming must not bypass the viewport by rewriting the pass camera");
                 const auto cut = validateRoamingCut(observer, asset, camera);
                 const Json stageTimes = observer.readTimings();
                 std::vector<RenderGraphExecutionStats> capturedTimings;
@@ -381,7 +435,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
                 maxFineGroups = std::max(maxFineGroups, cut.at("fineGroups").get<uint64_t>());
                 maxDeferred = std::max(maxDeferred, stats.at("frameAllocationDeferredCount").get<uint64_t>());
                 report["samples"].push_back({{"seconds", elapsed}, {"camera", camera}, {"coverage", covered}, {"cut", cut},
-                    {"streaming", observer.latest}, {"memory", roamingMemory()},
+                    {"streaming", observer.latest}, {"pagePriorities", observer.readPagePriorities()}, {"memory", roamingMemory()},
                     {"checkpointGpuMilliseconds", stageTimes}, {"passGpuMilliseconds", nodeTimes}});
                 if (nextCheckpoint <= 60) {
                     observer.capture = false;

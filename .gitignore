@@ -91,5 +91,6 @@ Asset/MeshletCache/
 cache/
 Asset/SuperSponza/
 Asset/MiniZorah/
+Asset/Caldera/*
 Captures/NsightGraphics/
 Captures/*.tracy

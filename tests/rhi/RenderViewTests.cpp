@@ -80,8 +80,11 @@ public:
         // Deliberately conflicting legacy node cameras must never win over the view.
         graph.addNode("ViewProbePass", "A", {{"camera", {{"eye", {99, 0, 0}}}}});
         graph.addNode("ViewProbePass", "B", {{"camera", {{"eye", {-99, 0, 0}}}}});
+        graph.addNode("ViewProbePass", "Asset", {{"sceneBinding", "asset"}, {"viewBinding", "global"},
+            {"camera", {{"eye", {199, 0, 0}}}}});
         graph.markOutput("A.view");
         graph.markOutput("B.view");
+        graph.markOutput("Asset.view");
         std::string log;
         render::RenderGraph restored;
         if (!render::deserializeRenderGraphFromString(render::serializeRenderGraphToString(graph), restored, log) ||
@@ -113,8 +116,10 @@ public:
         if (!execute(executor) || !execute(secondExecutor)) { return RhiTestResult::fail("Moving view dispatch"); }
         moved = read(executor, "A.view");
         auto otherPass = read(executor, "B.view");
+        auto assetPass = read(executor, "Asset.view");
         auto otherView = read(secondExecutor, "A.view");
-        if (std::memcmp(&moved, &otherPass, sizeof(moved)) != 0 || !moved.frame[1] ||
+        if (std::memcmp(&moved, &otherPass, sizeof(moved)) != 0 ||
+            std::memcmp(&moved, &assetPass, sizeof(moved)) != 0 || !moved.frame[1] ||
             moved.previous.center[0] != first.current.center[0] || moved.current.center[0] != camera.center[0] ||
             otherView.current.center[0] != first.current.center[0]) {
             return RhiTestResult::fail("GPU ABI, shared pass data, previous frame or independent view isolation");

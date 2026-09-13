@@ -285,6 +285,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
             1u),
         .queuedFrameCount = 3,
         .enableClusterRtx = false,
+        .screenSpacePagePriority = boolProperty(&properties, "screenSpacePagePriority", true),
     };
 }
 
@@ -612,8 +613,10 @@ public:
     {
         std::vector<std::string> points{"AfterEarlyCull", "AfterLateCull", "AfterPass",
             "AfterResidentLod", "AfterResidentEarlyBins", "AfterResidentLateBins"};
-        if (streamEnabled_) { points.insert(points.end(), {"AfterStreamEarlyBins", "AfterStreamLateBins"}); }
-        if (streamEnabled_) { points.insert(points.begin(), "AfterTraversal"); }
+        if (streamEnabled_) { points.insert(points.end(), {"AfterStreamEarlyCandidates", "AfterStreamEarlyClassify", "AfterStreamEarlyBins", "AfterStreamEarlyRaster", "AfterStreamEarlyResolve",
+            "AfterStreamLateCandidates", "AfterStreamLateClassify", "AfterStreamLateBins", "AfterStreamLateRaster", "AfterStreamLateResolve"}); }
+        if (streamEnabled_) { points.insert(points.begin(), {"BeforeStreamUpdates", "AfterStreamUpdates",
+            "AfterStreamFrontier", "AfterStreamPrefix", "AfterStreamEmit", "AfterTraversal"}); }
         return points;
     }
 
@@ -1243,7 +1246,10 @@ public:
             streamFrame = streamFrameDesc(context);
             result = streamRuntime_.cmdPreTraversal(
                 context.commandBuffer(),
-                streamFrame);
+                streamFrame, [&](std::string_view checkpoint) {
+                    gpuDrivenDebugCheckpoint(context, checkpoint, gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_,
+                        &streamRuntime_, UINT32_MAX, residentRecordCapacity_);
+                });
             if (!result) {
                 return result;
             }
@@ -3242,12 +3248,14 @@ private:
             hybridRasterizer_->prepareClusterCandidates(commandBuffer);
             push.hybridQueueBuffer = UINT32_MAX;
             commandBuffer.endDebugLabel();
+            context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyCandidates" : "AfterStreamLateCandidates");
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify stream clusters"});
             commandBuffer.bindComputePipeline(*streamClusterBinPipeline_);
             commandBuffer.pushBindlessData(&push, sizeof(push));
             result = commandBuffer.dispatchIndirect(hybridRasterizer_->candidateArguments());
             commandBuffer.endDebugLabel();
             if (!result) { return result; }
+            context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClassify" : "AfterStreamLateClassify");
             result = hybridRasterizer_->finishClusterBins(commandBuffer);
             if (!result) { return result; }
             debugClusterBins(context, phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyBins" : "AfterStreamLateBins");
@@ -3313,7 +3321,10 @@ private:
             if (rasterResult) { rasterResult = hardware(commandBuffer); }
         }
         if (!rasterResult) { return rasterResult; }
-        return hybridRasterEnabled() ? hybridRasterizer_->resolve(context.commandBuffer(), visibilityTexture, visibility, depthTexture, depth, prebin) : Result{};
+        context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyRaster" : "AfterStreamLateRaster");
+        result = hybridRasterEnabled() ? hybridRasterizer_->resolve(context.commandBuffer(), visibilityTexture, visibility, depthTexture, depth, prebin) : Result{};
+        context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyResolve" : "AfterStreamLateResolve");
+        return result;
     }
 
     static std::vector<uint32_t> alphaTestTextureIndices(const scene::Scene& loadedScene)

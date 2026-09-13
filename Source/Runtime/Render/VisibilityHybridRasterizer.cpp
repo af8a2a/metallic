@@ -41,7 +41,7 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
         if (i == 1) { push_.pixelBuffer = handle.index; }
         if (i == 2) { push_.argumentsBuffer = handle.index; }
     }
-    const uint64_t clusterSizes[] = {64ull + uint64_t(clusterCapacity) * 8u * 4u + ((clusterCapacity + 127u) / 128u) * 5ull * 4u, 5u * 12u};
+    const uint64_t clusterSizes[] = {64ull + uint64_t(clusterCapacity) * 9u * 4u + ((clusterCapacity + 127u) / 128u) * 5ull * 4u, 5u * 12u};
     for (size_t i = 0; i < 2; ++i) {
         auto& buffer = i == 0 ? clusterBuffer_ : clusterArguments_;
         result = device.createBuffer({.size = clusterSizes[i], .structureStride = 4,

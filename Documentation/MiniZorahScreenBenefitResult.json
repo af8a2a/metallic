@@ -1,0 +1,2992 @@
+{
+  "date": "2026-09-13",
+  "status": "validated_quality_convergence_open",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "driver": "616.64",
+  "configuration": "RelWithDebInfo",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "targetPixelError": 1.5,
+  "asyncHybrid": true,
+  "vulkanValidation": true,
+  "routePeriodSeconds": 60,
+  "timingScope": "Synchronous offscreen GPUDriven + MaterialResolve; no presentation blit or output/debug readback on timed frames. Checkpoint verification excluded. Not editor presentation FPS.",
+  "notes": [
+    "baseline-detailed is the pre-change implementation with detailed checkpoints; raster enables parallel mesh and phase candidates; priority is the first scheduler draft; final and both pressure runs use the final scheduler with cached admission sort keys.",
+    "Routes advance in wall-clock render time. Asynchronous page arrival and selected cuts differ between runs; comparisons are workload measurements, not identical-cut kernel microbenchmarks.",
+    "Upload and eviction totals are taken at the last five-second checkpoint, not the end of the final timed frame.",
+    "More fine groups or fewer over-target refinement records do not prove 1.5 px convergence. Record counts are cut dependent."
+  ],
+  "regressions": {
+    "passed": 34,
+    "total": 34,
+    "log": "build-relwithdebinfo/minizorah-screen-benefit/final-tests.log"
+  },
+  "runs": {
+    "baseline-detailed": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-screen-benefit/baseline-detailed/MiniZorahRoamingReport.json",
+      "reportSha256": "23d309998c1a5433823904be6d80b14ed641cd37d12c0e56801dc0c4de2624c9",
+      "renderSeconds": 60.0204709000001,
+      "pageBudgetBytes": 1073741824,
+      "checkpoints": 12,
+      "frameMilliseconds": {
+        "max": 106.7276,
+        "p50": 21.1986,
+        "p95": 27.2955,
+        "p99": 28.8802,
+        "samples": 3572
+      },
+      "gpuMilliseconds": {
+        "max": 25.412128,
+        "p50": 17.441184,
+        "p95": 21.824352,
+        "p99": 22.8648,
+        "samples": 3572
+      },
+      "cpuRecordMilliseconds": {
+        "max": 10.3257,
+        "p50": 3.879,
+        "p95": 6.1925,
+        "p99": 7.7321,
+        "samples": 3572
+      },
+      "gpuMemoryPlateau": null,
+      "lastCheckpointSeconds": 55.00354230000008,
+      "totalUploadBytesAtLastCheckpoint": 3224889536,
+      "totalEvictedPagesAtLastCheckpoint": 57406,
+      "near15": {
+        "camera": {
+          "center": [
+            43.997737884521484,
+            5.7994967,
+            2.7562990188598633
+          ],
+          "eye": [
+            52.64362716674805,
+            6.4527273,
+            0.38651639223098755
+          ],
+          "fovDegrees": 60,
+          "reversedZ": true,
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "zfar": 29999.998,
+          "znear": 0.020000003
+        },
+        "checkpointGpuMilliseconds": {
+          "AfterEarlyCull": 0.402432,
+          "AfterLateCull": 0.085312,
+          "AfterPass": 0.081024,
+          "AfterStreamEarlyBins": 0.038752,
+          "AfterStreamEarlyCandidates": 0.662592,
+          "AfterStreamEarlyClassify": 4.605056,
+          "AfterStreamEarlyRaster": 7.4632,
+          "AfterStreamEarlyResolve": 0.027104,
+          "AfterStreamEmit": 0.156736,
+          "AfterStreamFrontier": 1.421536,
+          "AfterStreamLateBins": 0.029216,
+          "AfterStreamLateCandidates": 0.6256,
+          "AfterStreamLateClassify": 4.6376,
+          "AfterStreamLateRaster": 0.460576,
+          "AfterStreamLateResolve": 0.024288,
+          "AfterStreamPrefix": 0.063264,
+          "AfterStreamUpdates": 0.017824,
+          "AfterTraversal": 0.017728,
+          "afterTraversalToEnd": 19.142752
+        },
+        "coverage": 2022246,
+        "cut": {
+          "activeGroups": 27153,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyHardware": 42881,
+          "earlySoftware": 26466,
+          "fineGroups": 19116,
+          "lateHardware": 2395,
+          "lateSoftware": 2670,
+          "maxFiniteRefinementErrorPixels": 40142.5859375,
+          "nearPlaneUnboundedRefinements": 1181,
+          "overTargetRefinements": 1828,
+          "selectedClusters": 386154,
+          "verifiedInstances": 12511
+        },
+        "memory": {
+          "processCommitBytes": 3638509568,
+          "processLocalGpuBytes": 2401689600,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 3275337728
+        },
+        "passGpuMilliseconds": {
+          "GPUDriven": 20.82288,
+          "MaterialResolve": 0.082528
+        },
+        "seconds": 15.006667699999985,
+        "streaming": {
+          "clusterRtxEnabled": false,
+          "frame": 640,
+          "generation": 2,
+          "instanceCount": 19144,
+          "lodStateBytes": 162274640,
+          "lodTopologyBytes": 172573172,
+          "pageBufferBytes": 1073741824,
+          "pageCount": 28908,
+          "pages": [],
+          "pagesTruncated": true,
+          "pass": "GPUDriven",
+          "primitiveCount": 3163,
+          "requestSourceFrame": 639,
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 3126,
+            "frameEvictedPageCount": 13,
+            "frameEvictionCandidateTests": 28763,
+            "frameEvictionScanCount": 1,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 70,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 25624,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 5891840,
+            "pendingPageCount": 107,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 38,
+            "residentPageCount": 28750,
+            "totalCancelledQueuedLoadCount": 4,
+            "totalCompletedPageLoadCount": 45390,
+            "totalCompletedUnloadCount": 16500,
+            "totalCompletedUploadCount": 45263,
+            "totalEvictedPageCount": 16513,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalUploadBytes": 1757429936,
+            "usedResidentBytes": 1067849984
+          },
+          "terminalPageCount": 3163,
+          "terminalReady": true,
+          "terminalResidentPageCount": 3163
+        }
+      },
+      "memorySamples": [
+        {
+          "seconds": 0.0,
+          "memory": {
+            "processCommitBytes": 3327172608,
+            "processLocalGpuBytes": 2133254144,
+            "processNonLocalGpuBytes": 144089088,
+            "workingSetBytes": 1533276160
+          }
+        },
+        {
+          "seconds": 5.017436199999998,
+          "memory": {
+            "processCommitBytes": 3636465664,
+            "processLocalGpuBytes": 2401689600,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 2713608192
+          }
+        },
+        {
+          "seconds": 10.001729199999993,
+          "memory": {
+            "processCommitBytes": 3630104576,
+            "processLocalGpuBytes": 2401689600,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 2775392256
+          }
+        },
+        {
+          "seconds": 15.006667699999985,
+          "memory": {
+            "processCommitBytes": 3638509568,
+            "processLocalGpuBytes": 2401689600,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3275337728
+          }
+        },
+        {
+          "seconds": 20.010719099999985,
+          "memory": {
+            "processCommitBytes": 3637334016,
+            "processLocalGpuBytes": 2401689600,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3371704320
+          }
+        },
+        {
+          "seconds": 25.00088769999998,
+          "memory": {
+            "processCommitBytes": 3656171520,
+            "processLocalGpuBytes": 2401689600,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3383918592
+          }
+        },
+        {
+          "seconds": 30.01458039999997,
+          "memory": {
+            "processCommitBytes": 3659177984,
+            "processLocalGpuBytes": 2401689600,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3398758400
+          }
+        },
+        {
+          "seconds": 35.01041090000002,
+          "memory": {
+            "processCommitBytes": 3653087232,
+            "processLocalGpuBytes": 2401689600,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3512713216
+          }
+        },
+        {
+          "seconds": 40.00043740000004,
+          "memory": {
+            "processCommitBytes": 3655790592,
+            "processLocalGpuBytes": 2401689600,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3521515520
+          }
+        },
+        {
+          "seconds": 45.00787400000001,
+          "memory": {
+            "processCommitBytes": 3663282176,
+            "processLocalGpuBytes": 2401689600,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3690459136
+          }
+        },
+        {
+          "seconds": 50.025253900000024,
+          "memory": {
+            "processCommitBytes": 3695898624,
+            "processLocalGpuBytes": 2401689600,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3744231424
+          }
+        },
+        {
+          "seconds": 55.00354230000008,
+          "memory": {
+            "processCommitBytes": 3703083008,
+            "processLocalGpuBytes": 2401689600,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3751510016
+          }
+        }
+      ]
+    },
+    "raster": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-screen-benefit/raster/MiniZorahRoamingReport.json",
+      "reportSha256": "7cbd71d85e15f05ec9d038c07f3a494843789fe64955fb78510025a5496fe58d",
+      "renderSeconds": 60.01185910000005,
+      "pageBudgetBytes": 1073741824,
+      "checkpoints": 12,
+      "frameMilliseconds": {
+        "max": 94.6964,
+        "p50": 14.8098,
+        "p95": 18.2054,
+        "p99": 19.5502,
+        "samples": 4573
+      },
+      "gpuMilliseconds": {
+        "max": 14.303584,
+        "p50": 10.754176,
+        "p95": 12.818368,
+        "p99": 13.148992,
+        "samples": 4573
+      },
+      "cpuRecordMilliseconds": {
+        "max": 12.5889,
+        "p50": 3.906,
+        "p95": 5.8493,
+        "p99": 7.5867,
+        "samples": 4573
+      },
+      "gpuMemoryPlateau": null,
+      "lastCheckpointSeconds": 55.00251869999999,
+      "totalUploadBytesAtLastCheckpoint": 3320744304,
+      "totalEvictedPagesAtLastCheckpoint": 59781,
+      "near15": {
+        "camera": {
+          "center": [
+            43.99751281738281,
+            5.7994967,
+            2.7554774284362793
+          ],
+          "eye": [
+            52.64362716674805,
+            6.4527273,
+            0.38651639223098755
+          ],
+          "fovDegrees": 60,
+          "reversedZ": true,
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "zfar": 29999.998,
+          "znear": 0.020000003
+        },
+        "checkpointGpuMilliseconds": {
+          "AfterEarlyCull": 0.393856,
+          "AfterLateCull": 0.101056,
+          "AfterPass": 0.076992,
+          "AfterStreamEarlyBins": 0.025312,
+          "AfterStreamEarlyCandidates": 0.77664,
+          "AfterStreamEarlyClassify": 4.954304,
+          "AfterStreamEarlyRaster": 1.467616,
+          "AfterStreamEarlyResolve": 0.037024,
+          "AfterStreamEmit": 0.156768,
+          "AfterStreamFrontier": 1.426432,
+          "AfterStreamLateBins": 0.032928,
+          "AfterStreamLateCandidates": 0.866304,
+          "AfterStreamLateClassify": 1.205984,
+          "AfterStreamLateRaster": 0.277024,
+          "AfterStreamLateResolve": 0.026208,
+          "AfterStreamPrefix": 0.063328,
+          "AfterStreamUpdates": 0.019328,
+          "AfterTraversal": 0.020768,
+          "afterTraversalToEnd": 10.241248
+        },
+        "coverage": 2022226,
+        "cut": {
+          "activeGroups": 27304,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 368249,
+          "earlyHardware": 42952,
+          "earlySoftware": 26576,
+          "fineGroups": 19266,
+          "lateCandidates": 66314,
+          "lateHardware": 2337,
+          "lateSoftware": 2581,
+          "maxFiniteRefinementErrorPixels": 42102.58203125,
+          "nearPlaneUnboundedRefinements": 1422,
+          "overTargetRefinements": 2037,
+          "selectedClusters": 389133,
+          "verifiedInstances": 12514
+        },
+        "memory": {
+          "processCommitBytes": 3719606272,
+          "processLocalGpuBytes": 2418466816,
+          "processNonLocalGpuBytes": 145661952,
+          "workingSetBytes": 3386372096
+        },
+        "passGpuMilliseconds": {
+          "GPUDriven": 11.950304,
+          "MaterialResolve": 0.084288
+        },
+        "seconds": 15.000628899999988,
+        "streaming": {
+          "clusterRtxEnabled": false,
+          "frame": 910,
+          "generation": 2,
+          "instanceCount": 19144,
+          "lodStateBytes": 162274640,
+          "lodTopologyBytes": 172573172,
+          "pageBufferBytes": 1073741824,
+          "pageCount": 28885,
+          "pages": [],
+          "pagesTruncated": true,
+          "pass": "GPUDriven",
+          "primitiveCount": 3163,
+          "requestSourceFrame": 909,
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 3074,
+            "frameEvictedPageCount": 13,
+            "frameEvictionCandidateTests": 28820,
+            "frameEvictionScanCount": 1,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 46,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 25733,
+            "frameUploadBytes": 848352,
+            "freeResidentBytes": 7218432,
+            "pendingPageCount": 57,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 8,
+            "residentPageCount": 28807,
+            "totalCancelledQueuedLoadCount": 20,
+            "totalCompletedPageLoadCount": 46283,
+            "totalCompletedUnloadCount": 17406,
+            "totalCompletedUploadCount": 46226,
+            "totalEvictedPageCount": 17419,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalUploadBytes": 1798169456,
+            "usedResidentBytes": 1066523392
+          },
+          "terminalPageCount": 3163,
+          "terminalReady": true,
+          "terminalResidentPageCount": 3163
+        }
+      },
+      "memorySamples": [
+        {
+          "seconds": 0.0,
+          "memory": {
+            "processCommitBytes": 3494055936,
+            "processLocalGpuBytes": 2150031360,
+            "processNonLocalGpuBytes": 143564800,
+            "workingSetBytes": 1694605312
+          }
+        },
+        {
+          "seconds": 5.0137349,
+          "memory": {
+            "processCommitBytes": 3694186496,
+            "processLocalGpuBytes": 2418466816,
+            "processNonLocalGpuBytes": 145661952,
+            "workingSetBytes": 2803101696
+          }
+        },
+        {
+          "seconds": 10.015273600000002,
+          "memory": {
+            "processCommitBytes": 3700707328,
+            "processLocalGpuBytes": 2418466816,
+            "processNonLocalGpuBytes": 145661952,
+            "workingSetBytes": 2863169536
+          }
+        },
+        {
+          "seconds": 15.000628899999988,
+          "memory": {
+            "processCommitBytes": 3719606272,
+            "processLocalGpuBytes": 2418466816,
+            "processNonLocalGpuBytes": 145661952,
+            "workingSetBytes": 3386372096
+          }
+        },
+        {
+          "seconds": 20.011090099999993,
+          "memory": {
+            "processCommitBytes": 3722838016,
+            "processLocalGpuBytes": 2418466816,
+            "processNonLocalGpuBytes": 145661952,
+            "workingSetBytes": 3444191232
+          }
+        },
+        {
+          "seconds": 25.004509400000003,
+          "memory": {
+            "processCommitBytes": 3730325504,
+            "processLocalGpuBytes": 2418466816,
+            "processNonLocalGpuBytes": 145661952,
+            "workingSetBytes": 3452231680
+          }
+        },
+        {
+          "seconds": 30.010322300000027,
+          "memory": {
+            "processCommitBytes": 3734282240,
+            "processLocalGpuBytes": 2418466816,
+            "processNonLocalGpuBytes": 145661952,
+            "workingSetBytes": 3472625664
+          }
+        },
+        {
+          "seconds": 35.00099219999997,
+          "memory": {
+            "processCommitBytes": 3736875008,
+            "processLocalGpuBytes": 2418466816,
+            "processNonLocalGpuBytes": 145661952,
+            "workingSetBytes": 3621421056
+          }
+        },
+        {
+          "seconds": 40.00763939999995,
+          "memory": {
+            "processCommitBytes": 3742150656,
+            "processLocalGpuBytes": 2418466816,
+            "processNonLocalGpuBytes": 145661952,
+            "workingSetBytes": 3634405376
+          }
+        },
+        {
+          "seconds": 45.004198499999966,
+          "memory": {
+            "processCommitBytes": 3746918400,
+            "processLocalGpuBytes": 2418466816,
+            "processNonLocalGpuBytes": 145661952,
+            "workingSetBytes": 3770621952
+          }
+        },
+        {
+          "seconds": 50.00421919999997,
+          "memory": {
+            "processCommitBytes": 3754266624,
+            "processLocalGpuBytes": 2418466816,
+            "processNonLocalGpuBytes": 145661952,
+            "workingSetBytes": 3798925312
+          }
+        },
+        {
+          "seconds": 55.00251869999999,
+          "memory": {
+            "processCommitBytes": 3739541504,
+            "processLocalGpuBytes": 2418466816,
+            "processNonLocalGpuBytes": 145661952,
+            "workingSetBytes": 3784454144
+          }
+        }
+      ]
+    },
+    "priority": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-screen-benefit/priority/MiniZorahRoamingReport.json",
+      "reportSha256": "4e82a5ef96cdc02924e58febfad6769ac423610e23a619924eb6ee991f9f533b",
+      "renderSeconds": 60.01244840000002,
+      "pageBudgetBytes": 1073741824,
+      "checkpoints": 12,
+      "frameMilliseconds": {
+        "max": 234.7277,
+        "p50": 15.0781,
+        "p95": 19.6333,
+        "p99": 21.4637,
+        "samples": 4356
+      },
+      "gpuMilliseconds": {
+        "max": 14.818752,
+        "p50": 10.149312,
+        "p95": 11.82352,
+        "p99": 12.426336,
+        "samples": 4356
+      },
+      "cpuRecordMilliseconds": {
+        "max": 158.1756,
+        "p50": 5.0261,
+        "p95": 8.1156,
+        "p99": 9.859,
+        "samples": 4356
+      },
+      "gpuMemoryPlateau": null,
+      "lastCheckpointSeconds": 55.00217110000004,
+      "totalUploadBytesAtLastCheckpoint": 3983879680,
+      "totalEvictedPagesAtLastCheckpoint": 74652,
+      "near15": {
+        "camera": {
+          "center": [
+            43.997718811035156,
+            5.7994967,
+            2.7562360763549805
+          ],
+          "eye": [
+            52.64362716674805,
+            6.4527273,
+            0.38651639223098755
+          ],
+          "fovDegrees": 60,
+          "reversedZ": true,
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "zfar": 29999.998,
+          "znear": 0.020000003
+        },
+        "checkpointGpuMilliseconds": {
+          "AfterEarlyCull": 0.491616,
+          "AfterLateCull": 0.090304,
+          "AfterPass": 0.087872,
+          "AfterStreamEarlyBins": 0.036608,
+          "AfterStreamEarlyCandidates": 0.769088,
+          "AfterStreamEarlyClassify": 4.449408,
+          "AfterStreamEarlyRaster": 1.179712,
+          "AfterStreamEarlyResolve": 0.027456,
+          "AfterStreamEmit": 0.159648,
+          "AfterStreamFrontier": 1.441344,
+          "AfterStreamLateBins": 0.022944,
+          "AfterStreamLateCandidates": 0.89712,
+          "AfterStreamLateClassify": 1.032896,
+          "AfterStreamLateRaster": 0.139744,
+          "AfterStreamLateResolve": 0.013952,
+          "AfterStreamPrefix": 0.068288,
+          "AfterStreamUpdates": 0.024864,
+          "AfterTraversal": 0.017664,
+          "afterTraversalToEnd": 9.23872
+        },
+        "coverage": 2022248,
+        "cut": {
+          "activeGroups": 27223,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 366495,
+          "earlyHardware": 43084,
+          "earlySoftware": 26789,
+          "fineGroups": 19186,
+          "lateCandidates": 66070,
+          "lateHardware": 2309,
+          "lateSoftware": 2643,
+          "maxFiniteRefinementErrorPixels": 40288.328125,
+          "nearPlaneUnboundedRefinements": 1146,
+          "overTargetRefinements": 1747,
+          "selectedClusters": 387270,
+          "verifiedInstances": 12511
+        },
+        "memory": {
+          "processCommitBytes": 3698757632,
+          "processLocalGpuBytes": 2424102912,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 3199111168
+        },
+        "passGpuMilliseconds": {
+          "GPUDriven": 10.953632,
+          "MaterialResolve": 0.098592
+        },
+        "seconds": 15.00620469999999,
+        "streaming": {
+          "clusterRtxEnabled": false,
+          "frame": 847,
+          "generation": 2,
+          "instanceCount": 19144,
+          "lodStateBytes": 162274640,
+          "lodTopologyBytes": 172573172,
+          "pageBufferBytes": 1073741824,
+          "pageCount": 28828,
+          "pages": [],
+          "pagesTruncated": true,
+          "pass": "GPUDriven",
+          "primitiveCount": 3163,
+          "requestSourceFrame": 846,
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 2937,
+            "frameEvictedPageCount": 11,
+            "frameEvictionCandidateTests": 28758,
+            "frameEvictionScanCount": 1,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 36,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 25810,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 10266880,
+            "pendingPageCount": 53,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 17,
+            "residentPageCount": 28747,
+            "totalCancelledQueuedLoadCount": 4,
+            "totalCompletedPageLoadCount": 44488,
+            "totalCompletedUnloadCount": 15668,
+            "totalCompletedUploadCount": 44426,
+            "totalEvictedPageCount": 15679,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalUploadBytes": 1712714896,
+            "usedResidentBytes": 1063474944
+          },
+          "terminalPageCount": 3163,
+          "terminalReady": true,
+          "terminalResidentPageCount": 3163
+        }
+      },
+      "memorySamples": [
+        {
+          "seconds": 0.0,
+          "memory": {
+            "processCommitBytes": 3377315840,
+            "processLocalGpuBytes": 2155667456,
+            "processNonLocalGpuBytes": 144089088,
+            "workingSetBytes": 1554014208
+          }
+        },
+        {
+          "seconds": 5.006119600000003,
+          "memory": {
+            "processCommitBytes": 3672522752,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 2735476736
+          }
+        },
+        {
+          "seconds": 10.003852300000002,
+          "memory": {
+            "processCommitBytes": 3683495936,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 2794745856
+          }
+        },
+        {
+          "seconds": 15.00620469999999,
+          "memory": {
+            "processCommitBytes": 3698757632,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3199111168
+          }
+        },
+        {
+          "seconds": 20.001699700000025,
+          "memory": {
+            "processCommitBytes": 3710181376,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3361554432
+          }
+        },
+        {
+          "seconds": 25.000201400000083,
+          "memory": {
+            "processCommitBytes": 3717144576,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3368517632
+          }
+        },
+        {
+          "seconds": 30.0073083000001,
+          "memory": {
+            "processCommitBytes": 3718983680,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3387473920
+          }
+        },
+        {
+          "seconds": 35.000740800000095,
+          "memory": {
+            "processCommitBytes": 3721674752,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3764887552
+          }
+        },
+        {
+          "seconds": 40.001643200000096,
+          "memory": {
+            "processCommitBytes": 3724496896,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3772932096
+          }
+        },
+        {
+          "seconds": 45.00716640000003,
+          "memory": {
+            "processCommitBytes": 3730825216,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3869130752
+          }
+        },
+        {
+          "seconds": 50.010615700000045,
+          "memory": {
+            "processCommitBytes": 3733512192,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3932786688
+          }
+        },
+        {
+          "seconds": 55.00217110000004,
+          "memory": {
+            "processCommitBytes": 3697852416,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3901534208
+          }
+        }
+      ]
+    },
+    "final": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-screen-benefit/final/MiniZorahRoamingReport.json",
+      "reportSha256": "1da7f346bfa3a0a1363bc93a1602bf11b5c81650a2396b38d5bb7e0347c2a61f",
+      "renderSeconds": 60.01326010000013,
+      "pageBudgetBytes": 1073741824,
+      "checkpoints": 12,
+      "frameMilliseconds": {
+        "max": 110.4684,
+        "p50": 15.557,
+        "p95": 19.201,
+        "p99": 21.365,
+        "samples": 4441
+      },
+      "gpuMilliseconds": {
+        "max": 15.309408,
+        "p50": 10.99408,
+        "p95": 12.983232,
+        "p99": 13.44688,
+        "samples": 4441
+      },
+      "cpuRecordMilliseconds": {
+        "max": 17.9266,
+        "p50": 4.0726,
+        "p95": 6.6745,
+        "p99": 8.6683,
+        "samples": 4441
+      },
+      "gpuMemoryPlateau": null,
+      "lastCheckpointSeconds": 55.00339290000006,
+      "totalUploadBytesAtLastCheckpoint": 3913410944,
+      "totalEvictedPagesAtLastCheckpoint": 73160,
+      "near15": {
+        "camera": {
+          "center": [
+            43.99790573120117,
+            5.7994967,
+            2.7569022178649902
+          ],
+          "eye": [
+            52.64362716674805,
+            6.4527273,
+            0.38651639223098755
+          ],
+          "fovDegrees": 60,
+          "reversedZ": true,
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "zfar": 29999.998,
+          "znear": 0.020000003
+        },
+        "checkpointGpuMilliseconds": {
+          "AfterEarlyCull": 0.401472,
+          "AfterLateCull": 0.07504,
+          "AfterPass": 0.080448,
+          "AfterStreamEarlyBins": 0.044928,
+          "AfterStreamEarlyCandidates": 0.7824,
+          "AfterStreamEarlyClassify": 5.019872,
+          "AfterStreamEarlyRaster": 1.222624,
+          "AfterStreamEarlyResolve": 0.02624,
+          "AfterStreamEmit": 0.156096,
+          "AfterStreamFrontier": 1.441856,
+          "AfterStreamLateBins": 0.027648,
+          "AfterStreamLateCandidates": 1.105952,
+          "AfterStreamLateClassify": 1.031168,
+          "AfterStreamLateRaster": 0.108096,
+          "AfterStreamLateResolve": 0.0144,
+          "AfterStreamPrefix": 0.064928,
+          "AfterStreamUpdates": 0.010112,
+          "AfterTraversal": 0.017952,
+          "afterTraversalToEnd": 9.940288
+        },
+        "coverage": 2022210,
+        "cut": {
+          "activeGroups": 27083,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 363292,
+          "earlyHardware": 43134,
+          "earlySoftware": 26814,
+          "fineGroups": 19048,
+          "lateCandidates": 65958,
+          "lateHardware": 2275,
+          "lateSoftware": 2646,
+          "maxFiniteRefinementErrorPixels": 38788.2890625,
+          "nearPlaneUnboundedRefinements": 878,
+          "overTargetRefinements": 1478,
+          "selectedClusters": 384026,
+          "verifiedInstances": 12510
+        },
+        "memory": {
+          "processCommitBytes": 3846299648,
+          "processLocalGpuBytes": 2457657344,
+          "processNonLocalGpuBytes": 214867968,
+          "workingSetBytes": 3341471744
+        },
+        "pagePriorities": {
+          "enabled": true,
+          "maximumBenefit": 132710400.0,
+          "positive": 126,
+          "requests": 1246
+        },
+        "passGpuMilliseconds": {
+          "GPUDriven": 11.670432,
+          "MaterialResolve": 0.090816
+        },
+        "seconds": 15.011137900000024,
+        "streaming": {
+          "clusterRtxEnabled": false,
+          "frame": 903,
+          "generation": 2,
+          "instanceCount": 19144,
+          "lodStateBytes": 162274640,
+          "lodTopologyBytes": 172573172,
+          "pageBufferBytes": 1073741824,
+          "pageCount": 28835,
+          "pages": [],
+          "pagesTruncated": true,
+          "pass": "GPUDriven",
+          "primitiveCount": 3163,
+          "requestBufferBytes": 6214332,
+          "requestReadbackBytes": 786496,
+          "requestSourceFrame": 902,
+          "screenSpacePagePriority": true,
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 2941,
+            "frameEvictedPageCount": 13,
+            "frameEvictionCandidateTests": 28779,
+            "frameEvictionScanCount": 1,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 52,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 25825,
+            "frameUploadBytes": 1168896,
+            "freeResidentBytes": 10484480,
+            "pendingPageCount": 48,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 8,
+            "residentPageCount": 28766,
+            "totalCancelledQueuedLoadCount": 4,
+            "totalCompletedPageLoadCount": 45242,
+            "totalCompletedUnloadCount": 16415,
+            "totalCompletedUploadCount": 45194,
+            "totalEvictedPageCount": 16428,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalUploadBytes": 1749820720,
+            "usedResidentBytes": 1063257344
+          },
+          "terminalPageCount": 3163,
+          "terminalReady": true,
+          "terminalResidentPageCount": 3163
+        }
+      },
+      "memorySamples": [
+        {
+          "seconds": 0.0,
+          "memory": {
+            "processCommitBytes": 3646955520,
+            "processLocalGpuBytes": 2189221888,
+            "processNonLocalGpuBytes": 212770816,
+            "workingSetBytes": 1804644352
+          }
+        },
+        {
+          "seconds": 5.0062750000000005,
+          "memory": {
+            "processCommitBytes": 3809673216,
+            "processLocalGpuBytes": 2457657344,
+            "processNonLocalGpuBytes": 214867968,
+            "workingSetBytes": 2868215808
+          }
+        },
+        {
+          "seconds": 10.013643700000005,
+          "memory": {
+            "processCommitBytes": 3826708480,
+            "processLocalGpuBytes": 2457657344,
+            "processNonLocalGpuBytes": 214867968,
+            "workingSetBytes": 2926870528
+          }
+        },
+        {
+          "seconds": 15.011137900000024,
+          "memory": {
+            "processCommitBytes": 3846299648,
+            "processLocalGpuBytes": 2457657344,
+            "processNonLocalGpuBytes": 214867968,
+            "workingSetBytes": 3341471744
+          }
+        },
+        {
+          "seconds": 20.01591780000002,
+          "memory": {
+            "processCommitBytes": 3817873408,
+            "processLocalGpuBytes": 2455887872,
+            "processNonLocalGpuBytes": 214867968,
+            "workingSetBytes": 3407458304
+          }
+        },
+        {
+          "seconds": 25.005169200000015,
+          "memory": {
+            "processCommitBytes": 3827068928,
+            "processLocalGpuBytes": 2455887872,
+            "processNonLocalGpuBytes": 214867968,
+            "workingSetBytes": 3416391680
+          }
+        },
+        {
+          "seconds": 30.00026140000001,
+          "memory": {
+            "processCommitBytes": 3829575680,
+            "processLocalGpuBytes": 2455887872,
+            "processNonLocalGpuBytes": 214867968,
+            "workingSetBytes": 3434323968
+          }
+        },
+        {
+          "seconds": 35.0037102,
+          "memory": {
+            "processCommitBytes": 3832131584,
+            "processLocalGpuBytes": 2455887872,
+            "processNonLocalGpuBytes": 214867968,
+            "workingSetBytes": 3649101824
+          }
+        },
+        {
+          "seconds": 40.02027569999999,
+          "memory": {
+            "processCommitBytes": 3834961920,
+            "processLocalGpuBytes": 2455887872,
+            "processNonLocalGpuBytes": 214867968,
+            "workingSetBytes": 3657244672
+          }
+        },
+        {
+          "seconds": 45.00661069999995,
+          "memory": {
+            "processCommitBytes": 3841138688,
+            "processLocalGpuBytes": 2455887872,
+            "processNonLocalGpuBytes": 214867968,
+            "workingSetBytes": 3815084032
+          }
+        },
+        {
+          "seconds": 50.008918999999956,
+          "memory": {
+            "processCommitBytes": 3843829760,
+            "processLocalGpuBytes": 2455887872,
+            "processNonLocalGpuBytes": 214867968,
+            "workingSetBytes": 3895889920
+          }
+        },
+        {
+          "seconds": 55.00339290000006,
+          "memory": {
+            "processCommitBytes": 3850330112,
+            "processLocalGpuBytes": 2455887872,
+            "processNonLocalGpuBytes": 214867968,
+            "workingSetBytes": 3902459904
+          }
+        }
+      ]
+    },
+    "pressure-off": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-screen-benefit/pressure-off/MiniZorahRoamingReport.json",
+      "reportSha256": "deef10e343727c572c29f6ca9fb0fca84fed7bc3f95dcd3090f1577589588ba4",
+      "renderSeconds": 60.00073839999996,
+      "pageBudgetBytes": 67108864,
+      "checkpoints": 12,
+      "frameMilliseconds": {
+        "max": 232.2857,
+        "p50": 7.5148,
+        "p95": 19.8896,
+        "p99": 23.709,
+        "samples": 6515
+      },
+      "gpuMilliseconds": {
+        "max": 28.379136,
+        "p50": 4.655072,
+        "p95": 13.509248,
+        "p99": 17.671936,
+        "samples": 6515
+      },
+      "cpuRecordMilliseconds": {
+        "max": 124.9931,
+        "p50": 2.724,
+        "p95": 4.2933,
+        "p99": 5.9808,
+        "samples": 6515
+      },
+      "gpuMemoryPlateau": null,
+      "lastCheckpointSeconds": 55.0010742,
+      "totalUploadBytesAtLastCheckpoint": 261566848,
+      "totalEvictedPagesAtLastCheckpoint": 13901,
+      "near15": {
+        "camera": {
+          "center": [
+            43.99762725830078,
+            5.7994967,
+            2.7559120655059814
+          ],
+          "eye": [
+            52.64362716674805,
+            6.4527273,
+            0.38651639223098755
+          ],
+          "fovDegrees": 60,
+          "reversedZ": true,
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "zfar": 29999.998,
+          "znear": 0.020000003
+        },
+        "checkpointGpuMilliseconds": {
+          "AfterEarlyCull": 0.460736,
+          "AfterLateCull": 0.081984,
+          "AfterPass": 0.074752,
+          "AfterStreamEarlyBins": 0.033568,
+          "AfterStreamEarlyCandidates": 0.500704,
+          "AfterStreamEarlyClassify": 1.055968,
+          "AfterStreamEarlyRaster": 1.006144,
+          "AfterStreamEarlyResolve": 0.041344,
+          "AfterStreamEmit": 0.057568,
+          "AfterStreamFrontier": 1.138336,
+          "AfterStreamLateBins": 0.029888,
+          "AfterStreamLateCandidates": 0.52736,
+          "AfterStreamLateClassify": 0.38768,
+          "AfterStreamLateRaster": 0.10288,
+          "AfterStreamLateResolve": 0.013248,
+          "AfterStreamPrefix": 0.064768,
+          "AfterStreamUpdates": 0.018048,
+          "AfterTraversal": 0.01744,
+          "afterTraversalToEnd": 4.316256
+        },
+        "coverage": 2022050,
+        "cut": {
+          "activeGroups": 14055,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 71114,
+          "earlyHardware": 27247,
+          "earlySoftware": 14391,
+          "fineGroups": 6001,
+          "lateCandidates": 24208,
+          "lateHardware": 1764,
+          "lateSoftware": 1051,
+          "maxFiniteRefinementErrorPixels": 188070.765625,
+          "nearPlaneUnboundedRefinements": 151,
+          "overTargetRefinements": 2521,
+          "selectedClusters": 82205,
+          "verifiedInstances": 12513
+        },
+        "memory": {
+          "processCommitBytes": 2654605312,
+          "processLocalGpuBytes": 1344724992,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 1737150464
+        },
+        "pagePriorities": {
+          "enabled": false
+        },
+        "passGpuMilliseconds": {
+          "GPUDriven": 5.617152,
+          "MaterialResolve": 0.084256
+        },
+        "seconds": 15.003817099999992,
+        "streaming": {
+          "clusterRtxEnabled": false,
+          "frame": 1416,
+          "generation": 2,
+          "instanceCount": 19144,
+          "lodStateBytes": 162274640,
+          "lodTopologyBytes": 172573172,
+          "pageBufferBytes": 67108864,
+          "pageCount": 7099,
+          "pages": [],
+          "pagesTruncated": true,
+          "pass": "GPUDriven",
+          "primitiveCount": 3163,
+          "requestBufferBytes": 524352,
+          "requestReadbackBytes": 524352,
+          "requestSourceFrame": 1415,
+          "screenSpacePagePriority": false,
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 618,
+            "frameAllocationFailureCount": 618,
+            "frameCachedUnusedPageCount": 0,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 7097,
+            "frameEvictionScanCount": 1,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 620,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 7097,
+            "frameUploadBytes": 9808,
+            "freeResidentBytes": 1595392,
+            "pendingPageCount": 2,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 0,
+            "residentPageCount": 7097,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 9356,
+            "totalCompletedUnloadCount": 2257,
+            "totalCompletedUploadCount": 9354,
+            "totalEvictedPageCount": 2257,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalUploadBytes": 102567968,
+            "usedResidentBytes": 65513472
+          },
+          "terminalPageCount": 3163,
+          "terminalReady": true,
+          "terminalResidentPageCount": 3163
+        }
+      },
+      "memorySamples": [
+        {
+          "seconds": 0.0,
+          "memory": {
+            "processCommitBytes": 2340560896,
+            "processLocalGpuBytes": 1076289536,
+            "processNonLocalGpuBytes": 144089088,
+            "workingSetBytes": 1613692928
+          }
+        },
+        {
+          "seconds": 5.005654600000002,
+          "memory": {
+            "processCommitBytes": 2633486336,
+            "processLocalGpuBytes": 1344724992,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1708101632
+          }
+        },
+        {
+          "seconds": 10.003365000000013,
+          "memory": {
+            "processCommitBytes": 2649731072,
+            "processLocalGpuBytes": 1344724992,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1721446400
+          }
+        },
+        {
+          "seconds": 15.003817099999992,
+          "memory": {
+            "processCommitBytes": 2654605312,
+            "processLocalGpuBytes": 1344724992,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1737150464
+          }
+        },
+        {
+          "seconds": 20.012177299999987,
+          "memory": {
+            "processCommitBytes": 2659332096,
+            "processLocalGpuBytes": 1344724992,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1744543744
+          }
+        },
+        {
+          "seconds": 25.004828999999976,
+          "memory": {
+            "processCommitBytes": 2662420480,
+            "processLocalGpuBytes": 1344724992,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1745731584
+          }
+        },
+        {
+          "seconds": 30.01756549999995,
+          "memory": {
+            "processCommitBytes": 2664652800,
+            "processLocalGpuBytes": 1344724992,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1749549056
+          }
+        },
+        {
+          "seconds": 35.000018099999906,
+          "memory": {
+            "processCommitBytes": 2666725376,
+            "processLocalGpuBytes": 1344724992,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1774870528
+          }
+        },
+        {
+          "seconds": 40.00179879999996,
+          "memory": {
+            "processCommitBytes": 2676015104,
+            "processLocalGpuBytes": 1344724992,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1786388480
+          }
+        },
+        {
+          "seconds": 45.006339900000015,
+          "memory": {
+            "processCommitBytes": 2681520128,
+            "processLocalGpuBytes": 1344724992,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1808822272
+          }
+        },
+        {
+          "seconds": 50.00697189999998,
+          "memory": {
+            "processCommitBytes": 2687307776,
+            "processLocalGpuBytes": 1344724992,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1816571904
+          }
+        },
+        {
+          "seconds": 55.0010742,
+          "memory": {
+            "processCommitBytes": 2702999552,
+            "processLocalGpuBytes": 1344724992,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1831866368
+          }
+        }
+      ]
+    },
+    "pressure-on": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-screen-benefit/pressure-on/MiniZorahRoamingReport.json",
+      "reportSha256": "1b5fe5e1c6fd1f1954ddf14b4c42ecb644ab242f8fdca816b0ee0110e8a29de1",
+      "renderSeconds": 60.00444240000015,
+      "pageBudgetBytes": 67108864,
+      "checkpoints": 12,
+      "frameMilliseconds": {
+        "max": 146.6731,
+        "p50": 7.6498,
+        "p95": 8.903,
+        "p99": 9.5976,
+        "samples": 8161
+      },
+      "gpuMilliseconds": {
+        "max": 7.014272,
+        "p50": 4.780832,
+        "p95": 5.376192,
+        "p99": 5.823616,
+        "samples": 8161
+      },
+      "cpuRecordMilliseconds": {
+        "max": 12.0804,
+        "p50": 2.6723,
+        "p95": 3.8053,
+        "p99": 4.5541,
+        "samples": 8161
+      },
+      "gpuMemoryPlateau": null,
+      "lastCheckpointSeconds": 55.00526700000009,
+      "totalUploadBytesAtLastCheckpoint": 211075456,
+      "totalEvictedPagesAtLastCheckpoint": 12580,
+      "near15": {
+        "camera": {
+          "center": [
+            43.997737884521484,
+            5.7994967,
+            2.756307601928711
+          ],
+          "eye": [
+            52.64362716674805,
+            6.4527273,
+            0.38651639223098755
+          ],
+          "fovDegrees": 60,
+          "reversedZ": true,
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "zfar": 29999.998,
+          "znear": 0.020000003
+        },
+        "checkpointGpuMilliseconds": {
+          "AfterEarlyCull": 0.381856,
+          "AfterLateCull": 0.091392,
+          "AfterPass": 0.083808,
+          "AfterStreamEarlyBins": 0.0208,
+          "AfterStreamEarlyCandidates": 0.512032,
+          "AfterStreamEarlyClassify": 1.205056,
+          "AfterStreamEarlyRaster": 0.765056,
+          "AfterStreamEarlyResolve": 0.025056,
+          "AfterStreamEmit": 0.054944,
+          "AfterStreamFrontier": 0.989216,
+          "AfterStreamLateBins": 0.02336,
+          "AfterStreamLateCandidates": 0.518144,
+          "AfterStreamLateClassify": 0.397408,
+          "AfterStreamLateRaster": 0.097568,
+          "AfterStreamLateResolve": 0.013504,
+          "AfterStreamPrefix": 0.068224,
+          "AfterStreamUpdates": 0.017024,
+          "AfterTraversal": 0.018016,
+          "afterTraversalToEnd": 4.13504
+        },
+        "coverage": 2022068,
+        "cut": {
+          "activeGroups": 15000,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 85468,
+          "earlyHardware": 31630,
+          "earlySoftware": 15377,
+          "fineGroups": 6947,
+          "lateCandidates": 25222,
+          "lateHardware": 1888,
+          "lateSoftware": 1160,
+          "maxFiniteRefinementErrorPixels": 188706.109375,
+          "nearPlaneUnboundedRefinements": 236,
+          "overTargetRefinements": 3049,
+          "selectedClusters": 95893,
+          "verifiedInstances": 12511
+        },
+        "memory": {
+          "processCommitBytes": 2632638464,
+          "processLocalGpuBytes": 1350361088,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 1690267648
+        },
+        "pagePriorities": {
+          "enabled": true,
+          "maximumBenefit": 132710400.0,
+          "positive": 635,
+          "requests": 666
+        },
+        "passGpuMilliseconds": {
+          "GPUDriven": 5.296192,
+          "MaterialResolve": 0.085152
+        },
+        "seconds": 15.006732699999992,
+        "streaming": {
+          "clusterRtxEnabled": false,
+          "frame": 1878,
+          "generation": 2,
+          "instanceCount": 19144,
+          "lodStateBytes": 162274640,
+          "lodTopologyBytes": 172573172,
+          "pageBufferBytes": 67108864,
+          "pageCount": 7065,
+          "pages": [],
+          "pagesTruncated": true,
+          "pass": "GPUDriven",
+          "primitiveCount": 3163,
+          "requestBufferBytes": 6214332,
+          "requestReadbackBytes": 786496,
+          "requestSourceFrame": 1877,
+          "screenSpacePagePriority": true,
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 673,
+            "frameAllocationFailureCount": 673,
+            "frameCachedUnusedPageCount": 0,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 7063,
+            "frameEvictionScanCount": 1,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 675,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 7063,
+            "frameUploadBytes": 9808,
+            "freeResidentBytes": 2090240,
+            "pendingPageCount": 2,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 0,
+            "residentPageCount": 7063,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 9071,
+            "totalCompletedUnloadCount": 2006,
+            "totalCompletedUploadCount": 9069,
+            "totalEvictedPageCount": 2006,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalUploadBytes": 93545664,
+            "usedResidentBytes": 65018624
+          },
+          "terminalPageCount": 3163,
+          "terminalReady": true,
+          "terminalResidentPageCount": 3163
+        }
+      },
+      "memorySamples": [
+        {
+          "seconds": 0.0,
+          "memory": {
+            "processCommitBytes": 2316668928,
+            "processLocalGpuBytes": 1081925632,
+            "processNonLocalGpuBytes": 144089088,
+            "workingSetBytes": 1558421504
+          }
+        },
+        {
+          "seconds": 5.000253299999999,
+          "memory": {
+            "processCommitBytes": 2612207616,
+            "processLocalGpuBytes": 1350361088,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1662566400
+          }
+        },
+        {
+          "seconds": 10.005220199999986,
+          "memory": {
+            "processCommitBytes": 2626453504,
+            "processLocalGpuBytes": 1350361088,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1675964416
+          }
+        },
+        {
+          "seconds": 15.006732699999992,
+          "memory": {
+            "processCommitBytes": 2632638464,
+            "processLocalGpuBytes": 1350361088,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1690267648
+          }
+        },
+        {
+          "seconds": 20.000437100000006,
+          "memory": {
+            "processCommitBytes": 2646257664,
+            "processLocalGpuBytes": 1350361088,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1696055296
+          }
+        },
+        {
+          "seconds": 25.00013240000006,
+          "memory": {
+            "processCommitBytes": 2657546240,
+            "processLocalGpuBytes": 1350361088,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1706754048
+          }
+        },
+        {
+          "seconds": 30.007628500000077,
+          "memory": {
+            "processCommitBytes": 2662526976,
+            "processLocalGpuBytes": 1350361088,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1712979968
+          }
+        },
+        {
+          "seconds": 35.00046040000013,
+          "memory": {
+            "processCommitBytes": 2668101632,
+            "processLocalGpuBytes": 1350361088,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1736282112
+          }
+        },
+        {
+          "seconds": 40.000984700000124,
+          "memory": {
+            "processCommitBytes": 2673422336,
+            "processLocalGpuBytes": 1350361088,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1744695296
+          }
+        },
+        {
+          "seconds": 45.0017283,
+          "memory": {
+            "processCommitBytes": 2685022208,
+            "processLocalGpuBytes": 1350361088,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1762304000
+          }
+        },
+        {
+          "seconds": 50.000267000000015,
+          "memory": {
+            "processCommitBytes": 2690424832,
+            "processLocalGpuBytes": 1350361088,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1769922560
+          }
+        },
+        {
+          "seconds": 55.00526700000009,
+          "memory": {
+            "processCommitBytes": 2698764288,
+            "processLocalGpuBytes": 1350361088,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 1778130944
+          }
+        }
+      ]
+    },
+    "long": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-screen-benefit/long/MiniZorahRoamingReport.json",
+      "reportSha256": "74a7352ab4734acfbd509c9458e8feb96717005db85df05d87249d2a0a3d84b5",
+      "renderSeconds": 660.0084215999987,
+      "pageBudgetBytes": 1073741824,
+      "checkpoints": 132,
+      "frameMilliseconds": {
+        "max": 155.2707,
+        "p50": 15.4914,
+        "p95": 18.3824,
+        "p99": 20.2582,
+        "samples": 49156
+      },
+      "gpuMilliseconds": {
+        "max": 14.6712,
+        "p50": 11.132576,
+        "p95": 12.921632,
+        "p99": 13.312736,
+        "samples": 49156
+      },
+      "cpuRecordMilliseconds": {
+        "max": 25.1707,
+        "p50": 3.993,
+        "p95": 6.0906,
+        "p99": 8.0425,
+        "samples": 49156
+      },
+      "gpuMemoryPlateau": {
+        "allowedGrowthBytes": 67108864,
+        "finalCyclePeakBytes": 2422333440,
+        "warmCyclePeakBytes": 2424102912
+      },
+      "lastCheckpointSeconds": 655.0035631999983,
+      "totalUploadBytesAtLastCheckpoint": 34677281536,
+      "totalEvictedPagesAtLastCheckpoint": 863106,
+      "near15": {
+        "camera": {
+          "center": [
+            43.99750518798828,
+            5.7994967,
+            2.755446195602417
+          ],
+          "eye": [
+            52.64362716674805,
+            6.4527273,
+            0.38651639223098755
+          ],
+          "fovDegrees": 60,
+          "reversedZ": true,
+          "up": [
+            0,
+            1,
+            0
+          ],
+          "zfar": 29999.998,
+          "znear": 0.020000003
+        },
+        "checkpointGpuMilliseconds": {
+          "AfterEarlyCull": 0.384832,
+          "AfterLateCull": 0.0904,
+          "AfterPass": 0.096192,
+          "AfterStreamEarlyBins": 0.046624,
+          "AfterStreamEarlyCandidates": 1.07424,
+          "AfterStreamEarlyClassify": 5.144928,
+          "AfterStreamEarlyRaster": 1.182304,
+          "AfterStreamEarlyResolve": 0.026912,
+          "AfterStreamEmit": 0.161024,
+          "AfterStreamFrontier": 2.533536,
+          "AfterStreamLateBins": 0.022624,
+          "AfterStreamLateCandidates": 0.8888,
+          "AfterStreamLateClassify": 1.031968,
+          "AfterStreamLateRaster": 0.283616,
+          "AfterStreamLateResolve": 0.033056,
+          "AfterStreamPrefix": 0.065312,
+          "AfterStreamUpdates": 0.025472,
+          "AfterTraversal": 0.01712,
+          "afterTraversalToEnd": 10.306496
+        },
+        "coverage": 2022231,
+        "cut": {
+          "activeGroups": 27212,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 366245,
+          "earlyHardware": 42963,
+          "earlySoftware": 26613,
+          "fineGroups": 19174,
+          "lateCandidates": 66350,
+          "lateHardware": 2336,
+          "lateSoftware": 2580,
+          "maxFiniteRefinementErrorPixels": 42178.69921875,
+          "nearPlaneUnboundedRefinements": 1122,
+          "overTargetRefinements": 1715,
+          "selectedClusters": 387129,
+          "verifiedInstances": 12514
+        },
+        "memory": {
+          "processCommitBytes": 3708157952,
+          "processLocalGpuBytes": 2424102912,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 3224637440
+        },
+        "pagePriorities": {
+          "enabled": true,
+          "maximumBenefit": 132710400.0,
+          "positive": 127,
+          "requests": 1498
+        },
+        "passGpuMilliseconds": {
+          "GPUDriven": 13.1224,
+          "MaterialResolve": 0.091776
+        },
+        "seconds": 15.000398000000006,
+        "streaming": {
+          "clusterRtxEnabled": false,
+          "frame": 883,
+          "generation": 2,
+          "instanceCount": 19144,
+          "lodStateBytes": 162274640,
+          "lodTopologyBytes": 172573172,
+          "pageBufferBytes": 1073741824,
+          "pageCount": 28818,
+          "pages": [],
+          "pagesTruncated": true,
+          "pass": "GPUDriven",
+          "primitiveCount": 3163,
+          "requestBufferBytes": 6214332,
+          "requestReadbackBytes": 786496,
+          "requestSourceFrame": 882,
+          "screenSpacePagePriority": true,
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 2929,
+            "frameEvictedPageCount": 9,
+            "frameEvictionCandidateTests": 28744,
+            "frameEvictionScanCount": 1,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 46,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 25806,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 10584064,
+            "pendingPageCount": 50,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 24,
+            "residentPageCount": 28735,
+            "totalCancelledQueuedLoadCount": 5,
+            "totalCompletedPageLoadCount": 45133,
+            "totalCompletedUnloadCount": 16324,
+            "totalCompletedUploadCount": 45068,
+            "totalEvictedPageCount": 16333,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalUploadBytes": 1743163648,
+            "usedResidentBytes": 1063157760
+          },
+          "terminalPageCount": 3163,
+          "terminalReady": true,
+          "terminalResidentPageCount": 3163
+        }
+      },
+      "memorySamples": [
+        {
+          "seconds": 0.0,
+          "memory": {
+            "processCommitBytes": 3379134464,
+            "processLocalGpuBytes": 2155667456,
+            "processNonLocalGpuBytes": 144089088,
+            "workingSetBytes": 1556713472
+          }
+        },
+        {
+          "seconds": 5.013124400000004,
+          "memory": {
+            "processCommitBytes": 3674046464,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 2751098880
+          }
+        },
+        {
+          "seconds": 10.004710700000002,
+          "memory": {
+            "processCommitBytes": 3685695488,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 2807988224
+          }
+        },
+        {
+          "seconds": 15.000398000000006,
+          "memory": {
+            "processCommitBytes": 3708157952,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3224637440
+          }
+        },
+        {
+          "seconds": 20.01260239999999,
+          "memory": {
+            "processCommitBytes": 3719610368,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3379376128
+          }
+        },
+        {
+          "seconds": 25.001271600000006,
+          "memory": {
+            "processCommitBytes": 3726635008,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3386888192
+          }
+        },
+        {
+          "seconds": 30.00548339999999,
+          "memory": {
+            "processCommitBytes": 3729133568,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3405369344
+          }
+        },
+        {
+          "seconds": 35.00998739999996,
+          "memory": {
+            "processCommitBytes": 3731759104,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3719520256
+          }
+        },
+        {
+          "seconds": 40.00521609999995,
+          "memory": {
+            "processCommitBytes": 3734515712,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3727949824
+          }
+        },
+        {
+          "seconds": 45.00688579999999,
+          "memory": {
+            "processCommitBytes": 3740725248,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3818205184
+          }
+        },
+        {
+          "seconds": 50.010819399999924,
+          "memory": {
+            "processCommitBytes": 3743444992,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3882741760
+          }
+        },
+        {
+          "seconds": 55.004808699999856,
+          "memory": {
+            "processCommitBytes": 3721945088,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3862753280
+          }
+        },
+        {
+          "seconds": 60.01070179999989,
+          "memory": {
+            "processCommitBytes": 3736121344,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3981643776
+          }
+        },
+        {
+          "seconds": 65.01340739999986,
+          "memory": {
+            "processCommitBytes": 3740086272,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3992285184
+          }
+        },
+        {
+          "seconds": 70.00574939999983,
+          "memory": {
+            "processCommitBytes": 3742515200,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 3995078656
+          }
+        },
+        {
+          "seconds": 75.01046329999993,
+          "memory": {
+            "processCommitBytes": 3745021952,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4002156544
+          }
+        },
+        {
+          "seconds": 80.00091679999993,
+          "memory": {
+            "processCommitBytes": 3761717248,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4029947904
+          }
+        },
+        {
+          "seconds": 85.00425860000007,
+          "memory": {
+            "processCommitBytes": 3760603136,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4029353984
+          }
+        },
+        {
+          "seconds": 90.0039369,
+          "memory": {
+            "processCommitBytes": 3763105792,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4032253952
+          }
+        },
+        {
+          "seconds": 95.01371049999992,
+          "memory": {
+            "processCommitBytes": 3772960768,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4044861440
+          }
+        },
+        {
+          "seconds": 100.01450189999989,
+          "memory": {
+            "processCommitBytes": 3776389120,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4048306176
+          }
+        },
+        {
+          "seconds": 105.01428689999985,
+          "memory": {
+            "processCommitBytes": 3778953216,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4055748608
+          }
+        },
+        {
+          "seconds": 110.01699709999971,
+          "memory": {
+            "processCommitBytes": 3783254016,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4073705472
+          }
+        },
+        {
+          "seconds": 115.00421449999985,
+          "memory": {
+            "processCommitBytes": 3769380864,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4049813504
+          }
+        },
+        {
+          "seconds": 120.01308449999988,
+          "memory": {
+            "processCommitBytes": 3753693184,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4044374016
+          }
+        },
+        {
+          "seconds": 125.01162029999995,
+          "memory": {
+            "processCommitBytes": 3760992256,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4052578304
+          }
+        },
+        {
+          "seconds": 130.00354859999982,
+          "memory": {
+            "processCommitBytes": 3763462144,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4055158784
+          }
+        },
+        {
+          "seconds": 135.00262799999962,
+          "memory": {
+            "processCommitBytes": 3765895168,
+            "processLocalGpuBytes": 2424102912,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4058267648
+          }
+        },
+        {
+          "seconds": 140.0072577999996,
+          "memory": {
+            "processCommitBytes": 3769556992,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4062789632
+          }
+        },
+        {
+          "seconds": 145.0048709999996,
+          "memory": {
+            "processCommitBytes": 3774877696,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4069617664
+          }
+        },
+        {
+          "seconds": 150.00837969999955,
+          "memory": {
+            "processCommitBytes": 3777372160,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4072177664
+          }
+        },
+        {
+          "seconds": 155.0034989999997,
+          "memory": {
+            "processCommitBytes": 3794980864,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4091682816
+          }
+        },
+        {
+          "seconds": 160.00428239999965,
+          "memory": {
+            "processCommitBytes": 3797544960,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4094676992
+          }
+        },
+        {
+          "seconds": 165.01383859999956,
+          "memory": {
+            "processCommitBytes": 3800043520,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4100259840
+          }
+        },
+        {
+          "seconds": 170.0198904999998,
+          "memory": {
+            "processCommitBytes": 3815649280,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4116373504
+          }
+        },
+        {
+          "seconds": 175.00007389999948,
+          "memory": {
+            "processCommitBytes": 3823390720,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4123336704
+          }
+        },
+        {
+          "seconds": 180.00073419999939,
+          "memory": {
+            "processCommitBytes": 3825762304,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4127236096
+          }
+        },
+        {
+          "seconds": 185.01265509999945,
+          "memory": {
+            "processCommitBytes": 3828195328,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4129849344
+          }
+        },
+        {
+          "seconds": 190.00485009999932,
+          "memory": {
+            "processCommitBytes": 3830624256,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4132323328
+          }
+        },
+        {
+          "seconds": 195.01604999999935,
+          "memory": {
+            "processCommitBytes": 3834892288,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4136632320
+          }
+        },
+        {
+          "seconds": 200.00369779999917,
+          "memory": {
+            "processCommitBytes": 3837325312,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4139597824
+          }
+        },
+        {
+          "seconds": 205.00066179999902,
+          "memory": {
+            "processCommitBytes": 3843366912,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4145872896
+          }
+        },
+        {
+          "seconds": 210.0037083999989,
+          "memory": {
+            "processCommitBytes": 3814285312,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4114567168
+          }
+        },
+        {
+          "seconds": 215.01214449999895,
+          "memory": {
+            "processCommitBytes": 3838619648,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4141649920
+          }
+        },
+        {
+          "seconds": 220.01444509999908,
+          "memory": {
+            "processCommitBytes": 3841388544,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4144615424
+          }
+        },
+        {
+          "seconds": 225.00801359999915,
+          "memory": {
+            "processCommitBytes": 3843964928,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4150345728
+          }
+        },
+        {
+          "seconds": 230.00009889999916,
+          "memory": {
+            "processCommitBytes": 3860537344,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4169236480
+          }
+        },
+        {
+          "seconds": 235.00620389999915,
+          "memory": {
+            "processCommitBytes": 3865989120,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4174655488
+          }
+        },
+        {
+          "seconds": 240.00575159999917,
+          "memory": {
+            "processCommitBytes": 3868418048,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4177879040
+          }
+        },
+        {
+          "seconds": 245.0141963999991,
+          "memory": {
+            "processCommitBytes": 3870785536,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4180312064
+          }
+        },
+        {
+          "seconds": 250.00955469999906,
+          "memory": {
+            "processCommitBytes": 3873083392,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4182609920
+          }
+        },
+        {
+          "seconds": 255.010555399999,
+          "memory": {
+            "processCommitBytes": 3846959104,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4156383232
+          }
+        },
+        {
+          "seconds": 260.006742699999,
+          "memory": {
+            "processCommitBytes": 3864694784,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4186513408
+          }
+        },
+        {
+          "seconds": 265.0032576999993,
+          "memory": {
+            "processCommitBytes": 3874082816,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4194631680
+          }
+        },
+        {
+          "seconds": 270.007239199999,
+          "memory": {
+            "processCommitBytes": 3876745216,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4197318656
+          }
+        },
+        {
+          "seconds": 275.0113141999989,
+          "memory": {
+            "processCommitBytes": 3883413504,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4204576768
+          }
+        },
+        {
+          "seconds": 280.01210049999895,
+          "memory": {
+            "processCommitBytes": 3886104576,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4207280128
+          }
+        },
+        {
+          "seconds": 285.002409499999,
+          "memory": {
+            "processCommitBytes": 3888709632,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4210597888
+          }
+        },
+        {
+          "seconds": 290.0166319999985,
+          "memory": {
+            "processCommitBytes": 3902181376,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4224536576
+          }
+        },
+        {
+          "seconds": 295.0029023999981,
+          "memory": {
+            "processCommitBytes": 3908157440,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4230995968
+          }
+        },
+        {
+          "seconds": 300.01140769999785,
+          "memory": {
+            "processCommitBytes": 3910721536,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4233555968
+          }
+        },
+        {
+          "seconds": 305.01564619999795,
+          "memory": {
+            "processCommitBytes": 3913150464,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4236042240
+          }
+        },
+        {
+          "seconds": 310.007644299998,
+          "memory": {
+            "processCommitBytes": 3940798464,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4264931328
+          }
+        },
+        {
+          "seconds": 315.0147047999981,
+          "memory": {
+            "processCommitBytes": 3943297024,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4267614208
+          }
+        },
+        {
+          "seconds": 320.00839869999794,
+          "memory": {
+            "processCommitBytes": 3945725952,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4270043136
+          }
+        },
+        {
+          "seconds": 325.0011011999983,
+          "memory": {
+            "processCommitBytes": 3951636480,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4276137984
+          }
+        },
+        {
+          "seconds": 330.00611449999815,
+          "memory": {
+            "processCommitBytes": 3954130944,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4278796288
+          }
+        },
+        {
+          "seconds": 335.00473849999815,
+          "memory": {
+            "processCommitBytes": 3940122624,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4256813056
+          }
+        },
+        {
+          "seconds": 340.0091195999977,
+          "memory": {
+            "processCommitBytes": 3946029056,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4269293568
+          }
+        },
+        {
+          "seconds": 345.01239599999786,
+          "memory": {
+            "processCommitBytes": 3948687360,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4276957184
+          }
+        },
+        {
+          "seconds": 350.0072206999977,
+          "memory": {
+            "processCommitBytes": 3963576320,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4298100736
+          }
+        },
+        {
+          "seconds": 355.0056314999979,
+          "memory": {
+            "processCommitBytes": 3972468736,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4307365888
+          }
+        },
+        {
+          "seconds": 360.01675729999755,
+          "memory": {
+            "processCommitBytes": 3974930432,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4309778432
+          }
+        },
+        {
+          "seconds": 365.00234189999696,
+          "memory": {
+            "processCommitBytes": 3977302016,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4312215552
+          }
+        },
+        {
+          "seconds": 370.0136382999973,
+          "memory": {
+            "processCommitBytes": 3979665408,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4314583040
+          }
+        },
+        {
+          "seconds": 375.006933199997,
+          "memory": {
+            "processCommitBytes": 3981975552,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4317081600
+          }
+        },
+        {
+          "seconds": 380.012151799997,
+          "memory": {
+            "processCommitBytes": 3980668928,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4319277056
+          }
+        },
+        {
+          "seconds": 385.000022199997,
+          "memory": {
+            "processCommitBytes": 3991044096,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4327960576
+          }
+        },
+        {
+          "seconds": 390.0056167999971,
+          "memory": {
+            "processCommitBytes": 3995770880,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4332666880
+          }
+        },
+        {
+          "seconds": 395.0007579999972,
+          "memory": {
+            "processCommitBytes": 3998273536,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4335263744
+          }
+        },
+        {
+          "seconds": 400.01106729999714,
+          "memory": {
+            "processCommitBytes": 4000768000,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4337881088
+          }
+        },
+        {
+          "seconds": 405.0073844999972,
+          "memory": {
+            "processCommitBytes": 4003360768,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4340965376
+          }
+        },
+        {
+          "seconds": 410.0081966999972,
+          "memory": {
+            "processCommitBytes": 4005928960,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4344053760
+          }
+        },
+        {
+          "seconds": 415.00031429999643,
+          "memory": {
+            "processCommitBytes": 4011245568,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4349427712
+          }
+        },
+        {
+          "seconds": 420.0025830999962,
+          "memory": {
+            "processCommitBytes": 4013678592,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4351922176
+          }
+        },
+        {
+          "seconds": 425.0140492999957,
+          "memory": {
+            "processCommitBytes": 4015980544,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4354277376
+          }
+        },
+        {
+          "seconds": 430.0016606999955,
+          "memory": {
+            "processCommitBytes": 4018413568,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4356833280
+          }
+        },
+        {
+          "seconds": 435.00035659999537,
+          "memory": {
+            "processCommitBytes": 4020846592,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4359237632
+          }
+        },
+        {
+          "seconds": 440.00775229999545,
+          "memory": {
+            "processCommitBytes": 4023275520,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4361723904
+          }
+        },
+        {
+          "seconds": 445.0064675999956,
+          "memory": {
+            "processCommitBytes": 4029251584,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4367765504
+          }
+        },
+        {
+          "seconds": 450.01399249999577,
+          "memory": {
+            "processCommitBytes": 4031746048,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4370321408
+          }
+        },
+        {
+          "seconds": 455.0062441999955,
+          "memory": {
+            "processCommitBytes": 4034441216,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4373356544
+          }
+        },
+        {
+          "seconds": 460.0064218999956,
+          "memory": {
+            "processCommitBytes": 4037140480,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4376195072
+          }
+        },
+        {
+          "seconds": 465.0011687999956,
+          "memory": {
+            "processCommitBytes": 4039700480,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4378804224
+          }
+        },
+        {
+          "seconds": 470.0052518999955,
+          "memory": {
+            "processCommitBytes": 4047556608,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4386988032
+          }
+        },
+        {
+          "seconds": 475.00654519999597,
+          "memory": {
+            "processCommitBytes": 4056481792,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4394831872
+          }
+        },
+        {
+          "seconds": 480.00448969999627,
+          "memory": {
+            "processCommitBytes": 4058923008,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4397334528
+          }
+        },
+        {
+          "seconds": 485.0046501999961,
+          "memory": {
+            "processCommitBytes": 4061286400,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4399693824
+          }
+        },
+        {
+          "seconds": 490.00851539999604,
+          "memory": {
+            "processCommitBytes": 4063649792,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4402311168
+          }
+        },
+        {
+          "seconds": 495.008900299996,
+          "memory": {
+            "processCommitBytes": 4066017280,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4404613120
+          }
+        },
+        {
+          "seconds": 500.00945539999594,
+          "memory": {
+            "processCommitBytes": 4068380672,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4408221696
+          }
+        },
+        {
+          "seconds": 505.00756029999627,
+          "memory": {
+            "processCommitBytes": 4073635840,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4413595648
+          }
+        },
+        {
+          "seconds": 510.0098888999962,
+          "memory": {
+            "processCommitBytes": 4076130304,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4416118784
+          }
+        },
+        {
+          "seconds": 515.0088497999964,
+          "memory": {
+            "processCommitBytes": 4078952448,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4419371008
+          }
+        },
+        {
+          "seconds": 520.008314399996,
+          "memory": {
+            "processCommitBytes": 4081844224,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4422524928
+          }
+        },
+        {
+          "seconds": 525.0015579999958,
+          "memory": {
+            "processCommitBytes": 4084600832,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4428062720
+          }
+        },
+        {
+          "seconds": 530.0051703999958,
+          "memory": {
+            "processCommitBytes": 4087357440,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4432412672
+          }
+        },
+        {
+          "seconds": 535.0038332999952,
+          "memory": {
+            "processCommitBytes": 4093005824,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4438122496
+          }
+        },
+        {
+          "seconds": 540.0009880999954,
+          "memory": {
+            "processCommitBytes": 4095500288,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4445401088
+          }
+        },
+        {
+          "seconds": 545.0080535999954,
+          "memory": {
+            "processCommitBytes": 4097994752,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4449353728
+          }
+        },
+        {
+          "seconds": 550.0080404999949,
+          "memory": {
+            "processCommitBytes": 4100624384,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4452044800
+          }
+        },
+        {
+          "seconds": 555.0056075999953,
+          "memory": {
+            "processCommitBytes": 4103188480,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4456275968
+          }
+        },
+        {
+          "seconds": 560.0103449999951,
+          "memory": {
+            "processCommitBytes": 4105748480,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4459024384
+          }
+        },
+        {
+          "seconds": 565.0012617999952,
+          "memory": {
+            "processCommitBytes": 4111724544,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4465025024
+          }
+        },
+        {
+          "seconds": 570.0128903999956,
+          "memory": {
+            "processCommitBytes": 4114223104,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4467650560
+          }
+        },
+        {
+          "seconds": 575.0058281999952,
+          "memory": {
+            "processCommitBytes": 4116951040,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4470558720
+          }
+        },
+        {
+          "seconds": 580.0070703999955,
+          "memory": {
+            "processCommitBytes": 4121550848,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4474003456
+          }
+        },
+        {
+          "seconds": 585.0124155999958,
+          "memory": {
+            "processCommitBytes": 4124241920,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4476821504
+          }
+        },
+        {
+          "seconds": 590.0081440999958,
+          "memory": {
+            "processCommitBytes": 4125687808,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4478185472
+          }
+        },
+        {
+          "seconds": 595.0019494999965,
+          "memory": {
+            "processCommitBytes": 4101984256,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4450676736
+          }
+        },
+        {
+          "seconds": 600.0134745999967,
+          "memory": {
+            "processCommitBytes": 4122738688,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4473933824
+          }
+        },
+        {
+          "seconds": 605.0142394999974,
+          "memory": {
+            "processCommitBytes": 4126187520,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4477181952
+          }
+        },
+        {
+          "seconds": 610.0021461999977,
+          "memory": {
+            "processCommitBytes": 4128755712,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4479811584
+          }
+        },
+        {
+          "seconds": 615.0007612999983,
+          "memory": {
+            "processCommitBytes": 4133826560,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4485160960
+          }
+        },
+        {
+          "seconds": 620.0081193999985,
+          "memory": {
+            "processCommitBytes": 4138061824,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4489969664
+          }
+        },
+        {
+          "seconds": 625.0047098999969,
+          "memory": {
+            "processCommitBytes": 4204068864,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4547411968
+          }
+        },
+        {
+          "seconds": 630.015407099997,
+          "memory": {
+            "processCommitBytes": 4206706688,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4550045696
+          }
+        },
+        {
+          "seconds": 635.0118972999975,
+          "memory": {
+            "processCommitBytes": 4213727232,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4556488704
+          }
+        },
+        {
+          "seconds": 640.0124302999977,
+          "memory": {
+            "processCommitBytes": 4216483840,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4559302656
+          }
+        },
+        {
+          "seconds": 645.0096400999985,
+          "memory": {
+            "processCommitBytes": 4214087680,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4557033472
+          }
+        },
+        {
+          "seconds": 650.0180826999987,
+          "memory": {
+            "processCommitBytes": 4218249216,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4562067456
+          }
+        },
+        {
+          "seconds": 655.0035631999983,
+          "memory": {
+            "processCommitBytes": 4224225280,
+            "processLocalGpuBytes": 2422333440,
+            "processNonLocalGpuBytes": 146186240,
+            "workingSetBytes": 4568104960
+          }
+        }
+      ]
+    }
+  }
+}

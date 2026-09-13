@@ -1,0 +1,657 @@
+{
+  "date": "2026-09-13",
+  "status": "optimized_roaming_validated_quality_convergence_open",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "driver": "616.64",
+  "configuration": "RelWithDebInfo",
+  "sample": "gpu-driven-minizorah-vbuffer",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "targetPixelError": 1.5,
+  "asyncHybrid": true,
+  "vulkanValidation": true,
+  "routePeriodSeconds": 60,
+  "timingScope": "Synchronous offscreen GPUDriven + MaterialResolve; no FinalBlit or output/debug readback on timed frames; checkpoint verification excluded. Not editor presentation FPS.",
+  "changes": [
+    "64-thread per-instance cooperative frontier and emit with conservative level-homogeneous tiles",
+    "GPU-unused resident pages cached and used as protected budget-eviction candidates",
+    "Cached contiguous allocation bounds avoid repeated fragmented free-list scans",
+    "Separate page-update/frontier/prefix/emit checkpoint timestamps"
+  ],
+  "runs": {
+    "baseline60": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-m4-opt/baseline/MiniZorahRoamingReport.json",
+      "reportSha256": "e7270003d516bd51c7bb1e80ada5743bf4176c59847a56aecd7e2515f12cd5ef",
+      "renderSeconds": 60.01968460000007,
+      "timedFrames": 3336,
+      "pageBudgetBytes": 1073741824,
+      "checkpoints": 12,
+      "frameMilliseconds": {
+        "max": 196.7873,
+        "p50": 5.0482,
+        "p95": 67.208,
+        "p99": 72.3476,
+        "samples": 3336
+      },
+      "gpuMilliseconds": {
+        "max": 68.00176,
+        "p50": 2.11152,
+        "p95": 59.900416,
+        "p99": 64.931488,
+        "samples": 3336
+      },
+      "cpuRecordMilliseconds": {
+        "max": 119.4308,
+        "p50": 2.7797,
+        "p95": 7.7203,
+        "p99": 10.5533,
+        "samples": 3336
+      },
+      "cpuTimingValid": true,
+      "sampledPoolPeakBytes": 881853696,
+      "sampledMemoryPeaks": {
+        "processCommitBytes": 3877359616,
+        "processLocalGpuBytes": 2542067712,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 3558817792
+      },
+      "maxSelectedClusters": 346943,
+      "maxOverTargetRefinements": 9990,
+      "maxNearPlaneUnboundedRefinements": 7081,
+      "maxFineGroups": 17862,
+      "capacityFallbackCheckpoints": 0,
+      "lastCheckpointSeconds": 55.004095100000015,
+      "lastCumulativeStats": {
+        "totalCancelledQueuedLoadCount": 1689,
+        "totalCompletedPageLoadCount": 158900,
+        "totalCompletedUnloadCount": 155725,
+        "totalCompletedUploadCount": 158900,
+        "totalEvictedPageCount": 3066,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 6419642112
+      },
+      "gpuMemoryPlateau": null,
+      "near15Seconds": {
+        "seconds": 15.041413600000007,
+        "cut": {
+          "activeGroups": 25559,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyHardware": 42891,
+          "earlySoftware": 26812,
+          "fineGroups": 17509,
+          "lateHardware": 2252,
+          "lateSoftware": 2394,
+          "maxFiniteRefinementErrorPixels": 196293.234375,
+          "nearPlaneUnboundedRefinements": 1019,
+          "overTargetRefinements": 2238,
+          "selectedClusters": 342448,
+          "verifiedInstances": 12508
+        },
+        "adjacentStageGpuMilliseconds": {
+          "AfterEarlyCull": 0.381024,
+          "AfterLateCull": 7.652128,
+          "AfterPass": 0.567584,
+          "AfterStreamEarlyBins": 5.02704,
+          "AfterStreamEmit": 4.496416,
+          "AfterStreamFrontier": 40.168032,
+          "AfterStreamLateBins": 5.143456,
+          "AfterStreamPrefix": 0.064288,
+          "AfterStreamUpdates": 0.01856,
+          "AfterTraversal": 0.016832,
+          "afterTraversalToEnd": 18.771232
+        }
+      }
+    },
+    "deviceExperiment60": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-m4-opt/device/MiniZorahRoamingReport.json",
+      "reportSha256": "bbe351912c2940b3bd3931dc512a398cf82a42facf78a52da48e2ffc85624c25",
+      "renderSeconds": 60.05501909999994,
+      "timedFrames": 3198,
+      "pageBudgetBytes": 1073741824,
+      "checkpoints": 12,
+      "frameMilliseconds": {
+        "max": 173.092,
+        "p50": 5.0976,
+        "p95": 69.9223,
+        "p99": 75.6286,
+        "samples": 3198
+      },
+      "gpuMilliseconds": {
+        "max": 73.616032,
+        "p50": 2.529984,
+        "p95": 61.232608,
+        "p99": 69.456352,
+        "samples": 3198
+      },
+      "cpuRecordMilliseconds": {
+        "max": 37.6375,
+        "p50": 2.4322,
+        "p95": 8.196,
+        "p99": 11.0791,
+        "samples": 3198
+      },
+      "cpuTimingValid": true,
+      "sampledPoolPeakBytes": 878730240,
+      "sampledMemoryPeaks": {
+        "processCommitBytes": 3890753536,
+        "processLocalGpuBytes": 2543452160,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 3513573376
+      },
+      "maxSelectedClusters": 343717,
+      "maxOverTargetRefinements": 10295,
+      "maxNearPlaneUnboundedRefinements": 7432,
+      "maxFineGroups": 17905,
+      "capacityFallbackCheckpoints": 0,
+      "lastCheckpointSeconds": 55.00467019999997,
+      "lastCumulativeStats": {
+        "totalCancelledQueuedLoadCount": 2448,
+        "totalCompletedPageLoadCount": 153687,
+        "totalCompletedUnloadCount": 150512,
+        "totalCompletedUploadCount": 153687,
+        "totalEvictedPageCount": 1870,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 6321494640
+      },
+      "gpuMemoryPlateau": null,
+      "near15Seconds": {
+        "seconds": 15.061122800000001,
+        "cut": {
+          "activeGroups": 25037,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyHardware": 42003,
+          "earlySoftware": 25929,
+          "fineGroups": 16858,
+          "lateHardware": 2340,
+          "lateSoftware": 2503,
+          "maxFiniteRefinementErrorPixels": 200629.59375,
+          "nearPlaneUnboundedRefinements": 1202,
+          "overTargetRefinements": 3053,
+          "selectedClusters": 333115,
+          "verifiedInstances": 12508
+        },
+        "adjacentStageGpuMilliseconds": {
+          "AfterEarlyCull": 0.415872,
+          "AfterLateCull": 9.003136,
+          "AfterPass": 0.967808,
+          "AfterStreamEarlyBins": 4.92528,
+          "AfterStreamEmit": 6.55824,
+          "AfterStreamFrontier": 40.938976,
+          "AfterStreamLateBins": 4.865088,
+          "AfterStreamPrefix": 0.074944,
+          "AfterStreamUpdates": 0.019872,
+          "AfterTraversal": 0.017184,
+          "afterTraversalToEnd": 20.177184
+        }
+      }
+    },
+    "cooperativeCache60": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-m4-opt/cooperative/MiniZorahRoamingReport.json",
+      "reportSha256": "12f01e3ccfde7c8c1833b304062d88101e4c735ea2cd9aeb32f176bcb4d70399",
+      "renderSeconds": 60.010908500000056,
+      "timedFrames": 2721,
+      "pageBudgetBytes": 1073741824,
+      "checkpoints": 12,
+      "frameMilliseconds": {
+        "max": 229.3766,
+        "p50": 8.0088,
+        "p95": 48.6046,
+        "p99": 80.9642,
+        "samples": 2721
+      },
+      "gpuMilliseconds": {
+        "max": 26.461472,
+        "p50": 3.099616,
+        "p95": 23.701952,
+        "p99": 24.901056,
+        "samples": 2721
+      },
+      "cpuRecordMilliseconds": {
+        "max": 68.2933,
+        "p50": 4.5275,
+        "p95": 27.0596,
+        "p99": 58.4731,
+        "samples": 2721
+      },
+      "cpuTimingValid": true,
+      "sampledPoolPeakBytes": 1068692992,
+      "sampledMemoryPeaks": {
+        "processCommitBytes": 3697401856,
+        "processLocalGpuBytes": 2401689600,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 3713540096
+      },
+      "maxSelectedClusters": 457842,
+      "maxOverTargetRefinements": 8315,
+      "maxNearPlaneUnboundedRefinements": 6015,
+      "maxFineGroups": 22838,
+      "capacityFallbackCheckpoints": 0,
+      "lastCheckpointSeconds": 55.00486180000006,
+      "lastCumulativeStats": {
+        "totalCancelledQueuedLoadCount": 62,
+        "totalCompletedPageLoadCount": 82903,
+        "totalCompletedUnloadCount": 54448,
+        "totalCompletedUploadCount": 82903,
+        "totalEvictedPageCount": 54448,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 3116817312
+      },
+      "gpuMemoryPlateau": null,
+      "near15Seconds": {
+        "seconds": 15.0018783,
+        "cut": {
+          "activeGroups": 27377,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyHardware": 43188,
+          "earlySoftware": 26897,
+          "fineGroups": 19339,
+          "lateHardware": 2211,
+          "lateSoftware": 2501,
+          "maxFiniteRefinementErrorPixels": 41684.765625,
+          "nearPlaneUnboundedRefinements": 1779,
+          "overTargetRefinements": 2521,
+          "selectedClusters": 390511,
+          "verifiedInstances": 12514
+        },
+        "adjacentStageGpuMilliseconds": {
+          "AfterEarlyCull": 0.393024,
+          "AfterLateCull": 8.17776,
+          "AfterPass": 0.549152,
+          "AfterStreamEarlyBins": 5.8408,
+          "AfterStreamEmit": 0.160768,
+          "AfterStreamFrontier": 1.589152,
+          "AfterStreamLateBins": 5.882784,
+          "AfterStreamPrefix": 0.064448,
+          "AfterStreamUpdates": 0.018112,
+          "AfterTraversal": 0.018176,
+          "afterTraversalToEnd": 20.84352
+        }
+      }
+    },
+    "optimized60": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-m4-opt/cache/MiniZorahRoamingReport.json",
+      "reportSha256": "ba47cee6d75fa6beed6961fbd96a88084fe88bf1d6ef8186923145e16c11d2d3",
+      "renderSeconds": 60.00194499999999,
+      "timedFrames": 3035,
+      "pageBudgetBytes": 1073741824,
+      "checkpoints": 12,
+      "frameMilliseconds": {
+        "max": 215.5306,
+        "p50": 24.9762,
+        "p95": 31.6558,
+        "p99": 35.0358,
+        "samples": 3035
+      },
+      "gpuMilliseconds": {
+        "max": 26.29968,
+        "p50": 19.054432,
+        "p95": 24.0568,
+        "p99": 24.85968,
+        "samples": 3035
+      },
+      "cpuRecordMilliseconds": {
+        "max": 137.2877,
+        "p50": 5.4042,
+        "p95": 8.8917,
+        "p99": 11.3067,
+        "samples": 3035
+      },
+      "cpuTimingValid": true,
+      "sampledPoolPeakBytes": 1069235968,
+      "sampledMemoryPeaks": {
+        "processCommitBytes": 3820978176,
+        "processLocalGpuBytes": 2435244032,
+        "processNonLocalGpuBytes": 214867968,
+        "workingSetBytes": 3769294848
+      },
+      "maxSelectedClusters": 458477,
+      "maxOverTargetRefinements": 8210,
+      "maxNearPlaneUnboundedRefinements": 5641,
+      "maxFineGroups": 22682,
+      "capacityFallbackCheckpoints": 0,
+      "lastCheckpointSeconds": 55.00206690000002,
+      "lastCumulativeStats": {
+        "totalCancelledQueuedLoadCount": 12,
+        "totalCompletedPageLoadCount": 84092,
+        "totalCompletedUnloadCount": 55712,
+        "totalCompletedUploadCount": 84092,
+        "totalEvictedPageCount": 55712,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 3156006240
+      },
+      "gpuMemoryPlateau": null,
+      "near15Seconds": {
+        "seconds": 15.001528600000015,
+        "cut": {
+          "activeGroups": 26926,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyHardware": 42980,
+          "earlySoftware": 26590,
+          "fineGroups": 18888,
+          "lateHardware": 2330,
+          "lateSoftware": 2497,
+          "maxFiniteRefinementErrorPixels": 41799.34765625,
+          "nearPlaneUnboundedRefinements": 820,
+          "overTargetRefinements": 1533,
+          "selectedClusters": 380815,
+          "verifiedInstances": 12514
+        },
+        "adjacentStageGpuMilliseconds": {
+          "AfterEarlyCull": 0.410528,
+          "AfterLateCull": 8.540288,
+          "AfterPass": 0.590016,
+          "AfterStreamEarlyBins": 6.016064,
+          "AfterStreamEmit": 0.1568,
+          "AfterStreamFrontier": 1.44272,
+          "AfterStreamLateBins": 5.979136,
+          "AfterStreamPrefix": 0.064224,
+          "AfterStreamUpdates": 0.010112,
+          "AfterTraversal": 0.018784,
+          "afterTraversalToEnd": 21.536032
+        }
+      }
+    },
+    "pressure64MiB": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-m4-opt/regression/MiniZorahRoamingReport.json",
+      "reportSha256": "bfa81c989b6e46b54ce89584f01034d368e8228c75df81a290c6333f19d7f03d",
+      "renderSeconds": 60.00698020000008,
+      "timedFrames": 5805,
+      "pageBudgetBytes": 67108864,
+      "checkpoints": 12,
+      "frameMilliseconds": {
+        "max": 202.3462,
+        "p50": 11.5415,
+        "p95": 13.9258,
+        "p99": 15.1843,
+        "samples": 5805
+      },
+      "gpuMilliseconds": {
+        "max": 12.378848,
+        "p50": 8.11696,
+        "p95": 9.992224,
+        "p99": 10.586912,
+        "samples": 5805
+      },
+      "cpuRecordMilliseconds": {
+        "max": 58.2085,
+        "p50": 3.115,
+        "p95": 4.1559,
+        "p99": 5.3336,
+        "samples": 5805
+      },
+      "cpuTimingValid": true,
+      "sampledPoolPeakBytes": 65819136,
+      "sampledMemoryPeaks": {
+        "processCommitBytes": 2836414464,
+        "processLocalGpuBytes": 1361502208,
+        "processNonLocalGpuBytes": 214867968,
+        "workingSetBytes": 1930784768
+      },
+      "maxSelectedClusters": 94808,
+      "maxOverTargetRefinements": 4401,
+      "maxNearPlaneUnboundedRefinements": 266,
+      "maxFineGroups": 6822,
+      "capacityFallbackCheckpoints": 0,
+      "lastCheckpointSeconds": 55.000173200000035,
+      "lastCumulativeStats": {
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCompletedPageLoadCount": 20749,
+        "totalCompletedUnloadCount": 13763,
+        "totalCompletedUploadCount": 20749,
+        "totalEvictedPageCount": 13763,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 258321440
+      },
+      "gpuMemoryPlateau": null,
+      "near15Seconds": {
+        "seconds": 15.00651600000002,
+        "cut": {
+          "activeGroups": 14220,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyHardware": 27345,
+          "earlySoftware": 15040,
+          "fineGroups": 6167,
+          "lateHardware": 1699,
+          "lateSoftware": 1163,
+          "maxFiniteRefinementErrorPixels": 2047283.75,
+          "nearPlaneUnboundedRefinements": 189,
+          "overTargetRefinements": 2795,
+          "selectedClusters": 83755,
+          "verifiedInstances": 12511
+        },
+        "adjacentStageGpuMilliseconds": {
+          "AfterEarlyCull": 0.451392,
+          "AfterLateCull": 4.450464,
+          "AfterPass": 0.408576,
+          "AfterStreamEarlyBins": 1.674304,
+          "AfterStreamEmit": 0.05472,
+          "AfterStreamFrontier": 0.960832,
+          "AfterStreamLateBins": 1.567808,
+          "AfterStreamPrefix": 0.063168,
+          "AfterStreamUpdates": 0.019296,
+          "AfterTraversal": 0.018464,
+          "afterTraversalToEnd": 8.552544
+        }
+      }
+    },
+    "optimized660": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-m4-opt/cruise/MiniZorahRoamingReport.json",
+      "reportSha256": "0a69b4c059129afe4164227f80816851fb509673d464c5ce74c5fd0c73c53f5c",
+      "renderSeconds": 660.0051476999997,
+      "timedFrames": 33786,
+      "pageBudgetBytes": 1073741824,
+      "checkpoints": 132,
+      "frameMilliseconds": {
+        "max": 250.0394,
+        "p50": 23.5959,
+        "p95": 32.6763,
+        "p99": 40.606,
+        "samples": 33786
+      },
+      "gpuMilliseconds": {
+        "max": 28.60784,
+        "p50": 18.88016,
+        "p95": 23.85968,
+        "p99": 24.909952,
+        "samples": 33786
+      },
+      "cpuRecordMilliseconds": {
+        "max": 115.9122,
+        "p50": 4.7834,
+        "p95": 9.9358,
+        "p99": 15.8211,
+        "samples": 33786
+      },
+      "cpuTimingValid": true,
+      "sampledPoolPeakBytes": 1068755456,
+      "sampledMemoryPeaks": {
+        "processCommitBytes": 4003262464,
+        "processLocalGpuBytes": 2401689600,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 3943645184
+      },
+      "maxSelectedClusters": 458814,
+      "maxOverTargetRefinements": 8640,
+      "maxNearPlaneUnboundedRefinements": 6092,
+      "maxFineGroups": 23517,
+      "capacityFallbackCheckpoints": 0,
+      "lastCheckpointSeconds": 655.0003264000002,
+      "lastCumulativeStats": {
+        "totalCancelledQueuedLoadCount": 52,
+        "totalCompletedPageLoadCount": 642785,
+        "totalCompletedUnloadCount": 614481,
+        "totalCompletedUploadCount": 642785,
+        "totalEvictedPageCount": 614481,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 23891273792
+      },
+      "gpuMemoryPlateau": {
+        "allowedGrowthBytes": 67108864,
+        "finalCyclePeakBytes": 2399920128,
+        "warmCyclePeakBytes": 2401689600
+      },
+      "near15Seconds": {
+        "seconds": 15.0017094,
+        "cut": {
+          "activeGroups": 26748,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyHardware": 42962,
+          "earlySoftware": 26605,
+          "fineGroups": 18710,
+          "lateHardware": 2338,
+          "lateSoftware": 2532,
+          "maxFiniteRefinementErrorPixels": 41738.77734375,
+          "nearPlaneUnboundedRefinements": 435,
+          "overTargetRefinements": 1126,
+          "selectedClusters": 376263,
+          "verifiedInstances": 12514
+        },
+        "adjacentStageGpuMilliseconds": {
+          "AfterEarlyCull": 0.439072,
+          "AfterLateCull": 7.66688,
+          "AfterPass": 0.567456,
+          "AfterStreamEarlyBins": 5.477184,
+          "AfterStreamEmit": 0.153184,
+          "AfterStreamFrontier": 1.406976,
+          "AfterStreamLateBins": 5.60848,
+          "AfterStreamPrefix": 0.063328,
+          "AfterStreamUpdates": 0.011712,
+          "AfterTraversal": 0.018144,
+          "afterTraversalToEnd": 19.759072
+        }
+      }
+    },
+    "previousM4Cruise660": {
+      "status": "passed",
+      "report": "build-relwithdebinfo/minizorah-m4/cruise/MiniZorahRoamingReport.json",
+      "reportSha256": "7ee50456d2f17a66da63433801a51db47ee91df8eb5588b88fab5fee9b2673d5",
+      "renderSeconds": 660.0268826000029,
+      "timedFrames": 34431,
+      "pageBudgetBytes": 1073741824,
+      "checkpoints": 132,
+      "frameMilliseconds": {
+        "max": 247.9033,
+        "p50": 5.3814,
+        "p95": 68.9859,
+        "p99": 76.4506,
+        "samples": 34431
+      },
+      "gpuMilliseconds": {
+        "max": 199.144224,
+        "p50": 2.523584,
+        "p95": 61.358272,
+        "p99": 68.411008,
+        "samples": 34431
+      },
+      "cpuRecordMilliseconds": null,
+      "cpuTimingValid": false,
+      "sampledPoolPeakBytes": 1028153344,
+      "sampledMemoryPeaks": {
+        "processCommitBytes": 4005568512,
+        "processLocalGpuBytes": 2667962368,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 4208316416
+      },
+      "maxSelectedClusters": 415386,
+      "maxOverTargetRefinements": 12253,
+      "maxNearPlaneUnboundedRefinements": 8262,
+      "maxFineGroups": 20765,
+      "capacityFallbackCheckpoints": 0,
+      "lastCheckpointSeconds": 655.0046713000031,
+      "lastCumulativeStats": {
+        "totalCancelledQueuedLoadCount": 22224,
+        "totalCompletedPageLoadCount": 1848804,
+        "totalCompletedUnloadCount": 1845629,
+        "totalCompletedUploadCount": 1848804,
+        "totalEvictedPageCount": 30862,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 77479478304
+      },
+      "gpuMemoryPlateau": {
+        "allowedGrowthBytes": 67108864,
+        "finalCyclePeakBytes": 2397757440,
+        "warmCyclePeakBytes": 2397757440
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "before": "baseline60",
+      "after": "optimized60",
+      "gpuP95ReductionPercent": 59.838676245587344,
+      "synchronousFrameP95ReductionPercent": 52.89876205213665,
+      "uploadBytesReductionPercent": 50.83828374013881,
+      "completedUnloadReductionPercent": 64.22411301974635
+    },
+    {
+      "before": "previousM4Cruise660",
+      "after": "optimized660",
+      "gpuP95ReductionPercent": 61.11415914711549,
+      "synchronousFrameP95ReductionPercent": 52.63336420920797,
+      "uploadBytesReductionPercent": 69.16438479585558,
+      "completedUnloadReductionPercent": 66.70614733513615
+    }
+  ],
+  "regression": {
+    "passed": 33,
+    "failed": 0,
+    "seconds": 163.809,
+    "log": "build-relwithdebinfo/minizorah-m4-opt/regression.log",
+    "gpuReferenceCutCases": 219,
+    "newTests": [
+      "streamer_meshlet_demand_cache",
+      "streamer_meshlet_fragmented_storage"
+    ]
+  },
+  "builtTargets": [
+    "MetallicRhiTests",
+    "MetallicGPUDrivenSample",
+    "Metallic"
+  ],
+  "synchronousRoamingP95TargetMilliseconds": 33.3,
+  "longRunSynchronousP95TargetMet": true,
+  "deviceMemoryExperimentRetained": false,
+  "sourceSha256": {
+    "Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang": "86d96ff2cec9d6ddd94f321d5bb45957744a88d16cec2771e291bf86247cfdae",
+    "Source/Runtime/Render/MeshletLod.cpp": "ea8adaa91b9bc93294a64e5391be9b9d57a4bfd844ad3b6559dcddf7bfb3d024",
+    "Source/Runtime/Render/MeshletLod.h": "23e823c962ac4ef3815c30e5994ed3a2734d711591a4de0686cb5a6a6a5e5fd9",
+    "Source/Runtime/Render/MeshletStreamResidency.cpp": "ccc5eb243f3046c16684cf0a8e4b3029ff90641fe7f1950d316e00ec8d6035c8",
+    "Source/Runtime/Render/MeshletStreamResidency.h": "dcaeabfea85e3e88a3e6d6369c0b7e1d922409794c2c91570a9790bb30f8f6b2",
+    "Source/Runtime/Render/MeshletStreamRuntime.cpp": "2f996ec68e21ffc3650167e715f8b473a5d912b88cfd53cb836044dc0beac323",
+    "Source/Runtime/Render/MeshletStreamRuntime.h": "3fcff627a636466c78938520fa237c37d0b70e81977b3161b4f21bb5b212f9aa",
+    "Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp": "6b4c6833485397dd040ad03354edfe51bcd33350918cb54f55cc4d00a09aa554",
+    "tests/rhi/MiniZorahRoamingTests.cpp": "85f81a933649e34fcf945a6357f9b3a4e8c6e27bfa5e03c31ef34b25f9ae5c1d",
+    "tests/rhi/StreamMeshletLodTests.cpp": "3a7fb0af3f2f70f4c735946960ac71cc708ba41c2ed24e5cfc423e69bb4eda00",
+    "tests/rhi/StreamerTests.cpp": "4283c6f9e611d23df7b7ec18e853b48a21877f7f6e15d6f0e1e57752b7f5340c"
+  },
+  "limits": [
+    "Runs share route, budget, resolution and target error, but asynchronous residency/cuts are not identical per frame.",
+    "Stage intervals include barriers; frontier interval also includes reset. Do not interpret as pure fixed-input kernel benchmarks.",
+    "Quality remains unconverged; conservative refinement counts are neither pixel counts nor directly comparable across different cuts.",
+    "Memory peaks and cumulative upload/unload counters are sampled at five-second checkpoints.",
+    "The previous 660-second baseline CPU zeros are invalid and excluded from comparisons.",
+    "P99 and maximum frame spikes remain; a P95 target is not a per-frame deadline.",
+    "No new Nsight trace is used; attribution is based on RHI timestamps and controlled implementation comparisons."
+  ]
+}

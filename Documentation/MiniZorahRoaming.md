@@ -2,7 +2,11 @@
 
 本阶段打通固定预算下的持续运行和可复现验收。**覆盖完整性、质量收敛和交互帧时分别统计；长测通过不能视为已收敛到 1.5 px。**
 
+后续已实现工作组协作 frontier/emit、按 GPU 需求保留驻留缓存，以及碎片分配检查缓存；60 秒路线 GPU P95 从 59.90 ms 降到 24.06 ms，同步帧 P95 从 67.21 ms 降到 31.66 ms。当前实现与最新验收见 [遍历与驻留优化](MiniZorahRoamingOptimization.md)。下文保留 M4 初始基线，便于比较。
+
 ## 实现
+
+编辑器输入链路的后续修复见 [视口相机修复](MiniZorahViewportCameraFix.md)：旧自动路线直接修改 pass camera，未覆盖编辑器共享 RenderView；现在 MiniZorah 跟随共享视口，并在漫游检查点读回验证实际渲染相机。
 
 - 流式 active group 的 mask 稳定展开为紧凑候选，GPU 生成分类与 histogram/scatter 的间接派发参数。沿用原始 `groupIndex * maxClusters + clusterIndex` 记录号，不改变 VBuffer 材质解码或等深度绘制次序。工作量随实际 cut 增长；记录和分箱缓冲的预留容量仍计入显存。
 - 当前视锥在 LOD frontier 前筛选实例，并清理上一帧的稀疏状态。手动 LOD 与无 raster bindings 的独立遍历保留原契约。HZB 仍执行 early/late 复测，历史遮挡不会永久阻止实例返回。

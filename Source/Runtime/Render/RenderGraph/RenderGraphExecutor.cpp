@@ -625,8 +625,11 @@ struct RenderGraphExecutor::Impl {
         for (size_t index = 0; index < executionList.size(); ++index) {
             const auto& node = executionList[index];
             const auto& dependency = node.sceneDependency;
-            if (dependency.source == RenderGraphSceneSource::None) { continue; }
             auto properties = mergeRenderGraphProperties(node.staticProperties, node.runtimeProperties);
+            if (dependency.source == RenderGraphSceneSource::None) {
+                bindings[index].localView = renderGraphUsesLocalView(properties);
+                continue;
+            }
             const std::string mode = properties.value("sceneBinding", "world");
             if (mode != "world" && mode != "asset") {
                 log = "Pass '" + node.name + "' has invalid sceneBinding '" + mode + "'";
@@ -666,8 +669,7 @@ struct RenderGraphExecutor::Impl {
                 if (!result) { log = "Pass '" + node.name + "' scene resolution failed: " + log; return result; }
                 bindings[index] = captureSceneBinding(source);
             }
-            bindings[index].localView = bindings[index].localView || mode == "asset" ||
-                properties.value("viewBinding", "global") == "local";
+            bindings[index].localView = bindings[index].localView || renderGraphUsesLocalView(properties);
         }
         return {};
     }
@@ -1734,10 +1736,7 @@ struct RenderGraphExecutor::Impl {
         }
 
         RenderUploadSubsystem* upload = uploadSubsystem();
-        const bool usesView = frameViewBuffer != nullptr &&
-            !node.sceneBinding.localView &&
-            node.effectiveProperties.value("sceneBinding", "world") != "asset" &&
-            node.effectiveProperties.value("viewBinding", "global") != "local";
+        const bool usesView = frameViewBuffer != nullptr && !node.sceneBinding.localView;
         auto executionProperties = node.effectiveProperties;
         if (usesView) {
             // Compatibility adapter for passes still using the packed camera ABI.

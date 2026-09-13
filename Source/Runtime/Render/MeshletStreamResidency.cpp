@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cmath>
 #include <limits>
 #include <vector>
 
@@ -14,6 +15,14 @@ uint64_t alignUp(uint64_t value, uint64_t alignment)
         return value;
     }
     return ((value + alignment - 1) / alignment) * alignment;
+}
+
+// Screen benefit per resident byte with bounded request aging. Zero-benefit
+// dependencies still progress when visible requests no longer consume admission.
+double pageBenefitPerByte(float benefit, uint64_t bytes, uint64_t age)
+{
+    return std::max(benefit, 0.0f) * (1.0 + std::min<uint64_t>(age, 120u) / 30.0) /
+        double(std::max<uint64_t>(bytes, 1024u));
 }
 
 constexpr uint32_t kInvalidTablePosition = UINT32_MAX;
@@ -73,12 +82,13 @@ void MeshletStreamStorage::reset()
     usedBytes_ = 0;
     allocationCount_ = 0;
     freeBlocks_.clear();
+    freeBlockBoundsValid_ = false;
 }
 
 MeshletStreamStorageAllocation MeshletStreamStorage::allocate(uint64_t byteSize)
 {
     const uint64_t alignedSize = allocationSize(byteSize);
-    if (alignedSize == 0) {
+    if (alignedSize == 0 || !canAllocate(byteSize)) {
         return {};
     }
 
@@ -95,6 +105,11 @@ MeshletStreamStorageAllocation MeshletStreamStorage::allocate(uint64_t byteSize)
 
         const uint64_t suffixOffset = alignedOffset + alignedSize;
         const uint64_t suffixBytes = block.offset + block.size - suffixOffset;
+        // Other blocks cannot become larger when allocating. Preserve a valid
+        // bound unless this allocation consumes one of its maximizers.
+        if (block.size == largestFreeBlockBytes_ || block.size - prefixBytes == largestAllocatableBytes_) {
+            freeBlockBoundsValid_ = false;
+        }
         if (prefixBytes != 0 && suffixBytes != 0) {
             block.size = prefixBytes;
             freeBlocks_.insert(
@@ -136,6 +151,7 @@ void MeshletStreamStorage::release(const MeshletStreamStorageAllocation& allocat
         .offset = allocation.offset,
         .size = allocation.allocatedSize,
     };
+    freeBlockBoundsValid_ = false;
     auto iter = std::lower_bound(
         freeBlocks_.begin(),
         freeBlocks_.end(),
@@ -167,7 +183,7 @@ void MeshletStreamStorage::release(const MeshletStreamStorageAllocation& allocat
 
 uint64_t MeshletStreamStorage::allocationSize(uint64_t byteSize) const
 {
-    if (byteSize == 0) {
+    if (byteSize == 0 || byteSize > UINT64_MAX - (alignmentBytes_ - 1u)) {
         return 0;
     }
     return alignUp(byteSize, alignmentBytes_);
@@ -176,29 +192,32 @@ uint64_t MeshletStreamStorage::allocationSize(uint64_t byteSize) const
 bool MeshletStreamStorage::canAllocate(uint64_t byteSize) const
 {
     const uint64_t alignedSize = allocationSize(byteSize);
-    if (alignedSize == 0) {
-        return false;
-    }
+    if (alignedSize == 0) { return false; }
+    updateFreeBlockBounds();
+    return alignedSize <= largestAllocatableBytes_;
+}
+
+void MeshletStreamStorage::updateFreeBlockBounds() const
+{
+    if (freeBlockBoundsValid_) { return; }
+    largestFreeBlockBytes_ = 0;
+    largestAllocatableBytes_ = 0;
     for (const FreeBlock& block : freeBlocks_) {
+        largestFreeBlockBytes_ = std::max(largestFreeBlockBytes_, block.size);
         const uint64_t alignedOffset = alignUp(block.offset, alignmentBytes_);
         if (alignedOffset < block.offset) {
             continue;
         }
         const uint64_t prefixBytes = alignedOffset - block.offset;
-        if (prefixBytes <= block.size && alignedSize <= block.size - prefixBytes) {
-            return true;
-        }
+        if (prefixBytes <= block.size) { largestAllocatableBytes_ = std::max(largestAllocatableBytes_, block.size - prefixBytes); }
     }
-    return false;
+    freeBlockBoundsValid_ = true;
 }
 
 uint64_t MeshletStreamStorage::largestFreeBlockBytes() const
 {
-    uint64_t largest = 0;
-    for (const FreeBlock& block : freeBlocks_) {
-        largest = std::max(largest, block.size);
-    }
-    return largest;
+    updateFreeBlockBounds();
+    return largestFreeBlockBytes_;
 }
 
 bool MeshletStreamResidencyManager::initialize(
@@ -289,7 +308,8 @@ void MeshletStreamResidencyManager::reset()
     uploadQueue_.clear();
     preparedPageLoads_.clear();
     requestTaskQueue_.reset();
-    for (std::vector<uint32_t>& taskPages : requestTaskPages_) {
+    residentDemandFeedback_ = false;
+    for (auto& taskPages : requestTaskPages_) {
         taskPages.clear();
     }
     for (std::vector<uint32_t>& taskPages : requestTaskUnloadPages_) {
@@ -456,13 +476,29 @@ void MeshletStreamResidencyManager::beginFrame()
                     ++consumedUnloads;
                 }
             }
-            std::vector<uint32_t>& taskPages = requestTaskPages_[latestTaskIndex];
+            auto& taskPages = requestTaskPages_[latestTaskIndex];
             // Refresh the complete batch before reclaiming stale, unissued I/O.
             // Already submitted loads/uploads retain their completion lifetime.
-            for (uint32_t pageIndex : taskPages) {
-                const auto found = pages_.find(pageIndex);
-                if (found != pages_.end()) { found->second.lastUsedFrame = frameIndex_; }
+            const bool prioritized = std::any_of(taskPages.begin(), taskPages.end(),
+                [](const PageRequest& request) { return request.screenBenefit >= 0.0f; });
+            for (auto& request : taskPages) {
+                const auto found = pages_.find(request.pageIndex);
+                if (found != pages_.end()) {
+                    found->second.lastUsedFrame = frameIndex_;
+                    found->second.screenBenefit = request.screenBenefit;
+                }
+                if (prioritized) {
+                    const uint64_t age = found == pages_.end() ? 0u : frameIndex_ - found->second.firstRequestFrame;
+                    request.schedulingPriority = pageBenefitPerByte(request.screenBenefit,
+                        asset_->pages()[request.pageIndex].uncompressedSize, age);
+                }
             }
+            if (prioritized) {
+                std::stable_sort(taskPages.begin(), taskPages.end(), [](const PageRequest& a, const PageRequest& b) {
+                    const double left = a.schedulingPriority, right = b.schedulingPriority;
+                    return left != right ? left > right : a.pageIndex < b.pageIndex;
+                });
+            } else { std::reverse(taskPages.begin(), taskPages.end()); }
             std::erase_if(uploadQueue_, [this](uint32_t pageIndex) {
                 const auto found = pages_.find(pageIndex);
                 if (found == pages_.end()) { return true; }
@@ -475,13 +511,15 @@ void MeshletStreamResidencyManager::beginFrame()
                 }
                 return false;
             });
-            for (auto iter = taskPages.rbegin(); iter != taskPages.rend(); ++iter) {
-                const uint32_t pageIndex = *iter;
+            for (const auto& request : taskPages) {
+                const uint32_t pageIndex = request.pageIndex;
                 if (pageIndex >= pageCount_) {
                     continue;
                 }
                 requestedPages_.push_back(pageIndex);
                 (void)requestPage(pageIndex);
+                const auto admitted = pages_.find(pageIndex);
+                if (admitted != pages_.end()) { admitted->second.screenBenefit = request.screenBenefit; }
                 ++consumed;
             }
             taskPages.clear();
@@ -656,19 +694,26 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     stats_.frameGpuInvalidRequestCount += requests.invalidPageCounter;
     stats_.totalGpuInvalidRequestCount += requests.invalidPageCounter;
 
-    std::vector<uint32_t> uniqueRequests;
+    std::vector<PageRequest> uniqueRequests;
     uniqueRequests.reserve(requests.loadPageIds.size());
     requestMarks_.clear();
     requestMarks_.reserve(requests.loadPageIds.size());
-    for (uint32_t pageIndex : requests.loadPageIds) {
-        if (pageIndex >= pageCount_ || !requestMarks_.insert(pageIndex).second) {
-            if (pageIndex >= pageCount_) {
-                ++stats_.frameGpuInvalidRequestCount;
-                ++stats_.totalGpuInvalidRequestCount;
-            }
+    for (size_t index = 0; index < requests.loadPageIds.size(); ++index) {
+        const uint32_t pageIndex = requests.loadPageIds[index];
+        if (pageIndex >= pageCount_) {
+            ++stats_.frameGpuInvalidRequestCount;
+            ++stats_.totalGpuInvalidRequestCount;
             continue;
         }
-        uniqueRequests.push_back(pageIndex);
+        float benefit = index < requests.loadPriorities.size() ? requests.loadPriorities[index] : -1.0f;
+        if (!std::isfinite(benefit)) { benefit = 0.0f; }
+        benefit = std::clamp(benefit, -1.0f, 1e9f);
+        const auto [slot, inserted] = requestMarks_.emplace(pageIndex, uniqueRequests.size());
+        if (!inserted) {
+            uniqueRequests[slot->second].screenBenefit = std::max(uniqueRequests[slot->second].screenBenefit, benefit);
+            continue;
+        }
+        uniqueRequests.push_back({pageIndex, benefit});
         requestedPages_.push_back(pageIndex);
     }
     stats_.frameUniqueGpuRequestCount += static_cast<uint32_t>(uniqueRequests.size());
@@ -692,6 +737,25 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     stats_.frameUniqueGpuUnloadRequestCount += static_cast<uint32_t>(uniqueUnloadRequests.size());
     stats_.totalUniqueGpuUnloadRequestCount += uniqueUnloadRequests.size();
 
+    if (requests.residentDemandFeedback) {
+        residentDemandFeedback_ = true;
+        const bool complete = requests.unloadOverflowCounter == 0 && requests.invalidPageCounter == 0 &&
+            requests.unloadRequestCounter <= requests.unloadPageIds.size();
+        for (uint32_t pageIndex : residentPages_) {
+            PageEntry& page = pages_.at(pageIndex);
+            // Only explicitly unused pages may be budget victims. Truncated
+            // feedback must not infer that an omitted page is cold.
+            page.gpuUnused = unloadRequestMarks_.contains(pageIndex);
+            if (page.gpuUnused) {
+                ++stats_.frameCachedUnusedPageCount;
+            } else if (complete) {
+                page.lastUsedFrame = frameIndex_;
+                ++stats_.frameResidentDemandCount;
+            }
+        }
+        uniqueUnloadRequests.clear();
+    }
+
     if (uniqueRequests.empty() && uniqueUnloadRequests.empty()) {
         return 0;
     }
@@ -703,7 +767,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
         return 0;
     }
 
-    std::vector<uint32_t>& taskPages = requestTaskPages_[taskIndex];
+    auto& taskPages = requestTaskPages_[taskIndex];
     taskPages = std::move(uniqueRequests);
     std::vector<uint32_t>& taskUnloadPages = requestTaskUnloadPages_[taskIndex];
     taskUnloadPages = std::move(uniqueUnloadRequests);
@@ -726,15 +790,21 @@ uint32_t MeshletStreamResidencyManager::processUploads(
     // Roots first, then recently demanded pages, with aging within a live
     // request batch. For equal age, prefer the cheaper payload. stable_sort
     // preserves request order when priorities are equal.
-    std::stable_sort(uploadQueue_.begin(), uploadQueue_.end(), [this](uint32_t a, uint32_t b) {
+    const auto higherPriority = [this](uint32_t a, uint32_t b) {
         const auto ia = pages_.find(a), ib = pages_.find(b);
         if (ia == pages_.end() || ib == pages_.end()) { return ia != pages_.end(); }
         const PageEntry& pa = ia->second; const PageEntry& pb = ib->second;
         if (pa.lockedFallback != pb.lockedFallback) { return pa.lockedFallback; }
         if (pa.lastUsedFrame != pb.lastUsedFrame) { return pa.lastUsedFrame > pb.lastUsedFrame; }
+        if (pa.screenBenefit >= 0.0f || pb.screenBenefit >= 0.0f) {
+            const double left = pageBenefitPerByte(pa.screenBenefit, pa.deviceSizeBytes, frameIndex_ - pa.firstRequestFrame);
+            const double right = pageBenefitPerByte(pb.screenBenefit, pb.deviceSizeBytes, frameIndex_ - pb.firstRequestFrame);
+            if (left != right) { return left > right; }
+        }
         if (pa.firstRequestFrame != pb.firstRequestFrame) { return pa.firstRequestFrame < pb.firstRequestFrame; }
         return pa.deviceSizeBytes < pb.deviceSizeBytes;
-    });
+    };
+    std::stable_sort(uploadQueue_.begin(), uploadQueue_.end(), higherPriority);
     auto schedulePageLoads = [this]() {
         while (!uploadQueue_.empty() &&
             static_cast<uint64_t>(pageLoader_.outstandingCount()) + preparedPageLoads_.size() <
@@ -789,6 +859,11 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             }
             preparedPageLoads_.push_back(std::move(loadedPage));
         }
+    }
+
+    if (asynchronousLoads) {
+        std::stable_sort(preparedPageLoads_.begin(), preparedPageLoads_.end(),
+            [&](const auto& a, const auto& b) { return higherPriority(a.pageIndex, b.pageIndex); });
     }
 
     if (maxUploads == 0) {
@@ -1099,7 +1174,8 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
             for (uint32_t candidate : residentPages_) {
                 ++stats_.frameEvictionCandidateTests;
                 const PageEntry& entry = pages_.at(candidate);
-                if (entry.lockedFallback || !streamableEvictionState(entry.state)) { continue; }
+                if (entry.lockedFallback || !streamableEvictionState(entry.state) ||
+                    (residentDemandFeedback_ && !entry.gpuUnused)) { continue; }
                 if (pageAge(candidate) < evictionAgeThresholdFrames_) {
                     evictionAgeRejected_ = true;
                     continue;
@@ -1122,7 +1198,7 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
             const PageEntry& entry = candidateIter->second;
             if (entry.lockedFallback ||
                 !pageAllocated(candidate) ||
-                !streamableEvictionState(entry.state)) {
+                !streamableEvictionState(entry.state) || (residentDemandFeedback_ && !entry.gpuUnused)) {
                 continue;
             }
             const uint64_t age = pageAge(candidate);
@@ -1177,6 +1253,7 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
     page.deviceOffsetBytes = static_cast<uint32_t>(allocation.offset);
     page.allocationBytes = static_cast<uint32_t>(allocation.allocatedSize);
     page.deviceSizeBytes = static_cast<uint32_t>(allocation.requestedSize);
+    page.gpuUnused = false;
     addToTable(activePages_, &PageEntry::activeTablePosition, pageIndex);
     return true;
 }
@@ -1442,6 +1519,8 @@ void MeshletStreamResidencyManager::resetFrameStats()
     stats_.frameEvictionScanCount = 0;
     stats_.frameEvictionCandidateTests = 0;
     stats_.frameAllocationDeferredCount = 0;
+    stats_.frameCachedUnusedPageCount = 0;
+    stats_.frameResidentDemandCount = 0;
     stats_.frameUploadBytes = 0;
     stats_.frameAdmissionDeferredCount = 0;
     stats_.frameCancelledQueuedLoadCount = 0;

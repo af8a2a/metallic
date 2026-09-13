@@ -93,8 +93,8 @@ struct StreamRequestBufferHeader {
     uint32_t lastLoadOverflowFrame = 0;
     uint32_t lastUnloadOverflowFrame = 0;
     uint32_t lastInvalidPageFrame = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
+    uint32_t loadPriorityOffset = 0; // Word offsets; zero preserves the legacy request ABI.
+    uint32_t priorityTableOffset = 0;
     uint32_t padding2 = 0;
     uint32_t padding3 = 0;
     uint32_t padding4 = 0;
@@ -133,6 +133,10 @@ struct StreamGpuRequestBatch {
     uint32_t unloadOverflowCounter = 0;
     uint32_t invalidPageCounter = 0;
     uint32_t frameIndex = 0;
+    // The unload list enumerates resident pages unused by this GPU view. Keep
+    // them cached and use the feedback for budget eviction, not eager unload.
+    bool residentDemandFeedback = false;
+    std::span<const float> loadPriorities; // Maximum screen benefit across instances, before byte cost.
 };
 
 struct MeshletStreamStorageAllocation {
@@ -171,12 +175,16 @@ private:
         uint64_t offset = 0;
         uint64_t size = 0;
     };
+    void updateFreeBlockBounds() const;
 
     uint64_t capacityBytes_ = 0;
     uint64_t alignmentBytes_ = kMeshletStreamStorageAlignment;
     uint64_t usedBytes_ = 0;
     uint32_t allocationCount_ = 0;
     std::vector<FreeBlock> freeBlocks_;
+    mutable bool freeBlockBoundsValid_ = false;
+    mutable uint64_t largestFreeBlockBytes_ = 0;
+    mutable uint64_t largestAllocatableBytes_ = 0;
 };
 
 struct MeshletStreamResidencyDesc {
@@ -256,6 +264,8 @@ struct MeshletStreamResidencyStats {
     uint32_t frameEvictionScanCount = 0;
     uint32_t frameEvictionCandidateTests = 0;
     uint32_t frameAllocationDeferredCount = 0;
+    uint32_t frameCachedUnusedPageCount = 0;
+    uint32_t frameResidentDemandCount = 0;
     uint64_t frameUploadBytes = 0;
     uint64_t totalUploadBytes = 0;
     uint32_t frameAdmissionDeferredCount = 0;
@@ -344,6 +354,12 @@ public:
     MeshletStreamResidencyStats stats() const;
 
 private:
+    struct PageRequest {
+        uint32_t pageIndex;
+        float screenBenefit = -1.0f;
+        double schedulingPriority = 0.0;
+    };
+
     struct PageEntry {
         uint64_t lastUsedFrame = 0;
         uint64_t firstRequestFrame = 0;
@@ -356,7 +372,8 @@ private:
         bool lockedFallback = false;
         bool queued = false;
         MeshletStreamPageResidencyState state = MeshletStreamPageResidencyState::Unloaded;
-        uint8_t padding0 = 0;
+        bool gpuUnused = false;
+        float screenBenefit = -1.0f;
     };
     static_assert(sizeof(PageEntry) == 48);
 
@@ -385,7 +402,7 @@ private:
     MeshletStreamPageLoader pageLoader_;
     std::deque<MeshletStreamPageLoadResult> preparedPageLoads_;
     StreamingTaskQueue requestTaskQueue_;
-    std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> requestTaskPages_;
+    std::array<std::vector<PageRequest>, kStreamingMaxActiveTasks> requestTaskPages_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> requestTaskUnloadPages_;
     StreamingTaskQueue storageTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> storageTaskPages_;
@@ -404,8 +421,9 @@ private:
     size_t evictionCandidateCursor_ = 0;
     bool evictionCandidatesBuilt_ = false;
     bool evictionAgeRejected_ = false;
+    bool residentDemandFeedback_ = false;
     uint32_t frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
-    std::unordered_set<uint32_t> requestMarks_;
+    std::unordered_map<uint32_t, size_t> requestMarks_;
     std::unordered_set<uint32_t> unloadRequestMarks_;
     std::vector<StreamPageTablePatch> patches_;
     MeshletStreamResidencyStats stats_;

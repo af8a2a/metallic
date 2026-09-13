@@ -250,6 +250,7 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
             properties,
             "maxFallbackBlasBytes",
             512ull * 1024ull * 1024ull),
+        .screenSpacePagePriority = boolProperty(properties, "screenSpacePagePriority", true),
     };
 }
 
