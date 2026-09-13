@@ -1,5 +1,6 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/MeshletLod.h"
+#include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 
 #include "Runtime/Render/MeshletStreamClas.h"
@@ -525,6 +526,7 @@ class MeshletStreamRuntime::ActiveBuildPass {
 public:
     Result initialize(Device& device, std::string& log)
     {
+        profiling::CpuPhase phase("streamInit.activeShader");
         Result result = createSlangShaderModule(
             device,
             kMeshletStreamShaderModuleName,
@@ -535,6 +537,7 @@ public:
             return result;
         }
 
+        phase.next("streamInit.activePipeline");
         result = device.createComputePipeline(
             ComputePipelineDesc{
                 .computeShader = activeBuildShader_.get(),
@@ -548,9 +551,11 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
+        phase.next("streamInit.cooperativeShader");
         result = createSlangShaderModule(device, kMeshletStreamShaderModuleName,
             kMeshletStreamCooperativeBuildEntryPoint, cooperativeShader_, log);
         if (!result) { return result; }
+        phase.next("streamInit.cooperativePipeline");
         result = device.createComputePipeline({.computeShader = cooperativeShader_.get(),
             .computeEntryPoint = "main", .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, cooperativePipeline_);
@@ -792,9 +797,11 @@ MeshletStreamRuntime::~MeshletStreamRuntime()
 
 Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log)
 {
+    profiling::CpuPhase phase("streamInit.reset");
     reset();
     log.clear();
 
+    phase.next("streamInit.openAsset");
     std::string reason;
     scene::MeshletStreamAsset openedAsset;
     if (!openedAsset.open(desc.streamAssetPath, reason) || !openedAsset.isCurrentForSource(desc.sourcePath)) {
@@ -805,6 +812,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return makeError(Error::Failure);
     }
 
+    phase.next("streamInit.boundsAndBudget");
     asset_ = std::move(openedAsset);
     drawBounds_ = computeDrawBounds(asset_);
     if (!drawBounds_.valid) {
@@ -859,6 +867,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             BufferUsageBits::AccelerationStructureBuildInput;
     }
 
+    phase.next("streamInit.pagePool", maxResidentBytes_);
     Result result = device.createBuffer(
         BufferDesc{
             .size = maxResidentBytes_,
@@ -875,6 +884,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     }
     pageBufferState_ = ResourceState::Undefined;
 
+    phase.next("streamInit.residency");
     if (!residency_.initialize(
             MeshletStreamResidencyDesc{
                 .asset = &asset_,
@@ -893,6 +903,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return makeError(Error::Failure);
     }
 
+    phase.next("streamInit.terminalCutAndCapacity");
     const MeshletStreamStorage& residencyStorage = residency_.storage();
     // Every terminal branch belongs to the base cut, including branches
     // that stopped simplifying before the primitive's coarsest level.
@@ -1040,11 +1051,13 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     const uint64_t updateByteSize =
         sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(maxUpdatePatches_) * sizeof(StreamPageTablePatch);
 
+    phase.next("streamInit.sceneMetadata");
     result = initializeSceneMetadataBuffers(device, log);
     if (!result) {
         return result;
     }
 
+    phase.next("streamInit.buffersAndDescriptors");
     result = createNamedBuffer(
         device,
         BufferDesc{
@@ -2028,16 +2041,19 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         }
     }
 
+    phase.next("streamInit.updatePass");
     updatePass_ = std::make_unique<UpdatePass>();
     result = updatePass_->initialize(device, *bindlessHeap_, updateByteSize, log);
     if (!result) {
         return result;
     }
+    phase.next("streamInit.traversalPass");
     traversalPass_ = std::make_unique<TraversalPass>();
     result = traversalPass_->initialize(device, log);
     if (!result) {
         return result;
     }
+    phase.next("streamInit.activePass");
     activeBuildPass_ = std::make_unique<ActiveBuildPass>();
     result = activeBuildPass_->initialize(device, log);
     if (!result) {

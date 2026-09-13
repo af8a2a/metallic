@@ -340,6 +340,73 @@ public:
     }
 };
 
+class FrameUploadGrowthBurstTest : public RhiTest {
+public:
+    FrameUploadGrowthBurstTest() { type = RhiTestType::Resource; name = "frame_upload_growth_burst"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::QueueSubmissionTracker tracker;
+        Commands commands(1);
+        std::unique_ptr<render::Streamer> streamer;
+        std::unique_ptr<render::Buffer> output;
+        std::unique_ptr<render::Semaphore> gate;
+        FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
+        FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
+        FRAME_REQUIRE(context.device.createSemaphore(gate));
+        FRAME_REQUIRE(context.device.createStreamer({.dynamicBufferSizePerFrame = 64 * 1024,
+            .queuedFrameCount = 2}, streamer));
+        constexpr uint32_t kPages = 64, kWordsPerPage = 5 * 1024;
+        constexpr uint64_t kBytes = uint64_t(kPages) * kWordsPerPage * sizeof(uint32_t);
+        FRAME_REQUIRE(context.device.createBuffer({.size = kBytes,
+            .usage = render::BufferUsageBits::TransferDestination,
+            .memoryLocation = render::MemoryLocation::HostReadback}, output));
+        QueueDrain drain{context.graphicsQueue, gate.get()};
+        FRAME_REQUIRE(commands.begin(1));
+        FRAME_REQUIRE(streamer->beginFrame(commands.frame));
+        std::vector<uint32_t> expected(kPages * kWordsPerPage);
+        render::Buffer* previous = nullptr;
+        uint32_t allocations = 0;
+        uint64_t allocatedBytes = 0;
+        for (uint32_t page = 0; page < kPages; ++page) {
+            auto* words = expected.data() + page * kWordsPerPage;
+            std::fill_n(words, kWordsPerPage, 0x12340000u + page);
+            render::StreamDataChunk chunk{.data = words, .size = kWordsPerPage * sizeof(uint32_t)};
+            const auto upload = streamer->streamBufferData({.dataChunks = &chunk, .dataChunkCount = 1,
+                .dstBuffer = output.get(), .dstOffset = uint64_t(page) * chunk.size});
+            if (!upload.valid()) { return RhiTestResult::fail("burst upload failed"); }
+            if (upload.buffer != previous) {
+                ++allocations;
+                allocatedBytes += streamer->stats().dynamicBufferSizePerFrame * 2;
+                previous = upload.buffer;
+            }
+        }
+        const auto capacity = streamer->stats().dynamicBufferSizePerFrame;
+        if (allocations > 8 || capacity < kBytes || capacity >= 2 * kBytes || allocatedBytes >= capacity * 4) {
+            return RhiTestResult::fail("burst uploads amplified retained staging allocations");
+        }
+        streamer->copyStreamedData(*commands.buffer);
+        streamer->endFrame();
+        FRAME_REQUIRE(commands.submit(tracker, gate.get()));
+        for (int index = 0; index < 8; ++index) { streamer->endFrame(); }
+        streamer.reset();
+        FRAME_REQUIRE(gate->signal(1));
+        FRAME_REQUIRE(commands.frame.wait(kWaitTimeout));
+        std::vector<uint32_t> actual(expected.size());
+        if (!readWords(*output, actual.data(), actual.size()) || actual != expected) {
+            return RhiTestResult::fail("slot 1 burst copies lost data across staging growth/destruction");
+        }
+        // Reject capacities whose alignment or queued-frame multiplication
+        // would overflow before attempting any Vulkan allocation.
+        if (context.device.createStreamer({.dynamicBufferSizePerFrame = UINT64_MAX,
+                .queuedFrameCount = 2}, streamer)) {
+            return RhiTestResult::fail("overflowing staging capacity was accepted");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(FrameUploadGrowthBurstTest);
+
 render::Result createProbe(render::Device& device, const char* entry,
     std::span<const render::ComputeProgramBindingDesc> bindings, render::ComputeProgram& program, std::string& log,
     uint32_t tableCount = 1)

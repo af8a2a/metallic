@@ -2,6 +2,7 @@
 #include "Runtime/Render/GAPI/StreamUploadCompletion.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
+#include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 
 #include <algorithm>
 #include <cstring>
@@ -156,6 +157,10 @@ struct StreamerImpl {
         if (desc.dynamicBufferSizePerFrame == 0) {
             desc.dynamicBufferSizePerFrame = kDynamicBufferChunkSize;
         }
+        const uint64_t maxSizePerFrame = (UINT64_MAX / desc.queuedFrameCount / kDynamicBufferChunkSize) * kDynamicBufferChunkSize;
+        if (desc.dynamicBufferSizePerFrame > maxSizePerFrame) {
+            return makeError(Error::InvalidArgument);
+        }
         dynamicBufferSizePerFrame = alignUp(desc.dynamicBufferSizePerFrame, kDynamicBufferChunkSize);
 
         if (desc.constantBufferSize > 0) {
@@ -212,14 +217,26 @@ struct StreamerImpl {
             return {};
         }
 
-        const uint64_t newSizePerFrame = alignUp(
-            std::max(requiredSizePerFrame, dynamicBufferSizePerFrame),
-            kDynamicBufferChunkSize);
+        const uint64_t maxSizePerFrame = (UINT64_MAX / desc.queuedFrameCount / kDynamicBufferChunkSize) * kDynamicBufferChunkSize;
+        if (requiredSizePerFrame > maxSizePerFrame) {
+            return makeError(Error::InvalidArgument);
+        }
+        uint64_t capacity = std::max(requiredSizePerFrame, dynamicBufferSizePerFrame);
+        if (dynamicBuffer != nullptr) {
+            // Each pending copy still references its original buffer. Growing
+            // one 64 KiB chunk at a time retains a near-full allocation per
+            // page, amplifying cold-start memory residency and release costs.
+            const uint64_t doubled = dynamicBufferSizePerFrame > maxSizePerFrame / 2
+                ? maxSizePerFrame : dynamicBufferSizePerFrame * 2;
+            capacity = std::max(capacity, doubled);
+        }
+        const uint64_t newSizePerFrame = alignUp(capacity, kDynamicBufferChunkSize);
         BufferDesc bufferDesc = desc.dynamicBufferDesc;
         bufferDesc.size = newSizePerFrame * desc.queuedFrameCount;
         bufferDesc.usage = bufferDesc.usage | BufferUsageBits::TransferSource;
         bufferDesc.memoryLocation = desc.dynamicBufferMemoryLocation;
 
+        profiling::CpuPhase allocationPhase("stream.grow", bufferDesc.size);
         std::unique_ptr<Buffer> newBuffer;
         Result result = device->createBuffer(bufferDesc, newBuffer);
         if (!result || newBuffer == nullptr) {

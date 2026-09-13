@@ -1,0 +1,3727 @@
+{
+  "date": "2026-09-13",
+  "baseCommit": "48298747a2ef2b5a2e109b77187c21141d86becc",
+  "scope": "MiniZorah, 1920x1080, 1.5 px, 1 GiB page pool except pressure-64; fresh process and GPU residency, existing cook/shader/OS caches; synchronous offscreen without presentation",
+  "cases": {
+    "trace-current": {
+      "status": "passed",
+      "durationSeconds": 10,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 15,
+      "frameMilliseconds": {
+        "max": 138.659,
+        "p50": 11.9646,
+        "p95": 13.4819,
+        "p99": 20.6022,
+        "samples": 795
+      },
+      "gpuMilliseconds": {
+        "max": 9.966336,
+        "p50": 8.64624,
+        "p95": 9.121504,
+        "p99": 9.371264,
+        "samples": 810
+      },
+      "cpuRecordMilliseconds": {
+        "max": 12.5121,
+        "p50": 3.0873,
+        "p95": 4.7359,
+        "p99": 7.512,
+        "samples": 795
+      },
+      "firstConvergedSeconds": 9.002023999999999,
+      "firstConvergedWallSeconds": 9.0803715,
+      "latencyOnly": true,
+      "implementation": "linear growth",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 35,
+        "demandFrames": {
+          "count": 8678,
+          "max": 23.0,
+          "mean": 4.129177229776446,
+          "p50": 3.0,
+          "p95": 11.0,
+          "p99": 15.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 12007,
+            "max": 572.013,
+            "mean": 5.343933205630049,
+            "p50": 1.0,
+            "p95": 13.0,
+            "p99": 171.0
+          },
+          "decode": {
+            "count": 12004,
+            "max": 1.333,
+            "mean": 0.15406722759080307,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 8678,
+            "max": 242.399,
+            "mean": 78.04589790274257,
+            "p50": 53.0,
+            "p95": 170.0,
+            "p99": 173.0
+          },
+          "feedback": {
+            "count": 12042,
+            "max": 138.938,
+            "mean": 19.209730443447935,
+            "p50": 13.0,
+            "p95": 100.0,
+            "p99": 139.0
+          },
+          "ioQueue": {
+            "count": 12004,
+            "max": 28.964,
+            "mean": 5.909197100966344,
+            "p50": 4.0,
+            "p95": 24.0,
+            "p99": 28.0
+          },
+          "prefetchToDrawable": {
+            "count": 3319,
+            "max": 76.648,
+            "mean": 38.45221150949081,
+            "p50": 37.0,
+            "p95": 46.0,
+            "p99": 63.0
+          },
+          "readyToUpload": {
+            "count": 12004,
+            "max": 139.943,
+            "mean": 19.228864461846054,
+            "p50": 12.0,
+            "p95": 95.0,
+            "p99": 136.0
+          },
+          "uploadToDrawable": {
+            "count": 11997,
+            "max": 138.159,
+            "mean": 19.021060931899644,
+            "p50": 12.0,
+            "p95": 98.0,
+            "p99": 138.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 10
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 3736,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 10,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11423,
+        "frameUploadBytes": 227376,
+        "freeResidentBytes": 672100864,
+        "pendingPageCount": 7,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 3,
+        "residentPageCount": 15160,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 15167,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 15160,
+        "totalCompletionDrivenUploads": 15160,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 3360,
+        "totalPrefetchDeferred": 770,
+        "totalPrefetchUsed": 2305,
+        "totalUploadBytes": 399708480,
+        "usedResidentBytes": 401640960
+      },
+      "finalCut": {
+        "activeGroups": 21623,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 215034,
+        "earlyHardware": 42149,
+        "earlySoftware": 25769,
+        "fineGroups": 13279,
+        "lateCandidates": 79072,
+        "lateHardware": 275,
+        "lateSoftware": 351,
+        "maxFiniteRefinementErrorPixels": 314584.84375,
+        "maxVisibleRefinementErrorPixels": 1.4999196529388428,
+        "nearPlaneUnboundedRefinements": 435,
+        "overTargetRefinements": 1215,
+        "selectedClusters": 237362,
+        "verifiedInstances": 12965,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "trace": {
+        "frames": 128,
+        "dropped": 0,
+        "growthCount": null,
+        "allocatedMiB": null,
+        "maxAllocationMiB": null,
+        "maxReleaseMilliseconds": 15.9083,
+        "initialFrame": {
+          "executionId": 0,
+          "frame": 0,
+          "milliseconds": 5401.1801,
+          "phase": "terminal",
+          "recordMilliseconds": 109.9563
+        },
+        "initialPhases": [
+          {
+            "depth": 0,
+            "frame": 0,
+            "milliseconds": 5286.4922,
+            "name": "preview.compile",
+            "startMilliseconds": 659.6037,
+            "value": 0
+          }
+        ],
+        "longestTimedFrames": [
+          {
+            "executionId": 25,
+            "frame": 25,
+            "milliseconds": 138.6506,
+            "phase": "timed",
+            "recordMilliseconds": 7.512,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 28,
+            "frame": 28,
+            "milliseconds": 107.7843,
+            "phase": "timed",
+            "recordMilliseconds": 8.6048,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 35,
+            "frame": 35,
+            "milliseconds": 99.0776,
+            "phase": "timed",
+            "recordMilliseconds": 8.2073,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 22,
+            "frame": 22,
+            "milliseconds": 34.8096,
+            "phase": "timed",
+            "recordMilliseconds": 5.4249,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 30,
+            "frame": 30,
+            "milliseconds": 27.1715,
+            "phase": "timed",
+            "recordMilliseconds": 5.6698,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 44,
+            "frame": 44,
+            "milliseconds": 23.6624,
+            "phase": "timed",
+            "recordMilliseconds": 7.0431,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 27,
+            "frame": 27,
+            "milliseconds": 22.8488,
+            "phase": "timed",
+            "recordMilliseconds": 4.7477,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 39,
+            "frame": 39,
+            "milliseconds": 18.372,
+            "phase": "timed",
+            "recordMilliseconds": 10.3432,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          }
+        ],
+        "growthInstrumentation": "unavailable in initial CPU-only instrumentation"
+      }
+    },
+    "trace-delayed": {
+      "status": "passed",
+      "durationSeconds": 10,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 22,
+      "frameMilliseconds": {
+        "max": 305.7987,
+        "p50": 12.3299,
+        "p95": 14.1308,
+        "p99": 15.1654,
+        "samples": 783
+      },
+      "gpuMilliseconds": {
+        "max": 10.386048,
+        "p50": 8.65072,
+        "p95": 9.686272,
+        "p99": 10.179488,
+        "samples": 805
+      },
+      "cpuRecordMilliseconds": {
+        "max": 95.9441,
+        "p50": 3.4097,
+        "p95": 4.9007,
+        "p99": 6.4671,
+        "samples": 783
+      },
+      "firstConvergedSeconds": 9.014197100000004,
+      "firstConvergedWallSeconds": 9.1095481,
+      "latencyOnly": true,
+      "implementation": "linear growth",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 57,
+        "demandFrames": {
+          "count": 7396,
+          "max": 21.0,
+          "mean": 7.0551649540292045,
+          "p50": 6.0,
+          "p95": 14.0,
+          "p99": 18.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 11993,
+            "max": 570.256,
+            "mean": 13.476399316267823,
+            "p50": 1.0,
+            "p95": 75.0,
+            "p99": 381.0
+          },
+          "decode": {
+            "count": 11993,
+            "max": 8.807,
+            "mean": 0.17674501792712416,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 7396,
+            "max": 368.575,
+            "mean": 102.16310708491076,
+            "p50": 78.0,
+            "p95": 360.0,
+            "p99": 364.0
+          },
+          "feedback": {
+            "count": 12050,
+            "max": 306.705,
+            "mean": 19.426949958506224,
+            "p50": 12.0,
+            "p95": 16.0,
+            "p99": 307.0
+          },
+          "ioQueue": {
+            "count": 11993,
+            "max": 24.428,
+            "mean": 4.39959367964646,
+            "p50": 3.0,
+            "p95": 15.0,
+            "p99": 21.0
+          },
+          "prefetchToDrawable": {
+            "count": 4575,
+            "max": 639.171,
+            "mean": 103.94268612021858,
+            "p50": 77.0,
+            "p95": 360.0,
+            "p99": 525.0
+          },
+          "readyToUpload": {
+            "count": 11993,
+            "max": 327.953,
+            "mean": 12.915694988743432,
+            "p50": 11.0,
+            "p95": 36.0,
+            "p99": 56.0
+          },
+          "uploadToDrawable": {
+            "count": 11971,
+            "max": 344.41,
+            "mean": 58.42242101745886,
+            "p50": 49.0,
+            "p95": 101.0,
+            "p99": 345.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 22
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 3709,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 11,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11416,
+        "frameUploadBytes": 361936,
+        "freeResidentBytes": 672784896,
+        "pendingPageCount": 22,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 15134,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 15156,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 15134,
+        "totalCompletionDrivenUploads": 0,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 4764,
+        "totalPrefetchDeferred": 4404,
+        "totalPrefetchUsed": 3704,
+        "totalUploadBytes": 399123520,
+        "usedResidentBytes": 400956928
+      },
+      "finalCut": {
+        "activeGroups": 21695,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 216969,
+        "earlyHardware": 42097,
+        "earlySoftware": 25412,
+        "fineGroups": 13353,
+        "lateCandidates": 80025,
+        "lateHardware": 210,
+        "lateSoftware": 445,
+        "maxFiniteRefinementErrorPixels": 249180.296875,
+        "maxVisibleRefinementErrorPixels": 1.4999576807022095,
+        "nearPlaneUnboundedRefinements": 435,
+        "overTargetRefinements": 1247,
+        "selectedClusters": 238711,
+        "verifiedInstances": 12958,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "trace": {
+        "frames": 128,
+        "dropped": 0,
+        "growthCount": null,
+        "allocatedMiB": null,
+        "maxAllocationMiB": null,
+        "maxReleaseMilliseconds": 12.0251,
+        "initialFrame": {
+          "executionId": 0,
+          "frame": 0,
+          "milliseconds": 5338.2586,
+          "phase": "terminal",
+          "recordMilliseconds": 106.9684
+        },
+        "initialPhases": [
+          {
+            "depth": 0,
+            "frame": 0,
+            "milliseconds": 5225.68,
+            "name": "preview.compile",
+            "startMilliseconds": 735.3906,
+            "value": 0
+          }
+        ],
+        "longestTimedFrames": [
+          {
+            "executionId": 35,
+            "frame": 35,
+            "milliseconds": 305.7881,
+            "phase": "timed",
+            "recordMilliseconds": 95.9441,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 41,
+            "frame": 41,
+            "milliseconds": 60.6924,
+            "phase": "timed",
+            "recordMilliseconds": 6.9251,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 43,
+            "frame": 43,
+            "milliseconds": 21.7745,
+            "phase": "timed",
+            "recordMilliseconds": 5.9899,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 37,
+            "frame": 37,
+            "milliseconds": 21.4377,
+            "phase": "timed",
+            "recordMilliseconds": 5.1275,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 63,
+            "frame": 63,
+            "milliseconds": 16.34,
+            "phase": "timed",
+            "recordMilliseconds": 7.5378,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 79,
+            "frame": 79,
+            "milliseconds": 14.8721,
+            "phase": "timed",
+            "recordMilliseconds": 5.7315,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 81,
+            "frame": 81,
+            "milliseconds": 14.7775,
+            "phase": "timed",
+            "recordMilliseconds": 5.397,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          },
+          {
+            "executionId": 67,
+            "frame": 67,
+            "milliseconds": 14.6266,
+            "phase": "timed",
+            "recordMilliseconds": 5.9112,
+            "growthCount": 0,
+            "allocatedMiB": 0.0
+          }
+        ],
+        "growthInstrumentation": "unavailable in initial CPU-only instrumentation"
+      }
+    },
+    "calibrated-current": {
+      "status": "passed",
+      "durationSeconds": 10,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 15,
+      "frameMilliseconds": {
+        "max": 199.0786,
+        "p50": 12.5714,
+        "p95": 14.6203,
+        "p99": 24.6843,
+        "samples": 740
+      },
+      "gpuMilliseconds": {
+        "max": 21.920288,
+        "p50": 9.077952,
+        "p95": 10.005664,
+        "p99": 18.352512,
+        "samples": 755
+      },
+      "cpuRecordMilliseconds": {
+        "max": 15.3338,
+        "p50": 3.1734,
+        "p95": 4.9894,
+        "p99": 6.96,
+        "samples": 740
+      },
+      "firstConvergedSeconds": 9.010348399999991,
+      "firstConvergedWallSeconds": 9.0903619,
+      "latencyOnly": true,
+      "implementation": "linear growth",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 26,
+        "demandFrames": {
+          "count": 8718,
+          "max": 17.0,
+          "mean": 4.131108052305574,
+          "p50": 3.0,
+          "p95": 10.0,
+          "p99": 13.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 11988,
+            "max": 807.14,
+            "mean": 6.283426676676677,
+            "p50": 1.0,
+            "p95": 2.0,
+            "p99": 172.0
+          },
+          "decode": {
+            "count": 11988,
+            "max": 1.941,
+            "mean": 0.16401835168501835,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 8718,
+            "max": 224.373,
+            "mean": 87.94035983023629,
+            "p50": 59.0,
+            "p95": 221.0,
+            "p99": 225.0
+          },
+          "feedback": {
+            "count": 12014,
+            "max": 198.6,
+            "mean": 22.911981022140836,
+            "p50": 14.0,
+            "p95": 119.0,
+            "p99": 199.0
+          },
+          "ioQueue": {
+            "count": 11988,
+            "max": 39.191,
+            "mean": 7.419571321321321,
+            "p50": 4.0,
+            "p95": 33.0,
+            "p99": 37.0
+          },
+          "prefetchToDrawable": {
+            "count": 3264,
+            "max": 117.704,
+            "mean": 41.69578033088235,
+            "p50": 39.0,
+            "p95": 54.0,
+            "p99": 103.0
+          },
+          "readyToUpload": {
+            "count": 11988,
+            "max": 198.397,
+            "mean": 19.737671671671674,
+            "p50": 12.0,
+            "p95": 92.0,
+            "p99": 194.0
+          },
+          "uploadToDrawable": {
+            "count": 11982,
+            "max": 197.419,
+            "mean": 22.49209347354365,
+            "p50": 13.0,
+            "p95": 118.0,
+            "p99": 197.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 6
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 3722,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 6,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11418,
+        "frameUploadBytes": 218816,
+        "freeResidentBytes": 672920320,
+        "pendingPageCount": 6,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 15145,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 15151,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 15145,
+        "totalCompletionDrivenUploads": 15145,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 3286,
+        "totalPrefetchDeferred": 920,
+        "totalPrefetchUsed": 2234,
+        "totalUploadBytes": 398988624,
+        "usedResidentBytes": 400821504
+      },
+      "finalCut": {
+        "activeGroups": 21700,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 216332,
+        "earlyHardware": 42026,
+        "earlySoftware": 25442,
+        "fineGroups": 13357,
+        "lateCandidates": 79480,
+        "lateHardware": 175,
+        "lateSoftware": 440,
+        "maxFiniteRefinementErrorPixels": 199237.375,
+        "maxVisibleRefinementErrorPixels": 1.4999884366989136,
+        "nearPlaneUnboundedRefinements": 435,
+        "overTargetRefinements": 1245,
+        "selectedClusters": 238745,
+        "verifiedInstances": 12963,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "trace": {
+        "frames": 128,
+        "dropped": 0,
+        "growthCount": 119,
+        "allocatedMiB": 1829.625,
+        "maxAllocationMiB": 22.75,
+        "maxReleaseMilliseconds": 10.9007,
+        "initialFrame": {
+          "executionId": 0,
+          "frame": 0,
+          "milliseconds": 5381.3613,
+          "phase": "terminal",
+          "recordMilliseconds": 94.0588
+        },
+        "initialPhases": [
+          {
+            "depth": 0,
+            "frame": 0,
+            "milliseconds": 5282.2852,
+            "name": "preview.compile",
+            "startMilliseconds": 688.3,
+            "value": 0
+          }
+        ],
+        "longestTimedFrames": [
+          {
+            "executionId": 30,
+            "frame": 30,
+            "milliseconds": 199.066,
+            "phase": "timed",
+            "recordMilliseconds": 10.5129,
+            "growthCount": 21,
+            "allocatedMiB": 259.875,
+            "gpuMilliseconds": 18.3523839999998,
+            "gpuStartAfterSubmitEndMilliseconds": 169.13570600000045,
+            "waitReturnAfterGpuEndMilliseconds": 0.32070999999996275,
+            "alignmentUncertaintyMilliseconds": 0.011118
+          },
+          {
+            "executionId": 33,
+            "frame": 33,
+            "milliseconds": 157.984,
+            "phase": "timed",
+            "recordMilliseconds": 11.9037,
+            "growthCount": 27,
+            "allocatedMiB": 486.0,
+            "gpuMilliseconds": 17.81504000000041,
+            "gpuStartAfterSubmitEndMilliseconds": 127.52768800000004,
+            "waitReturnAfterGpuEndMilliseconds": 0.1732719999999972,
+            "alignmentUncertaintyMilliseconds": 0.008904
+          },
+          {
+            "executionId": 25,
+            "frame": 25,
+            "milliseconds": 117.2391,
+            "phase": "timed",
+            "recordMilliseconds": 4.1774,
+            "growthCount": 11,
+            "allocatedMiB": 96.25,
+            "gpuMilliseconds": 15.344127999999728,
+            "gpuStartAfterSubmitEndMilliseconds": 96.77594600000045,
+            "waitReturnAfterGpuEndMilliseconds": 0.4404260000001159,
+            "alignmentUncertaintyMilliseconds": 0.010846
+          },
+          {
+            "executionId": 36,
+            "frame": 36,
+            "milliseconds": 94.6325,
+            "phase": "timed",
+            "recordMilliseconds": 7.7558,
+            "growthCount": 16,
+            "allocatedMiB": 331.0,
+            "gpuMilliseconds": 19.01951999999983,
+            "gpuStartAfterSubmitEndMilliseconds": 67.17971200000036,
+            "waitReturnAfterGpuEndMilliseconds": 0.27846800000043004,
+            "alignmentUncertaintyMilliseconds": 0.008036
+          },
+          {
+            "executionId": 48,
+            "frame": 48,
+            "milliseconds": 28.884,
+            "phase": "timed",
+            "recordMilliseconds": 6.7065,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 21.920256000000336,
+            "gpuStartAfterSubmitEndMilliseconds": -0.2455340000000768,
+            "waitReturnAfterGpuEndMilliseconds": 0.14897799999926065,
+            "alignmentUncertaintyMilliseconds": 0.009086
+          },
+          {
+            "executionId": 44,
+            "frame": 44,
+            "milliseconds": 28.3995,
+            "phase": "timed",
+            "recordMilliseconds": 7.1271,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 20.940544000000045,
+            "gpuStartAfterSubmitEndMilliseconds": -0.20741799999991345,
+            "waitReturnAfterGpuEndMilliseconds": 0.1305740000007063,
+            "alignmentUncertaintyMilliseconds": 0.008254
+          },
+          {
+            "executionId": 74,
+            "frame": 74,
+            "milliseconds": 25.5816,
+            "phase": "timed",
+            "recordMilliseconds": 3.9999,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 21.271552000000156,
+            "gpuStartAfterSubmitEndMilliseconds": -0.1484939999997223,
+            "waitReturnAfterGpuEndMilliseconds": 0.15654199999971752,
+            "alignmentUncertaintyMilliseconds": 0.010754
+          },
+          {
+            "executionId": 52,
+            "frame": 52,
+            "milliseconds": 24.9848,
+            "phase": "timed",
+            "recordMilliseconds": 4.04,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 20.658175999999912,
+            "gpuStartAfterSubmitEndMilliseconds": -0.16155600000007836,
+            "waitReturnAfterGpuEndMilliseconds": 0.14548000000013417,
+            "alignmentUncertaintyMilliseconds": 0.00994
+          }
+        ]
+      }
+    },
+    "calibrated-geometric": {
+      "status": "passed",
+      "durationSeconds": 10,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 15,
+      "frameMilliseconds": {
+        "max": 32.745,
+        "p50": 12.696,
+        "p95": 15.0394,
+        "p99": 16.2082,
+        "samples": 781
+      },
+      "gpuMilliseconds": {
+        "max": 11.651712,
+        "p50": 8.914368,
+        "p95": 10.504032,
+        "p99": 11.190944,
+        "samples": 796
+      },
+      "cpuRecordMilliseconds": {
+        "max": 14.1344,
+        "p50": 3.4155,
+        "p95": 4.9557,
+        "p99": 6.2206,
+        "samples": 781
+      },
+      "firstConvergedSeconds": 9.00205019999999,
+      "firstConvergedWallSeconds": 9.0881406,
+      "latencyOnly": true,
+      "implementation": "geometric growth",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 46,
+        "demandFrames": {
+          "count": 8614,
+          "max": 17.0,
+          "mean": 4.297654980264685,
+          "p50": 4.0,
+          "p95": 10.0,
+          "p99": 13.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 12037,
+            "max": 250.977,
+            "mean": 2.4739849630306554,
+            "p50": 1.0,
+            "p95": 11.0,
+            "p99": 43.0
+          },
+          "decode": {
+            "count": 12034,
+            "max": 1.75,
+            "mean": 0.19216453382084095,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 8614,
+            "max": 163.869,
+            "mean": 47.080982238216855,
+            "p50": 42.0,
+            "p95": 97.0,
+            "p99": 134.0
+          },
+          "feedback": {
+            "count": 12083,
+            "max": 32.693,
+            "mean": 12.001994372258546,
+            "p50": 13.0,
+            "p95": 16.0,
+            "p99": 33.0
+          },
+          "ioQueue": {
+            "count": 12034,
+            "max": 31.166,
+            "mean": 9.15566220707994,
+            "p50": 8.0,
+            "p95": 26.0,
+            "p99": 30.0
+          },
+          "prefetchToDrawable": {
+            "count": 3413,
+            "max": 98.236,
+            "mean": 39.06510723703487,
+            "p50": 39.0,
+            "p95": 45.0,
+            "p99": 69.0
+          },
+          "readyToUpload": {
+            "count": 12034,
+            "max": 56.147,
+            "mean": 9.049907096559748,
+            "p50": 10.0,
+            "p95": 16.0,
+            "p99": 28.0
+          },
+          "uploadToDrawable": {
+            "count": 12027,
+            "max": 32.02,
+            "mean": 11.068531803442255,
+            "p50": 12.0,
+            "p95": 15.0,
+            "p99": 32.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 10
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 3766,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 10,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11423,
+        "frameUploadBytes": 227376,
+        "freeResidentBytes": 670910976,
+        "pendingPageCount": 7,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 3,
+        "residentPageCount": 15190,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 15197,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 15190,
+        "totalCompletionDrivenUploads": 15190,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 3431,
+        "totalPrefetchDeferred": 748,
+        "totalPrefetchUsed": 2363,
+        "totalUploadBytes": 400894000,
+        "usedResidentBytes": 402830848
+      },
+      "finalCut": {
+        "activeGroups": 21623,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 215034,
+        "earlyHardware": 42141,
+        "earlySoftware": 25690,
+        "fineGroups": 13279,
+        "lateCandidates": 79159,
+        "lateHardware": 283,
+        "lateSoftware": 430,
+        "maxFiniteRefinementErrorPixels": 313896.375,
+        "maxVisibleRefinementErrorPixels": 1.4999217987060547,
+        "nearPlaneUnboundedRefinements": 435,
+        "overTargetRefinements": 1215,
+        "selectedClusters": 237362,
+        "verifiedInstances": 12965,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "trace": {
+        "frames": 128,
+        "dropped": 0,
+        "growthCount": 3,
+        "allocatedMiB": 56.0,
+        "maxAllocationMiB": 32.0,
+        "maxReleaseMilliseconds": 0.0124,
+        "initialFrame": {
+          "executionId": 0,
+          "frame": 0,
+          "milliseconds": 5605.5675,
+          "phase": "terminal",
+          "recordMilliseconds": 111.0077
+        },
+        "initialPhases": [
+          {
+            "depth": 0,
+            "frame": 0,
+            "milliseconds": 5489.3001,
+            "name": "preview.compile",
+            "startMilliseconds": 645.109,
+            "value": 0
+          }
+        ],
+        "longestTimedFrames": [
+          {
+            "executionId": 36,
+            "frame": 36,
+            "milliseconds": 32.7413,
+            "phase": "timed",
+            "recordMilliseconds": 6.0156,
+            "growthCount": 1,
+            "allocatedMiB": 32.0,
+            "gpuMilliseconds": 5.612288000000262,
+            "gpuStartAfterSubmitEndMilliseconds": 20.678509999999708,
+            "waitReturnAfterGpuEndMilliseconds": 0.12830200000007608,
+            "alignmentUncertaintyMilliseconds": 0.005522
+          },
+          {
+            "executionId": 50,
+            "frame": 50,
+            "milliseconds": 15.6108,
+            "phase": "timed",
+            "recordMilliseconds": 6.2206,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.98815999999988,
+            "gpuStartAfterSubmitEndMilliseconds": -0.16607199999931183,
+            "waitReturnAfterGpuEndMilliseconds": 0.2565119999999297,
+            "alignmentUncertaintyMilliseconds": 0.005072
+          },
+          {
+            "executionId": 52,
+            "frame": 52,
+            "milliseconds": 15.1092,
+            "phase": "timed",
+            "recordMilliseconds": 5.8893,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 9.299712,
+            "gpuStartAfterSubmitEndMilliseconds": -0.462196000000101,
+            "waitReturnAfterGpuEndMilliseconds": 0.11178399999971589,
+            "alignmentUncertaintyMilliseconds": 0.005568
+          },
+          {
+            "executionId": 49,
+            "frame": 49,
+            "milliseconds": 14.6761,
+            "phase": "timed",
+            "recordMilliseconds": 5.974,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.581887999999708,
+            "gpuStartAfterSubmitEndMilliseconds": -0.2748099999999817,
+            "waitReturnAfterGpuEndMilliseconds": 0.09562200000073062,
+            "alignmentUncertaintyMilliseconds": 0.005186
+          },
+          {
+            "executionId": 84,
+            "frame": 84,
+            "milliseconds": 14.6584,
+            "phase": "timed",
+            "recordMilliseconds": 14.1344,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 11.651840000000448,
+            "gpuStartAfterSubmitEndMilliseconds": -11.552963999999672,
+            "waitReturnAfterGpuEndMilliseconds": 0.11662400000022899,
+            "alignmentUncertaintyMilliseconds": 0.005436
+          },
+          {
+            "executionId": 60,
+            "frame": 60,
+            "milliseconds": 14.5023,
+            "phase": "timed",
+            "recordMilliseconds": 3.4114,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 10.970879999999852,
+            "gpuStartAfterSubmitEndMilliseconds": -0.24675399999982617,
+            "waitReturnAfterGpuEndMilliseconds": 0.11617399999977351,
+            "alignmentUncertaintyMilliseconds": 0.005486
+          },
+          {
+            "executionId": 51,
+            "frame": 51,
+            "milliseconds": 14.4042,
+            "phase": "timed",
+            "recordMilliseconds": 5.5751,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.743680000000495,
+            "gpuStartAfterSubmitEndMilliseconds": -0.27052199999989823,
+            "waitReturnAfterGpuEndMilliseconds": 0.09824200000002747,
+            "alignmentUncertaintyMilliseconds": 0.005186
+          },
+          {
+            "executionId": 48,
+            "frame": 48,
+            "milliseconds": 14.3727,
+            "phase": "timed",
+            "recordMilliseconds": 5.8873,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.356608000000051,
+            "gpuStartAfterSubmitEndMilliseconds": -0.250794000000025,
+            "waitReturnAfterGpuEndMilliseconds": 0.11108600000079605,
+            "alignmentUncertaintyMilliseconds": 0.005086
+          }
+        ]
+      }
+    },
+    "calibrated-geometric-repeat": {
+      "status": "passed",
+      "durationSeconds": 10,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 15,
+      "frameMilliseconds": {
+        "max": 38.6876,
+        "p50": 12.7688,
+        "p95": 18.7293,
+        "p99": 24.8968,
+        "samples": 747
+      },
+      "gpuMilliseconds": {
+        "max": 33.038016,
+        "p50": 8.891456,
+        "p95": 12.793376,
+        "p99": 20.704128,
+        "samples": 762
+      },
+      "cpuRecordMilliseconds": {
+        "max": 8.8726,
+        "p50": 3.6095,
+        "p95": 5.3277,
+        "p99": 6.6633,
+        "samples": 747
+      },
+      "firstConvergedSeconds": 9.010950700000008,
+      "firstConvergedWallSeconds": 9.1112708,
+      "latencyOnly": true,
+      "implementation": "geometric growth",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 44,
+        "demandFrames": {
+          "count": 8611,
+          "max": 22.0,
+          "mean": 4.063871791894089,
+          "p50": 3.0,
+          "p95": 10.0,
+          "p99": 13.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 12038,
+            "max": 296.633,
+            "mean": 3.133788420003323,
+            "p50": 1.0,
+            "p95": 11.0,
+            "p99": 89.0
+          },
+          "decode": {
+            "count": 12038,
+            "max": 1.112,
+            "mean": 0.14443445755108822,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 8611,
+            "max": 205.416,
+            "mean": 47.817880501683895,
+            "p50": 42.0,
+            "p95": 109.0,
+            "p99": 138.0
+          },
+          "feedback": {
+            "count": 12082,
+            "max": 38.769,
+            "mean": 12.22610784638305,
+            "p50": 13.0,
+            "p95": 16.0,
+            "p99": 25.0
+          },
+          "ioQueue": {
+            "count": 12038,
+            "max": 40.355,
+            "mean": 6.83994517361688,
+            "p50": 4.0,
+            "p95": 34.0,
+            "p99": 39.0
+          },
+          "prefetchToDrawable": {
+            "count": 3420,
+            "max": 82.954,
+            "mean": 40.36098128654971,
+            "p50": 39.0,
+            "p95": 51.0,
+            "p99": 57.0
+          },
+          "readyToUpload": {
+            "count": 12038,
+            "max": 148.701,
+            "mean": 11.372753530486792,
+            "p50": 11.0,
+            "p95": 25.0,
+            "p99": 45.0
+          },
+          "uploadToDrawable": {
+            "count": 12031,
+            "max": 37.529,
+            "mean": 11.673793699609343,
+            "p50": 12.0,
+            "p95": 17.0,
+            "p99": 35.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 7
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 3773,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 7,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11417,
+        "frameUploadBytes": 262144,
+        "freeResidentBytes": 670844672,
+        "pendingPageCount": 7,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 15194,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 15201,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 15194,
+        "totalCompletionDrivenUploads": 15194,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 3450,
+        "totalPrefetchDeferred": 962,
+        "totalPrefetchUsed": 2382,
+        "totalUploadBytes": 401057968,
+        "usedResidentBytes": 402897152
+      },
+      "finalCut": {
+        "activeGroups": 21698,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 216323,
+        "earlyHardware": 42021,
+        "earlySoftware": 25439,
+        "fineGroups": 13355,
+        "lateCandidates": 79487,
+        "lateHardware": 217,
+        "lateSoftware": 473,
+        "maxFiniteRefinementErrorPixels": 205976.84375,
+        "maxVisibleRefinementErrorPixels": 1.4999958276748657,
+        "nearPlaneUnboundedRefinements": 435,
+        "overTargetRefinements": 1246,
+        "selectedClusters": 238717,
+        "verifiedInstances": 12961,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "trace": {
+        "frames": 128,
+        "dropped": 0,
+        "growthCount": 3,
+        "allocatedMiB": 56.0,
+        "maxAllocationMiB": 32.0,
+        "maxReleaseMilliseconds": 0.0134,
+        "initialFrame": {
+          "executionId": 0,
+          "frame": 0,
+          "milliseconds": 6041.4586,
+          "phase": "terminal",
+          "recordMilliseconds": 109.9647
+        },
+        "initialPhases": [
+          {
+            "depth": 0,
+            "frame": 0,
+            "milliseconds": 5925.9596,
+            "name": "preview.compile",
+            "startMilliseconds": 710.0447,
+            "value": 0
+          }
+        ],
+        "longestTimedFrames": [
+          {
+            "executionId": 29,
+            "frame": 29,
+            "milliseconds": 35.1373,
+            "phase": "timed",
+            "recordMilliseconds": 6.9268,
+            "growthCount": 1,
+            "allocatedMiB": 32.0,
+            "gpuMilliseconds": 4.746240000000398,
+            "gpuStartAfterSubmitEndMilliseconds": 22.903269999999896,
+            "waitReturnAfterGpuEndMilliseconds": 0.1647899999998117,
+            "alignmentUncertaintyMilliseconds": 0.00735
+          },
+          {
+            "executionId": 60,
+            "frame": 60,
+            "milliseconds": 25.4198,
+            "phase": "timed",
+            "recordMilliseconds": 4.1648,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 20.691200000000208,
+            "gpuStartAfterSubmitEndMilliseconds": -0.19684800000015967,
+            "waitReturnAfterGpuEndMilliseconds": 0.23884800000087125,
+            "alignmentUncertaintyMilliseconds": 0.009664
+          },
+          {
+            "executionId": 77,
+            "frame": 77,
+            "milliseconds": 22.6343,
+            "phase": "timed",
+            "recordMilliseconds": 3.9054,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 18.444032000000334,
+            "gpuStartAfterSubmitEndMilliseconds": -0.21719000000083905,
+            "waitReturnAfterGpuEndMilliseconds": 0.185657999999421,
+            "alignmentUncertaintyMilliseconds": 0.007254
+          },
+          {
+            "executionId": 112,
+            "frame": 112,
+            "milliseconds": 20.9675,
+            "phase": "timed",
+            "recordMilliseconds": 4.8706,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 12.8471040000004,
+            "gpuStartAfterSubmitEndMilliseconds": 2.8005619999999456,
+            "waitReturnAfterGpuEndMilliseconds": 0.14023399999950925,
+            "alignmentUncertaintyMilliseconds": 0.006182
+          },
+          {
+            "executionId": 94,
+            "frame": 94,
+            "milliseconds": 20.8268,
+            "phase": "timed",
+            "recordMilliseconds": 3.7607,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 16.77184000000034,
+            "gpuStartAfterSubmitEndMilliseconds": -0.1698980000000389,
+            "waitReturnAfterGpuEndMilliseconds": 0.11635799999930896,
+            "alignmentUncertaintyMilliseconds": 0.005354
+          },
+          {
+            "executionId": 44,
+            "frame": 44,
+            "milliseconds": 19.243,
+            "phase": "timed",
+            "recordMilliseconds": 6.7804,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 9.759743999999955,
+            "gpuStartAfterSubmitEndMilliseconds": 2.2396959999997796,
+            "waitReturnAfterGpuEndMilliseconds": 0.13015999999970518,
+            "alignmentUncertaintyMilliseconds": 0.005868
+          },
+          {
+            "executionId": 43,
+            "frame": 43,
+            "milliseconds": 15.5346,
+            "phase": "timed",
+            "recordMilliseconds": 6.9711,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.2030079999995,
+            "gpuStartAfterSubmitEndMilliseconds": -0.12884200000004636,
+            "waitReturnAfterGpuEndMilliseconds": 0.1334340000003067,
+            "alignmentUncertaintyMilliseconds": 0.006786
+          },
+          {
+            "executionId": 55,
+            "frame": 55,
+            "milliseconds": 15.4864,
+            "phase": "timed",
+            "recordMilliseconds": 5.6538,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 9.671680000000379,
+            "gpuStartAfterSubmitEndMilliseconds": -0.21457800000033606,
+            "waitReturnAfterGpuEndMilliseconds": 0.1033980000001975,
+            "alignmentUncertaintyMilliseconds": 0.005686
+          }
+        ]
+      }
+    },
+    "calibrated-linear-reverse": {
+      "status": "passed",
+      "durationSeconds": 10,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 15,
+      "frameMilliseconds": {
+        "max": 141.9969,
+        "p50": 12.696,
+        "p95": 14.4341,
+        "p99": 18.3911,
+        "samples": 747
+      },
+      "gpuMilliseconds": {
+        "max": 10.873664,
+        "p50": 8.838752,
+        "p95": 9.57152,
+        "p99": 10.036512,
+        "samples": 762
+      },
+      "cpuRecordMilliseconds": {
+        "max": 10.4904,
+        "p50": 3.6544,
+        "p95": 5.2371,
+        "p99": 7.4104,
+        "samples": 747
+      },
+      "firstConvergedSeconds": 9.006265800000001,
+      "firstConvergedWallSeconds": 9.0935898,
+      "latencyOnly": true,
+      "implementation": "linear growth",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 28,
+        "demandFrames": {
+          "count": 8707,
+          "max": 17.0,
+          "mean": 4.354886872631217,
+          "p50": 3.0,
+          "p95": 10.0,
+          "p99": 13.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 11997,
+            "max": 559.495,
+            "mean": 5.940527131782946,
+            "p50": 1.0,
+            "p95": 11.0,
+            "p99": 197.0
+          },
+          "decode": {
+            "count": 11995,
+            "max": 1.303,
+            "mean": 0.1899805752396832,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 8707,
+            "max": 286.451,
+            "mean": 85.48157011599862,
+            "p50": 54.0,
+            "p95": 218.0,
+            "p99": 227.0
+          },
+          "feedback": {
+            "count": 12025,
+            "max": 131.685,
+            "mean": 20.638588523908524,
+            "p50": 13.0,
+            "p95": 109.0,
+            "p99": 118.0
+          },
+          "ioQueue": {
+            "count": 11995,
+            "max": 34.284,
+            "mean": 9.242982409337225,
+            "p50": 7.0,
+            "p95": 28.0,
+            "p99": 33.0
+          },
+          "prefetchToDrawable": {
+            "count": 3279,
+            "max": 99.479,
+            "mean": 40.4762131747484,
+            "p50": 39.0,
+            "p95": 46.0,
+            "p99": 90.0
+          },
+          "readyToUpload": {
+            "count": 11995,
+            "max": 243.764,
+            "mean": 19.676746144226758,
+            "p50": 12.0,
+            "p95": 107.0,
+            "p99": 131.0
+          },
+          "uploadToDrawable": {
+            "count": 11986,
+            "max": 130.397,
+            "mean": 20.921050225262807,
+            "p50": 13.0,
+            "p95": 108.0,
+            "p99": 130.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 11
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 3730,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 10,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11418,
+        "frameUploadBytes": 293200,
+        "freeResidentBytes": 672527104,
+        "pendingPageCount": 9,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 2,
+        "residentPageCount": 15149,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 15158,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 15149,
+        "totalCompletionDrivenUploads": 15149,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 3311,
+        "totalPrefetchDeferred": 805,
+        "totalPrefetchUsed": 2255,
+        "totalUploadBytes": 399291680,
+        "usedResidentBytes": 401214720
+      },
+      "finalCut": {
+        "activeGroups": 21621,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 215594,
+        "earlyHardware": 42110,
+        "earlySoftware": 25350,
+        "fineGroups": 13278,
+        "lateCandidates": 80025,
+        "lateHardware": 197,
+        "lateSoftware": 242,
+        "maxFiniteRefinementErrorPixels": 226078.75,
+        "maxVisibleRefinementErrorPixels": 1.49996817111969,
+        "nearPlaneUnboundedRefinements": 435,
+        "overTargetRefinements": 1212,
+        "selectedClusters": 237404,
+        "verifiedInstances": 12963,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "trace": {
+        "frames": 128,
+        "dropped": 0,
+        "growthCount": 117,
+        "allocatedMiB": 1784.25,
+        "maxAllocationMiB": 22.5,
+        "maxReleaseMilliseconds": 16.1501,
+        "initialFrame": {
+          "executionId": 0,
+          "frame": 0,
+          "milliseconds": 5680.4805,
+          "phase": "terminal",
+          "recordMilliseconds": 116.9097
+        },
+        "initialPhases": [
+          {
+            "depth": 0,
+            "frame": 0,
+            "milliseconds": 5558.3061,
+            "name": "preview.compile",
+            "startMilliseconds": 679.885,
+            "value": 0
+          }
+        ],
+        "longestTimedFrames": [
+          {
+            "executionId": 35,
+            "frame": 35,
+            "milliseconds": 141.984,
+            "phase": "timed",
+            "recordMilliseconds": 10.4904,
+            "growthCount": 36,
+            "allocatedMiB": 645.75,
+            "gpuMilliseconds": 5.7620480000005045,
+            "gpuStartAfterSubmitEndMilliseconds": 114.38268400000035,
+            "waitReturnAfterGpuEndMilliseconds": 0.19496799999978975,
+            "alignmentUncertaintyMilliseconds": 0.010164
+          },
+          {
+            "executionId": 43,
+            "frame": 43,
+            "milliseconds": 117.0194,
+            "phase": "timed",
+            "recordMilliseconds": 8.1381,
+            "growthCount": 14,
+            "allocatedMiB": 303.625,
+            "gpuMilliseconds": 7.637248,
+            "gpuStartAfterSubmitEndMilliseconds": 100.56148399999968,
+            "waitReturnAfterGpuEndMilliseconds": 0.18916799999988143,
+            "alignmentUncertaintyMilliseconds": 0.008836
+          },
+          {
+            "executionId": 30,
+            "frame": 30,
+            "milliseconds": 108.6881,
+            "phase": "timed",
+            "recordMilliseconds": 6.7727,
+            "growthCount": 30,
+            "allocatedMiB": 324.375,
+            "gpuMilliseconds": 4.667904000000817,
+            "gpuStartAfterSubmitEndMilliseconds": 96.51379999999958,
+            "waitReturnAfterGpuEndMilliseconds": 0.18799599999965722,
+            "alignmentUncertaintyMilliseconds": 0.009832
+          },
+          {
+            "executionId": 29,
+            "frame": 29,
+            "milliseconds": 95.432,
+            "phase": "timed",
+            "recordMilliseconds": 5.1874,
+            "growthCount": 7,
+            "allocatedMiB": 59.5,
+            "gpuMilliseconds": 4.5309440000000905,
+            "gpuStartAfterSubmitEndMilliseconds": 85.1207320000004,
+            "waitReturnAfterGpuEndMilliseconds": 0.1666239999995014,
+            "alignmentUncertaintyMilliseconds": 0.007704
+          },
+          {
+            "executionId": 33,
+            "frame": 33,
+            "milliseconds": 71.2559,
+            "phase": "timed",
+            "recordMilliseconds": 7.4104,
+            "growthCount": 24,
+            "allocatedMiB": 340.5,
+            "gpuMilliseconds": 5.4346239999995305,
+            "gpuStartAfterSubmitEndMilliseconds": 57.75564999999973,
+            "waitReturnAfterGpuEndMilliseconds": 0.16892600000028324,
+            "alignmentUncertaintyMilliseconds": 0.009218
+          },
+          {
+            "executionId": 37,
+            "frame": 37,
+            "milliseconds": 27.6143,
+            "phase": "timed",
+            "recordMilliseconds": 5.2507,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 5.9737599999998565,
+            "gpuStartAfterSubmitEndMilliseconds": -0.23426199999950187,
+            "waitReturnAfterGpuEndMilliseconds": 0.12340200000016921,
+            "alignmentUncertaintyMilliseconds": 0.006454
+          },
+          {
+            "executionId": 45,
+            "frame": 45,
+            "milliseconds": 24.3625,
+            "phase": "timed",
+            "recordMilliseconds": 6.8797,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 7.661568000000443,
+            "gpuStartAfterSubmitEndMilliseconds": -0.2033040000000052,
+            "waitReturnAfterGpuEndMilliseconds": 0.12653599999975995,
+            "alignmentUncertaintyMilliseconds": 0.005432
+          },
+          {
+            "executionId": 50,
+            "frame": 50,
+            "milliseconds": 18.684,
+            "phase": "timed",
+            "recordMilliseconds": 8.963,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 9.415423999999803,
+            "gpuStartAfterSubmitEndMilliseconds": -0.23125000000021828,
+            "waitReturnAfterGpuEndMilliseconds": 0.17112600000018574,
+            "alignmentUncertaintyMilliseconds": 0.009938
+          }
+        ]
+      }
+    },
+    "final-startup": {
+      "status": "passed",
+      "durationSeconds": 10,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 15,
+      "frameMilliseconds": {
+        "max": 165.734,
+        "p50": 12.2761,
+        "p95": 14.6473,
+        "p99": 19.2923,
+        "samples": 762
+      },
+      "gpuMilliseconds": {
+        "max": 11.415136,
+        "p50": 8.487648,
+        "p95": 9.907392,
+        "p99": 10.720352,
+        "samples": 777
+      },
+      "cpuRecordMilliseconds": {
+        "max": 13.1167,
+        "p50": 3.4418,
+        "p95": 5.4477,
+        "p99": 8.4411,
+        "samples": 762
+      },
+      "firstConvergedSeconds": 9.005503099999995,
+      "firstConvergedWallSeconds": 9.0869524,
+      "latencyOnly": true,
+      "implementation": "STALE LINEAR OBJECT; source restore preserved mtime, incremental build reused old Streamer.obj. Invalid as geometric result; retained for audit / initialization attribution only.",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 52,
+        "demandFrames": {
+          "count": 8687,
+          "max": 22.0,
+          "mean": 4.077356970185335,
+          "p50": 3.0,
+          "p95": 10.0,
+          "p99": 13.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 11992,
+            "max": 801.72,
+            "mean": 7.873594312875251,
+            "p50": 1.0,
+            "p95": 17.0,
+            "p99": 339.0
+          },
+          "decode": {
+            "count": 11992,
+            "max": 7.187,
+            "mean": 0.17784247831887925,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 8687,
+            "max": 306.094,
+            "mean": 88.79273707839299,
+            "p50": 61.0,
+            "p95": 190.0,
+            "p99": 293.0
+          },
+          "feedback": {
+            "count": 12044,
+            "max": 166.226,
+            "mean": 21.017845898372634,
+            "p50": 14.0,
+            "p95": 66.0,
+            "p99": 117.0
+          },
+          "ioQueue": {
+            "count": 11992,
+            "max": 50.932,
+            "mean": 8.847328719146097,
+            "p50": 5.0,
+            "p95": 41.0,
+            "p99": 47.0
+          },
+          "prefetchToDrawable": {
+            "count": 3297,
+            "max": 106.831,
+            "mean": 41.58662056414923,
+            "p50": 38.0,
+            "p95": 55.0,
+            "p99": 90.0
+          },
+          "readyToUpload": {
+            "count": 11992,
+            "max": 178.903,
+            "mean": 21.054490660440294,
+            "p50": 12.0,
+            "p95": 106.0,
+            "p99": 161.0
+          },
+          "uploadToDrawable": {
+            "count": 11984,
+            "max": 165.192,
+            "mean": 21.875893858477973,
+            "p50": 14.0,
+            "p95": 113.0,
+            "p99": 165.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 8
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 3727,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 7,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11416,
+        "frameUploadBytes": 319856,
+        "freeResidentBytes": 672670976,
+        "pendingPageCount": 8,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 15147,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 15155,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 15147,
+        "totalCompletionDrivenUploads": 15147,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 3320,
+        "totalPrefetchDeferred": 891,
+        "totalPrefetchUsed": 2260,
+        "totalUploadBytes": 399237488,
+        "usedResidentBytes": 401070848
+      },
+      "finalCut": {
+        "activeGroups": 21621,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 215154,
+        "earlyHardware": 41923,
+        "earlySoftware": 25343,
+        "fineGroups": 13278,
+        "lateCandidates": 79734,
+        "lateHardware": 419,
+        "lateSoftware": 502,
+        "maxFiniteRefinementErrorPixels": 238981.234375,
+        "maxVisibleRefinementErrorPixels": 1.4999830722808838,
+        "nearPlaneUnboundedRefinements": 435,
+        "overTargetRefinements": 1213,
+        "selectedClusters": 237379,
+        "verifiedInstances": 12963,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "trace": {
+        "frames": 128,
+        "dropped": 0,
+        "growthCount": 115,
+        "allocatedMiB": 1739.375,
+        "maxAllocationMiB": 22.25,
+        "maxReleaseMilliseconds": 23.2675,
+        "initialFrame": {
+          "executionId": 0,
+          "frame": 0,
+          "milliseconds": 5476.8269,
+          "phase": "terminal",
+          "recordMilliseconds": 101.6341
+        },
+        "initialPhases": [
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 0.0008,
+            "name": "streamInit.reset",
+            "startMilliseconds": 883.5462,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 195.94,
+            "name": "streamInit.openAsset",
+            "startMilliseconds": 883.547,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 1.193,
+            "name": "streamInit.boundsAndBudget",
+            "startMilliseconds": 1079.487,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 2.433,
+            "name": "streamInit.pagePool",
+            "startMilliseconds": 1080.68,
+            "value": 1073741824
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 0.0671,
+            "name": "streamInit.residency",
+            "startMilliseconds": 1083.113,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 1.7301,
+            "name": "streamInit.terminalCutAndCapacity",
+            "startMilliseconds": 1083.1801,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 1191.0637,
+            "name": "streamInit.sceneMetadata",
+            "startMilliseconds": 1084.9102,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 5.7401,
+            "name": "streamInit.buffersAndDescriptors",
+            "startMilliseconds": 2275.9739,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 76.3254,
+            "name": "streamInit.updatePass",
+            "startMilliseconds": 2281.714,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 148.5215,
+            "name": "streamInit.traversalPass",
+            "startMilliseconds": 2358.0394,
+            "value": 0
+          },
+          {
+            "depth": 2,
+            "frame": 0,
+            "milliseconds": 38.6208,
+            "name": "streamInit.activeShader",
+            "startMilliseconds": 2506.5723,
+            "value": 0
+          },
+          {
+            "depth": 2,
+            "frame": 0,
+            "milliseconds": 1316.4761,
+            "name": "streamInit.activePipeline",
+            "startMilliseconds": 2545.1931,
+            "value": 0
+          },
+          {
+            "depth": 2,
+            "frame": 0,
+            "milliseconds": 29.0311,
+            "name": "streamInit.cooperativeShader",
+            "startMilliseconds": 3861.6692,
+            "value": 0
+          },
+          {
+            "depth": 2,
+            "frame": 0,
+            "milliseconds": 571.7094,
+            "name": "streamInit.cooperativePipeline",
+            "startMilliseconds": 3890.7003,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 1955.961,
+            "name": "streamInit.activePass",
+            "startMilliseconds": 2506.5609,
+            "value": 0
+          },
+          {
+            "depth": 0,
+            "frame": 0,
+            "milliseconds": 5370.7472,
+            "name": "preview.compile",
+            "startMilliseconds": 487.6307,
+            "value": 0
+          }
+        ],
+        "longestTimedFrames": [
+          {
+            "executionId": 26,
+            "frame": 26,
+            "milliseconds": 165.7207,
+            "phase": "timed",
+            "recordMilliseconds": 8.3577,
+            "growthCount": 25,
+            "allocatedMiB": 271.875,
+            "gpuMilliseconds": 5.098751999999877,
+            "gpuStartAfterSubmitEndMilliseconds": 151.46605199999982,
+            "waitReturnAfterGpuEndMilliseconds": 0.2670960000004925,
+            "alignmentUncertaintyMilliseconds": 0.012468
+          },
+          {
+            "executionId": 24,
+            "frame": 24,
+            "milliseconds": 116.0666,
+            "phase": "timed",
+            "recordMilliseconds": 5.4477,
+            "growthCount": 8,
+            "allocatedMiB": 70.5,
+            "gpuMilliseconds": 5.01145600000018,
+            "gpuStartAfterSubmitEndMilliseconds": 104.9658960000002,
+            "waitReturnAfterGpuEndMilliseconds": 0.20204800000010437,
+            "alignmentUncertaintyMilliseconds": 0.008772
+          },
+          {
+            "executionId": 29,
+            "frame": 29,
+            "milliseconds": 113.0463,
+            "phase": "timed",
+            "recordMilliseconds": 8.0842,
+            "growthCount": 20,
+            "allocatedMiB": 276.25,
+            "gpuMilliseconds": 5.422079999999369,
+            "gpuStartAfterSubmitEndMilliseconds": 98.77364199999998,
+            "waitReturnAfterGpuEndMilliseconds": 0.2318780000005063,
+            "alignmentUncertaintyMilliseconds": 0.01065
+          },
+          {
+            "executionId": 32,
+            "frame": 32,
+            "milliseconds": 110.2756,
+            "phase": "timed",
+            "recordMilliseconds": 9.5393,
+            "growthCount": 16,
+            "allocatedMiB": 315.0,
+            "gpuMilliseconds": 6.446335999999974,
+            "gpuStartAfterSubmitEndMilliseconds": 70.2845760000007,
+            "waitReturnAfterGpuEndMilliseconds": 0.19478799999978946,
+            "alignmentUncertaintyMilliseconds": 0.010336
+          },
+          {
+            "executionId": 30,
+            "frame": 30,
+            "milliseconds": 65.0869,
+            "phase": "timed",
+            "recordMilliseconds": 8.7389,
+            "growthCount": 29,
+            "allocatedMiB": 489.375,
+            "gpuMilliseconds": 5.97631999999976,
+            "gpuStartAfterSubmitEndMilliseconds": 49.580220000000715,
+            "waitReturnAfterGpuEndMilliseconds": 0.19755999999961205,
+            "alignmentUncertaintyMilliseconds": 0.01
+          },
+          {
+            "executionId": 34,
+            "frame": 34,
+            "milliseconds": 24.5091,
+            "phase": "timed",
+            "recordMilliseconds": 7.4657,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 6.5807360000007975,
+            "gpuStartAfterSubmitEndMilliseconds": -0.247516000000709,
+            "waitReturnAfterGpuEndMilliseconds": 0.19508000000041648,
+            "alignmentUncertaintyMilliseconds": 0.009204
+          },
+          {
+            "executionId": 35,
+            "frame": 35,
+            "milliseconds": 21.8022,
+            "phase": "timed",
+            "recordMilliseconds": 13.1167,
+            "growthCount": 5,
+            "allocatedMiB": 105.0,
+            "gpuMilliseconds": 6.732288000000153,
+            "gpuStartAfterSubmitEndMilliseconds": -0.44784400000021996,
+            "waitReturnAfterGpuEndMilliseconds": 1.8667560000003505,
+            "alignmentUncertaintyMilliseconds": 0.007936
+          },
+          {
+            "executionId": 36,
+            "frame": 36,
+            "milliseconds": 19.7031,
+            "phase": "timed",
+            "recordMilliseconds": 10.8449,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 7.505664000000252,
+            "gpuStartAfterSubmitEndMilliseconds": -0.2317280000007464,
+            "waitReturnAfterGpuEndMilliseconds": 0.32156399999985297,
+            "alignmentUncertaintyMilliseconds": 0.008732
+          }
+        ]
+      }
+    },
+    "latency-linear-60": {
+      "status": "passed",
+      "durationSeconds": 60,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 15,
+      "frameMilliseconds": {
+        "max": 237.6358,
+        "p50": 12.2441,
+        "p95": 22.6511,
+        "p99": 26.1761,
+        "samples": 4745
+      },
+      "gpuMilliseconds": {
+        "max": 28.182304,
+        "p50": 8.530336,
+        "p95": 16.585248,
+        "p99": 20.39648,
+        "samples": 4760
+      },
+      "cpuRecordMilliseconds": {
+        "max": 14.7307,
+        "p50": 3.7989,
+        "p95": 5.8171,
+        "p99": 7.1252,
+        "samples": 4745
+      },
+      "firstConvergedSeconds": 59.00840520000001,
+      "firstConvergedWallSeconds": 59.1395665,
+      "latencyOnly": true,
+      "implementation": "linear growth",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 20,
+        "demandFrames": {
+          "count": 8799,
+          "max": 16.0,
+          "mean": 4.345380156836004,
+          "p50": 3.0,
+          "p95": 10.0,
+          "p99": 13.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 20353,
+            "max": 837.188,
+            "mean": 4.041470348351594,
+            "p50": 1.0,
+            "p95": 3.0,
+            "p99": 52.0
+          },
+          "decode": {
+            "count": 20353,
+            "max": 8.872,
+            "mean": 0.19625028251363436,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 8799,
+            "max": 344.156,
+            "mean": 93.49114842595749,
+            "p50": 58.0,
+            "p95": 255.0,
+            "p99": 261.0
+          },
+          "feedback": {
+            "count": 20373,
+            "max": 238.118,
+            "mean": 19.87830589505718,
+            "p50": 13.0,
+            "p95": 76.0,
+            "p99": 122.0
+          },
+          "ioQueue": {
+            "count": 20353,
+            "max": 37.935,
+            "mean": 5.758178008156046,
+            "p50": 1.0,
+            "p95": 29.0,
+            "p99": 36.0
+          },
+          "prefetchToDrawable": {
+            "count": 11554,
+            "max": 101.29,
+            "mean": 44.94427488315735,
+            "p50": 39.0,
+            "p95": 71.0,
+            "p99": 76.0
+          },
+          "readyToUpload": {
+            "count": 20353,
+            "max": 238.8,
+            "mean": 18.96726571021471,
+            "p50": 13.0,
+            "p95": 95.0,
+            "p99": 171.0
+          },
+          "uploadToDrawable": {
+            "count": 20353,
+            "max": 237.436,
+            "mean": 19.086428487200905,
+            "p50": 12.0,
+            "p95": 74.0,
+            "p99": 121.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 0
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 12412,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11104,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 370243584,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 23516,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 23516,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 23516,
+        "totalCompletionDrivenUploads": 23516,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 11583,
+        "totalPrefetchDeferred": 805,
+        "totalPrefetchUsed": 9074,
+        "totalUploadBytes": 700667536,
+        "usedResidentBytes": 703498240
+      },
+      "finalCut": {
+        "activeGroups": 20902,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 195514,
+        "earlyHardware": 41579,
+        "earlySoftware": 23898,
+        "fineGroups": 12445,
+        "lateCandidates": 64108,
+        "lateHardware": 176,
+        "lateSoftware": 257,
+        "maxFiniteRefinementErrorPixels": 825267.75,
+        "maxVisibleRefinementErrorPixels": 1.499991774559021,
+        "nearPlaneUnboundedRefinements": 473,
+        "overTargetRefinements": 1358,
+        "selectedClusters": 217476,
+        "verifiedInstances": 13082,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      }
+    },
+    "latency-geometric-60": {
+      "status": "passed",
+      "durationSeconds": 60,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 15,
+      "frameMilliseconds": {
+        "max": 255.1333,
+        "p50": 11.1824,
+        "p95": 13.0794,
+        "p99": 14.1358,
+        "samples": 5835
+      },
+      "gpuMilliseconds": {
+        "max": 25.714336,
+        "p50": 7.62608,
+        "p95": 8.981888,
+        "p99": 9.610944,
+        "samples": 5850
+      },
+      "cpuRecordMilliseconds": {
+        "max": 28.2225,
+        "p50": 3.3753,
+        "p95": 4.5247,
+        "p99": 5.6222,
+        "samples": 5835
+      },
+      "firstConvergedSeconds": 59.00617339999995,
+      "firstConvergedWallSeconds": 59.1261782,
+      "latencyOnly": true,
+      "implementation": "STALE LINEAR OBJECT; source restore preserved mtime, incremental build reused old Streamer.obj. Invalid as geometric result; retained for audit / initialization attribution only.",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 42,
+        "demandFrames": {
+          "count": 8791,
+          "max": 16.0,
+          "mean": 4.097258559890797,
+          "p50": 3.0,
+          "p95": 10.0,
+          "p99": 13.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 20355,
+            "max": 764.48,
+            "mean": 3.95203099975436,
+            "p50": 1.0,
+            "p95": 2.0,
+            "p99": 57.0
+          },
+          "decode": {
+            "count": 20355,
+            "max": 9.101,
+            "mean": 0.1834032915745517,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 8791,
+            "max": 273.745,
+            "mean": 79.66715185985667,
+            "p50": 51.0,
+            "p95": 271.0,
+            "p99": 274.0
+          },
+          "feedback": {
+            "count": 20397,
+            "max": 255.428,
+            "mean": 15.46269544540864,
+            "p50": 12.0,
+            "p95": 28.0,
+            "p99": 112.0
+          },
+          "ioQueue": {
+            "count": 20355,
+            "max": 38.725,
+            "mean": 4.888790714812086,
+            "p50": 1.0,
+            "p95": 29.0,
+            "p99": 36.0
+          },
+          "prefetchToDrawable": {
+            "count": 11564,
+            "max": 101.904,
+            "mean": 35.856010204081635,
+            "p50": 36.0,
+            "p95": 46.0,
+            "p99": 54.0
+          },
+          "readyToUpload": {
+            "count": 20355,
+            "max": 255.472,
+            "mean": 15.48142554654876,
+            "p50": 12.0,
+            "p95": 27.0,
+            "p99": 143.0
+          },
+          "uploadToDrawable": {
+            "count": 20355,
+            "max": 254.819,
+            "mean": 16.770641513141733,
+            "p50": 12.0,
+            "p95": 27.0,
+            "p99": 254.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 0
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 12413,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11105,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 370188288,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 23518,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 23518,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 23518,
+        "totalCompletionDrivenUploads": 23518,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 11594,
+        "totalPrefetchDeferred": 963,
+        "totalPrefetchUsed": 9096,
+        "totalUploadBytes": 700722816,
+        "usedResidentBytes": 703553536
+      },
+      "finalCut": {
+        "activeGroups": 20902,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 196224,
+        "earlyHardware": 41675,
+        "earlySoftware": 23760,
+        "fineGroups": 12448,
+        "lateCandidates": 64881,
+        "lateHardware": 398,
+        "lateSoftware": 526,
+        "maxFiniteRefinementErrorPixels": 759494.1875,
+        "maxVisibleRefinementErrorPixels": 1.49996018409729,
+        "nearPlaneUnboundedRefinements": 473,
+        "overTargetRefinements": 1359,
+        "selectedClusters": 217499,
+        "verifiedInstances": 13081,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      }
+    },
+    "latency-geometric-verified-60": {
+      "status": "passed",
+      "durationSeconds": 60,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 15,
+      "frameMilliseconds": {
+        "max": 30.9979,
+        "p50": 11.1798,
+        "p95": 13.2781,
+        "p99": 14.248,
+        "samples": 5822
+      },
+      "gpuMilliseconds": {
+        "max": 12.731296,
+        "p50": 7.714272,
+        "p95": 9.432512,
+        "p99": 10.07792,
+        "samples": 5837
+      },
+      "cpuRecordMilliseconds": {
+        "max": 8.2839,
+        "p50": 3.3438,
+        "p95": 4.5295,
+        "p99": 5.4974,
+        "samples": 5822
+      },
+      "firstConvergedSeconds": 59.006382399999985,
+      "firstConvergedWallSeconds": 59.1159426,
+      "latencyOnly": true,
+      "implementation": "geometric growth",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 40,
+        "demandFrames": {
+          "count": 8696,
+          "max": 16.0,
+          "mean": 4.2284958601655935,
+          "p50": 3.0,
+          "p95": 10.0,
+          "p99": 13.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 20364,
+            "max": 270.506,
+            "mean": 2.077350471420153,
+            "p50": 1.0,
+            "p95": 2.0,
+            "p99": 41.0
+          },
+          "decode": {
+            "count": 20364,
+            "max": 8.913,
+            "mean": 0.18319637595757218,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 8696,
+            "max": 200.647,
+            "mean": 46.845409843606255,
+            "p50": 43.0,
+            "p95": 101.0,
+            "p99": 132.0
+          },
+          "feedback": {
+            "count": 20404,
+            "max": 30.815,
+            "mean": 11.767875465594981,
+            "p50": 12.0,
+            "p95": 15.0,
+            "p99": 31.0
+          },
+          "ioQueue": {
+            "count": 20364,
+            "max": 34.751,
+            "mean": 4.777009035552936,
+            "p50": 1.0,
+            "p95": 26.0,
+            "p99": 33.0
+          },
+          "prefetchToDrawable": {
+            "count": 11668,
+            "max": 109.498,
+            "mean": 35.70091669523483,
+            "p50": 36.0,
+            "p95": 42.0,
+            "p99": 45.0
+          },
+          "readyToUpload": {
+            "count": 20364,
+            "max": 157.556,
+            "mean": 10.523655175800432,
+            "p50": 11.0,
+            "p95": 15.0,
+            "p99": 39.0
+          },
+          "uploadToDrawable": {
+            "count": 20364,
+            "max": 30.203,
+            "mean": 10.918908907876645,
+            "p50": 12.0,
+            "p95": 14.0,
+            "p99": 30.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 0
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 12422,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11105,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 369778688,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 23527,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 23527,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 23527,
+        "totalCompletionDrivenUploads": 23527,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 11682,
+        "totalPrefetchDeferred": 1108,
+        "totalPrefetchUsed": 9178,
+        "totalUploadBytes": 701131424,
+        "usedResidentBytes": 703963136
+      },
+      "finalCut": {
+        "activeGroups": 20902,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 196224,
+        "earlyHardware": 41676,
+        "earlySoftware": 23761,
+        "fineGroups": 12448,
+        "lateCandidates": 64880,
+        "lateHardware": 399,
+        "lateSoftware": 528,
+        "maxFiniteRefinementErrorPixels": 765361.1875,
+        "maxVisibleRefinementErrorPixels": 1.4999581575393677,
+        "nearPlaneUnboundedRefinements": 473,
+        "overTargetRefinements": 1359,
+        "selectedClusters": 217499,
+        "verifiedInstances": 13081,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      }
+    },
+    "final-startup-verified": {
+      "status": "passed",
+      "durationSeconds": 10,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 15,
+      "frameMilliseconds": {
+        "max": 15.6098,
+        "p50": 11.9797,
+        "p95": 13.6344,
+        "p99": 14.492,
+        "samples": 829
+      },
+      "gpuMilliseconds": {
+        "max": 10.33472,
+        "p50": 8.525024,
+        "p95": 9.315936,
+        "p99": 9.956384,
+        "samples": 844
+      },
+      "cpuRecordMilliseconds": {
+        "max": 6.3945,
+        "p50": 3.1923,
+        "p95": 4.6061,
+        "p99": 5.3896,
+        "samples": 829
+      },
+      "firstConvergedSeconds": 9.007230799999995,
+      "firstConvergedWallSeconds": 9.0987297,
+      "latencyOnly": true,
+      "implementation": "geometric growth",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 53,
+        "demandFrames": {
+          "count": 8591,
+          "max": 23.0,
+          "mean": 4.122802933302293,
+          "p50": 3.0,
+          "p95": 11.0,
+          "p99": 15.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 12061,
+            "max": 222.087,
+            "mean": 2.2797273857889064,
+            "p50": 1.0,
+            "p95": 9.0,
+            "p99": 59.0
+          },
+          "decode": {
+            "count": 12059,
+            "max": 0.898,
+            "mean": 0.02652052408989137,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 8591,
+            "max": 179.459,
+            "mean": 40.16786031893842,
+            "p50": 36.0,
+            "p95": 91.0,
+            "p99": 120.0
+          },
+          "feedback": {
+            "count": 12114,
+            "max": 15.714,
+            "mean": 10.668873122007595,
+            "p50": 12.0,
+            "p95": 14.0,
+            "p99": 15.0
+          },
+          "ioQueue": {
+            "count": 12059,
+            "max": 4.343,
+            "mean": 0.7722480305166266,
+            "p50": 1.0,
+            "p95": 3.0,
+            "p99": 4.0
+          },
+          "prefetchToDrawable": {
+            "count": 3462,
+            "max": 102.994,
+            "mean": 36.343647313691505,
+            "p50": 36.0,
+            "p95": 40.0,
+            "p99": 66.0
+          },
+          "readyToUpload": {
+            "count": 12059,
+            "max": 151.19,
+            "mean": 14.971111534953147,
+            "p50": 12.0,
+            "p95": 42.0,
+            "p99": 64.0
+          },
+          "uploadToDrawable": {
+            "count": 12053,
+            "max": 14.711,
+            "mean": 9.952782460798142,
+            "p50": 11.0,
+            "p95": 13.0,
+            "p99": 14.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 8
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 3796,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 7,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11419,
+        "frameUploadBytes": 205488,
+        "freeResidentBytes": 670185728,
+        "pendingPageCount": 6,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 2,
+        "residentPageCount": 15216,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 15222,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 15216,
+        "totalCompletionDrivenUploads": 15216,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 3489,
+        "totalPrefetchDeferred": 785,
+        "totalPrefetchUsed": 2410,
+        "totalUploadBytes": 401623968,
+        "usedResidentBytes": 403556096
+      },
+      "finalCut": {
+        "activeGroups": 21626,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 215039,
+        "earlyHardware": 42050,
+        "earlySoftware": 25574,
+        "fineGroups": 13283,
+        "lateCandidates": 79879,
+        "lateHardware": 273,
+        "lateSoftware": 253,
+        "maxFiniteRefinementErrorPixels": 211173.90625,
+        "maxVisibleRefinementErrorPixels": 1.4999985694885254,
+        "nearPlaneUnboundedRefinements": 435,
+        "overTargetRefinements": 1212,
+        "selectedClusters": 237485,
+        "verifiedInstances": 12964,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "trace": {
+        "frames": 128,
+        "dropped": 0,
+        "growthCount": 3,
+        "allocatedMiB": 56.0,
+        "maxAllocationMiB": 32.0,
+        "maxReleaseMilliseconds": 0.0164,
+        "initialFrame": {
+          "executionId": 0,
+          "frame": 0,
+          "milliseconds": 5013.1068,
+          "phase": "terminal",
+          "recordMilliseconds": 75.5859
+        },
+        "initialPhases": [
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 0.0007,
+            "name": "streamInit.reset",
+            "startMilliseconds": 689.0134,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 196.2355,
+            "name": "streamInit.openAsset",
+            "startMilliseconds": 689.0141,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 1.1456,
+            "name": "streamInit.boundsAndBudget",
+            "startMilliseconds": 885.2496,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 2.8354,
+            "name": "streamInit.pagePool",
+            "startMilliseconds": 886.3952,
+            "value": 1073741824
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 0.0705,
+            "name": "streamInit.residency",
+            "startMilliseconds": 889.2306,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 1.5737,
+            "name": "streamInit.terminalCutAndCapacity",
+            "startMilliseconds": 889.3011,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 1057.0886,
+            "name": "streamInit.sceneMetadata",
+            "startMilliseconds": 890.8748,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 3.3282,
+            "name": "streamInit.buffersAndDescriptors",
+            "startMilliseconds": 1947.9634,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 32.0577,
+            "name": "streamInit.updatePass",
+            "startMilliseconds": 1951.2916,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 129.6109,
+            "name": "streamInit.traversalPass",
+            "startMilliseconds": 1983.3493,
+            "value": 0
+          },
+          {
+            "depth": 2,
+            "frame": 0,
+            "milliseconds": 28.652,
+            "name": "streamInit.activeShader",
+            "startMilliseconds": 2112.9649,
+            "value": 0
+          },
+          {
+            "depth": 2,
+            "frame": 0,
+            "milliseconds": 1300.4232,
+            "name": "streamInit.activePipeline",
+            "startMilliseconds": 2141.6169,
+            "value": 0
+          },
+          {
+            "depth": 2,
+            "frame": 0,
+            "milliseconds": 20.5618,
+            "name": "streamInit.cooperativeShader",
+            "startMilliseconds": 3442.0401,
+            "value": 0
+          },
+          {
+            "depth": 2,
+            "frame": 0,
+            "milliseconds": 549.0647,
+            "name": "streamInit.cooperativePipeline",
+            "startMilliseconds": 3462.6019,
+            "value": 0
+          },
+          {
+            "depth": 1,
+            "frame": 0,
+            "milliseconds": 1898.7965,
+            "name": "streamInit.activePass",
+            "startMilliseconds": 2112.9602,
+            "value": 0
+          },
+          {
+            "depth": 0,
+            "frame": 0,
+            "milliseconds": 4933.1344,
+            "name": "preview.compile",
+            "startMilliseconds": 310.5307,
+            "value": 0
+          }
+        ],
+        "longestTimedFrames": [
+          {
+            "executionId": 44,
+            "frame": 44,
+            "milliseconds": 14.0854,
+            "phase": "timed",
+            "recordMilliseconds": 5.7568,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.135936000000584,
+            "gpuStartAfterSubmitEndMilliseconds": -0.18613200000045618,
+            "waitReturnAfterGpuEndMilliseconds": 0.12799599999925704,
+            "alignmentUncertaintyMilliseconds": 0.005536
+          },
+          {
+            "executionId": 47,
+            "frame": 47,
+            "milliseconds": 13.8601,
+            "phase": "timed",
+            "recordMilliseconds": 4.9603,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.726016000000527,
+            "gpuStartAfterSubmitEndMilliseconds": -0.20451999999981346,
+            "waitReturnAfterGpuEndMilliseconds": 0.10430399999950168,
+            "alignmentUncertaintyMilliseconds": 0.004772
+          },
+          {
+            "executionId": 45,
+            "frame": 45,
+            "milliseconds": 13.7198,
+            "phase": "timed",
+            "recordMilliseconds": 5.1164,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.377344000000448,
+            "gpuStartAfterSubmitEndMilliseconds": -0.1889920000007027,
+            "waitReturnAfterGpuEndMilliseconds": 0.10764800000015384,
+            "alignmentUncertaintyMilliseconds": 0.005204
+          },
+          {
+            "executionId": 50,
+            "frame": 50,
+            "milliseconds": 13.6434,
+            "phase": "timed",
+            "recordMilliseconds": 4.6593,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.835584000000381,
+            "gpuStartAfterSubmitEndMilliseconds": -0.19358400000027032,
+            "waitReturnAfterGpuEndMilliseconds": 0.0999999999994543,
+            "alignmentUncertaintyMilliseconds": 0.004904
+          },
+          {
+            "executionId": 41,
+            "frame": 41,
+            "milliseconds": 13.471,
+            "phase": "timed",
+            "recordMilliseconds": 5.7005,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 7.6047359999993205,
+            "gpuStartAfterSubmitEndMilliseconds": -0.19050999999948398,
+            "waitReturnAfterGpuEndMilliseconds": 0.08567399999992631,
+            "alignmentUncertaintyMilliseconds": 0.004822
+          },
+          {
+            "executionId": 52,
+            "frame": 52,
+            "milliseconds": 13.2949,
+            "phase": "timed",
+            "recordMilliseconds": 4.3442,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.76262399999996,
+            "gpuStartAfterSubmitEndMilliseconds": -0.22161799999995857,
+            "waitReturnAfterGpuEndMilliseconds": 0.11769400000048336,
+            "alignmentUncertaintyMilliseconds": 0.005486
+          },
+          {
+            "executionId": 42,
+            "frame": 42,
+            "milliseconds": 13.1336,
+            "phase": "timed",
+            "recordMilliseconds": 4.8304,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.126463999999942,
+            "gpuStartAfterSubmitEndMilliseconds": -0.20193200000005018,
+            "waitReturnAfterGpuEndMilliseconds": 0.09896800000024086,
+            "alignmentUncertaintyMilliseconds": 0.005372
+          },
+          {
+            "executionId": 46,
+            "frame": 46,
+            "milliseconds": 13.1266,
+            "phase": "timed",
+            "recordMilliseconds": 4.403,
+            "growthCount": 0,
+            "allocatedMiB": 0.0,
+            "gpuMilliseconds": 8.48281599999973,
+            "gpuStartAfterSubmitEndMilliseconds": -0.18814000000013475,
+            "waitReturnAfterGpuEndMilliseconds": 0.11962399999993067,
+            "alignmentUncertaintyMilliseconds": 0.005704
+          }
+        ]
+      }
+    },
+    "quality-fixed-0": {
+      "status": "passed",
+      "durationSeconds": 10,
+      "fixedViewSeconds": 0,
+      "terminalReadyFrames": 16,
+      "frameMilliseconds": {
+        "max": 35.7718,
+        "p50": 11.8689,
+        "p95": 13.3224,
+        "p99": 14.2843,
+        "samples": 840
+      },
+      "gpuMilliseconds": {
+        "max": 11.456352,
+        "p50": 8.44,
+        "p95": 9.289024,
+        "p99": 9.933536,
+        "samples": 840
+      },
+      "cpuRecordMilliseconds": {
+        "max": 7.3391,
+        "p50": 3.1874,
+        "p95": 4.5032,
+        "p99": 5.9038,
+        "samples": 840
+      },
+      "firstConvergedSeconds": 0.5110877,
+      "firstConvergedWallSeconds": 0.7481373,
+      "latencyOnly": false,
+      "implementation": "geometric growth",
+      "finalLatency": {
+        "abandonedDemand": 0,
+        "abandonedPrefetch": 44,
+        "demandFrames": {
+          "count": 8434,
+          "max": 23.0,
+          "mean": 4.197889494901588,
+          "p50": 3.0,
+          "p95": 12.0,
+          "p99": 15.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 9276,
+            "max": 231.153,
+            "mean": 3.2148961836998704,
+            "p50": 1.0,
+            "p95": 14.0,
+            "p99": 74.0
+          },
+          "decode": {
+            "count": 9276,
+            "max": 0.89,
+            "mean": 0.12873663216903838,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 8434,
+            "max": 364.293,
+            "mean": 65.26864595684135,
+            "p50": 43.0,
+            "p95": 175.0,
+            "p99": 291.0
+          },
+          "feedback": {
+            "count": 9320,
+            "max": 130.696,
+            "mean": 14.974155472103003,
+            "p50": 12.0,
+            "p95": 33.0,
+            "p99": 131.0
+          },
+          "ioQueue": {
+            "count": 9276,
+            "max": 45.601,
+            "mean": 9.014992992669255,
+            "p50": 5.0,
+            "p95": 41.0,
+            "p99": 45.0
+          },
+          "prefetchToDrawable": {
+            "count": 842,
+            "max": 99.507,
+            "mean": 54.62100593824228,
+            "p50": 42.0,
+            "p95": 100.0,
+            "p99": 100.0
+          },
+          "readyToUpload": {
+            "count": 9276,
+            "max": 207.169,
+            "mean": 19.767741483398016,
+            "p50": 9.0,
+            "p95": 130.0,
+            "p99": 191.0
+          },
+          "uploadToDrawable": {
+            "count": 9276,
+            "max": 129.279,
+            "mean": 16.415493639499786,
+            "p50": 12.0,
+            "p95": 36.0,
+            "p99": 130.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 0.0,
+        "pendingDemand": 0,
+        "pendingPrefetch": 0
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 841,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11598,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 779436288,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 12439,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 12439,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 12439,
+        "totalCompletionDrivenUploads": 12439,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 844,
+        "totalPrefetchDeferred": 788,
+        "totalPrefetchUsed": 3,
+        "totalUploadBytes": 292802240,
+        "usedResidentBytes": 294305536
+      },
+      "finalCut": {
+        "activeGroups": 22891,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 226893,
+        "earlyHardware": 42879,
+        "earlySoftware": 24354,
+        "fineGroups": 13968,
+        "lateCandidates": 80778,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 6266.07177734375,
+        "maxVisibleRefinementErrorPixels": 1.4999207258224487,
+        "nearPlaneUnboundedRefinements": 456,
+        "overTargetRefinements": 1484,
+        "selectedClusters": 248855,
+        "verifiedInstances": 13782,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      }
+    },
+    "pressure-64": {
+      "status": "passed",
+      "durationSeconds": 10,
+      "fixedViewSeconds": null,
+      "terminalReadyFrames": 15,
+      "frameMilliseconds": {
+        "max": 21.6504,
+        "p50": 8.272,
+        "p95": 9.6152,
+        "p99": 10.4923,
+        "samples": 1184
+      },
+      "gpuMilliseconds": {
+        "max": 7.15248,
+        "p50": 5.136992,
+        "p95": 5.787584,
+        "p99": 6.217632,
+        "samples": 1184
+      },
+      "cpuRecordMilliseconds": {
+        "max": 6.8589,
+        "p50": 2.7896,
+        "p95": 4.0982,
+        "p99": 5.1825,
+        "samples": 1184
+      },
+      "firstConvergedSeconds": null,
+      "firstConvergedWallSeconds": null,
+      "latencyOnly": false,
+      "implementation": "geometric growth",
+      "finalLatency": {
+        "abandonedDemand": 266,
+        "abandonedPrefetch": 119,
+        "demandFrames": {
+          "count": 4603,
+          "max": 570.0,
+          "mean": 13.27177927438627,
+          "p50": 3.0,
+          "p95": 20.0,
+          "p99": 349.0
+        },
+        "enabled": true,
+        "milliseconds": {
+          "admission": {
+            "count": 4604,
+            "max": 5482.421,
+            "mean": 87.11183362293659,
+            "p50": 1.0,
+            "p95": 143.0,
+            "p99": 5482.421
+          },
+          "decode": {
+            "count": 4604,
+            "max": 0.69,
+            "mean": 0.027444178974804518,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0
+          },
+          "demandToDrawable": {
+            "count": 4603,
+            "max": 5510.226,
+            "mean": 169.61514946773843,
+            "p50": 41.0,
+            "p95": 322.0,
+            "p99": 5510.226
+          },
+          "feedback": {
+            "count": 5676,
+            "max": 147.996,
+            "mean": 16.56296758280479,
+            "p50": 10.0,
+            "p95": 36.0,
+            "p99": 148.0
+          },
+          "ioQueue": {
+            "count": 4604,
+            "max": 4.281,
+            "mean": 0.5673364465682016,
+            "p50": 1.0,
+            "p95": 2.0,
+            "p99": 4.0
+          },
+          "prefetchToDrawable": {
+            "count": 0,
+            "max": 0.0,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0
+          },
+          "readyToUpload": {
+            "count": 4604,
+            "max": 275.038,
+            "mean": 40.417044309296266,
+            "p50": 12.0,
+            "p95": 230.0,
+            "p99": 266.0
+          },
+          "uploadToDrawable": {
+            "count": 4603,
+            "max": 164.717,
+            "mean": 18.698531609819682,
+            "p50": 9.0,
+            "p95": 147.0,
+            "p99": 147.0
+          }
+        },
+        "oldestPendingDemandMilliseconds": 5623.255,
+        "pendingDemand": 688,
+        "pendingPrefetch": 0
+      },
+      "finalStats": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 686,
+        "frameAllocationFailureCount": 686,
+        "frameCachedUnusedPageCount": 0,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 7048,
+        "frameEvictionScanCount": 1,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 687,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 7048,
+        "frameUploadBytes": 3856,
+        "freeResidentBytes": 1268224,
+        "pendingPageCount": 1,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 7048,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 7767,
+        "totalCompletedUnloadCount": 718,
+        "totalCompletedUploadCount": 7766,
+        "totalCompletionDrivenUploads": 7766,
+        "totalEvictedPageCount": 718,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 0,
+        "totalPrefetchDeferred": 300,
+        "totalPrefetchUsed": 0,
+        "totalUploadBytes": 76036688,
+        "usedResidentBytes": 65840640
+      },
+      "finalCut": {
+        "activeGroups": 15489,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 85109,
+        "earlyHardware": 30243,
+        "earlySoftware": 15062,
+        "fineGroups": 6954,
+        "lateCandidates": 24394,
+        "lateHardware": 97,
+        "lateSoftware": 78,
+        "maxFiniteRefinementErrorPixels": 171223.140625,
+        "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38,
+        "nearPlaneUnboundedRefinements": 295,
+        "overTargetRefinements": 3215,
+        "selectedClusters": 96891,
+        "verifiedInstances": 13219,
+        "visibleOverTargetRefinements": 3012,
+        "visibleUnboundedRefinements": 155
+      }
+    }
+  },
+  "artifacts": {
+    "build-relwithdebinfo/minizorah-startup-stalls/trace-current/MiniZorahStartupTrace.json": {
+      "bytes": 766647,
+      "sha256": "5338adbeb949de00d1f2e37ee41ca8ccad006a6dbe94e5deeff7f58ea43c366e"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/trace-current/MiniZorahRoamingReport.json": {
+      "bytes": 8665,
+      "sha256": "e2206c13753c18a29d25ccef30312457a3d9747406fbc0cfa811ad76871c2f0b"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/trace-current/run.log": {
+      "bytes": 16051,
+      "sha256": "c5a00e88b9c879eca389a1966e2be9d8fb8083ec4573448e761da0d6e3b85fcd"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/trace-delayed/MiniZorahStartupTrace.json": {
+      "bytes": 766513,
+      "sha256": "ea1be222a16a36b6a438a543208d38bcf8c703dca2835c01fb557a9aa47f4057"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/trace-delayed/MiniZorahRoamingReport.json": {
+      "bytes": 8681,
+      "sha256": "702d67edbf76999462793e1123c944d1c674b0023a37eb9eb017fa701d5e9434"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/trace-delayed/run.log": {
+      "bytes": 16053,
+      "sha256": "9ce4458744db69eb8cbc04acc9ef833f38580fba2cd105460bbe312f27b1d292"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-current/MiniZorahStartupTrace.json": {
+      "bytes": 809933,
+      "sha256": "250284750f8507b9c488669c4654e132d8d44479d836771e3c1f7f3489f505f4"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-current/MiniZorahRoamingReport.json": {
+      "bytes": 8671,
+      "sha256": "41ec79c9292e1133620bd0da2df1c78b87aa9c69740bdef6a8858bd2b1281a56"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-current/run.log": {
+      "bytes": 16051,
+      "sha256": "4b15ac8fb91df17f73d5d01dafe41e580ff051eaf690e3cc92ca2f417f230fd4"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-geometric/MiniZorahStartupTrace.json": {
+      "bytes": 789250,
+      "sha256": "db60af3a91b2dc57029696797ad90124dbfacfbd5eba3f0db535922183e761e6"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-geometric/MiniZorahRoamingReport.json": {
+      "bytes": 8658,
+      "sha256": "2bf4d1a7bd9a7cf3c16210d11028ef86f5b6f8d8cedb2499fd809f204a311f57"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-geometric/run.log": {
+      "bytes": 16052,
+      "sha256": "d48d2f37a4e9df4ae9824d646ce4adc44d3adf650b291072ff914500e6b94757"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-geometric-repeat/MiniZorahStartupTrace.json": {
+      "bytes": 789258,
+      "sha256": "a30acc62aaa22c544d0e879e224b4b0d7439c6735b15896d6838ab066462f3f1"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-geometric-repeat/MiniZorahRoamingReport.json": {
+      "bytes": 8669,
+      "sha256": "c97ae5ac286bda7a3a1a1176a2550d43b4cb016bc40a7d8feba286b446760261"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-geometric-repeat/run.log": {
+      "bytes": 16052,
+      "sha256": "507437b208e725aa8f970cdf637b9156737437f59267b198e630dbd564f1e8b7"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-linear-reverse/MiniZorahStartupTrace.json": {
+      "bytes": 809567,
+      "sha256": "b98cd7d74b715eb36f303419a4798c73fa926beb06adea5a6754131eddcb9a8d"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-linear-reverse/MiniZorahRoamingReport.json": {
+      "bytes": 8658,
+      "sha256": "83fdd18a1a4eefd12690141c2c3a55b0ece96d70d7689f472d599a43844050f3"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-linear-reverse/run.log": {
+      "bytes": 16054,
+      "sha256": "f08f0a279cf3553cba9ae54f71b4d20e6394516911a661ce1ffed64afff19c52"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/final-startup/MiniZorahStartupTrace.json": {
+      "bytes": 812116,
+      "sha256": "22ebfd47d487b9900df80e4ddd89b52a520e19cb06a55f26494e75b98d5d11da"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/final-startup/MiniZorahRoamingReport.json": {
+      "bytes": 8670,
+      "sha256": "99f498bb86706bdd730ed4936bc8738b9aa851fa997d5b39c5d9f38f7f443cf0"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/final-startup/run.log": {
+      "bytes": 16052,
+      "sha256": "5510205197e813bc19097615639d69197a1277e49455c6d94867e547ec26492e"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/latency-linear-60/MiniZorahRoamingReport.json": {
+      "bytes": 8664,
+      "sha256": "cb4b1008480ff496e86f699c298db3c981d4a3b4d07beaf8d21d6b3e2af6e878"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/latency-linear-60/run.log": {
+      "bytes": 16053,
+      "sha256": "15df5bb7c04366cc790b299e6d5f6dd575fbfe2a446779cbe3635e9ee8651e55"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/latency-geometric-60/MiniZorahRoamingReport.json": {
+      "bytes": 8659,
+      "sha256": "1f47ecfa7e21edcf0dd8c816124530b61cb7a9e5cc63258770fc2e6d07a40092"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/latency-geometric-60/run.log": {
+      "bytes": 16054,
+      "sha256": "21a67b821104129d781ba35b5431d08e7808e7e8ce18918fd1e516f8d25c81ce"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/latency-geometric-verified-60/MiniZorahRoamingReport.json": {
+      "bytes": 8666,
+      "sha256": "24a921568b9a563916abd6919ec95fd5592aecb5eae19ec81fc4c562b2a181e4"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/latency-geometric-verified-60/run.log": {
+      "bytes": 16052,
+      "sha256": "6c8b180428a40f30ba34f4f6b395d26ab6098788f28bb3c3dcac27ccf27e31ed"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/final-startup-verified/MiniZorahStartupTrace.json": {
+      "bytes": 791878,
+      "sha256": "b20f98dec063104aaefb9f4fe25792822dbe454e72b6770a1206298140a28c3a"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/final-startup-verified/MiniZorahRoamingReport.json": {
+      "bytes": 8662,
+      "sha256": "064cda61fb68e1b7d90eb6ff5ef39ae9165a8c8376709227ccea7eeb2030422d"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/final-startup-verified/run.log": {
+      "bytes": 16051,
+      "sha256": "295796057483e8b81973cd2e285ac160abb542691303e7f0dbab7b09878ddb56"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/quality-fixed-0/MiniZorahRoamingReport.json": {
+      "bytes": 80652,
+      "sha256": "b1e05f706e2b177edc14c7191912ab7c25b82cd97923b1097979adfc0778b39d"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/quality-fixed-0/run.log": {
+      "bytes": 17044,
+      "sha256": "9f1b83ae09dd9a22129f45df0eef1e74a4e557e86c192bbae43a99aed2104811"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/quality-fixed-0/roam-5.png": {
+      "bytes": 1812230,
+      "sha256": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/pressure-64/MiniZorahRoamingReport.json": {
+      "bytes": 73525,
+      "sha256": "0fefa9a790a04f99d68ceef5206618cdf1515aca07b9ce740b7f1d4838f0e1b3"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/pressure-64/run.log": {
+      "bytes": 16954,
+      "sha256": "44ffc1e51cdbba652108ed15eda228c1935ea224416ad222fd5688aa3b34e59d"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/pressure-64/roam-5.png": {
+      "bytes": 1509773,
+      "sha256": "68257fdf028107d61c85e6c506fd27636870603ff18b7735b7fd1d3da6790d2d"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/InspectTrace.py": {
+      "bytes": 1955,
+      "sha256": "2bdc7076a0e915fdbd4ffa336969f2a0cb4dd665b64c9bbb038a6ad6532b6cff"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/MakeReport.py": {
+      "bytes": 6082,
+      "sha256": "ffbb9d967a2b3098a811a425a06168d928c6ca20022c18c5298ad6bcd5e0a089"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/RunCase.ps1": {
+      "bytes": 1205,
+      "sha256": "ee6e532b4986e164ef9efd7e150c2938ef79ec3f8b88b19eea011ad78fc87f21"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/Streamer.geometric.cpp": {
+      "bytes": 29658,
+      "sha256": "d041a6bfd22296b386a94d5328afdd6e926c14f483ced3cd332be942e6ea98eb"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/Streamer.linear.cpp": {
+      "bytes": 28648,
+      "sha256": "dfa92543db49d9b1673c6615b441f96bced3e458723c50c6b40c93fbb36726e7"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/build-final.log": {
+      "bytes": 637,
+      "sha256": "32297076f2df356cd1ccae399cf6d0446241a1c43107cccfabb17ba1f5582ae7"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/build-linear.log": {
+      "bytes": 1152,
+      "sha256": "7c2a965725da2f824bb17b8d0f9b2160baaf5372b1d017ffcd635ddc15056fcb"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/build-verified.log": {
+      "bytes": 630,
+      "sha256": "860a3c8a6cb9bfc40664f242d51385740aca1d66585d6b9bd6226b704fbb6699"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/build.log": {
+      "bytes": 580,
+      "sha256": "3af53072b373138fdb37cf781e3b70c7e78b01611cc203fcba95ebb70026ed34"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-current.console.log": {
+      "bytes": 16051,
+      "sha256": "4b15ac8fb91df17f73d5d01dafe41e580ff051eaf690e3cc92ca2f417f230fd4"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-geometric-repeat.console.log": {
+      "bytes": 16052,
+      "sha256": "507437b208e725aa8f970cdf637b9156737437f59267b198e630dbd564f1e8b7"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-geometric.console.log": {
+      "bytes": 16052,
+      "sha256": "d48d2f37a4e9df4ae9824d646ce4adc44d3adf650b291072ff914500e6b94757"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/calibrated-linear-reverse.console.log": {
+      "bytes": 16054,
+      "sha256": "f08f0a279cf3553cba9ae54f71b4d20e6394516911a661ce1ffed64afff19c52"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/final-startup-verified.console.log": {
+      "bytes": 16051,
+      "sha256": "295796057483e8b81973cd2e285ac160abb542691303e7f0dbab7b09878ddb56"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/final-startup.console.log": {
+      "bytes": 16052,
+      "sha256": "5510205197e813bc19097615639d69197a1277e49455c6d94867e547ec26492e"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/growth-negative.log": {
+      "bytes": 834,
+      "sha256": "4b7be79314eb743afd0c62cdb7e2a8d30dd9a96af69a37ba52ec69be92e92eea"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/growth-stale.log": {
+      "bytes": 834,
+      "sha256": "c600daaac639f263aade2077609bdded6a2006bce620f02d8e1702d1e81e5f0e"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/growth-verified.log": {
+      "bytes": 712,
+      "sha256": "e5c2425ce4d5252f045d4a7cca85192cba4c78fe1e19c66c4811c23aeb6261fb"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/latency-geometric-60.console.log": {
+      "bytes": 16054,
+      "sha256": "21a67b821104129d781ba35b5431d08e7808e7e8ce18918fd1e516f8d25c81ce"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/latency-geometric-verified-60.console.log": {
+      "bytes": 16052,
+      "sha256": "6c8b180428a40f30ba34f4f6b395d26ab6098788f28bb3c3dcac27ccf27e31ed"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/latency-linear-60.console.log": {
+      "bytes": 16053,
+      "sha256": "15df5bb7c04366cc790b299e6d5f6dd575fbfe2a446779cbe3635e9ee8651e55"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/pressure-64.console.log": {
+      "bytes": 16954,
+      "sha256": "44ffc1e51cdbba652108ed15eda228c1935ea224416ad222fd5688aa3b34e59d"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/quality-fixed-0.console.log": {
+      "bytes": 17044,
+      "sha256": "9f1b83ae09dd9a22129f45df0eef1e74a4e557e86c192bbae43a99aed2104811"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/regression.log": {
+      "bytes": 308583,
+      "sha256": "7b7c4f270de3d49292f5ca7ea56906744b63426109a59941dbcd973583017aac"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/trace-current.console.log": {
+      "bytes": 16051,
+      "sha256": "c5a00e88b9c879eca389a1966e2be9d8fb8083ec4573448e761da0d6e3b85fcd"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/trace-delayed.console.log": {
+      "bytes": 16053,
+      "sha256": "9ce4458744db69eb8cbc04acc9ef833f38580fba2cd105460bbe312f27b1d292"
+    },
+    "build-relwithdebinfo/minizorah-startup-stalls/nsight.console.json": {
+      "bytes": 132,
+      "sha256": "6e0805dcf70e4fc8a6a79e5d32ffccb796edef6035a09f166daf45ebd00cf375"
+    },
+    "Source/Runtime/Render/Profiling/CpuPhaseTrace.h": {
+      "bytes": 3234,
+      "sha256": "cabe31416c33a97b852c9c305e40c4ed7dfaf3302188cda53bb19295bffaa55c"
+    },
+    "Source/Runtime/Render/GAPI/Streamer.cpp": {
+      "bytes": 29658,
+      "sha256": "d041a6bfd22296b386a94d5328afdd6e926c14f483ced3cd332be942e6ea98eb"
+    },
+    "Source/Runtime/Render/MeshletStreamRuntime.cpp": {
+      "bytes": 157230,
+      "sha256": "621d36c8b873e05477deae1125a7eda7373a0fef8415559e7032844ed111acbe"
+    },
+    "Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp": {
+      "bytes": 147643,
+      "sha256": "21289bc8cf4083e728b72a6af65f92073639fd465e1bd018714eb94e1fb82175"
+    },
+    "Source/Runtime/Render/RenderFrameContext.cpp": {
+      "bytes": 14016,
+      "sha256": "fb40da3a84f37124cf2d38d11f7341cae0b5ad7ecae23951d553c7e136359262"
+    },
+    "Source/Runtime/Render/Subsystem/RenderSubsystem.cpp": {
+      "bytes": 16221,
+      "sha256": "78a839078e09d8d9ef8ed9db9a8668f158def58efdd4c646c88413a30959cfb4"
+    },
+    "tests/rhi/FrameContextTests.cpp": {
+      "bytes": 74407,
+      "sha256": "c7c1b337cb163882acfa4aa6222bf58cb37d6c2fe5782ba680d9e269b8397ad8"
+    },
+    "tests/rhi/MiniZorahRoamingTests.cpp": {
+      "bytes": 38691,
+      "sha256": "2dfd0ba72672e19decd0efd1ea5918f5e6f4a540ea152659779c3b35e77e34a3"
+    },
+    "Documentation/MiniZorahStartupStalls.md": {
+      "bytes": 9134,
+      "sha256": "fc14a70d51ac86842dfd980c9e6cb993e8b5fd148f0055ea3f5104219660b983"
+    },
+    "Documentation/MiniZorahColdStart.md": {
+      "bytes": 9194,
+      "sha256": "85b82ee328062edfaf8acd23e273a041e109b4759fdbc1363b177be356769421"
+    },
+    "Documentation/MiniZorahGpuDrivenRoadmap.md": {
+      "bytes": 27563,
+      "sha256": "8fee9972e0b5b041c7bdab6afea58220e13c577ef2346e75d54eefd1ac616e6d"
+    },
+    "build-relwithdebinfo/minizorah-cold-start/fixed-0/roam-5.png": {
+      "bytes": 1812230,
+      "sha256": "9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4"
+    },
+    "build-relwithdebinfo/tests/MetallicRhiTests.exe": {
+      "bytes": 16576000,
+      "sha256": "a75173baf1f377d6af94caf3e0d594c0519f229bf629135f11df232c1030a0f3"
+    },
+    "build-relwithdebinfo/tests/MetallicRhiTests.linear.exe": {
+      "bytes": 16576000,
+      "sha256": "b472917f6365b6365a053c4f42f81e78ae5f93c38b668a93a244d949161ba636"
+    }
+  }
+}

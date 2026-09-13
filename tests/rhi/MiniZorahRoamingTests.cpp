@@ -6,6 +6,7 @@
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 
 #include <algorithm>
 #include <array>
@@ -339,6 +340,10 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
     const uint32_t fixedView = setting("METALLIC_MINIZORAH_FIXED_VIEW", UINT32_MAX);
     const bool transitionChecks = setting("METALLIC_MINIZORAH_TRANSITION_CHECKS", 0) != 0;
     const bool latencyOnly = setting("METALLIC_MINIZORAH_LATENCY_ONLY", 0) != 0;
+    const uint32_t startupTraceFrames = std::min(setting("METALLIC_MINIZORAH_STARTUP_TRACE_FRAMES", 0),
+        static_cast<uint32_t>(profiling::CpuPhaseTrace::kMaxFrames));
+    auto startupTrace = startupTraceFrames != 0 ? std::make_unique<profiling::CpuPhaseTrace>() : nullptr;
+    Json tracedFrames = Json::array(), tracedGpu = Json::array();
     Json report{{"status", "running"}, {"durationSeconds", duration}, {"pageBudgetBytes", budget},
         {"resolution", {1920, 1080}}, {"targetPixelError", 1.5}, {"routePeriodSeconds", 60},
         {"timingScope", "Synchronous GPUDriven + MaterialResolve offscreen graph; no presentation blit, output/debug readback on timed frames; excludes checkpoint verification"},
@@ -354,6 +359,28 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         report["gpuMilliseconds"] = percentiles(gpuTimes);
         report["cpuRecordMilliseconds"] = percentiles(cpuTimes);
         std::ofstream(context.outputDirectory / "MiniZorahRoamingReport.json") << report.dump(2) << '\n';
+        if (startupTrace) {
+            Json events = Json::array();
+            Json gpuSpans = Json::array();
+            for (const auto& event : startupTrace->events) {
+                events.push_back({{"name", event.name}, {"frame", event.frame}, {"depth", event.depth},
+                    {"startMilliseconds", double(event.startNanoseconds) / 1e6},
+                    {"milliseconds", double(event.durationNanoseconds) / 1e6}, {"value", event.value}});
+            }
+            for (const auto& span : startupTrace->gpuSpans) {
+                const auto mappedTime = [&](uint64_t timestamp) {
+                    return double((static_cast<long double>(timestamp) - span.calibrationTimestamp) *
+                        span.periodNanoseconds + span.hostReferenceNanoseconds) / 1e6;
+                };
+                gpuSpans.push_back({{"executionId", span.executionId},
+                    {"startMilliseconds", mappedTime(span.beginTimestamp)}, {"endMilliseconds", mappedTime(span.endTimestamp)},
+                    {"alignmentUncertaintyMilliseconds", double(span.calibrationCallNanoseconds / 2 + span.maxDeviationNanoseconds) / 1e6}});
+            }
+            std::ofstream(context.outputDirectory / "MiniZorahStartupTrace.json") << Json{
+                {"events", std::move(events)}, {"frames", tracedFrames}, {"gpu", tracedGpu},
+                {"calibratedGpuSpans", std::move(gpuSpans)},
+                {"droppedEvents", startupTrace->dropped}}.dump(2) << '\n';
+        }
     };
     try {
         std::filesystem::create_directories(context.outputDirectory);
@@ -362,6 +389,21 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         std::string log;
         checkRoam(loadBuiltInRenderSample("gpu-driven-minizorah-vbuffer", sample, log), log);
         auto graph = std::move(sample.graph);
+        uint64_t previewFrame = 0;
+        const auto renderPreview = [&](const char* output, bool readback, const char* phase) {
+            const uint64_t frame = previewFrame++;
+            auto* trace = startupTrace && frame < startupTraceFrames ? startupTrace.get() : nullptr;
+            profiling::CpuPhaseTraceFrame scope(trace, frame);
+            const auto start = trace ? Clock::now() : Clock::time_point{};
+            const auto result = preview.render(graph, 1920, 1080, output, readback);
+            if (trace) {
+                tracedFrames.push_back({{"frame", frame}, {"phase", phase},
+                    {"milliseconds", std::chrono::duration<double, std::milli>(Clock::now() - start).count()},
+                    {"executionId", preview.executionStats().executionId},
+                    {"recordMilliseconds", preview.executionStats().cpuMilliseconds}});
+            }
+            return result;
+        };
         // There is no swapchain in this test. Excluding the presentation copy
         // also lets the existing graphics timing envelope cover HW/SW joins.
         graph.removeNode(graph.findNode("FinalBlit")->id);
@@ -426,7 +468,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         const auto terminalStart = Clock::now();
         uint32_t terminalFrames = 0;
         for (; terminalFrames < 240 && !observer.latest.value("terminalReady", false); ++terminalFrames) {
-            checkRoam(bool(preview.render(graph, 1920, 1080, "MaterialResolve.color", false)), preview.lastLog());
+            checkRoam(bool(renderPreview("MaterialResolve.color", false, "terminal")), preview.lastLog());
         }
         checkRoam(observer.latest.value("terminalReady", false), "Terminal pages did not become ready");
         report["terminalReadyFrames"] = terminalFrames;
@@ -447,7 +489,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
             if (elapsed >= nextCheckpoint) {
                 observer.capture = true;
                 preview.setDebugObserver(&observer);
-                checkRoam(bool(preview.render(graph, 1920, 1080, "GPUDriven.visibility")), preview.lastLog());
+                checkRoam(bool(renderPreview("GPUDriven.visibility", true, "checkpoint")), preview.lastLog());
                 const auto rasterInfo = observer.read<VisibilityBufferFrameInfo>("rasterInfo").at(0);
                 for (uint32_t axis = 0; axis < 3; ++axis) {
                     checkRoam(std::abs(rasterInfo.eye[axis] - camera.at("eye")[axis].get<float>()) < 1e-5f &&
@@ -488,7 +530,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
                     {"checkpointGpuMilliseconds", stageTimes}, {"passGpuMilliseconds", nodeTimes}});
                 if (!latencyOnly && nextCheckpoint <= 60 && std::floor(nextCheckpoint) == nextCheckpoint) {
                     observer.capture = false;
-                    checkRoam(bool(preview.render(graph, 1920, 1080, "MaterialResolve.color")), preview.lastLog());
+                    checkRoam(bool(renderPreview("MaterialResolve.color", true, "image")), preview.lastLog());
                     checkRoam(saveRgba8Png(context.outputDirectory / ("roam-" + std::to_string(int(nextCheckpoint)) + ".png"),
                         reinterpret_cast<const uint8_t*>(preview.pixels().data()), 1920, 1080, log), log);
                 }
@@ -512,7 +554,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
             }
             preview.setDebugObserver(nullptr);
             const auto start = Clock::now();
-            checkRoam(bool(preview.render(graph, 1920, 1080, "MaterialResolve.color", false)), preview.lastLog());
+            checkRoam(bool(renderPreview("MaterialResolve.color", false, "timed")), preview.lastLog());
             const double ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
             elapsed += ms * .001;
             frameTimes.push_back(ms);
@@ -522,6 +564,10 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
             checkRoam(bool(preview.collectCompletedGpuExecutionStats(timings)), "Cannot collect GPU timings");
             for (const auto& timing : timings) {
                 if (timing.gpuTimingAvailable) { gpuTimes.push_back(timing.gpuMilliseconds); }
+                if (startupTrace && timing.executionId <= startupTraceFrames) {
+                    tracedGpu.push_back({{"executionId", timing.executionId},
+                        {"available", timing.gpuTimingAvailable}, {"milliseconds", timing.gpuMilliseconds}});
+                }
             }
         }
         checkRoam(maxFineGroups > 0, "Roaming used only the terminal LOD");

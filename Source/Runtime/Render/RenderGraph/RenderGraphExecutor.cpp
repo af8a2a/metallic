@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
+#include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
@@ -1391,6 +1392,7 @@ struct RenderGraphExecutor::Impl {
 
     Result waitForSubmittedWork(uint64_t timeoutNanoseconds)
     {
+        profiling::CpuPhase phase("drain.externalWait");
         const auto begin = std::chrono::steady_clock::now();
         auto remaining = [&]() {
             if (timeoutNanoseconds == UINT64_MAX) { return UINT64_MAX; }
@@ -1403,6 +1405,7 @@ struct RenderGraphExecutor::Impl {
             if (!result) { return result; }
         }
         externalCompletions.clear();
+        phase.next("drain.slotWait");
         for (const auto& slot : submissionSlots) {
             Result result = slot->frame.wait(remaining());
             if (!result) { return result; }
@@ -1410,10 +1413,12 @@ struct RenderGraphExecutor::Impl {
         // Descriptor heap reserved ranges remain associated with executable
         // command buffers even after GPU completion. Drop completed recordings
         // before recompile/scene refresh can recycle their heap addresses.
+        phase.next("drain.releaseCommands");
         for (const auto& slot : submissionSlots) { slot->commandBuffers.clear(); }
         hasSubmittedWork = false;
         // Also flush the last frames at shutdown/recompile; no additional wait
         // is introduced beyond the caller's existing completion wait above.
+        phase.next("drain.resolveTimings");
         (void)resolveGpuTimings();
         return {};
     }
@@ -1527,6 +1532,22 @@ struct RenderGraphExecutor::Impl {
             }
 
             tracyGpuProfiler.publish(slot.profile, queryResults, device->capabilities().timestampPeriodNanoseconds);
+            if (auto* trace = profiling::CpuPhaseTrace::active;
+                trace && trace->gpuSpans.size() < profiling::CpuPhaseTrace::kMaxFrames) {
+                GpuClockCalibration calibration;
+                const auto before = profiling::CpuPhaseTrace::Clock::now();
+                const auto* queue = device->getQueue(QueueType::Graphics);
+                const auto calibrated = queue ? queue->calibrateTimestamps(calibration) : makeError(Error::Unsupported);
+                const auto after = profiling::CpuPhaseTrace::Clock::now();
+                if (calibrated) {
+                    trace->gpuSpans.push_back({slot.stats.executionId, queryResults.front().value, queryResults[1].value,
+                        calibration.gpuTimestamp, device->capabilities().timestampPeriodNanoseconds,
+                        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            before + (after - before) / 2 - trace->origin).count()),
+                        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(after - before).count()),
+                        calibration.maxDeviationNanoseconds});
+                }
+            }
             slot.profile = {};
             completedGpuExecutionStats.push_back(std::move(slot.stats));
             slot.stats = {};
@@ -2550,6 +2571,7 @@ void RenderGraphExecutor::acceptSceneResourcePreparation()
 
 Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 {
+    profiling::CpuPhase phase("graph.refreshSceneBindings");
     DebugExecutionScope debugScope;
     if (!impl_->isCompiled || impl_->device == nullptr || impl_->executionList.empty()) {
         return makeError(Error::InvalidArgument);
@@ -2559,6 +2581,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     Result sceneResult = impl_->refreshFrameSceneBindings(desc.historyResources, sceneLog);
     if (!sceneResult) { spdlog::error("[RenderGraph] {}", sceneLog); return sceneResult; }
 
+    phase.next("graph.preflight");
     // Preflight before beginning a slot or mutating subsystem/resource state.
     // Unreviewed passes retain the universal-queue execution contract.
     const auto selectedType = [](const Impl::CompiledNode& node) {
@@ -2596,6 +2619,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     const bool requiresCompletedFrame = std::any_of(impl_->executionList.begin(), impl_->executionList.end(),
         [](const auto& node) { return !node.pass->supportsFrameOverlap(); });
     if (requiresCompletedFrame || sceneStamp != impl_->recordedSceneStamp || !impl_->externalCompletions.empty()) {
+        phase.next("graph.priorFrameDrain");
         Result result = impl_->waitForSubmittedWork(desc.slotWaitTimeoutNanoseconds);
         if (!result) { return result; }
     }
@@ -2604,8 +2628,10 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     const uint32_t slotCount = std::min(2u, impl_->subsystemHost->frameSlotCount());
     if (slotCount == 0) { return makeError(Error::InvalidArgument); }
     Impl::SubmissionSlot& slot = *impl_->submissionSlots[frameIndex % slotCount];
+    phase.next("graph.slotWait", frameIndex);
     Result result = slot.frame.wait(desc.slotWaitTimeoutNanoseconds);
     if (!result) { return result; }
+    phase.next("graph.poolReset");
     slot.commandBuffers.clear();
     for (auto& context : slot.queues) {
         if (context.commandPool != nullptr) {
@@ -2613,8 +2639,10 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             if (!result) { return result; }
         }
     }
+    phase.next("graph.frameBegin");
     result = slot.frame.begin(frameIndex, 0);
     if (!result) { return result; }
+    phase.next("graph.frameSetup");
     // Shared graph targets/history remain ordered across frames on the GPU.
     // This bounds CPU recording to two slots without cloning persistent targets.
     result = impl_->lastSubmittedCompletion.appendWaits(initialWaits);
@@ -2666,10 +2694,12 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 
     std::string log;
     if (desc.historyResources != nullptr) { desc.historyResources->beginFrame(frameIndex); }
+    phase.next("graph.subsystemBegin");
     result = impl_->subsystemHost->beginFrame(frameIndex, slot.frame.slotIndex(),
         desc.historyResources, log, &slot.frame);
     if (!result) { return abort(result); }
     RenderSubsystemFrameEndScope subsystemFrameScope(*impl_->subsystemHost);
+    phase.next("graph.record");
     impl_->beginDebugExecution(frameIndex, slot.frame.slotIndex());
     debugScope.observer = impl_->debugObserver;
     RenderUploadSubsystem* upload = impl_->uploadSubsystem();
@@ -2830,6 +2860,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     impl_->recordingQueue = nullptr;
     impl_->historyResources = nullptr;
 
+    phase.next("graph.submit", segments.size());
     std::unordered_set<Queue*> startedQueues;
     for (auto& segment : segments) {
         std::vector<SemaphoreSubmitDesc> waits;
@@ -2850,6 +2881,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         }, slot.frame, segment.completion);
         if (!result) { return abort(result); }
     }
+    phase.next("graph.sealAndFinish");
     result = slot.frame.finishSubmission();
     if (!result) { return abort(result); }
     impl_->lastSubmittedCompletion = slot.frame.completion();
@@ -3169,6 +3201,7 @@ Result RenderGraphPreviewRenderer::render(
     uint32_t newHeight,
     std::string_view outputName, bool readback)
 {
+    profiling::CpuPhase phase("preview.preflight");
     if (impl_->device == nullptr ||
         impl_->graphicsQueue == nullptr ||
         impl_->commandPool == nullptr ||
@@ -3186,11 +3219,13 @@ Result RenderGraphPreviewRenderer::render(
         return makeError(Error::InvalidArgument);
     }
 
+    phase.next("preview.previousReadbackWait");
     Result result = impl_->frameContext.wait();
     if (!result) {
         return result;
     }
 
+    phase.next("preview.compileCheck");
     const bool outputCompiled = impl_->executor.compiled() &&
         impl_->executor.outputResource(resolvedOutputName) != nullptr;
     const bool needsCompile =
@@ -3200,6 +3235,7 @@ Result RenderGraphPreviewRenderer::render(
         impl_->executor.height() != newHeight ||
         !outputCompiled;
     if (needsCompile) {
+        phase.next("preview.compile");
         result = impl_->device->waitIdle();
         if (!result) {
             return result;
@@ -3221,9 +3257,11 @@ Result RenderGraphPreviewRenderer::render(
         }
         graph.clearDirty();
     } else {
+        phase.next("preview.syncProperties");
         impl_->executor.syncRuntimeProperties(graph);
     }
 
+    phase.next("preview.outputCheck");
     RenderGraphResource* output = impl_->executor.outputResource(resolvedOutputName);
     if (output == nullptr) {
         impl_->lastLog = std::string("RenderGraph preview output resource is missing '") + resolvedOutputName + "'";
@@ -3245,14 +3283,18 @@ Result RenderGraphPreviewRenderer::render(
 
     if (!readback) {
         ++impl_->historyFrameIndex;
+        phase.next("preview.execute");
         result = impl_->executor.execute(RenderGraphSubmitDesc{.graphicsQueue = impl_->graphicsQueue,
             .computeQueue = impl_->device->getQueue(QueueType::Compute), .historyResources = &impl_->historyResources});
+        phase.next("preview.waitAndCollect");
         if (result) { result = impl_->executor.waitForSubmittedWork(); }
+        phase.next("preview.finish");
         impl_->pixels.clear();
         impl_->width = outputWidth;
         impl_->height = outputHeight;
         return result;
     }
+    phase.next("preview.readbackSetup");
     result = impl_->ensureReadback(outputWidth, outputHeight, outputTexelByteSize);
     if (!result) {
         return result;
@@ -3286,12 +3328,14 @@ Result RenderGraphPreviewRenderer::render(
     }
 
     ++impl_->historyFrameIndex;
+    phase.next("preview.execute");
     result = impl_->executor.execute(RenderGraphSubmitDesc{.graphicsQueue = impl_->graphicsQueue,
         .computeQueue = impl_->device->getQueue(QueueType::Compute), .historyResources = &impl_->historyResources});
     if (!result) {
         return result;
     }
 
+    phase.next("preview.readbackRecord");
     if (impl_->readbackBuffer == nullptr) {
         impl_->lastLog = std::string("RenderGraph preview output resource is missing '") + resolvedOutputName + "'";
         return makeError(Error::InvalidArgument);
@@ -3319,6 +3363,7 @@ Result RenderGraphPreviewRenderer::render(
     }
 
     CommandBuffer* commandBuffers[] = {impl_->commandBuffer.get()};
+    phase.next("preview.readbackSubmit");
     result = impl_->submissions.submit(QueueSubmitDesc{
         .commandBuffers = commandBuffers,
         .commandBufferCount = 1,
@@ -3326,11 +3371,13 @@ Result RenderGraphPreviewRenderer::render(
     if (!result) {
         return result;
     }
+    phase.next("preview.readbackWait");
     result = impl_->frameContext.wait();
     if (!result) {
         return result;
     }
 
+    phase.next("preview.readbackConvert");
     impl_->readbackBuffer->invalidate();
     void* mapped = impl_->readbackBuffer->map();
     if (mapped == nullptr) {

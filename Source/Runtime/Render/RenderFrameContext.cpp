@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 
 #include <algorithm>
 #include <chrono>
@@ -176,6 +177,7 @@ RenderFrameContext::~RenderFrameContext()
 
 Result RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanoseconds)
 {
+    profiling::CpuPhase phase("frame.wait", frameIndex);
     if (recording()) {
         return makeError(Error::InvalidArgument);
     }
@@ -183,8 +185,11 @@ Result RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanosecond
     if (!result) {
         return result;
     }
+    phase.next("frame.releaseResources", resources_.size());
     resources_.clear();
+    phase.next("frame.releaseDependencies", dependencies_.size());
     dependencies_.clear();
+    phase.next("frame.newState");
     completion_.state_ = std::make_shared<GpuCompletionPoint::State>();
     frameIndex_ = frameIndex;
     return {};
@@ -229,6 +234,7 @@ Result RenderFrameContext::finishSubmission()
 
 Result RenderFrameContext::reset()
 {
+    profiling::CpuPhase phase("frame.resetWait");
     cancel();
     Result result = wait();
     if (!result && !hasError(result, Error::DeviceLost)) {
@@ -236,8 +242,11 @@ Result RenderFrameContext::reset()
     }
     // Device loss is terminal: release while Device still exists instead of
     // retrying these waits from a destructor after the owner tears Device down.
+    phase.next("frame.releaseResources", resources_.size());
     resources_.clear();
+    phase.next("frame.releaseDependencies", dependencies_.size());
     dependencies_.clear();
+    phase.next("frame.newState");
     completion_ = {};
     return result;
 }
