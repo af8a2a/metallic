@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "Runtime/Render/RenderFrameContext.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
@@ -7366,6 +7367,7 @@ public:
                 {"path", sourcePath.string()},
                 {"streamAssetPath", streamAssetPath.string()},
                 {"enableClusterRtx", true},
+                {"compactClas", true},
                 {"rtasVisualization", true},
                 {"rtasGranularity", "cluster-id"},
                 {"maxClasBytes", 64ull * 1024ull * 1024ull},
@@ -7460,7 +7462,11 @@ public:
             return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
 
-        result = commandBuffer->begin();
+        render::RenderFrameContext readbackFrame;
+        render::QueueSubmissionTracker readbackTracker;
+        result = readbackTracker.initialize(*device, *graphicsQueue);
+        if (result) { result = readbackFrame.begin(kStreamingWarmupFrameCount); }
+        if (result) { result = commandBuffer->begin(&readbackFrame); }
         if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
@@ -7494,11 +7500,11 @@ public:
         }
 
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
-        result = graphicsQueue->submit(render::QueueSubmitDesc{
+        result = readbackTracker.submit(render::QueueSubmitDesc{
             .commandBuffers = commandBuffers,
             .commandBufferCount = 1,
             .signalFence = fence.get(),
-        });
+        }, readbackFrame);
         if (!result) {
             return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
         }

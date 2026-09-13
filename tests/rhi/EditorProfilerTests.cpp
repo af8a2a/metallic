@@ -269,7 +269,9 @@ public:
     {
         if (!std::getenv("METALLIC_TEST_MINIZORAH")) { return RhiTestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for full scene profiler validation"); }
         std::filesystem::create_directories(context.outputDirectory);
-        Json report{{"resolution", {1920, 1080}}, {"lodPixelError", 1.5}, {"frames", Json::array()}};
+        const bool stress = std::getenv("METALLIC_TEST_CLAS_ROAM_STRESS") != nullptr;
+        const uint32_t frameCount = stress ? 2400u : 360u;
+        Json report{{"stress", stress}, {"resolution", {1920, 1080}}, {"lodPixelError", 1.5}, {"frames", Json::array()}};
         const auto save = [&]() { std::ofstream(context.outputDirectory / "MiniZorahProfiler.json") << report.dump(2); };
         try {
             std::string log; RenderSampleLoadResult sample;
@@ -278,8 +280,17 @@ public:
             const bool clasEnabled = std::getenv("METALLIC_TEST_CLAS_OFF") == nullptr;
             graph.findNode("GPUDriven")->properties["enableClas"] = clasEnabled;
             report["clasEnabled"] = clasEnabled;
+            graph.findNode("GPUDriven")->properties["maxClasBytes"] = (std::getenv("METALLIC_TEST_CLAS_LEGACY") ? 1536ull : 512ull) << 20;
+            graph.findNode("GPUDriven")->properties["compactClas"] = std::getenv("METALLIC_TEST_CLAS_LEGACY") == nullptr;
+            graph.findNode("GPUDriven")->properties["coldPageRetentionFrames"] = std::getenv("METALLIC_TEST_CLAS_LEGACY") ? 0 : 120;
             const auto node = graph.findNode("GPUDriven")->id;
             graph.findNode(node)->properties["debugStreamingPages"] = false;
+            if (stress) {
+                // Force pending CLAS and geometry cache turnover without
+                // exhausting system VRAM or depending on interactive input.
+                graph.findNode(node)->properties["maxClasBytes"] = 64ull << 20;
+                graph.findNode(node)->properties["maxResidentBytes"] = 128ull << 20;
+            }
             RenderView view;
             const Json original = graph.viewProperties().at("camera");
             checkProfile(view.setCameraProperties(original), "invalid camera");
@@ -288,13 +299,22 @@ public:
             preview.bindRenderView(&view);
             EditorProfiler profiler;
             bool sawCompute = false, sawResident = false; uint64_t bytes = 0; uint32_t peakRequests = 0;
-            for (uint32_t f = 0; f < 180; ++f) {
+            for (uint32_t f = 0; f < frameCount; ++f) {
                 Json camera = original;
-                const float angle = f < 60 ? 0.0f : std::sin(float(f-60)*.04f)*.16f;
+                // Finish with a stationary view so asynchronous build/move and
+                // cold retirement can converge independently of fresh demand.
+                const uint32_t cameraFrame = stress ? f : std::min(f, 179u);
+                const float angle = f < 60 ? 0.0f : stress
+                    ? std::sin(float(f - 60) * .021f) * 2.7f
+                    : std::sin(float(cameraFrame - 60) * .04f) * .16f;
+                if (stress) {
+                    camera["eye"][0] = original["eye"][0].get<float>() + 12.f * std::sin(float(f) * .007f);
+                    camera["eye"][2] = original["eye"][2].get<float>() + 5.f * std::sin(float(f) * .013f);
+                }
                 const float x = original["center"][0].get<float>() - original["eye"][0].get<float>();
                 const float z = original["center"][2].get<float>() - original["eye"][2].get<float>();
-                camera["center"][0] = original["eye"][0].get<float>() + std::cos(angle)*x + std::sin(angle)*z;
-                camera["center"][2] = original["eye"][2].get<float>() - std::sin(angle)*x + std::cos(angle)*z;
+                camera["center"][0] = camera["eye"][0].get<float>() + std::cos(angle)*x + std::sin(angle)*z;
+                camera["center"][2] = camera["eye"][2].get<float>() - std::sin(angle)*x + std::cos(angle)*z;
                 checkProfile(view.setCameraProperties(camera), "invalid roaming camera");
                 {
                     auto frame = profiler.beginFrame();
@@ -339,14 +359,24 @@ public:
                 checkProfile(sawCandidates && sawTraversal && sawClassify && sawHardware, "missing GPUDriven stage instrumentation");
                 report["frames"].push_back({{"frame",f},{"gpuMs",stats.gpuMilliseconds},{"cpuMs",stats.cpuMilliseconds},{"nodes",nodes},
                     {"streamFrame",stream.frameIndex},{"residentPages",stream.residentPages},{"pendingPages",stream.pendingPages},
-                    {"clasBytes", stream.clasUsedBytes}, {"clasPages", stream.clasResidentPages}, {"clasClusters", stream.clasResidentClusters},
+                    {"clasBytes", stream.clasUsedBytes}, {"clasEncodedBytes", stream.clasEncodedBytes},
+                    {"clasWorstCaseBytes", stream.clasWorstCaseBytes}, {"clasScratchBytes", stream.clasScratchBytes}, {"clasMovedClusters", stream.clasMovedClusters}, {"clasPages", stream.clasResidentPages}, {"clasClusters", stream.clasResidentClusters},
                     {"clasBuiltPages", stream.clasBuiltPages}, {"clasBuiltClusters", stream.clasBuiltClusters},
                     {"clasPendingPages", stream.clasPendingPages}, {"clasRejectedPages", stream.clasRejectedPages},
                     {"clasTotalBuiltPages", stream.clasTotalBuiltPages},
                     {"geometryBytes",stream.geometryUsedBytes},{"budgetBytes",stream.geometryBudgetBytes},{"requests",stream.requests},
                     {"uploads",stream.uploads},{"evictions",stream.evictions},{"uploadBytes",stream.uploadBytes}});
             }
-            if (clasEnabled) {
+            if (stress) {
+                uint64_t evictions = 0, deferred = 0;
+                for (const auto& sample : report["frames"]) {
+                    evictions += sample["evictions"].get<uint32_t>();
+                    deferred += sample["clasRejectedPages"].get<uint32_t>();
+                }
+                checkProfile(evictions > 100 && deferred > 100, "Roam stress did not exercise eviction and CLAS pressure");
+                report["evictionsObserved"] = evictions;
+                report["clasDeferralsObserved"] = deferred;
+            } else if (clasEnabled) {
                 const auto& finalStream = profiler.streamingHistory().front().samples.back();
                 checkProfile(finalStream.clasResidentPages > 1000, "MiniZorah CLAS did not stream into residency");
                 checkProfile(finalStream.clasPendingPages == 0 && finalStream.clasRejectedPages == 0 &&
@@ -360,7 +390,7 @@ public:
             report["status"] = "passed"; report["asyncComputeTimed"] = sawCompute;
             report["uploadBytesObserved"] = bytes; report["peakRequests"] = peakRequests;
             save();
-            return RhiTestResult::pass("180 MiniZorah frames: nested GPU timings, asynchronous software raster, streaming telemetry and offscreen Profiler UI");
+            return RhiTestResult::pass(std::to_string(frameCount) + " MiniZorah frames: nested GPU timings, asynchronous software raster, streaming telemetry and offscreen Profiler UI");
         } catch (const std::exception& error) { report["status"] = "failed"; report["error"] = error.what(); save(); return RhiTestResult::fail(error.what()); }
     }
 };

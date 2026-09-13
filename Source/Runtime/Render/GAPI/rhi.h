@@ -548,6 +548,26 @@ struct ClusterAccelerationStructureTriangleBuildDesc {
     uint64_t scratchBufferOffset = 0;
     class Buffer* buildInfoBuffer = nullptr;
     class Buffer* destinationAddressBuffer = nullptr;
+    // Optional GPU output: one uint32_t actual encoded size per cluster.
+    class Buffer* destinationSizeBuffer = nullptr;
+};
+
+struct ClusterAccelerationStructureMoveInfo {
+    class Buffer* sourceBuffer = nullptr;
+    uint64_t sourceOffset = 0;
+    class Buffer* destinationBuffer = nullptr;
+    uint64_t destinationOffset = 0;
+    uint64_t size = 0;
+};
+
+// Non-overlapping copies of triangle CLAS, with driver relocation of their contents.
+struct ClusterAccelerationStructureMoveDesc {
+    const ClusterAccelerationStructureMoveInfo* objects = nullptr;
+    uint32_t objectCount = 0;
+    class Buffer* sourceAddressBuffer = nullptr;
+    class Buffer* destinationAddressBuffer = nullptr;
+    class Buffer* scratchBuffer = nullptr;
+    uint64_t scratchBufferOffset = 0;
 };
 
 enum class RayTracingAccelerationStructureType : uint8_t {
@@ -1841,6 +1861,7 @@ public:
     Result dispatchIndirect(Buffer& buffer, uint64_t offset = 0);
     Result buildClusterAccelerationStructureTriangles(
         const ClusterAccelerationStructureTriangleBuildDesc& desc);
+    Result moveClusterAccelerationStructures(const ClusterAccelerationStructureMoveDesc& desc);
     Result buildClusterAccelerationStructureBottomLevels(
         const ClusterAccelerationStructureBottomLevelBuildDesc& desc);
     Result buildPartitionedAccelerationStructure(
@@ -1979,6 +2000,9 @@ public:
         ClusterAccelerationStructureProperties& outProperties) const;
     Result queryClusterAccelerationStructureTriangleBuildSizes(
         const ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
+        ClusterAccelerationStructureBuildSizes& outSizes) const;
+    // MOVE_OBJECTS reports its required scratch bytes in updateScratchSize.
+    Result queryClusterAccelerationStructureMoveSizes(uint32_t maxCount, uint64_t maxBytes,
         ClusterAccelerationStructureBuildSizes& outSizes) const;
     Result queryClusterAccelerationStructureBottomLevelBuildSizes(
         const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc,

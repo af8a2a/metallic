@@ -200,6 +200,47 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
 
 bool EditorApplication::runSceneSwitchSmokeTest()
 {
+    if (std::getenv("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH")) {
+        const char* cycleCount = std::getenv("METALLIC_SMOKE_TEST_SWITCH_CYCLES");
+        const char* frameCount = std::getenv("METALLIC_SMOKE_TEST_ROAM_FRAMES");
+        const uint32_t cycles = cycleCount ? uint32_t(std::clamp(std::atoi(cycleCount), 1, 32)) : 4;
+        const uint32_t frames = frameCount ? uint32_t(std::clamp(std::atoi(frameCount), 16, 2400)) : 1200;
+        for (uint32_t cycle = 0; cycle < cycles; ++cycle) {
+            if (cycle != 0) {
+                loadBuiltInSample("gpu-driven-sample");
+                if (!waitForPendingSceneLoad(30000)) { return false; }
+            }
+            for (uint32_t frame = 0; frame < 60; ++frame) {
+                auto profileFrame = profiler_.beginFrame();
+                const render::vulkan::StreamlineFrameScope streamlineFrame;
+                if (!waitForFrameSlotBeforeInput() || !renderFrame() || !viewportPreviewValid_) { return false; }
+            }
+            loadBuiltInSample("gpu-driven-minizorah-vbuffer");
+            if (std::getenv("METALLIC_TEST_CLAS_OFF")) {
+                renderGraph_.findNode("GPUDriven")->properties["enableClas"] = false;
+            }
+            if (std::getenv("METALLIC_TEST_CLAS_LEGACY")) {
+                renderGraph_.findNode("GPUDriven")->properties["compactClas"] = false;
+            }
+            const auto original = viewportCameraProperties();
+            for (uint32_t frame = 0; frame < frames; ++frame) {
+                auto profileFrame = profiler_.beginFrame();
+                auto camera = original;
+                auto& position = camera["camera"];
+                const float angle = frame < 180 ? 0.f : std::sin(float(frame - 180) * .021f) * 2.7f;
+                const float x = original["camera"]["center"][0].get<float>() - original["camera"]["eye"][0].get<float>();
+                const float z = original["camera"]["center"][2].get<float>() - original["camera"]["eye"][2].get<float>();
+                position["center"][0] = position["eye"][0].get<float>() + std::cos(angle) * x + std::sin(angle) * z;
+                position["center"][2] = position["eye"][2].get<float>() - std::sin(angle) * x + std::cos(angle) * z;
+                applyViewportCameraProperties(camera, "Smoke MiniZorah roam");
+                const render::vulkan::StreamlineFrameScope streamlineFrame;
+                if (!waitForFrameSlotBeforeInput() || !renderFrame() || !viewportPreviewValid_) { return false; }
+            }
+            if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { return false; }
+            spdlog::info("[Smoke MiniZorah Switch] Cycle {} passed Sponza -> MiniZorah and {} frames", cycle, frames);
+        }
+        return true;
+    }
     const auto expect = [](bool condition, const std::string& message) {
         if (!condition) { spdlog::error("[Smoke Scene Switch] {}", message); }
         return condition;

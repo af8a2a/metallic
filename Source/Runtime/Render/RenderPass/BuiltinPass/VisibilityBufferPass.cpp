@@ -286,6 +286,8 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .queuedFrameCount = 3,
         .enableClusterRtx = false,
         .enableClas = boolProperty(&properties, "enableClas", false),
+        .compactClas = boolProperty(&properties, "compactClas", false),
+        .coldPageRetentionFrames = previewStreamUintProperty(properties, "coldPageRetentionFrames", 0),
         .maxClasBytes = previewStreamUint64Property(properties, "maxClasBytes", 512ull * 1024ull * 1024ull),
         .maxClasBuildClusters = previewStreamUintProperty(properties, "maxClasBuildClusters", 0),
         .screenSpacePagePriority = boolProperty(&properties, "screenSpacePagePriority", true),

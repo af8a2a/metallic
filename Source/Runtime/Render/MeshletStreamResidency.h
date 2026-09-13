@@ -324,6 +324,16 @@ struct MeshletStreamResidencyStats {
     uint64_t totalCompletionDrivenUploads = 0;
 };
 
+struct MeshletStreamColdPageReclaimDesc {
+    uint64_t clasUsedBytes = 0;
+    uint64_t clasCapacityBytes = 0;
+    uint64_t clasRetiringBytes = 0;
+    uint32_t retentionFrames = 120;
+    uint32_t pressureAgeFrames = 16;
+    uint32_t maxPages = 256;
+    std::function<uint64_t(uint32_t)> clasPageBytes;
+};
+
 class MeshletStreamResidencyManager {
 public:
     bool initialize(const MeshletStreamResidencyDesc& desc, std::string& reason);
@@ -339,6 +349,9 @@ public:
     using UploadObserver = std::function<void(uint32_t, std::span<const uint8_t>)>;
     uint32_t processUploads(Streamer& streamer, Buffer& destination, uint32_t maxUploads,
         const UploadObserver& observer = {});
+
+    // Uses confirmed unused feedback; geometry and its CLAS share one victim list.
+    uint32_t reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc);
 
     void buildInitialPageTable(std::span<StreamPageTableEntry> outEntries) const;
     std::span<const StreamPageTablePatch> pendingPatches() const { return patches_; }
@@ -405,6 +418,7 @@ private:
 
     using PagePositionMember = uint32_t PageEntry::*;
 
+    void prepareEvictionCandidates();
     bool allocatePageStorage(uint32_t pageIndex);
     bool scheduleUnload(uint32_t pageIndex, bool eviction);
     void completeUnloadTask(uint32_t taskIndex);
@@ -452,6 +466,8 @@ private:
     bool evictionCandidatesBuilt_ = false;
     bool evictionAgeRejected_ = false;
     bool residentDemandFeedback_ = false;
+    bool geometryReclaimPressure_ = false;
+    bool clasReclaimPressure_ = false;
     uint32_t frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
     std::unordered_map<uint32_t, size_t> requestMarks_;
     std::unordered_set<uint32_t> unloadRequestMarks_;

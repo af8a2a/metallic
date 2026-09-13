@@ -1,5 +1,7 @@
 # MiniZorah 流式 CLAS
 
+**后续更新：已启用实际尺寸搬移和联合冷页回收，CLAS 默认池为 512 MiB。** 见[当前实现与验证](E:/metallic/Documentation/MiniZorahClasCompaction.md)。下文保留最初固定槽实现及崩溃修复的历史记录。
+
 2026-09-13。MiniZorah VBuffer 样例现在默认构建驻留几何页的 CLAS，继续使用原有 VBuffer 绘制。CLAS 可以独立启用；只有 `enableClusterRtx` 才分配和构建动态 BLAS、fallback BLAS 与 TLAS。
 
 ## 使用与观测
@@ -63,3 +65,29 @@ $env:METALLIC_TEST_MINIZORAH='1'
 ```
 
 设置 `METALLIC_TEST_CLAS_OFF=1` 可运行同一 MiniZorah 测试的关闭 CLAS 对照；正常验证保持此变量未设置。
+
+
+## 漫游随机退出修复（2026-09-13 晚）
+
+用户日志以 `RenderGraph execute failed: Failure` 和退出码 0 结束。定位到 CLAS 待构建队列与几何重新上传之间的生命周期冲突：旧驻留的队列项可能因 CLAS 容量或构建预算滞留；同一页面卸载并开始新上传时，旧队列项看见页面尚未 Resident，误删新上传已准备好的 CLAS 参数。上传完成后缺少参数，运行时返回 Failure，编辑器退出。截图中 95% 显存占用不能单独证明是设备丢失或内存分配失败。
+
+修复将旧队列项的清理与上传参数释放分开：清理旧队列项只移除排队标记；参数继续跟随几何分配保留，在 CLAS 构建成功或几何分配撤销时释放。缺失参数的异常分支增加页面、状态、帧号和几何偏移日志。
+
+验证开启 Vulkan validation：
+
+- 新增 `stream_clas_eviction_reupload` 回归，以 64 KiB CLAS 池和受控的卸载/重载时序复现。修复前在运行时第 54 帧、页面 45 确定性返回 Failure；修复后完成 420 帧、31 次卸载与重载。相关上传、CLAS 池和运行时测试合计 5/5 通过。
+- MiniZorah 压力轨迹完成 2,400 帧，1920×1080、1.5 px、异步 Compute。几何池缩至 128 MiB、CLAS 池缩至 64 MiB，持续移动及大角度转向；累计淘汰 246,621 页次、上传 253,495 页次，CLAS 因容量推迟累计 868,552 页次（包含同一页跨帧重试）。未退出，日志无 Vulkan validation 错误。
+- 默认 1 GiB 几何池 / 1.5 GiB CLAS 池的 180 帧验证通过，待构建队列收敛至零。缩小缓存仅用于压力测试，样例默认预算没有修改。
+- `build-relwithdebinfo` 的 Metallic、MetallicGPUDrivenSample、MetallicRhiTests，以及用户使用的 `build-release` 的 Metallic、MetallicGPUDrivenSample 均重新构建成功。
+
+[修复前日志](E:/metallic/build-relwithdebinfo/clas-crash/before.log) · [回归日志](E:/metallic/build-relwithdebinfo/clas-crash/after.log) · [压力测试数据](E:/metallic/build-relwithdebinfo/clas-crash/stress/MiniZorahProfiler.json) · [默认配置验证](E:/metallic/build-relwithdebinfo/clas-crash/default/MiniZorahProfiler.json)
+
+压力测试命令（保持 `METALLIC_TEST_CLAS_OFF` 未设置）：
+
+```powershell
+$env:METALLIC_TEST_MINIZORAH='1'
+$env:METALLIC_TEST_CLAS_ROAM_STRESS='1'
+.\build-relwithdebinfo\tests\MetallicRhiTests.exe '--gtest_filter=*minizorah_profiler_streaming' --rhi-validation --rhi-async-compute --output-dir E:\metallic\build-relwithdebinfo\clas-crash\stress
+```
+
+普通 180 帧验证需移除 `METALLIC_TEST_CLAS_ROAM_STRESS`。以上覆盖确定性生命周期回归及自动漫游轨迹，不是对任意显存压力下长期运行的保证。

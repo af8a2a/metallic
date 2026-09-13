@@ -27,6 +27,10 @@ struct SceneStreamingProfile {
     uint64_t geometryBudgetBytes = 0;
     uint64_t clasUsedBytes = 0;
     uint64_t clasCapacityBytes = 0;
+    uint64_t clasEncodedBytes = 0;
+    uint64_t clasWorstCaseBytes = 0;
+    uint64_t clasScratchBytes = 0;
+    uint32_t clasMovedClusters = 0;
     bool clasEnabled = false;
     uint32_t clasResidentPages = 0;
     uint32_t clasResidentClusters = 0;

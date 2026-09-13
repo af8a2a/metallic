@@ -78,6 +78,7 @@ struct MeshletStreamClasPoolDesc {
     uint64_t maxStorageBytes = 512ull * 1024ull * 1024ull;
     uint32_t maxBuildClusters = 2048;
     uint32_t queuedFrameCount = 3;
+    bool compactStorage = false; // Opt-in until the compact path is validated.
 };
 
 struct MeshletStreamClasPageBuild {
@@ -104,7 +105,14 @@ struct MeshletStreamClasPoolStats {
     uint64_t usedStorageBytes = 0;
     uint64_t clusterStrideBytes = 0;
     uint64_t scratchBytes = 0;
+    uint64_t encodedStorageBytes = 0;
+    uint64_t worstCaseStorageBytes = 0;
+    uint64_t retiringStorageBytes = 0;
+    uint32_t frameMovedPageCount = 0;
+    uint32_t frameMovedClusterCount = 0;
 };
+
+class MeshletStreamCompactClasPool;
 
 class MeshletStreamClasPool {
 public:
@@ -125,11 +133,15 @@ public:
         CommandBuffer& commandBuffer,
         Buffer& pageBuffer,
         std::span<const MeshletStreamClasPageBuild> pages,
-        std::string& log);
+        std::string& log,
+        Buffer* sizeOutput = nullptr);
     void retirePages(std::span<const uint32_t> pageIndices);
 
     bool ready() const;
     bool pageHasClas(uint32_t pageIndex) const;
+    bool pageBuildPending(uint32_t pageIndex) const;
+    uint64_t pageStorageBytes(uint32_t pageIndex) const;
+    Buffer* storageBuffer() const;
     uint32_t pageClasAddressOffset(uint32_t pageIndex) const;
     uint64_t clusterAddress(uint32_t pageIndex, uint32_t clusterIndex) const;
     Buffer* clusterAddressBuffer() const;
@@ -139,6 +151,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    std::unique_ptr<MeshletStreamCompactClasPool> compact_;
 };
 
 bool buildMeshletStreamPageClusterOffsets(

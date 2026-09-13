@@ -6696,6 +6696,14 @@ Result CommandBuffer::buildClusterAccelerationStructureTriangles(
         return makeError(Error::InvalidArgument);
     }
 
+    Buffer* sizeBuffer = desc.destinationSizeBuffer;
+    if (sizeBuffer && (sizeBuffer->impl_ == nullptr || sizeBuffer->impl_->device != impl_->device ||
+        !hasFlag(sizeBuffer->desc().usage, BufferUsageBits::AccelerationStructureStorage) ||
+        !hasFlag(sizeBuffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) ||
+        sizeBuffer->desc().size < uint64_t(desc.clusterCount) * sizeof(uint32_t) || sizeBuffer->deviceAddress() == 0)) {
+        return makeError(Error::InvalidArgument);
+    }
+
     std::vector<VkClusterAccelerationStructureBuildTriangleClusterInfoNV> buildInfos(
         desc.clusterCount);
     std::vector<uint64_t> destinationAddresses(desc.clusterCount);
@@ -6862,6 +6870,15 @@ Result CommandBuffer::buildClusterAccelerationStructureTriangles(
         },
     };
 
+    if (sizeBuffer) {
+        commands.dstSizesArray = {sizeBuffer->deviceAddress(), sizeof(uint32_t), uint64_t(desc.clusterCount) * sizeof(uint32_t)};
+    }
+    if (std::getenv("METALLIC_TRACE_CLAS")) {
+        spdlog::info("[CLAS Trace] build count={} infos={:x} destinations={:x} scratch={:x} sizes={:x} firstDst={:x}",
+            desc.clusterCount, buildInfoAddress, destinationAddress, commands.scratchData,
+            commands.dstSizesArray.deviceAddress, destinationAddresses.front());
+    }
+
     const VkMemoryBarrier2 inputBarrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -6881,9 +6898,9 @@ Result CommandBuffer::buildClusterAccelerationStructureTriangles(
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+        .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
             (impl_->device->rayQueryEnabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
-        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+        .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
             (impl_->device->rayQueryEnabled ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo outputDependency{
@@ -6892,6 +6909,148 @@ Result CommandBuffer::buildClusterAccelerationStructureTriangles(
         .pMemoryBarriers = &outputBarrier,
     };
     vkCmdPipelineBarrier2(impl_->commandBuffer, &outputDependency);
+    return {};
+#endif
+}
+
+Result Device::queryClusterAccelerationStructureMoveSizes(
+    uint32_t maxCount, uint64_t maxBytes, ClusterAccelerationStructureBuildSizes& outSizes) const
+{
+    outSizes = {};
+#ifndef VK_NV_cluster_acceleration_structure
+    return makeError(Error::Unsupported);
+#else
+    if (!impl_ || !impl_->clusterAccelerationStructureEnabled) { return makeError(Error::Unsupported); }
+    if (!maxCount || !maxBytes) { return makeError(Error::InvalidArgument); }
+    activateVolkDevice(impl_->device);
+    VkClusterAccelerationStructureMoveObjectsInputNV move{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_MOVE_OBJECTS_INPUT_NV,
+        .type = VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_TRIANGLE_CLUSTER_NV,
+        .noMoveOverlap = VK_TRUE, .maxMovedBytes = maxBytes};
+    VkClusterAccelerationStructureInputInfoNV input{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+        .maxAccelerationStructureCount = maxCount,
+        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_MOVE_OBJECTS_NV,
+        .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
+        .opInput = {.pMoveObjects = &move}};
+    VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    vkGetClusterAccelerationStructureBuildSizesNV(impl_->device, &input, &sizes);
+    outSizes = {sizes.accelerationStructureSize, sizes.updateScratchSize, sizes.buildScratchSize};
+    return {};
+#endif
+}
+
+Result CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerationStructureMoveDesc& desc)
+{
+#ifndef VK_NV_cluster_acceleration_structure
+    return makeError(Error::Unsupported);
+#else
+    if (!impl_ || !impl_->device || !impl_->device->clusterAccelerationStructureEnabled) {
+        return makeError(Error::Unsupported);
+    }
+    const auto validBuffer = [&](Buffer* buffer, BufferUsageBits usage, uint64_t bytes) {
+        return buffer && buffer->impl_ && buffer->impl_->device == impl_->device &&
+            hasFlag(buffer->desc().usage, usage) && hasFlag(buffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) &&
+            bytes <= buffer->desc().size && buffer->deviceAddress() != 0;
+    };
+    const uint64_t arrayBytes = uint64_t(desc.objectCount) * sizeof(uint64_t);
+    if (!desc.objects || !desc.objectCount || desc.sourceAddressBuffer == desc.destinationAddressBuffer ||
+        !validBuffer(desc.sourceAddressBuffer, BufferUsageBits::AccelerationStructureBuildInput, arrayBytes) ||
+        !validBuffer(desc.destinationAddressBuffer, BufferUsageBits::AccelerationStructureStorage, arrayBytes) ||
+        !validBuffer(desc.scratchBuffer, BufferUsageBits::Storage, desc.scratchBufferOffset)) {
+        return makeError(Error::InvalidArgument);
+    }
+    std::vector<uint64_t> sources(desc.objectCount), destinations(desc.objectCount);
+    uint64_t totalBytes = 0;
+    // These limits are physical-device properties, with no queue synchronization.
+    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV limits{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV};
+    VkPhysicalDeviceProperties2 deviceProperties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &limits};
+    vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &deviceProperties);
+    for (uint32_t i = 0; i < desc.objectCount; ++i) {
+        const auto& item = desc.objects[i];
+        if (!item.size || item.sourceBuffer == item.destinationBuffer ||
+            !validBuffer(item.sourceBuffer, BufferUsageBits::AccelerationStructureStorage, item.sourceOffset) ||
+            !validBuffer(item.destinationBuffer, BufferUsageBits::AccelerationStructureStorage, item.destinationOffset) ||
+            item.size > item.sourceBuffer->desc().size - item.sourceOffset ||
+            item.size > item.destinationBuffer->desc().size - item.destinationOffset ||
+            totalBytes > UINT64_MAX - item.size) {
+            return makeError(Error::InvalidArgument);
+        }
+        sources[i] = item.sourceBuffer->deviceAddress() + item.sourceOffset;
+        destinations[i] = item.destinationBuffer->deviceAddress() + item.destinationOffset;
+        if (sources[i] % limits.clusterByteAlignment || destinations[i] % limits.clusterByteAlignment) {
+            return makeError(Error::InvalidArgument);
+        }
+        totalBytes += item.size;
+    }
+    struct MoveRange { uint64_t start, end; bool destination; };
+    std::vector<MoveRange> ranges;
+    ranges.reserve(size_t(desc.objectCount) * 2);
+    for (uint32_t i = 0; i < desc.objectCount; ++i) {
+        ranges.push_back({sources[i], sources[i] + desc.objects[i].size, false});
+        ranges.push_back({destinations[i], destinations[i] + desc.objects[i].size, true});
+    }
+    std::sort(ranges.begin(), ranges.end(), [](const auto& a, const auto& b) { return a.start < b.start; });
+    uint64_t sourceEnd = 0, destinationEnd = 0;
+    for (const auto& range : ranges) {
+        if (range.start < destinationEnd || (range.destination && range.start < sourceEnd)) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (range.destination) { destinationEnd = std::max(destinationEnd, range.end); }
+        else { sourceEnd = std::max(sourceEnd, range.end); }
+    }
+    VkClusterAccelerationStructureMoveObjectsInputNV move{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_MOVE_OBJECTS_INPUT_NV,
+        .type = VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_TRIANGLE_CLUSTER_NV,
+        .noMoveOverlap = VK_TRUE, .maxMovedBytes = totalBytes};
+    VkClusterAccelerationStructureInputInfoNV input{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+        .maxAccelerationStructureCount = desc.objectCount,
+        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_MOVE_OBJECTS_NV,
+        .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
+        .opInput = {.pMoveObjects = &move}};
+    VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    vkGetClusterAccelerationStructureBuildSizesNV(impl_->device->device, &input, &sizes);
+    const uint64_t scratchAddress = desc.scratchBuffer->deviceAddress() + desc.scratchBufferOffset;
+    // MOVE_OBJECTS reports its scratch requirement in updateScratchSize.
+    // Checking buildScratchSize here would allow undersized buffers on NVIDIA.
+    if (scratchAddress % limits.clusterScratchByteAlignment ||
+        sizes.updateScratchSize > desc.scratchBuffer->desc().size - desc.scratchBufferOffset) {
+        return makeError(Error::InvalidArgument);
+    }
+    for (const auto& pair : {std::pair{desc.sourceAddressBuffer, sources.data()},
+                             std::pair{desc.destinationAddressBuffer, destinations.data()}}) {
+        void* mapped = pair.first->map();
+        if (!mapped) { return makeError(Error::Failure); }
+        std::memcpy(mapped, pair.second, arrayBytes);
+        pair.first->flush(0, arrayBytes);
+        pair.first->unmap();
+    }
+    VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR};
+    VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+    VkClusterAccelerationStructureCommandsInfoNV commands{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
+        .input = input, .scratchData = scratchAddress,
+        .dstAddressesArray = {desc.destinationAddressBuffer->deviceAddress(), sizeof(uint64_t), arrayBytes},
+        .srcInfosArray = {desc.sourceAddressBuffer->deviceAddress(), sizeof(uint64_t), arrayBytes}};
+    if (std::getenv("METALLIC_TRACE_CLAS")) {
+        spdlog::info("[CLAS Trace] move count={} sources={:x} destinations={:x} scratch={:x} firstSrc={:x} firstDst={:x} bytes={} scratchCapacity={} scratchRequired={}",
+            desc.objectCount, commands.srcInfosArray.deviceAddress, commands.dstAddressesArray.deviceAddress,
+            commands.scratchData, sources.front(), destinations.front(), totalBytes,
+            desc.scratchBuffer->desc().size - desc.scratchBufferOffset, sizes.updateScratchSize);
+    }
+    vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+    barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
     return {};
 #endif
 }

@@ -240,6 +240,8 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
         .queuedFrameCount = 3,
         .enableClusterRtx = boolProperty(properties, "enableClusterRtx", false),
         .enableClas = boolProperty(properties, "enableClas", false),
+        .compactClas = boolProperty(properties, "compactClas", false),
+        .coldPageRetentionFrames = uintProperty(properties, "coldPageRetentionFrames", 0),
         .maxClasBytes = uint64Property(properties, "maxClasBytes", 512ull * 1024ull * 1024ull),
         .maxClasBuildClusters = uintProperty(properties, "maxClasBuildClusters", 0),
         .maxBlasClusterReferences = uintProperty(properties, "maxBlasClusterReferences", 0),

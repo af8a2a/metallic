@@ -316,6 +316,7 @@ void MeshletStreamResidencyManager::reset()
     preparedPageLoads_.clear();
     requestTaskQueue_.reset();
     residentDemandFeedback_ = false;
+    geometryReclaimPressure_ = clasReclaimPressure_ = false;
     for (auto& taskPages : requestTaskPages_) {
         taskPages.clear();
     }
@@ -1312,6 +1313,70 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats(bool detailed) 
     return result;
 }
 
+void MeshletStreamResidencyManager::prepareEvictionCandidates()
+{
+    if (evictionCandidatesBuilt_) { return; }
+    evictionCandidatesBuilt_ = true;
+    ++stats_.frameEvictionScanCount;
+    for (uint32_t candidate : residentPages_) {
+        ++stats_.frameEvictionCandidateTests;
+        const PageEntry& entry = pages_.at(candidate);
+        if (entry.lockedFallback || !streamableEvictionState(entry.state) ||
+            (residentDemandFeedback_ && !entry.gpuUnused)) { continue; }
+        if (pageAge(candidate) < evictionAgeThresholdFrames_) {
+            evictionAgeRejected_ = true;
+            continue;
+        }
+        evictionCandidates_.push_back(candidate);
+    }
+    std::sort(evictionCandidates_.begin(), evictionCandidates_.end(), [this](uint32_t a, uint32_t b) {
+        const auto ageA = pages_.at(a).lastUsedFrame, ageB = pages_.at(b).lastUsedFrame;
+        return ageA != ageB ? ageA < ageB : a < b;
+    });
+}
+
+uint32_t MeshletStreamResidencyManager::reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc)
+{
+    if (!residentDemandFeedback_ || !desc.retentionFrames || !desc.maxPages) { return 0; }
+    const auto subtract = [](uint64_t a, uint64_t b) { return a > b ? a - b : 0; };
+    uint64_t geometry = storage_.usedBytes();
+    uint64_t clas = subtract(desc.clasUsedBytes, desc.clasRetiringBytes);
+    // Credit already scheduled frees before selecting more victims. A delayed
+    // free must not drive repeated evictions while its GPU readers drain.
+    for (uint32_t id : activePages_) {
+        const auto& page = pages_.at(id);
+        if (page.state == MeshletStreamPageResidencyState::PendingUnload) {
+            geometry = subtract(geometry, page.allocationBytes);
+            if (desc.clasPageBytes) { clas = subtract(clas, desc.clasPageBytes(id)); }
+        }
+    }
+    const uint64_t geometryTarget = storage_.capacityBytes() * 70 / 100;
+    const uint64_t clasTarget = desc.clasCapacityBytes * 70 / 100;
+    const auto pressure = [](bool current, uint64_t used, uint64_t capacity) {
+        return capacity && (current ? used > capacity * 70 / 100 : used >= capacity * 85 / 100);
+    };
+    geometryReclaimPressure_ = pressure(geometryReclaimPressure_, geometry, storage_.capacityBytes());
+    clasReclaimPressure_ = pressure(clasReclaimPressure_, clas, desc.clasCapacityBytes);
+    prepareEvictionCandidates();
+    uint32_t reclaimed = 0;
+    for (uint32_t id : evictionCandidates_) {
+        if (reclaimed >= desc.maxPages || stats_.frameEvictedPageCount >= 256) { break; }
+        const auto& page = pages_.at(id);
+        if (page.lockedFallback || !page.gpuUnused || !streamableEvictionState(page.state)) { continue; }
+        const uint64_t clasBytes = desc.clasPageBytes ? desc.clasPageBytes(id) : 0;
+        const bool needGeometry = geometryReclaimPressure_ && geometry > geometryTarget;
+        const bool needClas = clasReclaimPressure_ && clas > clasTarget && clasBytes > 0;
+        const uint64_t minimumAge = needGeometry || needClas ? desc.pressureAgeFrames : desc.retentionFrames;
+        // Recently uploaded / recently used pages must survive delayed feedback.
+        if (pageAge(id) < minimumAge || frameIndex_ - page.residentSinceFrame < desc.pressureAgeFrames) { continue; }
+        const uint64_t geometryBytes = page.allocationBytes;
+        if (!scheduleUnload(id, true)) { break; }
+        geometry = subtract(geometry, geometryBytes); clas = subtract(clas, clasBytes);
+        ++reclaimed; ++stats_.frameEvictedPageCount; ++stats_.totalEvictedPageCount;
+    }
+    return reclaimed;
+}
+
 bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
 {
     if (pageIndex >= pageCount_) {
@@ -1331,25 +1396,7 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
     const bool storageBudgetReached = !storage_.canAllocate(assetPage.uncompressedSize);
     if (pageBudgetReached || storageBudgetReached) {
         uint32_t evictPage = UINT32_MAX;
-        if (!evictionCandidatesBuilt_) {
-            evictionCandidatesBuilt_ = true;
-            ++stats_.frameEvictionScanCount;
-            for (uint32_t candidate : residentPages_) {
-                ++stats_.frameEvictionCandidateTests;
-                const PageEntry& entry = pages_.at(candidate);
-                if (entry.lockedFallback || !streamableEvictionState(entry.state) ||
-                    (residentDemandFeedback_ && !entry.gpuUnused)) { continue; }
-                if (pageAge(candidate) < evictionAgeThresholdFrames_) {
-                    evictionAgeRejected_ = true;
-                    continue;
-                }
-                evictionCandidates_.push_back(candidate);
-            }
-            std::sort(evictionCandidates_.begin(), evictionCandidates_.end(), [this](uint32_t a, uint32_t b) {
-                const auto ageA = pages_.at(a).lastUsedFrame, ageB = pages_.at(b).lastUsedFrame;
-                return ageA != ageB ? ageA < ageB : a < b;
-            });
-        }
+        prepareEvictionCandidates();
         // At most 256 evictions per frame; one delayed-free task batches them.
         // Retrying after an exhausted scan/task budget is constant time.
         while (evictionCandidateCursor_ < evictionCandidates_.size() && stats_.frameEvictedPageCount < 256u) {

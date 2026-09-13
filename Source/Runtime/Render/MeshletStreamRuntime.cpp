@@ -832,6 +832,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return makeError(Error::Failure);
     }
 
+    coldPageRetentionFrames_ = desc.coldPageRetentionFrames;
     const bool enableClas = desc.enableClas && device.capabilities().clusterAccelerationStructure;
     clusterRtxEnabled_ = desc.enableClusterRtx;
     maxResidentPages_ = desc.maxResidentPages;
@@ -1001,6 +1002,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 .maxStorageBytes = desc.maxClasBytes,
                 .maxBuildClusters = static_cast<uint32_t>(buildClusters),
                 .queuedFrameCount = std::max(desc.queuedFrameCount, 1u),
+                .compactStorage = desc.compactClas,
             },
             log);
         if (!result) {
@@ -2156,6 +2158,7 @@ void MeshletStreamRuntime::reset()
     pendingClasPages_.clear();
     queuedClasPages_.clear();
     maxClasBuildClusters_ = 0;
+    coldPageRetentionFrames_ = 0;
     clusterRtxEnabled_ = false;
     pageHandle_ = {};
     activeGroupHandle_ = {};
@@ -2309,6 +2312,12 @@ Result MeshletStreamRuntime::cmdBeginFrame(
         clasPool_->retirePages(residency_.newlyUnloadedPages());
     }
     consumeGpuRequestReadback();
+    if (coldPageRetentionFrames_ != 0) {
+        const auto clas = clasPool_ ? clasPool_->stats() : MeshletStreamClasPoolStats{};
+        residency_.reclaimColdPages({.clasUsedBytes = clas.usedStorageBytes, .clasCapacityBytes = clas.storageBytes,
+            .clasRetiringBytes = clas.retiringStorageBytes, .retentionFrames = coldPageRetentionFrames_,
+            .clasPageBytes = [this](uint32_t page) { return clasPool_ ? clasPool_->pageStorageBytes(page) : 0; }});
+    }
     MeshletStreamResidencyManager::UploadObserver prepareClas;
     std::string planError;
     if (clasPool_) {
@@ -2407,22 +2416,30 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
     for (size_t i = 0; i < pendingCount; ++i) {
         const uint32_t page = pendingClasPages_.front();
         if (residency_.pageResident(page)) {
-            const uint32_t count = clasPool_->pageHasClas(page) ? 0 : asset_.pages()[page].clusterCount;
+            const uint32_t count = clasPool_->pageHasClas(page) || clasPool_->pageBuildPending(page)
+                ? 0 : asset_.pages()[page].clusterCount;
             if (count > maxClasBuildClusters_ - clusterCount) { break; }
             const auto plan = pendingClasPlans_.find(page);
             // A retired CLAS may have expired between upload admission and completion.
             // Always retain an upload plan until the resident page is built.
-            if (count && plan == pendingClasPlans_.end()) { return makeError(Error::Failure); }
+            if (count && plan == pendingClasPlans_.end()) {
+                spdlog::error("[MeshletStreamRuntime] Missing CLAS upload plan: page={} state={} frame={} pending={} geometryOffset={}",
+                    page, static_cast<uint32_t>(residency_.pageState(page)), frameIndex_, pendingClasPages_.size(),
+                    residency_.deviceOffsetForPage(page));
+                return makeError(Error::Failure);
+            }
             clasBuilds.push_back({.pageIndex = page, .deviceOffsetBytes = residency_.deviceOffsetForPage(page),
                 .plan = plan != pendingClasPlans_.end() ? &plan->second : nullptr});
             clusterCount += count;
         } else {
-            pendingClasPlans_.erase(page);
+            // This queue entry belongs to an old residency. A new upload may
+            // already own a plan while waiting for completion. Drop only the
+            // queue entry; beginFrame releases plans with their allocations.
             queuedClasPages_.erase(page);
         }
         pendingClasPages_.pop_front();
     }
-    if (!clasBuilds.empty()) {
+    { // Pending size/move batches also need progress on frames without new pages.
         std::string clasLog;
         result = clasPool_->cmdBuildPages(commandBuffer, *pageBuffer_, clasBuilds, clasLog);
         if (!result) {
@@ -3664,6 +3681,10 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
         const auto clas = clasPool_->stats();
         result.clasUsedBytes = clas.usedStorageBytes;
         result.clasCapacityBytes = clas.storageBytes;
+        result.clasEncodedBytes = clas.encodedStorageBytes;
+        result.clasWorstCaseBytes = clas.worstCaseStorageBytes;
+        result.clasScratchBytes = clas.scratchBytes;
+        result.clasMovedClusters = clas.frameMovedClusterCount;
         result.clasResidentPages = clas.builtPageCount;
         result.clasResidentClusters = clas.builtClusterCount;
         result.clasRetiringPages = clas.retiringPageCount;

@@ -1,0 +1,56 @@
+{
+  "date": "2026-09-13",
+  "device": "RTX 5070 Ti",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "lodPixelError": 1.5,
+  "trajectory": "360 frames: hold 0-59, yaw 60-179, hold final view 180-359",
+  "legacy": {
+    "geometryBytes": 381196800,
+    "clasBytes": 1196352000,
+    "clasWorstCaseBytes": 0,
+    "clasEncodedBytes": 0,
+    "clasScratchBytes": 1114879,
+    "residentPages": 14732,
+    "clasPages": 14732,
+    "clasClusters": 207700,
+    "clasPendingPages": 0,
+    "clasRejectedPages": 0
+  },
+  "compactAndCold": {
+    "geometryBytes": 262813952,
+    "clasBytes": 268492032,
+    "clasWorstCaseBytes": 824411520,
+    "clasEncodedBytes": 268492032,
+    "clasScratchBytes": 163643761,
+    "residentPages": 11530,
+    "clasPages": 11530,
+    "clasClusters": 143127,
+    "clasPendingPages": 0,
+    "clasRejectedPages": 0
+  },
+  "geometryReductionPercent": 31.055572344783588,
+  "clasCombinedReductionPercent": 77.55743861338469,
+  "sameResidentSetClasReductionPercent": 67.4322804222823,
+  "validation": {
+    "integrationTestsPassed": 11,
+    "stressFrames": 2400,
+    "evictions": 246192,
+    "capacityDeferralsIncludingRetries": 274931,
+    "status": "passed"
+  },
+  "limits": {
+    "geometryPoolCapacityBytes": 1073741824,
+    "clasPoolCapacityBytes": 536870912,
+    "retentionFrames": 120,
+    "pressureAgeFrames": 16,
+    "maxEvictionsPerFrame": 256
+  },
+  "logs": {
+    "integration": "build-relwithdebinfo\\clas-compact\\final.log",
+    "stress": "build-relwithdebinfo\\clas-compact\\final-stress.log",
+    "releaseBuild": "build-relwithdebinfo\\clas-compact\\release-build.log"
+  }
+}

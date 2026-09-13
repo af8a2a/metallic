@@ -258,6 +258,7 @@ add_executable(MetallicRhiTests
     rhi/RenderingTests.cpp
     rhi/ResourceTests.cpp
     rhi/RayTracingAccelerationStructureTests.cpp
+        rhi/ClasCompactionTests.cpp
     rhi/RayTracingPositionFetchTests.cpp
     rhi/OpacityMicromapTests.cpp
     rhi/StreamerTests.cpp

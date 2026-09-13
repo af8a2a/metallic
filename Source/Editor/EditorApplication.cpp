@@ -2062,7 +2062,8 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
-        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_SCENE_SWITCH")) {
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_SCENE_SWITCH") ||
+            environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH")) {
             const bool passed = runSceneSwitchSmokeTest();
             shutdown();
             return passed ? 0 : 1;
@@ -2283,7 +2284,7 @@ bool EditorApplication::initialize()
     }
 
     SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-    SDL_ShowWindow(window_);
+    if (!smokeTest_ || !environmentFlagEnabled("METALLIC_SMOKE_TEST_HIDDEN")) { SDL_ShowWindow(window_); }
 
     if (waitForGraphicsDebugger_) {
         SDL_ShowSimpleMessageBox(
@@ -2311,7 +2312,9 @@ bool EditorApplication::initialize()
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+        if (!smokeTest_ || !environmentFlagEnabled("METALLIC_SMOKE_TEST_HIDDEN")) {
+            io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+        }
         io.ConfigDpiScaleFonts = true;
         io.ConfigDpiScaleViewports = true;
         loadDefaultImGuiLayoutIfMissing();
@@ -2399,7 +2402,7 @@ bool EditorApplication::initializeRhi()
                 .enablePushDescriptor = true,
                 .enableClusterAccelerationStructure = true,
                 .enableStreamline = enableStreamline,
-                .enableAftermath = !smokeTest_,
+                .enableAftermath = !smokeTest_ || environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH"),
                 .validationSink = debugRuntime_ ? debugRuntime_->validationSink() : render::ValidationSink{},
                 .enableAsyncCompute = true,
             },
@@ -6072,10 +6075,15 @@ void EditorApplication::drawViewportPanel()
     const float panelWidth = panelMax.x - panelMin.x;
     const float panelHeight = panelMax.y - panelMin.y;
     constexpr uint32_t kSmokeTestPreviewSize = 256;
-    const auto [previewWidth, previewHeight] = constrainedPreviewExtent(
+    auto [previewWidth, previewHeight] = constrainedPreviewExtent(
         panelWidth,
         panelHeight,
-        smokeTest_ ? kSmokeTestPreviewSize : kMaxViewportPreviewSize);
+        smokeTest_ && !environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH")
+            ? kSmokeTestPreviewSize : kMaxViewportPreviewSize);
+    if (smokeTest_ && environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH")) {
+        previewWidth = 1564;
+        previewHeight = 708;
+    }
     const bool hasRhiPreview = updateViewportPreview(previewWidth, previewHeight);
     const uint32_t displayWidth = hasRhiPreview && viewportTextureWidth_ > 0
         ? viewportTextureWidth_

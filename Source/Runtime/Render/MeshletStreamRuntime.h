@@ -416,6 +416,8 @@ struct MeshletStreamRuntimeDesc {
     uint32_t queuedFrameCount = 3;
     bool enableClusterRtx = false;
     bool enableClas = false; // Build resident CLAS independently of per-frame BLAS/TLAS.
+    bool compactClas = false;
+    uint32_t coldPageRetentionFrames = 0; // Zero preserves budget-only eviction.
     uint64_t maxClasBytes = 512ull * 1024ull * 1024ull;
     uint32_t maxClasBuildClusters = 0;
     uint32_t maxBlasClusterReferences = 0;
@@ -608,6 +610,7 @@ private:
     std::deque<uint32_t> pendingClasPages_;
     std::unordered_set<uint32_t> queuedClasPages_;
     uint32_t maxClasBuildClusters_ = 0;
+    uint32_t coldPageRetentionFrames_ = 0;
     bool clusterRtxEnabled_ = false;
     BindlessHandle pageHandle_;
     BindlessHandle activeGroupHandle_;

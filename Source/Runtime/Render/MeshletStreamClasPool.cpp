@@ -1,4 +1,5 @@
 #include "Runtime/Render/MeshletStreamClas.h"
+#include "Runtime/Render/MeshletStreamCompactClasPool.h"
 
 #include "Runtime/Render/MeshletStreamResidency.h"
 
@@ -161,6 +162,10 @@ Result MeshletStreamClasPool::initialize(
     std::string& log)
 {
     clear();
+    if (desc.compactStorage) {
+        compact_ = std::make_unique<MeshletStreamCompactClasPool>();
+        return compact_->initialize(device, desc, log);
+    }
     log.clear();
     if (desc.asset == nullptr ||
         !desc.asset->valid() ||
@@ -424,11 +429,13 @@ Result MeshletStreamClasPool::initialize(
 
 void MeshletStreamClasPool::clear()
 {
+    compact_.reset();
     impl_ = std::make_unique<Impl>();
 }
 
 void MeshletStreamClasPool::beginFrame()
 {
+    if (compact_) { compact_->beginFrame(); return; }
     if (!ready()) {
         return;
     }
@@ -461,8 +468,10 @@ Result MeshletStreamClasPool::cmdBuildPages(
     CommandBuffer& commandBuffer,
     Buffer& pageBuffer,
     std::span<const MeshletStreamClasPageBuild> pages,
-    std::string& log)
+    std::string& log,
+    Buffer* sizeOutput)
 {
+    if (compact_) { return compact_->cmdBuildPages(commandBuffer, pageBuffer, pages, log); }
     log.clear();
     if (!ready()) {
         return makeError(Error::InvalidArgument);
@@ -634,6 +643,7 @@ Result MeshletStreamClasPool::cmdBuildPages(
             .scratchBufferOffset = impl_->scratchOffset,
             .buildInfoBuffer = frame.buildInfoBuffer.get(),
             .destinationAddressBuffer = frame.destinationAddressBuffer.get(),
+            .destinationSizeBuffer = sizeOutput,
         });
     if (!result) {
         rollback();
@@ -662,6 +672,7 @@ Result MeshletStreamClasPool::cmdBuildPages(
 
 void MeshletStreamClasPool::retirePages(std::span<const uint32_t> pageIndices)
 {
+    if (compact_) { compact_->retirePages(pageIndices); return; }
     if (!ready()) {
         return;
     }
@@ -694,6 +705,7 @@ void MeshletStreamClasPool::retirePages(std::span<const uint32_t> pageIndices)
 
 bool MeshletStreamClasPool::ready() const
 {
+    if (compact_) { return compact_->ready(); }
     return impl_ != nullptr &&
         impl_->asset != nullptr &&
         impl_->storageBuffer != nullptr &&
@@ -705,6 +717,7 @@ bool MeshletStreamClasPool::ready() const
 
 bool MeshletStreamClasPool::pageHasClas(uint32_t pageIndex) const
 {
+    if (compact_) { return compact_->pageHasClas(pageIndex); }
     if (!ready() || pageIndex >= impl_->pageCount) {
         return false;
     }
@@ -714,6 +727,7 @@ bool MeshletStreamClasPool::pageHasClas(uint32_t pageIndex) const
 
 uint32_t MeshletStreamClasPool::pageClasAddressOffset(uint32_t pageIndex) const
 {
+    if (compact_) { return compact_->pageClasAddressOffset(pageIndex); }
     if (!pageHasClas(pageIndex)) {
         return UINT32_MAX;
     }
@@ -722,6 +736,7 @@ uint32_t MeshletStreamClasPool::pageClasAddressOffset(uint32_t pageIndex) const
 
 uint64_t MeshletStreamClasPool::clusterAddress(uint32_t pageIndex, uint32_t clusterIndex) const
 {
+    if (compact_) { return compact_->clusterAddress(pageIndex, clusterIndex); }
     if (!pageHasClas(pageIndex)) {
         return 0;
     }
@@ -733,18 +748,38 @@ uint64_t MeshletStreamClasPool::clusterAddress(uint32_t pageIndex, uint32_t clus
         static_cast<uint64_t>(clusterIndex) * impl_->clusterStride;
 }
 
+bool MeshletStreamClasPool::pageBuildPending(uint32_t pageIndex) const
+{
+    if (compact_) { return compact_->pageBuildPending(pageIndex); }
+    return false;
+}
+uint64_t MeshletStreamClasPool::pageStorageBytes(uint32_t pageIndex) const
+{
+    if (compact_) { return compact_->pageStorageBytes(pageIndex); }
+    const auto it = impl_->pages.find(pageIndex);
+    return it == impl_->pages.end() ? 0 : it->second.allocation.allocatedSize;
+}
+Buffer* MeshletStreamClasPool::storageBuffer() const
+{
+    if (compact_) { return compact_->storageBuffer(); }
+    return impl_->storageBuffer.get();
+}
+
 Buffer* MeshletStreamClasPool::clusterAddressBuffer() const
 {
+    if (compact_) { return compact_->clusterAddressBuffer(); }
     return ready() ? impl_->addressBuffer.get() : nullptr;
 }
 
 Buffer* MeshletStreamClasPool::pageTableBuffer() const
 {
+    if (compact_) { return compact_->pageTableBuffer(); }
     return ready() ? impl_->pageTableBuffer.get() : nullptr;
 }
 
 MeshletStreamClasPoolStats MeshletStreamClasPool::stats() const
 {
+    if (compact_) { return compact_->stats(); }
     if (!ready()) {
         return {};
     }

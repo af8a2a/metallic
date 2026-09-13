@@ -417,6 +417,11 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
     if (last.clasEnabled) {
         ImGui::Text("CLAS %.1f / %.1f MiB | Resident %u pages / %u clusters", last.clasUsedBytes / mib,
             last.clasCapacityBytes / mib, last.clasResidentPages, last.clasResidentClusters);
+        if (last.clasEncodedBytes) {
+            ImGui::Text("CLAS encoded %.1f MiB | Fixed slots %.1f MiB | Build/move workspace %.1f MiB",
+                last.clasEncodedBytes / mib, last.clasWorstCaseBytes / mib, last.clasScratchBytes / mib);
+            ImGui::Text("CLAS relocated %u clusters this frame", last.clasMovedClusters);
+        }
         ImGui::Text("CLAS built %u pages / %u clusters | Pending %u | Retiring %u | Budget deferred %u",
             last.clasBuiltPages, last.clasBuiltClusters, last.clasPendingPages, last.clasRetiringPages, last.clasRejectedPages);
     }

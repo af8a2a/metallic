@@ -573,9 +573,13 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(StreamLodPipelineCacheTest);
 
-class StreamClasRuntimeTest final : public RhiTest {
+class StreamClasRuntimeTest : public RhiTest {
 public:
-    StreamClasRuntimeTest() { type = RhiTestType::Rendering; name = "stream_clas_runtime_lifecycle"; }
+    explicit StreamClasRuntimeTest(bool pressure = false) : pressure_(pressure)
+    {
+        type = RhiTestType::Rendering;
+        name = pressure ? "stream_clas_eviction_reupload" : "stream_clas_runtime_lifecycle";
+    }
     RhiTestResult run(RhiTestContext& context) override
     {
         using namespace render;
@@ -597,11 +601,11 @@ public:
         std::string log;
         const auto initialized = runtime.initialize(*device, {
             .sourcePath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf",
-            .streamAssetPath = path, .maxResidentBytes = 16ull << 20, .maxResidentPages = 256,
+            .streamAssetPath = path, .maxResidentBytes = 16ull << 20, .maxResidentPages = pressure_ ? 64u : 256u,
             .maxPageUploadsPerFrame = 64, .maxGpuPageRequests = 256, .maxGpuPageUnloadRequests = 256,
             .maxActiveGroups = 2048, .maxTraversalWorkers = 64, .maxTraversalWorkItems = 4096,
-            .pageLoadConcurrency = 1, .maxPageLoadsInFlight = 64, .queuedFrameCount = 2,
-            .enableClas = true, .maxClasBytes = 16ull << 20, .maxClasBuildClusters = budget,
+            .pageLoadConcurrency = pressure_ ? 0u : 1u, .maxPageLoadsInFlight = 64, .queuedFrameCount = 2,
+            .enableClas = true, .maxClasBytes = pressure_ ? 64ull << 10 : 16ull << 20, .maxClasBuildClusters = pressure_ ? budget * asset.pageCount() : budget,
             .prefetchPages = false}, log);
         if (!initialized) { return RhiTestResult::fail("CLAS-only initialize: " + log); }
         auto* queue = device->getQueue(QueueType::Graphics);
@@ -618,13 +622,24 @@ public:
         const auto nearCamera = frame.camera;
         bool sawBuilt = false, sawPending = false;
         uint64_t stableBuildCount = 0;
-        std::ofstream trace(context.outputDirectory / "ClasLifecycle.jsonl");
+        uint32_t reloadPage = UINT32_MAX;
+        std::ofstream trace(context.outputDirectory / (pressure_ ? "ClasEviction.jsonl" : "ClasLifecycle.jsonl"));
         for (uint32_t f = 0; f < 420; ++f) {
             frame.camera = nearCamera;
             if (f >= 180 && f < 240) { frame.camera.eye = {100.f, 100.f, 100.f}; frame.camera.center = {101.f, 100.f, 100.f}; }
             if (!pool->reset() || !fence->reset() || !commands->begin()) { return RhiTestResult::fail("Frame setup failed"); }
+            if (pressure_ && reloadPage != UINT32_MAX && f % 12 == 2) {
+                const_cast<MeshletStreamResidencyManager&>(runtime.residency()).requestPage(reloadPage);
+            }
             auto result = runtime.cmdBeginFrame(*commands, *streamer, frame);
-            if (result) { commands->copyStreamedData(*streamer); result = runtime.cmdPreTraversal(*commands, frame); }
+            if (result) {
+                commands->copyStreamedData(*streamer);
+                // Keep the old CLAS queue entry across unload completion, then
+                // admit a new upload before draining it (e.g. deferred traversal).
+                if (!pressure_ || reloadPage == UINT32_MAX || f % 12 != 1) {
+                    result = runtime.cmdPreTraversal(*commands, frame);
+                }
+            }
             if (result) { result = runtime.cmdPostTraversal(*commands); }
             if (result) { result = runtime.cmdEndFrame(*commands); }
             if (!result || !commands->end()) { return RhiTestResult::fail("CLAS frame failed: " + std::string(toString(result))); }
@@ -640,14 +655,36 @@ public:
                 stats.clasBuiltClusters > budget || stats.clasUsedBytes > stats.clasCapacityBytes) {
                 return RhiTestResult::fail("CLAS-only runtime violated build/storage budget or built a TLAS");
             }
+            if (pressure_ && f > 40 && f % 12 == 0) {
+                // Inject the same unload operation used by GPU feedback after
+                // the frame fence. The runtime itself is non-const; this only
+                // controls the regression's interleaving, without a test-only API.
+                auto& residency = const_cast<MeshletStreamResidencyManager&>(runtime.residency());
+                for (uint32_t page : residency.residentPages()) {
+                    if (residency.pageState(page) == MeshletStreamPageResidencyState::Resident &&
+                        !runtime.clasPool()->pageHasClas(page)) {
+                        residency.unloadPage(page);
+                        reloadPage = page;
+                        break;
+                    }
+                }
+            }
             sawBuilt |= stats.clasBuiltPages > 0;
             sawPending |= stats.clasPendingPages > 0;
             if (f == 150) { stableBuildCount = stats.clasTotalBuiltPages; }
-            if (f >= 151 && f < 180 && (stats.clasTotalBuiltPages != stableBuildCount || stats.clasPendingPages != 0)) {
+            if (!pressure_ && f >= 151 && f < 180 && (stats.clasTotalBuiltPages != stableBuildCount || stats.clasPendingPages != 0)) {
                 return RhiTestResult::fail("Steady resident CLAS rebuilt or backlog failed to converge");
             }
         }
         const auto last = runtime.profilingStats();
+        if (pressure_) {
+            const auto residency = runtime.residency().stats();
+            if (!sawPending || residency.totalCompletedUnloadCount < 10 || last.clasRejectedPages == 0) {
+                return RhiTestResult::fail("Pressure fixture did not exercise eviction and exhausted CLAS storage: " +
+                    std::to_string(residency.totalCompletedUnloadCount));
+            }
+            return RhiTestResult::pass("CLAS budget exhaustion with repeated geometry eviction/reupload retains live upload plans");
+        }
         if (!sawBuilt || !sawPending || last.clasPendingPages || last.clasResidentPages != last.residentPages ||
             last.clasTotalBuiltPages != stableBuildCount) {
             return RhiTestResult::fail("Lifecycle coverage/convergence: built=" + std::to_string(sawBuilt) +
@@ -657,8 +694,15 @@ public:
         }
         return RhiTestResult::pass("Compressed uploads, bounded build backlog, camera round-trip reuses cached CLAS, independent CLAS without BLAS/TLAS");
     }
+private:
+    bool pressure_ = false;
 };
 METALLIC_REGISTER_RHI_TEST(StreamClasRuntimeTest);
+class StreamClasEvictionTest final : public StreamClasRuntimeTest {
+public:
+    StreamClasEvictionTest() : StreamClasRuntimeTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(StreamClasEvictionTest);
 
 
 class StreamerBufferUploadTest : public RhiTest {
@@ -2456,6 +2500,79 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletDemandCacheTest);
+
+class StreamerJointColdReclaimTest final : public RhiTest {
+public:
+    StreamerJointColdReclaimTest() { type = RhiTestType::Command; name = "streamer_joint_cold_reclaim"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "joint_cold.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        const auto roots = fallbackPagesFor(asset);
+        auto pages = nonFallbackPagesFor(asset, roots);
+        if (pages.size() < 3) { return RhiTestResult::skip("Requires three streamable pages"); }
+        pages.resize(3);
+        MeshletStreamResidencyManager residency;
+        std::string reason;
+        if (!residency.initialize({.asset = &asset,
+                .maxResidentBytes = 4 * (pageStorageBytes(asset, roots) + pageStorageBytes(asset, pages)),
+                .maxResidentPages = static_cast<uint32_t>(roots.size() + 3), .queuedFrameCount = 1,
+                .unloadDelayFrames = 1, .evictionAgeThresholdFrames = 1}, reason) ||
+            !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
+        std::unique_ptr<Streamer> streamer;
+        auto result = context.device.createStreamer(makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096), streamer);
+        if (!result) { return RhiTestResult::fail(toString(result)); }
+        std::unique_ptr<Buffer> destination;
+        result = context.device.createBuffer({.size = residency.pageBufferSize(),
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, destination);
+        if (!result) { return RhiTestResult::fail(toString(result)); }
+        residency.beginFrame();
+        (void)residency.requestPage(pages[0]); (void)residency.requestPage(pages[1]);
+        const auto uploads = static_cast<uint32_t>(roots.size() + 2);
+        if (residency.processUploads(*streamer, *destination, uploads) != uploads) {
+            return RhiTestResult::fail("Cannot prepare demand-cache residents");
+        }
+        for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
+        if (!residency.pageResident(pages[0]) || !residency.pageResident(pages[1])) {
+            return RhiTestResult::fail("Demand-cache setup is not resident");
+        }
+
+        const std::array<uint32_t, 1> unused{pages[1]};
+        MeshletStreamColdPageReclaimDesc reclaim{.clasUsedBytes = 1024, .clasCapacityBytes = 1024,
+            .retentionFrames = 120, .pressureAgeFrames = 16,
+            .clasPageBytes = [&](uint32_t page) -> uint64_t { return page == pages[0] || page == pages[1] ? 512 : 0; }};
+        (void)residency.consumeGpuRequests({.unloadPageIds = unused, .unloadRequestCounter = 1, .residentDemandFeedback = true});
+        if (residency.reclaimColdPages(reclaim) != 0) { return RhiTestResult::fail("CLAS pressure evicted a recent page"); }
+        for (uint32_t frame = 0; frame < 16; ++frame) { residency.beginFrame(); }
+        (void)residency.consumeGpuRequests({.unloadPageIds = unused, .unloadRequestCounter = 1, .residentDemandFeedback = true});
+        if (residency.reclaimColdPages(reclaim) != 1 || residency.pageState(pages[1]) != MeshletStreamPageResidencyState::PendingUnload ||
+            !residency.pageResident(pages[0]) || residency.stats().usedResidentBytes >= residency.maxResidentBytes() * 70 / 100) {
+            return RhiTestResult::fail("CLAS-only pressure did not schedule the shared cold geometry page");
+        }
+        if (residency.reclaimColdPages(reclaim) != 0 || residency.stats().frameEvictionScanCount != 1) {
+            return RhiTestResult::fail("Pending joint frees caused duplicate victims or scans");
+        }
+        residency.beginFrame();
+        if (residency.pageAllocated(pages[1])) { return RhiTestResult::fail("Joint victim geometry was not freed"); }
+        reclaim.clasUsedBytes = 512;
+        reclaim.clasRetiringBytes = 512;
+        for (uint32_t frame = 0; frame < 121; ++frame) { residency.beginFrame(); }
+        // Complete feedback still protects the current view even after a long pause.
+        (void)residency.consumeGpuRequests(StreamGpuRequestBatch{.residentDemandFeedback = true});
+        if (residency.reclaimColdPages(reclaim) != 0) { return RhiTestResult::fail("Current view was treated as cold"); }
+        const std::array<uint32_t, 1> nowUnused{pages[0]};
+        for (uint32_t frame = 0; frame < 121; ++frame) { residency.beginFrame(); }
+        (void)residency.consumeGpuRequests({.unloadPageIds = nowUnused, .unloadRequestCounter = 1, .residentDemandFeedback = true});
+        if (residency.reclaimColdPages(reclaim) != 1) { return RhiTestResult::fail("Old cold page was retained below both budgets"); }
+        for (uint32_t root : roots) {
+            if (!residency.pageResident(root)) { return RhiTestResult::fail("Joint reclaim lost a fallback page"); }
+        }
+        return RhiTestResult::pass("CLAS-only pressure, recent/hot/root protection, delayed credit, shared scan and eager cold expiry");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerJointColdReclaimTest);
 
 class MeshletStreamFragmentedStorageTest final : public RhiTest {
 public:
