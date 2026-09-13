@@ -1,4 +1,5 @@
 #include "Runtime/Render/MeshletStreamPageLoader.h"
+#include "Runtime/Render/MeshletStreamLatency.h"
 #include "Runtime/Task/TaskSystem.h"
 
 #include <condition_variable>
@@ -15,6 +16,7 @@ struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStrea
     {
         MeshletStreamPageLoadResult result;
         result.pageIndex = pageIndex;
+        result.startedMicroseconds = meshletStreamTimeMicroseconds();
         try {
             if (asset == nullptr || pageIndex >= asset->pageCount()) {
                 result.failureReason = "stream page index is out of range";
@@ -44,6 +46,7 @@ struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStrea
             result.failureReason = "stream page decode threw an unknown exception";
         }
 
+        result.completedMicroseconds = meshletStreamTimeMicroseconds();
         std::string taskFailure = result.failureReason;
         bool replenish = false;
         try {

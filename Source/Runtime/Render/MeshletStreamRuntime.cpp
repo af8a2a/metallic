@@ -602,7 +602,8 @@ public:
         transitionBuffer(commandBuffer, traversalWorkBuffer, traversalWorkBufferState, ResourceState::General);
         commandBuffer.bindBindlessHeap(bindlessHeap);
         const bool cooperative = push.activeBuildPhase == kMeshletStreamActiveBuildFrontierPhase ||
-            push.activeBuildPhase == kMeshletStreamActiveBuildEmitPhase;
+            push.activeBuildPhase == kMeshletStreamActiveBuildEmitPhase ||
+            push.activeBuildPhase == kMeshletStreamActiveBuildPrefetchPhase;
         commandBuffer.bindComputePipeline(cooperative ? *cooperativePipeline_ : *activeBuildPipeline_);
         commandBuffer.pushBindlessData(&push, sizeof(push));
         const uint32_t groups = cooperative ? threadCount : threadCount / 64u + (threadCount % 64u != 0u ? 1u : 0u);
@@ -816,6 +817,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     maxGpuPageRequests_ = std::max(desc.maxGpuPageRequests, 1u);
     screenSpacePagePriority_ = desc.screenSpacePagePriority;
     viewDrivenPageDemand_ = desc.viewDrivenPageDemand;
+    prefetchPages_ = desc.prefetchPages && desc.viewDrivenPageDemand && desc.screenSpacePagePriority &&
+        asset_.pageCount() < kStreamPrefetchPageTag;
     maxGpuPageUnloadRequests_ = std::max(desc.maxGpuPageUnloadRequests, 1u);
     const uint64_t pageStride = alignUp(asset_.maxPagePayloadBytes(), 256);
     maxResidentBytes_ = desc.maxResidentBytes;
@@ -881,6 +884,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 .pageStride = pageStride,
                 .pageLoadConcurrency = desc.pageLoadConcurrency,
                 .maxPageLoadsInFlight = desc.maxPageLoadsInFlight,
+                .measurePageLatency = desc.measurePageLatency,
+                .immediateGpuRequests = desc.lowLatencyRequests,
             },
             reason)) {
         log = "MeshletStreamRuntime residency initialization failed: " + reason;
@@ -2162,6 +2167,9 @@ void MeshletStreamRuntime::reset()
     maxGpuPageRequests_ = 0;
     screenSpacePagePriority_ = false;
     viewDrivenPageDemand_ = false;
+    prefetchPages_ = false;
+    currentFramePrefetch_ = false;
+    recentGpuRequestCount_ = 0;
     maxGpuPageUnloadRequests_ = 0;
     maxUpdatePatches_ = 0;
     residentPageCapacity_ = 0;
@@ -2992,6 +3000,7 @@ Result MeshletStreamRuntime::clearRequestBuffer(CommandBuffer& commandBuffer)
             ? kStreamRequestHeaderWordCount + maxGpuPageRequests_ + maxGpuPageUnloadRequests_ : 0u,
         .priorityTableOffset = screenSpacePagePriority_
             ? kStreamRequestHeaderWordCount + 2u * maxGpuPageRequests_ + maxGpuPageUnloadRequests_ : 0u,
+        .prefetchRequestLimit = prefetchPages_ ? std::min(maxGpuPageRequests_ / 4u, residency_.availablePrefetchRequests()) : 0u,
     };
     Result result = updateHostBuffer(*requestClearBuffer_, &clearHeader, sizeof(clearHeader));
     if (!result) {
@@ -3113,6 +3122,17 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
     std::copy_n(previous.upProjection, 4u, params.previousUpProjection);
     std::copy_n(previous.viewport, 4u, params.previousViewport);
     std::copy_n(previous.clipOrtho, 4u, params.previousClipOrtho);
+    const bool moved = !previousFrameParamsValid_ || std::memcmp(params.eye, previous.eye, sizeof(params.eye)) != 0 ||
+        std::memcmp(params.center, previous.center, sizeof(params.center)) != 0 ||
+        std::memcmp(params.upProjection, previous.upProjection, sizeof(params.upProjection)) != 0 ||
+        std::memcmp(params.viewport, previous.viewport, sizeof(params.viewport)) != 0 ||
+        std::memcmp(params.clipOrtho, previous.clipOrtho, sizeof(params.clipOrtho)) != 0;
+    currentFramePrefetch_ = prefetchPages_ && frame.enableGpuLodSelection && residency_.availablePrefetchRequests() != 0 &&
+        (moved || recentGpuRequestCount_ != 0) &&
+        residency_.storage().usedBytes() + asset_.maxPagePayloadBytes() < maxResidentBytes_ * 3u / 4u;
+    params.prefetchParams[0] = 1.0625f;
+    params.prefetchParams[1] = .95f;
+    params.prefetchParams[2] = currentFramePrefetch_ ? 1.f : 0.f;
     Result result = updateHostBuffer(*paramsBuffer_, &params, sizeof(params));
     if (result) {
         previousFrameParams_ = params;
@@ -3191,6 +3211,11 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, cons
             if (phase == kMeshletStreamActiveBuildEmitPhase) { checkpoint("AfterStreamEmit"); }
         }
     }
+    if (currentFramePrefetch_) {
+        const auto result = dispatchPhase(kMeshletStreamActiveBuildPrefetchPhase, asset_.instanceCount());
+        if (!result) { return result; }
+    }
+    if (checkpoint) { checkpoint("AfterStreamPrefetch"); }
     return {};
 }
 
@@ -3472,6 +3497,7 @@ void MeshletStreamRuntime::consumeGpuRequestReadback()
     }
 
     const auto* header = static_cast<const StreamRequestBufferHeader*>(mapped);
+    recentGpuRequestCount_ = header->loadCounter;
     if (debugReadbackEnabled_) {
         debugRequestSourceFrame_ = header->frameIndex;
         debugRequestSourceKnown_ = true;
@@ -3502,6 +3528,7 @@ void MeshletStreamRuntime::consumeGpuRequestReadback()
             .frameIndex = header->frameIndex,
             .residentDemandFeedback = true,
             .loadPriorities = loadPriorities,
+            .taggedPrefetchRequests = prefetchPages_ && header->prefetchRequestLimit != 0,
         });
     }
 
@@ -3539,6 +3566,17 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
 {
     using debug::DebugValue;
     const auto stats = residency_.stats();
+    const auto latency = residency_.latencySnapshot();
+    const auto distribution = [](const MeshletStreamLatencySummary& sample) -> DebugValue {
+        return {{"count", sample.count}, {"p50", sample.p50}, {"p95", sample.p95},
+            {"p99", sample.p99}, {"max", sample.maximum}, {"mean", sample.mean}};
+    };
+    DebugValue latencyJson{{"enabled", latency.enabled}, {"pendingDemand", latency.pendingDemand},
+        {"pendingPrefetch", latency.pendingPrefetch}, {"abandonedDemand", latency.abandonedDemand},
+        {"abandonedPrefetch", latency.abandonedPrefetch}, {"oldestPendingDemandMilliseconds", latency.oldestPendingDemandMilliseconds},
+        {"demandFrames", distribution(latency.demandFrames)}};
+    constexpr std::array names{"feedback", "admission", "ioQueue", "decode", "readyToUpload", "uploadToDrawable", "demandToDrawable", "prefetchToDrawable"};
+    for (size_t i = 0; i < names.size(); ++i) { latencyJson["milliseconds"][names[i]] = distribution(latency.milliseconds[i]); }
     const auto terminalResidentPages = std::count_if(lockedFallbackPages_.begin(), lockedFallbackPages_.end(),
         [this](uint32_t page) { return residency_.pageResident(page); });
     DebugValue pages = DebugValue::array();
@@ -3554,6 +3592,8 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"pageBufferBytes", maxResidentBytes_}, {"clusterRtxEnabled", clasPool_ != nullptr},
         {"screenSpacePagePriority", screenSpacePagePriority_},
         {"viewDrivenPageDemand", viewDrivenPageDemand_},
+        {"prefetchPages", prefetchPages_}, {"prefetchActive", currentFramePrefetch_},
+        {"latency", std::move(latencyJson)},
         {"requestBufferBytes", requestBuffer_ ? requestBuffer_->desc().size : 0},
         {"requestReadbackBytes", requestReadbackBuffer_ ? requestReadbackBuffer_->desc().size : 0},
         {"lodTopologyBytes", lodTopologyBuffer_ ? lodTopologyBuffer_->desc().size : 0},
@@ -3572,6 +3612,8 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
             {"frameUploadBytes", stats.frameUploadBytes}, {"totalUploadBytes", stats.totalUploadBytes},
             {"totalEvictedPageCount", stats.totalEvictedPageCount}, {"totalCompletedUnloadCount", stats.totalCompletedUnloadCount},
             {"totalCancelledQueuedLoadCount", stats.totalCancelledQueuedLoadCount},
+            {"totalPrefetchAdmitted", stats.totalPrefetchAdmitted}, {"totalPrefetchUsed", stats.totalPrefetchUsed},
+            {"totalPrefetchDeferred", stats.totalPrefetchDeferred},
             {"totalCompletedPageLoadCount", stats.totalCompletedPageLoadCount},
             {"totalCompletedUploadCount", stats.totalCompletedUploadCount},
             {"totalPageLoadFailureCount", stats.totalPageLoadFailureCount},

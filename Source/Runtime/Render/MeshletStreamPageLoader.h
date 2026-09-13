@@ -15,6 +15,8 @@ struct MeshletStreamPageLoadResult {
     uint32_t pageIndex = UINT32_MAX;
     std::vector<uint8_t> payload;
     std::string failureReason;
+    uint64_t startedMicroseconds = 0;
+    uint64_t completedMicroseconds = 0;
 
     bool success() const { return pageIndex != UINT32_MAX && !payload.empty(); }
 };

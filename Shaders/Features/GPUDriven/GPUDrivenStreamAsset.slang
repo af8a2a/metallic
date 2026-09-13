@@ -43,6 +43,7 @@ static const uint kActiveBuildPhaseFrontier = 5u;
 static const uint kActiveBuildPhasePrefix = 6u;
 static const uint kActiveBuildPhaseEmit = 7u;
 static const uint kActiveBuildPhaseInitializeLodState = 8u;
+static const uint kActiveBuildPhasePrefetch = 9u;
 static const uint kBlasInputPhaseReset = 0u;
 static const uint kBlasInputPhaseCount = 1u;
 static const uint kBlasInputPhaseSetup = 2u;
@@ -69,6 +70,10 @@ static const uint kStreamRequestLastUnloadOverflowFrameWord = 9u;
 static const uint kStreamRequestLastInvalidPageFrameWord = 10u;
 static const uint kStreamRequestLoadPriorityOffsetWord = 11u;
 static const uint kStreamRequestPriorityTableOffsetWord = 12u;
+static const uint kStreamRequestPrefetchLimitWord = 13u;
+static const uint kStreamRequestPrefetchCounterWord = 14u;
+static const uint kStreamRequestPrefetchDroppedWord = 15u;
+static const uint kStreamPrefetchPageTag = 1u << 31u;
 
 struct GPUDrivenStreamAssetPush
 {
@@ -432,6 +437,7 @@ struct GPUDrivenStreamAssetParams
     float4 renderUpProjection;
     float4 renderViewport;
     float4 renderClipOrtho;
+    float4 prefetchParams;
 };
 
 struct GPUDrivenStreamAssetVertexOutput
@@ -1793,6 +1799,7 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
         uint count = min(requests[kStreamRequestLoadCounterWord], requests[kStreamRequestMaxLoadsWord]);
         if (table != 0u && output != 0u && threadIndex < count) {
             uint page = requests[kStreamRequestHeaderWords + threadIndex];
+            if (requests[kStreamRequestPrefetchLimitWord] != 0u) { page &= ~kStreamPrefetchPageTag; }
             requests[output + threadIndex] = page < params.scenePageCount ? requests[table + page] : 0u;
         }
         return;
@@ -2288,10 +2295,73 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
     GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
     uint header = instanceIndex * 4u;
     if (instance.primitiveIndex >= params.scenePrimitiveCount) {
-        if (lane < 4u) { state[header + lane] = 0u; }
+        if (lane < 4u && push.activeBuildPhase != kActiveBuildPhasePrefetch) { state[header + lane] = 0u; }
         return;
     }
     GPUDrivenStreamAssetPrimitive primitive = primitives[instance.primitiveIndex];
+    // Request-only lookahead: parent residency still gates the actual frontier.
+    // Run after all demand requests so speculation cannot consume their slots.
+    if (push.activeBuildPhase == kActiveBuildPhasePrefetch) {
+        uint limit = requests[kStreamRequestPrefetchLimitWord];
+        if (params.enableGpuLodSelection == 0u || params.prefetchParams.z == 0.0 ||
+            instance.visible == 0u || primitive.lodTileOffset == 0xffffffffu || limit == 0u) { return; }
+        GPUDrivenStreamAssetParams forecast = params;
+        forecast.viewport.w = 2.0 * atan(tan(params.viewport.w * 0.5) * params.prefetchParams.x);
+        forecast.clipOrtho.z *= params.prefetchParams.x;
+        forecast.lodPixelError *= params.prefetchParams.y;
+        if (!streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
+                max(instance.boundsCenterRadius.w, 0.000001), currentStreamCamera(forecast))) { return; }
+        float3 delta = params.center.xyz - params.eye.xyz;
+        float3 forward = dot(delta, delta) > 1e-12 ? normalize(delta) : float3(0.0, 0.0, -1.0);
+        float4 eye = float4(params.eye.xyz, params.clipOrtho.x);
+        float4 direction = float4(forward, params.upProjection.w);
+        float4 projection = float4(params.viewport.z, tan(params.viewport.w * 0.5), params.clipOrtho.z, forecast.lodPixelError);
+        uint table = requests[kStreamRequestPriorityTableOffsetWord];
+        uint tiles = topology[primitive.lodTileOffset];
+        for (uint tile = 0u; tile < tiles; ++tile) {
+            // The CPU publishes only spare admission capacity. Stop searching
+            // once it is filled instead of repeatedly reporting deferred work.
+            if (requests[kStreamRequestPrefetchCounterWord] >= limit) { return; }
+            uint offset = primitive.lodTileOffset + 1u + tile * 10u;
+            if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, 0xffffffffu)) { continue; }
+            uint count = topology[offset + 9u];
+            if (lane >= count) { continue; }
+            GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + topology[offset + 8u] + count - 1u - lane];
+            if ((group.flags & 1u) != 0u || group.pageIndex >= params.scenePageCount ||
+                streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { continue; }
+            if (!meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
+                    group.maxQuadricError, group.lodLevel, group.flags, instance.world0, instance.world1,
+                    instance.world2, instance.world3, eye, direction, projection, 0xffffffffu) ||
+                !streamRefinementDemandVisible(group, instance, forecast)) { continue; }
+            if (table != 0u) {
+                float benefit = streamGroupScreenBenefit(group, instance, forecast, eye, direction, projection);
+                InterlockedMax(requests[table + group.pageIndex], asuint(benefit));
+            }
+            uint previous;
+            InterlockedMax(pageTable[group.pageIndex].lastRequestFrame, params.frameIndex, previous);
+            if (previous >= params.frameIndex) { continue; }
+            uint index;
+            InterlockedAdd(requests[kStreamRequestPrefetchCounterWord], 1u, index);
+            if (index >= limit) {
+                InterlockedAdd(requests[kStreamRequestPrefetchDroppedWord], 1u);
+                continue;
+            }
+            for (;;) {
+                uint count = requests[kStreamRequestLoadCounterWord];
+                if (count >= requests[kStreamRequestMaxLoadsWord]) {
+                    InterlockedAdd(requests[kStreamRequestPrefetchDroppedWord], 1u);
+                    break;
+                }
+                uint observed;
+                InterlockedCompareExchange(requests[kStreamRequestLoadCounterWord], count, count + 1u, observed);
+                if (observed == count) {
+                    requests[kStreamRequestHeaderWords + count] = group.pageIndex | kStreamPrefetchPageTag;
+                    break;
+                }
+            }
+        }
+        return;
+    }
     if (primitive.lodTileOffset == 0xffffffffu) {
         if (lane == 0u) {
             if (push.activeBuildPhase == kActiveBuildPhaseFrontier) {

@@ -44,8 +44,8 @@ public:
     std::map<std::string, std::unique_ptr<Buffer>> copies;
     Device* device = nullptr;
     std::unique_ptr<TimestampQueryPool> timestamps;
-    static constexpr std::array<std::string_view, 19> stages = {"BeforeStreamUpdates", "AfterStreamUpdates",
-        "AfterStreamFrontier", "AfterStreamPrefix", "AfterStreamEmit", "AfterTraversal", "AfterEarlyCull",
+    static constexpr std::array<std::string_view, 20> stages = {"BeforeStreamUpdates", "AfterStreamUpdates",
+        "AfterStreamFrontier", "AfterStreamPrefix", "AfterStreamEmit", "AfterStreamPrefetch", "AfterTraversal", "AfterEarlyCull",
         "AfterStreamEarlyCandidates", "AfterStreamEarlyClassify", "AfterStreamEarlyBins", "AfterStreamEarlyRaster", "AfterStreamEarlyResolve",
         "AfterLateCull", "AfterStreamLateCandidates", "AfterStreamLateClassify", "AfterStreamLateBins", "AfterStreamLateRaster", "AfterStreamLateResolve", "AfterPass"};
     void compiled(Json) override {}
@@ -139,7 +139,7 @@ public:
             checkRoam(values[i].available, "Incomplete checkpoint timestamp");
             if (i != 0) { result[std::string(stages[i])] = timestamps->durationMilliseconds(values[i-1].value, values[i].value); }
         }
-        result["afterTraversalToEnd"] = timestamps->durationMilliseconds(values[5].value, values.back().value);
+        result["afterTraversalToEnd"] = timestamps->durationMilliseconds(values[6].value, values.back().value);
         return result;
     }
 };
@@ -337,6 +337,8 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
     const uint32_t duration = setting("METALLIC_MINIZORAH_ROAM_SECONDS", 660);
     const uint64_t budget = uint64_t(setting("METALLIC_MINIZORAH_ROAM_MIB", 1024)) << 20u;
     const uint32_t fixedView = setting("METALLIC_MINIZORAH_FIXED_VIEW", UINT32_MAX);
+    const bool transitionChecks = setting("METALLIC_MINIZORAH_TRANSITION_CHECKS", 0) != 0;
+    const bool latencyOnly = setting("METALLIC_MINIZORAH_LATENCY_ONLY", 0) != 0;
     Json report{{"status", "running"}, {"durationSeconds", duration}, {"pageBudgetBytes", budget},
         {"resolution", {1920, 1080}}, {"targetPixelError", 1.5}, {"routePeriodSeconds", 60},
         {"timingScope", "Synchronous GPUDriven + MaterialResolve offscreen graph; no presentation blit, output/debug readback on timed frames; excludes checkpoint verification"},
@@ -370,8 +372,14 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         props["maxResidentBytes"] = budget;
         props["screenSpacePagePriority"] = setting("METALLIC_MINIZORAH_PAGE_PRIORITY", 1) != 0;
         props["viewDrivenPageDemand"] = setting("METALLIC_MINIZORAH_VIEW_DEMAND", 1) != 0;
+        props["prefetchPages"] = setting("METALLIC_MINIZORAH_PREFETCH", 1) != 0;
+        props["lowLatencyRequests"] = setting("METALLIC_MINIZORAH_LOW_LATENCY", 1) != 0;
         report["screenSpacePagePriority"] = props["screenSpacePagePriority"];
         report["viewDrivenPageDemand"] = props["viewDrivenPageDemand"];
+        report["prefetchPages"] = props["prefetchPages"];
+        report["lowLatencyRequests"] = props["lowLatencyRequests"];
+        report["transitionChecks"] = transitionChecks;
+        report["latencyOnly"] = latencyOnly;
         props["debugStreamingPages"] = false;
         const Json original = graph.viewProperties().at("camera");
         checkRoam(props.value("viewBinding", "") == "global" && viewport.setCameraProperties(original),
@@ -417,7 +425,9 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
             checkRoam(bool(preview.render(graph, 1920, 1080, "MaterialResolve.color", false)), preview.lastLog());
         }
         checkRoam(observer.latest.value("terminalReady", false), "Terminal pages did not become ready");
-        double nextCheckpoint = 0;
+        // Measure wall-clock request tails without interleaving expensive cut
+        // readbacks/PNG saves; retain one final integrity/latency checkpoint.
+        double nextCheckpoint = latencyOnly ? double(duration - 1u) : 0.0;
         const uint32_t convergenceDeadline = setting("METALLIC_MINIZORAH_CONVERGENCE_SECONDS",
             fixedView != UINT32_MAX && budget >= (1ull << 30) ? 5u : UINT32_MAX);
         report["convergenceDeadlineSeconds"] = convergenceDeadline == UINT32_MAX ? Json(nullptr) : Json(convergenceDeadline);
@@ -470,7 +480,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
                     {"timedFrames", frameTimes.size()}, {"camera", camera}, {"coverage", covered}, {"cut", cut},
                     {"streaming", observer.latest}, {"pagePriorities", observer.readPagePriorities()}, {"memory", roamingMemory()},
                     {"checkpointGpuMilliseconds", stageTimes}, {"passGpuMilliseconds", nodeTimes}});
-                if (nextCheckpoint <= 60 && (fixedView == UINT32_MAX || std::floor(nextCheckpoint) == nextCheckpoint)) {
+                if (!latencyOnly && nextCheckpoint <= 60 && std::floor(nextCheckpoint) == nextCheckpoint) {
                     observer.capture = false;
                     checkRoam(bool(preview.render(graph, 1920, 1080, "MaterialResolve.color")), preview.lastLog());
                     checkRoam(saveRgba8Png(context.outputDirectory / ("roam-" + std::to_string(int(nextCheckpoint)) + ".png"),
@@ -481,7 +491,13 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
                     stats.at("usedResidentBytes").get<double>() / 1048576.0, stats.at("queuedUploadCount").get<uint32_t>(),
                     static_cast<unsigned long long>(cut.at("visibleOverTargetRefinements").get<uint64_t>()));
                 std::fflush(stdout);
-                nextCheckpoint += fixedView != UINT32_MAX && nextCheckpoint < 5 ? .5 : 5;
+                const double phase = std::fmod(nextCheckpoint, 60.0);
+                const bool transition = transitionChecks && fixedView == UINT32_MAX && (phase < 2 ||
+                    (phase >= 20 && phase < 22) || (phase >= 25 && phase < 27) || (phase >= 30 && phase < 32) ||
+                    (phase >= 50 && phase < 52) || (phase >= 55 && phase < 57));
+                nextCheckpoint = transition ? nextCheckpoint + .25 : fixedView != UINT32_MAX && nextCheckpoint < 5 ?
+                    nextCheckpoint + .5 : (std::floor(nextCheckpoint / 5.0) + 1.0) * 5.0;
+                if (latencyOnly) { nextCheckpoint = double(duration); }
                 save();
                 checkRoam(elapsed < convergenceDeadline || cut.at("visibleOverTargetRefinements") == 0,
                     "Visible refinements failed the 1.5 px convergence deadline");

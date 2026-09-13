@@ -72,6 +72,7 @@ inline constexpr uint32_t kMeshletStreamActiveBuildFrontierPhase = 5;
 inline constexpr uint32_t kMeshletStreamActiveBuildPrefixPhase = 6;
 inline constexpr uint32_t kMeshletStreamActiveBuildEmitPhase = 7;
 inline constexpr uint32_t kMeshletStreamActiveBuildInitializeLodStatePhase = 8;
+inline constexpr uint32_t kMeshletStreamActiveBuildPrefetchPhase = 9;
 inline constexpr uint32_t kMeshletStreamBlasInputResetPhase = 0;
 inline constexpr uint32_t kMeshletStreamBlasInputCountPhase = 1;
 inline constexpr uint32_t kMeshletStreamBlasInputSetupPhase = 2;
@@ -291,6 +292,7 @@ struct MeshletStreamGpuParams {
     float renderUpProjection[4] = {};
     float renderViewport[4] = {};
     float renderClipOrtho[4] = {};
+    float prefetchParams[4] = {}; // Frustum expansion, LOD error scale, enabled, reserved.
 };
 
 struct MeshletStreamGpuRasterBindings {
@@ -390,7 +392,7 @@ static_assert(sizeof(MeshletStreamGpuBlasHeader) == 32);
 static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGpuParams) == 368);
+static_assert(sizeof(MeshletStreamGpuParams) == 384);
 static_assert(sizeof(MeshletStreamGpuRasterBindings) == 80);
 static_assert(sizeof(MeshletStreamUserPush) == 120);
 
@@ -419,6 +421,9 @@ struct MeshletStreamRuntimeDesc {
     uint64_t maxFallbackBlasBytes = 512ull * 1024ull * 1024ull;
     bool screenSpacePagePriority = true;
     bool viewDrivenPageDemand = true;
+    bool measurePageLatency = true;
+    bool lowLatencyRequests = true;
+    bool prefetchPages = true;
 
     bool operator==(const MeshletStreamRuntimeDesc&) const = default;
 };
@@ -646,6 +651,9 @@ private:
     uint32_t maxGpuPageRequests_ = 0;
     bool screenSpacePagePriority_ = false;
     bool viewDrivenPageDemand_ = false;
+    bool prefetchPages_ = false;
+    bool currentFramePrefetch_ = false;
+    uint32_t recentGpuRequestCount_ = 0;
     uint32_t maxGpuPageUnloadRequests_ = 0;
     uint32_t maxUpdatePatches_ = 0;
     uint32_t residentPageCapacity_ = 0;

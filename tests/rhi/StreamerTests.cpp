@@ -1750,6 +1750,113 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletScreenPriorityTest);
 
+class StreamerMeshletPrefetchTest final : public RhiTest {
+public:
+    StreamerMeshletPrefetchTest() { type = RhiTestType::Command; name = "streamer_meshlet_prefetch_admission"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "prefetch.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        const auto roots = fallbackPagesFor(asset);
+        const auto pages = nonFallbackPagesFor(asset, roots);
+        if (pages.size() < 3) { return RhiTestResult::skip("Needs three streamable pages"); }
+        const uint64_t bytes = pageStorageBytes(asset, roots) + pageStorageBytes(asset, pages);
+        std::string reason;
+        MeshletStreamResidencyManager legacy, immediate;
+        if (!legacy.initialize({.asset = &asset, .maxResidentBytes = bytes}, reason) ||
+            !immediate.initialize({.asset = &asset, .maxResidentBytes = bytes,
+                .measurePageLatency = true, .immediateGpuRequests = true}, reason)) { return RhiTestResult::fail(reason); }
+        legacy.beginFrame(); immediate.beginFrame();
+        const uint32_t current[] = {pages[0]};
+        (void)legacy.consumeGpuRequests({.loadPageIds = current, .frameIndex = 1});
+        (void)immediate.consumeGpuRequests({.loadPageIds = current, .frameIndex = 1});
+        if (legacy.pageAllocated(pages[0]) || !immediate.pageAllocated(pages[0])) {
+            return RhiTestResult::fail("Immediate requests did not remove exactly the admission frame");
+        }
+        legacy.beginFrame();
+        if (!legacy.pageAllocated(pages[0])) { return RhiTestResult::fail("Legacy admission changed"); }
+        const uint32_t duplicate[] = {pages[1] | kStreamPrefetchPageTag, pages[1]};
+        (void)immediate.consumeGpuRequests({.loadPageIds = duplicate, .frameIndex = 1, .taggedPrefetchRequests = true});
+        if (!immediate.pageAllocated(pages[1]) || immediate.stats().totalPrefetchAdmitted != 0 ||
+            immediate.latencySnapshot().pendingDemand != 2 || immediate.latencySnapshot().pendingPrefetch != 0) {
+            return RhiTestResult::fail("Actual demand did not win a tagged duplicate without priorities");
+        }
+        // One page of speculation fits, but the next cannot evict it or use the
+        // reserved quarter. Current demand can use that remaining capacity.
+        MeshletStreamResidencyManager bounded;
+        const uint64_t largest = std::max(pageStorageBytes(asset, pages[0]), pageStorageBytes(asset, pages[1]));
+        if (!bounded.initialize({.asset = &asset, .maxResidentBytes = largest * 4,
+                .maxResidentPages = 2, .immediateGpuRequests = true}, reason)) { return RhiTestResult::fail(reason); }
+        bounded.beginFrame();
+        const uint32_t forecasts[] = {pages[0] | kStreamPrefetchPageTag, pages[1] | kStreamPrefetchPageTag};
+        (void)bounded.consumeGpuRequests({.loadPageIds = forecasts, .taggedPrefetchRequests = true});
+        if (bounded.stats().totalPrefetchAdmitted != 1 || bounded.stats().totalPrefetchDeferred != 1 ||
+            bounded.stats().totalEvictedPageCount != 0) {
+            return RhiTestResult::fail("Speculative admission displaced the demand reserve");
+        }
+        const uint32_t missing[] = {bounded.pageAllocated(pages[0]) ? pages[1] : pages[0]};
+        (void)bounded.consumeGpuRequests({.loadPageIds = missing});
+        if (!bounded.pageAllocated(pages[0]) || !bounded.pageAllocated(pages[1])) {
+            return RhiTestResult::fail("Actual demand could not use reserved capacity");
+        }
+        MeshletStreamResidencyManager queued;
+        if (!queued.initialize({.asset = &asset, .maxResidentBytes = bytes,
+                .pageLoadConcurrency = 1, .maxPageLoadsInFlight = 4, .immediateGpuRequests = true}, reason)) {
+            return RhiTestResult::fail(reason);
+        }
+        const uint32_t queuedForecasts[] = {pages[0] | kStreamPrefetchPageTag,
+            pages[1] | kStreamPrefetchPageTag, pages[2] | kStreamPrefetchPageTag};
+        (void)queued.consumeGpuRequests({.loadPageIds = queuedForecasts, .taggedPrefetchRequests = true});
+        if (queued.queuedUploadCount() != 1 || queued.availablePrefetchRequests() != 0 ||
+            queued.stats().totalPrefetchDeferred != 2) {
+            return RhiTestResult::fail("Unissued speculative I/O occupied the demand queue reserve");
+        }
+        (void)queued.consumeGpuRequests({.loadPageIds = std::span(pages).first(3)});
+        if (queued.queuedUploadCount() != 3 || queued.stats().totalPrefetchUsed != 1) {
+            return RhiTestResult::fail("Demand could not promote or bypass queued speculation");
+        }
+        return RhiTestResult::pass("Immediate/legacy admission, tagged promotion, memory and queue reserves, no speculative eviction");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletPrefetchTest);
+
+class StreamerMeshletLatencyTest final : public RhiTest {
+public:
+    StreamerMeshletLatencyTest() { type = RhiTestType::Validation; name = "streamer_meshlet_latency"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        using namespace render;
+        MeshletStreamLatencyHistogram histogram;
+        if (histogram.summary().count != 0) { return RhiTestResult::fail("Empty latency histogram"); }
+        for (uint32_t i = 0; i < 99; ++i) { histogram.observe(999); }
+        histogram.observe(5000123);
+        const auto sample = histogram.summary();
+        if (sample.count != 100 || sample.p50 != 1 || sample.p99 != 1 || sample.maximum != 5000.123) {
+            return RhiTestResult::fail("Latency percentile or overflow bin lost the tail");
+        }
+        MeshletStreamLatencyTracker tracker;
+        tracker.request(1, 2, 3, true);
+        tracker.request(1, 4, 5, false);
+        tracker.request(1, 6, 7, false);
+        tracker.complete(1, 10);
+        tracker.complete(1, 10);
+        tracker.request(2, 7, 8, true); tracker.abandon(2);
+        tracker.request(3, 7, 8, false); tracker.abandon(3);
+        tracker.request(4, 7, 8, true);
+        const auto snapshot = tracker.snapshot();
+        if (snapshot.demandFrames.count != 1 || snapshot.demandFrames.p95 != 6 ||
+            snapshot.abandonedDemand != 1 || snapshot.abandonedPrefetch != 1 ||
+            snapshot.pendingDemand != 0 || snapshot.pendingPrefetch != 1 ||
+            snapshot.milliseconds[size_t(MeshletStreamLatencyStage::Feedback)].count != 4) {
+            return RhiTestResult::fail("Latency duplicate, first demand frame, promotion or retirement accounting");
+        }
+        return RhiTestResult::pass("Histogram tail, source frames, promotion, duplicates and abandoned requests");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletLatencyTest);
+
 class StreamerMeshletResidencyGpuRequestUnloadOverflowTest : public RhiTest {
 public:
     StreamerMeshletResidencyGpuRequestUnloadOverflowTest()

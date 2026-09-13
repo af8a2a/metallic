@@ -559,6 +559,7 @@ private:
             .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, traversalPipeline));
         uint32_t positivePriorities = 0;
         uint32_t viewDemandReductions = 0;
+        uint32_t speculativeRequests = 0;
         MeshletStreamUserPush push;
         push.instanceBuffer = handles[Instance].index;
         push.primitiveBuffer = handles[Primitive].index;
@@ -592,17 +593,19 @@ private:
         STREAM_LOD_REQUIRE(pool->createCommandBuffer(commands));
         STREAM_LOD_REQUIRE(device->createFence(false, fence));
         const uint32_t caseCount = large ? 36u : 37u;
-        for (uint32_t frame = 0; frame < caseCount * 4; ++frame) {
+        for (uint32_t frame = 0; frame < caseCount * 5; ++frame) {
             const uint32_t test = frame % caseCount;
             const bool useBvh = frame >= caseCount;
             const bool cooperative = frame >= caseCount * 2;
             const bool viewDriven = frame >= caseCount * 3;
+            const bool prefetch = frame >= caseCount * 4;
             const float viewAspect = viewDriven && test % 7 == 1 ? .25f : 1.f;
             primitive.lodBvhNodeCount = useBvh ? static_cast<uint32_t>(nodes.size()) : 0;
             uint32_t manual, capacity;
             std::vector<uint8_t> available;
             configureStreamLodCase(fixture, large, test, manual, capacity, available);
             if (viewDriven) {
+                if (prefetch && large && test == 7) { fixture.drawable[128] = 0; available[128] = 0; }
                 if (test % 6 == 0) { fixture.instance.worldMatrix[12] = 500.f; }
                 if (test % 6 == 2) { fixture.instance.worldMatrix[14] = 1000.f; }
                 if (test % 6 == 4) { fixture.instance.worldMatrix[14] = -2000000.f; }
@@ -633,6 +636,8 @@ private:
             std::copy_n(fixture.instance.worldMatrix.data() + 4, 4, instance.world1);
             std::copy_n(fixture.instance.worldMatrix.data() + 8, 4, instance.world2);
             std::copy_n(fixture.instance.worldMatrix.data() + 12, 4, instance.world3);
+            std::copy_n(instance.world3, 3, instance.boundsCenterRadius);
+            instance.boundsCenterRadius[3] = 1000000.f; // Group bounds exercise the forecast frustum below.
             MeshletStreamGpuParams params;
             std::copy_n(fixture.view.eye.data(), 3, params.eye);
             for (uint32_t axis = 0; axis < 3; ++axis) { params.center[axis] = params.eye[axis] + fixture.view.forward[axis]; }
@@ -660,6 +665,9 @@ private:
             params.selectedLodLevel = manual;
             params.enableGpuLodSelection = manual == UINT32_MAX;
             params.maxGpuPageRequests = kRequestCapacity;
+            params.prefetchParams[0] = 1.125f;
+            params.prefetchParams[1] = .85f;
+            params.prefetchParams[2] = prefetch ? 1.f : 0.f;
             std::vector<StreamPageTableEntry> pages(kGroupCount);
             for (uint32_t group = 0; group < kGroupCount; ++group) {
                 pages[group].deviceOffsetAndState = packStreamPageTableEntry(
@@ -678,6 +686,10 @@ private:
             requests[4] = params.frameIndex;
             requests[11] = cooperative ? kPriorityOffset : 0u;
             requests[12] = cooperative ? kPriorityTable : 0u;
+            requests[13] = prefetch && test % 5 != 0 ? std::max(kRequestCapacity / 4u, 1u) : 0u;
+            if (prefetch && test % 3 == 1) {
+                requests[0] = std::max(static_cast<uint32_t>(expected.requestedGroups.size()), 1u);
+            }
             std::fill(requests.begin() + kPriorityTable, requests.end(), 0x7fc00000u);
             if (!upload(Instance, &instance, sizeof(instance)) || !upload(Params, &params, sizeof(params)) ||
                 !upload(Primitive, &primitive, sizeof(primitive)) ||
@@ -711,8 +723,9 @@ private:
                 commands->dispatch(std::min(initGroups, 65535u), (initGroups + 65534) / 65535, 1);
                 commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
             }
-            for (uint32_t phase : {0u, 5u, 6u, 7u, 2u}) {
-                commands->bindComputePipeline(cooperative && (phase == 5u || phase == 7u) ? *cooperativePipeline : *pipeline);
+            for (uint32_t phase : {0u, 5u, 6u, 7u, 2u, 9u, 9u}) {
+                if (phase == 9u && !prefetch) { continue; }
+                commands->bindComputePipeline(cooperative && (phase == 5u || phase == 7u || phase == 9u) ? *cooperativePipeline : *pipeline);
                 push.activeBuildPhase = phase;
                 commands->pushBindlessData(&push, sizeof(push));
                 commands->dispatch(1, 1, 1);
@@ -778,28 +791,53 @@ private:
                     }
                 }
             }
-            if (requests[2] > kRequestCapacity || requests[5] != 0 || requests[7] != 0) {
+            if (requests[2] > requests[0] || requests[5] != 0 || requests[7] != 0) {
                 return RhiTestResult::fail("stream frontier request overflow or invalid page");
             }
             std::vector<uint32_t> requested(requests.begin() + 16, requests.begin() + 16 + requests[2]);
+            uint32_t forecastCount = 0;
+            std::vector<uint8_t> requestedOnce(kGroupCount);
+            for (uint32_t encoded : requested) {
+                const bool tagged = (encoded & kStreamPrefetchPageTag) != 0;
+                const uint32_t page = encoded & ~kStreamPrefetchPageTag;
+                if (page >= kGroupCount || requestedOnce[page]++) { return RhiTestResult::fail("Invalid or duplicate forecast page"); }
+                if (!tagged && forecastCount != 0) { return RhiTestResult::fail("Forecast displaced the demand prefix"); }
+                if (!tagged) { continue; }
+                ++forecastCount;
+                auto forecastView = fixture.view;
+                forecastView.projection[1] *= 1.125f;
+                forecastView.projection[2] *= 1.125f;
+                if (!prefetch || manual != UINT32_MAX || available[page] ||
+                    (fixture.groups[page].flags & kMeshletLodTerminalGroup) != 0 ||
+                    !meshletLodBoundsVisible(refinementBounds[page], fixture.instance, forecastView,
+                        {0, 1, 0}, viewAspect, 1000000.f)) {
+                    return RhiTestResult::fail("Forecast ignored availability, view or manual LOD: " + caseLabel);
+                }
+            }
+            if (forecastCount > requests[13]) { return RhiTestResult::fail("Forecast exceeded its quota"); }
+            if (prefetch && !large && test == 1 && requests[15] == 0) {
+                return RhiTestResult::fail("Saturated demand buffer did not drop speculative requests");
+            }
+            speculativeRequests += forecastCount;
             if (cooperative) {
                 for (uint32_t index = 0; index < requests[2]; ++index) {
                     const uint32_t bits = requests[kPriorityOffset + index];
                     float value;
                     std::memcpy(&value, &bits, sizeof(value));
                     if (!std::isfinite(value) || value < 0.f || value > 1e9f ||
-                        bits != requests[kPriorityTable + requested[index]]) {
+                        bits != requests[kPriorityTable + (requested[index] & ~kStreamPrefetchPageTag)]) {
                         return RhiTestResult::fail("GPU page priority clear/aggregate/gather mismatch");
                     }
                     positivePriorities += value > 0.f;
                 }
                 for (uint32_t page = 0; page < kGroupCount; ++page) {
-                    if (std::find(requested.begin(), requested.end(), page) == requested.end() &&
+                    if (!prefetch && std::find(requested.begin(), requested.end(), page) == requested.end() &&
                         requests[kPriorityTable + page] != 0u) {
                         return RhiTestResult::fail("Unused page retained a stale screen benefit");
                     }
                 }
             }
+            std::erase_if(requested, [](uint32_t page) { return (page & kStreamPrefetchPageTag) != 0; });
             std::sort(requested.begin(), requested.end());
             if (actual != expected.selectedClusters || requested != expected.requestedGroups ||
                 (expected.valid && bool(header.padding0) != expected.capacityFallback) ||
@@ -842,8 +880,9 @@ private:
             }
         }
         if (positivePriorities == 0) { return RhiTestResult::fail("Visible requests never generated screen benefit"); }
+        if (speculativeRequests == 0) { return RhiTestResult::fail("Lookahead never requested a missing descendant"); }
         if (viewDemandReductions == 0) { return RhiTestResult::fail("View demand never pruned an offscreen refinement"); }
-        return RhiTestResult::pass("292 linear/BVH/cooperative/view-driven GPU-reference cuts, priority clear/gather, 511-group pruning, sparse state reuse, camera/residency transitions and capacity fallback");
+        return RhiTestResult::pass("365 linear/BVH/cooperative/view-driven/prefetch GPU-reference cuts; tagged forecasts preserve demand prefix, quota, availability, sparse state and fallback");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLodGpuTest);

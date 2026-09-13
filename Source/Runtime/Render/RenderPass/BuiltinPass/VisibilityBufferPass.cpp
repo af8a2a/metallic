@@ -287,6 +287,9 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .enableClusterRtx = false,
         .screenSpacePagePriority = boolProperty(&properties, "screenSpacePagePriority", true),
         .viewDrivenPageDemand = boolProperty(&properties, "viewDrivenPageDemand", true),
+        .measurePageLatency = boolProperty(&properties, "measurePageLatency", true),
+        .lowLatencyRequests = boolProperty(&properties, "lowLatencyRequests", true),
+        .prefetchPages = boolProperty(&properties, "prefetchPages", true),
     };
 }
 
@@ -617,7 +620,7 @@ public:
         if (streamEnabled_) { points.insert(points.end(), {"AfterStreamEarlyCandidates", "AfterStreamEarlyClassify", "AfterStreamEarlyBins", "AfterStreamEarlyRaster", "AfterStreamEarlyResolve",
             "AfterStreamLateCandidates", "AfterStreamLateClassify", "AfterStreamLateBins", "AfterStreamLateRaster", "AfterStreamLateResolve"}); }
         if (streamEnabled_) { points.insert(points.begin(), {"BeforeStreamUpdates", "AfterStreamUpdates",
-            "AfterStreamFrontier", "AfterStreamPrefix", "AfterStreamEmit", "AfterTraversal"}); }
+            "AfterStreamFrontier", "AfterStreamPrefix", "AfterStreamEmit", "AfterStreamPrefetch", "AfterTraversal"}); }
         return points;
     }
 

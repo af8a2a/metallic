@@ -45,7 +45,9 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
         DEBUG_FIELD(StreamRequestBufferHeader, unloadOverflowCounter), DEBUG_FIELD(StreamRequestBufferHeader, invalidPageCounter),
         DEBUG_FIELD(StreamRequestBufferHeader, lastLoadOverflowFrame), DEBUG_FIELD(StreamRequestBufferHeader, lastUnloadOverflowFrame),
         DEBUG_FIELD(StreamRequestBufferHeader, lastInvalidPageFrame),
-        DEBUG_FIELD(StreamRequestBufferHeader, loadPriorityOffset), DEBUG_FIELD(StreamRequestBufferHeader, priorityTableOffset)}});
+        DEBUG_FIELD(StreamRequestBufferHeader, loadPriorityOffset), DEBUG_FIELD(StreamRequestBufferHeader, priorityTableOffset),
+        DEBUG_FIELD(StreamRequestBufferHeader, prefetchRequestLimit), DEBUG_FIELD(StreamRequestBufferHeader, prefetchRequestCounter),
+        DEBUG_FIELD(StreamRequestBufferHeader, prefetchDroppedCounter)}});
     static_assert(sizeof(StreamPageTableEntry) == 8);
     add({"StreamPageTableEntry", sizeof(StreamPageTableEntry), {
         DEBUG_FIELD(StreamPageTableEntry, deviceOffsetAndState), DEBUG_FIELD(StreamPageTableEntry, lastRequestFrame),

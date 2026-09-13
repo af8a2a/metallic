@@ -1,0 +1,3193 @@
+{
+  "date": "2026-09-13",
+  "baseCommit": "cc09bf005f6ccc82c46f4d48b0427f9a69322194",
+  "configuration": "RelWithDebInfo",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "driver": "616.64",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "targetPixelError": 1.5,
+  "vulkanValidation": true,
+  "asyncHybrid": true,
+  "scope": "Synchronous offscreen GPUDriven + MaterialResolve; no presentation. GPU source-frame CPU start to Resident publication approximates request-to-drawable. 1 ms upper-bound histogram bins; unchanged queued GPU lifetime. OS file cache not controlled.",
+  "comparisonCaveat": "Prefetch removes future misses; remaining miss distribution is cold-start-heavy. PrefetchUsed includes demand promotions before upload, not exclusively ready cache hits. Latency-only runs avoid intermediate debug/PNG pauses; quality runs do not measure clean wall-clock tails.",
+  "settings": {
+    "prefetchFrustumScale": 1.0625,
+    "prefetchErrorScale": 0.95,
+    "spareMemoryFraction": 0.75,
+    "maxSpeculativeLoadFraction": 0.25,
+    "gpuQuota": "min(maxGpuRequests / 4, spare CPU speculative admission capacity)"
+  },
+  "runs": {
+    "baseline": {
+      "status": "passed",
+      "durationSeconds": 60,
+      "renderSeconds": 60.007373299999735,
+      "pageBudgetBytes": 1073741824,
+      "prefetchPages": false,
+      "lowLatencyRequests": false,
+      "transitionChecks": true,
+      "fixedViewSeconds": null,
+      "firstConvergedSeconds": 20.25441019999998,
+      "firstConvergedWallSeconds": 22.3687228,
+      "gpuMilliseconds": {
+        "max": 10.641088,
+        "p50": 7.317344,
+        "p95": 8.966336,
+        "p99": 9.505472,
+        "samples": 6027
+      },
+      "frameMilliseconds": {
+        "max": 188.487,
+        "p50": 10.7501,
+        "p95": 13.2037,
+        "p99": 14.9249,
+        "samples": 6027
+      },
+      "cpuRecordMilliseconds": {
+        "max": 49.9149,
+        "p50": 3.1804,
+        "p95": 4.7582,
+        "p99": 6.0778,
+        "samples": 6027
+      },
+      "latencyOnly": false,
+      "reportPath": "build-relwithdebinfo/minizorah-prefetch/baseline/MiniZorahRoamingReport.json",
+      "reportSha256": "dbc88577bd44ea3db8a7dd67f8bd12ebe8fe777b3e1be6d745a47450731dce8a",
+      "checkpointCount": 60,
+      "last": {
+        "seconds": 57.006891199999714,
+        "streaming": {
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 9818,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 0,
+            "frameEvictionScanCount": 0,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 0,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 11186,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 468947712,
+            "pendingPageCount": 1,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 0,
+            "residentPageCount": 21004,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 21005,
+            "totalCompletedUnloadCount": 0,
+            "totalCompletedUploadCount": 21004,
+            "totalEvictedPageCount": 0,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalUploadBytes": 602267248,
+            "usedResidentBytes": 604794112
+          },
+          "latency": {
+            "abandonedDemand": 0,
+            "abandonedPrefetch": 0,
+            "demandFrames": {
+              "count": 17841,
+              "max": 21,
+              "mean": 7.74317583095118,
+              "p50": 7,
+              "p95": 9,
+              "p99": 16
+            },
+            "enabled": true,
+            "milliseconds": {
+              "admission": {
+                "count": 17842,
+                "max": 265.098,
+                "mean": 18.877834323506335,
+                "p50": 12,
+                "p95": 72,
+                "p99": 226
+              },
+              "decode": {
+                "count": 17842,
+                "max": 8.933,
+                "mean": 0.1703512498598812,
+                "p50": 1,
+                "p95": 1,
+                "p99": 1
+              },
+              "demandToDrawable": {
+                "count": 17841,
+                "max": 410.301,
+                "mean": 128.13435732302003,
+                "p50": 91,
+                "p95": 320,
+                "p99": 378
+              },
+              "feedback": {
+                "count": 17842,
+                "max": 226.334,
+                "mean": 20.04830360946082,
+                "p50": 12,
+                "p95": 71,
+                "p99": 227
+              },
+              "ioQueue": {
+                "count": 17842,
+                "max": 21.214,
+                "mean": 2.3738225535253896,
+                "p50": 1,
+                "p95": 11,
+                "p99": 16
+              },
+              "prefetchToDrawable": {
+                "count": 0,
+                "max": 0,
+                "mean": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0
+              },
+              "readyToUpload": {
+                "count": 17842,
+                "max": 266.462,
+                "mean": 21.563511489743302,
+                "p50": 13,
+                "p95": 75,
+                "p99": 193
+              },
+              "uploadToDrawable": {
+                "count": 17841,
+                "max": 339.546,
+                "mean": 63.90987237262485,
+                "p50": 47,
+                "p95": 232,
+                "p99": 324
+              }
+            },
+            "oldestPendingDemandMilliseconds": 57.914,
+            "pendingDemand": 1,
+            "pendingPrefetch": 0
+          }
+        },
+        "cut": {
+          "activeGroups": 20537,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 197641,
+          "earlyHardware": 40023,
+          "earlySoftware": 23423,
+          "fineGroups": 12273,
+          "lateCandidates": 69010,
+          "lateHardware": 100,
+          "lateSoftware": 154,
+          "maxFiniteRefinementErrorPixels": 92069.71875,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38,
+          "nearPlaneUnboundedRefinements": 458,
+          "overTargetRefinements": 1425,
+          "selectedClusters": 213967,
+          "verifiedInstances": 12834,
+          "visibleOverTargetRefinements": 1,
+          "visibleUnboundedRefinements": 1
+        },
+        "memory": {
+          "processCommitBytes": 3790524416,
+          "processLocalGpuBytes": 2465062912,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 2263150592
+        }
+      },
+      "qualityCheckpoints": [
+        {
+          "seconds": 0,
+          "visibleOverTarget": 4533,
+          "usedBytes": 9587200,
+          "uploadedBytes": 9065408
+        },
+        {
+          "seconds": 0.28705539999999996,
+          "visibleOverTarget": 2025,
+          "usedBytes": 32159232,
+          "uploadedBytes": 31393216
+        },
+        {
+          "seconds": 0.5748,
+          "visibleOverTarget": 2215,
+          "usedBytes": 65789440,
+          "uploadedBytes": 64883856
+        },
+        {
+          "seconds": 0.7913217999999999,
+          "visibleOverTarget": 2797,
+          "usedBytes": 115502080,
+          "uploadedBytes": 114444976
+        },
+        {
+          "seconds": 1.0014836999999996,
+          "visibleOverTarget": 2571,
+          "usedBytes": 201027072,
+          "uploadedBytes": 199482960
+        },
+        {
+          "seconds": 1.2545151999999993,
+          "visibleOverTarget": 208,
+          "usedBytes": 270733312,
+          "uploadedBytes": 264288576
+        },
+        {
+          "seconds": 1.5029814999999986,
+          "visibleOverTarget": 47,
+          "usedBytes": 280172288,
+          "uploadedBytes": 278574768
+        },
+        {
+          "seconds": 1.7542479999999985,
+          "visibleOverTarget": 70,
+          "usedBytes": 287584256,
+          "uploadedBytes": 285821424
+        },
+        {
+          "seconds": 2.0089069999999984,
+          "visibleOverTarget": 48,
+          "usedBytes": 293608704,
+          "uploadedBytes": 291648048
+        },
+        {
+          "seconds": 5.0006041,
+          "visibleOverTarget": 17,
+          "usedBytes": 333835008,
+          "uploadedBytes": 332022816
+        },
+        {
+          "seconds": 10.00348399999999,
+          "visibleOverTarget": 26,
+          "usedBytes": 369440512,
+          "uploadedBytes": 367477152
+        },
+        {
+          "seconds": 15.005411699999986,
+          "visibleOverTarget": 47,
+          "usedBytes": 416861184,
+          "uploadedBytes": 414924960
+        },
+        {
+          "seconds": 20.003642499999973,
+          "visibleOverTarget": 2,
+          "usedBytes": 422139648,
+          "uploadedBytes": 420228560
+        },
+        {
+          "seconds": 20.25441019999998,
+          "visibleOverTarget": 0,
+          "usedBytes": 422142208,
+          "uploadedBytes": 420230928
+        },
+        {
+          "seconds": 20.503810099999978,
+          "visibleOverTarget": 0,
+          "usedBytes": 422142208,
+          "uploadedBytes": 420230928
+        },
+        {
+          "seconds": 20.751709899999984,
+          "visibleOverTarget": 0,
+          "usedBytes": 422142208,
+          "uploadedBytes": 420230928
+        },
+        {
+          "seconds": 21.00099959999999,
+          "visibleOverTarget": 0,
+          "usedBytes": 422142208,
+          "uploadedBytes": 420230928
+        },
+        {
+          "seconds": 21.251542899999993,
+          "visibleOverTarget": 0,
+          "usedBytes": 422142208,
+          "uploadedBytes": 420230928
+        },
+        {
+          "seconds": 21.5055946,
+          "visibleOverTarget": 0,
+          "usedBytes": 422142208,
+          "uploadedBytes": 420230928
+        },
+        {
+          "seconds": 21.750475299999998,
+          "visibleOverTarget": 0,
+          "usedBytes": 422142208,
+          "uploadedBytes": 420230928
+        },
+        {
+          "seconds": 22.001368100000004,
+          "visibleOverTarget": 0,
+          "usedBytes": 422142208,
+          "uploadedBytes": 420230928
+        },
+        {
+          "seconds": 25.0023689,
+          "visibleOverTarget": 147,
+          "usedBytes": 422142208,
+          "uploadedBytes": 420230928
+        },
+        {
+          "seconds": 25.2537449,
+          "visibleOverTarget": 6,
+          "usedBytes": 427574528,
+          "uploadedBytes": 425645472
+        },
+        {
+          "seconds": 25.505174900000007,
+          "visibleOverTarget": 6,
+          "usedBytes": 428018688,
+          "uploadedBytes": 426030528
+        },
+        {
+          "seconds": 25.75748270000001,
+          "visibleOverTarget": 2,
+          "usedBytes": 428162048,
+          "uploadedBytes": 426230688
+        },
+        {
+          "seconds": 26.006805500000006,
+          "visibleOverTarget": 4,
+          "usedBytes": 428444160,
+          "uploadedBytes": 426465696
+        },
+        {
+          "seconds": 26.250707700000007,
+          "visibleOverTarget": 0,
+          "usedBytes": 428524288,
+          "uploadedBytes": 426591824
+        },
+        {
+          "seconds": 26.503258900000006,
+          "visibleOverTarget": 0,
+          "usedBytes": 428524288,
+          "uploadedBytes": 426591824
+        },
+        {
+          "seconds": 26.7555407,
+          "visibleOverTarget": 0,
+          "usedBytes": 428524288,
+          "uploadedBytes": 426591824
+        },
+        {
+          "seconds": 27.0088101,
+          "visibleOverTarget": 0,
+          "usedBytes": 428524288,
+          "uploadedBytes": 426591824
+        },
+        {
+          "seconds": 30.013104199999987,
+          "visibleOverTarget": 7,
+          "usedBytes": 430915840,
+          "uploadedBytes": 428975072
+        },
+        {
+          "seconds": 30.251582199999994,
+          "visibleOverTarget": 0,
+          "usedBytes": 431735040,
+          "uploadedBytes": 429792656
+        },
+        {
+          "seconds": 30.512040799999998,
+          "visibleOverTarget": 3,
+          "usedBytes": 432025088,
+          "uploadedBytes": 430025584
+        },
+        {
+          "seconds": 30.76235239999999,
+          "visibleOverTarget": 17,
+          "usedBytes": 434321152,
+          "uploadedBytes": 432236816
+        },
+        {
+          "seconds": 31.000334099999993,
+          "visibleOverTarget": 13,
+          "usedBytes": 435835392,
+          "uploadedBytes": 433884080
+        },
+        {
+          "seconds": 31.261733499999988,
+          "visibleOverTarget": 80,
+          "usedBytes": 438556160,
+          "uploadedBytes": 436264864
+        },
+        {
+          "seconds": 31.503544099999985,
+          "visibleOverTarget": 113,
+          "usedBytes": 448760320,
+          "uploadedBytes": 446513952
+        },
+        {
+          "seconds": 31.75384909999999,
+          "visibleOverTarget": 84,
+          "usedBytes": 459319552,
+          "uploadedBytes": 457015472
+        },
+        {
+          "seconds": 32.00115569999999,
+          "visibleOverTarget": 106,
+          "usedBytes": 470703872,
+          "uploadedBytes": 466798096
+        },
+        {
+          "seconds": 35.008447300000014,
+          "visibleOverTarget": 2,
+          "usedBytes": 539840512,
+          "uploadedBytes": 537533392
+        },
+        {
+          "seconds": 40.00089909999998,
+          "visibleOverTarget": 0,
+          "usedBytes": 552171520,
+          "uploadedBytes": 549826912
+        },
+        {
+          "seconds": 45.00942829999988,
+          "visibleOverTarget": 3,
+          "usedBytes": 596683264,
+          "uploadedBytes": 594176400
+        },
+        {
+          "seconds": 50.003153599999855,
+          "visibleOverTarget": 0,
+          "usedBytes": 604619776,
+          "uploadedBytes": 602000816
+        },
+        {
+          "seconds": 50.25524209999986,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 50.505003599999846,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 50.755442999999836,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 51.000155599999836,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 51.25311959999983,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 51.50187759999983,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 51.753363899999826,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 52.0057080999998,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 55.005396099999714,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 55.25349149999971,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 55.507685399999716,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 55.7554427999997,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 56.003856299999704,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 56.25926359999973,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 56.50911929999972,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 56.75316629999972,
+          "visibleOverTarget": 0,
+          "usedBytes": 604663040,
+          "uploadedBytes": 602136576
+        },
+        {
+          "seconds": 57.006891199999714,
+          "visibleOverTarget": 1,
+          "usedBytes": 604794112,
+          "uploadedBytes": 602267248
+        }
+      ]
+    },
+    "adaptive": {
+      "status": "passed",
+      "durationSeconds": 60,
+      "renderSeconds": 60.008618799999965,
+      "pageBudgetBytes": 1073741824,
+      "prefetchPages": true,
+      "lowLatencyRequests": true,
+      "transitionChecks": true,
+      "fixedViewSeconds": null,
+      "firstConvergedSeconds": 0.7588169000000001,
+      "firstConvergedWallSeconds": 1.0650006,
+      "gpuMilliseconds": {
+        "max": 10.230464,
+        "p50": 7.631552,
+        "p95": 9.001504,
+        "p99": 9.387648,
+        "samples": 5986
+      },
+      "frameMilliseconds": {
+        "max": 97.2085,
+        "p50": 11.0587,
+        "p95": 12.6407,
+        "p99": 13.3432,
+        "samples": 5986
+      },
+      "cpuRecordMilliseconds": {
+        "max": 6.9345,
+        "p50": 3.2713,
+        "p95": 4.3573,
+        "p99": 5.2921,
+        "samples": 5986
+      },
+      "latencyOnly": false,
+      "reportPath": "build-relwithdebinfo/minizorah-prefetch/adaptive/MiniZorahRoamingReport.json",
+      "reportSha256": "d9dc80a43b0c2ec243924882c3c8a73ece38fd2e0a6fb814ca82db7d6b24f33d",
+      "checkpointCount": 60,
+      "last": {
+        "seconds": 57.00504930000001,
+        "streaming": {
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 12328,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 0,
+            "frameEvictionScanCount": 0,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 1,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 11187,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 370192896,
+            "pendingPageCount": 0,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 1,
+            "residentPageCount": 23515,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 23515,
+            "totalCompletedUnloadCount": 0,
+            "totalCompletedUploadCount": 23515,
+            "totalEvictedPageCount": 0,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalPrefetchAdmitted": 13282,
+            "totalPrefetchDeferred": 4751,
+            "totalPrefetchUsed": 10768,
+            "totalUploadBytes": 700698112,
+            "usedResidentBytes": 703548928
+          },
+          "latency": {
+            "abandonedDemand": 0,
+            "abandonedPrefetch": 40,
+            "demandFrames": {
+              "count": 7102,
+              "max": 21,
+              "mean": 6.983103351168685,
+              "p50": 6,
+              "p95": 14,
+              "p99": 18
+            },
+            "enabled": true,
+            "milliseconds": {
+              "admission": {
+                "count": 20353,
+                "max": 532.776,
+                "mean": 7.084296909546504,
+                "p50": 1,
+                "p95": 40,
+                "p99": 162
+              },
+              "decode": {
+                "count": 20352,
+                "max": 9.159,
+                "mean": 0.02723879716981132,
+                "p50": 1,
+                "p95": 1,
+                "p99": 1
+              },
+              "demandToDrawable": {
+                "count": 7102,
+                "max": 307.692,
+                "mean": 104.62587961137709,
+                "p50": 74,
+                "p95": 240,
+                "p99": 293
+              },
+              "feedback": {
+                "count": 20393,
+                "max": 97.623,
+                "mean": 13.653704261266121,
+                "p50": 12,
+                "p95": 28,
+                "p99": 98
+              },
+              "ioQueue": {
+                "count": 20352,
+                "max": 4.318,
+                "mean": 0.4331705974842768,
+                "p50": 1,
+                "p95": 2,
+                "p99": 3
+              },
+              "prefetchToDrawable": {
+                "count": 13250,
+                "max": 511.601,
+                "mean": 87.67053381132075,
+                "p50": 72,
+                "p95": 213,
+                "p99": 307
+              },
+              "readyToUpload": {
+                "count": 20352,
+                "max": 243.607,
+                "mean": 19.77356569378931,
+                "p50": 12,
+                "p95": 60,
+                "p99": 185
+              },
+              "uploadToDrawable": {
+                "count": 20352,
+                "max": 334.22,
+                "mean": 55.0247033706761,
+                "p50": 46,
+                "p95": 122,
+                "p99": 206
+              }
+            },
+            "oldestPendingDemandMilliseconds": 0,
+            "pendingDemand": 0,
+            "pendingPrefetch": 1
+          }
+        },
+        "cut": {
+          "activeGroups": 20540,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 197766,
+          "earlyHardware": 40176,
+          "earlySoftware": 23537,
+          "fineGroups": 12276,
+          "lateCandidates": 68821,
+          "lateHardware": 103,
+          "lateSoftware": 144,
+          "maxFiniteRefinementErrorPixels": 94198.921875,
+          "maxVisibleRefinementErrorPixels": 1.499997615814209,
+          "nearPlaneUnboundedRefinements": 457,
+          "overTargetRefinements": 1424,
+          "selectedClusters": 214011,
+          "verifiedInstances": 12834,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "memory": {
+          "processCommitBytes": 3791282176,
+          "processLocalGpuBytes": 2465062912,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 2367148032
+        }
+      },
+      "qualityCheckpoints": [
+        {
+          "seconds": 0,
+          "visibleOverTarget": 4524,
+          "usedBytes": 10784512,
+          "uploadedBytes": 9335728
+        },
+        {
+          "seconds": 0.2544628,
+          "visibleOverTarget": 1926,
+          "usedBytes": 62922240,
+          "uploadedBytes": 52662832
+        },
+        {
+          "seconds": 0.5035965000000001,
+          "visibleOverTarget": 3025,
+          "usedBytes": 206977024,
+          "uploadedBytes": 197028384
+        },
+        {
+          "seconds": 0.7588169000000001,
+          "visibleOverTarget": 0,
+          "usedBytes": 295916032,
+          "uploadedBytes": 293694496
+        },
+        {
+          "seconds": 1.0069592000000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 304463360,
+          "uploadedBytes": 302656128
+        },
+        {
+          "seconds": 1.2578937000000008,
+          "visibleOverTarget": 0,
+          "usedBytes": 314863872,
+          "uploadedBytes": 312943936
+        },
+        {
+          "seconds": 1.5070161000000009,
+          "visibleOverTarget": 0,
+          "usedBytes": 323026688,
+          "uploadedBytes": 321018048
+        },
+        {
+          "seconds": 1.7577931000000009,
+          "visibleOverTarget": 0,
+          "usedBytes": 329939456,
+          "uploadedBytes": 328050848
+        },
+        {
+          "seconds": 2.009864200000001,
+          "visibleOverTarget": 0,
+          "usedBytes": 336222208,
+          "uploadedBytes": 334259888
+        },
+        {
+          "seconds": 5.000255899999997,
+          "visibleOverTarget": 0,
+          "usedBytes": 379551232,
+          "uploadedBytes": 377532896
+        },
+        {
+          "seconds": 10.010015300000008,
+          "visibleOverTarget": 0,
+          "usedBytes": 412368128,
+          "uploadedBytes": 410443552
+        },
+        {
+          "seconds": 15.005544900000025,
+          "visibleOverTarget": 5,
+          "usedBytes": 468914944,
+          "uploadedBytes": 466812080
+        },
+        {
+          "seconds": 20.001960900000032,
+          "visibleOverTarget": 2,
+          "usedBytes": 475515648,
+          "uploadedBytes": 473441696
+        },
+        {
+          "seconds": 20.254636000000026,
+          "visibleOverTarget": 0,
+          "usedBytes": 475518208,
+          "uploadedBytes": 473444064
+        },
+        {
+          "seconds": 20.50475840000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 475518208,
+          "uploadedBytes": 473444064
+        },
+        {
+          "seconds": 20.75581190000004,
+          "visibleOverTarget": 0,
+          "usedBytes": 475518208,
+          "uploadedBytes": 473444064
+        },
+        {
+          "seconds": 21.00558420000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 475518208,
+          "uploadedBytes": 473444064
+        },
+        {
+          "seconds": 21.252933700000025,
+          "visibleOverTarget": 0,
+          "usedBytes": 475518208,
+          "uploadedBytes": 473444064
+        },
+        {
+          "seconds": 21.50557330000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 475518208,
+          "uploadedBytes": 473444064
+        },
+        {
+          "seconds": 21.75225200000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 475518208,
+          "uploadedBytes": 473444064
+        },
+        {
+          "seconds": 22.002294400000032,
+          "visibleOverTarget": 0,
+          "usedBytes": 475518208,
+          "uploadedBytes": 473444064
+        },
+        {
+          "seconds": 25.005746500000022,
+          "visibleOverTarget": 77,
+          "usedBytes": 475518208,
+          "uploadedBytes": 473444064
+        },
+        {
+          "seconds": 25.26101060000002,
+          "visibleOverTarget": 0,
+          "usedBytes": 482225920,
+          "uploadedBytes": 480128640
+        },
+        {
+          "seconds": 25.51163670000002,
+          "visibleOverTarget": 0,
+          "usedBytes": 482500096,
+          "uploadedBytes": 480355488
+        },
+        {
+          "seconds": 25.754623000000024,
+          "visibleOverTarget": 0,
+          "usedBytes": 482803968,
+          "uploadedBytes": 480704624
+        },
+        {
+          "seconds": 26.005952100000023,
+          "visibleOverTarget": 0,
+          "usedBytes": 483152128,
+          "uploadedBytes": 480998000
+        },
+        {
+          "seconds": 26.25582190000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 483152128,
+          "uploadedBytes": 481051552
+        },
+        {
+          "seconds": 26.504760400000023,
+          "visibleOverTarget": 0,
+          "usedBytes": 483152128,
+          "uploadedBytes": 481051552
+        },
+        {
+          "seconds": 26.759682600000023,
+          "visibleOverTarget": 0,
+          "usedBytes": 483152128,
+          "uploadedBytes": 481051552
+        },
+        {
+          "seconds": 27.004578200000026,
+          "visibleOverTarget": 0,
+          "usedBytes": 483152128,
+          "uploadedBytes": 481051552
+        },
+        {
+          "seconds": 30.01036610000002,
+          "visibleOverTarget": 0,
+          "usedBytes": 486378752,
+          "uploadedBytes": 484268144
+        },
+        {
+          "seconds": 30.25429430000002,
+          "visibleOverTarget": 0,
+          "usedBytes": 487585024,
+          "uploadedBytes": 485469568
+        },
+        {
+          "seconds": 30.50508500000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 487769344,
+          "uploadedBytes": 485591008
+        },
+        {
+          "seconds": 30.75145730000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 488261632,
+          "uploadedBytes": 486041424
+        },
+        {
+          "seconds": 31.008817400000034,
+          "visibleOverTarget": 0,
+          "usedBytes": 499614720,
+          "uploadedBytes": 496879552
+        },
+        {
+          "seconds": 31.25247670000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 509966080,
+          "uploadedBytes": 507568816
+        },
+        {
+          "seconds": 31.50746230000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 523383296,
+          "uploadedBytes": 520862928
+        },
+        {
+          "seconds": 31.75456650000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 532796416,
+          "uploadedBytes": 529162672
+        },
+        {
+          "seconds": 32.00534550000003,
+          "visibleOverTarget": 2,
+          "usedBytes": 544497408,
+          "uploadedBytes": 541361664
+        },
+        {
+          "seconds": 35.00350290000004,
+          "visibleOverTarget": 0,
+          "usedBytes": 626012672,
+          "uploadedBytes": 623440000
+        },
+        {
+          "seconds": 40.00956860000009,
+          "visibleOverTarget": 0,
+          "usedBytes": 638816000,
+          "uploadedBytes": 636204752
+        },
+        {
+          "seconds": 45.009371100000095,
+          "visibleOverTarget": 0,
+          "usedBytes": 696817664,
+          "uploadedBytes": 694009216
+        },
+        {
+          "seconds": 50.00820940000008,
+          "visibleOverTarget": 0,
+          "usedBytes": 703404800,
+          "uploadedBytes": 700575952
+        },
+        {
+          "seconds": 50.25531940000008,
+          "visibleOverTarget": 0,
+          "usedBytes": 703404800,
+          "uploadedBytes": 700575952
+        },
+        {
+          "seconds": 50.502081300000086,
+          "visibleOverTarget": 0,
+          "usedBytes": 703404800,
+          "uploadedBytes": 700575952
+        },
+        {
+          "seconds": 50.752767700000085,
+          "visibleOverTarget": 0,
+          "usedBytes": 703404800,
+          "uploadedBytes": 700575952
+        },
+        {
+          "seconds": 51.00577430000008,
+          "visibleOverTarget": 0,
+          "usedBytes": 703404800,
+          "uploadedBytes": 700575952
+        },
+        {
+          "seconds": 51.251371400000075,
+          "visibleOverTarget": 0,
+          "usedBytes": 703404800,
+          "uploadedBytes": 700575952
+        },
+        {
+          "seconds": 51.504736900000076,
+          "visibleOverTarget": 0,
+          "usedBytes": 703404800,
+          "uploadedBytes": 700575952
+        },
+        {
+          "seconds": 51.753778000000075,
+          "visibleOverTarget": 0,
+          "usedBytes": 703404800,
+          "uploadedBytes": 700575952
+        },
+        {
+          "seconds": 52.000260900000065,
+          "visibleOverTarget": 0,
+          "usedBytes": 703404800,
+          "uploadedBytes": 700575952
+        },
+        {
+          "seconds": 55.00011970000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 703404800,
+          "uploadedBytes": 700575952
+        },
+        {
+          "seconds": 55.25642660000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 703407872,
+          "uploadedBytes": 700578912
+        },
+        {
+          "seconds": 55.50550350000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 703407872,
+          "uploadedBytes": 700578912
+        },
+        {
+          "seconds": 55.75543240000004,
+          "visibleOverTarget": 0,
+          "usedBytes": 703437568,
+          "uploadedBytes": 700578912
+        },
+        {
+          "seconds": 56.00561310000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 703437568,
+          "uploadedBytes": 700608576
+        },
+        {
+          "seconds": 56.250190600000025,
+          "visibleOverTarget": 0,
+          "usedBytes": 703497728,
+          "uploadedBytes": 700668432
+        },
+        {
+          "seconds": 56.509497200000006,
+          "visibleOverTarget": 0,
+          "usedBytes": 703497728,
+          "uploadedBytes": 700668432
+        },
+        {
+          "seconds": 56.7571959,
+          "visibleOverTarget": 0,
+          "usedBytes": 703527680,
+          "uploadedBytes": 700698112
+        },
+        {
+          "seconds": 57.00504930000001,
+          "visibleOverTarget": 0,
+          "usedBytes": 703548928,
+          "uploadedBytes": 700698112
+        }
+      ]
+    },
+    "latency-baseline": {
+      "status": "passed",
+      "durationSeconds": 60,
+      "renderSeconds": 60.005991900000055,
+      "pageBudgetBytes": 1073741824,
+      "prefetchPages": false,
+      "lowLatencyRequests": false,
+      "transitionChecks": false,
+      "fixedViewSeconds": null,
+      "firstConvergedSeconds": 59.002178300000075,
+      "firstConvergedWallSeconds": 59.1127114,
+      "gpuMilliseconds": {
+        "max": 10.003872,
+        "p50": 7.31984,
+        "p95": 8.616736,
+        "p99": 8.93744,
+        "samples": 6217
+      },
+      "frameMilliseconds": {
+        "max": 97.6095,
+        "p50": 10.6473,
+        "p95": 12.1982,
+        "p99": 12.7888,
+        "samples": 6195
+      },
+      "cpuRecordMilliseconds": {
+        "max": 7.1145,
+        "p50": 3.1292,
+        "p95": 4.1545,
+        "p99": 5.0873,
+        "samples": 6195
+      },
+      "latencyOnly": true,
+      "reportPath": "build-relwithdebinfo/minizorah-prefetch/latency-baseline/MiniZorahRoamingReport.json",
+      "reportSha256": "512afb919c0db4dc5587b444cc43ce8b34fefd49d2e01749d293794253fec0e0",
+      "checkpointCount": 1,
+      "last": {
+        "seconds": 59.002178300000075,
+        "streaming": {
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 9915,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 0,
+            "frameEvictionScanCount": 0,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 0,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 11104,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 468656384,
+            "pendingPageCount": 0,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 0,
+            "residentPageCount": 21019,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 21019,
+            "totalCompletedUnloadCount": 0,
+            "totalCompletedUploadCount": 21019,
+            "totalEvictedPageCount": 0,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalPrefetchAdmitted": 0,
+            "totalPrefetchDeferred": 0,
+            "totalPrefetchUsed": 0,
+            "totalUploadBytes": 602556464,
+            "usedResidentBytes": 605085440
+          },
+          "latency": {
+            "abandonedDemand": 0,
+            "abandonedPrefetch": 0,
+            "demandFrames": {
+              "count": 17856,
+              "max": 21,
+              "mean": 7.791050627240144,
+              "p50": 8,
+              "p95": 9,
+              "p99": 16
+            },
+            "enabled": true,
+            "milliseconds": {
+              "admission": {
+                "count": 17856,
+                "max": 85.646,
+                "mean": 9.92587102374552,
+                "p50": 11,
+                "p95": 13,
+                "p99": 16
+              },
+              "decode": {
+                "count": 17856,
+                "max": 2.591,
+                "mean": 0.025054995519713262,
+                "p50": 1,
+                "p95": 1,
+                "p99": 1
+              },
+              "demandToDrawable": {
+                "count": 17856,
+                "max": 167.595,
+                "mean": 83.21184895833333,
+                "p50": 81,
+                "p95": 132,
+                "p99": 161
+              },
+              "feedback": {
+                "count": 17856,
+                "max": 97.901,
+                "mean": 11.56651310483871,
+                "p50": 11,
+                "p95": 13,
+                "p99": 86
+              },
+              "ioQueue": {
+                "count": 17856,
+                "max": 5.679,
+                "mean": 0.4330592517921147,
+                "p50": 1,
+                "p95": 3,
+                "p99": 4
+              },
+              "prefetchToDrawable": {
+                "count": 0,
+                "max": 0,
+                "mean": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0
+              },
+              "readyToUpload": {
+                "count": 17856,
+                "max": 109.885,
+                "mean": 17.45802279345878,
+                "p50": 13,
+                "p95": 39,
+                "p99": 71
+              },
+              "uploadToDrawable": {
+                "count": 17856,
+                "max": 133.203,
+                "mean": 42.766059867831544,
+                "p50": 43,
+                "p95": 50,
+                "p99": 133
+              }
+            },
+            "oldestPendingDemandMilliseconds": 0,
+            "pendingDemand": 0,
+            "pendingPrefetch": 0
+          }
+        },
+        "cut": {
+          "activeGroups": 20902,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 196224,
+          "earlyHardware": 41774,
+          "earlySoftware": 23815,
+          "fineGroups": 12448,
+          "lateCandidates": 63423,
+          "lateHardware": 199,
+          "lateSoftware": 394,
+          "maxFiniteRefinementErrorPixels": 660061.375,
+          "maxVisibleRefinementErrorPixels": 1.4999831914901733,
+          "nearPlaneUnboundedRefinements": 473,
+          "overTargetRefinements": 1361,
+          "selectedClusters": 217486,
+          "verifiedInstances": 13081,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "memory": {
+          "processCommitBytes": 3787685888,
+          "processLocalGpuBytes": 2465062912,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 2265665536
+        }
+      },
+      "qualityCheckpoints": [
+        {
+          "seconds": 59.002178300000075,
+          "visibleOverTarget": 0,
+          "usedBytes": 605085440,
+          "uploadedBytes": 602556464
+        }
+      ]
+    },
+    "latency-immediate": {
+      "status": "passed",
+      "durationSeconds": 60,
+      "renderSeconds": 60.01056109999999,
+      "pageBudgetBytes": 1073741824,
+      "prefetchPages": false,
+      "lowLatencyRequests": true,
+      "transitionChecks": false,
+      "fixedViewSeconds": null,
+      "firstConvergedSeconds": 59.00058639999996,
+      "firstConvergedWallSeconds": 59.1112991,
+      "gpuMilliseconds": {
+        "max": 14.405984,
+        "p50": 7.351232,
+        "p95": 8.646368,
+        "p99": 8.997216,
+        "samples": 6178
+      },
+      "frameMilliseconds": {
+        "max": 96.5385,
+        "p50": 10.7066,
+        "p95": 12.3027,
+        "p99": 13.0837,
+        "samples": 6156
+      },
+      "cpuRecordMilliseconds": {
+        "max": 14.4255,
+        "p50": 3.1457,
+        "p95": 4.2212,
+        "p99": 5.1805,
+        "samples": 6156
+      },
+      "latencyOnly": true,
+      "reportPath": "build-relwithdebinfo/minizorah-prefetch/latency-immediate/MiniZorahRoamingReport.json",
+      "reportSha256": "a7528b878d579ed44469d36b8e4e6c486c94a74eccde7421938f2a2ae2685fbd",
+      "checkpointCount": 1,
+      "last": {
+        "seconds": 59.00058639999996,
+        "streaming": {
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 9924,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 0,
+            "frameEvictionScanCount": 0,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 0,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 11103,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 468340224,
+            "pendingPageCount": 0,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 0,
+            "residentPageCount": 21027,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 21027,
+            "totalCompletedUnloadCount": 0,
+            "totalCompletedUploadCount": 21027,
+            "totalEvictedPageCount": 0,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalPrefetchAdmitted": 0,
+            "totalPrefetchDeferred": 0,
+            "totalPrefetchUsed": 0,
+            "totalUploadBytes": 602871632,
+            "usedResidentBytes": 605401600
+          },
+          "latency": {
+            "abandonedDemand": 0,
+            "abandonedPrefetch": 0,
+            "demandFrames": {
+              "count": 17864,
+              "max": 22,
+              "mean": 6.586318853560233,
+              "p50": 6,
+              "p95": 8,
+              "p99": 16
+            },
+            "enabled": true,
+            "milliseconds": {
+              "admission": {
+                "count": 17864,
+                "max": 15.762,
+                "mean": 0.4818960479175996,
+                "p50": 1,
+                "p95": 1,
+                "p99": 2
+              },
+              "decode": {
+                "count": 17864,
+                "max": 0.679,
+                "mean": 0.024210367218987908,
+                "p50": 1,
+                "p95": 1,
+                "p99": 1
+              },
+              "demandToDrawable": {
+                "count": 17864,
+                "max": 173.825,
+                "mean": 71.85871339005821,
+                "p50": 69,
+                "p95": 114,
+                "p99": 151
+              },
+              "feedback": {
+                "count": 17864,
+                "max": 96.6,
+                "mean": 11.575902149574564,
+                "p50": 11,
+                "p95": 13,
+                "p99": 76
+              },
+              "ioQueue": {
+                "count": 17864,
+                "max": 4.935,
+                "mean": 0.42577888490819527,
+                "p50": 1,
+                "p95": 2,
+                "p99": 4
+              },
+              "prefetchToDrawable": {
+                "count": 0,
+                "max": 0,
+                "mean": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0
+              },
+              "readyToUpload": {
+                "count": 17864,
+                "max": 75.612,
+                "mean": 14.274332456336767,
+                "p50": 12,
+                "p95": 33,
+                "p99": 56
+              },
+              "uploadToDrawable": {
+                "count": 17864,
+                "max": 136.016,
+                "mean": 44.0834763210927,
+                "p50": 44,
+                "p95": 71,
+                "p99": 136
+              }
+            },
+            "oldestPendingDemandMilliseconds": 0,
+            "pendingDemand": 0,
+            "pendingPrefetch": 0
+          }
+        },
+        "cut": {
+          "activeGroups": 20901,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 196210,
+          "earlyHardware": 41770,
+          "earlySoftware": 24015,
+          "fineGroups": 12447,
+          "lateCandidates": 63243,
+          "lateHardware": 207,
+          "lateSoftware": 367,
+          "maxFiniteRefinementErrorPixels": 625750.9375,
+          "maxVisibleRefinementErrorPixels": 1.4999829530715942,
+          "nearPlaneUnboundedRefinements": 473,
+          "overTargetRefinements": 1360,
+          "selectedClusters": 217503,
+          "verifiedInstances": 13081,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "memory": {
+          "processCommitBytes": 3794583552,
+          "processLocalGpuBytes": 2465062912,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 2274848768
+        }
+      },
+      "qualityCheckpoints": [
+        {
+          "seconds": 59.00058639999996,
+          "visibleOverTarget": 0,
+          "usedBytes": 605401600,
+          "uploadedBytes": 602871632
+        }
+      ]
+    },
+    "latency-adaptive": {
+      "status": "passed",
+      "durationSeconds": 60,
+      "renderSeconds": 60.003517599999974,
+      "pageBudgetBytes": 1073741824,
+      "prefetchPages": true,
+      "lowLatencyRequests": true,
+      "transitionChecks": false,
+      "fixedViewSeconds": null,
+      "firstConvergedSeconds": 59.01112229999996,
+      "firstConvergedWallSeconds": 59.1328185,
+      "gpuMilliseconds": {
+        "max": 9.934496,
+        "p50": 7.61312,
+        "p95": 8.952672,
+        "p99": 9.2728,
+        "samples": 5992
+      },
+      "frameMilliseconds": {
+        "max": 94.8397,
+        "p50": 11.1048,
+        "p95": 12.7662,
+        "p99": 13.4737,
+        "samples": 5970
+      },
+      "cpuRecordMilliseconds": {
+        "max": 7.8375,
+        "p50": 3.2982,
+        "p95": 4.467,
+        "p99": 5.2654,
+        "samples": 5970
+      },
+      "latencyOnly": true,
+      "reportPath": "build-relwithdebinfo/minizorah-prefetch/latency-adaptive/MiniZorahRoamingReport.json",
+      "reportSha256": "95891f5c2f28dd4b81ecfe7d9316d6f2e34ed42c423925028735e9f010ab8106",
+      "checkpointCount": 1,
+      "last": {
+        "seconds": 59.01112229999996,
+        "streaming": {
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 12418,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 0,
+            "frameEvictionScanCount": 0,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 0,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 11103,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 370112000,
+            "pendingPageCount": 0,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 0,
+            "residentPageCount": 23521,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 23521,
+            "totalCompletedUnloadCount": 0,
+            "totalCompletedUploadCount": 23521,
+            "totalEvictedPageCount": 0,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalPrefetchAdmitted": 13261,
+            "totalPrefetchDeferred": 4521,
+            "totalPrefetchUsed": 10764,
+            "totalUploadBytes": 700799696,
+            "usedResidentBytes": 703629824
+          },
+          "latency": {
+            "abandonedDemand": 0,
+            "abandonedPrefetch": 54,
+            "demandFrames": {
+              "count": 7142,
+              "max": 21,
+              "mean": 7.054466535984319,
+              "p50": 6,
+              "p95": 14,
+              "p99": 18
+            },
+            "enabled": true,
+            "milliseconds": {
+              "admission": {
+                "count": 20358,
+                "max": 386.051,
+                "mean": 6.165002063071029,
+                "p50": 1,
+                "p95": 38,
+                "p99": 146
+              },
+              "decode": {
+                "count": 20358,
+                "max": 8.99,
+                "mean": 0.02704312800864525,
+                "p50": 1,
+                "p95": 1,
+                "p99": 1
+              },
+              "demandToDrawable": {
+                "count": 7142,
+                "max": 178.445,
+                "mean": 79.00480411649397,
+                "p50": 71,
+                "p95": 169,
+                "p99": 171
+              },
+              "feedback": {
+                "count": 20412,
+                "max": 95.906,
+                "mean": 13.13838663531256,
+                "p50": 12,
+                "p95": 15,
+                "p99": 96
+              },
+              "ioQueue": {
+                "count": 20358,
+                "max": 3.412,
+                "mean": 0.4178485116416151,
+                "p50": 1,
+                "p95": 2,
+                "p99": 3
+              },
+              "prefetchToDrawable": {
+                "count": 13216,
+                "max": 445.802,
+                "mean": 77.24033376210654,
+                "p50": 72,
+                "p95": 114,
+                "p99": 244
+              },
+              "readyToUpload": {
+                "count": 20358,
+                "max": 112.083,
+                "mean": 13.808052166224579,
+                "p50": 12,
+                "p95": 27,
+                "p99": 62
+              },
+              "uploadToDrawable": {
+                "count": 20358,
+                "max": 153.423,
+                "mean": 46.352552460949006,
+                "p50": 45,
+                "p95": 93,
+                "p99": 154
+              }
+            },
+            "oldestPendingDemandMilliseconds": 0,
+            "pendingDemand": 0,
+            "pendingPrefetch": 0
+          }
+        },
+        "cut": {
+          "activeGroups": 20901,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 196200,
+          "earlyHardware": 41757,
+          "earlySoftware": 23801,
+          "fineGroups": 12444,
+          "lateCandidates": 64746,
+          "lateHardware": 264,
+          "lateSoftware": 649,
+          "maxFiniteRefinementErrorPixels": 918049.0625,
+          "maxVisibleRefinementErrorPixels": 1.4999746084213257,
+          "nearPlaneUnboundedRefinements": 473,
+          "overTargetRefinements": 1358,
+          "selectedClusters": 217445,
+          "verifiedInstances": 13082,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "memory": {
+          "processCommitBytes": 3785949184,
+          "processLocalGpuBytes": 2465062912,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 2364567552
+        }
+      },
+      "qualityCheckpoints": [
+        {
+          "seconds": 59.01112229999996,
+          "visibleOverTarget": 0,
+          "usedBytes": 703629824,
+          "uploadedBytes": 700799696
+        }
+      ]
+    },
+    "fixed-0": {
+      "status": "passed",
+      "durationSeconds": 30,
+      "renderSeconds": 30.001566299999997,
+      "pageBudgetBytes": 1073741824,
+      "prefetchPages": true,
+      "lowLatencyRequests": true,
+      "transitionChecks": false,
+      "fixedViewSeconds": 0,
+      "firstConvergedSeconds": 1.0085196,
+      "firstConvergedWallSeconds": 1.2983983,
+      "gpuMilliseconds": {
+        "max": 13.061696,
+        "p50": 9.2552,
+        "p95": 10.42304,
+        "p99": 10.98608,
+        "samples": 2318
+      },
+      "frameMilliseconds": {
+        "max": 120.8491,
+        "p50": 12.7109,
+        "p95": 14.6873,
+        "p99": 15.9239,
+        "samples": 2318
+      },
+      "cpuRecordMilliseconds": {
+        "max": 8.1571,
+        "p50": 3.1635,
+        "p95": 4.558,
+        "p99": 5.4782,
+        "samples": 2318
+      },
+      "latencyOnly": false,
+      "reportPath": "build-relwithdebinfo/minizorah-prefetch/fixed-0/MiniZorahRoamingReport.json",
+      "reportSha256": "436741472ff1ab0140d7cd161c4542eb044d853a40790b3771570d8279aacbc2",
+      "checkpointCount": 15,
+      "last": {
+        "seconds": 25.000576899999974,
+        "streaming": {
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 841,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 0,
+            "frameEvictionScanCount": 0,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 0,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 11598,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 779436288,
+            "pendingPageCount": 0,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 0,
+            "residentPageCount": 12439,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 12439,
+            "totalCompletedUnloadCount": 0,
+            "totalCompletedUploadCount": 12439,
+            "totalEvictedPageCount": 0,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalPrefetchAdmitted": 2627,
+            "totalPrefetchDeferred": 4232,
+            "totalPrefetchUsed": 1786,
+            "totalUploadBytes": 292802240,
+            "usedResidentBytes": 294305536
+          },
+          "latency": {
+            "abandonedDemand": 0,
+            "abandonedPrefetch": 1,
+            "demandFrames": {
+              "count": 6670,
+              "max": 22,
+              "mean": 7.131934032983509,
+              "p50": 6,
+              "p95": 14,
+              "p99": 18
+            },
+            "enabled": true,
+            "milliseconds": {
+              "admission": {
+                "count": 9276,
+                "max": 597.835,
+                "mean": 18.476391979301425,
+                "p50": 1,
+                "p95": 131,
+                "p99": 224
+              },
+              "decode": {
+                "count": 9276,
+                "max": 0.442,
+                "mean": 0.022704614057783526,
+                "p50": 1,
+                "p95": 1,
+                "p99": 1
+              },
+              "demandToDrawable": {
+                "count": 6670,
+                "max": 348.505,
+                "mean": 119.35060884557721,
+                "p50": 89,
+                "p95": 257,
+                "p99": 316
+              },
+              "feedback": {
+                "count": 9277,
+                "max": 111.883,
+                "mean": 15.858419855556752,
+                "p50": 12,
+                "p95": 30,
+                "p99": 112
+              },
+              "ioQueue": {
+                "count": 9276,
+                "max": 4.304,
+                "mean": 0.9110472186287193,
+                "p50": 1,
+                "p95": 3,
+                "p99": 4
+              },
+              "prefetchToDrawable": {
+                "count": 2606,
+                "max": 680.204,
+                "mean": 134.83970069071373,
+                "p50": 99,
+                "p95": 294,
+                "p99": 413
+              },
+              "readyToUpload": {
+                "count": 9276,
+                "max": 177.478,
+                "mean": 24.944586783096163,
+                "p50": 13,
+                "p95": 99,
+                "p99": 170
+              },
+              "uploadToDrawable": {
+                "count": 9276,
+                "max": 187.754,
+                "mean": 67.80238712807244,
+                "p50": 54,
+                "p95": 188,
+                "p99": 188
+              }
+            },
+            "oldestPendingDemandMilliseconds": 0,
+            "pendingDemand": 0,
+            "pendingPrefetch": 0
+          }
+        },
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.07177734375,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "memory": {
+          "processCommitBytes": 3612643328,
+          "processLocalGpuBytes": 2330845184,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 1915121664
+        }
+      },
+      "qualityCheckpoints": [
+        {
+          "seconds": 0,
+          "visibleOverTarget": 4519,
+          "usedBytes": 10914816,
+          "uploadedBytes": 9089952
+        },
+        {
+          "seconds": 0.5137508000000001,
+          "visibleOverTarget": 2374,
+          "usedBytes": 149642752,
+          "uploadedBytes": 137292240
+        },
+        {
+          "seconds": 1.0085196,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 1.5048769000000004,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 2.0116515000000006,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 2.5014862000000004,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 3.0148887999999996,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 3.5017138000000005,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 4.003785500000001,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 4.512832600000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 5.013849200000002,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 10.003221700000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 15.012435300000007,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 20.002204499999987,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        },
+        {
+          "seconds": 25.000576899999974,
+          "visibleOverTarget": 0,
+          "usedBytes": 294305536,
+          "uploadedBytes": 292802240
+        }
+      ]
+    },
+    "fixed-15": {
+      "status": "passed",
+      "durationSeconds": 30,
+      "renderSeconds": 30.003859899999952,
+      "pageBudgetBytes": 1073741824,
+      "prefetchPages": true,
+      "lowLatencyRequests": true,
+      "transitionChecks": false,
+      "fixedViewSeconds": 15,
+      "firstConvergedSeconds": 1.0024235,
+      "firstConvergedWallSeconds": 1.270333,
+      "gpuMilliseconds": {
+        "max": 10.203008,
+        "p50": 8.149088,
+        "p95": 8.75632,
+        "p99": 9.384608,
+        "samples": 2616
+      },
+      "frameMilliseconds": {
+        "max": 95.6568,
+        "p50": 11.3029,
+        "p95": 12.4723,
+        "p99": 13.5438,
+        "samples": 2616
+      },
+      "cpuRecordMilliseconds": {
+        "max": 7.5718,
+        "p50": 2.9282,
+        "p95": 3.9198,
+        "p99": 4.7454,
+        "samples": 2616
+      },
+      "latencyOnly": false,
+      "reportPath": "build-relwithdebinfo/minizorah-prefetch/fixed-15/MiniZorahRoamingReport.json",
+      "reportSha256": "6da7c246d1e42b9006811d689c2223918834b13fc1389c8ac34e784c0e775a13",
+      "checkpointCount": 15,
+      "last": {
+        "seconds": 25.008878200000016,
+        "streaming": {
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 1033,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 0,
+            "frameEvictionScanCount": 0,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 0,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 11176,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 791320832,
+            "pendingPageCount": 0,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 0,
+            "residentPageCount": 12209,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 12209,
+            "totalCompletedUnloadCount": 0,
+            "totalCompletedUploadCount": 12209,
+            "totalEvictedPageCount": 0,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalPrefetchAdmitted": 2308,
+            "totalPrefetchDeferred": 4155,
+            "totalPrefetchUsed": 1457,
+            "totalUploadBytes": 280944848,
+            "usedResidentBytes": 282420992
+          },
+          "latency": {
+            "abandonedDemand": 0,
+            "abandonedPrefetch": 33,
+            "demandFrames": {
+              "count": 6760,
+              "max": 22,
+              "mean": 7.14896449704142,
+              "p50": 6,
+              "p95": 14,
+              "p99": 18
+            },
+            "enabled": true,
+            "milliseconds": {
+              "admission": {
+                "count": 9046,
+                "max": 551.642,
+                "mean": 16.90034114525757,
+                "p50": 1,
+                "p95": 120,
+                "p99": 281
+              },
+              "decode": {
+                "count": 9046,
+                "max": 0.178,
+                "mean": 0.02630941852752598,
+                "p50": 1,
+                "p95": 1,
+                "p99": 1
+              },
+              "demandToDrawable": {
+                "count": 6760,
+                "max": 317.186,
+                "mean": 114.01101198224852,
+                "p50": 103,
+                "p95": 230,
+                "p99": 287
+              },
+              "feedback": {
+                "count": 9079,
+                "max": 96.641,
+                "mean": 19.336167088886445,
+                "p50": 11,
+                "p95": 85,
+                "p99": 97
+              },
+              "ioQueue": {
+                "count": 9046,
+                "max": 5.15,
+                "mean": 1.0085711916869335,
+                "p50": 1,
+                "p95": 3,
+                "p99": 5
+              },
+              "prefetchToDrawable": {
+                "count": 2286,
+                "max": 604.058,
+                "mean": 133.28896981627295,
+                "p50": 117,
+                "p95": 306,
+                "p99": 438
+              },
+              "readyToUpload": {
+                "count": 9046,
+                "max": 169.015,
+                "mean": 23.01435208932125,
+                "p50": 11,
+                "p95": 128,
+                "p99": 155
+              },
+              "uploadToDrawable": {
+                "count": 9046,
+                "max": 171.432,
+                "mean": 64.55217930577051,
+                "p50": 47,
+                "p95": 171,
+                "p99": 172
+              }
+            },
+            "oldestPendingDemandMilliseconds": 0,
+            "pendingDemand": 0,
+            "pendingPrefetch": 0
+          }
+        },
+        "cut": {
+          "activeGroups": 20265,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 187000,
+          "earlyHardware": 40334,
+          "earlySoftware": 24356,
+          "fineGroups": 12256,
+          "lateCandidates": 57137,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 42315.90234375,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451,
+          "nearPlaneUnboundedRefinements": 454,
+          "overTargetRefinements": 1937,
+          "selectedClusters": 213532,
+          "verifiedInstances": 12514,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "memory": {
+          "processCommitBytes": 3742674944,
+          "processLocalGpuBytes": 2465062912,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 1900486656
+        }
+      },
+      "qualityCheckpoints": [
+        {
+          "seconds": 0,
+          "visibleOverTarget": 4196,
+          "usedBytes": 10868480,
+          "uploadedBytes": 9085440
+        },
+        {
+          "seconds": 0.5023255,
+          "visibleOverTarget": 2160,
+          "usedBytes": 133597696,
+          "uploadedBytes": 126094800
+        },
+        {
+          "seconds": 1.0024235,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 1.5097880000000004,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 2.0101497999999998,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 2.5078031000000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 3.0004350000000013,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 3.504617000000002,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 4.005477900000002,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 4.504231800000001,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 5.012271600000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 10.000728600000015,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 15.008725600000007,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 20.004413400000026,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        },
+        {
+          "seconds": 25.008878200000016,
+          "visibleOverTarget": 0,
+          "usedBytes": 282420992,
+          "uploadedBytes": 280944848
+        }
+      ]
+    },
+    "fixed-35": {
+      "status": "passed",
+      "durationSeconds": 30,
+      "renderSeconds": 30.00101560000011,
+      "pageBudgetBytes": 1073741824,
+      "prefetchPages": true,
+      "lowLatencyRequests": true,
+      "transitionChecks": false,
+      "fixedViewSeconds": 35,
+      "firstConvergedSeconds": 1.0074735999999997,
+      "firstConvergedWallSeconds": 1.2457054,
+      "gpuMilliseconds": {
+        "max": 9.072544,
+        "p50": 6.326816,
+        "p95": 6.965984,
+        "p99": 7.648032,
+        "samples": 3118
+      },
+      "frameMilliseconds": {
+        "max": 95.7867,
+        "p50": 9.431,
+        "p95": 10.6801,
+        "p99": 11.7323,
+        "samples": 3118
+      },
+      "cpuRecordMilliseconds": {
+        "max": 7.3642,
+        "p50": 2.8396,
+        "p95": 3.9707,
+        "p99": 4.9921,
+        "samples": 3118
+      },
+      "latencyOnly": false,
+      "reportPath": "build-relwithdebinfo/minizorah-prefetch/fixed-35/MiniZorahRoamingReport.json",
+      "reportSha256": "cb30a45b81bbe859eb4f682fa1543e4ff8dd7e25278543f9e50e1c875ee5d9d2",
+      "checkpointCount": 15,
+      "last": {
+        "seconds": 25.004252600000097,
+        "streaming": {
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 1266,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 0,
+            "frameEvictionScanCount": 0,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 0,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 9535,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 840649472,
+            "pendingPageCount": 0,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 0,
+            "residentPageCount": 10801,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 10801,
+            "totalCompletedUnloadCount": 0,
+            "totalCompletedUploadCount": 10801,
+            "totalEvictedPageCount": 0,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalPrefetchAdmitted": 3352,
+            "totalPrefetchDeferred": 2567,
+            "totalPrefetchUsed": 2599,
+            "totalUploadBytes": 231789120,
+            "usedResidentBytes": 233092352
+          },
+          "latency": {
+            "abandonedDemand": 0,
+            "abandonedPrefetch": 66,
+            "demandFrames": {
+              "count": 4292,
+              "max": 22,
+              "mean": 7.617660764212488,
+              "p50": 6,
+              "p95": 16,
+              "p99": 19
+            },
+            "enabled": true,
+            "milliseconds": {
+              "admission": {
+                "count": 7638,
+                "max": 449.553,
+                "mean": 11.575071222833204,
+                "p50": 1,
+                "p95": 49,
+                "p99": 239
+              },
+              "decode": {
+                "count": 7638,
+                "max": 0.475,
+                "mean": 0.023374967268918564,
+                "p50": 1,
+                "p95": 1,
+                "p99": 1
+              },
+              "demandToDrawable": {
+                "count": 4292,
+                "max": 312.796,
+                "mean": 130.28412604846227,
+                "p50": 136,
+                "p95": 249,
+                "p99": 290
+              },
+              "feedback": {
+                "count": 7704,
+                "max": 96.406,
+                "mean": 19.83961072170301,
+                "p50": 11,
+                "p95": 56,
+                "p99": 97
+              },
+              "ioQueue": {
+                "count": 7638,
+                "max": 3.992,
+                "mean": 0.9433947368421053,
+                "p50": 1,
+                "p95": 3,
+                "p99": 4
+              },
+              "prefetchToDrawable": {
+                "count": 3346,
+                "max": 599.829,
+                "mean": 113.47857411835027,
+                "p50": 94,
+                "p95": 225,
+                "p99": 412
+              },
+              "readyToUpload": {
+                "count": 7638,
+                "max": 159.811,
+                "mean": 24.444748756218907,
+                "p50": 10,
+                "p95": 129,
+                "p99": 146
+              },
+              "uploadToDrawable": {
+                "count": 7638,
+                "max": 162.009,
+                "mean": 67.27077546478135,
+                "p50": 45,
+                "p95": 162,
+                "p99": 162
+              }
+            },
+            "oldestPendingDemandMilliseconds": 0,
+            "pendingDemand": 0,
+            "pendingPrefetch": 0
+          }
+        },
+        "cut": {
+          "activeGroups": 13458,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 139762,
+          "earlyHardware": 31040,
+          "earlySoftware": 17061,
+          "fineGroups": 8784,
+          "lateCandidates": 44275,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 146633.53125,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468,
+          "nearPlaneUnboundedRefinements": 615,
+          "overTargetRefinements": 1588,
+          "selectedClusters": 151261,
+          "verifiedInstances": 7957,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "memory": {
+          "processCommitBytes": 3888074752,
+          "processLocalGpuBytes": 2599280640,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 1856172032
+        }
+      },
+      "qualityCheckpoints": [
+        {
+          "seconds": 0,
+          "visibleOverTarget": 3034,
+          "usedBytes": 10920704,
+          "uploadedBytes": 9112832
+        },
+        {
+          "seconds": 0.5433198,
+          "visibleOverTarget": 1064,
+          "usedBytes": 157142016,
+          "uploadedBytes": 144967824
+        },
+        {
+          "seconds": 1.0074735999999997,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 1.5034941999999993,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 2.0008981000000006,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 2.5073601000000014,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 3.005336600000001,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 3.5066984000000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 4.005455300000002,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 4.504041100000004,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 5.009854500000004,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 10.000104100000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 15.00409090000002,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 20.007201600000066,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        },
+        {
+          "seconds": 25.004252600000097,
+          "visibleOverTarget": 0,
+          "usedBytes": 233092352,
+          "uploadedBytes": 231789120
+        }
+      ]
+    },
+    "roaming": {
+      "status": "passed",
+      "durationSeconds": 180,
+      "renderSeconds": 180.01075049999966,
+      "pageBudgetBytes": 1073741824,
+      "prefetchPages": true,
+      "lowLatencyRequests": true,
+      "transitionChecks": false,
+      "fixedViewSeconds": null,
+      "firstConvergedSeconds": 5.003243999999998,
+      "firstConvergedWallSeconds": 5.2476189,
+      "gpuMilliseconds": {
+        "max": 11.768544,
+        "p50": 8.094912,
+        "p95": 9.5328,
+        "p99": 10.116416,
+        "samples": 16639
+      },
+      "frameMilliseconds": {
+        "max": 73.4057,
+        "p50": 11.8726,
+        "p95": 13.8426,
+        "p99": 15.0738,
+        "samples": 16639
+      },
+      "cpuRecordMilliseconds": {
+        "max": 13.6266,
+        "p50": 3.5704,
+        "p95": 4.9759,
+        "p99": 6.0782,
+        "samples": 16639
+      },
+      "latencyOnly": false,
+      "reportPath": "build-relwithdebinfo/minizorah-prefetch/roaming/MiniZorahRoamingReport.json",
+      "reportSha256": "d02a5437b76296c2131562ab6d342940fbe1aa02a6446f4528678f761da1171e",
+      "checkpointCount": 36,
+      "last": {
+        "seconds": 175.0003632999997,
+        "streaming": {
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 20370,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 0,
+            "frameEvictionScanCount": 0,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 0,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 3175,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 368987392,
+            "pendingPageCount": 0,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 0,
+            "residentPageCount": 23545,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 23545,
+            "totalCompletedUnloadCount": 0,
+            "totalCompletedUploadCount": 23545,
+            "totalEvictedPageCount": 0,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalPrefetchAdmitted": 13310,
+            "totalPrefetchDeferred": 4539,
+            "totalPrefetchUsed": 10808,
+            "totalUploadBytes": 701920784,
+            "usedResidentBytes": 704754432
+          },
+          "latency": {
+            "abandonedDemand": 0,
+            "abandonedPrefetch": 48,
+            "demandFrames": {
+              "count": 7130,
+              "max": 22,
+              "mean": 7.050210378681627,
+              "p50": 6,
+              "p95": 14,
+              "p99": 18
+            },
+            "enabled": true,
+            "milliseconds": {
+              "admission": {
+                "count": 20382,
+                "max": 543.283,
+                "mean": 8.009559856736336,
+                "p50": 1,
+                "p95": 49,
+                "p99": 178
+              },
+              "decode": {
+                "count": 20382,
+                "max": 9.086,
+                "mean": 0.03111932096948288,
+                "p50": 1,
+                "p95": 1,
+                "p99": 1
+              },
+              "demandToDrawable": {
+                "count": 7130,
+                "max": 386.967,
+                "mean": 111.92376283309957,
+                "p50": 92,
+                "p95": 242,
+                "p99": 317
+              },
+              "feedback": {
+                "count": 20430,
+                "max": 86.923,
+                "mean": 15.522878267254038,
+                "p50": 13,
+                "p95": 55,
+                "p99": 74
+              },
+              "ioQueue": {
+                "count": 20382,
+                "max": 20.19,
+                "mean": 0.45526022961436563,
+                "p50": 1,
+                "p95": 2,
+                "p99": 4
+              },
+              "prefetchToDrawable": {
+                "count": 13252,
+                "max": 608.18,
+                "mean": 88.98078757923332,
+                "p50": 78,
+                "p95": 178,
+                "p99": 317
+              },
+              "readyToUpload": {
+                "count": 20382,
+                "max": 332.042,
+                "mean": 20.105520312040035,
+                "p50": 13,
+                "p95": 57,
+                "p99": 200
+              },
+              "uploadToDrawable": {
+                "count": 20382,
+                "max": 362.14,
+                "mean": 55.623800068688055,
+                "p50": 50,
+                "p95": 96,
+                "p99": 176
+              }
+            },
+            "oldestPendingDemandMilliseconds": 0,
+            "pendingDemand": 0,
+            "pendingPrefetch": 0
+          }
+        },
+        "cut": {
+          "activeGroups": 21265,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 228036,
+          "earlyHardware": 66737,
+          "earlySoftware": 81252,
+          "fineGroups": 12927,
+          "lateCandidates": 0,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 99562.625,
+          "maxVisibleRefinementErrorPixels": 1.499951720237732,
+          "nearPlaneUnboundedRefinements": 437,
+          "overTargetRefinements": 1770,
+          "selectedClusters": 228036,
+          "verifiedInstances": 12948,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "memory": {
+          "processCommitBytes": 3718479872,
+          "processLocalGpuBytes": 2329075712,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 2429673472
+        }
+      },
+      "qualityCheckpoints": [
+        {
+          "seconds": 0,
+          "visibleOverTarget": 4523,
+          "usedBytes": 10832128,
+          "uploadedBytes": 9089952
+        },
+        {
+          "seconds": 5.003243999999998,
+          "visibleOverTarget": 0,
+          "usedBytes": 377909504,
+          "uploadedBytes": 376145664
+        },
+        {
+          "seconds": 10.007941499999982,
+          "visibleOverTarget": 1,
+          "usedBytes": 411652352,
+          "uploadedBytes": 409663056
+        },
+        {
+          "seconds": 15.007068199999974,
+          "visibleOverTarget": 6,
+          "usedBytes": 468424960,
+          "uploadedBytes": 466323968
+        },
+        {
+          "seconds": 20.01143529999995,
+          "visibleOverTarget": 2,
+          "usedBytes": 475111936,
+          "uploadedBytes": 473039472
+        },
+        {
+          "seconds": 25.0028450999999,
+          "visibleOverTarget": 77,
+          "usedBytes": 475114496,
+          "uploadedBytes": 473041840
+        },
+        {
+          "seconds": 30.000081999999924,
+          "visibleOverTarget": 0,
+          "usedBytes": 486014208,
+          "uploadedBytes": 483905008
+        },
+        {
+          "seconds": 35.00705829999997,
+          "visibleOverTarget": 0,
+          "usedBytes": 626088448,
+          "uploadedBytes": 623515776
+        },
+        {
+          "seconds": 40.00970230000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 638865664,
+          "uploadedBytes": 636254448
+        },
+        {
+          "seconds": 45.00773530000007,
+          "visibleOverTarget": 0,
+          "usedBytes": 696384256,
+          "uploadedBytes": 693526848
+        },
+        {
+          "seconds": 50.01045670000007,
+          "visibleOverTarget": 0,
+          "usedBytes": 702903552,
+          "uploadedBytes": 700076736
+        },
+        {
+          "seconds": 55.00376440000009,
+          "visibleOverTarget": 0,
+          "usedBytes": 702903552,
+          "uploadedBytes": 700076736
+        },
+        {
+          "seconds": 60.00892760000011,
+          "visibleOverTarget": 0,
+          "usedBytes": 703423488,
+          "uploadedBytes": 700593952
+        },
+        {
+          "seconds": 65.01257880000014,
+          "visibleOverTarget": 0,
+          "usedBytes": 703486208,
+          "uploadedBytes": 700656672
+        },
+        {
+          "seconds": 70.01634970000018,
+          "visibleOverTarget": 0,
+          "usedBytes": 703486208,
+          "uploadedBytes": 700656672
+        },
+        {
+          "seconds": 75.01219220000013,
+          "visibleOverTarget": 0,
+          "usedBytes": 703571200,
+          "uploadedBytes": 700741472
+        },
+        {
+          "seconds": 80.00861600000019,
+          "visibleOverTarget": 0,
+          "usedBytes": 703571200,
+          "uploadedBytes": 700741472
+        },
+        {
+          "seconds": 85.00295200000008,
+          "visibleOverTarget": 0,
+          "usedBytes": 703571200,
+          "uploadedBytes": 700741472
+        },
+        {
+          "seconds": 90.00778530000001,
+          "visibleOverTarget": 0,
+          "usedBytes": 703576832,
+          "uploadedBytes": 700746864
+        },
+        {
+          "seconds": 95.00377120000002,
+          "visibleOverTarget": 0,
+          "usedBytes": 703618816,
+          "uploadedBytes": 700788736
+        },
+        {
+          "seconds": 100.00403840000006,
+          "visibleOverTarget": 0,
+          "usedBytes": 703789056,
+          "uploadedBytes": 700958672
+        },
+        {
+          "seconds": 105.00168450000004,
+          "visibleOverTarget": 0,
+          "usedBytes": 704008192,
+          "uploadedBytes": 701177088
+        },
+        {
+          "seconds": 110.00880110000008,
+          "visibleOverTarget": 0,
+          "usedBytes": 704284416,
+          "uploadedBytes": 701452160
+        },
+        {
+          "seconds": 115.00544359999995,
+          "visibleOverTarget": 0,
+          "usedBytes": 704284416,
+          "uploadedBytes": 701452160
+        },
+        {
+          "seconds": 120.00193730000007,
+          "visibleOverTarget": 0,
+          "usedBytes": 704284416,
+          "uploadedBytes": 701452160
+        },
+        {
+          "seconds": 125.01192130000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 704284416,
+          "uploadedBytes": 701452160
+        },
+        {
+          "seconds": 130.01160590000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 704284416,
+          "uploadedBytes": 701452160
+        },
+        {
+          "seconds": 135.0038497000003,
+          "visibleOverTarget": 0,
+          "usedBytes": 704391680,
+          "uploadedBytes": 701559280
+        },
+        {
+          "seconds": 140.00423920000014,
+          "visibleOverTarget": 0,
+          "usedBytes": 704391680,
+          "uploadedBytes": 701559280
+        },
+        {
+          "seconds": 145.00173129999993,
+          "visibleOverTarget": 0,
+          "usedBytes": 704391680,
+          "uploadedBytes": 701559280
+        },
+        {
+          "seconds": 150.0100957,
+          "visibleOverTarget": 0,
+          "usedBytes": 704391680,
+          "uploadedBytes": 701559280
+        },
+        {
+          "seconds": 155.00464179999977,
+          "visibleOverTarget": 0,
+          "usedBytes": 704425984,
+          "uploadedBytes": 701593392
+        },
+        {
+          "seconds": 160.00207679999988,
+          "visibleOverTarget": 0,
+          "usedBytes": 704587776,
+          "uploadedBytes": 701754688
+        },
+        {
+          "seconds": 165.0007158999998,
+          "visibleOverTarget": 0,
+          "usedBytes": 704587776,
+          "uploadedBytes": 701754688
+        },
+        {
+          "seconds": 170.01160269999974,
+          "visibleOverTarget": 0,
+          "usedBytes": 704754432,
+          "uploadedBytes": 701920784
+        },
+        {
+          "seconds": 175.0003632999997,
+          "visibleOverTarget": 0,
+          "usedBytes": 704754432,
+          "uploadedBytes": 701920784
+        }
+      ]
+    },
+    "pressure": {
+      "status": "passed",
+      "durationSeconds": 60,
+      "renderSeconds": 60.00033599999996,
+      "pageBudgetBytes": 67108864,
+      "prefetchPages": true,
+      "lowLatencyRequests": true,
+      "transitionChecks": false,
+      "fixedViewSeconds": null,
+      "firstConvergedSeconds": null,
+      "firstConvergedWallSeconds": null,
+      "gpuMilliseconds": {
+        "max": 7.940992,
+        "p50": 5.039424,
+        "p95": 5.780576,
+        "p99": 6.261504,
+        "samples": 7729
+      },
+      "frameMilliseconds": {
+        "max": 93.7871,
+        "p50": 8.0927,
+        "p95": 9.3755,
+        "p99": 10.1448,
+        "samples": 7729
+      },
+      "cpuRecordMilliseconds": {
+        "max": 15.6599,
+        "p50": 2.8208,
+        "p95": 3.8647,
+        "p99": 4.7403,
+        "samples": 7729
+      },
+      "latencyOnly": false,
+      "reportPath": "build-relwithdebinfo/minizorah-prefetch/pressure/MiniZorahRoamingReport.json",
+      "reportSha256": "57e5e439afc3256c1425fbbcfa54b8c33ea85f655015fbf36b39798df8e69ebe",
+      "checkpointCount": 12,
+      "last": {
+        "seconds": 55.00306859999992,
+        "streaming": {
+          "stats": {
+            "activePageLoadCount": 0,
+            "frameAdmissionDeferredCount": 0,
+            "frameAllocationDeferredCount": 0,
+            "frameAllocationFailureCount": 0,
+            "frameCachedUnusedPageCount": 3814,
+            "frameEvictedPageCount": 0,
+            "frameEvictionCandidateTests": 0,
+            "frameEvictionScanCount": 0,
+            "frameGpuInvalidRequestCount": 0,
+            "frameGpuRequestCount": 0,
+            "frameGpuRequestOverflowCount": 0,
+            "frameResidentDemandCount": 3175,
+            "frameUploadBytes": 0,
+            "freeResidentBytes": 1784320,
+            "pendingPageCount": 0,
+            "pendingPageLoadCount": 0,
+            "pendingPatchCount": 0,
+            "queuedUploadCount": 0,
+            "residentPageCount": 6989,
+            "totalCancelledQueuedLoadCount": 0,
+            "totalCompletedPageLoadCount": 19498,
+            "totalCompletedUnloadCount": 12509,
+            "totalCompletedUploadCount": 19498,
+            "totalEvictedPageCount": 12509,
+            "totalGpuInvalidRequestCount": 0,
+            "totalPageLoadFailureCount": 0,
+            "totalPrefetchAdmitted": 344,
+            "totalPrefetchDeferred": 1276,
+            "totalPrefetchUsed": 305,
+            "totalUploadBytes": 210713600,
+            "usedResidentBytes": 65324544
+          },
+          "latency": {
+            "abandonedDemand": 5284,
+            "abandonedPrefetch": 101,
+            "demandFrames": {
+              "count": 15995,
+              "max": 3110,
+              "mean": 34.75973741794311,
+              "p50": 6,
+              "p95": 104,
+              "p99": 810
+            },
+            "enabled": true,
+            "milliseconds": {
+              "admission": {
+                "count": 16335,
+                "max": 25989.717,
+                "mean": 245.8212189164371,
+                "p50": 1,
+                "p95": 832,
+                "p99": 25989.717
+              },
+              "decode": {
+                "count": 16335,
+                "max": 0.145,
+                "mean": 0.008005387205387205,
+                "p50": 1,
+                "p95": 1,
+                "p99": 1
+              },
+              "demandToDrawable": {
+                "count": 15995,
+                "max": 26076.451,
+                "mean": 323.43465026570806,
+                "p50": 54,
+                "p95": 916,
+                "p99": 26076.451
+              },
+              "feedback": {
+                "count": 21720,
+                "max": 193.971,
+                "mean": 11.83598835174954,
+                "p50": 9,
+                "p95": 43,
+                "p99": 95
+              },
+              "ioQueue": {
+                "count": 16335,
+                "max": 1.812,
+                "mean": 0.12807903275176002,
+                "p50": 1,
+                "p95": 1,
+                "p99": 2
+              },
+              "prefetchToDrawable": {
+                "count": 340,
+                "max": 475.565,
+                "mean": 178.07974117647058,
+                "p50": 167,
+                "p95": 388,
+                "p99": 397
+              },
+              "readyToUpload": {
+                "count": 16335,
+                "max": 206.121,
+                "mean": 19.363240648913376,
+                "p50": 9,
+                "p95": 141,
+                "p99": 194
+              },
+              "uploadToDrawable": {
+                "count": 16335,
+                "max": 286.304,
+                "mean": 43.52291086623814,
+                "p50": 34,
+                "p95": 124,
+                "p99": 189
+              }
+            },
+            "oldestPendingDemandMilliseconds": 0,
+            "pendingDemand": 0,
+            "pendingPrefetch": 0
+          }
+        },
+        "cut": {
+          "activeGroups": 16027,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 103914,
+          "earlyHardware": 50968,
+          "earlySoftware": 30770,
+          "fineGroups": 7607,
+          "lateCandidates": 0,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 133369.328125,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38,
+          "nearPlaneUnboundedRefinements": 344,
+          "overTargetRefinements": 3830,
+          "selectedClusters": 103914,
+          "verifiedInstances": 12948,
+          "visibleOverTargetRefinements": 3454,
+          "visibleUnboundedRefinements": 110
+        },
+        "memory": {
+          "processCommitBytes": 2805993472,
+          "processLocalGpuBytes": 1458429952,
+          "processNonLocalGpuBytes": 146186240,
+          "workingSetBytes": 1793540096
+        }
+      },
+      "qualityCheckpoints": [
+        {
+          "seconds": 0,
+          "visibleOverTarget": 4477,
+          "usedBytes": 10915840,
+          "uploadedBytes": 9094496
+        },
+        {
+          "seconds": 5.003413500000003,
+          "visibleOverTarget": 2684,
+          "usedBytes": 65527040,
+          "uploadedBytes": 78487552
+        },
+        {
+          "seconds": 10.001553999999985,
+          "visibleOverTarget": 3014,
+          "usedBytes": 65450752,
+          "uploadedBytes": 88470320
+        },
+        {
+          "seconds": 15.003247399999987,
+          "visibleOverTarget": 2795,
+          "usedBytes": 65130240,
+          "uploadedBytes": 99493792
+        },
+        {
+          "seconds": 20.0042904,
+          "visibleOverTarget": 2,
+          "usedBytes": 65410304,
+          "uploadedBytes": 104565712
+        },
+        {
+          "seconds": 25.00286499999999,
+          "visibleOverTarget": 3252,
+          "usedBytes": 65412864,
+          "uploadedBytes": 104607264
+        },
+        {
+          "seconds": 30.006020600000042,
+          "visibleOverTarget": 3251,
+          "usedBytes": 65407232,
+          "uploadedBytes": 112037568
+        },
+        {
+          "seconds": 35.0066178,
+          "visibleOverTarget": 2120,
+          "usedBytes": 61484288,
+          "uploadedBytes": 143151424
+        },
+        {
+          "seconds": 40.00158569999998,
+          "visibleOverTarget": 3442,
+          "usedBytes": 65267200,
+          "uploadedBytes": 165801264
+        },
+        {
+          "seconds": 45.00506179999993,
+          "visibleOverTarget": 2411,
+          "usedBytes": 61692416,
+          "uploadedBytes": 191553664
+        },
+        {
+          "seconds": 50.004230599999865,
+          "visibleOverTarget": 2,
+          "usedBytes": 65342720,
+          "uploadedBytes": 210689232
+        },
+        {
+          "seconds": 55.00306859999992,
+          "visibleOverTarget": 3454,
+          "usedBytes": 65324544,
+          "uploadedBytes": 210713600
+        }
+      ]
+    }
+  },
+  "regression": {
+    "passed": 41,
+    "logPath": "build-relwithdebinfo/minizorah-prefetch/regression.log",
+    "logSha256": "1492815934724d8706c484b4ea282159edd8abc011dfa4c40c41671d1b62e6b8",
+    "gpuReferenceCases": 365,
+    "coverage": [
+      "current request prefix under saturated capacity",
+      "speculative quota and same-frame deduplication",
+      "unchanged active cut and sparse masks",
+      "pending uploads, unavailable ancestors, views and manual LOD",
+      "immediate/legacy admission and tagged promotion",
+      "memory and queued-I/O reserves",
+      "histogram overflow, source frames, promotion and retirement",
+      "loader, residency, GPUScene, VBuffer and hybrid raster"
+    ]
+  },
+  "nearImageComparison": {
+    "original": "build-relwithdebinfo/minizorah-quality/fixed-near/roam-25.png",
+    "current": "build-relwithdebinfo/minizorah-prefetch/fixed-15/roam-25.png",
+    "differentPixels": 0,
+    "pixelCount": 2073600,
+    "originalSha256": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75",
+    "currentSha256": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75"
+  },
+  "status": "validated_with_remaining_cold_start_miss_tail"
+}

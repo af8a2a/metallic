@@ -267,6 +267,8 @@ bool MeshletStreamResidencyManager::initialize(
     }
 
     asset_ = desc.asset;
+    if (desc.measurePageLatency) { latency_ = std::make_unique<MeshletStreamLatencyTracker>(); }
+    immediateGpuRequests_ = desc.immediateGpuRequests;
     maxResidentPages_ = desc.maxResidentPages;
     queuedFrameCount_ = std::max(desc.queuedFrameCount, 1u);
     unloadDelayFrames_ = std::max(desc.unloadDelayFrames, 1u);
@@ -302,6 +304,8 @@ bool MeshletStreamResidencyManager::initialize(
 void MeshletStreamResidencyManager::reset()
 {
     pageLoader_.reset();
+    latency_.reset();
+    immediateGpuRequests_ = false;
     asset_ = nullptr;
     storage_.reset();
     pages_.clear();
@@ -355,6 +359,19 @@ void MeshletStreamResidencyManager::reset()
 void MeshletStreamResidencyManager::beginFrame()
 {
     ++frameIndex_;
+    if (latency_) {
+        latency_->frameTimes[frameIndex_ % latency_->frameTimes.size()] = {frameIndex_, meshletStreamTimeMicroseconds()};
+        for (auto it = latency_->pending.begin(); it != latency_->pending.end();) {
+            const auto page = pages_.find(it->first);
+            const bool inFlight = page != pages_.end() && (page->second.queued ||
+                page->second.state == MeshletStreamPageResidencyState::PendingUpload);
+            if (!inFlight && frameIndex_ - it->second.lastSeenFrame > uint64_t(queuedFrameCount_) * 2u + 2u) {
+                const uint32_t id = it->first;
+                ++it;
+                latency_->abandon(id);
+            } else { ++it; }
+        }
+    }
     requestedPages_.clear();
     unloadRequestedPages_.clear();
     newlyResidentPages_.clear();
@@ -386,6 +403,8 @@ void MeshletStreamResidencyManager::beginFrame()
                         ? MeshletStreamPageResidencyState::LockedFallback
                         : MeshletStreamPageResidencyState::Resident);
                 newlyResidentPages_.push_back(pageIndex);
+                page.residentSinceFrame = frameIndex_;
+                if (latency_) { latency_->complete(pageIndex, frameIndex_); }
                 ++stats_.frameCompletedUpdateCount;
                 ++stats_.frameCompletedUploadCount;
                 ++stats_.totalCompletedUpdateCount;
@@ -450,6 +469,11 @@ void MeshletStreamResidencyManager::beginFrame()
         unloadTaskQueue_.releaseTaskIndex(taskIndex);
     }
 
+    consumeReadyRequestTasks();
+}
+
+void MeshletStreamResidencyManager::consumeReadyRequestTasks()
+{
     if (requestTaskQueue_.canPop(frameIndex_, true)) {
         const uint32_t taskIndex = requestTaskQueue_.pop();
         uint32_t latestTaskIndex = taskIndex;
@@ -480,12 +504,16 @@ void MeshletStreamResidencyManager::beginFrame()
             // Refresh the complete batch before reclaiming stale, unissued I/O.
             // Already submitted loads/uploads retain their completion lifetime.
             const bool prioritized = std::any_of(taskPages.begin(), taskPages.end(),
-                [](const PageRequest& request) { return request.screenBenefit >= 0.0f; });
+                [](const PageRequest& request) { return request.screenBenefit >= 0.0f || request.prefetch; });
             for (auto& request : taskPages) {
                 const auto found = pages_.find(request.pageIndex);
                 if (found != pages_.end()) {
                     found->second.lastUsedFrame = frameIndex_;
                     found->second.screenBenefit = request.screenBenefit;
+                    if (!request.prefetch && found->second.prefetch) {
+                        ++stats_.totalPrefetchUsed;
+                        found->second.prefetch = false;
+                    }
                 }
                 if (prioritized) {
                     const uint64_t age = found == pages_.end() ? 0u : frameIndex_ - found->second.firstRequestFrame;
@@ -494,7 +522,13 @@ void MeshletStreamResidencyManager::beginFrame()
                 }
             }
             if (prioritized) {
-                std::stable_sort(taskPages.begin(), taskPages.end(), [](const PageRequest& a, const PageRequest& b) {
+                std::stable_sort(taskPages.begin(), taskPages.end(), [this](const PageRequest& a, const PageRequest& b) {
+                    if (a.prefetch != b.prefetch) { return !a.prefetch; }
+                    if (a.prefetch) {
+                        const uint32_t la = asset_->groups()[asset_->pages()[a.pageIndex].lodGroupIndex].lodLevel;
+                        const uint32_t lb = asset_->groups()[asset_->pages()[b.pageIndex].lodGroupIndex].lodLevel;
+                        if (la != lb) { return la > lb; }
+                    }
                     const double left = a.schedulingPriority, right = b.schedulingPriority;
                     return left != right ? left > right : a.pageIndex < b.pageIndex;
                 });
@@ -517,9 +551,27 @@ void MeshletStreamResidencyManager::beginFrame()
                     continue;
                 }
                 requestedPages_.push_back(pageIndex);
+                const bool alreadyAllocated = pageAllocated(pageIndex);
+                if (request.prefetch && !alreadyAllocated) {
+                    const uint64_t bytes = storage_.allocationSize(asset_->pages()[pageIndex].uncompressedSize);
+                    // Speculation uses spare capacity only and never triggers
+                    // eviction. Keep one quarter available for actual demand.
+                    if (storage_.usedBytes() + bytes > storage_.capacityBytes() * 3u / 4u || !storage_.canAllocate(bytes) ||
+                        (pageLoader_.ready() && queuedUploadCount() >= std::max(maxPageLoadsInFlight_ / 4u, 1u)) ||
+                        (maxResidentPages_ != 0 && activePages_.size() + 1 > uint64_t(maxResidentPages_) * 3u / 4u)) {
+                        ++stats_.totalPrefetchDeferred;
+                        continue;
+                    }
+                }
                 (void)requestPage(pageIndex);
                 const auto admitted = pages_.find(pageIndex);
-                if (admitted != pages_.end()) { admitted->second.screenBenefit = request.screenBenefit; }
+                if (admitted != pages_.end()) {
+                    admitted->second.screenBenefit = request.screenBenefit;
+                    if (!alreadyAllocated) {
+                        admitted->second.prefetch = request.prefetch;
+                        stats_.totalPrefetchAdmitted += request.prefetch;
+                    }
+                }
                 ++consumed;
             }
             taskPages.clear();
@@ -631,6 +683,13 @@ bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
     }
     if (!page.queued) {
         page.firstRequestFrame = frameIndex_;
+        if (latency_) {
+            const auto sample = latency_->pending.find(pageIndex);
+            if (sample != latency_->pending.end() && sample->second.admissionTime == 0) {
+                sample->second.admissionTime = meshletStreamTimeMicroseconds();
+                latency_->observe(MeshletStreamLatencyStage::Admission, sample->second.feedbackTime, sample->second.admissionTime);
+            }
+        }
         queueUpload(pageIndex);
     }
     return false;
@@ -699,7 +758,9 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     requestMarks_.clear();
     requestMarks_.reserve(requests.loadPageIds.size());
     for (size_t index = 0; index < requests.loadPageIds.size(); ++index) {
-        const uint32_t pageIndex = requests.loadPageIds[index];
+        const uint32_t encodedPage = requests.loadPageIds[index];
+        const bool prefetch = requests.taggedPrefetchRequests && (encodedPage & kStreamPrefetchPageTag) != 0;
+        const uint32_t pageIndex = requests.taggedPrefetchRequests ? encodedPage & ~kStreamPrefetchPageTag : encodedPage;
         if (pageIndex >= pageCount_) {
             ++stats_.frameGpuInvalidRequestCount;
             ++stats_.totalGpuInvalidRequestCount;
@@ -711,9 +772,19 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
         const auto [slot, inserted] = requestMarks_.emplace(pageIndex, uniqueRequests.size());
         if (!inserted) {
             uniqueRequests[slot->second].screenBenefit = std::max(uniqueRequests[slot->second].screenBenefit, benefit);
+            uniqueRequests[slot->second].prefetch = uniqueRequests[slot->second].prefetch && prefetch;
+            if (latency_ && !prefetch && latency_->pending.contains(pageIndex)) {
+                latency_->request(pageIndex, requests.frameIndex, frameIndex_, false);
+            }
             continue;
         }
-        uniqueRequests.push_back({pageIndex, benefit});
+        uniqueRequests.push_back({.pageIndex = pageIndex, .screenBenefit = benefit, .prefetch = prefetch});
+        if (latency_ && !pageResident(pageIndex)) {
+            const auto tracked = pages_.find(pageIndex);
+            if (tracked == pages_.end() || !tracked->second.lockedFallback) {
+                latency_->request(pageIndex, requests.frameIndex, frameIndex_, prefetch);
+            }
+        }
         requestedPages_.push_back(pageIndex);
     }
     stats_.frameUniqueGpuRequestCount += static_cast<uint32_t>(uniqueRequests.size());
@@ -743,6 +814,9 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
             requests.unloadRequestCounter <= requests.unloadPageIds.size();
         for (uint32_t pageIndex : residentPages_) {
             PageEntry& page = pages_.at(pageIndex);
+            // This page was not in an older frame's resident list. Its absence
+            // from that frame's unused list cannot imply a prefetch hit.
+            if (requests.frameIndex != 0 && page.residentSinceFrame > requests.frameIndex) { continue; }
             // Only explicitly unused pages may be budget victims. Truncated
             // feedback must not infer that an omitted page is cold.
             page.gpuUnused = unloadRequestMarks_.contains(pageIndex);
@@ -750,6 +824,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
                 ++stats_.frameCachedUnusedPageCount;
             } else if (complete) {
                 page.lastUsedFrame = frameIndex_;
+                if (page.prefetch) { ++stats_.totalPrefetchUsed; page.prefetch = false; }
                 ++stats_.frameResidentDemandCount;
             }
         }
@@ -771,10 +846,12 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     taskPages = std::move(uniqueRequests);
     std::vector<uint32_t>& taskUnloadPages = requestTaskUnloadPages_[taskIndex];
     taskUnloadPages = std::move(uniqueUnloadRequests);
-    requestTaskQueue_.push(taskIndex, frameIndex_ + 1u);
+    requestTaskQueue_.push(taskIndex, frameIndex_ + (immediateGpuRequests_ ? 0u : 1u));
     ++stats_.frameScheduledRequestTaskCount;
     ++stats_.totalScheduledRequestTaskCount;
-    return static_cast<uint32_t>(taskPages.size() + taskUnloadPages.size());
+    const uint32_t count = static_cast<uint32_t>(taskPages.size() + taskUnloadPages.size());
+    if (immediateGpuRequests_) { consumeReadyRequestTasks(); }
+    return count;
 }
 
 uint32_t MeshletStreamResidencyManager::processUploads(
@@ -795,6 +872,12 @@ uint32_t MeshletStreamResidencyManager::processUploads(
         if (ia == pages_.end() || ib == pages_.end()) { return ia != pages_.end(); }
         const PageEntry& pa = ia->second; const PageEntry& pb = ib->second;
         if (pa.lockedFallback != pb.lockedFallback) { return pa.lockedFallback; }
+        if (pa.prefetch != pb.prefetch) { return !pa.prefetch; }
+        if (pa.prefetch) {
+            const auto la = asset_->groups()[asset_->pages()[a].lodGroupIndex].lodLevel;
+            const auto lb = asset_->groups()[asset_->pages()[b].lodGroupIndex].lodLevel;
+            if (la != lb) { return la > lb; }
+        }
         if (pa.lastUsedFrame != pb.lastUsedFrame) { return pa.lastUsedFrame > pb.lastUsedFrame; }
         if (pa.screenBenefit >= 0.0f || pb.screenBenefit >= 0.0f) {
             const double left = pageBenefitPerByte(pa.screenBenefit, pa.deviceSizeBytes, frameIndex_ - pa.firstRequestFrame);
@@ -810,6 +893,11 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             static_cast<uint64_t>(pageLoader_.outstandingCount()) + preparedPageLoads_.size() <
                 maxPageLoadsInFlight_) {
             const uint32_t pageIndex = uploadQueue_.front();
+            const auto next = pages_.find(pageIndex);
+            if (next != pages_.end() && next->second.prefetch &&
+                uint64_t(pageLoader_.outstandingCount()) + preparedPageLoads_.size() >= std::max(maxPageLoadsInFlight_ / 4u, 1u)) {
+                break;
+            }
             uploadQueue_.pop_front();
             auto pageIter = pages_.find(pageIndex);
             if (pageIter == pages_.end()) {
@@ -822,9 +910,14 @@ uint32_t MeshletStreamResidencyManager::processUploads(
                 page.queued = false;
                 continue;
             }
+            const uint64_t enqueueTime = latency_ ? meshletStreamTimeMicroseconds() : 0;
             if (!pageLoader_.enqueue(pageIndex)) {
                 uploadQueue_.push_front(pageIndex);
                 break;
+            }
+            if (latency_) {
+                const auto sample = latency_->pending.find(pageIndex);
+                if (sample != latency_->pending.end()) { sample->second.enqueueTime = enqueueTime; }
             }
             ++stats_.frameScheduledPageLoadCount;
             ++stats_.totalScheduledPageLoadCount;
@@ -844,6 +937,13 @@ uint32_t MeshletStreamResidencyManager::processUploads(
                 continue;
             }
             PageEntry& page = pageIter->second;
+            if (latency_) {
+                const auto sample = latency_->pending.find(loadedPage.pageIndex);
+                if (sample != latency_->pending.end()) {
+                    latency_->observe(MeshletStreamLatencyStage::IoQueue, sample->second.enqueueTime, loadedPage.startedMicroseconds);
+                    latency_->observe(MeshletStreamLatencyStage::Decode, loadedPage.startedMicroseconds, loadedPage.completedMicroseconds);
+                }
+            }
             const bool validPayload = loadedPage.success() &&
                 page.state == MeshletStreamPageResidencyState::Unloaded &&
                 pageAllocated(loadedPage.pageIndex) &&
@@ -971,6 +1071,16 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             break;
         }
 
+        if (latency_) {
+            const auto sample = latency_->pending.find(pageIndex);
+            if (sample != latency_->pending.end()) {
+                sample->second.uploadTime = meshletStreamTimeMicroseconds();
+                if (asynchronousLoads) {
+                    latency_->observe(MeshletStreamLatencyStage::ReadyToUpload,
+                        preparedPageLoads_.front().completedMicroseconds, sample->second.uploadTime);
+                }
+            }
+        }
         page.queued = false;
         if (asynchronousLoads) {
             preparedPageLoads_.pop_front();
@@ -1334,6 +1444,7 @@ void MeshletStreamResidencyManager::completeUnloadTask(uint32_t taskIndex)
 
 void MeshletStreamResidencyManager::releasePageStorage(uint32_t pageIndex)
 {
+    if (latency_) { latency_->abandon(pageIndex); }
     auto pageIter = pages_.find(pageIndex);
     if (pageIter == pages_.end()) {
         return;

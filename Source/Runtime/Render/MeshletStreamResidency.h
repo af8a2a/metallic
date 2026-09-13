@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/MeshletStreamLatency.h"
 #include "Runtime/Render/MeshletStreamPageLoader.h"
 #include "Runtime/Render/StreamingTaskQueue.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
@@ -79,6 +80,7 @@ inline constexpr MeshletStreamPageResidencyState streamPageTablePatchState(
 }
 
 inline constexpr uint32_t kStreamRequestHeaderWordCount = 16;
+inline constexpr uint32_t kStreamPrefetchPageTag = 1u << 31;
 inline constexpr uint32_t kStreamUpdateHeaderWordCount = 16;
 
 struct StreamRequestBufferHeader {
@@ -95,9 +97,9 @@ struct StreamRequestBufferHeader {
     uint32_t lastInvalidPageFrame = 0;
     uint32_t loadPriorityOffset = 0; // Word offsets; zero preserves the legacy request ABI.
     uint32_t priorityTableOffset = 0;
-    uint32_t padding2 = 0;
-    uint32_t padding3 = 0;
-    uint32_t padding4 = 0;
+    uint32_t prefetchRequestLimit = 0;
+    uint32_t prefetchRequestCounter = 0;
+    uint32_t prefetchDroppedCounter = 0;
 };
 
 struct StreamUpdateBufferHeader {
@@ -137,6 +139,7 @@ struct StreamGpuRequestBatch {
     // them cached and use the feedback for budget eviction, not eager unload.
     bool residentDemandFeedback = false;
     std::span<const float> loadPriorities; // Maximum screen benefit across instances, before byte cost.
+    bool taggedPrefetchRequests = false;
 };
 
 struct MeshletStreamStorageAllocation {
@@ -198,6 +201,8 @@ struct MeshletStreamResidencyDesc {
     uint32_t evictionAgeThresholdFrames = 1;
     uint32_t pageLoadConcurrency = 0;
     uint32_t maxPageLoadsInFlight = 0;
+    bool measurePageLatency = false;
+    bool immediateGpuRequests = false;
 };
 
 struct MeshletStreamResidencyStats {
@@ -310,6 +315,9 @@ struct MeshletStreamResidencyStats {
     uint64_t oldestActiveAge = 0;
     uint64_t oldestResidentAge = 0;
     uint64_t oldestPendingAge = 0;
+    uint64_t totalPrefetchAdmitted = 0;
+    uint64_t totalPrefetchUsed = 0;
+    uint64_t totalPrefetchDeferred = 0;
 };
 
 class MeshletStreamResidencyManager {
@@ -352,17 +360,26 @@ public:
     std::span<const uint32_t> newlyUnloadedPages() const { return newlyUnloadedPages_; }
     const MeshletStreamStorage& storage() const { return storage_; }
     MeshletStreamResidencyStats stats() const;
+    MeshletStreamLatencySnapshot latencySnapshot() const { return latency_ ? latency_->snapshot() : MeshletStreamLatencySnapshot{}; }
+    uint32_t availablePrefetchRequests() const
+    {
+        const uint32_t limit = pageLoader_.ready() ? std::max(maxPageLoadsInFlight_ / 4u, 1u) : 32u;
+        const uint32_t queued = queuedUploadCount();
+        return queued < limit ? limit - queued : 0u;
+    }
 
 private:
     struct PageRequest {
         uint32_t pageIndex;
         float screenBenefit = -1.0f;
         double schedulingPriority = 0.0;
+        bool prefetch = false;
     };
 
     struct PageEntry {
         uint64_t lastUsedFrame = 0;
         uint64_t firstRequestFrame = 0;
+        uint64_t residentSinceFrame = 0;
         uint32_t deviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
         uint32_t allocationBytes = 0;
         uint32_t deviceSizeBytes = 0;
@@ -374,8 +391,9 @@ private:
         MeshletStreamPageResidencyState state = MeshletStreamPageResidencyState::Unloaded;
         bool gpuUnused = false;
         float screenBenefit = -1.0f;
+        bool prefetch = false;
     };
-    static_assert(sizeof(PageEntry) == 48);
+    static_assert(sizeof(PageEntry) == 64);
 
     using PagePositionMember = uint32_t PageEntry::*;
 
@@ -394,12 +412,14 @@ private:
         MeshletStreamPageResidencyState newState);
     uint64_t oldestAge(std::span<const uint32_t> pageIndices) const;
     void resetFrameStats();
+    void consumeReadyRequestTasks();
 
     const scene::MeshletStreamAsset* asset_ = nullptr;
     MeshletStreamStorage storage_;
     std::unordered_map<uint32_t, PageEntry> pages_;
     std::deque<uint32_t> uploadQueue_;
     MeshletStreamPageLoader pageLoader_;
+    std::unique_ptr<MeshletStreamLatencyTracker> latency_;
     std::deque<MeshletStreamPageLoadResult> preparedPageLoads_;
     StreamingTaskQueue requestTaskQueue_;
     std::array<std::vector<PageRequest>, kStreamingMaxActiveTasks> requestTaskPages_;
@@ -434,6 +454,7 @@ private:
     uint32_t unloadDelayFrames_ = 1;
     uint32_t evictionAgeThresholdFrames_ = 1;
     uint32_t maxPageLoadsInFlight_ = 0;
+    bool immediateGpuRequests_ = false;
 };
 
 } // namespace metallic::render
