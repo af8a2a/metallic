@@ -352,12 +352,20 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
         pending[0].values.push_back(sample.pendingPages); pending[1].values.push_back(sample.ioQueued); pending[2].values.push_back(sample.ioActive);
     }
     if (!last.clasEnabled) { memory.pop_back(); }
-    ImGui::Checkbox("Include capacity in memory chart", &showBudget);
-    drawHistoryPlot("Streaming memory (MiB)", frames, memory, "MiB", 200, true,
-        showBudget ? (last.geometryBudgetBytes + last.clasCapacityBytes) / mib : 0.0);
-    drawHistoryPlot("Page traffic (pages/frame)", frames, pages, "pages", 170);
-    drawHistoryPlot("Upload traffic (MiB/frame)", frames, uploads, "MiB", 150);
-    drawHistoryPlot("Streaming backlog (pages)", frames, pending, "pages", 150);
+    if (ImGui::CollapsingHeader("Streaming Memory", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Include capacity in memory chart", &showBudget);
+        drawHistoryPlot("Streaming memory (MiB)", frames, memory, "MiB", 200, true,
+            showBudget ? (last.geometryBudgetBytes + last.clasCapacityBytes) / mib : 0.0);
+    }
+    if (ImGui::CollapsingHeader("Page Traffic")) {
+        drawHistoryPlot("Page traffic (pages/frame)", frames, pages, "pages", 170);
+    }
+    if (ImGui::CollapsingHeader("Upload Traffic")) {
+        drawHistoryPlot("Upload traffic (MiB/frame)", frames, uploads, "MiB", 150);
+    }
+    if (ImGui::CollapsingHeader("Streaming Backlog")) {
+        drawHistoryPlot("Streaming backlog (pages)", frames, pending, "pages", 150);
+    }
 }
 
 void drawPieSlice(
