@@ -815,6 +815,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     maxPageUploadsPerFrame_ = desc.maxPageUploadsPerFrame;
     maxGpuPageRequests_ = std::max(desc.maxGpuPageRequests, 1u);
     screenSpacePagePriority_ = desc.screenSpacePagePriority;
+    viewDrivenPageDemand_ = desc.viewDrivenPageDemand;
     maxGpuPageUnloadRequests_ = std::max(desc.maxGpuPageUnloadRequests, 1u);
     const uint64_t pageStride = alignUp(asset_.maxPagePayloadBytes(), 256);
     maxResidentBytes_ = desc.maxResidentBytes;
@@ -2160,6 +2161,7 @@ void MeshletStreamRuntime::reset()
     maxPageUploadsPerFrame_ = 0;
     maxGpuPageRequests_ = 0;
     screenSpacePagePriority_ = false;
+    viewDrivenPageDemand_ = false;
     maxGpuPageUnloadRequests_ = 0;
     maxUpdatePatches_ = 0;
     residentPageCapacity_ = 0;
@@ -2873,13 +2875,27 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
     }
 
     const std::span<const scene::MeshletStreamGroupInfo> groups = asset_.groups();
+    std::vector<MeshletLodRefinementBounds> refinementBounds;
+    if (viewDrivenPageDemand_) {
+        std::vector<MeshletLodGroupRecord> metrics(groups.size());
+        std::vector<MeshletLodGroupRange> ranges(groups.size());
+        for (size_t i = 0; i < groups.size(); ++i) {
+            std::copy_n(groups[i].boundsCenterRadius, 4, metrics[i].sphere.begin());
+            metrics[i].error = groups[i].maxQuadricError;
+            metrics[i].flags = groups[i].flags;
+            ranges[i] = {groups[i].clusterRefinedOffset, groups[i].clusterCount};
+        }
+        if (!buildMeshletLodRefinementBounds(metrics, ranges, refinedGroups, refinementBounds, log)) {
+            return makeError(Error::InvalidArgument);
+        }
+    }
     result = createAndPopulateHostStorageBuffer<MeshletStreamGpuGroup>(
         device,
         groups.size(),
         groupBuffer_,
         log,
         "MeshletStreamRuntime groups",
-        [groups, &parents, &parentOffsets](MeshletStreamGpuGroup& gpuGroup, size_t index) {
+        [groups, &parents, &parentOffsets, &refinementBounds](MeshletStreamGpuGroup& gpuGroup, size_t index) {
             const scene::MeshletStreamGroupInfo& group = groups[index];
             gpuGroup = MeshletStreamGpuGroup{
                 .primitiveIndex = group.primitiveIndex,
@@ -2891,6 +2907,7 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
                 .flags = group.flags,
                 .parentOffset = parentOffsets[index],
                 .parentCount = static_cast<uint32_t>(parents[index].size()),
+                .refinementBounds = refinementBounds.empty() ? MeshletLodRefinementBounds{} : refinementBounds[index],
             };
             std::copy(
                 std::begin(group.boundsCenterRadius),
@@ -3536,6 +3553,7 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"terminalReady", !lockedFallbackPages_.empty() && terminalResidentPages == lockedFallbackPages_.size()},
         {"pageBufferBytes", maxResidentBytes_}, {"clusterRtxEnabled", clasPool_ != nullptr},
         {"screenSpacePagePriority", screenSpacePagePriority_},
+        {"viewDrivenPageDemand", viewDrivenPageDemand_},
         {"requestBufferBytes", requestBuffer_ ? requestBuffer_->desc().size : 0},
         {"requestReadbackBytes", requestReadbackBuffer_ ? requestReadbackBuffer_->desc().size : 0},
         {"lodTopologyBytes", lodTopologyBuffer_ ? lodTopologyBuffer_->desc().size : 0},

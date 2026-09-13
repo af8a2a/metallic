@@ -44,6 +44,24 @@ struct MeshletLodView {
     std::array<float, 4> projection{1080, 0.577350269f, 10, 1.5f};
 };
 
+struct MeshletLodGroupRange;
+struct GPUSceneGpuInstanceRecord;
+
+// Includes every replacement descendant, padded by its authored error. Used
+// only for page demand culling; it does not change the LOD error metric.
+struct MeshletLodRefinementBounds {
+    std::array<float, 3> min{1, 1, 1};
+    std::array<float, 3> max{-1, -1, -1};
+};
+
+bool buildMeshletLodRefinementBounds(std::span<const MeshletLodGroupRecord> groups,
+    std::span<const MeshletLodGroupRange> ranges, std::span<const uint32_t> refinedGroups,
+    std::vector<MeshletLodRefinementBounds>& bounds, std::string& reason);
+
+bool meshletLodBoundsVisible(const MeshletLodRefinementBounds& bounds,
+    const GPUSceneGpuInstanceRecord& instance, const MeshletLodView& view,
+    std::array<float, 3> cameraUp, float aspect, float farPlane);
+
 // GPU output. recordIndex retains the immutable VBuffer indirection; compacted
 // list order is deliberately not a persistent geometry identity.
 struct alignas(16) MeshletLodSelection {
@@ -55,7 +73,6 @@ struct alignas(16) MeshletLodSelection {
 };
 
 struct GPUSceneGpuMeshletRecord;
-struct GPUSceneGpuInstanceRecord;
 
 bool buildMeshletLodMetadata(const scene::RenderPrimitive& primitive,
     std::vector<MeshletLodGroupRecord>& groups, std::string& reason);

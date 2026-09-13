@@ -229,6 +229,7 @@ add_executable(MetallicRhiTests
     rhi/StreamMeshletLodSceneTests.cpp
     rhi/MiniZorahStreamAssetTests.cpp
     rhi/MiniZorahRoamingTests.cpp
+    rhi/MiniZorahQualityTests.cpp
     rhi/HistoryResourcesTests.cpp
     rhi/ImportedVirtualLightTests.cpp
     rhi/LightGridDebugPassTests.cpp

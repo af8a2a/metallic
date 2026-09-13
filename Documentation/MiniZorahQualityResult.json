@@ -1,0 +1,1445 @@
+{
+  "date": "2026-09-13",
+  "status": "fixed_views_converged_motion_transients_remain",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "driver": "616.64",
+  "configuration": "RelWithDebInfo",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "targetPixelError": 1.5,
+  "pageBudgetBytes": 1073741824,
+  "addedGroupMetadataBytes": 32567016,
+  "asyncHybrid": true,
+  "vulkanValidation": true,
+  "qualityScope": "Existing cooked geometric-error metric, conservative own refinement envelope intersecting the frustum; no HZB exclusion. DAG coverage checked independently.",
+  "timingScope": "Synchronous offscreen GPUDriven + MaterialResolve, without presentation blit or timed-frame image/debug readback. Checkpoint verification and initialization excluded; not editor presentation FPS.",
+  "runs": {
+    "hold-legacy": {
+      "status": "passed",
+      "renderSeconds": 30.002578399999972,
+      "pageBudgetBytes": 1073741824,
+      "viewDrivenPageDemand": false,
+      "fixedViewSeconds": 15,
+      "firstConvergedSeconds": null,
+      "firstConvergedWallSeconds": null,
+      "frameMilliseconds": {
+        "max": 211.7175,
+        "p50": 16.558,
+        "p95": 18.1424,
+        "p99": 20.6035,
+        "samples": 1794
+      },
+      "gpuMilliseconds": {
+        "max": 14.363744,
+        "p50": 12.4488,
+        "p95": 13.168352,
+        "p99": 13.546656,
+        "samples": 1794
+      },
+      "cpuRecordMilliseconds": {
+        "max": 13.0357,
+        "p50": 3.816,
+        "p95": 5.8273,
+        "p99": 8.0438,
+        "samples": 1794
+      },
+      "report": "build-relwithdebinfo/minizorah-quality/hold-legacy/MiniZorahRoamingReport.json",
+      "reportSha256": "a5093a3d217845b1c35bf3624648218a6d1fd3bf07f61de3af09fed129c21696",
+      "checkpoints": 6,
+      "lastCheckpointSeconds": 25.01379339999997,
+      "lastCut": {
+        "activeGroups": 29493,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 411041,
+        "earlyHardware": 40334,
+        "earlySoftware": 24356,
+        "fineGroups": 21484,
+        "lateCandidates": 57137,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 2.33180832862854,
+        "maxVisibleRefinementErrorPixels": 1.4999721050262451,
+        "nearPlaneUnboundedRefinements": 3185,
+        "overTargetRefinements": 3258,
+        "selectedClusters": 437644,
+        "verifiedInstances": 12514,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "lastMemory": {
+        "processCommitBytes": 3733450752,
+        "processLocalGpuBytes": 2456674304,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 2674327552
+      },
+      "lastStreaming": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 2988,
+        "frameAllocationFailureCount": 2988,
+        "frameCachedUnusedPageCount": 0,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 28765,
+        "frameEvictionScanCount": 1,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 2988,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 28765,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 632576,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 28765,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCompletedPageLoadCount": 28932,
+        "totalCompletedUnloadCount": 167,
+        "totalCompletedUploadCount": 28932,
+        "totalEvictedPageCount": 167,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 1070273072,
+        "usedResidentBytes": 1073109248
+      },
+      "peakUsedResidentBytes": 1073109248,
+      "qualityTimeline": [
+        {
+          "seconds": 0,
+          "visibleOverTargetRefinements": 4180,
+          "visibleUnboundedRefinements": 51,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 5.0048309999999985,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 10.011667200000003,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 15.011121499999998,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 20.001482799999966,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 25.01379339999997,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        }
+      ]
+    },
+    "fixed-0": {
+      "status": "passed",
+      "renderSeconds": 30.004510699999997,
+      "pageBudgetBytes": 1073741824,
+      "viewDrivenPageDemand": true,
+      "fixedViewSeconds": 0,
+      "firstConvergedSeconds": 1.5071579000000002,
+      "firstConvergedWallSeconds": 2.0953496,
+      "frameMilliseconds": {
+        "max": 107.179,
+        "p50": 11.9321,
+        "p95": 13.1883,
+        "p99": 14.2769,
+        "samples": 2492
+      },
+      "gpuMilliseconds": {
+        "max": 11.930176,
+        "p50": 8.861152,
+        "p95": 9.68336,
+        "p99": 10.197952,
+        "samples": 2492
+      },
+      "cpuRecordMilliseconds": {
+        "max": 8.1594,
+        "p50": 2.7821,
+        "p95": 3.8249,
+        "p99": 4.8814,
+        "samples": 2492
+      },
+      "report": "build-relwithdebinfo/minizorah-quality/fixed-0/MiniZorahRoamingReport.json",
+      "reportSha256": "91609dd1c0a81cca62a77a8014297bdc8e8fcb15e8624dfdd46d60e8007d4338",
+      "checkpoints": 15,
+      "lastCheckpointSeconds": 25.009217000000007,
+      "lastCut": {
+        "activeGroups": 22891,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 226893,
+        "earlyHardware": 42879,
+        "earlySoftware": 24354,
+        "fineGroups": 13968,
+        "lateCandidates": 80778,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 6266.07177734375,
+        "maxVisibleRefinementErrorPixels": 1.4999207258224487,
+        "nearPlaneUnboundedRefinements": 456,
+        "overTargetRefinements": 1484,
+        "selectedClusters": 248855,
+        "verifiedInstances": 13782,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "lastMemory": {
+        "processCommitBytes": 3737354240,
+        "processLocalGpuBytes": 2465062912,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 1872764928
+      },
+      "lastStreaming": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 0,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11598,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 809534976,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 11598,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCompletedPageLoadCount": 11598,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 11598,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 262806256,
+        "usedResidentBytes": 264206848
+      },
+      "peakUsedResidentBytes": 264206848,
+      "qualityTimeline": [
+        {
+          "seconds": 0,
+          "visibleOverTargetRefinements": 4470,
+          "visibleUnboundedRefinements": 53,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 0.5065707,
+          "visibleOverTargetRefinements": 2378,
+          "visibleUnboundedRefinements": 145,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 1.0101168000000003,
+          "visibleOverTargetRefinements": 235,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 19.09609603881836
+        },
+        {
+          "seconds": 1.5071579000000002,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        },
+        {
+          "seconds": 2.0042141,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        },
+        {
+          "seconds": 2.5073269999999988,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        },
+        {
+          "seconds": 3.0057040999999987,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        },
+        {
+          "seconds": 3.505372199999998,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        },
+        {
+          "seconds": 4.012504399999999,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        },
+        {
+          "seconds": 4.510951199999998,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        },
+        {
+          "seconds": 5.0061662999999985,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        },
+        {
+          "seconds": 10.003257999999995,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        },
+        {
+          "seconds": 15.0118177,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        },
+        {
+          "seconds": 20.006840900000018,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        },
+        {
+          "seconds": 25.009217000000007,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999207258224487
+        }
+      ],
+      "settledQualityPassed": true
+    },
+    "fixed-near": {
+      "status": "passed",
+      "renderSeconds": 30.007707399999955,
+      "pageBudgetBytes": 1073741824,
+      "viewDrivenPageDemand": true,
+      "fixedViewSeconds": 15,
+      "firstConvergedSeconds": 1.5084702999999997,
+      "firstConvergedWallSeconds": null,
+      "frameMilliseconds": {
+        "max": 123.8134,
+        "p50": 11.3502,
+        "p95": 12.685,
+        "p99": 13.3864,
+        "samples": 2614
+      },
+      "gpuMilliseconds": {
+        "max": 11.555872,
+        "p50": 8.23056,
+        "p95": 9.101728,
+        "p99": 9.576224,
+        "samples": 2614
+      },
+      "cpuRecordMilliseconds": {
+        "max": 14.1925,
+        "p50": 2.8408,
+        "p95": 3.9196,
+        "p99": 4.9341,
+        "samples": 2614
+      },
+      "report": "build-relwithdebinfo/minizorah-quality/fixed-near/MiniZorahRoamingReport.json",
+      "reportSha256": "c8481f2c3ea22318e342201ec471ab6371588532f3ca04413c09d92a6792a667",
+      "checkpoints": 15,
+      "lastCheckpointSeconds": 25.00820159999998,
+      "lastCut": {
+        "activeGroups": 20265,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 187000,
+        "earlyHardware": 40334,
+        "earlySoftware": 24356,
+        "fineGroups": 12256,
+        "lateCandidates": 57137,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 42315.90234375,
+        "maxVisibleRefinementErrorPixels": 1.4999721050262451,
+        "nearPlaneUnboundedRefinements": 454,
+        "overTargetRefinements": 1937,
+        "selectedClusters": 213532,
+        "verifiedInstances": 12514,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "lastMemory": {
+        "processCommitBytes": 3755593728,
+        "processLocalGpuBytes": 2465062912,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 1864327168
+      },
+      "lastStreaming": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 170,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11176,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 823776256,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 11346,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCompletedPageLoadCount": 11346,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 11346,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 248596368,
+        "usedResidentBytes": 249965568
+      },
+      "peakUsedResidentBytes": 249965568,
+      "qualityTimeline": [
+        {
+          "seconds": 0,
+          "visibleOverTargetRefinements": 4234,
+          "visibleUnboundedRefinements": 51,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 0.5056636999999999,
+          "visibleOverTargetRefinements": 2321,
+          "visibleUnboundedRefinements": 148,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 1.0057817999999998,
+          "visibleOverTargetRefinements": 154,
+          "visibleUnboundedRefinements": 5,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 1.5084702999999997,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 2.0095453,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 2.5044412,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 3.0068045,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 3.5036109,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 4.0091652,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 4.5065497,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 5.008505299999998,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 10.002274299999995,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 15.009230799999983,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 20.007956099999998,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        },
+        {
+          "seconds": 25.00820159999998,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999721050262451
+        }
+      ],
+      "settledQualityPassed": true
+    },
+    "fixed-35": {
+      "status": "passed",
+      "renderSeconds": 30.001344200000034,
+      "pageBudgetBytes": 1073741824,
+      "viewDrivenPageDemand": true,
+      "fixedViewSeconds": 35,
+      "firstConvergedSeconds": 1.5002402000000004,
+      "firstConvergedWallSeconds": 2.0459767,
+      "frameMilliseconds": {
+        "max": 111.0653,
+        "p50": 8.9817,
+        "p95": 10.3992,
+        "p99": 11.2196,
+        "samples": 3259
+      },
+      "gpuMilliseconds": {
+        "max": 8.798496,
+        "p50": 6.02048,
+        "p95": 6.563872,
+        "p99": 7.012672,
+        "samples": 3259
+      },
+      "cpuRecordMilliseconds": {
+        "max": 12.8707,
+        "p50": 2.6829,
+        "p95": 3.9582,
+        "p99": 4.9773,
+        "samples": 3259
+      },
+      "report": "build-relwithdebinfo/minizorah-quality/fixed-35/MiniZorahRoamingReport.json",
+      "reportSha256": "9d4e6b2e96690e626acf10c0454d11b542c4a23f8b57ea7447b32ab50469358d",
+      "checkpoints": 15,
+      "lastCheckpointSeconds": 25.00185060000004,
+      "lastCut": {
+        "activeGroups": 13458,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 139762,
+        "earlyHardware": 31040,
+        "earlySoftware": 17061,
+        "fineGroups": 8784,
+        "lateCandidates": 44275,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 146633.53125,
+        "maxVisibleRefinementErrorPixels": 1.4999583959579468,
+        "nearPlaneUnboundedRefinements": 615,
+        "overTargetRefinements": 1588,
+        "selectedClusters": 151261,
+        "verifiedInstances": 7957,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "lastMemory": {
+        "processCommitBytes": 3746385920,
+        "processLocalGpuBytes": 2465062912,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 1816039424
+      },
+      "lastStreaming": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 504,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 9535,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 868172032,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 10039,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCompletedPageLoadCount": 10039,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 10039,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 204359680,
+        "usedResidentBytes": 205569792
+      },
+      "peakUsedResidentBytes": 205569792,
+      "qualityTimeline": [
+        {
+          "seconds": 0,
+          "visibleOverTargetRefinements": 3021,
+          "visibleUnboundedRefinements": 55,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 0.5016531000000001,
+          "visibleOverTargetRefinements": 1829,
+          "visibleUnboundedRefinements": 160,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 1.0075619,
+          "visibleOverTargetRefinements": 22,
+          "visibleUnboundedRefinements": 5,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 1.5002402000000004,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        },
+        {
+          "seconds": 2.0025543000000003,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        },
+        {
+          "seconds": 2.5089885000000005,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        },
+        {
+          "seconds": 3.000830600000001,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        },
+        {
+          "seconds": 3.504693500000001,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        },
+        {
+          "seconds": 4.0079901000000016,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        },
+        {
+          "seconds": 4.502579100000003,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        },
+        {
+          "seconds": 5.006949800000001,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        },
+        {
+          "seconds": 10.004288800000019,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        },
+        {
+          "seconds": 15.000630800000033,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        },
+        {
+          "seconds": 20.004888200000025,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        },
+        {
+          "seconds": 25.00185060000004,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999583959579468
+        }
+      ],
+      "settledQualityPassed": true
+    },
+    "roaming-legacy": {
+      "status": "passed",
+      "renderSeconds": 60.012059900000025,
+      "pageBudgetBytes": 1073741824,
+      "viewDrivenPageDemand": false,
+      "fixedViewSeconds": null,
+      "firstConvergedSeconds": null,
+      "firstConvergedWallSeconds": null,
+      "frameMilliseconds": {
+        "max": 114.9481,
+        "p50": 14.6988,
+        "p95": 18.5272,
+        "p99": 20.2877,
+        "samples": 4629
+      },
+      "gpuMilliseconds": {
+        "max": 14.615904,
+        "p50": 10.510144,
+        "p95": 12.208704,
+        "p99": 12.6808,
+        "samples": 4629
+      },
+      "cpuRecordMilliseconds": {
+        "max": 14.6521,
+        "p50": 3.9684,
+        "p95": 6.5493,
+        "p99": 8.5114,
+        "samples": 4629
+      },
+      "report": "build-relwithdebinfo/minizorah-quality/roaming-legacy/MiniZorahRoamingReport.json",
+      "reportSha256": "c9a3a312d6db578aa92e2d16e5f44a8951dec500044f4324deae2810a89efa85",
+      "checkpoints": 12,
+      "lastCheckpointSeconds": 55.00376530000007,
+      "lastCut": {
+        "activeGroups": 29082,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 422596,
+        "earlyHardware": 66426,
+        "earlySoftware": 79489,
+        "fineGroups": 20687,
+        "lateCandidates": 0,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 8140.96533203125,
+        "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38,
+        "nearPlaneUnboundedRefinements": 2165,
+        "overTargetRefinements": 2789,
+        "selectedClusters": 422596,
+        "verifiedInstances": 12948,
+        "visibleOverTargetRefinements": 326,
+        "visibleUnboundedRefinements": 15
+      },
+      "lastMemory": {
+        "processCommitBytes": 3890008064,
+        "processLocalGpuBytes": 2599280640,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 3921199104
+      },
+      "lastStreaming": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 25249,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 3175,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 30603008,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 28424,
+        "totalCancelledQueuedLoadCount": 12,
+        "totalCompletedPageLoadCount": 103164,
+        "totalCompletedUnloadCount": 74740,
+        "totalCompletedUploadCount": 103164,
+        "totalEvictedPageCount": 74740,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 3988788960,
+        "usedResidentBytes": 1043138816
+      },
+      "peakUsedResidentBytes": 1067130368,
+      "qualityTimeline": [
+        {
+          "seconds": 0,
+          "visibleOverTargetRefinements": 4470,
+          "visibleUnboundedRefinements": 53,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 5.017068999999996,
+          "visibleOverTargetRefinements": 201,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 9.263339042663574
+        },
+        {
+          "seconds": 10.004729199999984,
+          "visibleOverTargetRefinements": 152,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 13.123494148254395
+        },
+        {
+          "seconds": 15.001480099999991,
+          "visibleOverTargetRefinements": 329,
+          "visibleUnboundedRefinements": 33,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 20.010734699999993,
+          "visibleOverTargetRefinements": 2,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.691820502281189
+        },
+        {
+          "seconds": 25.0025214,
+          "visibleOverTargetRefinements": 1236,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 202.6670379638672
+        },
+        {
+          "seconds": 30.007883299999992,
+          "visibleOverTargetRefinements": 614,
+          "visibleUnboundedRefinements": 3,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 35.0015814,
+          "visibleOverTargetRefinements": 178,
+          "visibleUnboundedRefinements": 15,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 40.01368220000005,
+          "visibleOverTargetRefinements": 1089,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 63.01093292236328
+        },
+        {
+          "seconds": 45.00955130000007,
+          "visibleOverTargetRefinements": 73,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 8.814937591552734
+        },
+        {
+          "seconds": 50.005974100000095,
+          "visibleOverTargetRefinements": 2,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.691820502281189
+        },
+        {
+          "seconds": 55.00376530000007,
+          "visibleOverTargetRefinements": 326,
+          "visibleUnboundedRefinements": 15,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        }
+      ]
+    },
+    "roaming": {
+      "status": "passed",
+      "renderSeconds": 180.00110429999992,
+      "pageBudgetBytes": 1073741824,
+      "viewDrivenPageDemand": true,
+      "fixedViewSeconds": null,
+      "firstConvergedSeconds": 40.00750009999999,
+      "firstConvergedWallSeconds": 41.9808583,
+      "frameMilliseconds": {
+        "max": 107.3461,
+        "p50": 10.7391,
+        "p95": 12.4146,
+        "p99": 13.305,
+        "samples": 18367
+      },
+      "gpuMilliseconds": {
+        "max": 11.042368,
+        "p50": 7.477216,
+        "p95": 8.745888,
+        "p99": 9.152256,
+        "samples": 18367
+      },
+      "cpuRecordMilliseconds": {
+        "max": 11.708,
+        "p50": 3.1134,
+        "p95": 4.5187,
+        "p99": 5.2358,
+        "samples": 18367
+      },
+      "report": "build-relwithdebinfo/minizorah-quality/roaming/MiniZorahRoamingReport.json",
+      "reportSha256": "fa14b42d0ba7f4c6c9df53fa21478ae4d1f2908e2a5290d6ac2ffa9c8058c980",
+      "checkpoints": 36,
+      "lastCheckpointSeconds": 175.00233909999992,
+      "lastCut": {
+        "activeGroups": 21266,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 228058,
+        "earlyHardware": 66758,
+        "earlySoftware": 81247,
+        "fineGroups": 12928,
+        "lateCandidates": 0,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 105096.234375,
+        "maxVisibleRefinementErrorPixels": 1.4999977350234985,
+        "nearPlaneUnboundedRefinements": 437,
+        "overTargetRefinements": 1770,
+        "selectedClusters": 228058,
+        "verifiedInstances": 12948,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "lastMemory": {
+        "processCommitBytes": 3855745024,
+        "processLocalGpuBytes": 2463293440,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 2340761600
+      },
+      "lastStreaming": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 17868,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 3175,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 467827200,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 21043,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCompletedPageLoadCount": 21043,
+        "totalCompletedUnloadCount": 0,
+        "totalCompletedUploadCount": 21043,
+        "totalEvictedPageCount": 0,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 603382816,
+        "usedResidentBytes": 605914624
+      },
+      "peakUsedResidentBytes": 605914624,
+      "qualityTimeline": [
+        {
+          "seconds": 0,
+          "visibleOverTargetRefinements": 4470,
+          "visibleUnboundedRefinements": 53,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 5.000346000000002,
+          "visibleOverTargetRefinements": 14,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.516333818435669
+        },
+        {
+          "seconds": 10.011046100000003,
+          "visibleOverTargetRefinements": 20,
+          "visibleUnboundedRefinements": 1,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 15.008914399999995,
+          "visibleOverTargetRefinements": 46,
+          "visibleUnboundedRefinements": 1,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 20.003909199999978,
+          "visibleOverTargetRefinements": 2,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.691820502281189
+        },
+        {
+          "seconds": 25.004345899999972,
+          "visibleOverTargetRefinements": 147,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 2.5279788970947266
+        },
+        {
+          "seconds": 30.0061785,
+          "visibleOverTargetRefinements": 5,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 2.267409324645996
+        },
+        {
+          "seconds": 35.005449899999995,
+          "visibleOverTargetRefinements": 2,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.509034514427185
+        },
+        {
+          "seconds": 40.00750009999999,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999934434890747
+        },
+        {
+          "seconds": 45.003087600000036,
+          "visibleOverTargetRefinements": 4,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 8.824528694152832
+        },
+        {
+          "seconds": 50.00660780000006,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.482418179512024
+        },
+        {
+          "seconds": 55.00459569999996,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999582767486572
+        },
+        {
+          "seconds": 60.00846759999995,
+          "visibleOverTargetRefinements": 1,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.5364360809326172
+        },
+        {
+          "seconds": 65.00443119999996,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.499982476234436
+        },
+        {
+          "seconds": 70.00119819999999,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999134540557861
+        },
+        {
+          "seconds": 75.00294589999996,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999747276306152
+        },
+        {
+          "seconds": 80.00975419999995,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.482418179512024
+        },
+        {
+          "seconds": 85.00083619999984,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999724626541138
+        },
+        {
+          "seconds": 90.00480239999982,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999395608901978
+        },
+        {
+          "seconds": 95.00387249999984,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4998648166656494
+        },
+        {
+          "seconds": 100.01122439999978,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999873638153076
+        },
+        {
+          "seconds": 105.00235359999975,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4998157024383545
+        },
+        {
+          "seconds": 110.00210659999972,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.482418179512024
+        },
+        {
+          "seconds": 115.00348389999978,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999773502349854
+        },
+        {
+          "seconds": 120.00096829999985,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999558925628662
+        },
+        {
+          "seconds": 125.00818439999985,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999722242355347
+        },
+        {
+          "seconds": 130.00208689999988,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.49997079372406
+        },
+        {
+          "seconds": 135.0026291999999,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999741315841675
+        },
+        {
+          "seconds": 140.00221679999967,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.482418179512024
+        },
+        {
+          "seconds": 145.00492069999987,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999948740005493
+        },
+        {
+          "seconds": 150.00061470000026,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.499992847442627
+        },
+        {
+          "seconds": 155.00191340000032,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999929666519165
+        },
+        {
+          "seconds": 160.0012515000005,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999927282333374
+        },
+        {
+          "seconds": 165.00553030000034,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.499998688697815
+        },
+        {
+          "seconds": 170.00251470000032,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.482418179512024
+        },
+        {
+          "seconds": 175.00233909999992,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.4999977350234985
+        }
+      ]
+    },
+    "pressure": {
+      "status": "passed",
+      "renderSeconds": 60.00140100000007,
+      "pageBudgetBytes": 67108864,
+      "viewDrivenPageDemand": true,
+      "fixedViewSeconds": null,
+      "firstConvergedSeconds": null,
+      "firstConvergedWallSeconds": null,
+      "frameMilliseconds": {
+        "max": 139.8398,
+        "p50": 7.7258,
+        "p95": 9.0368,
+        "p99": 9.5485,
+        "samples": 8095
+      },
+      "gpuMilliseconds": {
+        "max": 6.935488,
+        "p50": 4.908288,
+        "p95": 5.62064,
+        "p99": 5.922976,
+        "samples": 8095
+      },
+      "cpuRecordMilliseconds": {
+        "max": 9.0977,
+        "p50": 2.5852,
+        "p95": 3.7599,
+        "p99": 4.4793,
+        "samples": 8095
+      },
+      "report": "build-relwithdebinfo/minizorah-quality/pressure/MiniZorahRoamingReport.json",
+      "reportSha256": "79a2bae99022d0aeb4699ce365b078dc58c1cc21b89f1caa8f7418cc9ababd07",
+      "checkpoints": 12,
+      "lastCheckpointSeconds": 55.000911500000015,
+      "lastCut": {
+        "activeGroups": 16530,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 110094,
+        "earlyHardware": 52554,
+        "earlySoftware": 36332,
+        "fineGroups": 8110,
+        "lateCandidates": 0,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 150537.21875,
+        "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38,
+        "nearPlaneUnboundedRefinements": 318,
+        "overTargetRefinements": 3965,
+        "selectedClusters": 110094,
+        "verifiedInstances": 12948,
+        "visibleOverTargetRefinements": 3679,
+        "visibleUnboundedRefinements": 126
+      },
+      "lastMemory": {
+        "processCommitBytes": 2711687168,
+        "processLocalGpuBytes": 1391321088,
+        "processNonLocalGpuBytes": 146186240,
+        "workingSetBytes": 1779802112
+      },
+      "lastStreaming": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 3839,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 0,
+        "frameEvictionScanCount": 0,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 3175,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 1909504,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 7014,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCompletedPageLoadCount": 19683,
+        "totalCompletedUnloadCount": 12669,
+        "totalCompletedUploadCount": 19683,
+        "totalEvictedPageCount": 12669,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalUploadBytes": 213756496,
+        "usedResidentBytes": 65199360
+      },
+      "peakUsedResidentBytes": 65478144,
+      "qualityTimeline": [
+        {
+          "seconds": 0,
+          "visibleOverTargetRefinements": 4470,
+          "visibleUnboundedRefinements": 53,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 5.000932099999998,
+          "visibleOverTargetRefinements": 2910,
+          "visibleUnboundedRefinements": 182,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 10.001577000000006,
+          "visibleOverTargetRefinements": 3144,
+          "visibleUnboundedRefinements": 149,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 15.002643500000001,
+          "visibleOverTargetRefinements": 3058,
+          "visibleUnboundedRefinements": 127,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 20.002307500000015,
+          "visibleOverTargetRefinements": 2,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.691820502281189
+        },
+        {
+          "seconds": 25.00044639999997,
+          "visibleOverTargetRefinements": 3529,
+          "visibleUnboundedRefinements": 106,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 30.00498679999996,
+          "visibleOverTargetRefinements": 3360,
+          "visibleUnboundedRefinements": 108,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 35.00668480000002,
+          "visibleOverTargetRefinements": 2330,
+          "visibleUnboundedRefinements": 152,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 40.004648300000014,
+          "visibleOverTargetRefinements": 3410,
+          "visibleUnboundedRefinements": 91,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 45.00570560000008,
+          "visibleOverTargetRefinements": 2616,
+          "visibleUnboundedRefinements": 106,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        },
+        {
+          "seconds": 50.00002390000003,
+          "visibleOverTargetRefinements": 2,
+          "visibleUnboundedRefinements": 0,
+          "maxVisibleRefinementErrorPixels": 1.691820502281189
+        },
+        {
+          "seconds": 55.000911500000015,
+          "visibleOverTargetRefinements": 3679,
+          "visibleUnboundedRefinements": 126,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38
+        }
+      ]
+    }
+  },
+  "audit": {
+    "report": "build-relwithdebinfo/minizorah-quality/fixed-near/MiniZorahQualityAudit.json",
+    "sha256": "1f250b82653bfc199db8ce2377df573ea6289fb8648022a9e4c92d9833d9ab50",
+    "result": {
+      "resolution": [
+        1920,
+        1080
+      ],
+      "targetPixelError": 1.5,
+      "views": [
+        {
+          "activeGroups": 2147099,
+          "activePayloadBytes": 18190997760,
+          "blockedDesiredGroups": 0,
+          "lostVisibleDemand": 0,
+          "pose": 0,
+          "selectedClusters": 25545683,
+          "selectedGroups": 1055362,
+          "selectedPayloadBytes": 9810353152,
+          "sphereOnlyPruned": 6,
+          "viewDrivenGroups": 54372,
+          "viewDrivenPayloadBytes": 291440128,
+          "visibleBlockedDesiredGroups": 0,
+          "visibleDemandClosureBytes": 241200128,
+          "visibleDemandClosureGroups": 50084
+        },
+        {
+          "activeGroups": 2433060,
+          "activePayloadBytes": 20252111616,
+          "blockedDesiredGroups": 0,
+          "lostVisibleDemand": 0,
+          "pose": 1,
+          "selectedClusters": 29002680,
+          "selectedGroups": 1200060,
+          "selectedPayloadBytes": 11188459520,
+          "sphereOnlyPruned": 6,
+          "viewDrivenGroups": 52825,
+          "viewDrivenPayloadBytes": 275145472,
+          "visibleBlockedDesiredGroups": 0,
+          "visibleDemandClosureBytes": 228243712,
+          "visibleDemandClosureGroups": 48524
+        },
+        {
+          "activeGroups": 3614914,
+          "activePayloadBytes": 25364625664,
+          "blockedDesiredGroups": 0,
+          "lostVisibleDemand": 0,
+          "pose": 2,
+          "selectedClusters": 43390589,
+          "selectedGroups": 1789146,
+          "selectedPayloadBytes": 14894315776,
+          "sphereOnlyPruned": 19,
+          "viewDrivenGroups": 40477,
+          "viewDrivenPayloadBytes": 251700992,
+          "visibleBlockedDesiredGroups": 0,
+          "visibleDemandClosureBytes": 191756032,
+          "visibleDemandClosureGroups": 38407
+        }
+      ]
+    }
+  },
+  "nearImageComparison": {
+    "baseline": "build-relwithdebinfo/minizorah-quality/hold-legacy/roam-25.png",
+    "current": "build-relwithdebinfo/minizorah-quality/fixed-near/roam-25.png",
+    "differentPixels": 0,
+    "totalPixels": 2073600,
+    "baselineSha256": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75",
+    "currentSha256": "b181ca6e019e5d95a28f7857054de6fdc80b00aa066d0fb871302122f3344f75"
+  },
+  "routeComparisonAt55Seconds": {
+    "legacyUploadBytes": 3988788960,
+    "currentUploadBytes": 601938656,
+    "legacyEvictedPages": 74740,
+    "currentEvictedPages": 0,
+    "additionalUploadBytes55To175Seconds": 1444160
+  },
+  "warmRouteQuality": {
+    "fromSeconds": 65,
+    "throughSeconds": 175,
+    "checkpoints": 23,
+    "allCheckpointVisibleRefinementsWithinTarget": true,
+    "perFrameQualityReadback": false
+  },
+  "notes": [
+    "Near legacy sampled every five seconds; fixed current samples every half second initially. Do not infer a cold convergence speedup from their first observed zero.",
+    "Legacy roaming duration is 60 seconds and current roaming duration 180 seconds. Compare uploads at the matching 55-second checkpoint, not unequal-duration timing percentiles.",
+    "The 1 GiB page pool remains allocated. Reduced used residency does not imply equal physical VRAM savings.",
+    "64 MiB pressure passes budget and complete fallback, but does not meet the 1.5 px quality target.",
+    "Changes after these performance runs only extend the pixel guard to portrait viewports; 1920x1080 uses the identical guard. Final regressions exercise the updated shader."
+  ],
+  "regressions": {
+    "passed": 35,
+    "total": 35,
+    "log": "build-relwithdebinfo/minizorah-quality/final-tests.log",
+    "gpuReferenceCutComparisons": 292
+  },
+  "build": {
+    "targets": [
+      "Metallic",
+      "MetallicGPUDrivenSample",
+      "MetallicRhiTests"
+    ],
+    "status": "passed",
+    "log": "build-relwithdebinfo/minizorah-quality/final-build.log"
+  }
+}

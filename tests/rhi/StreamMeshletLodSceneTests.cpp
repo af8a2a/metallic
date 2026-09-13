@@ -166,6 +166,14 @@ public:
                 GPUSceneGpuInstanceRecord instance;
                 std::copy_n(sourceInstance.worldMatrix, 16, instance.worldMatrix.begin());
                 instance.identity[3] = sourceInstance.visible != 0 ? GPUSceneGpuInstanceVisible : 0;
+                std::vector<MeshletLodRefinementBounds> bounds;
+                if (!buildMeshletLodRefinementBounds(groups, ranges, refined, bounds, log)) { throw std::runtime_error(log); }
+                for (uint32_t group = 0; group < groups.size(); ++group) {
+                    if (manual == UINT32_MAX && (groups[group].flags & kMeshletLodTerminalGroup) == 0 &&
+                        !meshletLodBoundsVisible(bounds[group], instance, view, {0, 1, 0}, float(kWidth) / kHeight, 10.f)) {
+                        groups[group].error = 0;
+                    }
+                }
                 const auto cut = selectStreamMeshletLodReference(groups, ranges, refined, drawable, instance, view, manual);
                 if (!cut.valid) { throw std::runtime_error("Scene CPU cut is invalid: " + cut.reason); }
                 std::vector<uint8_t> selected(refined.size(), 0);

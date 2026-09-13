@@ -222,6 +222,12 @@ struct GPUDrivenStreamAssetGroup
     uint flags;
     uint parentOffset;
     uint parentCount;
+    float demandMinX;
+    float demandMinY;
+    float demandMinZ;
+    float demandMaxX;
+    float demandMaxY;
+    float demandMaxZ;
 };
 
 struct GPUDrivenStreamAssetNode
@@ -621,6 +627,45 @@ bool streamSphereInsideFrustum(
     float radiusY = radius * sqrt(1.0 + tanY * tanY);
     return abs(viewCenter.x) <= viewCenter.z * tanX + radiusX &&
         abs(viewCenter.y) <= viewCenter.z * tanY + radiusY;
+}
+
+bool streamRefinementDemandVisible(GPUDrivenStreamAssetGroup group, GPUDrivenStreamAssetInstance instance,
+    GPUDrivenStreamAssetParams params)
+{
+    if (params.enableGpuLodSelection == 0u || (group.flags & 1u) != 0u) { return true; }
+    float3 low = float3(group.demandMinX, group.demandMinY, group.demandMinZ);
+    float3 high = float3(group.demandMaxX, group.demandMaxY, group.demandMaxZ);
+    if (any(low > high) || !all(isfinite(low)) || !all(isfinite(high))) { return true; }
+    float3 center = low * 0.5 + high * 0.5, extent = high * 0.5 - low * 0.5;
+    float3 a = instance.world0.xyz, b = instance.world1.xyz, c = instance.world2.xyz;
+    float3 delta = a * center.x + b * center.y + c * center.z + instance.world3.xyz - params.eye.xyz;
+    float3 forward = safeNormalize(params.center.xyz - params.eye.xyz, float3(0,0,-1));
+    float3 right = safeNormalize(cross(forward, params.upProjection.xyz), float3(1,0,0));
+    float3 up = cross(right, forward);
+    float3 magnitude = abs(a) * (abs(center.x) + extent.x) + abs(b) * (abs(center.y) + extent.y) +
+        abs(c) * (abs(center.z) + extent.z) + abs(instance.world3.xyz) + abs(params.eye.xyz);
+    if (!all(isfinite(delta)) || !isfinite(dot(magnitude, float3(1, 1, 1)))) { return true; }
+    float padding = dot(magnitude, float3(1,1,1)) * (32.0 * 1.1920928955078125e-7);
+    float z = dot(delta, forward);
+    float rz = dot(abs(float3(dot(a, forward), dot(b, forward), dot(c, forward))), extent) + padding;
+    if (z + rz < params.clipOrtho.x || z - rz > params.clipOrtho.y) { return false; }
+    // One pixel guard plus transform roundoff. Demand must be conservative at
+    // viewport edges even while temporal jitter moves the raster samples.
+    float guard = 1.0 + 2.0 / max(min(params.viewport.y, params.viewport.z), 1.0);
+    float ty = tan(params.viewport.w * 0.5) * guard, tx = ty * params.viewport.x;
+    if (params.upProjection.w != 0.0) {
+        float halfHeight = params.clipOrtho.z * 0.5 * guard;
+        float rx = dot(abs(float3(dot(a, right), dot(b, right), dot(c, right))), extent) + padding;
+        float ry = dot(abs(float3(dot(a, up), dot(b, up), dot(c, up))), extent) + padding;
+        return abs(dot(delta, right)) <= halfHeight * params.viewport.x + rx && abs(dot(delta, up)) <= halfHeight + ry;
+    }
+    float3 planes[4] = {forward * tx + right, forward * tx - right, forward * ty + up, forward * ty - up};
+    for (uint i = 0u; i < 4u; ++i) {
+        float3 normal = planes[i];
+        float radius = dot(abs(float3(dot(a, normal), dot(b, normal), dot(c, normal))), extent);
+        if (dot(delta, normal) + radius + padding * length(normal) < 0.0) { return false; }
+    }
+    return true;
 }
 
 // A scheduling heuristic, not a replacement for the conservative LOD cut.
@@ -1935,7 +1980,7 @@ void buildStreamLodBvhFrontier(uint instanceIndex,
             bool desired = meshletLodGroupNeedsFine(sphere, group.maxQuadricError,
                 group.lodLevel, group.flags, instance.world0, instance.world1, instance.world2,
                 instance.world3, lodEye, lodForward, lodProjection, manualLevel);
-            bool demanded = terminal || (parentsActive && desired);
+            bool demanded = terminal || (parentsActive && desired && streamRefinementDemandVisible(group, instance, params));
             if (demanded) {
                 if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) {
                     markStreamPageDemand(pageTable, params, group.pageIndex);
@@ -2051,7 +2096,7 @@ void buildStreamLodFrontier(
         bool desired = meshletLodGroupNeedsFine(sphere, group.maxQuadricError,
             group.lodLevel, group.flags, instance.world0, instance.world1, instance.world2,
             instance.world3, lodEye, lodForward, lodProjection, manualLevel);
-        bool demanded = terminal || (parentsActive && desired);
+        bool demanded = terminal || (parentsActive && desired && streamRefinementDemandVisible(group, instance, params));
         if (demanded) {
             if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) {
                 markStreamPageDemand(pageTable, params, group.pageIndex);
@@ -2341,7 +2386,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             bool desired = meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
                 group.maxQuadricError, group.lodLevel, group.flags, instance.world0, instance.world1,
                 instance.world2, instance.world3, eye, direction, projection, manual);
-            bool demanded = terminal || (parentsActive && desired);
+            bool demanded = terminal || (parentsActive && desired && streamRefinementDemandVisible(group, instance, params));
             if (demanded) {
                 if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { markStreamPageDemand(pageTable, params, group.pageIndex); }
                 else {

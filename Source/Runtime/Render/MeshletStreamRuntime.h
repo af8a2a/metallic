@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/MeshletStreamResidency.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
@@ -177,6 +178,7 @@ struct MeshletStreamGpuGroup {
     uint32_t flags = 0;
     uint32_t parentOffset = 0;
     uint32_t parentCount = 0;
+    MeshletLodRefinementBounds refinementBounds;
 };
 
 struct MeshletStreamGpuNode {
@@ -379,7 +381,7 @@ static_assert(sizeof(MeshletStreamGpuActiveGroup) == 112);
 static_assert(sizeof(MeshletStreamGpuInstance) == 96);
 static_assert(sizeof(MeshletStreamGpuPrimitive) == 64);
 static_assert(sizeof(MeshletStreamGpuLodLevel) == 32);
-static_assert(sizeof(MeshletStreamGpuGroup) == 52);
+static_assert(sizeof(MeshletStreamGpuGroup) == 76);
 static_assert(sizeof(MeshletStreamGpuNode) == 48);
 static_assert(sizeof(MeshletStreamGpuDrawIndirect) == 12);
 static_assert(sizeof(MeshletStreamGpuTraversalHeader) == 32);
@@ -416,6 +418,7 @@ struct MeshletStreamRuntimeDesc {
     uint32_t maxBlasBuilds = kMeshletStreamDefaultMaxBlasBuilds;
     uint64_t maxFallbackBlasBytes = 512ull * 1024ull * 1024ull;
     bool screenSpacePagePriority = true;
+    bool viewDrivenPageDemand = true;
 
     bool operator==(const MeshletStreamRuntimeDesc&) const = default;
 };
@@ -642,6 +645,7 @@ private:
     uint32_t maxPageUploadsPerFrame_ = 0;
     uint32_t maxGpuPageRequests_ = 0;
     bool screenSpacePagePriority_ = false;
+    bool viewDrivenPageDemand_ = false;
     uint32_t maxGpuPageUnloadRequests_ = 0;
     uint32_t maxUpdatePatches_ = 0;
     uint32_t residentPageCapacity_ = 0;

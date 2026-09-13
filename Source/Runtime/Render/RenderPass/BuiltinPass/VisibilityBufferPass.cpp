@@ -286,6 +286,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .queuedFrameCount = 3,
         .enableClusterRtx = false,
         .screenSpacePagePriority = boolProperty(&properties, "screenSpacePagePriority", true),
+        .viewDrivenPageDemand = boolProperty(&properties, "viewDrivenPageDemand", true),
     };
 }
 

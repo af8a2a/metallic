@@ -347,6 +347,86 @@ float meshletLodBvhWorldBoundsPadding(const MeshletLodBvhNode& node,
 
 } // namespace
 
+bool buildMeshletLodRefinementBounds(std::span<const MeshletLodGroupRecord> groups,
+    std::span<const MeshletLodGroupRange> ranges, std::span<const uint32_t> refinedGroups,
+    std::vector<MeshletLodRefinementBounds>& bounds, std::string& reason)
+{
+    bounds.clear();
+    reason.clear();
+    if (groups.size() != ranges.size()) { reason = "Refinement bound ranges disagree"; return false; }
+    bounds.resize(groups.size());
+    for (size_t id = 0; id < groups.size(); ++id) {
+        const auto& group = groups[id];
+        const auto& range = ranges[id];
+        if (!validLodSphere(group.sphere, false) || !std::isfinite(group.error) || group.error < 0 ||
+            uint64_t(range.clusterOffset) + range.clusterCount > refinedGroups.size()) {
+            reason = "Invalid refinement bound input"; bounds.clear(); return false;
+        }
+        // Terminal error is a sentinel. Terminal payloads are always retained.
+        const double radius = double(group.sphere[3]) + ((group.flags & kMeshletLodTerminalGroup) ? 0.0 : group.error);
+        auto& box = bounds[id];
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            box.min[axis] = std::nextafter(float(double(group.sphere[axis]) - radius), -INFINITY);
+            box.max[axis] = std::nextafter(float(double(group.sphere[axis]) + radius), INFINITY);
+        }
+        for (uint32_t cluster = 0; cluster < range.clusterCount; ++cluster) {
+            const uint32_t child = refinedGroups[range.clusterOffset + cluster];
+            if (child == kMeshletLodInvalidGroup) { continue; }
+            if (child >= id) { reason = "Refinement bound topology is not a descending DAG"; bounds.clear(); return false; }
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                box.min[axis] = std::min(box.min[axis], bounds[child].min[axis]);
+                box.max[axis] = std::max(box.max[axis], bounds[child].max[axis]);
+            }
+        }
+    }
+    return true;
+}
+
+bool meshletLodBoundsVisible(const MeshletLodRefinementBounds& bounds,
+    const GPUSceneGpuInstanceRecord& instance, const MeshletLodView& view,
+    std::array<float, 3> cameraUp, float aspect, float farPlane)
+{
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        if (!std::isfinite(bounds.min[axis]) || !std::isfinite(bounds.max[axis]) ||
+            bounds.min[axis] > bounds.max[axis]) { return true; }
+    }
+    const auto& m = instance.worldMatrix;
+    const float3 low(bounds.min[0], bounds.min[1], bounds.min[2]);
+    const float3 high(bounds.max[0], bounds.max[1], bounds.max[2]);
+    const auto center = low * .5f + high * .5f, extent = high * .5f - low * .5f;
+    const float3 a(m[0], m[1], m[2]), b(m[4], m[5], m[6]), c(m[8], m[9], m[10]);
+    const float3 eye(view.eye[0], view.eye[1], view.eye[2]);
+    const float3 delta = a * center.x + b * center.y + c * center.z + float3(m[12], m[13], m[14]) - eye;
+    const float3 forward(view.forward[0], view.forward[1], view.forward[2]);
+    auto right = cross(forward, float3(cameraUp[0], cameraUp[1], cameraUp[2]));
+    right = dot(right, right) > 1e-12f ? normalize(right) : float3(1, 0, 0);
+    const auto up = cross(right, forward);
+    const auto radius = [&](float3 normal) {
+        return std::abs(dot(a, normal)) * extent.x + std::abs(dot(b, normal)) * extent.y + std::abs(dot(c, normal)) * extent.z;
+    };
+    float magnitude = 0;
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        magnitude += std::abs(m[axis]) * (std::abs(center.x) + extent.x) +
+            std::abs(m[4 + axis]) * (std::abs(center.y) + extent.y) +
+            std::abs(m[8 + axis]) * (std::abs(center.z) + extent.z) + std::abs(m[12 + axis]) + std::abs(view.eye[axis]);
+    }
+    if (!std::isfinite(magnitude) || !std::isfinite(delta.x) || !std::isfinite(delta.y) || !std::isfinite(delta.z)) { return true; }
+    const float padding = magnitude * (32.f * std::numeric_limits<float>::epsilon());
+    const float z = dot(delta, forward), rz = radius(forward) + padding;
+    if (z + rz < view.eye[3] || z - rz > farPlane) { return false; }
+    const float guard = 1.f + 2.f / std::max(std::min(view.projection[0], view.projection[0] * aspect), 1.f);
+    if (view.forward[3] != 0) {
+        const float halfHeight = view.projection[2] * .5f * guard;
+        return std::abs(dot(delta, right)) <= halfHeight * aspect + radius(right) + padding &&
+            std::abs(dot(delta, up)) <= halfHeight + radius(up) + padding;
+    }
+    const float ty = view.projection[1] * guard, tx = ty * aspect;
+    for (auto normal : {forward * tx + right, forward * tx - right, forward * ty + up, forward * ty - up}) {
+        if (dot(delta, normal) + radius(normal) + padding * length(normal) < 0) { return false; }
+    }
+    return true;
+}
+
 float meshletLodPixelError(const MeshletLodGroupRecord& group,
     const GPUSceneGpuInstanceRecord& instance, const MeshletLodView& view)
 {

@@ -216,8 +216,8 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
         fineGroups += (asset.groups()[groupId].flags & 1u) == 0u;
     }
     uint32_t verified = 0;
-    uint64_t overTarget = 0, unbounded = 0;
-    float maxFiniteError = 0;
+    uint64_t overTarget = 0, unbounded = 0, visibleOverTarget = 0, visibleUnbounded = 0;
+    float maxFiniteError = 0, maxVisibleError = 0;
     MeshletLodView view;
     for (uint32_t axis = 0; axis < 3; ++axis) { view.eye[axis] = camera.at("eye")[axis].get<float>(); }
     view.eye[3] = camera.at("znear").get<float>();
@@ -247,6 +247,20 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
                 std::copy_n(refine.boundsCenterRadius, 4, metric.sphere.begin());
                 metric.error = refine.maxQuadricError;
                 const float error = meshletLodPixelError(metric, metricInstance, view);
+                MeshletLodRefinementBounds bounds;
+                for (uint32_t axis = 0; axis < 3; ++axis) {
+                    const double radius = double(metric.sphere[3]) + metric.error;
+                    bounds.min[axis] = std::nextafter(float(double(metric.sphere[axis]) - radius), -INFINITY);
+                    bounds.max[axis] = std::nextafter(float(double(metric.sphere[axis]) + radius), INFINITY);
+                }
+                // Measure only the referenced refinement's own error envelope;
+                // ancestor demand bounds deliberately contain additional descendants.
+                if (meshletLodBoundsVisible(bounds, metricInstance, view, {0, 1, 0}, 1920.f / 1080.f,
+                    camera.at("zfar").get<float>())) {
+                    visibleOverTarget += error > 1.5001f;
+                    visibleUnbounded += error > 1e30f;
+                    maxVisibleError = std::max(maxVisibleError, error);
+                }
                 if (error > 1.5001f) { ++overTarget; }
                 if (error > 1e30f) { ++unbounded; }
                 else { maxFiniteError = std::max(maxFiniteError, error); }
@@ -292,7 +306,9 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
         {"candidateCapacity", early[5]}, {"earlyHardware", early[0]},
         {"earlySoftware", early[4]}, {"lateHardware", late[0]}, {"lateSoftware", late[4]},
         {"capacityFallback", header.overflowCount != 0}, {"overTargetRefinements", overTarget},
-        {"nearPlaneUnboundedRefinements", unbounded}, {"maxFiniteRefinementErrorPixels", maxFiniteError}};
+        {"nearPlaneUnboundedRefinements", unbounded}, {"maxFiniteRefinementErrorPixels", maxFiniteError},
+        {"visibleOverTargetRefinements", visibleOverTarget}, {"visibleUnboundedRefinements", visibleUnbounded},
+        {"maxVisibleRefinementErrorPixels", maxVisibleError}};
 }
 
 Json percentiles(std::vector<double> samples)
@@ -320,6 +336,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
     };
     const uint32_t duration = setting("METALLIC_MINIZORAH_ROAM_SECONDS", 660);
     const uint64_t budget = uint64_t(setting("METALLIC_MINIZORAH_ROAM_MIB", 1024)) << 20u;
+    const uint32_t fixedView = setting("METALLIC_MINIZORAH_FIXED_VIEW", UINT32_MAX);
     Json report{{"status", "running"}, {"durationSeconds", duration}, {"pageBudgetBytes", budget},
         {"resolution", {1920, 1080}}, {"targetPixelError", 1.5}, {"routePeriodSeconds", 60},
         {"timingScope", "Synchronous GPUDriven + MaterialResolve offscreen graph; no presentation blit, output/debug readback on timed frames; excludes checkpoint verification"},
@@ -352,13 +369,16 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         auto& props = graph.findNode(node)->properties;
         props["maxResidentBytes"] = budget;
         props["screenSpacePagePriority"] = setting("METALLIC_MINIZORAH_PAGE_PRIORITY", 1) != 0;
+        props["viewDrivenPageDemand"] = setting("METALLIC_MINIZORAH_VIEW_DEMAND", 1) != 0;
         report["screenSpacePagePriority"] = props["screenSpacePagePriority"];
+        report["viewDrivenPageDemand"] = props["viewDrivenPageDemand"];
         props["debugStreamingPages"] = false;
         const Json original = graph.viewProperties().at("camera");
         checkRoam(props.value("viewBinding", "") == "global" && viewport.setCameraProperties(original),
             "MiniZorah must initialize a shared viewport camera");
         preview.bindRenderView(&viewport);
         report["cameraControl"] = "Shared RenderView, same as editor viewport input";
+        report["fixedViewSeconds"] = fixedView == UINT32_MAX ? Json(nullptr) : Json(fixedView);
         scene::MeshletStreamAsset asset;
         checkRoam(asset.open(std::filesystem::path(PROJECT_SOURCE_DIR) / props.at("streamAssetPath").get<std::string>(), log), log);
         scene::Bounds bounds;
@@ -376,6 +396,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         farCamera["eye"] = {center.x + radius*2, center.y + radius*1.4f, center.z + radius*2};
         farCamera["center"] = {center.x, center.y, center.z}; farCamera["znear"] = radius*.001f; farCamera["zfar"] = radius*5;
         const auto cameraAt = [&](double seconds) {
+            if (fixedView != UINT32_MAX) { seconds = double(fixedView); }
             const double phase = std::fmod(seconds, 60.0);
             if ((phase >= 20 && phase < 25) || (phase >= 50 && phase < 55)) { return farCamera; }
             Json camera = original;
@@ -397,6 +418,12 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         }
         checkRoam(observer.latest.value("terminalReady", false), "Terminal pages did not become ready");
         double nextCheckpoint = 0;
+        const uint32_t convergenceDeadline = setting("METALLIC_MINIZORAH_CONVERGENCE_SECONDS",
+            fixedView != UINT32_MAX && budget >= (1ull << 30) ? 5u : UINT32_MAX);
+        report["convergenceDeadlineSeconds"] = convergenceDeadline == UINT32_MAX ? Json(nullptr) : Json(convergenceDeadline);
+        report["firstConvergedSeconds"] = nullptr;
+        report["firstConvergedWallSeconds"] = nullptr;
+        const auto roamingStart = Clock::now();
         uint64_t maxFineGroups = 0, maxDeferred = 0;
         while (elapsed < duration) {
             const auto camera = cameraAt(elapsed);
@@ -414,6 +441,10 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
                 checkRoam(!graph.findNode(node)->runtimeProperties.contains("camera"),
                     "Roaming must not bypass the viewport by rewriting the pass camera");
                 const auto cut = validateRoamingCut(observer, asset, camera);
+                if (cut.at("visibleOverTargetRefinements") == 0 && report["firstConvergedSeconds"].is_null()) {
+                    report["firstConvergedSeconds"] = elapsed;
+                    report["firstConvergedWallSeconds"] = std::chrono::duration<double>(Clock::now() - roamingStart).count();
+                }
                 const Json stageTimes = observer.readTimings();
                 std::vector<RenderGraphExecutionStats> capturedTimings;
                 checkRoam(bool(preview.collectCompletedGpuExecutionStats(capturedTimings)), "Cannot collect checkpoint GPU timings");
@@ -434,21 +465,26 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
                     stats.at("frameEvictionScanCount").get<uint32_t>() <= 1, "Streaming error or repeated eviction scan");
                 maxFineGroups = std::max(maxFineGroups, cut.at("fineGroups").get<uint64_t>());
                 maxDeferred = std::max(maxDeferred, stats.at("frameAllocationDeferredCount").get<uint64_t>());
-                report["samples"].push_back({{"seconds", elapsed}, {"camera", camera}, {"coverage", covered}, {"cut", cut},
+                report["samples"].push_back({{"seconds", elapsed},
+                    {"wallSeconds", std::chrono::duration<double>(Clock::now() - roamingStart).count()},
+                    {"timedFrames", frameTimes.size()}, {"camera", camera}, {"coverage", covered}, {"cut", cut},
                     {"streaming", observer.latest}, {"pagePriorities", observer.readPagePriorities()}, {"memory", roamingMemory()},
                     {"checkpointGpuMilliseconds", stageTimes}, {"passGpuMilliseconds", nodeTimes}});
-                if (nextCheckpoint <= 60) {
+                if (nextCheckpoint <= 60 && (fixedView == UINT32_MAX || std::floor(nextCheckpoint) == nextCheckpoint)) {
                     observer.capture = false;
                     checkRoam(bool(preview.render(graph, 1920, 1080, "MaterialResolve.color")), preview.lastLog());
                     checkRoam(saveRgba8Png(context.outputDirectory / ("roam-" + std::to_string(int(nextCheckpoint)) + ".png"),
                         reinterpret_cast<const uint8_t*>(preview.pixels().data()), 1920, 1080, log), log);
                 }
-                std::printf("[MiniZorahRoaming] %.1fs groups=%u candidates=%llu pool=%.1fMiB queued=%u\n", elapsed,
+                std::printf("[MiniZorahRoaming] %.1fs groups=%u candidates=%llu pool=%.1fMiB queued=%u visibleOverTarget=%llu\n", elapsed,
                     cut.at("activeGroups").get<uint32_t>(), static_cast<unsigned long long>(cut.at("selectedClusters").get<uint64_t>()),
-                    stats.at("usedResidentBytes").get<double>() / 1048576.0, stats.at("queuedUploadCount").get<uint32_t>());
+                    stats.at("usedResidentBytes").get<double>() / 1048576.0, stats.at("queuedUploadCount").get<uint32_t>(),
+                    static_cast<unsigned long long>(cut.at("visibleOverTargetRefinements").get<uint64_t>()));
                 std::fflush(stdout);
-                nextCheckpoint += 5;
+                nextCheckpoint += fixedView != UINT32_MAX && nextCheckpoint < 5 ? .5 : 5;
                 save();
+                checkRoam(elapsed < convergenceDeadline || cut.at("visibleOverTargetRefinements") == 0,
+                    "Visible refinements failed the 1.5 px convergence deadline");
                 std::vector<RenderGraphExecutionStats> checkpointTimings;
                 checkRoam(bool(preview.collectCompletedGpuExecutionStats(checkpointTimings)), "Cannot retire checkpoint timings");
             }

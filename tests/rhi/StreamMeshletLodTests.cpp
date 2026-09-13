@@ -470,6 +470,10 @@ private:
         primitive.lodLevelCount = large ? 9 : 3;
         std::vector<MeshletLodBvhNode> nodes;
         std::string reason;
+        std::vector<MeshletLodRefinementBounds> refinementBounds;
+        if (!buildMeshletLodRefinementBounds(fixture.groups, fixture.ranges, fixture.refined, refinementBounds, reason)) {
+            return RhiTestResult::fail(reason);
+        }
         if (!buildMeshletLodBvh(fixture.groups, nodes, reason)) {
             return RhiTestResult::fail("stream GPU fixture BVH: " + reason);
         }
@@ -554,6 +558,7 @@ private:
         STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = traversalShader.get(), .computeEntryPoint = "main",
             .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, traversalPipeline));
         uint32_t positivePriorities = 0;
+        uint32_t viewDemandReductions = 0;
         MeshletStreamUserPush push;
         push.instanceBuffer = handles[Instance].index;
         push.primitiveBuffer = handles[Primitive].index;
@@ -587,21 +592,40 @@ private:
         STREAM_LOD_REQUIRE(pool->createCommandBuffer(commands));
         STREAM_LOD_REQUIRE(device->createFence(false, fence));
         const uint32_t caseCount = large ? 36u : 37u;
-        for (uint32_t frame = 0; frame < caseCount * 3; ++frame) {
+        for (uint32_t frame = 0; frame < caseCount * 4; ++frame) {
             const uint32_t test = frame % caseCount;
             const bool useBvh = frame >= caseCount;
             const bool cooperative = frame >= caseCount * 2;
+            const bool viewDriven = frame >= caseCount * 3;
+            const float viewAspect = viewDriven && test % 7 == 1 ? .25f : 1.f;
             primitive.lodBvhNodeCount = useBvh ? static_cast<uint32_t>(nodes.size()) : 0;
             uint32_t manual, capacity;
             std::vector<uint8_t> available;
             configureStreamLodCase(fixture, large, test, manual, capacity, available);
-            const auto expected = selectStreamMeshletLodReference(fixture.groups, fixture.ranges, fixture.refined,
+            if (viewDriven) {
+                if (test % 6 == 0) { fixture.instance.worldMatrix[12] = 500.f; }
+                if (test % 6 == 2) { fixture.instance.worldMatrix[14] = 1000.f; }
+                if (test % 6 == 4) { fixture.instance.worldMatrix[14] = -2000000.f; }
+            }
+            auto demandMetrics = fixture.groups;
+            for (uint32_t group = 0; group < kGroupCount; ++group) {
+                groups[group].refinementBounds = viewDriven ? refinementBounds[group] : MeshletLodRefinementBounds{};
+                if (viewDriven && manual == UINT32_MAX && (demandMetrics[group].flags & kMeshletLodTerminalGroup) == 0 &&
+                    !meshletLodBoundsVisible(refinementBounds[group], fixture.instance, fixture.view, {0, 1, 0}, viewAspect, 1000000.f)) {
+                    demandMetrics[group].error = 0;
+                }
+            }
+            const auto expected = selectStreamMeshletLodReference(demandMetrics, fixture.ranges, fixture.refined,
                 fixture.drawable, fixture.instance, fixture.view, manual, capacity, available);
-            const auto expectedState = selectStreamMeshletLodReference(fixture.groups, fixture.ranges, fixture.refined,
+            if (viewDriven) {
+                const auto legacy = fixture.select(manual, capacity);
+                viewDemandReductions += expected.selectedClusters.size() < legacy.selectedClusters.size();
+            }
+            const auto expectedState = selectStreamMeshletLodReference(demandMetrics, fixture.ranges, fixture.refined,
                 fixture.drawable, fixture.instance, fixture.view, manual, UINT32_MAX, available,
                 useBvh ? std::span<const MeshletLodBvhNode>(nodes) : std::span<const MeshletLodBvhNode>{});
             const std::string caseLabel = std::string(large ? "511 groups, " : "shared parents, ") +
-                (cooperative ? "cooperative, case " : useBvh ? "BVH, case " : "linear, case ") + std::to_string(test);
+                (viewDriven ? "view demand, case " : cooperative ? "cooperative, case " : useBvh ? "BVH, case " : "linear, case ") + std::to_string(test);
             MeshletStreamGpuInstance instance;
             instance.visible = fixture.instance.identity[3] != 0;
             instance.gpuSceneInstanceIndex = 17;
@@ -615,8 +639,8 @@ private:
             params.upProjection[1] = 1;
             params.upProjection[3] = fixture.view.forward[3];
             params.viewport[2] = fixture.view.projection[0];
-            params.viewport[0] = 1.f;
-            params.viewport[1] = params.viewport[2];
+            params.viewport[0] = viewAspect;
+            params.viewport[1] = params.viewport[2] * viewAspect;
             params.viewport[3] = 2 * std::atan(fixture.view.projection[1]);
             params.clipOrtho[0] = fixture.view.eye[3];
             params.clipOrtho[1] = 1000000.f;
@@ -657,6 +681,7 @@ private:
             std::fill(requests.begin() + kPriorityTable, requests.end(), 0x7fc00000u);
             if (!upload(Instance, &instance, sizeof(instance)) || !upload(Params, &params, sizeof(params)) ||
                 !upload(Primitive, &primitive, sizeof(primitive)) ||
+                !upload(Groups, groups.data(), sizes[Groups]) ||
                 !upload(PageTable, pages.data(), sizes[PageTable]) || !upload(Requests, requests.data(), sizes[Requests])) {
                 return RhiTestResult::fail("stream frame input map");
             }
@@ -817,7 +842,8 @@ private:
             }
         }
         if (positivePriorities == 0) { return RhiTestResult::fail("Visible requests never generated screen benefit"); }
-        return RhiTestResult::pass("219 linear/BVH/cooperative GPU-reference cuts, priority clear/gather, 511-group pruning, sparse state reuse, camera/residency transitions and capacity fallback");
+        if (viewDemandReductions == 0) { return RhiTestResult::fail("View demand never pruned an offscreen refinement"); }
+        return RhiTestResult::pass("292 linear/BVH/cooperative/view-driven GPU-reference cuts, priority clear/gather, 511-group pruning, sparse state reuse, camera/residency transitions and capacity fallback");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLodGpuTest);
