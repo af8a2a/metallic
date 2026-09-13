@@ -65,9 +65,129 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerHistoryTest);
 
+class EditorProfilerSortingTest final : public RhiTest {
+public:
+    EditorProfilerSortingTest() { type = RhiTestType::Command; name = "editor_profiler_column_sorting"; }
+    RhiTestResult run(RhiTestContext& testContext) override
+    {
+        auto* previous = ImGui::GetCurrentContext();
+        auto* context = ImGui::CreateContext();
+        struct Cleanup {
+            ImGuiContext* context;
+            ImGuiContext* previous;
+            ~Cleanup() { ImGui::DestroyContext(context); ImGui::SetCurrentContext(previous); }
+        } cleanup{context, previous};
+        try {
+            auto& io = ImGui::GetIO(); io.IniFilename = nullptr; io.LogFilename = nullptr;
+            io.DisplaySize = ImVec2(1500, 1000); io.DeltaTime = 1.f / 60;
+            unsigned char* pixels = nullptr; int width = 0, height = 0;
+            io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height); io.Fonts->SetTexID(ImTextureID(1));
+            EditorProfiler profiler;
+            RenderGraphExecutionStats stats{.graphGeneration = 1, .gpuTimingAvailable = true};
+            const char* names[]{"Alpha", "Bravo", "Charlie", "Missing", "Zero"};
+            const QueueType queues[]{QueueType::Graphics, QueueType::Compute, QueueType::Copy, QueueType::Graphics, QueueType::Compute};
+            const double gpu[2][5]{{9, 2, 3, 999, 0}, {1, 8, 3, 999, 0}};
+            const double cpu[2][5]{{4, 1, 10, 5, 0}, {2, 1, 0, 5, 0}};
+            for (uint32_t f = 0; f < 2; ++f) {
+                stats.executionId = f; stats.nodes.clear();
+                for (uint32_t n = 0; n < 5; ++n) {
+                    stats.nodes.push_back({.id = n, .name = names[n], .type = "Test", .cpuMilliseconds = cpu[f][n],
+                        .gpuMilliseconds = gpu[f][n], .gpuTimingAvailable = n != 3, .queue = queues[n]});
+                }
+                stats.nodes[0].sections = {{.name = "Alpha child low", .gpuMilliseconds = 1, .gpuTimingAvailable = true},
+                    {.name = "Alpha child high", .gpuMilliseconds = 7, .gpuTimingAvailable = true}};
+                auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stats);
+            }
+            const auto draw = [&](bool expand = true) {
+                ImGui::NewFrame();
+                if (ImGui::FindWindowByName("Profiler")) { ImGui::SetWindowSize("Profiler", io.DisplaySize); }
+                ImGui::SetNextWindowPos(ImVec2(0, 0));
+                ImGui::LogToBuffer(expand ? 16 : 0);
+                bool open = true; profiler.drawWindow(&open, {});
+                std::string text = context->LogBuffer.c_str();
+                ImGui::LogFinish(); ImGui::Render();
+                return text;
+            };
+            const auto table = [&]() {
+                // BeginTabItem adds a scope ID; this isolated context owns one table.
+                return context->Tables.GetAliveCount() ? context->Tables.GetByIndex(0) : nullptr;
+            };
+            const auto click = [&](ImVec2 point) {
+                io.AddMousePosEvent(point.x, point.y); draw();
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, true); draw();
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, false); draw();
+                io.AddMousePosEvent(-100, -100);
+                return draw();
+            };
+            const auto header = [&](int column) {
+                auto* t = table(); checkProfile(t && column < t->ColumnsCount, "missing profiler table column");
+                return click(ImVec2(t->Columns[column].MinX + 15, t->OuterRect.Min.y + ImGui::GetTextLineHeight() * .5f));
+            };
+            const auto expectOrder = [&](const std::string& text, std::initializer_list<const char*> expected) {
+                size_t previousPosition = 0;
+                for (auto* name : expected) {
+                    const auto position = text.find(std::string(name) + " (Test)");
+                    checkProfile(position != std::string::npos && position >= previousPosition, "incorrect order at " + std::string(name) + "\n" + text);
+                    previousPosition = position;
+                }
+            };
+            draw(); draw();
+            expectOrder(draw(), {"Alpha", "Bravo", "Charlie", "Missing", "Zero"});
+            auto text = header(1);
+            expectOrder(text, {"Alpha", "Bravo", "Charlie", "Zero", "Missing"});
+            checkProfile(text.find("Alpha child high") < text.find("Alpha child low") && text.find("Alpha child low") < text.find("Bravo (Test)"),
+                "sorting flattened child scopes or failed to sort siblings");
+            expectOrder(header(1), {"Zero", "Charlie", "Alpha", "Bravo", "Missing"});
+            expectOrder(header(1), {"Alpha", "Bravo", "Charlie", "Missing", "Zero"});
+            expectOrder(header(2), {"Charlie", "Missing", "Alpha", "Bravo", "Zero"});
+            expectOrder(header(2), {"Zero", "Bravo", "Alpha", "Charlie", "Missing"});
+            expectOrder(header(0), {"Alpha", "Bravo", "Charlie", "Missing", "Zero"});
+            expectOrder(header(0), {"Zero", "Missing", "Charlie", "Bravo", "Alpha"});
+            expectOrder(header(3), {"Bravo", "Zero", "Charlie", "Alpha", "Missing"});
+            // Toggle Detailed through the real checkbox and exercise every added column.
+            click(ImVec2(17, 59));
+            checkProfile(table()->ColumnsCount == 10, "Detailed checkbox did not expose timing columns");
+            expectOrder(header(4), {"Bravo", "Charlie", "Alpha", "Zero", "Missing"});
+            expectOrder(header(5), {"Charlie", "Bravo", "Alpha", "Zero", "Missing"});
+            expectOrder(header(6), {"Alpha", "Bravo", "Charlie", "Zero", "Missing"});
+            expectOrder(header(7), {"Missing", "Alpha", "Bravo", "Charlie", "Zero"});
+            expectOrder(header(8), {"Missing", "Alpha", "Bravo", "Charlie", "Zero"});
+            expectOrder(header(9), {"Charlie", "Missing", "Alpha", "Bravo", "Zero"});
+            // A backfilled result changes ordering without clicking the header again.
+            header(1);
+            auto backfill = stats; backfill.nodes[3].gpuTimingAvailable = true; backfill.nodes[3].gpuMilliseconds = 20;
+            profiler.updateRenderGraphGpuStats(backfill);
+            expectOrder(draw(), {"Missing", "Alpha", "Bravo", "Charlie", "Zero"});
+            // Close Alpha by its stable ImGui ID, then sort while keeping it closed.
+            const auto& frame = profiler.displayFrame();
+            size_t alpha = 0;
+            for (size_t i = 0; i < frame.nodes.size(); ++i) { if (frame.nodes[i].name == "Alpha (Test)") { alpha = i; break; } }
+            std::vector<size_t> chain;
+            for (size_t i = alpha;; i = frame.nodes[i].parent) { chain.push_back(i); if (i == 0) { break; } }
+            ImGuiID id = table()->ID;
+            for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+                const void* pointer = reinterpret_cast<void*>(*it + 1); id = ImHashData(&pointer, sizeof(pointer), id);
+            }
+            table()->InnerWindow->StateStorage.SetInt(id, 0);
+            checkProfile(draw(false).find("Alpha child low") == std::string::npos, "failed to collapse fixture scope");
+            auto* t = table();
+            const auto old = context->CurrentTable; context->CurrentTable = t;
+            ImGui::TableSetColumnSortDirection(1, ImGuiSortDirection_Ascending, false);
+            context->CurrentTable = old;
+            text = draw(false);
+            checkProfile(table()->InnerWindow->StateStorage.GetInt(id, -1) == 0 && text.find("Alpha child low") == std::string::npos,
+                "sorting changed collapsed scope identity");
+            std::filesystem::create_directories(testContext.outputDirectory);
+            std::ofstream(testContext.outputDirectory / "ProfilerSortedTable.txt") << text;
+            return RhiTestResult::pass("Real column clicks: tri-state, all timing/name/queue columns, missing/zero/ties, subtree ordering, GPU backfill and collapsed identity");
+        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(EditorProfilerSortingTest);
+
 // Render real ImGui draw data offscreen for UI QA, without creating an OS window
 // or taking over the user's desktop. Only the font atlas is used by this panel.
-bool saveProfilerPanel(EditorProfiler& profiler, const char* tab, const std::filesystem::path& path, std::string& message)
+bool saveProfilerPanel(EditorProfiler& profiler, const char* tab, const std::filesystem::path& path, std::string& message, bool sortGpu = false)
 {
     auto* previous = ImGui::GetCurrentContext();
     auto* context = ImGui::CreateContext();
@@ -84,6 +204,13 @@ bool saveProfilerPanel(EditorProfiler& profiler, const char* tab, const std::fil
     io.Fonts->GetTexDataAsRGBA32(&atlas, &tw, &th); io.Fonts->SetTexID(ImTextureID(1));
     for (int f = 0; f < 4; ++f) {
         ImGui::NewFrame();
+        if (sortGpu && context->Tables.GetAliveCount()) {
+            auto* table = context->Tables.GetByIndex(0);
+            const auto previousTable = context->CurrentTable;
+            context->CurrentTable = table;
+            ImGui::TableSetColumnSortDirection(1, ImGuiSortDirection_Descending, false);
+            context->CurrentTable = previousTable;
+        }
         if (auto* window = ImGui::FindWindowByName("Profiler")) {
             ImGui::SetWindowSize("Profiler", ImVec2(width, height), ImGuiCond_Always);
             if (auto* bar = context->TabBars.GetByKey(window->GetID("ProfilerTabs"))) {
@@ -213,6 +340,7 @@ public:
             for (const char* tab : {"Table", "Streaming", "LineChart", "BarChart"}) {
                 checkProfile(saveProfilerPanel(profiler, tab, context.outputDirectory / (std::string("Profiler-")+tab+".png"), log), log);
             }
+            checkProfile(saveProfilerPanel(profiler, "Table", context.outputDirectory / "Profiler-Table-Sorted.png", log, true), log);
             report["status"] = "passed"; report["asyncComputeTimed"] = sawCompute;
             report["uploadBytesObserved"] = bytes; report["peakRequests"] = peakRequests;
             save();

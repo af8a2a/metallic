@@ -7,6 +7,7 @@
 重新启动本次构建的 `build-relwithdebinfo/Source/MetallicGPUDrivenSample.exe` 或 `Metallic.exe`，打开 Profiler。
 
 - **Table**：GPU/CPU 平均毫秒数和实际队列；展开 GPUDriven 查看遍历、候选展开、剔除、软硬分类、分桶、软光栅、硬光栅、合并与两轮 HZB。**Detailed** 展示双方的末次、最小和最大值。
+- **列排序**：点击耗时列标题，在降序、升序、原始执行顺序之间循环；Timer / Queue 首次点击为升序。Detailed 中的 last / min / max 同样支持排序。只重排同一 scope 的兄弟节点，保留子树和折叠状态；缺失值 `--` 始终置底，合法零值参与排序，同值保留原始顺序。排序随实时样本及延迟 GPU 回填更新。
 - **BarChart / LineChart**：选择 CPU/GPU 和 Scope。可单独观察 Stream early 等内部阶段，悬停折线查看具体帧。条形图按独立耗时显示；并行和嵌套区间不累加为帧耗时。
 - **Streaming**：当前 pass 和 cooked asset；几何页占用、容量，驻留/总页面数、等待页面、I/O 队列、上传管线和反馈年龄。显示显存面积图、请求/上传/卸载曲线、上传 MiB/frame 与积压曲线。
 - 两类历史最多保留 **500 帧**。GPU 查询按 execution ID 回填；未完成或不支持的数据排除出均值，合法的 0 ms 保留。重编译时清理计时历史；stream generation 改变或离开流送场景时清理对应流送历史。

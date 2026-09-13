@@ -77,8 +77,56 @@ const char* queueName(render::QueueType queue)
     return queue == render::QueueType::Compute ? "Compute" : queue == render::QueueType::Copy ? "Copy" : "Graphics";
 }
 
+enum class ProfilerColumn : ImGuiID {
+    Timer = 1, GpuAverage, CpuAverage, Queue, GpuLast, GpuMinimum, GpuMaximum, CpuLast, CpuMinimum, CpuMaximum
+};
+
+struct ProfilerTableRow {
+    Aggregate gpu;
+    Aggregate cpu;
+    bool ready = false;
+};
+
+const ProfilerTableRow& tableRow(const EditorProfiler::Frame& frame, const std::vector<EditorProfiler::Frame>& history,
+    size_t index, std::vector<ProfilerTableRow>& rows)
+{
+    auto& row = rows[index];
+    if (!row.ready) {
+        std::vector<std::string> path;
+        for (size_t current = index; current != 0; current = frame.nodes[current].parent) { path.push_back(frame.nodes[current].name); }
+        std::reverse(path.begin(), path.end());
+        row.gpu = aggregateByPath(history, path, true);
+        row.cpu = aggregateByPath(history, path, false);
+        row.ready = true;
+    }
+    return row;
+}
+
+const char* tableQueueName(const EditorProfiler::Node& node)
+{
+    if (node.renderGraphExecutionId == UINT64_MAX) { return "CPU"; }
+    return node.renderGraphNodeId == UINT32_MAX ? "Envelope" : queueName(node.queue);
+}
+
+double tableSortValue(const EditorProfiler::Node& node, const ProfilerTableRow& row, ProfilerColumn column)
+{
+    const double missing = std::numeric_limits<double>::quiet_NaN();
+    switch (column) {
+    case ProfilerColumn::GpuAverage: return row.gpu.count ? row.gpu.average : missing;
+    case ProfilerColumn::CpuAverage: return row.cpu.count ? row.cpu.average : missing;
+    case ProfilerColumn::GpuLast: return node.gpuTimingAvailable ? node.gpuMilliseconds : missing;
+    case ProfilerColumn::GpuMinimum: return row.gpu.count ? row.gpu.minimum : missing;
+    case ProfilerColumn::GpuMaximum: return row.gpu.count ? row.gpu.maximum : missing;
+    case ProfilerColumn::CpuLast: return node.cpuMilliseconds;
+    case ProfilerColumn::CpuMinimum: return row.cpu.count ? row.cpu.minimum : missing;
+    case ProfilerColumn::CpuMaximum: return row.cpu.count ? row.cpu.maximum : missing;
+    default: return missing;
+    }
+}
+
 void drawProfilerTableNode(const EditorProfiler::Frame& frame, const std::vector<EditorProfiler::Frame>& history,
-    size_t index, std::vector<std::string>& path, uint32_t depth, bool detailed)
+    size_t index, uint32_t depth, bool detailed, std::vector<ProfilerTableRow>& rows,
+    const ImGuiTableColumnSortSpecs* sort)
 {
     const auto& node = frame.nodes[index];
     const bool children = !node.children.empty();
@@ -90,15 +138,16 @@ void drawProfilerTableNode(const EditorProfiler::Frame& frame, const std::vector
     ImGui::PushStyleColor(ImGuiCol_Text, imguiColor(node.color));
     const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(index + 1), flags, "%s", node.name.c_str());
     ImGui::PopStyleColor();
-    const auto gpu = aggregateByPath(history, path, true);
-    const auto cpu = aggregateByPath(history, path, false);
+    const auto& row = tableRow(frame, history, index, rows);
+    const auto& gpu = row.gpu;
+    const auto& cpu = row.cpu;
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("CPU samples: %zu | GPU samples: %zu\nGPU results arrive after completion; missing queries are excluded.\nNested / concurrent intervals must not be added together.", cpu.count, gpu.count);
     }
     ImGui::TableNextColumn(); drawDuration(gpu.average, gpu.count != 0);
     ImGui::TableNextColumn(); drawDuration(cpu.average, cpu.count != 0);
     ImGui::TableNextColumn();
-    if (node.renderGraphExecutionId != UINT64_MAX) { ImGui::TextUnformatted(node.renderGraphNodeId == UINT32_MAX ? "Envelope" : queueName(node.queue)); }
+    if (node.renderGraphExecutionId != UINT64_MAX) { ImGui::TextUnformatted(tableQueueName(node)); }
     else { ImGui::TextDisabled("CPU"); }
     if (detailed) {
         ImGui::TableNextColumn(); drawDuration(node.gpuMilliseconds, node.gpuTimingAvailable);
@@ -109,10 +158,34 @@ void drawProfilerTableNode(const EditorProfiler::Frame& frame, const std::vector
         ImGui::TableNextColumn(); drawDuration(cpu.maximum, cpu.count != 0);
     }
     if (open && children) {
-        for (const size_t child : node.children) {
-            path.push_back(frame.nodes[child].name);
-            drawProfilerTableNode(frame, history, child, path, depth + 1, detailed);
-            path.pop_back();
+        // Sort only a display copy of siblings. Original node indices and their
+        // parent ID stack stay stable, so sorting never moves or reopens a scope.
+        auto children = node.children;
+        if (sort && sort->SortDirection != ImGuiSortDirection_None) {
+            const auto column = static_cast<ProfilerColumn>(sort->ColumnUserID);
+            if (column != ProfilerColumn::Timer && column != ProfilerColumn::Queue) {
+                for (size_t child : children) { tableRow(frame, history, child, rows); }
+            }
+            std::stable_sort(children.begin(), children.end(), [&](size_t a, size_t b) {
+                const auto& left = frame.nodes[a];
+                const auto& right = frame.nodes[b];
+                int order = 0;
+                if (column == ProfilerColumn::Timer) { order = left.name.compare(right.name); }
+                else if (column == ProfilerColumn::Queue) { order = std::string_view(tableQueueName(left)).compare(tableQueueName(right)); }
+                else {
+                    const double x = tableSortValue(left, rows[a], column);
+                    const double y = tableSortValue(right, rows[b], column);
+                    const bool xValid = std::isfinite(x), yValid = std::isfinite(y);
+                    // Missing queries stay last in both directions; zero is valid.
+                    if (xValid != yValid) { return xValid; }
+                    if (!xValid) { return false; }
+                    order = x < y ? -1 : x > y ? 1 : 0;
+                }
+                return sort->SortDirection == ImGuiSortDirection_Ascending ? order < 0 : order > 0;
+            });
+        }
+        for (const size_t child : children) {
+            drawProfilerTableNode(frame, history, child, depth + 1, detailed, rows, sort);
         }
         ImGui::TreePop();
     }
@@ -122,18 +195,33 @@ void drawProfilerTable(const EditorProfiler::Frame& frame, const std::vector<Edi
 {
     if (frame.nodes.empty()) { ImGui::TextDisabled("No profiler samples yet."); return; }
     if (!ImGui::BeginTable("ProfilerTable", detailed ? 10 : 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-        ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX, ImVec2(0, 0))) { return; }
-    ImGui::TableSetupColumn("Timer", ImGuiTableColumnFlags_WidthStretch, 300);
-    for (const char* label : {"GPU avg ms", "CPU avg ms", "Queue"}) { ImGui::TableSetupColumn(label, ImGuiTableColumnFlags_WidthFixed, 90); }
+        ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
+        ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate, ImVec2(0, 0))) { return; }
+    const auto setupColumn = [](const char* name, ProfilerColumn column, float width, bool numeric = true) {
+        ImGui::TableSetupColumn(name, ImGuiTableColumnFlags_WidthFixed |
+            (numeric ? ImGuiTableColumnFlags_PreferSortDescending : ImGuiTableColumnFlags_None), width, static_cast<ImGuiID>(column));
+    };
+    ImGui::TableSetupColumn("Timer", ImGuiTableColumnFlags_WidthStretch, 300, static_cast<ImGuiID>(ProfilerColumn::Timer));
+    setupColumn("GPU avg ms", ProfilerColumn::GpuAverage, 90);
+    setupColumn("CPU avg ms", ProfilerColumn::CpuAverage, 90);
+    setupColumn("Queue", ProfilerColumn::Queue, 90, false);
     if (detailed) {
-        for (const char* label : {"GPU last", "GPU min", "GPU max", "CPU last", "CPU min", "CPU max"}) {
-            ImGui::TableSetupColumn(label, ImGuiTableColumnFlags_WidthFixed, 85);
-        }
+        setupColumn("GPU last", ProfilerColumn::GpuLast, 85);
+        setupColumn("GPU min", ProfilerColumn::GpuMinimum, 85);
+        setupColumn("GPU max", ProfilerColumn::GpuMaximum, 85);
+        setupColumn("CPU last", ProfilerColumn::CpuLast, 85);
+        setupColumn("CPU min", ProfilerColumn::CpuMinimum, 85);
+        setupColumn("CPU max", ProfilerColumn::CpuMaximum, 85);
     }
     ImGui::TableSetupScrollFreeze(1, 1);
     ImGui::TableHeadersRow();
-    std::vector<std::string> path;
-    drawProfilerTableNode(frame, history, 0, path, 0, detailed);
+    auto* specs = ImGui::TableGetSortSpecs();
+    const auto* sort = specs && specs->SpecsCount > 0 ? &specs->Specs[0] : nullptr;
+    // Recompute on every displayed sample, including delayed GPU backfills, not
+    // just SpecsDirty. Each row's history aggregate is computed once per draw.
+    std::vector<ProfilerTableRow> rows(frame.nodes.size());
+    drawProfilerTableNode(frame, history, 0, 0, detailed, rows, sort);
+    if (specs) { specs->SpecsDirty = false; }
     ImGui::EndTable();
 }
 
