@@ -11,7 +11,7 @@
 - **BarChart / LineChart**：选择 CPU/GPU 和 Scope。可单独观察 Stream early 等内部阶段，悬停折线查看具体帧。条形图按独立耗时显示；并行和嵌套区间不累加为帧耗时。
 - **Streaming**：当前 pass 和 cooked asset；几何页占用、容量，驻留/总页面数、等待页面、I/O 队列、上传管线和反馈年龄。显示显存面积图、请求/上传/卸载曲线、上传 MiB/frame 与积压曲线。
 - 两类历史最多保留 **500 帧**。GPU 查询按 execution ID 回填；未完成或不支持的数据排除出均值，合法的 0 ms 保留。重编译时清理计时历史；stream generation 改变或离开流送场景时清理对应流送历史。
-- 流送面积图默认按实际占用缩放；勾选 **Include capacity in memory chart** 可看到预算/容量。CLAS 启用时堆叠显示其池占用；当前 MiniZorah VBuffer 路径显示 **CLAS disabled**。
+- 流送面积图默认按实际占用缩放；勾选 **Include capacity in memory chart** 可看到预算/容量。CLAS 启用时堆叠显示其池占用；MiniZorah VBuffer 现已默认启用独立 CLAS，新增 **CLAS Streaming** 折叠图表；参见 [流式 CLAS 实现与实测](E:/metallic/Documentation/MiniZorahStreamClas.md)。下方计时实测保留最初关闭 CLAS 的基线。
 
 ## 计时与数据范围
 

@@ -414,7 +414,12 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
     constexpr double mib = 1024.0 * 1024.0;
     ImGui::Text("Geometry %.1f / %.1f MiB | Resident %u / %u pages", last.geometryUsedBytes / mib,
         last.geometryBudgetBytes / mib, last.residentPages, last.totalPages);
-    if (last.clasEnabled) { ImGui::Text("CLAS %.1f / %.1f MiB", last.clasUsedBytes / mib, last.clasCapacityBytes / mib); }
+    if (last.clasEnabled) {
+        ImGui::Text("CLAS %.1f / %.1f MiB | Resident %u pages / %u clusters", last.clasUsedBytes / mib,
+            last.clasCapacityBytes / mib, last.clasResidentPages, last.clasResidentClusters);
+        ImGui::Text("CLAS built %u pages / %u clusters | Pending %u | Retiring %u | Budget deferred %u",
+            last.clasBuiltPages, last.clasBuiltClusters, last.clasPendingPages, last.clasRetiringPages, last.clasRejectedPages);
+    }
     else { ImGui::TextDisabled("CLAS: disabled for this rendering path"); }
     ImGui::Text("Pending pages %u | I/O queued %u, active %u | Upload pipeline %u", last.pendingPages, last.ioQueued, last.ioActive, last.uploadQueued);
     ImGui::Text("Requests %u | Completed uploads %u | Evictions %u | Upload %.3f MiB/frame", last.requests, last.uploads, last.evictions, last.uploadBytes / mib);
@@ -432,7 +437,12 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
     std::vector<PlotSeries> pages{{"Requests", IM_COL32(255, 211, 92, 255), {}}, {"Uploads", IM_COL32(92, 217, 161, 255), {}}, {"Evictions", IM_COL32(246, 123, 123, 255), {}}};
     std::vector<PlotSeries> uploads{{"Upload MiB/frame", IM_COL32(104, 178, 248, 255), {}}};
     std::vector<PlotSeries> pending{{"Pending pages", IM_COL32(255, 211, 92, 255), {}}, {"I/O queued", IM_COL32(246, 123, 123, 255), {}}, {"I/O active", IM_COL32(104, 178, 248, 255), {}}};
+    std::vector<PlotSeries> clasTraffic{{"Built pages", IM_COL32(75, 151, 250, 255), {}},
+        {"Pending pages", IM_COL32(255, 211, 92, 255), {}}, {"Retiring pages", IM_COL32(246, 123, 123, 255), {}}};
     for (const auto& sample : it->samples) {
+        clasTraffic[0].values.push_back(sample.clasBuiltPages);
+        clasTraffic[1].values.push_back(sample.clasPendingPages);
+        clasTraffic[2].values.push_back(sample.clasRetiringPages);
         frames.push_back(sample.frameIndex);
         memory[0].values.push_back(sample.geometryUsedBytes / mib); memory[1].values.push_back(sample.clasUsedBytes / mib);
         pages[0].values.push_back(sample.requests); pages[1].values.push_back(sample.uploads); pages[2].values.push_back(sample.evictions);
@@ -450,6 +460,9 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
     }
     if (ImGui::CollapsingHeader("Upload Traffic")) {
         drawHistoryPlot("Upload traffic (MiB/frame)", frames, uploads, "MiB", 150);
+    }
+    if (last.clasEnabled && ImGui::CollapsingHeader("CLAS Streaming")) {
+        drawHistoryPlot("CLAS build / backlog (pages)", frames, clasTraffic, "pages", 150);
     }
     if (ImGui::CollapsingHeader("Streaming Backlog")) {
         drawHistoryPlot("Streaming backlog (pages)", frames, pending, "pages", 150);

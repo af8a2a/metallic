@@ -543,17 +543,26 @@ Result MeshletStreamClasPool::cmdBuildPages(
             continue;
         }
 
-        MeshletStreamClasPagePlan plan;
+        MeshletStreamClasPagePlan decodedPlan;
+        const MeshletStreamClasPagePlan* pagePlan = request.plan;
         std::string reason;
-        if (!buildMeshletStreamClasPagePlan(
-                *impl_->asset,
-                request.pageIndex,
-                request.pageIndex * impl_->clusterIdStride,
-                plan,
-                reason)) {
+        if (!pagePlan) {
+            if (!buildMeshletStreamClasPagePlan(*impl_->asset, request.pageIndex,
+                    request.pageIndex * impl_->clusterIdStride, decodedPlan, reason)) {
+                impl_->storage.release(allocation);
+                rollback();
+                log = "MeshletStreamClasPool page plan failed: " + reason;
+                return makeError(Error::InvalidArgument);
+            }
+            pagePlan = &decodedPlan;
+        }
+        const auto& plan = *pagePlan;
+        if (plan.pageIndex != request.pageIndex || plan.clusters.size() != assetPage.clusterCount ||
+            plan.firstClusterId != request.pageIndex * impl_->clusterIdStride ||
+            plan.payloadByteSize != assetPage.uncompressedSize) {
             impl_->storage.release(allocation);
             rollback();
-            log = "MeshletStreamClasPool page plan failed: " + reason;
+            log = "MeshletStreamClasPool supplied plan does not match its page";
             return makeError(Error::InvalidArgument);
         }
 

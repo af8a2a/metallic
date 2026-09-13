@@ -787,9 +787,15 @@ public:
         if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
+        render::MeshletStreamClasPagePlan uploadPlan;
+        if (!render::buildMeshletStreamClasPagePlan(asset.pages()[pageIndex], decodedPayload, pageIndex,
+                pageIndex * asset.maxPageClusters(), uploadPlan, log)) {
+            return RhiTestResult::fail("Upload CLAS plan: " + log);
+        }
         const render::MeshletStreamClasPageBuild pageBuild{
             .pageIndex = pageIndex,
             .deviceOffsetBytes = 0,
+            .plan = &uploadPlan,
         };
         result = pool.cmdBuildPages(*commandBuffer, *pageBuffer, std::span(&pageBuild, 1), log);
         if (!result) {
@@ -871,6 +877,15 @@ public:
             render::MeshletStreamClasPageState::Retiring) {
             return RhiTestResult::fail("stream CLAS GPU page table did not hide the retired page");
         }
+        const auto retainedAddress = pool.clusterAddress(pageIndex, 0);
+        if (!commandPool->reset() || !commandBuffer->begin()) { return RhiTestResult::fail("Cannot reset reactivation commands"); }
+        result = pool.cmdBuildPages(*commandBuffer, *pageBuffer, std::span(&pageBuild, 1), log);
+        if (!commandBuffer->end()) { return RhiTestResult::fail("Cannot end reactivation commands"); }
+        if (!result || pool.stats().retiringPageCount != 0 || pool.stats().builtPageCount != 1 ||
+            pool.stats().totalBuiltPageCount != 1 || pool.clusterAddress(pageIndex, 0) != retainedAddress) {
+            return RhiTestResult::fail("Retiring CLAS was rebuilt instead of reactivated");
+        }
+        pool.retirePages(std::span(&pageIndex, 1));
         pool.beginFrame();
         if (!pool.pageHasClas(pageIndex)) {
             return RhiTestResult::fail("stream CLAS pool released a retired page before the queued-frame delay");

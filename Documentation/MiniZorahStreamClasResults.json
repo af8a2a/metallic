@@ -1,0 +1,47 @@
+{
+  "date": "2026-09-13",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "lodPixelError": 1.5,
+  "frames": 180,
+  "roamingFrames": [
+    60,
+    179
+  ],
+  "clasBudgetBytes": 1610612736,
+  "maxClasBuildClusters": 8192,
+  "runs": {
+    "baseline": {
+      "renderGraphGpuAverageMs": 4.712678133333333,
+      "renderGraphGpuMedianMs": 4.677872,
+      "clasBuildGpuAverageMs": 0,
+      "clasBuildCpuAverageMs": 0,
+      "final": {
+        "residentPages": 14732,
+        "clasBytes": 0,
+        "clasPages": 0,
+        "clasClusters": 0,
+        "clasPendingPages": 0,
+        "clasRejectedPages": 0,
+        "clasTotalBuiltPages": 0
+      }
+    },
+    "final": {
+      "renderGraphGpuAverageMs": 4.779672,
+      "renderGraphGpuMedianMs": 4.782544,
+      "clasBuildGpuAverageMs": 0.085388,
+      "clasBuildCpuAverageMs": 0.050715833333333335,
+      "final": {
+        "residentPages": 14732,
+        "clasBytes": 1196352000,
+        "clasPages": 14732,
+        "clasClusters": 207700,
+        "clasPendingPages": 0,
+        "clasRejectedPages": 0,
+        "clasTotalBuiltPages": 14732
+      }
+    }
+  }
+}

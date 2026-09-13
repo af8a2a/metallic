@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -571,6 +572,94 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(StreamLodPipelineCacheTest);
+
+class StreamClasRuntimeTest final : public RhiTest {
+public:
+    StreamClasRuntimeTest() { type = RhiTestType::Rendering; name = "stream_clas_runtime_lifecycle"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        std::unique_ptr<Device> device;
+        const auto created = createDevice({.applicationName = "Stream CLAS lifecycle",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .enableShaderObject = true, .enableClusterAccelerationStructure = true}, device);
+        if (!created) {
+            return hasError(created, Error::Unsupported) ? RhiTestResult::skip("Requires CLAS and bindless support")
+                : RhiTestResult::fail("CLAS device creation failed");
+        }
+        if (!device->capabilities().clusterAccelerationStructure) { return RhiTestResult::skip("CLAS unavailable"); }
+        const auto path = std::filesystem::absolute(context.outputDirectory / "clas_lifecycle.meshstream.bin");
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(path, asset, scene::MeshletStreamPayloadCompression::ByteRle);
+        if (!built.passed) { return built; }
+        const auto budget = asset.maxPageClusters();
+        MeshletStreamRuntime runtime;
+        std::string log;
+        const auto initialized = runtime.initialize(*device, {
+            .sourcePath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf",
+            .streamAssetPath = path, .maxResidentBytes = 16ull << 20, .maxResidentPages = 256,
+            .maxPageUploadsPerFrame = 64, .maxGpuPageRequests = 256, .maxGpuPageUnloadRequests = 256,
+            .maxActiveGroups = 2048, .maxTraversalWorkers = 64, .maxTraversalWorkItems = 4096,
+            .pageLoadConcurrency = 1, .maxPageLoadsInFlight = 64, .queuedFrameCount = 2,
+            .enableClas = true, .maxClasBytes = 16ull << 20, .maxClasBuildClusters = budget,
+            .prefetchPages = false}, log);
+        if (!initialized) { return RhiTestResult::fail("CLAS-only initialize: " + log); }
+        auto* queue = device->getQueue(QueueType::Graphics);
+        std::unique_ptr<CommandPool> pool;
+        std::unique_ptr<CommandBuffer> commands;
+        std::unique_ptr<Fence> fence;
+        const auto setup = createCommandResources(*device, *queue, pool, commands, fence);
+        if (!setup.passed) { return setup; }
+        std::unique_ptr<Streamer> streamer;
+        if (!device->createStreamer(makeTestStreamerDesc(), streamer)) { return RhiTestResult::fail("Cannot create streamer"); }
+        MeshletStreamFrameDesc frame{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
+        frame.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f},
+            .znear = .001f, .zfar = 10.f};
+        const auto nearCamera = frame.camera;
+        bool sawBuilt = false, sawPending = false;
+        uint64_t stableBuildCount = 0;
+        std::ofstream trace(context.outputDirectory / "ClasLifecycle.jsonl");
+        for (uint32_t f = 0; f < 420; ++f) {
+            frame.camera = nearCamera;
+            if (f >= 180 && f < 240) { frame.camera.eye = {100.f, 100.f, 100.f}; frame.camera.center = {101.f, 100.f, 100.f}; }
+            if (!pool->reset() || !fence->reset() || !commands->begin()) { return RhiTestResult::fail("Frame setup failed"); }
+            auto result = runtime.cmdBeginFrame(*commands, *streamer, frame);
+            if (result) { commands->copyStreamedData(*streamer); result = runtime.cmdPreTraversal(*commands, frame); }
+            if (result) { result = runtime.cmdPostTraversal(*commands); }
+            if (result) { result = runtime.cmdEndFrame(*commands); }
+            if (!result || !commands->end()) { return RhiTestResult::fail("CLAS frame failed: " + std::string(toString(result))); }
+            const auto submitted = submitAndWait(*queue, *commands, *fence);
+            streamer->endFrame();
+            if (!submitted.passed) { return submitted; }
+            const auto stats = runtime.profilingStats();
+            trace << nlohmann::json{{"frame", f}, {"runtime", runtime.debugSnapshot(false)},
+                {"clas", {{"resident", stats.clasResidentPages}, {"pending", stats.clasPendingPages},
+                    {"built", stats.clasBuiltPages}, {"total", stats.clasTotalBuiltPages},
+                    {"retiring", stats.clasRetiringPages}, {"rejected", stats.clasRejectedPages}, {"bytes", stats.clasUsedBytes}}}}.dump() << '\n';
+            if (!stats.clasEnabled || runtime.tlasReady() || runtime.accelerationStructure() ||
+                stats.clasBuiltClusters > budget || stats.clasUsedBytes > stats.clasCapacityBytes) {
+                return RhiTestResult::fail("CLAS-only runtime violated build/storage budget or built a TLAS");
+            }
+            sawBuilt |= stats.clasBuiltPages > 0;
+            sawPending |= stats.clasPendingPages > 0;
+            if (f == 150) { stableBuildCount = stats.clasTotalBuiltPages; }
+            if (f >= 151 && f < 180 && (stats.clasTotalBuiltPages != stableBuildCount || stats.clasPendingPages != 0)) {
+                return RhiTestResult::fail("Steady resident CLAS rebuilt or backlog failed to converge");
+            }
+        }
+        const auto last = runtime.profilingStats();
+        if (!sawBuilt || !sawPending || last.clasPendingPages || last.clasResidentPages != last.residentPages ||
+            last.clasTotalBuiltPages != stableBuildCount) {
+            return RhiTestResult::fail("Lifecycle coverage/convergence: built=" + std::to_string(sawBuilt) +
+                " pending=" + std::to_string(sawPending) +
+                " final pending=" + std::to_string(last.clasPendingPages) + " resident=" + std::to_string(last.residentPages) +
+                " CLAS=" + std::to_string(last.clasResidentPages));
+        }
+        return RhiTestResult::pass("Compressed uploads, bounded build backlog, camera round-trip reuses cached CLAS, independent CLAS without BLAS/TLAS");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamClasRuntimeTest);
+
 
 class StreamerBufferUploadTest : public RhiTest {
 public:

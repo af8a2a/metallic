@@ -905,7 +905,8 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
 uint32_t MeshletStreamResidencyManager::processUploads(
     Streamer& streamer,
     Buffer& destination,
-    uint32_t maxUploads)
+    uint32_t maxUploads,
+    const UploadObserver& observer)
 {
     if (asset_ == nullptr) {
         return 0;
@@ -1119,6 +1120,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             break;
         }
 
+        if (observer) { observer(pageIndex, devicePayload); }
         if (latency_) {
             const auto sample = latency_->pending.find(pageIndex);
             if (sample != latency_->pending.end()) {

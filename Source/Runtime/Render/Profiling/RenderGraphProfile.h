@@ -28,6 +28,15 @@ struct SceneStreamingProfile {
     uint64_t clasUsedBytes = 0;
     uint64_t clasCapacityBytes = 0;
     bool clasEnabled = false;
+    uint32_t clasResidentPages = 0;
+    uint32_t clasResidentClusters = 0;
+    uint32_t clasRetiringPages = 0;
+    uint32_t clasPendingPages = 0;
+    uint32_t clasBuiltPages = 0;
+    uint32_t clasBuiltClusters = 0;
+    uint32_t clasRejectedPages = 0;
+    uint64_t clasTotalBuiltPages = 0;
+    uint64_t clasTotalBuiltClusters = 0;
     uint32_t totalPages = 0;
     uint32_t residentPages = 0;
     uint32_t pendingPages = 0;

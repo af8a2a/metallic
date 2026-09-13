@@ -4,6 +4,7 @@
 #include "Runtime/Render/Profiling/RenderGraphProfile.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/MeshletLod.h"
+#include "Runtime/Render/MeshletStreamClas.h"
 #include "Runtime/Render/MeshletStreamResidency.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
@@ -414,6 +415,7 @@ struct MeshletStreamRuntimeDesc {
     uint32_t maxPageLoadsInFlight = 128;
     uint32_t queuedFrameCount = 3;
     bool enableClusterRtx = false;
+    bool enableClas = false; // Build resident CLAS independently of per-frame BLAS/TLAS.
     uint64_t maxClasBytes = 512ull * 1024ull * 1024ull;
     uint32_t maxClasBuildClusters = 0;
     uint32_t maxBlasClusterReferences = 0;
@@ -602,6 +604,11 @@ private:
     std::unique_ptr<BlasInputPass> blasInputPass_;
     std::unique_ptr<TlasInputPass> tlasInputPass_;
     std::unique_ptr<MeshletStreamClasPool> clasPool_;
+    std::unordered_map<uint32_t, MeshletStreamClasPagePlan> pendingClasPlans_;
+    std::deque<uint32_t> pendingClasPages_;
+    std::unordered_set<uint32_t> queuedClasPages_;
+    uint32_t maxClasBuildClusters_ = 0;
+    bool clusterRtxEnabled_ = false;
     BindlessHandle pageHandle_;
     BindlessHandle activeGroupHandle_;
     BindlessHandle activeHeaderHandle_;

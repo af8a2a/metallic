@@ -83,6 +83,7 @@ struct MeshletStreamClasPoolDesc {
 struct MeshletStreamClasPageBuild {
     uint32_t pageIndex = UINT32_MAX;
     uint64_t deviceOffsetBytes = UINT64_MAX;
+    const MeshletStreamClasPagePlan* plan = nullptr;
 };
 
 struct MeshletStreamClasPoolStats {

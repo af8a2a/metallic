@@ -275,13 +275,16 @@ public:
             std::string log; RenderSampleLoadResult sample;
             checkProfile(loadBuiltInRenderSample("gpu-driven-minizorah-vbuffer", sample, log), log);
             auto graph = std::move(sample.graph);
+            const bool clasEnabled = std::getenv("METALLIC_TEST_CLAS_OFF") == nullptr;
+            graph.findNode("GPUDriven")->properties["enableClas"] = clasEnabled;
+            report["clasEnabled"] = clasEnabled;
             const auto node = graph.findNode("GPUDriven")->id;
             graph.findNode(node)->properties["debugStreamingPages"] = false;
             RenderView view;
             const Json original = graph.viewProperties().at("camera");
             checkProfile(view.setCameraProperties(original), "invalid camera");
             RenderGraphPreviewRenderer preview;
-            checkProfile(bool(preview.initialize(context.enableValidation, false, false)), "preview initialization failed");
+            checkProfile(bool(preview.initialize(context.enableValidation, true, false)), "preview initialization failed");
             preview.bindRenderView(&view);
             EditorProfiler profiler;
             bool sawCompute = false, sawResident = false; uint64_t bytes = 0; uint32_t peakRequests = 0;
@@ -311,7 +314,10 @@ public:
                     stream.geometryBudgetBytes > 0 && stream.geometryUsedBytes <= stream.geometryBudgetBytes,
                     "invalid current-scene residency counters");
                 sawResident |= stream.residentPages > 0 && stream.geometryUsedBytes > 0;
-                checkProfile(!stream.clasEnabled && stream.clasUsedBytes == 0, "raster path reported fictitious CLAS allocation");
+                checkProfile(stream.clasEnabled == clasEnabled && stream.clasUsedBytes <= stream.clasCapacityBytes &&
+                    (clasEnabled ? stream.clasCapacityBytes > 0 : stream.clasUsedBytes == 0),
+                    "stream CLAS pool missing or exceeded capacity");
+                checkProfile(stream.clasBuiltClusters <= 8192, "CLAS exceeded per-frame build budget");
                 if (f > 2) { checkProfile(stream.feedbackFrame != UINT64_MAX, "feedback age unavailable when debug capture is disabled"); }
                 bytes += stream.uploadBytes; peakRequests = std::max(peakRequests, stream.requests);
                 Json nodes = Json::array();
@@ -333,8 +339,18 @@ public:
                 checkProfile(sawCandidates && sawTraversal && sawClassify && sawHardware, "missing GPUDriven stage instrumentation");
                 report["frames"].push_back({{"frame",f},{"gpuMs",stats.gpuMilliseconds},{"cpuMs",stats.cpuMilliseconds},{"nodes",nodes},
                     {"streamFrame",stream.frameIndex},{"residentPages",stream.residentPages},{"pendingPages",stream.pendingPages},
+                    {"clasBytes", stream.clasUsedBytes}, {"clasPages", stream.clasResidentPages}, {"clasClusters", stream.clasResidentClusters},
+                    {"clasBuiltPages", stream.clasBuiltPages}, {"clasBuiltClusters", stream.clasBuiltClusters},
+                    {"clasPendingPages", stream.clasPendingPages}, {"clasRejectedPages", stream.clasRejectedPages},
+                    {"clasTotalBuiltPages", stream.clasTotalBuiltPages},
                     {"geometryBytes",stream.geometryUsedBytes},{"budgetBytes",stream.geometryBudgetBytes},{"requests",stream.requests},
                     {"uploads",stream.uploads},{"evictions",stream.evictions},{"uploadBytes",stream.uploadBytes}});
+            }
+            if (clasEnabled) {
+                const auto& finalStream = profiler.streamingHistory().front().samples.back();
+                checkProfile(finalStream.clasResidentPages > 1000, "MiniZorah CLAS did not stream into residency");
+                checkProfile(finalStream.clasPendingPages == 0 && finalStream.clasRejectedPages == 0 &&
+                    finalStream.clasResidentPages == finalStream.residentPages, "MiniZorah CLAS backlog did not converge");
             }
             checkProfile(bytes > 0 && peakRequests > 0 && sawCompute && sawResident, "did not observe streaming traffic or async compute timings");
             for (const char* tab : {"Table", "Streaming", "LineChart", "BarChart"}) {

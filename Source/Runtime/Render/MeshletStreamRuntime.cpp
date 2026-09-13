@@ -832,6 +832,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return makeError(Error::Failure);
     }
 
+    const bool enableClas = desc.enableClas && device.capabilities().clusterAccelerationStructure;
+    clusterRtxEnabled_ = desc.enableClusterRtx;
     maxResidentPages_ = desc.maxResidentPages;
     maxPageUploadsPerFrame_ = desc.maxPageUploadsPerFrame;
     maxGpuPageRequests_ = std::max(desc.maxGpuPageRequests, 1u);
@@ -869,7 +871,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     }
 
     BufferUsageBits pageBufferUsage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination;
-    if (desc.enableClusterRtx) {
+    if (desc.enableClusterRtx || enableClas) {
         if (!device.capabilities().clusterAccelerationStructure) {
             log = "MeshletStreamRuntime cluster RTX requires cluster acceleration structure support";
             return makeError(Error::Unsupported);
@@ -978,18 +980,19 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return makeError(Error::Failure);
     }
 
-    if (desc.enableClusterRtx) {
+    if (desc.enableClusterRtx || enableClas) {
         const uint64_t defaultBuildClusters =
             static_cast<uint64_t>(std::max(maxPageUploadsPerFrame_, 1u)) * asset_.maxPageClusters();
         const uint64_t buildClusters = desc.maxClasBuildClusters != 0
             ? desc.maxClasBuildClusters
             : defaultBuildClusters;
         if (desc.maxClasBytes == 0 ||
-            buildClusters == 0 ||
+            buildClusters < asset_.maxPageClusters() ||
             buildClusters > std::numeric_limits<uint32_t>::max()) {
             log = "MeshletStreamRuntime cluster RTX capacities are invalid";
             return makeError(Error::InvalidArgument);
         }
+        maxClasBuildClusters_ = static_cast<uint32_t>(buildClusters);
         clasPool_ = std::make_unique<MeshletStreamClasPool>();
         result = clasPool_->initialize(
             device,
@@ -1023,7 +1026,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         log = "MeshletStreamRuntime active group draw task count overflowed";
         return makeError(Error::Failure);
     }
-    if (clasPool_ != nullptr) {
+    if (desc.enableClusterRtx) {
         const uint32_t activeClusterCapacity = visibleClusterCapacity();
         blasClusterReferenceCapacity_ = desc.maxBlasClusterReferences == 0
             ? activeClusterCapacity
@@ -1145,7 +1148,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return result;
     }
     traversalWorkBufferState_ = ResourceState::Undefined;
-    if (clasPool_ != nullptr) {
+    if (desc.enableClusterRtx) {
         ClusterAccelerationStructureProperties clusterProperties;
         result = device.queryClusterAccelerationStructureProperties(clusterProperties);
         if (!result) {
@@ -1988,6 +1991,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         if (!result) {
             return result;
         }
+    }
+    if (desc.enableClusterRtx) {
         result = allocateAndWriteBuffer(
             *bindlessHeap_,
             *blasHeaderBuffer_,
@@ -2071,7 +2076,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (!result) {
         return result;
     }
-    if (clasPool_ != nullptr) {
+    if (desc.enableClusterRtx) {
         blasInputPass_ = std::make_unique<BlasInputPass>();
         result = blasInputPass_->initialize(device, log, pipelineCache);
         if (!result) {
@@ -2147,6 +2152,11 @@ void MeshletStreamRuntime::reset()
     blasInputPass_.reset();
     tlasInputPass_.reset();
     clasPool_.reset();
+    pendingClasPlans_.clear();
+    pendingClasPages_.clear();
+    queuedClasPages_.clear();
+    maxClasBuildClusters_ = 0;
+    clusterRtxEnabled_ = false;
     pageHandle_ = {};
     activeGroupHandle_ = {};
     activeHeaderHandle_ = {};
@@ -2250,9 +2260,9 @@ bool MeshletStreamRuntime::ready() const
         drawIndirectBuffer_ != nullptr &&
         traversalHeaderBuffer_ != nullptr &&
         traversalWorkBuffer_ != nullptr &&
-        (clasPool_ == nullptr ||
-            (clasPool_->ready() &&
-                blasInputPass_ != nullptr &&
+        (clasPool_ == nullptr || clasPool_->ready()) &&
+        (!clusterRtxEnabled_ ||
+            (blasInputPass_ != nullptr &&
                 blasInputPass_->ready() &&
                 tlasInputPass_ != nullptr &&
                 tlasInputPass_->ready() &&
@@ -2299,7 +2309,32 @@ Result MeshletStreamRuntime::cmdBeginFrame(
         clasPool_->retirePages(residency_.newlyUnloadedPages());
     }
     consumeGpuRequestReadback();
-    currentFrameUploadCount_ = residency_.processUploads(streamer, *pageBuffer_, maxPageUploadsPerFrame_);
+    MeshletStreamResidencyManager::UploadObserver prepareClas;
+    std::string planError;
+    if (clasPool_) {
+        // Also drop plans for cancelled uploads whose geometry allocation was evicted.
+        std::erase_if(pendingClasPlans_, [this](const auto& entry) { return !residency_.pageAllocated(entry.first); });
+        prepareClas = [&](uint32_t page, std::span<const uint8_t> payload) {
+            MeshletStreamClasPagePlan plan;
+            std::string reason;
+            if (!buildMeshletStreamClasPagePlan(asset_.pages()[page], payload, page,
+                    page * asset_.maxPageClusters(), plan, reason)) {
+                planError = std::move(reason);
+                return;
+            }
+            pendingClasPlans_.insert_or_assign(page, std::move(plan));
+        };
+    }
+    currentFrameUploadCount_ = residency_.processUploads(streamer, *pageBuffer_, maxPageUploadsPerFrame_, prepareClas);
+    if (!planError.empty()) {
+        spdlog::error("[MeshletStreamRuntime] CLAS upload plan failed: {}", planError);
+        return makeError(Error::Failure);
+    }
+    if (clasPool_) {
+        for (uint32_t page : residency_.newlyResidentPages()) {
+            if (queuedClasPages_.insert(page).second) { pendingClasPages_.push_back(page); }
+        }
+    }
     const std::span<const uint32_t> residentPages = residency_.residentPages();
     if (residentPages.size() > residentPageCapacity_ || residentPageFrames_.empty()) {
         return makeError(Error::Failure);
@@ -2364,37 +2399,47 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
         return result;
     }
 
+    if (checkpoint) { checkpoint("BeforeStreamClasBuild"); }
     std::vector<MeshletStreamClasPageBuild> clasBuilds;
-    clasBuilds.reserve(
-        residency_.newlyResidentPages().size() + residency_.residentPages().size());
-    for (uint32_t pageIndex : residency_.newlyResidentPages()) {
-        const uint64_t deviceOffset = residency_.deviceOffsetForPage(pageIndex);
-        if (deviceOffset != UINT64_MAX) {
-            clasBuilds.push_back(MeshletStreamClasPageBuild{
-                .pageIndex = pageIndex,
-                .deviceOffsetBytes = deviceOffset,
-            });
+    uint32_t clusterCount = 0;
+    const size_t pendingCount = pendingClasPages_.size();
+    // Visit only queued pages, with a bounded batch. No resident-set scan or I/O.
+    for (size_t i = 0; i < pendingCount; ++i) {
+        const uint32_t page = pendingClasPages_.front();
+        if (residency_.pageResident(page)) {
+            const uint32_t count = clasPool_->pageHasClas(page) ? 0 : asset_.pages()[page].clusterCount;
+            if (count > maxClasBuildClusters_ - clusterCount) { break; }
+            const auto plan = pendingClasPlans_.find(page);
+            // A retired CLAS may have expired between upload admission and completion.
+            // Always retain an upload plan until the resident page is built.
+            if (count && plan == pendingClasPlans_.end()) { return makeError(Error::Failure); }
+            clasBuilds.push_back({.pageIndex = page, .deviceOffsetBytes = residency_.deviceOffsetForPage(page),
+                .plan = plan != pendingClasPlans_.end() ? &plan->second : nullptr});
+            clusterCount += count;
+        } else {
+            pendingClasPlans_.erase(page);
+            queuedClasPages_.erase(page);
         }
-    }
-    for (uint32_t pageIndex : residency_.residentPages()) {
-        if (clasPool_->pageHasClas(pageIndex)) {
-            continue;
-        }
-        const uint64_t deviceOffset = residency_.deviceOffsetForPage(pageIndex);
-        if (deviceOffset != UINT64_MAX) {
-            clasBuilds.push_back(MeshletStreamClasPageBuild{
-                .pageIndex = pageIndex,
-                .deviceOffsetBytes = deviceOffset,
-            });
-        }
+        pendingClasPages_.pop_front();
     }
     if (!clasBuilds.empty()) {
         std::string clasLog;
         result = clasPool_->cmdBuildPages(commandBuffer, *pageBuffer_, clasBuilds, clasLog);
         if (!result) {
+            spdlog::error("[MeshletStreamRuntime] CLAS build failed: {}", clasLog);
             return result;
         }
+        for (const auto& build : clasBuilds) {
+            if (clasPool_->pageHasClas(build.pageIndex)) {
+                pendingClasPlans_.erase(build.pageIndex);
+                queuedClasPages_.erase(build.pageIndex);
+            } else {
+                pendingClasPages_.push_back(build.pageIndex);
+            }
+        }
     }
+    if (checkpoint) { checkpoint("AfterStreamClasBuild"); }
+    if (!clusterRtxEnabled_) { return {}; }
     result = cmdBuildFallbackBlas(commandBuffer);
     if (!result) {
         return result;
@@ -3619,6 +3664,15 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
         const auto clas = clasPool_->stats();
         result.clasUsedBytes = clas.usedStorageBytes;
         result.clasCapacityBytes = clas.storageBytes;
+        result.clasResidentPages = clas.builtPageCount;
+        result.clasResidentClusters = clas.builtClusterCount;
+        result.clasRetiringPages = clas.retiringPageCount;
+        result.clasPendingPages = static_cast<uint32_t>(queuedClasPages_.size());
+        result.clasBuiltPages = clas.frameBuiltPageCount;
+        result.clasBuiltClusters = clas.frameBuiltClusterCount;
+        result.clasRejectedPages = clas.frameRejectedPageCount;
+        result.clasTotalBuiltPages = clas.totalBuiltPageCount;
+        result.clasTotalBuiltClusters = clas.totalBuiltClusterCount;
     }
     return result;
 }
@@ -3650,7 +3704,7 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"primitiveCount", asset_.primitiveCount()}, {"instanceCount", asset_.instanceCount()},
         {"terminalPageCount", lockedFallbackPages_.size()}, {"terminalResidentPageCount", terminalResidentPages},
         {"terminalReady", !lockedFallbackPages_.empty() && terminalResidentPages == lockedFallbackPages_.size()},
-        {"pageBufferBytes", maxResidentBytes_}, {"clusterRtxEnabled", clasPool_ != nullptr},
+        {"pageBufferBytes", maxResidentBytes_}, {"clusterRtxEnabled", clusterRtxEnabled_}, {"clasEnabled", clasPool_ != nullptr},
         {"screenSpacePagePriority", screenSpacePagePriority_},
         {"viewDrivenPageDemand", viewDrivenPageDemand_},
         {"prefetchPages", prefetchPages_}, {"prefetchActive", currentFramePrefetch_},

@@ -285,6 +285,9 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
             1u),
         .queuedFrameCount = 3,
         .enableClusterRtx = false,
+        .enableClas = boolProperty(&properties, "enableClas", false),
+        .maxClasBytes = previewStreamUint64Property(properties, "maxClasBytes", 512ull * 1024ull * 1024ull),
+        .maxClasBuildClusters = previewStreamUintProperty(properties, "maxClasBuildClusters", 0),
         .screenSpacePagePriority = boolProperty(&properties, "screenSpacePagePriority", true),
         .viewDrivenPageDemand = boolProperty(&properties, "viewDrivenPageDemand", true),
         .measurePageLatency = boolProperty(&properties, "measurePageLatency", true),
@@ -1275,6 +1278,8 @@ public:
                     else if (checkpoint == "AfterStreamPrefix") { phaseProfile.next("LOD emit"); }
                     else if (checkpoint == "AfterStreamEmit") { phaseProfile.next("Prefetch"); }
                     else if (checkpoint == "AfterStreamPrefetch") { phaseProfile.next("Traversal finalize"); }
+                    else if (checkpoint == "BeforeStreamClasBuild") { phaseProfile.next("CLAS build"); }
+                    else if (checkpoint == "AfterStreamClasBuild") { phaseProfile.end(); }
                     gpuDrivenDebugCheckpoint(context, checkpoint, gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_,
                         &streamRuntime_, UINT32_MAX, residentRecordCapacity_);
                 });

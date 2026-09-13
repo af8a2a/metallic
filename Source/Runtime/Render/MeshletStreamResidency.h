@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -334,7 +335,10 @@ public:
     bool unloadPage(uint32_t pageIndex);
     uint32_t consumeGpuRequests(std::span<const uint32_t> pageIds);
     uint32_t consumeGpuRequests(const StreamGpuRequestBatch& requests);
-    uint32_t processUploads(Streamer& streamer, Buffer& destination, uint32_t maxUploads);
+    // Called once after an upload is admitted, before the decoded payload is released.
+    using UploadObserver = std::function<void(uint32_t, std::span<const uint8_t>)>;
+    uint32_t processUploads(Streamer& streamer, Buffer& destination, uint32_t maxUploads,
+        const UploadObserver& observer = {});
 
     void buildInitialPageTable(std::span<StreamPageTableEntry> outEntries) const;
     std::span<const StreamPageTablePatch> pendingPatches() const { return patches_; }
