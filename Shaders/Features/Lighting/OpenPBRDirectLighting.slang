@@ -1,25 +1,26 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+import Lighting;
+using Metallic.Lighting;
 
 #include "../PathTracing/OpenPBRRayQueryPathTrace.slang"
-#include "../../Libraries/Math/SphericalHarmonics.slang"
 
-#define gEnvironmentIrradianceSH METALLIC_RESOURCE(StructuredBuffer<float4>, 51)
+#define gEnvironmentIrradianceSH getResource<StructuredBuffer<float4>>(51)
 
 #if METALLIC_DEFERRED_LIGHT_GRID
-#include "../../Libraries/Lighting/ClusterLightGridCommon.slang"
-#define gDeferredGridParams METALLIC_RESOURCE(StructuredBuffer<ClusterLightGridParams>, 75)
-#define gDeferredGridLights METALLIC_RESOURCE(StructuredBuffer<GpuPunctualLight>, 76)
-#define gDeferredGridCandidates METALLIC_RESOURCE(StructuredBuffer<uint>, 77)
-#define gDeferredGridCells METALLIC_RESOURCE(StructuredBuffer<ClusterLightGridCell>, 78)
-#define gDeferredGridIndices METALLIC_RESOURCE(StructuredBuffer<uint>, 79)
+
+#define gDeferredGridParams getResource<StructuredBuffer<ClusterLightGridParams>>(75)
+#define gDeferredGridLights getResource<StructuredBuffer<GpuPunctualLight>>(76)
+#define gDeferredGridCandidates getResource<StructuredBuffer<uint>>(77)
+#define gDeferredGridCells getResource<StructuredBuffer<ClusterLightGridCell>>(78)
+#define gDeferredGridIndices getResource<StructuredBuffer<uint>>(79)
 #endif
 
 #if METALLIC_REALTIME_DEFERRED
-#include "../../Libraries/Lighting/EnvironmentPrefilter.slang"
-#include "../../Libraries/Lighting/ScreenSpaceShadowCommon.slang"
-#define gRealtimeShadow METALLIC_RESOURCE(Texture2D<float>, 81)
-#define gRealtimeShadowParameters METALLIC_RESOURCE(StructuredBuffer<ShadowParameters>, 82)
-#define gEnvironmentSpecular METALLIC_RESOURCE(StructuredBuffer<float4>, 74)
+
+#define gRealtimeShadow getResource<Texture2D<float>>(81)
+#define gRealtimeShadowParameters getResource<StructuredBuffer<ShadowParameters>>(82)
+#define gEnvironmentSpecular getResource<StructuredBuffer<float4>>(74)
 
 float3 realtimeEnvironmentSpecular(float3 direction, float roughness, ScenePathTracePush push)
 {
@@ -97,7 +98,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
             uint2(samplePixel), cameraLinearDepth(hit.position, push));
         uint count = lookup.count + clusterLightGridGlobalLightCount(grid);
 #else
-        uint count = punctualLightCount();
+        uint count = punctualLightCount(getResource<StructuredBuffer<GpuPunctualLight>>(50));
 #endif
         for (uint i = 0u; i < count; ++i) {
 #if METALLIC_DEFERRED_LIGHT_GRID
@@ -106,7 +107,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
                 : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, i - lookup.count);
             PunctualLightSample light = samplePunctualLightData(gDeferredGridLights[source], hit.position);
 #else
-            PunctualLightSample light = samplePunctualLight(i, hit.position);
+            PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GpuPunctualLight>>(50), i, hit.position);
 #endif
             float3 bsdf = max(openpbr_get_sum_of_diffuse_specular(
                 openpbr_eval(prepared, light.direction)), float3(0.0));

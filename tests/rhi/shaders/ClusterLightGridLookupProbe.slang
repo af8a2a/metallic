@@ -1,13 +1,14 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+import Lighting;
+using Metallic.Lighting;
 
-#include "../../../Shaders/Libraries/Lighting/ClusterLightGridCommon.slang"
-
-#define gParams METALLIC_RESOURCE(StructuredBuffer<ClusterLightGridParams>, 0)
-#define gLights METALLIC_RESOURCE(StructuredBuffer<ClusterLightData>, 1)
-#define gCandidates METALLIC_RESOURCE(StructuredBuffer<uint>, 2)
-#define gCells METALLIC_RESOURCE(StructuredBuffer<ClusterLightGridCell>, 3)
-#define gLightIndices METALLIC_RESOURCE(StructuredBuffer<uint>, 4)
-#define gOutput METALLIC_RESOURCE(RWStructuredBuffer<uint4>, 5)
+#define gParams getResource<StructuredBuffer<ClusterLightGridParams>>(0)
+#define gLights getResource<StructuredBuffer<ClusterLightData>>(1)
+#define gCandidates getResource<StructuredBuffer<uint>>(2)
+#define gCells getResource<StructuredBuffer<ClusterLightGridCell>>(3)
+#define gLightIndices getResource<StructuredBuffer<uint>>(4)
+#define gOutput getResource<RWStructuredBuffer<uint4>>(5)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

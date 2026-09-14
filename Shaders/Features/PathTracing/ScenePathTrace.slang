@@ -1,4 +1,9 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+import Material;
+using Metallic.Material;
+import Lighting;
+using Metallic.Lighting;
 
 #ifndef STF_SHADER_STAGE
 #define STF_SHADER_STAGE 6
@@ -13,7 +18,8 @@
 #define STF_ALLOW_WAVE_READ 0
 #endif
 #include "../../../External/Rtxtf/STFSamplerState.hlsli"
-#include "../../Libraries/Texturing/NeuralTextureSampling.slang"
+import NeuralTextures;
+using Metallic.Interop.NeuralTextures;
 
 #ifndef METALLIC_HAS_RTXCR
 #define METALLIC_HAS_RTXCR 0
@@ -52,10 +58,10 @@
 #endif
 
 #if METALLIC_PT_SHARC
-#include "../../Libraries/RadianceCache/Sharc/SharcCommon.h"
+#include "../../ThirdParty/RadianceCache/Sharc/SharcCommon.h"
 #endif
 
-#include "../../Libraries/RadianceCache/Nrc/Nrc.hlsli"
+#include "../../ThirdParty/RadianceCache/Nrc/Nrc.hlsli"
 
 // Cache mode pushed through the per-frame parameter buffer.
 #define METALLIC_CACHE_MODE_OFF 0
@@ -84,35 +90,32 @@ struct ScenePathTraceCacheParams
 
 // Match the tightly packed CPU constants, including NRC at byte offset 76.
 typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathTraceCacheBuffer;
-#define gCacheParams METALLIC_RESOURCE(ScenePathTraceCacheBuffer, 20)
+#define gCacheParams getResource<ScenePathTraceCacheBuffer>(20)
 
 #if METALLIC_PT_SHARC
-#define gSharcHashEntries METALLIC_RESOURCE(RWStructuredBuffer<uint64_t>, 21)
+#define gSharcHashEntries getResource<RWStructuredBuffer<uint64_t>>(21)
 
-#define gSharcAccumulation METALLIC_RESOURCE(RWStructuredBuffer<SharcAccumulationData>, 22)
+#define gSharcAccumulation getResource<RWStructuredBuffer<SharcAccumulationData>>(22)
 
-#define gSharcResolved METALLIC_RESOURCE(RWStructuredBuffer<SharcPackedData>, 23)
+#define gSharcResolved getResource<RWStructuredBuffer<SharcPackedData>>(23)
 #endif
 
 #if METALLIC_PT_NRC
-#define gNrcQueryPathInfo METALLIC_RESOURCE(RWStructuredBuffer<NrcPackedQueryPathInfo>, 24)
+#define gNrcQueryPathInfo getResource<RWStructuredBuffer<NrcPackedQueryPathInfo>>(24)
 
-#define gNrcTrainingPathInfo METALLIC_RESOURCE(RWStructuredBuffer<NrcPackedTrainingPathInfo>, 25)
+#define gNrcTrainingPathInfo getResource<RWStructuredBuffer<NrcPackedTrainingPathInfo>>(25)
 
-#define gNrcTrainingPathVertices METALLIC_RESOURCE(RWStructuredBuffer<NrcPackedPathVertex>, 26)
+#define gNrcTrainingPathVertices getResource<RWStructuredBuffer<NrcPackedPathVertex>>(26)
 
 typedef RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> NrcQueryRadianceBuffer;
-#define gNrcQueryRadianceParams METALLIC_RESOURCE(NrcQueryRadianceBuffer, 27)
+#define gNrcQueryRadianceParams getResource<NrcQueryRadianceBuffer>(27)
 
-#define gNrcCounters METALLIC_RESOURCE(RWStructuredBuffer<uint>, 28)
+#define gNrcCounters getResource<RWStructuredBuffer<uint>>(28)
 #endif
 
+#define gScene getResource<RaytracingAccelerationStructure>(0)
 
-#define gScene METALLIC_RESOURCE(RaytracingAccelerationStructure, 0)
-
-#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 1)
-
-#include "../../Libraries/Scene/SceneShadingVertex.slang"
+#define gOutput getResource<RWTexture2D<float4>>(1)
 
 struct PathTracePrimitive
 {
@@ -134,29 +137,23 @@ struct PathTraceInstance
     float rayConeLodConstant;
 };
 
-#include "../../Libraries/Scene/SceneMaterial.slang"
+#define gIndices getResource<StructuredBuffer<uint>>(3)
 
-#define gIndices METALLIC_RESOURCE(StructuredBuffer<uint>, 3)
+#define gPrimitives getResource<StructuredBuffer<PathTracePrimitive>>(4)
 
-#define gPrimitives METALLIC_RESOURCE(StructuredBuffer<PathTracePrimitive>, 4)
+#define gInstances getResource<StructuredBuffer<PathTraceInstance>>(5)
 
-#define gInstances METALLIC_RESOURCE(StructuredBuffer<PathTraceInstance>, 5)
+#define gMaterials getResource<StructuredBuffer<PathTraceMaterial>>(6)
 
-#define gMaterials METALLIC_RESOURCE(StructuredBuffer<PathTraceMaterial>, 6)
+#define gHistoryCurrent getResource<RWTexture2D<float4>>(7)
 
-#define gHistoryCurrent METALLIC_RESOURCE(RWTexture2D<float4>, 7)
+#define gHistoryPrevious getResource<RWTexture2D<float4>>(8)
 
-#define gHistoryPrevious METALLIC_RESOURCE(RWTexture2D<float4>, 8)
+#define gMaterialTextures(index) getResourceArray<Texture2D<float4>>(9, index)
 
-#define gMaterialTextures(index) METALLIC_RESOURCE_ARRAY(Texture2D<float4>, 9, index)
+#define gEnvironmentMap getResource<Texture2D<float4>>(10)
 
-#define gEnvironmentMap METALLIC_RESOURCE(Texture2D<float4>, 10)
-
-#define gEnvironmentImportancePdf METALLIC_RESOURCE(Texture2D<float>, 13)
-
-#include "../../Libraries/Lighting/PunctualLightSampling.slang"
-#include "../../Libraries/Lighting/ProceduralEnvironment.slang"
-
+#define gEnvironmentImportancePdf getResource<Texture2D<float>>(13)
 
 static const uint kMaxMaterialTextures = 256u;
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
@@ -1033,9 +1030,9 @@ float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
     uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
     uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-    return gVertices[i0].texcoord.xy * weights.x +
-        gVertices[i1].texcoord.xy * weights.y +
-        gVertices[i2].texcoord.xy * weights.z;
+    return getResource<StructuredBuffer<SceneShadingVertex>>(2)[i0].texcoord.xy * weights.x +
+        getResource<StructuredBuffer<SceneShadingVertex>>(2)[i1].texcoord.xy * weights.y +
+        getResource<StructuredBuffer<SceneShadingVertex>>(2)[i2].texcoord.xy * weights.z;
 }
 
 bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, ScenePathTracePush push)
@@ -1175,9 +1172,9 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
     uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
     uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    SceneShadingVertex v0 = gVertices[i0];
-    SceneShadingVertex v1 = gVertices[i1];
-    SceneShadingVertex v2 = gVertices[i2];
+    SceneShadingVertex v0 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i0];
+    SceneShadingVertex v1 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i1];
+    SceneShadingVertex v2 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i2];
 
     float2 bary = query.CommittedTriangleBarycentrics();
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
@@ -1190,9 +1187,9 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     float3 p1 = positions[1];
     float3 p2 = positions[2];
 #else
-    float3 p0 = loadSceneVertexPosition(i0);
-    float3 p1 = loadSceneVertexPosition(i1);
-    float3 p2 = loadSceneVertexPosition(i2);
+    float3 p0 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i0);
+    float3 p1 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i1);
+    float3 p2 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i2);
 #endif
     float2 uv0 = v0.texcoord;
     float2 uv1 = v1.texcoord;
@@ -1329,7 +1326,6 @@ float fallbackBsdfPdf(
         (1.0 - specularChance) *
             ((1.0 - transmissionChance) * diffusePdf + transmissionChance * transmissionPdf);
 }
-
 
 float3 applyNormalMap(
     float3 normal,
@@ -1553,8 +1549,8 @@ float3 pathTrace(
 
             uint hairLightIndex;
             float hairInverseSourcePdf;
-            if (selectPunctualLight(hit.position, seed, hairLightIndex, hairInverseSourcePdf)) {
-                PunctualLightSample light = samplePunctualLight(hairLightIndex, hit.position);
+            if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GpuPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, hairLightIndex, hairInverseSourcePdf)) {
+                PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GpuPunctualLight>>(50), hairLightIndex, hit.position);
                 float3 hairBsdf = max(RTXCR_HairChiangBsdfEval(
                     hairMaterial, hairSurface, light.direction), 0.0);
                 if (luminanceMax(hairBsdf * light.illuminance) > 0.0) {
@@ -1728,8 +1724,8 @@ float3 pathTrace(
         EnvironmentLightSample lightSample;
         uint punctualLightIndex;
         float punctualInverseSourcePdf;
-        if (selectPunctualLight(hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
-            PunctualLightSample light = samplePunctualLight(punctualLightIndex, hit.position);
+        if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GpuPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
+            PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GpuPunctualLight>>(50), punctualLightIndex, hit.position);
             float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
                 baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
             if (luminanceMax(bsdf * light.illuminance) > 0.0) {
@@ -1905,7 +1901,7 @@ PathTraceCacheContext makeCacheContext()
 [numthreads(8, 8, 1)]
 void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    ScenePathTracePush push = METALLIC_CONSTANTS(ScenePathTracePush);
+    ScenePathTracePush push = getConstants<ScenePathTracePush>();
     uint2 pixel = dispatchThreadId.xy;
     uint samples = clamp(push.samples, 1u, 16u);
     uint2 outputPixel = pixel;
@@ -2009,7 +2005,7 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 #endif
 
     if (push.outputLinear == 0u) {
-        color *= lightingExposure();
+        color *= lightingExposure(getResource<StructuredBuffer<GpuPunctualLight>>(50));
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
         color = saturate(color);

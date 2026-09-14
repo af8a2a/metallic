@@ -1,9 +1,9 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+import Lighting;
+using Metallic.Lighting;
 
 // GPU PDF preparation for RTXDI-style local-light and environment importance sampling.
-
-#define METALLIC_PUNCTUAL_SAMPLING_DISABLE_RESOURCES
-#include "../../Libraries/Lighting/PunctualLightSampling.slang"
 
 static const uint kMaxPdfMipCount = 16u;
 static const uint kPrepareLocalLights = 0u;
@@ -12,11 +12,11 @@ static const uint kGenerateLocalMip = 2u;
 static const uint kGenerateEnvironmentMip = 3u;
 static const float kPi = 3.14159265358979323846;
 
-#define gEnvironmentMap METALLIC_RESOURCE(Texture2D<float4>, 0)
+#define gEnvironmentMap getResource<Texture2D<float4>>(0)
 
-#define gLocalPdfMips(index) METALLIC_RESOURCE_ARRAY(RWTexture2D<float>, 1, index)
+#define gLocalPdfMips(index) getResourceArray<RWTexture2D<float>>(1, index)
 
-#define gEnvironmentPdfMips(index) METALLIC_RESOURCE_ARRAY(RWTexture2D<float>, 2, index)
+#define gEnvironmentPdfMips(index) getResourceArray<RWTexture2D<float>>(2, index)
 
 struct PrepareLightsPdfPush
 {
@@ -54,8 +54,8 @@ void prepareLocalLightPdf(uint2 dispatchPosition, PrepareLightsPdfPush push)
     if (any(pdfPosition >= push.destinationSize)) {
         return;
     }
-    gLocalPdfMips(0)[pdfPosition] = linearIndex < min(push.lightCount, punctualLightCount())
-        ? punctualLightPower(gPunctualLights[linearIndex + 1u])
+    gLocalPdfMips(0)[pdfPosition] = linearIndex < min(push.lightCount, punctualLightCount(getResource<StructuredBuffer<GpuPunctualLight>>(50)))
+        ? punctualLightPower(getResource<StructuredBuffer<GpuPunctualLight>>(50)[linearIndex + 1u])
         : 0.0;
 }
 
@@ -119,7 +119,7 @@ void generateEnvironmentMip(uint2 position, PrepareLightsPdfPush push)
 void prepareLightsPdfMain(
     uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    PrepareLightsPdfPush push = METALLIC_CONSTANTS(PrepareLightsPdfPush);
+    PrepareLightsPdfPush push = getConstants<PrepareLightsPdfPush>();
     if (push.mode == kPrepareLocalLights) {
         prepareLocalLightPdf(dispatchThreadId.xy, push);
     } else if (push.mode == kPrepareEnvironment) {

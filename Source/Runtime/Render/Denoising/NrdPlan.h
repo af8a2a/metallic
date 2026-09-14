@@ -17,7 +17,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include <cstring>
 #include <span>
 #include <vector>
-#include "Shaders/Libraries/Denoising/NRD/NRDConfig.hlsli"
+#include "Shaders/Interop/Denoising/NRD/NRDConfig.hlsli"
 
 // The constants use the same field list on CPU and GPU. MathLib matrices are
 // column-major; Bindless.hlsli declares this explicitly regardless of Slang defaults.

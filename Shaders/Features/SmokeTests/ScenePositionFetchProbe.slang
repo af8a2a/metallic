@@ -1,10 +1,11 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
 #include "../PathTracing/ScenePathTrace.slang"
 
-#define gProbeOutput METALLIC_RESOURCE(RWStructuredBuffer<float4>, 63)
+#define gProbeOutput getResource<RWStructuredBuffer<float4>>(63)
 struct ProbePush { float translationX; };
-#define gProbePush METALLIC_CONSTANTS(ProbePush)
+#define gProbePush getConstants<ProbePush>()
 
 [shader("compute")]
 [numthreads(4, 1, 1)]

@@ -10,19 +10,19 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "NrdPlan.h"
 
-#include "Shaders/Libraries/Denoising/NRD/RELAX_Config.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_AntiFirefly.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_Atrous.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_AtrousSmem.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_ClassifyTiles.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_Copy.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_HistoryClamping.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_HistoryFix.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_HitDistReconstruction.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_PrePass.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_SplitScreen.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_TemporalAccumulation.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/RELAX_Validation.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_Config.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_AntiFirefly.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_Atrous.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_AtrousSmem.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_ClassifyTiles.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_Copy.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_HistoryClamping.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_HistoryFix.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_HitDistReconstruction.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_PrePass.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_SplitScreen.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_TemporalAccumulation.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/RELAX_Validation.resources.hlsli"
 
 // Permutations
 #define RELAX_HITDIST_RECONSTRUCTION_PERMUTATION_NUM 2

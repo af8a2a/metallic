@@ -1,5 +1,7 @@
-#include "../../Libraries/GPUDriven/HybridRasterTriangle.slang"
-#include "../../Libraries/GPUDriven/HybridClusterBins.slang"
+import GPUDriven;
+using Metallic.GPUDriven;
+import Material;
+using Metallic.Material;
 
 struct HybridPush
 {

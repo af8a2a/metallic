@@ -1,14 +1,14 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+import Lighting;
+using Metallic.Lighting;
 
 // GPU construction of a grid ReGIR light selector. Each grid cell owns a
 // fixed-size set of RIS light slots, matching the selection flow used by RTXDI.
 
-#define METALLIC_PUNCTUAL_SAMPLING_DISABLE_RESOURCES
-#include "../../Libraries/Lighting/PunctualLightSampling.slang"
+#define gLocalLightPdf getResource<Texture2D<float>>(0)
 
-#define gLocalLightPdf METALLIC_RESOURCE(Texture2D<float>, 0)
-
-#define gReGIRData METALLIC_RESOURCE(RWStructuredBuffer<uint4>, 1)
+#define gReGIRData getResource<RWStructuredBuffer<uint4>>(1)
 
 static const uint kReGIRHeaderRecordCount = 3u;
 static const uint kReGIRMagic = 0x52454749u;
@@ -115,7 +115,7 @@ bool sampleLocalLightPdf(inout uint seed, uint lightCount, out uint lightIndex, 
 void buildReGIRMain(
     uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    BuildReGIRPush push = METALLIC_CONSTANTS(BuildReGIRPush);
+    BuildReGIRPush push = getConstants<BuildReGIRPush>();
     uint lightSlot = dispatchThreadId.x;
     if (lightSlot >= push.lightSlotCount) {
         return;
@@ -150,14 +150,14 @@ void buildReGIRMain(
     uint selectedLight = 0xffffffffu;
     float selectedTarget = 0.0;
     float weightSum = 0.0;
-    uint lightCount = min(push.lightCount, punctualLightCount());
+    uint lightCount = min(push.lightCount, punctualLightCount(getResource<StructuredBuffer<GpuPunctualLight>>(50)));
     for (uint sampleIndex = 0u; lightCount > 0u && sampleIndex < push.buildSamples; ++sampleIndex) {
         uint candidateLight;
         float sourcePdf;
         if (!sampleLocalLightPdf(seed, lightCount, candidateLight, sourcePdf)) {
             continue;
         }
-        GpuPunctualLight light = gPunctualLights[candidateLight + 1u];
+        GpuPunctualLight light = getResource<StructuredBuffer<GpuPunctualLight>>(50)[candidateLight + 1u];
         float target = punctualLightTargetForVolume(light, cellCenter, cellRadius);
         float candidateWeight = target / (sourcePdf * float(push.buildSamples));
         if (!(candidateWeight > 0.0) || !isfinite(candidateWeight)) { continue; }

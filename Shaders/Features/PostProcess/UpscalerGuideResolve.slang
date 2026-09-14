@@ -1,9 +1,10 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
-#define gMotion METALLIC_RESOURCE(Texture2D<float2>, 0)
-#define gDepth METALLIC_RESOURCE(Texture2D<float>, 1)
-#define gOutputMotion METALLIC_RESOURCE(RWTexture2D<float2>, 2)
-#define gOutputDepth METALLIC_RESOURCE(RWTexture2D<float>, 3)
+#define gMotion getResource<Texture2D<float2>>(0)
+#define gDepth getResource<Texture2D<float>>(1)
+#define gOutputMotion getResource<RWTexture2D<float2>>(2)
+#define gOutputDepth getResource<RWTexture2D<float>>(3)
 
 struct UpscalerGuideResolvePush { float2 jitter; };
 
@@ -15,7 +16,7 @@ void upscalerGuideResolveMain(uint3 id : SV_DispatchThreadID)
     gOutputDepth.GetDimensions(width, height);
     if (id.x >= width || id.y >= height) { return; }
     gDepth.GetDimensions(sourceWidth, sourceHeight);
-    UpscalerGuideResolvePush push = METALLIC_CONSTANTS(UpscalerGuideResolvePush);
+    UpscalerGuideResolvePush push = getConstants<UpscalerGuideResolvePush>();
     float2 uv = (float2(id.xy) + 0.5) / float2(width, height);
     int2 base = int2(floor(uv * float2(sourceWidth, sourceHeight) - push.jitter - 0.5));
     int2 selected = clamp(base, int2(0), int2(sourceWidth, sourceHeight) - 1);

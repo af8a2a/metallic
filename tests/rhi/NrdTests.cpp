@@ -125,7 +125,7 @@ TEST(NrdShaders, EverySupportedPermutationUsesNativeHandles)
         ASSERT_TRUE(
             render::compileSlangShaderToSpirv({.moduleName = pipeline.shaderName.c_str(),
                                                .entryPointName = "main",
-                                               .searchPath = PROJECT_SOURCE_DIR "/Shaders/Libraries/Denoising/NRD",
+                                               .searchPath = PROJECT_SOURCE_DIR "/Shaders/Interop/Denoising/NRD",
                                                .additionalSearchPaths = includes,
                                                .additionalSearchPathCount = 1,
                                                .macroDefines = defines.data(),

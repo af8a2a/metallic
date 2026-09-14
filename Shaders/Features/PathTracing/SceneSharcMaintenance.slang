@@ -1,4 +1,5 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
 // SHaRC maintenance passes (reference: RTXGI v2 SDK SharcResolve.hlsl).
 //
@@ -9,7 +10,7 @@
 //                    temporal accumulation, stale eviction and adjacent-level
 //                    blending, then clears the accumulation buffer.
 
-#include "../../Libraries/RadianceCache/Sharc/SharcCommon.h"
+#include "../../ThirdParty/RadianceCache/Sharc/SharcCommon.h"
 
 #ifndef SHARC_MAINTENANCE_BLOCK_SIZE
 #define SHARC_MAINTENANCE_BLOCK_SIZE 256
@@ -26,13 +27,13 @@ struct SceneSharcMaintenanceParams
     uint frameIndex;
 };
 
-#define gHashEntries METALLIC_RESOURCE(RWStructuredBuffer<uint64_t>, 0)
+#define gHashEntries getResource<RWStructuredBuffer<uint64_t>>(0)
 
-#define gAccumulation METALLIC_RESOURCE(RWStructuredBuffer<SharcAccumulationData>, 1)
+#define gAccumulation getResource<RWStructuredBuffer<SharcAccumulationData>>(1)
 
-#define gResolved METALLIC_RESOURCE(RWStructuredBuffer<SharcPackedData>, 2)
+#define gResolved getResource<RWStructuredBuffer<SharcPackedData>>(2)
 
-#define gParams METALLIC_RESOURCE(StructuredBuffer<SceneSharcMaintenanceParams>, 3)
+#define gParams getResource<StructuredBuffer<SceneSharcMaintenanceParams>>(3)
 
 [shader("compute")]
 [numthreads(SHARC_MAINTENANCE_BLOCK_SIZE, 1, 1)]

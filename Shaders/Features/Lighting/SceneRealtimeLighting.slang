@@ -1,4 +1,5 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
 #include "OpenPBRDirectLighting.slang"
 
@@ -7,7 +8,7 @@
 [numthreads(8, 8, 1)]
 void sceneRealtimeLightingMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    ScenePathTracePush push = METALLIC_CONSTANTS(ScenePathTracePush);
+    ScenePathTracePush push = getConstants<ScenePathTracePush>();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float2 samplePixel = float2(pixel) + 0.5;
@@ -23,7 +24,7 @@ void sceneRealtimeLightingMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         gOutput[pixel] = float4(max(radiance, float3(0.0)), 1.0);
         return;
     }
-    float3 exposed = max(radiance * lightingExposure(), float3(0.0));
+    float3 exposed = max(radiance * lightingExposure(getResource<StructuredBuffer<GpuPunctualLight>>(50)), float3(0.0));
     float3 color = pow(exposed / (exposed + 1.0), 1.0 / 2.2);
     gOutput[pixel] = float4(saturate(color), 1.0);
 }

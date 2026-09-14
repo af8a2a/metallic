@@ -1,12 +1,13 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+import Lighting;
+using Metallic.Lighting;
 
-#include "../../Libraries/Lighting/ClusterLightGridCommon.slang"
+#define gLightGridDebugParams getResource<StructuredBuffer<ClusterLightGridParams>>(0)
 
-#define gLightGridDebugParams METALLIC_RESOURCE(StructuredBuffer<ClusterLightGridParams>, 0)
+#define gLightGridDebugCells getResource<StructuredBuffer<ClusterLightGridCell>>(1)
 
-#define gLightGridDebugCells METALLIC_RESOURCE(StructuredBuffer<ClusterLightGridCell>, 1)
-
-#define gLightGridDebugOutput METALLIC_RESOURCE(RWTexture2D<float4>, 2)
+#define gLightGridDebugOutput getResource<RWTexture2D<float4>>(2)
 
 struct LightGridDebugPush
 {
@@ -122,7 +123,7 @@ float3 lightGridDebugLegend(float3 color, uint2 pixel, LightGridDebugPush push)
 [numthreads(8, 8, 1)]
 void lightGridDebugMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    LightGridDebugPush push = METALLIC_CONSTANTS(LightGridDebugPush);
+    LightGridDebugPush push = getConstants<LightGridDebugPush>();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

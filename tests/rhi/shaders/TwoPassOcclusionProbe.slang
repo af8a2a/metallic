@@ -1,5 +1,9 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
-#include "../../../Shaders/Libraries/GPUDriven/GPUDrivenCullingCommon.slang"
+import Core;
+using Metallic;
+import GPUDriven;
+using Metallic.GPUDriven;
+import Material;
+using Metallic.Material;
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
@@ -7,8 +11,8 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
 {
     // Full ceil-divided 17x9 pyramid: 153 + 45 + 15 + 6 + 2 + 1.
     for (uint i = id.x; i < 222u; i += 32u) {
-        METALLIC_RESOURCE(RWStructuredBuffer<float>, 1)[i] = 0.25;
-        METALLIC_RESOURCE(RWStructuredBuffer<float>, 2)[i] = 1.0;
+        getResource<RWStructuredBuffer<float>>(1)[i] = 0.25;
+        getResource<RWStructuredBuffer<float>>(2)[i] = 1.0;
     }
     AllMemoryBarrierWithGroupSync();
     GPUDrivenPreviewParams params = {};
@@ -97,6 +101,6 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
         float3 point = transformPoint(transform, float3(cos(angle), sin(angle), 0));
         depthErrors += length(point) > scale + 1e-6 ? 1u : 0u;
     }
-    METALLIC_RESOURCE(RWStructuredBuffer<float4>, 0)[id.x] =
+    getResource<RWStructuredBuffer<float4>>(0)[id.x] =
         float4(early ? 1.0 : 0.0, late ? 1.0 : 0.0, float(rectErrors), float(depthErrors));
 }

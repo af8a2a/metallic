@@ -7,7 +7,7 @@
 
 namespace metallic::render {
 
-// Shader ABI: Libraries/Scene/SceneShadingVertex.slang. UVs remain float32
+// Shader ABI: Modules/Core/SceneShadingVertex.slang. UVs remain float32
 // to preserve tiling and large/negative texture coordinates.
 struct SceneShadingVertex {
     uint32_t normal = 0x80008000u;

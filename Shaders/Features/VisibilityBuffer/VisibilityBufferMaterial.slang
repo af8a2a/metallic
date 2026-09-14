@@ -1,5 +1,9 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
-#include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
+import Core;
+using Metallic;
+import GPUDriven;
+using Metallic.GPUDriven;
+import Material;
+using Metallic.Material;
 
 struct MaterialPush { uint width, height, residentCount, streamCount, mode; float3 eye; };
 struct ActiveGroup {
@@ -8,20 +12,20 @@ struct ActiveGroup {
     uint instanceIndex, gpuSceneInstanceIndex, padding0, padding1;
     float4 world0, world1, world2, world3;
 };
-#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 0)
-#define gVisibility METALLIC_RESOURCE(Texture2D<uint>, 1)
-#define gInstances METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewInstance>, 2)
-#define gMaterials METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewMaterial>, 3)
-#define gRecords METALLIC_RESOURCE(StructuredBuffer<VisibleClusterRecord>, 4)
-#define gMeshlets METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewMeshlet>, 5)
-#define gVertices METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewVertex>, 6)
-#define gVertexIndices METALLIC_RESOURCE(StructuredBuffer<uint>, 7)
-#define gTriangles METALLIC_RESOURCE(StructuredBuffer<uint>, 8)
-#define gGeometries METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewGeometry>, 9)
-#define gStreamRecords METALLIC_RESOURCE(StructuredBuffer<VisibleClusterRecord>, 10)
-#define gGroups METALLIC_RESOURCE(StructuredBuffer<ActiveGroup>, 11)
-#define gPages METALLIC_RESOURCE(StructuredBuffer<uint>, 12)
-#define gPageTable METALLIC_RESOURCE(StructuredBuffer<uint2>, 13)
+#define gOutput getResource<RWTexture2D<float4>>(0)
+#define gVisibility getResource<Texture2D<uint>>(1)
+#define gInstances getResource<StructuredBuffer<GPUDrivenPreviewInstance>>(2)
+#define gMaterials getResource<StructuredBuffer<GPUDrivenPreviewMaterial>>(3)
+#define gRecords getResource<StructuredBuffer<VisibleClusterRecord>>(4)
+#define gMeshlets getResource<StructuredBuffer<GPUDrivenPreviewMeshlet>>(5)
+#define gVertices getResource<StructuredBuffer<GPUDrivenPreviewVertex>>(6)
+#define gVertexIndices getResource<StructuredBuffer<uint>>(7)
+#define gTriangles getResource<StructuredBuffer<uint>>(8)
+#define gGeometries getResource<StructuredBuffer<GPUDrivenPreviewGeometry>>(9)
+#define gStreamRecords getResource<StructuredBuffer<VisibleClusterRecord>>(10)
+#define gGroups getResource<StructuredBuffer<ActiveGroup>>(11)
+#define gPages getResource<StructuredBuffer<uint>>(12)
+#define gPageTable getResource<StructuredBuffer<uint2>>(13)
 
 float3 worldPosition(GPUDrivenPreviewInstance instance, float3 p)
 {
@@ -95,7 +99,7 @@ bool decodeTriangle(uint id, MaterialPush push, out uint instanceId, out float3 
 [numthreads(8, 8, 1)]
 void visibilityBufferMaterialMain(uint3 thread : SV_DispatchThreadID)
 {
-    MaterialPush push = METALLIC_CONSTANTS(MaterialPush);
+    MaterialPush push = getConstants<MaterialPush>();
     if (thread.x >= push.width || thread.y >= push.height) { return; }
     uint id = gVisibility.Load(int3(thread.xy, 0)), instanceId;
     float3 a, b, c;

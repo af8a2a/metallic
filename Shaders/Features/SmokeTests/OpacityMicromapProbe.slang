@@ -1,9 +1,11 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+
 #include "../PathTracing/ScenePathTrace.slang"
 
-#define gProbeOutput METALLIC_RESOURCE(RWStructuredBuffer<uint2>, 63)
+#define gProbeOutput getResource<RWStructuredBuffer<uint2>>(63)
 struct ProbePush { uint materialTextureCount; };
-#define gProbePush METALLIC_CONSTANTS(ProbePush)
+#define gProbePush getConstants<ProbePush>()
 
 [shader("compute")]
 [numthreads(8, 8, 1)]

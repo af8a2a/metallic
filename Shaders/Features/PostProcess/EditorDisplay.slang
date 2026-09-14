@@ -1,4 +1,5 @@
-#include "../../Libraries/Color/DisplayOutput.slang"
+import Core;
+using Metallic;
 
 #ifndef DISPLAY_HDR
 #define DISPLAY_HDR 0

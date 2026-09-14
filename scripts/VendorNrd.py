@@ -10,7 +10,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'External/nrd/Shaders'
-DEST = ROOT / 'Shaders/Libraries/Denoising/NRD'
+DEST = ROOT / 'Shaders/Interop/Denoising/NRD'
 REVISION = '36183520b006b65860bebc96d3dd7185e5edeb45'
 revision = subprocess.check_output(['git', '-C', str(SOURCE.parent), 'rev-parse', 'HEAD'], text=True).strip()
 if revision != REVISION:

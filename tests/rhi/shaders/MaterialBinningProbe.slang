@@ -1,17 +1,19 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+import GPUDriven;
+using Metallic.GPUDriven;
+import Material;
+using Metallic.Material;
 
-#include "../../../Shaders/Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
-#include "../../../Shaders/Libraries/GPUDriven/MaterialBinningCommon.slang"
-
-#define gVisibility METALLIC_RESOURCE(RWTexture2D<uint>, 0)
-#define gRecords METALLIC_RESOURCE(RWStructuredBuffer<VisibleClusterRecord>, 1)
-#define gInstances METALLIC_RESOURCE(RWStructuredBuffer<GPUDrivenPreviewInstance>, 2)
-#define gMaterials METALLIC_RESOURCE(RWStructuredBuffer<GPUDrivenPreviewMaterial>, 3)
-#define gShadingMaterials METALLIC_RESOURCE(RWStructuredBuffer<PathTraceMaterial>, 4)
-#define gBins METALLIC_RESOURCE(StructuredBuffer<MaterialBin>, 5)
-#define gTiles METALLIC_RESOURCE(StructuredBuffer<MaterialTile>, 6)
-#define gArguments METALLIC_RESOURCE(StructuredBuffer<uint>, 7)
-#define gResult METALLIC_RESOURCE(RWStructuredBuffer<uint>, 8)
+#define gVisibility getResource<RWTexture2D<uint>>(0)
+#define gRecords getResource<RWStructuredBuffer<VisibleClusterRecord>>(1)
+#define gInstances getResource<RWStructuredBuffer<GPUDrivenPreviewInstance>>(2)
+#define gMaterials getResource<RWStructuredBuffer<GPUDrivenPreviewMaterial>>(3)
+#define gShadingMaterials getResource<RWStructuredBuffer<PathTraceMaterial>>(4)
+#define gBins getResource<StructuredBuffer<MaterialBin>>(5)
+#define gTiles getResource<StructuredBuffer<MaterialTile>>(6)
+#define gArguments getResource<StructuredBuffer<uint>>(7)
+#define gResult getResource<RWStructuredBuffer<uint>>(8)
 
 struct ProbePush { uint width; uint height; uint binCount; uint bin; };
 static const uint kProbeHeader = 27u;
@@ -20,7 +22,7 @@ static const uint kProbeHeader = 27u;
 [numthreads(64, 1, 1)]
 void materialFixtureMain(uint3 id : SV_DispatchThreadID)
 {
-    ProbePush push = METALLIC_CONSTANTS(ProbePush);
+    ProbePush push = getConstants<ProbePush>();
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
     if (i < 260u) {
         VisibleClusterRecord record = {0u, i, 0u, 0u};
@@ -66,7 +68,7 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
 {
-    ProbePush push = METALLIC_CONSTANTS(ProbePush);
+    ProbePush push = getConstants<ProbePush>();
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
     if (i == 0u) { gResult[kProbeHeader - 2u] = push.bin; gResult[kProbeHeader - 1u] = 0u; }
     if (i < push.binCount) {
@@ -85,7 +87,7 @@ void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
 [numthreads(32, 1, 1)]
 void materialIndirectProbeMain(uint3 group : SV_GroupID)
 {
-    ProbePush push = METALLIC_CONSTANTS(ProbePush);
+    ProbePush push = getConstants<ProbePush>();
     MaterialBin bin = gBins[push.bin];
     uint index = group.y * kMaterialBinMaxGroupsX + group.x;
     if (index >= bin.count) { return; }

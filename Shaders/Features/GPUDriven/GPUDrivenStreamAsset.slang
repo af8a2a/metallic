@@ -1,8 +1,7 @@
-#include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
-#include "../../Libraries/GPUDriven/HybridClusterBins.slang"
-#include "../../Libraries/GPUDriven/HybridRasterTriangle.slang"
-#include "../../Libraries/GPUDriven/ConservativeOcclusion.slang"
-#include "../../Libraries/GPUDriven/MeshletLodMetric.slang"
+import GPUDriven;
+using Metallic.GPUDriven;
+import Material;
+using Metallic.Material;
 
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
@@ -3268,7 +3267,6 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
         record.flags |= ((instanceFlags & 2u) != 0u ? 1u : 0u) | ((instanceFlags & 4u) != 0u ? 2u : 0u);
         visibleClusters[localRecordIndex] = record;
     }
-
 
     output.params = params;
     output.group = group;

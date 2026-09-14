@@ -1,4 +1,5 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
 struct SliderDebugPush {
     float splitPosition;
@@ -6,10 +7,10 @@ struct SliderDebugPush {
     uint swapSides;
 };
 
-#define gPush METALLIC_CONSTANTS(SliderDebugPush)
-#define gSourceA METALLIC_RESOURCE(Texture2D<float4>, 0)
-#define gSourceB METALLIC_RESOURCE(Texture2D<float4>, 1)
-#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 2)
+#define gPush getConstants<SliderDebugPush>()
+#define gSourceA getResource<Texture2D<float4>>(0)
+#define gSourceB getResource<Texture2D<float4>>(1)
+#define gOutput getResource<RWTexture2D<float4>>(2)
 
 bool sliderDebugUsesSourceA(uint2 pixel, uint width, uint height)
 {

@@ -1,19 +1,21 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+import GPUDriven;
+using Metallic.GPUDriven;
+import Material;
+using Metallic.Material;
 
 #ifndef MATERIAL_CLASS
 #define MATERIAL_CLASS -1
 #endif
 
 #include "../Lighting/OpenPBRDirectLighting.slang"
-#include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
-#include "../../Libraries/GPUDriven/MaterialBinningCommon.slang"
-#include "../../Libraries/Camera/ViewConstants.slang"
 
 ScenePathTracePush deferredViewPush()
 {
-    ScenePathTracePush push = METALLIC_CONSTANTS(ScenePathTracePush);
+    ScenePathTracePush push = getConstants<ScenePathTracePush>();
 #if METALLIC_GLOBAL_VIEW
-    ViewConstants view = METALLIC_RESOURCE(StructuredBuffer<ViewConstants>, 80)[0];
+    ViewConstants view = getResource<StructuredBuffer<ViewConstants>>(80)[0];
     push.eye = view.current.eye;
     push.center = view.current.center;
     push.upProjection = view.current.upProjection;
@@ -32,21 +34,21 @@ ScenePathTracePush deferredViewPush()
     return push;
 }
 
-#define gVisibility METALLIC_RESOURCE(Texture2D<uint>, 60)
-#define gVisibilityDepth METALLIC_RESOURCE(Texture2D<float>, 61)
-#define gRasterVertices METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewVertex>, 62)
-#define gRasterMeshlets METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewMeshlet>, 63)
-#define gRasterRecords METALLIC_RESOURCE(StructuredBuffer<VisibleClusterRecord>, 64)
-#define gRasterMeshletVertices METALLIC_RESOURCE(StructuredBuffer<uint>, 65)
-#define gRasterTriangles METALLIC_RESOURCE(StructuredBuffer<uint>, 66)
-#define gRasterGeometries METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewGeometry>, 67)
-#define gRasterInstances METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewInstance>, 68)
-#define gRasterMaterials METALLIC_RESOURCE(StructuredBuffer<GPUDrivenPreviewMaterial>, 69)
-#define gMaterialBins METALLIC_RESOURCE(StructuredBuffer<MaterialBin>, 70)
-#define gMaterialTiles METALLIC_RESOURCE(StructuredBuffer<MaterialTile>, 71)
+#define gVisibility getResource<Texture2D<uint>>(60)
+#define gVisibilityDepth getResource<Texture2D<float>>(61)
+#define gRasterVertices getResource<StructuredBuffer<GPUDrivenPreviewVertex>>(62)
+#define gRasterMeshlets getResource<StructuredBuffer<GPUDrivenPreviewMeshlet>>(63)
+#define gRasterRecords getResource<StructuredBuffer<VisibleClusterRecord>>(64)
+#define gRasterMeshletVertices getResource<StructuredBuffer<uint>>(65)
+#define gRasterTriangles getResource<StructuredBuffer<uint>>(66)
+#define gRasterGeometries getResource<StructuredBuffer<GPUDrivenPreviewGeometry>>(67)
+#define gRasterInstances getResource<StructuredBuffer<GPUDrivenPreviewInstance>>(68)
+#define gRasterMaterials getResource<StructuredBuffer<GPUDrivenPreviewMaterial>>(69)
+#define gMaterialBins getResource<StructuredBuffer<MaterialBin>>(70)
+#define gMaterialTiles getResource<StructuredBuffer<MaterialTile>>(71)
 #if METALLIC_DEFERRED_UPSCALER_GUIDES
-#define gUpscalerMotion METALLIC_RESOURCE(RWTexture2D<float2>, 72)
-#define gUpscalerDepth METALLIC_RESOURCE(RWTexture2D<float>, 73)
+#define gUpscalerMotion getResource<RWTexture2D<float2>>(72)
+#define gUpscalerDepth getResource<RWTexture2D<float>>(73)
 #endif
 
 float3 rasterWorldPosition(GPUDrivenPreviewInstance instance, float3 position)

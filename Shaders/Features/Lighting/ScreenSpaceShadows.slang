@@ -1,17 +1,21 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+import Lighting;
+using Metallic.Lighting;
 
 // Reuse scene alpha-mask and neural-texture evaluation for closest-hit shadow rays.
 #include "../PathTracing/ScenePathTrace.slang"
-#include "../../Libraries/Lighting/ScreenSpaceShadowCommon.slang"
-#include "../../Libraries/Denoising/NRD.hlsli"
 
-#define gShadowParameters METALLIC_RESOURCE(StructuredBuffer<ShadowParameters>, 80)
-#define gDepth METALLIC_RESOURCE(Texture2D<float>, 81)
-#define gPenumbra METALLIC_RESOURCE(RWTexture2D<float>, 82)
-#define gNormal METALLIC_RESOURCE(RWTexture2D<float4>, 83)
-#define gViewZ METALLIC_RESOURCE(RWTexture2D<float>, 84)
-#define gMotion METALLIC_RESOURCE(RWTexture2D<float4>, 85)
-#define gShadow METALLIC_RESOURCE(RWTexture2D<float>, 86)
+import NrdEncoding;
+using Metallic.Interop.NrdEncoding;
+
+#define gShadowParameters getResource<StructuredBuffer<ShadowParameters>>(80)
+#define gDepth getResource<Texture2D<float>>(81)
+#define gPenumbra getResource<RWTexture2D<float>>(82)
+#define gNormal getResource<RWTexture2D<float4>>(83)
+#define gViewZ getResource<RWTexture2D<float>>(84)
+#define gMotion getResource<RWTexture2D<float4>>(85)
+#define gShadow getResource<RWTexture2D<float>>(86)
 
 struct ShadowGeometryPush
 {
@@ -21,7 +25,7 @@ struct ShadowGeometryPush
 
 float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
 {
-    ShadowGeometryPush geometry = METALLIC_CONSTANTS(ShadowGeometryPush);
+    ShadowGeometryPush geometry = getConstants<ShadowGeometryPush>();
     ScenePathTracePush push = (ScenePathTracePush)0;
     push.materialTextureCount = geometry.materialTextureCount;
     push.ntcTextureSetCount = geometry.ntcTextureSetCount;
@@ -41,7 +45,7 @@ float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
         }
     }
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT
-        ? min(query.CommittedRayT(), NRD_FP16_MAX - 1.0) : NRD_FP16_MAX;
+        ? min(query.CommittedRayT(), kNrdFp16Max - 1.0) : kNrdFp16Max;
 }
 
 void shadowCameraBasis(ViewCameraConstants camera, out float3 forward, out float3 right, out float3 up)
@@ -137,7 +141,7 @@ void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
     float3 position = shadowWorldPosition(int2(pixel), p);
     float3 normal = background ? float3(0, 0, 1) : shadowDepthNormal(int2(pixel), p, position);
     gViewZ[pixel] = background ? 1e6 : viewZ;
-    gNormal[pixel] = NRD_FrontEnd_PackNormalAndRoughness(normal, 1.0, 0.0);
+    gNormal[pixel] = packNrdNormalRoughness(normal, 1.0, 0.0);
     float2 motion = float2(0.0);
     if (!background && p.view.frame.y != 0u) {
         float3 previous = shadowProject(position, p.view.previous);
@@ -145,8 +149,8 @@ void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
         if (previous.z > p.view.previous.clipOrtho.x) { motion = previous.xy - currentUv; }
     }
     gMotion[pixel] = float4(motion, 0.0, 0.0);
-    float distance = NRD_FP16_MAX;
-    float penumbra = NRD_FP16_MAX;
+    float distance = kNrdFp16Max;
+    float penumbra = kNrdFp16Max;
     if (!background && p.control.x != 0u) {
         PunctualLightSample light = samplePunctualLightData(p.light, position);
         if (any(light.illuminance > 0.0)) {
@@ -174,11 +178,11 @@ void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
                 rayLength = min(rayLength, targetDistance - 0.001);
             }
             if (rayLength > 0.001) { distance = traceGeometryShadow(origin, direction, rayLength); }
-            penumbra = p.light.directionType.w < 0.5 ? SIGMA_FrontEnd_PackPenumbra(distance, p.trace.w)
-                : SIGMA_FrontEnd_PackPenumbra(distance, light.distance, p.shape.x * 2.0);
+            penumbra = p.light.directionType.w < 0.5 ? packNrdPenumbra(distance, p.trace.w)
+                : packNrdPenumbra(distance, light.distance, p.shape.x * 2.0);
         }
     }
     gPenumbra[pixel] = penumbra;
     // SIGMA reads the previous encoded output during Copy; preserve it until denoising.
-    if (p.shape.y == 0.0 || background) { gShadow[pixel] = distance >= NRD_FP16_MAX ? 1.0 : 0.0; }
+    if (p.shape.y == 0.0 || background) { gShadow[pixel] = distance >= kNrdFp16Max ? 1.0 : 0.0; }
 }

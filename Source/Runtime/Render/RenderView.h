@@ -19,7 +19,7 @@ struct ViewCamera {
     bool operator==(const ViewCamera&) const = default;
 };
 
-// GPU ABI shared with Libraries/Camera/ViewConstants.slang. Matrices can be
+// GPU ABI shared with Modules/Core/ViewConstants.slang. Matrices can be
 // derived from this unjittered camera without making the view depend on a pass.
 struct alignas(16) ViewCameraConstants {
     float eye[4]{};

@@ -1,4 +1,5 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
 // This software contains source code that calls interfaces provided by NVIDIA Corporation.
 #include <rtxcr/HairChiangBSDF.hlsli>
@@ -28,7 +29,7 @@ struct RtxcrMaterialSamplePush
     float padding1;
 };
 
-#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 0)
+#define gOutput getResource<RWTexture2D<float4>>(0)
 
 static const float kPi = 3.14159265358979323846;
 
@@ -240,7 +241,7 @@ float3 acesApprox(float3 color)
 void rtxcrMaterialSampleMain(
     uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    RtxcrMaterialSamplePush push = METALLIC_CONSTANTS(RtxcrMaterialSamplePush);
+    RtxcrMaterialSamplePush push = getConstants<RtxcrMaterialSamplePush>();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

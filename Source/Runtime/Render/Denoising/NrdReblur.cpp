@@ -10,17 +10,17 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "NrdPlan.h"
 
-#include "Shaders/Libraries/Denoising/NRD/REBLUR_Config.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/REBLUR_Blur.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/REBLUR_ClassifyTiles.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/REBLUR_HistoryFix.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/REBLUR_HitDistReconstruction.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/REBLUR_PostBlur.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/REBLUR_PrePass.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/REBLUR_SplitScreen.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/REBLUR_TemporalAccumulation.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/REBLUR_TemporalStabilization.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/REBLUR_Validation.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REBLUR_Config.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REBLUR_Blur.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REBLUR_ClassifyTiles.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REBLUR_HistoryFix.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REBLUR_HitDistReconstruction.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REBLUR_PostBlur.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REBLUR_PrePass.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REBLUR_SplitScreen.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REBLUR_TemporalAccumulation.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REBLUR_TemporalStabilization.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REBLUR_Validation.resources.hlsli"
 
 // Permutations
 #define REBLUR_HITDIST_RECONSTRUCTION_PERMUTATION_NUM 4

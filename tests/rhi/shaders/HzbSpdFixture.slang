@@ -1,11 +1,12 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
 struct FixturePush { uint width; uint height; uint seed; uint reversedZ; };
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void hzbSpdFixtureMain(uint3 id : SV_DispatchThreadID)
 {
-    FixturePush push = METALLIC_CONSTANTS(FixturePush);
+    FixturePush push = getConstants<FixturePush>();
     if (id.x >= push.width || id.y >= push.height) { return; }
     uint hash = (id.x * 73u + id.y * 137u + push.seed * 31u) % 1024u;
     // Each 64x64 tile has a different range so the last-group tail must
@@ -16,9 +17,9 @@ void hzbSpdFixtureMain(uint3 id : SV_DispatchThreadID)
         depth = push.reversedZ != 0u ? 0.0 : 1.0;
     }
     if (id.x == 0u && id.y == 0u) { depth = asfloat(0x7fc00000u); }
-    METALLIC_RESOURCE(RWTexture2D<float>, 0)[id.xy] = depth;
+    getResource<RWTexture2D<float>>(0)[id.xy] = depth;
     if (id.x == 0u && id.y == 0u) {
-        METALLIC_RESOURCE(RWStructuredBuffer<uint>, 1)[0] = 0u;
-        METALLIC_RESOURCE(RWStructuredBuffer<uint>, 1)[1] = push.seed;
+        getResource<RWStructuredBuffer<uint>>(1)[0] = 0u;
+        getResource<RWStructuredBuffer<uint>>(1)[1] = push.seed;
     }
 }

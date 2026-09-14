@@ -1,5 +1,5 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
-#include "../../Libraries/Color/DisplayOutput.slang"
+import Core;
+using Metallic;
 
 struct DisplayOutputPush
 {
@@ -30,9 +30,9 @@ float3 displayOutput(float3 color, DisplayOutputPush push)
     return push.sampledSrgb != 0u ? displayLinearToSrgb(color) : color;
 }
 
-#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 0)
+#define gOutput getResource<RWTexture2D<float4>>(0)
 
-#define gSource METALLIC_RESOURCE(Texture2D<float4>, 1)
+#define gSource getResource<Texture2D<float4>>(1)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -45,7 +45,7 @@ void finalBlitUvMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
     float2 uv = (float2(pixel) + 0.5) / float2(width, height);
-    DisplayOutputPush push = METALLIC_CONSTANTS(DisplayOutputPush);
+    DisplayOutputPush push = getConstants<DisplayOutputPush>();
     float3 color;
     if (push.calibration != 0u) {
         float3 nits = displayCalibrationNits(uv);
@@ -82,5 +82,5 @@ void finalBlitMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     float3 c01 = gSource.Load(int3(clamp(origin + int2(0, 1), int2(0), maximum), 0)).rgb;
     float3 c11 = gSource.Load(int3(clamp(origin + int2(1, 1), int2(0), maximum), 0)).rgb;
     float3 color = lerp(lerp(c00, c10, weight.x), lerp(c01, c11, weight.x), weight.y);
-    gOutput[pixel] = float4(displayOutput(color, METALLIC_CONSTANTS(DisplayOutputPush)), 1.0);
+    gOutput[pixel] = float4(displayOutput(color, getConstants<DisplayOutputPush>()), 1.0);
 }

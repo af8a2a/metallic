@@ -34,7 +34,7 @@ struct ComputeProgramDesc {
     const char* debugName = nullptr;
     uint32_t resourceTableCount = 1;
     bool requiresRayQuery = true;
-    // Native DescriptorHandle shaders include ComputeResources.slang. The
+    // Native DescriptorHandle shaders import the Core module. The
     // mapped path is retained only for explicit legacy shader diagnostics.
     bool usesResourceTable = true;
     // Optional cache borrowed only during pipeline creation.

@@ -144,7 +144,7 @@ NRD now uses vendored shaders and Metallic-owned dispatch scheduling. Enabling
 all shader permutations. Kernels compile on first use through the Slang disk
 cache. This also allows `cmake --preset metallic-dev -DMETALLIC_ENABLE_NRD=ON`
 without initializing the NRD submodule. See the
-[NRD integration notes](../Shaders/Libraries/Denoising/NRD/README.md) for ownership,
+[NRD integration notes](../Shaders/Interop/Denoising/NRD/README.md) for ownership,
 upgrades, and the `MetallicNrdTests` validation target.
 
 The hash includes compiler identity/version/target, platform, Windows SDK,

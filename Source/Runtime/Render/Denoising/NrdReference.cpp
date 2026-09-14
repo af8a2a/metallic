@@ -19,8 +19,8 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#include "Shaders/Libraries/Denoising/NRD/REFERENCE_Copy.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/REFERENCE_TemporalAccumulation.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REFERENCE_Copy.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/REFERENCE_TemporalAccumulation.resources.hlsli"
 
 #define DENOISER_NAME Reference
 

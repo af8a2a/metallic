@@ -41,7 +41,7 @@ namespace {
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 2;
-constexpr uint32_t kShaderCacheRequestVersion = 4;
+constexpr uint32_t kShaderCacheRequestVersion = 5;
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
@@ -460,6 +460,8 @@ uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode deb
     hash = hashValue(hash, static_cast<uint8_t>(debugMode));
     const std::string searchPath = normalizedAbsolutePath(desc.searchPath).generic_string();
     hash = hashText(hash, searchPath.c_str());
+    hash = hashText(hash, PROJECT_SOURCE_DIR "/Shaders/Modules");
+    hash = hashText(hash, PROJECT_SOURCE_DIR "/Shaders/Interop");
     hash = hashValue(hash, desc.additionalSearchPathCount);
     for (uint32_t index = 0; index < desc.additionalSearchPathCount; ++index) {
         const std::string additionalSearchPath = normalizedAbsolutePath(
@@ -896,12 +898,25 @@ Result compileSlangShaderToSpirv(
     }
 
     std::vector<std::filesystem::path> normalizedSearchPaths;
-    normalizedSearchPaths.reserve(1u + desc.additionalSearchPathCount);
+    normalizedSearchPaths.reserve(5u + desc.additionalSearchPathCount);
     normalizedSearchPaths.push_back(normalizedAbsolutePath(desc.searchPath));
     for (uint32_t index = 0; index < desc.additionalSearchPathCount; ++index) {
         normalizedSearchPaths.push_back(
             normalizedAbsolutePath(desc.additionalSearchPaths[index]));
     }
+    // Program roots and SDK paths retain precedence. Subsystem modules have
+    // stable names, also when the entry point lives under tests or an SDK root.
+    const auto addModuleRoot = [&](const std::filesystem::path& root) {
+        for (const char* directory : {"Modules", "Interop"}) {
+            const auto path = normalizedAbsolutePath(root / directory);
+            if (std::find(normalizedSearchPaths.begin(), normalizedSearchPaths.end(), path) ==
+                normalizedSearchPaths.end()) {
+                normalizedSearchPaths.push_back(path);
+            }
+        }
+    };
+    addModuleRoot(desc.searchPath);
+    addModuleRoot(PROJECT_SOURCE_DIR "/Shaders");
     std::vector<std::string> searchPathStorage;
     searchPathStorage.reserve(normalizedSearchPaths.size());
     for (const std::filesystem::path& searchPath : normalizedSearchPaths) {
@@ -975,6 +990,8 @@ Result compileSlangShaderToSpirv(
         });
     }
 
+    // Sessions cache imported modules. Keep a fresh session per request so a
+    // source edit or SDK macro permutation cannot reuse stale module IR.
     slang::SessionDesc sessionDesc{};
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;

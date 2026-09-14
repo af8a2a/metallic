@@ -1,12 +1,13 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
-#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 0)
+#define gOutput getResource<RWTexture2D<float4>>(0)
 struct FixturePush { uint width; uint height; float luminance; uint outliers; };
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void autoExposureFixtureMain(uint3 pixel : SV_DispatchThreadID)
 {
-    FixturePush push = METALLIC_CONSTANTS(FixturePush);
+    FixturePush push = getConstants<FixturePush>();
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float value = push.luminance;
     if (push.outliers == 1u && pixel.x < max(push.width / 20u, 1u)) { value = 1000000.0; }

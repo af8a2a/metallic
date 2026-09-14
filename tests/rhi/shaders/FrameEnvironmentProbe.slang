@@ -1,7 +1,8 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
-#define environmentTexture METALLIC_RESOURCE(Texture2D<float4>, 0)
-#define result METALLIC_RESOURCE(RWStructuredBuffer<float4>, 1)
+#define environmentTexture getResource<Texture2D<float4>>(0)
+#define result getResource<RWStructuredBuffer<float4>>(1)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

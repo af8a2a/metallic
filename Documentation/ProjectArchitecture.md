@@ -381,7 +381,7 @@ PSO 缓存不替代 Slang 源码到 SPIR-V 的编译缓存；它优化的是驱�
 ```text
 Asset/*.gltf|*.glb|*.hdr  <- 节点 properties 中的路径
 Pipelines/*.metallic_graph.json <- Pass 节点、边、输出和参数
-Shaders/Features/**/*.slang <- Pass compile() 中选择的功能模块，复用 Shaders/Libraries/
+Shaders/Features/**/*.slang <- Pass compile() 中选择的功能模块，导入 Shaders/Modules/ 的子系统模块
 ```
 
 `RenderSample` 是三者之间的装配描述：它给出样例 ID、场景路径、图路径、需要覆盖场景/环境的节点名，以及默认视口输出。当前内置样例覆盖 OpenPBR 路径追踪、DLSS-RR、RTXDI、材质可视化和三种 GPU-driven 变体。

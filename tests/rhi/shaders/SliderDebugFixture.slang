@@ -1,10 +1,11 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
-#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 0)
-#define gInput METALLIC_RESOURCE(Texture2D<float4>, 1)
-#define gReadback METALLIC_RESOURCE(RWStructuredBuffer<float4>, 2)
+#define gOutput getResource<RWTexture2D<float4>>(0)
+#define gInput getResource<Texture2D<float4>>(1)
+#define gReadback getResource<RWStructuredBuffer<float4>>(2)
 struct FixturePush { uint path; };
-#define gPush METALLIC_CONSTANTS(FixturePush)
+#define gPush getConstants<FixturePush>()
 
 [shader("compute")]
 [numthreads(8, 8, 1)]

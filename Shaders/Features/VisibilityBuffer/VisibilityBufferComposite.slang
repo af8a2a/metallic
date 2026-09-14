@@ -1,4 +1,7 @@
-#include "../../Libraries/GPUDriven/GPUDrivenSceneCommon.slang"
+import GPUDriven;
+using Metallic.GPUDriven;
+import Material;
+using Metallic.Material;
 
 // Debug consumer ABI; the raster push layout remains unchanged.
 struct VisibilityBufferCompositePush

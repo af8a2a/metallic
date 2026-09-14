@@ -1,5 +1,9 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
-#include "../../../Shaders/Libraries/GPUDriven/GPUDrivenCullingCommon.slang"
+import Core;
+using Metallic;
+import GPUDriven;
+using Metallic.GPUDriven;
+import Material;
+using Metallic.Material;
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
@@ -22,7 +26,7 @@ void gpuDrivenConeProbeMain(uint3 id : SV_DispatchThreadID)
     bool front = meshletVisible(meshlet, 0, transform, params);
     params.eye = float4(-expected, 0);
     bool back = meshletVisible(meshlet, 0, transform, params);
-    METALLIC_RESOURCE(RWStructuredBuffer<float4>, 0)[id.x * 2u] =
+    getResource<RWStructuredBuffer<float4>>(0)[id.x * 2u] =
         float4(transformNormal(transform, float3(0, 1, 0)), front ? 1.0 : 0.0);
-    METALLIC_RESOURCE(RWStructuredBuffer<float4>, 0)[id.x * 2u + 1u] = float4(expected, back ? 1.0 : 0.0);
+    getResource<RWStructuredBuffer<float4>>(0)[id.x * 2u + 1u] = float4(expected, back ? 1.0 : 0.0);
 }

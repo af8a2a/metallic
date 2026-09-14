@@ -10,13 +10,13 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "NrdPlan.h"
 
-#include "Shaders/Libraries/Denoising/NRD/SIGMA_Config.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/SIGMA_Blur.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/SIGMA_ClassifyTiles.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/SIGMA_Copy.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/SIGMA_SmoothTiles.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/SIGMA_SplitScreen.resources.hlsli"
-#include "Shaders/Libraries/Denoising/NRD/SIGMA_TemporalStabilization.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/SIGMA_Config.hlsli"
+#include "Shaders/Interop/Denoising/NRD/SIGMA_Blur.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/SIGMA_ClassifyTiles.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/SIGMA_Copy.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/SIGMA_SmoothTiles.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/SIGMA_SplitScreen.resources.hlsli"
+#include "Shaders/Interop/Denoising/NRD/SIGMA_TemporalStabilization.resources.hlsli"
 
 // Permutations
 #define SIGMA_POST_BLUR_PERMUTATION_NUM 2

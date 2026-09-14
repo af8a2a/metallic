@@ -18,7 +18,7 @@ buffers, not total VRAM, cache traffic or frame-time improvements. Encoding adds
 shader arithmetic; performance still needs scene-specific measurement.
 
 CPU packing is in `Source/Runtime/Render/SceneShadingVertex.h`; the matching shader
-ABI and decoders are in `Shaders/Libraries/Scene/SceneShadingVertex.slang`.
+ABI and decoders are in `Shaders/Modules/Core/SceneShadingVertex.slang`.
 Zero/missing normals preserve geometric-normal fallback. Tangent sign remains
 explicit, and UVs retain float32 precision for large, tiled and negative values.
 Directions are normalized by the octahedral representation.

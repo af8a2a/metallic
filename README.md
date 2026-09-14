@@ -250,7 +250,7 @@ build\Source\Debug\Metallic.exe --smoke-test
 ```text
 Asset/*.gltf|*.glb|*.hdr|*.usd   <- 样例节点 properties 中的路径
 Pipelines/*.metallic_graph.json  <- Pass 节点、边、输出与参数
-Shaders/Features/**/*.slang      <- Pass compile() 选择的功能模块，复用 Shaders/Libraries/
+Shaders/Features/**/*.slang      <- Pass compile() 选择的功能模块，导入 Shaders/Modules/ 的子系统模块
 tests/rhi/shaders/*.slang        <- 测试专用探针
 ```
 

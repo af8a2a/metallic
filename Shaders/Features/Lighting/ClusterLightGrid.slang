@@ -1,16 +1,17 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+import Lighting;
+using Metallic.Lighting;
 
-#include "../../Libraries/Lighting/ClusterLightGridCommon.slang"
+#define gClusterParams getResource<StructuredBuffer<ClusterLightGridParams>>(0)
 
-#define gClusterParams METALLIC_RESOURCE(StructuredBuffer<ClusterLightGridParams>, 0)
+#define gClusterLights getResource<StructuredBuffer<ClusterLightData>>(1)
 
-#define gClusterLights METALLIC_RESOURCE(StructuredBuffer<ClusterLightData>, 1)
+#define gClusterCandidates getResource<StructuredBuffer<uint>>(2)
 
-#define gClusterCandidates METALLIC_RESOURCE(StructuredBuffer<uint>, 2)
+#define gClusterCells getResource<RWStructuredBuffer<ClusterLightGridCell>>(3)
 
-#define gClusterCells METALLIC_RESOURCE(RWStructuredBuffer<ClusterLightGridCell>, 3)
-
-#define gClusterLightIndices METALLIC_RESOURCE(RWStructuredBuffer<uint>, 4)
+#define gClusterLightIndices getResource<RWStructuredBuffer<uint>>(4)
 
 static const uint kClusterLightGridThreadCount = 64u;
 groupshared uint gClusterIntersectionCount;

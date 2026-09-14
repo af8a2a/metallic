@@ -15,7 +15,7 @@ namespace {
 constexpr uint32_t kMaxComputeResourceSlots = 256;
 
 // The RHI prepends its two-word heap header. These addresses match
-// ComputeResourcePush in Shaders/Libraries/Resources/ComputeResources.slang.
+// ComputeResourcePush in Shaders/Modules/Core/ComputeResources.slang.
 struct ComputeResourcePush {
     uint64_t resources = 0;
     uint64_t constants = 0;

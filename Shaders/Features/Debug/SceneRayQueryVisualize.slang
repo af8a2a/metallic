@@ -1,8 +1,9 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
-#define gScene METALLIC_RESOURCE(RaytracingAccelerationStructure, 0)
+#define gScene getResource<RaytracingAccelerationStructure>(0)
 
-#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 1)
+#define gOutput getResource<RWTexture2D<float4>>(1)
 
 #ifndef SCENE_RAYQUERY_ENABLE_CLUSTER_ID
 #define SCENE_RAYQUERY_ENABLE_CLUSTER_ID 0
@@ -108,7 +109,7 @@ float3 rayOriginFromPixel(uint2 pixel, SceneRayQueryVisualizationPush push)
 [numthreads(8, 8, 1)]
 void sceneRayQueryVisualizeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    SceneRayQueryVisualizationPush push = METALLIC_CONSTANTS(SceneRayQueryVisualizationPush);
+    SceneRayQueryVisualizationPush push = getConstants<SceneRayQueryVisualizationPush>();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

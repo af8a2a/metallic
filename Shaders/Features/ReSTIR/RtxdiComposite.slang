@@ -1,14 +1,15 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
-#define gDenoisedDiffuse METALLIC_RESOURCE(RWTexture2D<float4>, 0)
+#define gDenoisedDiffuse getResource<RWTexture2D<float4>>(0)
 
-#define gDenoisedSpecular METALLIC_RESOURCE(RWTexture2D<float4>, 1)
+#define gDenoisedSpecular getResource<RWTexture2D<float4>>(1)
 
-#define gBaseColorMetalness METALLIC_RESOURCE(RWTexture2D<float4>, 2)
+#define gBaseColorMetalness getResource<RWTexture2D<float4>>(2)
 
-#define gEmissive METALLIC_RESOURCE(RWTexture2D<float4>, 3)
+#define gEmissive getResource<RWTexture2D<float4>>(3)
 
-#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 4)
+#define gOutput getResource<RWTexture2D<float4>>(4)
 
 struct RtxdiCompositePush
 {
@@ -29,7 +30,7 @@ float3 toneMap(float3 color, float exposure)
 void rtxdiCompositeMain(
     uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    RtxdiCompositePush push = METALLIC_CONSTANTS(RtxdiCompositePush);
+    RtxdiCompositePush push = getConstants<RtxdiCompositePush>();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

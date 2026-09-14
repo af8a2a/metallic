@@ -1,6 +1,7 @@
-#include "../../Libraries/GPUDriven/GPUDrivenCullingCommon.slang"
-#include "../../Libraries/GPUDriven/HybridClusterBins.slang"
-#include "../../Libraries/GPUDriven/HybridRasterTriangle.slang"
+import GPUDriven;
+using Metallic.GPUDriven;
+import Material;
+using Metallic.Material;
 
 #ifndef GPU_DRIVEN_AMPLIFICATION_WAVE_OPS
 #define GPU_DRIVEN_AMPLIFICATION_WAVE_OPS 1

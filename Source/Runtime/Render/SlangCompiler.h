@@ -25,6 +25,8 @@ struct SlangShaderDesc {
     // "Features/Environment/EnvironmentLightingPrecompute".
     const char* moduleName = nullptr;
     const char* entryPointName = nullptr;
+    // Program root. Modules/ and Interop/ under this root and the project's
+    // Shaders directory are also searched for named subsystem imports.
     const char* searchPath = nullptr;
     const char* const* additionalSearchPaths = nullptr;
     uint32_t additionalSearchPathCount = 0;

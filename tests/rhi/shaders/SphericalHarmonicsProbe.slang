@@ -1,9 +1,8 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
-#include "../../../Shaders/Libraries/Math/SphericalHarmonics.slang"
-
-#define gOutput METALLIC_RESOURCE(RWStructuredBuffer<float4>, 0)
-#define gInput METALLIC_RESOURCE(StructuredBuffer<float4>, 1)
+#define gOutput getResource<RWStructuredBuffer<float4>>(0)
+#define gInput getResource<StructuredBuffer<float4>>(1)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

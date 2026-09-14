@@ -1,10 +1,11 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
 // Dispatch after the destination is initialized, with a storage-write barrier
 // between this dispatch and earlier image writes. One invocation owns all text.
 #include "ShaderToHumanScatter.slang"
 
-#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 0)
+#define gOutput getResource<RWTexture2D<float4>>(0)
 
 void onGfxForAllScatter(int2 pxPos, float4 color)
 {

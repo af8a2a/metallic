@@ -1,8 +1,9 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
 #include "../../../Shaders/Features/PathTracing/ScenePathTrace.slang"
 
-#define gMotionResults METALLIC_RESOURCE(RWStructuredBuffer<float4>, 63)
+#define gMotionResults getResource<RWStructuredBuffer<float4>>(63)
 
 [shader("compute")]
 [numthreads(32, 1, 1)]

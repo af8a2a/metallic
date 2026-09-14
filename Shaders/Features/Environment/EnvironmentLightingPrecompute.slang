@@ -1,9 +1,9 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
+import Lighting;
+using Metallic.Lighting;
 
 // GPU projection and cosine convolution: irradiance SH through l=2.
-#include "../../Libraries/Math/SphericalHarmonics.slang"
-#include "../../Libraries/Lighting/ProceduralEnvironment.slang"
-#include "../../Libraries/Lighting/EnvironmentPrefilter.slang"
 
 static const uint kIntegratePartials = 0u;
 static const uint kFinalizeCoefficients = 1u;
@@ -11,12 +11,12 @@ static const uint kThreadCount = 128u;
 static const uint kCoefficientCount = SH::L2RGB::kCoefficientCount;
 static const float kPi = 3.14159265358979323846;
 
-#define gEnvironmentMap METALLIC_RESOURCE(Texture2D<float4>, 0)
+#define gEnvironmentMap getResource<Texture2D<float4>>(0)
 
-#define gPartials METALLIC_RESOURCE(RWStructuredBuffer<float4>, 1)
+#define gPartials getResource<RWStructuredBuffer<float4>>(1)
 
-#define gCoefficients METALLIC_RESOURCE(RWStructuredBuffer<float4>, 2)
-#define gSpecular METALLIC_RESOURCE(RWStructuredBuffer<float4>, 3)
+#define gCoefficients getResource<RWStructuredBuffer<float4>>(2)
+#define gSpecular getResource<RWStructuredBuffer<float4>>(3)
 
 struct EnvironmentLightingPrecomputePush
 {
@@ -152,7 +152,7 @@ void environmentLightingPrecomputeMain(
     uint3 groupId : SV_GroupID,
     uint groupThreadIndex : SV_GroupIndex)
 {
-    EnvironmentLightingPrecomputePush push = METALLIC_CONSTANTS(EnvironmentLightingPrecomputePush);
+    EnvironmentLightingPrecomputePush push = getConstants<EnvironmentLightingPrecomputePush>();
     if (push.mode == kIntegratePartials) {
         integratePartials(groupId, groupThreadIndex, push);
     } else if (push.mode == kFinalizeCoefficients) {

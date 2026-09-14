@@ -1,9 +1,13 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
-#define gMotion METALLIC_RESOURCE(Texture2D<float2>, 0)
-#define gDepth METALLIC_RESOURCE(Texture2D<float>, 1)
-#define gData METALLIC_RESOURCE(RWStructuredBuffer<float4>, 2)
-#include "../../../Shaders/Libraries/Lighting/EnvironmentPrefilter.slang"
-#define gPrefilter METALLIC_RESOURCE(StructuredBuffer<float4>, 3)
+import Core;
+using Metallic;
+import Lighting;
+using Metallic.Lighting;
+
+#define gMotion getResource<Texture2D<float2>>(0)
+#define gDepth getResource<Texture2D<float>>(1)
+#define gData getResource<RWStructuredBuffer<float4>>(2)
+
+#define gPrefilter getResource<StructuredBuffer<float4>>(3)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]

@@ -1,4 +1,7 @@
-#include "../../Libraries/GPUDriven/GPUDrivenCullingCommon.slang"
+import GPUDriven;
+using Metallic.GPUDriven;
+import Material;
+using Metallic.Material;
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

@@ -1,7 +1,7 @@
 # Bindless compute resources
 
-All application compute shaders that previously declared `vk::binding` now use
-`Shaders/Libraries/Resources/ComputeResources.slang`. This covers RTXDI/ReGIR,
+All application compute shaders that previously declared `vk::binding` now import `Core`. Its ABI is declared in
+`Shaders/Modules/Core/ComputeResources.slang`. This covers RTXDI/ReGIR,
 Standard and OpenPBR path tracing and guides, SHaRC/NRC, neural textures,
 visibility-buffer deferred shading/material binning, environment precomputation,
 post processing and debug passes. NRD already uses its own native bindless ABI.
@@ -20,7 +20,7 @@ post processing and debug passes. NRD already uses its own native bindless ABI.
 - The native RHI prepends an 8-byte heap header. ComputeProgram then pushes the
   resource-table and constants addresses (8 bytes each), for 24 bytes total.
   Shader entry points load their existing parameter types with
-  `METALLIC_CONSTANTS`. Parameter field
+  `getConstants<T>()`. Parameter field
   order and CPU/shader layouts are unchanged.
 - `resourceTableCount` and `resourceTableIndex` select application resource tables.
   Each active frame retains its heap, table, constants and pipeline until GPU

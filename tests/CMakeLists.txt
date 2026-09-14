@@ -252,6 +252,7 @@ add_executable(MetallicRhiTests
     rhi/RenderViewTests.cpp
     rhi/ShaderToHumanTests.cpp
     rhi/ShaderHotReloadTests.cpp
+    rhi/ShaderModuleTests.cpp
     rhi/SphericalHarmonicsTests.cpp
     rhi/ReGIRVirtualLightTests.cpp
     rhi/RenderGraphTests.cpp

@@ -180,7 +180,7 @@ struct NrdRuntime::Impl {
             {
                 .moduleName = recipe.shaderName.c_str(),
                 .entryPointName = "main",
-                .searchPath = PROJECT_SOURCE_DIR "/Shaders/Libraries/Denoising/NRD",
+                .searchPath = PROJECT_SOURCE_DIR "/Shaders/Interop/Denoising/NRD",
                 .additionalSearchPaths = searchPaths,
                 .additionalSearchPathCount = 1,
                 .macroDefines = defines.data(),

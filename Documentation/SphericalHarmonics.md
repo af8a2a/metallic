@@ -1,6 +1,6 @@
 # 球谐 GI Shader 接口
 
-`Shaders/Libraries/Math/SphericalHarmonics.slang` 参考 [MJP 的 SHforHLSL](https://github.com/TheRealMJP/SHforHLSL)
+`Shaders/Modules/Core/SphericalHarmonics.slang` 参考 [MJP 的 SHforHLSL](https://github.com/TheRealMJP/SHforHLSL)
 封装低阶球谐的类型、投影与运算。调用采用 HLSL 2021 风格的命名空间、泛型类型和
 运算符；实现使用项目现有 Slang 编译链，遵循
 [Slang 泛型及运算符语法](https://docs.shader-slang.org/en/latest/coming-from-hlsl.html)。
@@ -29,7 +29,8 @@ Y-up 经纬环境图只决定 texel 到方向的映射，不改变这套系数�
 
 ```hlsl
 // From a shader in Shaders/Features/<Feature>/:
-#include "../../Libraries/Math/SphericalHarmonics.slang"
+import Core;
+using Metallic;
 
 SH::L2RGB radianceSH = SH::L2RGB::zero();
 // 在采样循环中：sampleDirection 为单位向量，samplePdf 为正。

@@ -1,10 +1,10 @@
-#include "../../../Shaders/Libraries/Resources/ComputeResources.slang"
-#include "../../../Shaders/Libraries/Camera/ViewConstants.slang"
+import Core;
+using Metallic;
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void viewConstantsProbeMain()
 {
-    METALLIC_RESOURCE(RWStructuredBuffer<ViewConstants>, 0)[0] =
-        METALLIC_RESOURCE(StructuredBuffer<ViewConstants>, 1)[0];
+    getResource<RWStructuredBuffer<ViewConstants>>(0)[0] =
+        getResource<StructuredBuffer<ViewConstants>>(1)[0];
 }

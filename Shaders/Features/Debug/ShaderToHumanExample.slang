@@ -1,10 +1,11 @@
-#include "../../Libraries/Resources/ComputeResources.slang"
+import Core;
+using Metallic;
 
 // Standalone linear-color example. A 320x192 output shows the entire overlay.
 // Compile either the compute or fragment entry; only compute binds gOutput.
 #include "ShaderToHuman.slang"
 
-#define gOutput METALLIC_RESOURCE(RWTexture2D<float4>, 0)
+#define gOutput getResource<RWTexture2D<float4>>(0)
 
 float4 shaderToHumanExampleColor(float2 pixelCenter)
 {
