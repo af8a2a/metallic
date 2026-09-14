@@ -1,3 +1,24 @@
+if(WIN32)
+    set(METALLIC_TRACY_VIEWER "" CACHE FILEPATH
+        "Tracy Viewer executable (empty uses build-tracy-viewer in the source tree)")
+    add_executable(MetallicTracy TracyLauncher.cpp)
+    target_compile_definitions(MetallicTracy PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    if(MSVC)
+        target_compile_options(MetallicTracy PRIVATE /utf-8)
+    endif()
+    # Generate per configuration without making the small launcher depend on
+    # rebuilding the editor or Tracy's independently built Release viewer.
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/tracy/$<CONFIG>/TracyLauncherConfig.h"
+        CONTENT "#pragma once
+inline constexpr wchar_t kRepositoryRoot[] = LR\"metallic(${PROJECT_SOURCE_DIR})metallic\";
+inline constexpr wchar_t kMetallicExecutable[] = LR\"metallic($<TARGET_FILE:Metallic>)metallic\";
+inline constexpr wchar_t kViewerOverride[] = LR\"metallic(${METALLIC_TRACY_VIEWER})metallic\";
+")
+    target_include_directories(MetallicTracy PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/tracy/$<CONFIG>")
+    set_target_properties(MetallicTracy PROPERTIES
+        VS_DEBUGGER_WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+endif()
+
 find_package(Python3 QUIET COMPONENTS Interpreter)
 
 if(Python3_Interpreter_FOUND)

@@ -2,6 +2,33 @@
 
 ## Ready-to-use local setup
 
+On Windows, reload CMake in CLion and select the **MetallicTracy** executable
+target to build and run the launcher. With no arguments it connects to
+`127.0.0.1:8086`. Set the run configuration's working directory to the repository
+root when using relative capture paths.
+
+```powershell
+cmake --build build-dev --target MetallicTracy
+./build-dev/Tools/MetallicTracy.exe
+./build-dev/Tools/MetallicTracy.exe --capture ./Captures/tracy-gpu-smoke.tracy
+./build-dev/Tools/MetallicTracy.exe --with-metallic
+```
+
+Program arguments also accept `--address HOST --port PORT`, or a capture filename
+as the sole argument. `--with-metallic` starts a new editor from the launcher's
+**current CMake build configuration**, so build the `Metallic` target there first.
+The launcher waits for Viewer to exit and returns its exit code; closing Viewer
+does not close the editor.
+
+The launcher builds independently of the editor and Viewer. It uses the existing
+Release Viewer at `build-tracy-viewer/tracy-profiler.exe` (or its `Release/`
+subdirectory). To use another matching Viewer, configure
+`-DMETALLIC_TRACY_VIEWER=C:/path/to/tracy-profiler.exe` and rebuild the launcher.
+Viewer is still built separately as described below. This keeps its dependency
+graph and build configuration separate from Metallic's.
+
+The PowerShell launcher remains available:
+
 `build-tracy-viewer/tracy-profiler.exe` is the matching Tracy Viewer. From the
 repository root, use:
 
