@@ -93,6 +93,8 @@ public:
             graph.markOutput("GPUDriven.visibility"); graph.markOutput("GPUDriven.color");
             const auto node = graph.findNode("GPUDriven")->id;
             graph.findNode(node)->properties["debugStreamingPages"] = false;
+            // Compare ID albedo, not view-dependent geometric shading.
+            graph.findNode(node)->properties["shadedDebugColors"] = false;
             const Json original = graph.viewProperties().at("camera");
             RenderView view;
             checkDebug(view.setCameraProperties(original), "Invalid initial camera");
@@ -183,6 +185,39 @@ public:
                 }
             }
             checkDebug(totalRemapped > 1000, "Candidate relocation was not exercised");
+            graph.setNodeRuntimeProperty(node, "visualization", "meshlet");
+            Json closeCamera = original;
+            closeCamera["eye"] = {54.842365, 6.680129, 0.444687};
+            closeCamera["center"] = {49.537601, 3.466686, 6.950641};
+            checkDebug(view.setCameraProperties(closeCamera), "Invalid close comparison camera");
+            for (uint32_t f = 0; f < 120; ++f) { renderFrame(false); }
+            double flatLuminance = 0.0;
+            for (bool shaded : {false, true}) {
+                graph.setNodeRuntimeProperty(node, "shadedDebugColors", shaded);
+                renderFrame(true);
+                const auto colors = observer.read<uint32_t>("GPUDriven.color");
+                const auto image = context.outputDirectory / (shaded ? "MiniZorah-meshlet-shaded.png" : "MiniZorah-meshlet-flat.png");
+                checkDebug(saveRgba8Png(image, reinterpret_cast<const uint8_t*>(colors.data()), 1920, 1080, log), log);
+                double luminance = 0.0;
+                uint64_t covered = 0;
+                for (size_t pixel = 0; pixel < preview.pixels().size(); ++pixel) {
+                    if (preview.pixels()[pixel] == 0) { continue; }
+                    const uint32_t color = colors[pixel];
+                    checkDebug((color >> 24) == 255u, "Debug shading changed alpha");
+                    luminance += 0.2126 * (color & 255u) + 0.7152 * ((color >> 8) & 255u) +
+                        0.0722 * ((color >> 16) & 255u);
+                    ++covered;
+                }
+                checkDebug(covered > 1000, "Insufficient shaded comparison coverage");
+                luminance /= double(covered) * 255.0;
+                report["shadingComparison"].push_back({{"shaded", shaded}, {"meanLuminance", luminance},
+                    {"coveredPixels", covered}, {"image", image.generic_string()}});
+                if (!shaded) { flatLuminance = luminance; }
+                else {
+                    checkDebug(luminance > flatLuminance * 0.25 && luminance < flatLuminance * 0.95,
+                        "Shading is ineffective or has made the comparison view unreadably dark");
+                }
+            }
             report["status"] = "passed"; report["matchedColorSamples"] = totalCompared;
             report["remappedInstanceRecords"] = totalRemapped; report["colorMismatches"] = 0; save();
             return RhiTestResult::pass("MiniZorah meshlet/triangle/LOD colors stable across yaw and temporary record relocation");

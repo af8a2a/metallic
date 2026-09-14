@@ -673,6 +673,7 @@ public:
                  {"Coverage", "coverage"},
                  {"LOD Level", "lod"},
                  {"Off (VBuffer Only)", "none"}}),
+            runtimeBoolSetting("shadedDebugColors", "Shaded ID Colors", true),
             runtimeBoolSetting("hybridRaster", "Hybrid Software Rasterization", true),
             runtimeBoolSetting("clusterPrebin", "Cluster Prebinning", true),
             runtimeBoolSetting("asyncSoftwareRaster", "Async Software Rasterization", true),
@@ -2821,6 +2822,7 @@ private:
             .residentRecordCapacity = residentRecordCapacity_,
             .streamRecords = streamEnabled_ ? streamDebugRecordsHandle_.index : kGPUDrivenInvalidBindlessIndex,
             .streamGroups = streamEnabled_ ? streamDebugGroupsHandle_.index : kGPUDrivenInvalidBindlessIndex,
+            .shadedColors = boolProperty(&properties(), "shadedDebugColors", true) ? 1u : 0u,
         };
         commandBuffer.pushBindlessData(&push, sizeof(push));
         if (previousParams_.mode != kVisibilityModeNone) {

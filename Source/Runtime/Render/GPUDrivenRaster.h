@@ -16,8 +16,9 @@ struct VisibilityBufferCompositeUserPush {
     uint32_t residentRecordCapacity = 0;
     uint32_t streamRecords = UINT32_MAX;
     uint32_t streamGroups = UINT32_MAX;
+    uint32_t shadedColors = 0;
 };
-static_assert(sizeof(VisibilityBufferCompositeUserPush) == 32);
+static_assert(sizeof(VisibilityBufferCompositeUserPush) == 36);
 
 // CPU-authored metadata accompanying visibility/depth. Consumers reconstruct
 // from the actual raster camera, including when the culling camera is frozen.

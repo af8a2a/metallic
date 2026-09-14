@@ -141,6 +141,7 @@ StreamAsset 目前不绘制固定剔除视图，且其光栅相机仅支持透�
 `VisibilityBufferPass` 暴露以下运行时设置；剔除默认开启，固定相机默认关闭：
 
 - `visualization`：默认 `meshlet`，运行时切换无需重建图，不使 HZB 历史失效。
+- `shadedDebugColors`（Shaded ID Colors）：默认开启，为 Meshlet / Triangle / LOD ID 底色增加形体明暗和屏幕空间接触遮蔽；关闭后显示纯色，便于检查 ID 稳定性。
 - `instanceFrustumCull`
 - `instanceHzbCull`
 - `meshletFrustumCull`
@@ -151,13 +152,20 @@ StreamAsset 目前不绘制固定剔除视图，且其光栅相机仅支持透�
 
 | Visualization | JSON 值 | 显示内容 |
 | --- | --- | --- |
-| Meshlet ID | `meshlet` | 可见 cluster record ID 的哈希色（区分实例与 producer） |
-| Triangle ID | `triangle` | 完整 packed ID 的哈希色，区分 meshlet 内三角形 |
+| Meshlet ID | `meshlet` | 稳定几何身份的哈希色；流送使用逻辑页与页内 cluster，同一几何的实例共享底色 |
+| Triangle ID | `triangle` | 稳定 cluster 身份与局部三角形索引的哈希色 |
+| LOD | `lod` | LOD 层级的哈希色 |
 | Depth | `depth` | 当前观察相机的原始 device Z 灰度，不做线性化 |
 | Coverage | `coverage` | ID 非零为白色，背景为清屏色 |
 | Off (VBuffer Only) | `none` | 仅生成原始 visibility / depth，color 保持清屏色 |
 
 旧 `mode` 属性仍可读取；旧 Shaded / Base Color 回退为 Meshlet ID，不会重新启用材质着色。Depth 在固定剔除相机模式下仍显示观察相机深度，而非内部剔除深度。
+
+ID 可视化参考 `vk_lod_clusters/shaders/render_shading.glsl` 的 `colorizeID`：将随机 RGB 范围收敛到 `[0.3, 0.8]`，把颜色作为底色叠加明暗。Composite 从当前观察相机的深度重建法线，结合固定方向光、天空填充与视线方向柔光显示表面朝向，并使用八个邻域样本近似接触遮蔽。深度导数优先选择深度差较小的一侧，遮蔽按距离衰减，减轻轮廓处跨前后景采样产生的暗边。
+
+该效果只作用于 ID 调试输出，不改材质法线、VBuffer ID、剔除或流送选择，也不增加独立渲染 pass。接触遮蔽仅有屏幕空间信息，不等同于参考程序的光追阴影/AO。光照强度可随观察方向变化，但底色仍由稳定几何身份决定；Depth / Coverage / Off 不受此开关影响。
+
+2026-09-15：`visibility_debug_stable_geometry_identity` 验证 resident/stream 记录搬移与页复用后的底色一致性；启用 `METALLIC_TEST_MINIZORAH=1` 的 `minizorah_debug_identity_stability` 验证 MiniZorah 三种 ID 模式转视角后的底色稳定性，并在近景相机输出 `MiniZorah-meshlet-flat.png` / `MiniZorah-meshlet-shaded.png`。对比还检查不透明 alpha、有效覆盖及明暗开关实际生效，数据位于 `build-release/meshlet-shading/after/`。
 
 主窗口和 RenderGraphEditor 的 Runtime Settings 中选择 Visualization 时，视口自动显示该 pass 的 `.color` 调试输出；选择 Off 后恢复切换前的预览（通常为 FinalBlit 的最终着色结果，也可为手动选取的中间输出）。调试模式之间切换保留原返回目标；手动选择其他预览输出优先。切换在视口记录 ImGui 图像前应用，不修改图连接或最终呈现输出。
 
