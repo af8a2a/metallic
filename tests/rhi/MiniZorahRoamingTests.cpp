@@ -628,7 +628,8 @@ public:
         };
         const bool clas = setting("METALLIC_MINIZORAH_BENCH_CLAS", 1) != 0;
         const bool quality = setting("METALLIC_MINIZORAH_BENCH_QUALITY", 0) != 0;
-        const uint32_t frameCount = setting("METALLIC_MINIZORAH_BENCH_FRAMES", 8400);
+        uint32_t frameCount = setting("METALLIC_MINIZORAH_BENCH_FRAMES", 8400);
+        Json replay;
         Json report{{"protocol", "minizorah-fixed-v1"}, {"status", "running"},
             {"clasEnabled", clas}, {"qualityRun", quality}, {"validation", context.enableValidation},
             {"resolution", {1920, 1080}}, {"lodPixelError", 1.5}, {"frameCount", frameCount},
@@ -641,6 +642,16 @@ public:
         std::unique_ptr<Device> device;
         RoamingObserver observer;
         try {
+            if (const char* replayPath = std::getenv("METALLIC_MINIZORAH_REPLAY")) {
+                std::ifstream input(replayPath);
+                checkRoam(input.good(), "Cannot open external camera replay");
+                replay = Json::parse(input);
+                checkRoam(replay.at("frames").is_array(), "Invalid camera replay");
+                frameCount = static_cast<uint32_t>(replay.at("frames").size());
+                report["protocol"] = replay.at("protocol");
+                report["externalReplay"] = replayPath;
+                report["frameCount"] = frameCount;
+            }
             checkRoam(frameCount >= 600 && frameCount <= 8400, "Baseline frame count must be 600..8400");
             RenderSampleLoadResult sample;
             std::string log;
@@ -659,6 +670,11 @@ public:
             props["debugStreamingPages"] = false;
             for (const char* key : {"screenSpacePagePriority", "viewDrivenPageDemand", "prefetchPages",
                      "lowLatencyRequests", "completionDrivenUploads", "measurePageLatency"}) { props[key] = true; }
+            if (!replay.is_null()) {
+                auto viewProperties = graph.viewProperties();
+                viewProperties["camera"] = replay.at("originalCamera");
+                graph.setViewProperties(std::move(viewProperties));
+            }
             report["graph"] = Json::parse(serializeRenderGraphToString(graph));
             const Json original = graph.viewProperties().at("camera");
             scene::MeshletStreamAsset asset;
@@ -682,6 +698,7 @@ public:
             farCamera["center"] = {center.x, center.y, center.z};
             farCamera["znear"] = radius*.001f; farCamera["zfar"] = radius*5;
             const auto cameraAt = [&](uint32_t f) {
+                if (!replay.is_null()) { return replay.at("frames").at(f).at("camera"); }
                 if (f < 600 || f >= 7800) { return original; }
                 const double phase = double((f - 600) % 3600) / 60.0;
                 if ((phase >= 20 && phase < 25) || (phase >= 50 && phase < 55)) { return farCamera; }
@@ -697,7 +714,8 @@ public:
                 camera["center"][2] = camera["eye"][2].get<float>() + dx*std::sin(yaw) + dz*std::cos(yaw);
                 return camera;
             };
-            const auto phaseAt = [](uint32_t f) -> const char* {
+            const auto phaseAt = [&](uint32_t f) -> std::string {
+                if (!replay.is_null()) { return replay.at("frames").at(f).at("phase").get<std::string>(); }
                 if (f < 300) { return "cold_start"; }
                 if (f < 600) { return "static_warm"; }
                 if (f < 4200) { return "roam_first"; }
@@ -831,11 +849,30 @@ public:
                     checkRoam(pass.gpuTimingAvailable, "Pass GPU timing missing");
                     Json sections = Json::array();
                     for (const auto& section : pass.sections) {
-                        checkRoam(section.gpuTimingAvailable, "Scope GPU timing missing");
+                        checkRoam(section.cpuOnly ? !section.gpuTimingAvailable : section.gpuTimingAvailable,
+                            "Scope timing domain mismatch");
                         sawCompute |= section.queue == QueueType::Compute;
                         sections.push_back({{"name", section.name}, {"parent", section.parent},
-                            {"queue", section.queue == QueueType::Compute ? "compute" : "graphics"},
+                            {"queue", section.cpuOnly ? "cpu" : section.queue == QueueType::Compute ? "compute" : "graphics"},
+                            {"cpuOnly", section.cpuOnly}, {"gpuTimingAvailable", section.gpuTimingAvailable},
                             {"gpuMs", section.gpuMilliseconds}, {"cpuMs", section.cpuMilliseconds}});
+                    }
+                    const auto streamBegin = std::find_if(pass.sections.begin(), pass.sections.end(),
+                        [](const auto& section) { return section.name == "Stream Begin"; });
+                    if (streamBegin != pass.sections.end()) {
+                        const auto beginIndex = uint32_t(streamBegin - pass.sections.begin());
+                        uint32_t children = 0;
+                        double childCpuMs = 0;
+                        for (uint32_t i = 0; i < pass.sections.size(); ++i) {
+                            const auto& section = pass.sections[i];
+                            if (!section.cpuOnly) { continue; }
+                            checkRoam(section.parent < i && std::isfinite(section.cpuMilliseconds) &&
+                                section.cpuMilliseconds >= 0 && section.gpuMilliseconds == 0,
+                                "Invalid CPU profile hierarchy or duration");
+                            if (section.parent == beginIndex) { ++children; childCpuMs += section.cpuMilliseconds; }
+                        }
+                        checkRoam(children >= 7 && childCpuMs <= streamBegin->cpuMilliseconds + .01,
+                            "Stream Begin CPU breakdown missing or double-counted");
                     }
                     nodes.push_back({{"name", pass.name}, {"gpuMs", pass.gpuMilliseconds},
                         {"cpuMs", pass.cpuMilliseconds}, {"sections", std::move(sections)}});

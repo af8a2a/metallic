@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GPUDrivenRaster.h"
-#include "Runtime/Render/Profiling/RenderGraphProfile.h"
+#include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/Streamer/MeshletStreamClas.h"
@@ -490,6 +490,7 @@ public:
     RayTracingAccelerationStructure* accelerationStructure() const;
 
     Result cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame);
+    const CpuProfileRecorder& beginFrameCpuProfile() const { return beginFrameCpuProfile_; }
     using TraversalCheckpoint = std::function<void(std::string_view)>;
     Result cmdPreTraversal(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame,
         const TraversalCheckpoint& checkpoint = {});
@@ -516,6 +517,7 @@ public:
     MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }
 
 private:
+    CpuProfileRecorder beginFrameCpuProfile_;
     struct FallbackBlasPrimitive {
         uint32_t primitiveIndex = 0;
         uint32_t referenceCount = 0;
@@ -552,7 +554,7 @@ private:
     Result copyRequestBufferForReadback(CommandBuffer& commandBuffer);
     Result updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
-    void consumeGpuRequestReadback();
+    void consumeGpuRequestReadback(CpuProfileRecorder* profiler);
 
     scene::MeshletStreamAsset asset_;
     MeshletStreamResidencyManager residency_;

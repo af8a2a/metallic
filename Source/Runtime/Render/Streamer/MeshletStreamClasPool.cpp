@@ -433,9 +433,9 @@ void MeshletStreamClasPool::clear()
     impl_ = std::make_unique<Impl>();
 }
 
-void MeshletStreamClasPool::beginFrame()
+void MeshletStreamClasPool::beginFrame(CpuProfileRecorder* profiler)
 {
-    if (compact_) { compact_->beginFrame(); return; }
+    if (compact_) { compact_->beginFrame(profiler); return; }
     if (!ready()) {
         return;
     }

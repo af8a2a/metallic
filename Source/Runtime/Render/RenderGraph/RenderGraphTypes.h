@@ -306,6 +306,10 @@ public:
     };
     ProfileScope profileScope(std::string_view name) { return {*this, name, nullptr}; }
     ProfileScope profileScope(CommandBuffer& commands, std::string_view name) { return {*this, name, &commands}; }
+    void publishCpuProfile(std::span<const RenderGraphProfileSection> sections)
+    {
+        if (cpuProfile_) { cpuProfile_(sections, profileParent_); }
+    }
     void publishStreamingProfile(SceneStreamingProfile sample)
     {
         sample.passName = passName_;
@@ -343,6 +347,7 @@ private:
     ParallelRecorder parallelRecorder_;
     std::function<uint32_t(CommandBuffer&, std::string_view, uint32_t)> beginProfile_;
     std::function<void(CommandBuffer&, uint32_t, double)> endProfile_;
+    std::function<void(std::span<const RenderGraphProfileSection>, uint32_t)> cpuProfile_;
     std::function<void(SceneStreamingProfile)> streamingProfile_;
     uint32_t profileParent_ = UINT32_MAX;
     CommandBuffer* commandBuffer_ = nullptr;

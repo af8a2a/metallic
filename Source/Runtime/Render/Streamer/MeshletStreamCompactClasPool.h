@@ -2,6 +2,8 @@
 #include "Runtime/Render/Streamer/MeshletStreamClas.h"
 
 namespace metallic::render {
+
+struct CpuProfileRecorder;
 // Optional compact backend. The existing pool remains the temporary builder and
 // the compatibility path; this backend only owns relocation and publication.
 class MeshletStreamCompactClasPool {
@@ -9,7 +11,7 @@ class MeshletStreamCompactClasPool {
     MeshletStreamCompactClasPool();
     ~MeshletStreamCompactClasPool();
     Result initialize(Device&, const MeshletStreamClasPoolDesc&, std::string&);
-    void beginFrame();
+    void beginFrame(CpuProfileRecorder* profiler = nullptr);
     Result cmdBuildPages(CommandBuffer&, Buffer&, std::span<const MeshletStreamClasPageBuild>, std::string&);
     void retirePages(std::span<const uint32_t>);
     bool ready() const;

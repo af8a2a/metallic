@@ -1,5 +1,6 @@
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 #include "Runtime/Render/GAPI/StreamUploadCompletion.h"
+#include "Runtime/Render/Profiling/CpuProfile.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -361,8 +362,9 @@ void MeshletStreamResidencyManager::reset()
     maxPageLoadsInFlight_ = 0;
 }
 
-void MeshletStreamResidencyManager::beginFrame()
+void MeshletStreamResidencyManager::beginFrame(CpuProfileRecorder* profiler)
 {
+    CpuProfileScope profile(profiler, "Reset / latency tracking");
     ++frameIndex_;
     if (latency_) {
         latency_->frameTimes[frameIndex_ % latency_->frameTimes.size()] = {frameIndex_, meshletStreamTimeMicroseconds()};
@@ -388,6 +390,7 @@ void MeshletStreamResidencyManager::beginFrame()
     evictionAgeRejected_ = false;
     frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
 
+    profile.next("Complete update tasks");
     while (updateTaskQueue_.canPop(frameIndex_, true)) {
         const uint32_t taskIndex = updateTaskQueue_.pop();
         if (taskIndex < updateTaskPages_.size()) {
@@ -397,6 +400,7 @@ void MeshletStreamResidencyManager::beginFrame()
         updateTaskQueue_.releaseTaskIndex(taskIndex);
     }
 
+    profile.next("Complete storage tasks");
     while (!storageTaskQueue_.empty()) {
         const uint32_t frontIndex = storageTaskQueue_.frontTaskIndex();
         const auto completion = storageCompletions_[frontIndex];
@@ -488,12 +492,14 @@ void MeshletStreamResidencyManager::beginFrame()
         break;
     }
 
+    profile.next("Complete unload tasks");
     while (unloadTaskQueue_.canPop(frameIndex_, true)) {
         const uint32_t taskIndex = unloadTaskQueue_.pop();
         completeUnloadTask(taskIndex);
         unloadTaskQueue_.releaseTaskIndex(taskIndex);
     }
 
+    profile.next("Consume queued requests");
     consumeReadyRequestTasks();
 }
 
@@ -777,8 +783,9 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(std::span<const uint3
     });
 }
 
-uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuRequestBatch& requests)
+uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuRequestBatch& requests, CpuProfileRecorder* profiler)
 {
+    CpuProfileScope profile(profiler, "Deduplicate loads");
     if (asset_ == nullptr) {
         return 0;
     }
@@ -839,6 +846,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     stats_.frameUniqueGpuRequestCount += static_cast<uint32_t>(uniqueRequests.size());
     stats_.totalUniqueGpuRequestCount += uniqueRequests.size();
 
+    profile.next("Deduplicate unloads");
     std::vector<uint32_t> uniqueUnloadRequests;
     uniqueUnloadRequests.reserve(requests.unloadPageIds.size());
     unloadRequestMarks_.clear();
@@ -857,6 +865,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     stats_.frameUniqueGpuUnloadRequestCount += static_cast<uint32_t>(uniqueUnloadRequests.size());
     stats_.totalUniqueGpuUnloadRequestCount += uniqueUnloadRequests.size();
 
+    profile.next("Update resident demand");
     if (requests.residentDemandFeedback) {
         residentDemandFeedback_ = true;
         const bool complete = requests.unloadOverflowCounter == 0 && requests.invalidPageCounter == 0 &&
@@ -880,6 +889,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
         uniqueUnloadRequests.clear();
     }
 
+    profile.next("Admit request batch");
     if (uniqueRequests.empty() && uniqueUnloadRequests.empty()) {
         return 0;
     }
@@ -907,8 +917,9 @@ uint32_t MeshletStreamResidencyManager::processUploads(
     Streamer& streamer,
     Buffer& destination,
     uint32_t maxUploads,
-    const UploadObserver& observer)
+    const UploadObserver& observer, CpuProfileRecorder* profiler)
 {
+    CpuProfileScope profile(profiler, "Sort queued loads");
     if (asset_ == nullptr) {
         return 0;
     }
@@ -974,8 +985,10 @@ uint32_t MeshletStreamResidencyManager::processUploads(
         }
     };
 
+    profile.next("Schedule page I/O");
     if (asynchronousLoads) {
         schedulePageLoads();
+        profile.next("Collect decoded pages");
         MeshletStreamPageLoadResult loadedPage;
         while (pageLoader_.tryPop(loadedPage)) {
             ++stats_.frameCompletedPageLoadCount;
@@ -1011,11 +1024,13 @@ uint32_t MeshletStreamResidencyManager::processUploads(
         }
     }
 
+    profile.next("Sort ready uploads");
     if (asynchronousLoads) {
         std::stable_sort(preparedPageLoads_.begin(), preparedPageLoads_.end(),
             [&](const auto& a, const auto& b) { return higherPriority(a.pageIndex, b.pageIndex); });
     }
 
+    profile.next("Prepare transfer batch");
     if (maxUploads == 0) {
         if (queuedUploadCount() != 0) {
             ++stats_.frameTransferBudgetFailureCount;
@@ -1047,6 +1062,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
     taskPages.clear();
     std::vector<uint8_t> decompressedPayload;
     uint32_t uploadCount = 0;
+    profile.next("Stage payloads / CLAS plans");
     while (uploadCount < maxUploads &&
         (asynchronousLoads ? !preparedPageLoads_.empty() : !uploadQueue_.empty())) {
         const uint32_t pageIndex = asynchronousLoads
@@ -1146,6 +1162,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
         stats_.totalUploadBytes += chunk.size;
     }
 
+    profile.next("Submit upload tracking");
     if (uploadCount == 0) {
         taskPages.clear();
         storageTaskQueue_.releaseTaskIndex(taskIndex);
@@ -1313,9 +1330,10 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats(bool detailed) 
     return result;
 }
 
-void MeshletStreamResidencyManager::prepareEvictionCandidates()
+void MeshletStreamResidencyManager::prepareEvictionCandidates(CpuProfileRecorder* profiler)
 {
     if (evictionCandidatesBuilt_) { return; }
+    CpuProfileScope profile(profiler, "Scan resident candidates");
     evictionCandidatesBuilt_ = true;
     ++stats_.frameEvictionScanCount;
     for (uint32_t candidate : residentPages_) {
@@ -1329,14 +1347,16 @@ void MeshletStreamResidencyManager::prepareEvictionCandidates()
         }
         evictionCandidates_.push_back(candidate);
     }
+    profile.next("Sort cold candidates");
     std::sort(evictionCandidates_.begin(), evictionCandidates_.end(), [this](uint32_t a, uint32_t b) {
         const auto ageA = pages_.at(a).lastUsedFrame, ageB = pages_.at(b).lastUsedFrame;
         return ageA != ageB ? ageA < ageB : a < b;
     });
 }
 
-uint32_t MeshletStreamResidencyManager::reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc)
+uint32_t MeshletStreamResidencyManager::reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc, CpuProfileRecorder* profiler)
 {
+    CpuProfileScope profile(profiler, "Credit pending frees");
     if (!residentDemandFeedback_ || !desc.retentionFrames || !desc.maxPages) { return 0; }
     const auto subtract = [](uint64_t a, uint64_t b) { return a > b ? a - b : 0; };
     uint64_t geometry = storage_.usedBytes();
@@ -1357,7 +1377,9 @@ uint32_t MeshletStreamResidencyManager::reclaimColdPages(const MeshletStreamCold
     };
     geometryReclaimPressure_ = pressure(geometryReclaimPressure_, geometry, storage_.capacityBytes());
     clasReclaimPressure_ = pressure(clasReclaimPressure_, clas, desc.clasCapacityBytes);
-    prepareEvictionCandidates();
+    profile.next("Prepare cold candidates");
+    prepareEvictionCandidates(profiler);
+    profile.next("Schedule cold evictions");
     uint32_t reclaimed = 0;
     for (uint32_t id : evictionCandidates_) {
         if (reclaimed >= desc.maxPages || stats_.frameEvictedPageCount >= 256) { break; }

@@ -11,6 +11,8 @@
 
 namespace metallic::render {
 
+struct CpuProfileRecorder;
+
 struct MeshletStreamClasClusterInput {
     uint32_t clusterId = 0;
     uint32_t pageIndex = 0;
@@ -127,7 +129,7 @@ public:
 
     Result initialize(Device& device, const MeshletStreamClasPoolDesc& desc, std::string& log);
     void clear();
-    void beginFrame();
+    void beginFrame(CpuProfileRecorder* profiler = nullptr);
 
     Result cmdBuildPages(
         CommandBuffer& commandBuffer,

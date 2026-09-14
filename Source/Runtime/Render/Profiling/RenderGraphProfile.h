@@ -14,6 +14,7 @@ struct RenderGraphProfileSection {
     double cpuMilliseconds = 0.0;
     double gpuMilliseconds = 0.0;
     bool gpuTimingAvailable = false;
+    bool cpuOnly = false;
 };
 
 // CPU-visible streaming counters; never triggers a GPU readback or page scan.

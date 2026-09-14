@@ -30,6 +30,7 @@ public:
         double cpuMilliseconds = 0.0;
         double gpuMilliseconds = 0.0;
         bool gpuTimingAvailable = false;
+        bool cpuOnly = false;
         uint64_t renderGraphExecutionId = UINT64_MAX;
         uint32_t renderGraphNodeId = UINT32_MAX;
         uint32_t renderGraphSectionIndex = UINT32_MAX;

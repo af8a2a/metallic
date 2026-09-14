@@ -1187,6 +1187,7 @@ public:
                     context.commandBuffer(),
                     *context.streamer(),
                     streamFrame);
+                context.publishCpuProfile(streamRuntime_->beginFrameCpuProfile().sections);
             }
             if (!result) {
                 return result;

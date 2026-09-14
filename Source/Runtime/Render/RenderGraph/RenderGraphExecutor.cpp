@@ -1807,6 +1807,21 @@ struct RenderGraphExecutor::Impl {
             lastExecutionStats.nodes[nodeIndex].sections[index].cpuMilliseconds = cpuMs;
             if (activeGpuTimingSlot) { endInterval(commands, activeGpuTimingSlot->sectionTimers[nodeIndex][index]); }
         };
+        context.cpuProfile_ = [&, nodeIndex](std::span<const RenderGraphProfileSection> samples, uint32_t parent) {
+            auto& sections = lastExecutionStats.nodes[nodeIndex].sections;
+            if (sections.size() + samples.size() > 256) { lastExecutionStats.profilingOverflow = true; return; }
+            const uint32_t base = uint32_t(sections.size());
+            for (uint32_t i = 0; i < samples.size(); ++i) {
+                auto section = samples[i];
+                section.parent = section.parent < i ? base + section.parent : parent;
+                section.cpuOnly = true;
+                section.gpuTimingAvailable = false;
+                section.gpuMilliseconds = 0;
+                sections.push_back(std::move(section));
+                // Keep indices aligned without allocating a GPU timestamp pair.
+                if (activeGpuTimingSlot) { activeGpuTimingSlot->sectionTimers[nodeIndex].push_back({}); }
+            }
+        };
         context.streamingProfile_ = [&](SceneStreamingProfile sample) { lastExecutionStats.streaming.push_back(std::move(sample)); };
         const auto cpuBegin = std::chrono::steady_clock::now();
         Result result = node.pass->execute(context);

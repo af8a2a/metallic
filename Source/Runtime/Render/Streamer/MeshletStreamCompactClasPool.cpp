@@ -1,4 +1,5 @@
 #include "Runtime/Render/Streamer/MeshletStreamCompactClasPool.h"
+#include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include <algorithm>
@@ -293,7 +294,7 @@ Result MeshletStreamCompactClasPool::initialize(Device& device, const MeshletStr
     return {};
 }
 
-void MeshletStreamCompactClasPool::beginFrame()
+void MeshletStreamCompactClasPool::beginFrame(CpuProfileRecorder* profiler)
 {
     if (!ready()) {
         return;
@@ -302,7 +303,9 @@ void MeshletStreamCompactClasPool::beginFrame()
     ++p.frame;
     p.stats.frameBuiltPageCount = p.stats.frameBuiltClusterCount = p.stats.frameRejectedPageCount = 0;
     p.stats.frameMovedPageCount = p.stats.frameMovedClusterCount = 0;
+    CpuProfileScope profile(profiler, "Collect completed CLAS");
     p.collect();
+    profile.next("Expire retired CLAS");
     for (auto it = p.pages.begin(); it != p.pages.end();) {
         auto& page = it->second;
         if (page.state == Impl::State::Retiring && page.retireFrame <= p.frame) {

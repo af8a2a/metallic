@@ -18,6 +18,8 @@
 
 namespace metallic::render {
 
+struct CpuProfileRecorder;
+
 inline constexpr uint32_t kInvalidStreamDeviceOffsetBytes = UINT32_MAX;
 inline constexpr uint64_t kMeshletStreamStorageAlignment = 256;
 
@@ -339,19 +341,19 @@ public:
     bool initialize(const MeshletStreamResidencyDesc& desc, std::string& reason);
     void reset();
 
-    void beginFrame();
+    void beginFrame(CpuProfileRecorder* profiler = nullptr);
     bool lockFallbackPages(std::span<const uint32_t> pageIndices, std::string& reason);
     bool requestPage(uint32_t pageIndex);
     bool unloadPage(uint32_t pageIndex);
     uint32_t consumeGpuRequests(std::span<const uint32_t> pageIds);
-    uint32_t consumeGpuRequests(const StreamGpuRequestBatch& requests);
+    uint32_t consumeGpuRequests(const StreamGpuRequestBatch& requests, CpuProfileRecorder* profiler = nullptr);
     // Called once after an upload is admitted, before the decoded payload is released.
     using UploadObserver = std::function<void(uint32_t, std::span<const uint8_t>)>;
     uint32_t processUploads(Streamer& streamer, Buffer& destination, uint32_t maxUploads,
-        const UploadObserver& observer = {});
+        const UploadObserver& observer = {}, CpuProfileRecorder* profiler = nullptr);
 
     // Uses confirmed unused feedback; geometry and its CLAS share one victim list.
-    uint32_t reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc);
+    uint32_t reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc, CpuProfileRecorder* profiler = nullptr);
 
     void buildInitialPageTable(std::span<StreamPageTableEntry> outEntries) const;
     std::span<const StreamPageTablePatch> pendingPatches() const { return patches_; }
@@ -418,7 +420,7 @@ private:
 
     using PagePositionMember = uint32_t PageEntry::*;
 
-    void prepareEvictionCandidates();
+    void prepareEvictionCandidates(CpuProfileRecorder* profiler = nullptr);
     bool allocatePageStorage(uint32_t pageIndex);
     bool scheduleUnload(uint32_t pageIndex, bool eviction);
     void completeUnloadTask(uint32_t taskIndex);

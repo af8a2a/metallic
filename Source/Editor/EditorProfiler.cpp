@@ -104,7 +104,7 @@ const ProfilerTableRow& tableRow(const EditorProfiler::Frame& frame, const std::
 
 const char* tableQueueName(const EditorProfiler::Node& node)
 {
-    if (node.renderGraphExecutionId == UINT64_MAX) { return "CPU"; }
+    if (node.cpuOnly || node.renderGraphExecutionId == UINT64_MAX) { return "CPU"; }
     return node.renderGraphNodeId == UINT32_MAX ? "Envelope" : queueName(node.queue);
 }
 
@@ -702,6 +702,7 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
             node.renderGraphNodeId = stat.id;
             node.renderGraphSectionIndex = i;
             node.queue = section.queue;
+            node.cpuOnly = section.cpuOnly;
             sectionNodes.push_back(child);
         }
     }

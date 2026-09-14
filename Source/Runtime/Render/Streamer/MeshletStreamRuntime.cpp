@@ -2305,19 +2305,27 @@ Result MeshletStreamRuntime::cmdBeginFrame(
         return makeError(Error::InvalidArgument);
     }
 
+    beginFrameCpuProfile_.reset();
+    auto* profiler = &beginFrameCpuProfile_;
+    CpuProfileScope profile(profiler, "Residency completion");
     ++frameIndex_;
-    residency_.beginFrame();
+    residency_.beginFrame(profiler);
     if (clasPool_ != nullptr) {
-        clasPool_->beginFrame();
+        profile.next("CLAS completion / expiry");
+        clasPool_->beginFrame(profiler);
+        profile.next("Retire unloaded CLAS");
         clasPool_->retirePages(residency_.newlyUnloadedPages());
     }
-    consumeGpuRequestReadback();
+    profile.next("GPU request feedback");
+    consumeGpuRequestReadback(profiler);
+    profile.next("Joint cold page reclaim");
     if (coldPageRetentionFrames_ != 0) {
         const auto clas = clasPool_ ? clasPool_->stats() : MeshletStreamClasPoolStats{};
         residency_.reclaimColdPages({.clasUsedBytes = clas.usedStorageBytes, .clasCapacityBytes = clas.storageBytes,
             .clasRetiringBytes = clas.retiringStorageBytes, .retentionFrames = coldPageRetentionFrames_,
-            .clasPageBytes = [this](uint32_t page) { return clasPool_ ? clasPool_->pageStorageBytes(page) : 0; }});
+            .clasPageBytes = [this](uint32_t page) { return clasPool_ ? clasPool_->pageStorageBytes(page) : 0; }}, profiler);
     }
+    profile.next("Discard obsolete CLAS plans");
     MeshletStreamResidencyManager::UploadObserver prepareClas;
     std::string planError;
     if (clasPool_) {
@@ -2334,16 +2342,19 @@ Result MeshletStreamRuntime::cmdBeginFrame(
             pendingClasPlans_.insert_or_assign(page, std::move(plan));
         };
     }
-    currentFrameUploadCount_ = residency_.processUploads(streamer, *pageBuffer_, maxPageUploadsPerFrame_, prepareClas);
+    profile.next("Prepare page uploads");
+    currentFrameUploadCount_ = residency_.processUploads(streamer, *pageBuffer_, maxPageUploadsPerFrame_, prepareClas, profiler);
     if (!planError.empty()) {
         spdlog::error("[MeshletStreamRuntime] CLAS upload plan failed: {}", planError);
         return makeError(Error::Failure);
     }
+    profile.next("Queue resident CLAS");
     if (clasPool_) {
         for (uint32_t page : residency_.newlyResidentPages()) {
             if (queuedClasPages_.insert(page).second) { pendingClasPages_.push_back(page); }
         }
     }
+    profile.next("Publish resident pages");
     const std::span<const uint32_t> residentPages = residency_.residentPages();
     if (residentPages.size() > residentPageCapacity_ || residentPageFrames_.empty()) {
         return makeError(Error::Failure);
@@ -3575,12 +3586,13 @@ Result MeshletStreamRuntime::transitionPageBufferForTraversal(CommandBuffer& com
     return {};
 }
 
-void MeshletStreamRuntime::consumeGpuRequestReadback()
+void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profiler)
 {
     if (!requestReadbackValid_ || requestReadbackBuffer_ == nullptr) {
         return;
     }
 
+    CpuProfileScope profile(profiler, "Map feedback");
     requestReadbackBuffer_->invalidate();
     const void* mapped = requestReadbackBuffer_->map();
     if (mapped == nullptr) {
@@ -3606,6 +3618,7 @@ void MeshletStreamRuntime::consumeGpuRequestReadback()
     if (screenSpacePagePriority_ && header->loadPriorityOffset == expectedOffset) {
         loadPriorities = {reinterpret_cast<const float*>(mapped) + expectedOffset, loadCount};
     }
+    profile.next("Consume requests");
     // Empty feedback is meaningful: every enumerated resident page was used.
     {
         (void)residency_.consumeGpuRequests(StreamGpuRequestBatch{
@@ -3620,9 +3633,10 @@ void MeshletStreamRuntime::consumeGpuRequestReadback()
             .residentDemandFeedback = true,
             .loadPriorities = loadPriorities,
             .taggedPrefetchRequests = prefetchPages_ && header->prefetchRequestLimit != 0,
-        });
+        }, profiler);
     }
 
+    profile.next("Unmap feedback");
     requestReadbackBuffer_->unmap();
     requestReadbackValid_ = false;
 }

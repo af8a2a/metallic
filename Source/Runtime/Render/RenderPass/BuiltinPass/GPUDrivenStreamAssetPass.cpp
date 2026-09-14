@@ -978,6 +978,7 @@ public:
         {
             auto profile = context.profileScope("Stream Begin");
             result = streamRuntime_->cmdBeginFrame(context.commandBuffer(), *context.streamer(), frame);
+            context.publishCpuProfile(streamRuntime_->beginFrameCpuProfile().sections);
         }
         if (!result) {
             return result;
