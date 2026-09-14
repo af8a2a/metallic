@@ -15,7 +15,7 @@
 
 参考图表直接读取 `stats.usedDataBytes` 和 `stats.usedClasBytes`，不是 Statistics 的总 Geometry/CLAS。它的 Statistics 总量另加 `persistentDataBytes` / `persistentClasBytes`。因此 14 + 60 MiB 也不等于程序总显存。
 
-依据：[参考图表](E:/vk_lod_clusters/src/lodclusters_ui.cpp:1512)、[参考总量口径](E:/vk_lod_clusters/src/scene_streaming.cpp:1651)、[Metallic 图表取值](E:/metallic/Source/Runtime/Render/MeshletStreamRuntime.cpp:3653)。
+依据：[参考图表](E:/vk_lod_clusters/src/lodclusters_ui.cpp:1512)、[参考总量口径](E:/vk_lod_clusters/src/scene_streaming.cpp:1651)、[Metallic 图表取值](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp:3653)。
 
 ## 2. 实际几何布局：位置保留方式最关键
 
@@ -64,7 +64,7 @@ Metallic 查询最大 128 vertices / 128 triangles CLAS 的空间，将返回值
 
 没有读取两边同一批 clusters 的 GPU 实际 CLAS 尺寸，因此不能声称“改紧凑分配必然减少 25 倍”。目前只能确定固定最坏尺寸槽位存在，以及两边没有使用相同的分配/精度条件。
 
-依据：[最坏尺寸槽位](E:/metallic/Source/Runtime/Render/MeshletStreamClasPool.cpp:239)、[按槽位分配](E:/metallic/Source/Runtime/Render/MeshletStreamClasPool.cpp:537)、[参考实际尺寸输出](E:/vk_lod_clusters/src/scene_streaming.cpp:1343)、[GPU 按组累计实际尺寸](E:/vk_lod_clusters/shaders/stream_allocator_load_groups.comp.glsl:185)、[场景精度配置](E:/metallic/Asset/MiniZorah/zorah_main_public.v2.cfg:7)。
+依据：[最坏尺寸槽位](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamClasPool.cpp:239)、[按槽位分配](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamClasPool.cpp:537)、[参考实际尺寸输出](E:/vk_lod_clusters/src/scene_streaming.cpp:1343)、[GPU 按组累计实际尺寸](E:/vk_lod_clusters/shaders/stream_allocator_load_groups.comp.glsl:185)、[场景精度配置](E:/metallic/Asset/MiniZorah/zorah_main_public.v2.cfg:7)。
 
 ## 4. 保留的驻留集合不同，图表会随漫游历史累积
 
@@ -82,7 +82,7 @@ Metallic 收到 GPU 的 unused 页列表后，将其标记为冷页并清空实�
 
 unused 来自已完成的 GPU 反馈，有帧延迟；这是页数比例，不能直接当成字节比例。它明确表明已分配量不等于当前视角必需量。两张截图的相机、参考 1001×621 / 1 px、Metallic 截图的未知渲染分辨率，以及各自流送历史未对齐，剩余截图倍数还不能精确归因。
 
-依据：[保留 unused 页](E:/metallic/Source/Runtime/Render/MeshletStreamResidency.cpp:858)、[容量触发淘汰](E:/metallic/Source/Runtime/Render/MeshletStreamResidency.cpp:1328)、[参考年龄阈值](E:/vk_lod_clusters/src/scene_streaming.hpp:126)、[参考年龄过滤](E:/vk_lod_clusters/shaders/streaming.glsl:36)。
+依据：[保留 unused 页](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp:858)、[容量触发淘汰](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp:1328)、[参考年龄阈值](E:/vk_lod_clusters/src/scene_streaming.hpp:126)、[参考年龄过滤](E:/vk_lod_clusters/shaders/streaming.glsl:36)。
 
 ## 建议顺序
 

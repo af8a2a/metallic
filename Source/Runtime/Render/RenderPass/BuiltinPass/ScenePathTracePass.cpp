@@ -1,7 +1,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
-#include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
@@ -820,9 +820,20 @@ public:
 
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
     {
-        if (context.runtimeScene != nullptr && context.runtimeScene->hasStreamGeometry()) {
-            log = "This ray-traced consumer requires resident geometry; use VisibilityBufferMaterialPass for scalar StreamAsset shading";
+        streamMaterials_ = context.runtimeScene != nullptr && context.runtimeScene->hasStreamGeometry();
+        if (streamMaterials_ && (!visibilityDeferred_ || properties().value("lightingMode", "reference") != "realtime")) {
+            log = "StreamAsset scenes require realtime visibility-buffer deferred lighting";
             return makeError(Error::Unsupported);
+        }
+        if (streamMaterials_) {
+            for (const auto& material : context.runtimeScene->materials()) {
+                if (material.transmissionFactor > 0 || material.diffuseTransmissionFactor > 0 ||
+                    (material.alphaMode == "BLEND" && material.baseColorFactor.w < 1) ||
+                    (material.alphaMode == "MASK" && material.baseColorFactor.w < material.alphaCutoff)) {
+                    log = "Position-only StreamAsset deferred lighting requires opaque scalar materials";
+                    return makeError(Error::Unsupported);
+                }
+            }
         }
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
             log = "ScenePathTracePass requires a device and graphics queue";
@@ -846,10 +857,9 @@ public:
                 *context.graphicsQueue,
                 properties(),
                 context.runtimeScene,
-                SceneResourceFeatureBits::Geometry |
-                    SceneResourceFeatureBits::Materials |
-                    SceneResourceFeatureBits::MaterialTextures |
-                    SceneResourceFeatureBits::StandardAccelerationStructure,
+                streamMaterials_ ? (SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures) :
+                    (SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
+                        SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure),
                 snapshot,
                 log);
             if (result && snapshot != nullptr) {
@@ -868,7 +878,7 @@ public:
         const bool useOpenPBR = useOpenPBRBsdf(properties());
         const bool exportGuides = exportDenoiserGuides(properties());
         const bool ntcActive = sceneResources_.neuralTextures().active();
-        const bool positionFetch = context.device->capabilities().rayTracingPositionFetch;
+        const bool positionFetch = !streamMaterials_ && context.device->capabilities().rayTracingPositionFetch;
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
         const char* moduleName = nullptr;
@@ -924,6 +934,7 @@ public:
         const bool globalView = visibilityDeferred_ && context.renderView != nullptr &&
             properties().value("sceneBinding", "world") != "asset" && properties().value("viewBinding", "global") != "local";
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
+            "|streamMaterials=" + (streamMaterials_ ? "1" : "0") +
             "|view=" + (globalView ? "1" : "0") +
             "|cache=" + std::to_string(cacheMode_) +
             "|ntc=" + (ntcActive ? "1" : "0") +
@@ -1042,7 +1053,7 @@ public:
                 .kind = ComputeResourceBindingKind::SampledImage,
             },
         };
-        if (!positionFetch) {
+        if (!positionFetch && !streamMaterials_) {
             baseBindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
         }
         if (realtime_) {
@@ -1071,6 +1082,9 @@ public:
             baseBindings.push_back({.binding = 60, .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = 61, .kind = ComputeResourceBindingKind::SampledImage});
             for (uint32_t binding = 62; binding <= 69; ++binding) {
+                baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
+            }
+            for (uint32_t binding = 83; binding <= 87; ++binding) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
             if (boolProperty(properties(), "materialBinning", true)) {
@@ -1144,12 +1158,18 @@ public:
             });
         }
 
+        if (streamMaterials_) {
+            std::erase_if(baseBindings, [](const auto& binding) {
+                return binding.binding == 0 || (binding.binding >= 2 && binding.binding <= 5);
+            });
+        }
         auto compilePermutation =
             [&](PathTracePermutation permutation,
                 std::span<const SlangMacroDefine> extraDefines,
                 const std::vector<ComputeProgramBindingDesc>& permutationBindings,
                 ComputeProgram& outProgram) -> Result {
             std::vector<SlangMacroDefine> defines{
+                {.name = "METALLIC_STREAM_MATERIALS", .value = streamMaterials_ ? "1" : "0"},
                 {.name = "METALLIC_GLOBAL_VIEW", .value = globalView ? "1" : "0"},
                 SlangMacroDefine{
                     .name = "METALLIC_HAS_RTXCR",
@@ -1708,6 +1728,8 @@ public:
         TextureView* visibilityDepthView = nullptr;
         const GPUSceneGlobalBufferViews* deferredViews = nullptr;
         const ClusterLightGridSnapshot* deferredGrid = nullptr;
+        const MeshletStreamDeferredGpuResourcesView* deferredStream = nullptr;
+        Buffer* deferredFrameInfo = nullptr;
         VisibilityBufferFrameInfo info;
         if (visibilityDeferred_) {
             const auto visibility = context.inputTexture("visibility");
@@ -1723,10 +1745,10 @@ public:
             if (mapped == nullptr) { return makeError(Error::Failure); }
             std::memcpy(&info, mapped, sizeof(info));
             rasterInfo.buffer()->unmap();
-            if (info.hasStreamGeometry != 0u) {
-                spdlog::error("VisibilityBufferDeferredPass currently requires resident GPUScene geometry");
-                return makeError(Error::Unsupported);
-            }
+            deferredFrameInfo = rasterInfo.buffer();
+            deferredStream = gpuScene->visibilityStream({info.lightGridViewIndex, info.lightGridViewGeneration},
+                info.frameIndex, info.sceneIdentity);
+            if (info.hasStreamGeometry && !deferredStream) { return makeError(Error::InvalidArgument); }
             if (info.width != context.width() || info.height != context.height() || info.frameIndex != context.frameIndex() ||
                 lightScene == nullptr || info.sceneIdentity != lightScene->resourceIdentity()) {
                 spdlog::error("[VisibilityBufferDeferredPass] Raster scene/view mismatch: raster={}x{} scene={}, deferred={}x{} scene={}",
@@ -1879,6 +1901,11 @@ public:
         if (sceneResources_.fallbackPositionBuffer() != nullptr) {
             bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
         }
+        if (streamMaterials_) {
+            std::erase_if(bindings, [](const auto& binding) {
+                return binding.binding == 0 || (binding.binding >= 2 && binding.binding <= 5);
+            });
+        }
         if (realtime_) {
             bindings.push_back(ComputeDispatchBinding{
                 .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,
@@ -1936,7 +1963,8 @@ public:
                     std::string shadowLog;
                     result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(),
                         *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(),
-                        lightScene->transformRevision(), settings, shadow, shadowLog, &sceneResources_);
+                        lightScene->transformRevision(), settings, shadow, shadowLog, &sceneResources_,
+                        streamMaterials_ ? deferredStream : nullptr);
                     if (!result) { spdlog::error("Ray-traced shadows: {} ({})", shadowLog, resultToString(result)); return result; }
                     previousShadowJitter_ = {shadowView.jitter[0], shadowView.jitter[1]};
                 }
@@ -1953,16 +1981,29 @@ public:
                 &deferredViews->meshletDraws, &deferredViews->meshletVertices, &deferredViews->meshletTriangleWords,
                 &deferredViews->geometries, &deferredViews->instances, &deferredViews->materials};
             for (uint32_t i = 0; i < std::size(views); ++i) {
-                bindings.push_back({.binding = 62 + i, .buffer = views[i]->buffer,
-                    .offset = views[i]->offset, .size = views[i]->size});
+                const auto& view = views[i]->buffer ? *views[i] : deferredViews->geometries;
+                bindings.push_back({.binding = 62 + i, .buffer = view.buffer,
+                    .offset = view.offset, .size = view.size});
+            }
+            Buffer* fallback = deferredViews->geometries.buffer;
+            const std::array streamBuffers{
+                deferredStream ? deferredStream->visibleClusterBuffer : fallback,
+                deferredStream ? deferredStream->activeGroupBuffer : fallback,
+                deferredStream ? deferredStream->pageBuffer : fallback,
+                deferredStream ? deferredStream->pageTableBuffer : fallback, deferredFrameInfo};
+            for (uint32_t i = 0; i < streamBuffers.size(); ++i) {
+                bindings.push_back({.binding = 83 + i, .buffer = streamBuffers[i]});
             }
             if (boolProperty(context.properties(), "materialBinning", true)) {
                 std::string binningLog;
                 result = materialBinning_.record(*device_, context.commandBuffer(), {
-                    .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer,
+                    .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer
+                        ? deferredViews->meshletDraws.buffer : fallback,
                     .instances = deferredViews->instances.buffer, .materials = deferredViews->materials.buffer,
                     .shadingMaterials = sceneResources_.materialBuffer(),
-                    .width = push.width, .height = push.height},
+                    .width = push.width, .height = push.height,
+                    .streamRecords = deferredStream ? deferredStream->visibleClusterBuffer : nullptr,
+                    .residentRecordCount = info.residentRecordCount},
                     materialBins, binningLog);
                 if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
                 bindings.push_back({.binding = 70, .buffer = materialBins.bins});
@@ -3130,6 +3171,7 @@ private:
     SceneLightResources lights_;
     SceneResourceManager fallbackSceneResourceManager_;
     ScenePathTraceResources sceneResources_;
+    bool streamMaterials_ = false;
     SceneResourceManager* sceneResourceManager_ = nullptr;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;

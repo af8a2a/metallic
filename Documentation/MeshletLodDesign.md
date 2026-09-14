@@ -142,7 +142,7 @@ Metallic 当前每个 group 对应一个 page，简化了组内完整上传问�
 - [selectedMeshletRange](E:/metallic/Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp:3990)：非 LOD 预览模式返回 base range。
 - [StreamAsset 投影误差](E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:985)、[cluster 选择](E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:1100)。
 - [StreamAsset 空间层级](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp:1313)：每档构建空间树，再组合 primitive 根；内部节点按 8 路聚合，primitive 根有多个 LOD 子根。
-- [回退档选择](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp:1477)、[回退页预算](E:/metallic/Source/Runtime/Render/MeshletStreamRuntime.cpp:873)、[GPU 遍历入队](E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:1402)。
+- [回退档选择](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp:1477)、[回退页预算](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp:873)、[GPU 遍历入队](E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:1402)。
 
 ## 7. 实施顺序
 

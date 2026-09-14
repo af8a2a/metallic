@@ -46,8 +46,10 @@ bool applySampleScenePath(RenderGraph& graph, const RenderSampleDesc& desc, std:
 {
     std::vector<uint32_t> targets;
     for (const auto& node : graph.nodes()) {
-        if (renderGraphPassSceneDependency(node.type).source != RenderGraphSceneSource::None &&
-            node.properties.value("sceneBinding", "world") != "asset") {
+        const bool sampleTarget = std::find(desc.scenePathTargets.begin(), desc.scenePathTargets.end(), node.name)
+            != desc.scenePathTargets.end();
+        if (sampleTarget || (renderGraphPassSceneDependency(node.type).source != RenderGraphSceneSource::None &&
+            node.properties.value("sceneBinding", "world") != "asset")) {
             targets.push_back(node.id);
         }
     }
@@ -482,9 +484,11 @@ public:
     std::string_view category() const override { return "GPUDriven"; }
     std::string_view description() const override
     {
-        return "Repository Sponza rendered with GPU-driven visibility, clustered deferred lighting, SH/HDRI, auto exposure and DLSS-SR. Optional DLSS-NR.";
+        return "MiniZorah streamed through GPU-driven visibility and realtime deferred OpenPBR lighting, SH/HDRI, auto exposure and DLSS-SR. Optional DLSS-NR.";
     }
-    std::string scenePath() const override { return "Asset/Sponza/glTF/Sponza.gltf"; }
+    std::string scenePath() const override { return "Asset/MiniZorah/zorah_main_public.v2.gltf"; }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_realtime.metallic_graph.json"; }
 };
 
 class GPUDrivenVisibilitySample final : public RenderSample {

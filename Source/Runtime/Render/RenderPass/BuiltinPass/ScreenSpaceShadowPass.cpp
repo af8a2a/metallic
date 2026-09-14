@@ -1,7 +1,8 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
-#include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/RenderFrameContext.h"
 
 namespace metallic::render::builtin_pass {
@@ -11,6 +12,12 @@ class RayTracedShadowPass final : public UnsafePass {
 public:
     // SIGMA reads its previous output and the trace updates singleton uploads.
     bool supportsFrameOverlap() const override { return false; }
+
+    std::span<const RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{GPUSceneSubsystem::kSubsystemId};
+        return required;
+    }
 
     RenderGraphSceneDependency sceneDependency() const override
     {
@@ -47,7 +54,7 @@ public:
             return makeError(Error::Unsupported);
         }
         // Prepare the same shared geometry snapshot as Deferred, outside execute().
-        {
+        if (context.runtimeScene == nullptr || !context.runtimeScene->hasStreamGeometry()) {
             if (context.graphicsQueue == nullptr) { return makeError(Error::InvalidArgument); }
             auto* manager = context.sceneResourceManager != nullptr
                 ? context.sceneResourceManager : &fallbackSceneResourceManager_;
@@ -116,11 +123,20 @@ public:
             [] {}, [history = history_] { history->valid = false; }));
         if (!result) { return result; }
         const auto lights = buildScreenSpaceShadowLightRecords(scene, resolveSceneLighting(scene, context.world()));
+        const MeshletStreamDeferredGpuResourcesView* stream = nullptr;
+        if (scene->hasStreamGeometry()) {
+            const auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
+            if (gpuScene != nullptr) {
+                stream = gpuScene->visibilityStream({info.lightGridViewIndex, info.lightGridViewGeneration},
+                    info.frameIndex, info.sceneIdentity);
+            }
+            if (stream == nullptr) { return makeError(Error::InvalidArgument); }
+        }
         ScreenSpaceShadowResult shadow;
         std::string log;
         result = shadows_.record(*device_, commands, *context.streamer(), *depth.view(), view,
             lights, scene->contentRevision(), scene->transformRevision(),
-            screenSpaceShadowSettings(context.properties()), shadow, log, &geometry_);
+            screenSpaceShadowSettings(context.properties()), shadow, log, &geometry_, stream);
         if (!result) {
             spdlog::error("RayTracedShadowPass: {} ({})", log, resultToString(result));
             return result;

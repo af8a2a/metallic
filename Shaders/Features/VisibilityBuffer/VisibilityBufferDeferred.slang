@@ -44,6 +44,12 @@ ScenePathTracePush deferredViewPush()
 #define gRasterGeometries getResource<StructuredBuffer<GPUDrivenPreviewGeometry>>(67)
 #define gRasterInstances getResource<StructuredBuffer<GPUDrivenPreviewInstance>>(68)
 #define gRasterMaterials getResource<StructuredBuffer<GPUDrivenPreviewMaterial>>(69)
+#include "VisibilityStreamDecode.slang"
+#define gStreamRecords getResource<StructuredBuffer<VisibleClusterRecord>>(83)
+#define gStreamGroups getResource<StructuredBuffer<StreamActiveGroup>>(84)
+#define gStreamPages getResource<StructuredBuffer<uint>>(85)
+#define gStreamPageTable getResource<StructuredBuffer<uint2>>(86)
+#define gRasterFrameInfo getResource<ByteAddressBuffer>(87)
 #define gMaterialBins getResource<StructuredBuffer<MaterialBin>>(70)
 #define gMaterialTiles getResource<StructuredBuffer<MaterialTile>>(71)
 #if METALLIC_DEFERRED_UPSCALER_GUIDES
@@ -68,11 +74,53 @@ float3 rasterWorldNormal(GPUDrivenPreviewInstance instance, float3 normal)
         (determinant < 0.0 ? -1.0 : 1.0), normal);
 }
 
+bool reconstructStreamSurface(uint recordIndex, uint triangleIndex, Ray ray, ScenePathTracePush push, out HitInfo hit)
+{
+    hit = (HitInfo)0;
+    if (gRasterFrameInfo.Load(92) == 0u) { return false; }
+    VisibleClusterRecord record;
+    float3 a, b, c;
+    if (!decodeStreamTriangle(recordIndex, triangleIndex, gStreamRecords, gStreamGroups,
+        gStreamPages, gStreamPageTable, record, a, b, c)) { return false; }
+    uint count, stride;
+    gRasterInstances.GetDimensions(count, stride);
+    if (record.instanceIndex >= count) { return false; }
+    GPUDrivenPreviewInstance instance = gRasterInstances[record.instanceIndex];
+    float3 localNormal = safeTriangleNormal(b - a, c - a, float3(0, 1, 0));
+    float3 p = rasterWorldPosition(instance, a);
+    hit.geometryNormal = rasterWorldNormal(instance, localNormal);
+    hit.normal = hit.geometryNormal;
+    float denominator = dot(ray.direction, hit.geometryNormal);
+    if (abs(denominator) < 1e-8) { return false; }
+    hit.t = dot(p - ray.origin, hit.geometryNormal) / denominator;
+    hit.position = ray.origin + ray.direction * hit.t;
+    hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
+    // The position-only cook has scalar materials. Keep the authored geometric
+    // normal stable; face-forward happens after material normal evaluation.
+    float3 axis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
+    float3 tangent = safeNormalize(cross(axis, hit.normal), float3(1, 0, 0));
+    hit.tangent = float4(tangent, push.bitangentFlip);
+    hit.bitangent = cross(hit.normal, tangent) * push.bitangentFlip;
+    gRasterMaterials.GetDimensions(count, stride);
+    if (instance.identity.y >= count) { return false; }
+    hit.materialIndex = gRasterMaterials[instance.identity.y].identity.z;
+    gMaterials.GetDimensions(count, stride);
+    if (hit.materialIndex >= count) { return false; }
+    hit.instanceIndex = instance.identity.z;
+    hit.primitiveIndex = gStreamGroups[record.dataIndex].primitiveIndex;
+    hit.triangleIndex = triangleIndex;
+    return true;
+}
+
 bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push, out HitInfo hit)
 {
     hit = (HitInfo)0;
     uint recordIndex, triangleIndex;
     if (!unpackVisibilityId(gVisibility.Load(int3(pixel, 0)), recordIndex, triangleIndex)) { return false; }
+    uint residentCount = gRasterFrameInfo.Load(88);
+    if (recordIndex >= residentCount) {
+        return reconstructStreamSurface(recordIndex - residentCount, triangleIndex, ray, push, hit);
+    }
     uint count, stride;
     gRasterRecords.GetDimensions(count, stride);
     if (recordIndex >= count) { return false; }

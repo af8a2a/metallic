@@ -1,4 +1,4 @@
-#include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/SceneResourceManager.h"
 
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -13,6 +13,13 @@
 
 namespace metallic::render {
 namespace {
+
+bool requiresResidentGeometry(SceneResourceFeatureBits features)
+{
+    constexpr auto geometry = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Meshlets |
+        SceneResourceFeatureBits::StandardAccelerationStructure | SceneResourceFeatureBits::ClusterAccelerationStructure;
+    return (static_cast<uint32_t>(features) & static_cast<uint32_t>(geometry)) != 0;
+}
 
 std::filesystem::path propertyPath(
     const RenderGraphProperties& properties,
@@ -137,13 +144,13 @@ Result SceneResourceManager::acquire(
     if (!sceneResult) {
         return sceneResult;
     }
-    if (resolvedScene->hasStreamGeometry()) {
+    if (resolvedScene->hasStreamGeometry() && requiresResidentGeometry(features)) {
         log = "SceneResourceManager cannot build resident geometry or RTAS from StreamAsset metadata";
         return makeError(Error::InvalidArgument);
     }
 
     const std::filesystem::path scenePath = propertyPath(properties, "path");
-    const std::string key = resourceKey(scenePath);
+    const std::string key = resourceKey(scenePath) + (resolvedScene->hasStreamGeometry() ? "#stream-materials" : "");
     auto found = impl_->snapshots.find(key);
     if (found != impl_->snapshots.end()) {
         if (found->second != nullptr &&
@@ -210,7 +217,7 @@ Result SceneResourceManager::beginAcquireAsync(
     std::shared_ptr<SceneResourceSnapshot>& outSnapshot,
     std::string& log)
 {
-    if (runtimeScene.hasStreamGeometry()) {
+    if (runtimeScene.hasStreamGeometry() && requiresResidentGeometry(features)) {
         log = "SceneResourceManager cannot build resident geometry or RTAS from StreamAsset metadata";
         return makeError(Error::InvalidArgument);
     }
@@ -224,7 +231,7 @@ Result SceneResourceManager::beginAcquireAsync(
     impl_->device = &device;
 
     const std::filesystem::path scenePath = propertyPath(properties, "path");
-    const std::string key = resourceKey(scenePath);
+    const std::string key = resourceKey(scenePath) + (runtimeScene.hasStreamGeometry() ? "#stream-materials" : "");
     auto found = impl_->snapshots.find(key);
     if (found != impl_->snapshots.end()) {
         if (found->second != nullptr &&

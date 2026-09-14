@@ -4,8 +4,8 @@
 #include "Runtime/Render/Profiling/RenderGraphProfile.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/MeshletLod.h"
-#include "Runtime/Render/MeshletStreamClas.h"
-#include "Runtime/Render/MeshletStreamResidency.h"
+#include "Runtime/Render/Streamer/MeshletStreamClas.h"
+#include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
 
@@ -334,6 +334,7 @@ struct MeshletStreamDeferredGpuResourcesView {
     Buffer* paramsBuffer = nullptr;
     Buffer* visibleClusterBuffer = nullptr;
     uint32_t visibleRecordCapacity = 0;
+    RayTracingAccelerationStructure* accelerationStructure = nullptr;
 
     bool valid() const
     {

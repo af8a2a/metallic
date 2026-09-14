@@ -1,4 +1,4 @@
-#include "Runtime/Render/RenderPass/ScenePathTraceResources.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Scene/SceneDocument.h"
 
@@ -9,6 +9,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <thread>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -1088,6 +1089,11 @@ bool buildGpuScene(
     outScene = ScenePathTraceGpuScene{};
     outScene.materials = buildGpuMaterials(
         loadedScene, textureIndexMap, neuralTextureSetIndexMap, log);
+    if (loadedScene.hasStreamGeometry()) {
+        // Geometry stays in the Streamer page pool. Deferred only needs the
+        // same OpenPBR material table and textures as resident shading.
+        return !outScene.materials.empty();
+    }
 
     constexpr uint32_t kInvalidPrimitiveIndex = std::numeric_limits<uint32_t>::max();
     std::vector<uint32_t> primitiveToGpuPrimitive(
@@ -1937,6 +1943,7 @@ struct ScenePathTraceResources::Impl {
         drawBounds = scene::Bounds{};
         scenePath.clear();
         prepared = false;
+        materialOnly = false;
         uploadStats = {};
         asyncPrepareStage = AsyncPrepareStage::Idle;
         partialUploadResumeStage = AsyncPrepareStage::Idle;
@@ -1961,13 +1968,10 @@ struct ScenePathTraceResources::Impl {
     bool valid() const
     {
         return prepared &&
-            rtxBuilder.valid() &&
             drawBounds.valid &&
-            shadingVertexBuffer != nullptr &&
-            (device->capabilities().rayTracingPositionFetch || fallbackPositionBuffer != nullptr) &&
-            indexBuffer != nullptr &&
-            primitiveBuffer != nullptr &&
-            instanceBuffer != nullptr &&
+            (materialOnly || (rtxBuilder.valid() && shadingVertexBuffer != nullptr &&
+                (device->capabilities().rayTracingPositionFetch || fallbackPositionBuffer != nullptr) &&
+                indexBuffer != nullptr && primitiveBuffer != nullptr && instanceBuffer != nullptr)) &&
             materialBuffer != nullptr &&
             !materialTextures.empty() &&
             materialTextureViews[0] != nullptr;
@@ -1995,6 +1999,7 @@ struct ScenePathTraceResources::Impl {
     }
 
     SceneAccelerationStructureBuilder rtxBuilder;
+    bool materialOnly = false;
     Device* device = nullptr;
     Queue* graphicsQueue = nullptr;
     scene::Bounds drawBounds;
@@ -2055,6 +2060,16 @@ Result ScenePathTraceResources::prepare(
     const scene::Scene* runtimeScene,
     std::string& log)
 {
+    if (runtimeScene && runtimeScene->hasStreamGeometry()) {
+        Result result = beginPrepareAsync(device, graphicsQueue, properties, *runtimeScene, log);
+        bool complete = false;
+        scene::SceneLoadProgress progress;
+        while (result && !complete) {
+            result = pumpPrepareAsync(std::numeric_limits<double>::max(), complete, progress, log);
+            if (result && !complete) { std::this_thread::yield(); }
+        }
+        return result;
+    }
     impl_->device = &device;
     impl_->graphicsQueue = &graphicsQueue;
     const std::filesystem::path path = scenePathFromProperties(properties);
@@ -2275,6 +2290,7 @@ Result ScenePathTraceResources::beginPrepareAsync(
     impl_->device = &device;
     impl_->graphicsQueue = &graphicsQueue;
     impl_->asyncScene = boundScene;
+    impl_->materialOnly = boundScene->hasStreamGeometry();
     impl_->asyncScenePath = path;
     impl_->asyncSourceResourceIdentity = boundScene->resourceIdentity();
     impl_->asyncSourceStructuralRevision =
@@ -2393,6 +2409,11 @@ Result ScenePathTraceResources::pumpPrepareAsync(
             progress.fraction = 0.82f;
             return {};
         case Impl::AsyncPrepareStage::AccelerationStructure: {
+            if (impl_->materialOnly) {
+                impl_->asyncBufferStep = 4; // Only material payload; no resident buffers or RTAS.
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Buffers;
+                continue;
+            }
             Queue* accelerationQueue = impl_->device->getQueue(QueueType::Compute);
             if (accelerationQueue == nullptr) {
                 accelerationQueue = impl_->graphicsQueue;
@@ -2536,9 +2557,9 @@ Result ScenePathTraceResources::pumpPrepareAsync(
             progress.phase = scene::SceneLoadPhase::AccelerationStructures;
             progress.fraction = 0.97f;
             {
-                bool accelerationStructuresComplete = false;
+                bool accelerationStructuresComplete = impl_->materialOnly;
                 std::string rtxLog;
-                result = impl_->rtxBuilder.pollBuild(
+                result = impl_->materialOnly ? Result{} : impl_->rtxBuilder.pollBuild(
                     accelerationStructuresComplete,
                     rtxLog);
                 appendLogBlock(log, rtxLog);
@@ -2694,6 +2715,12 @@ Result ScenePathTraceResources::syncRuntimeScene(
         return {};
     }
 
+    if (impl_->materialOnly) {
+        impl_->drawBounds = boundScene->bounds();
+        impl_->stampSource(*boundScene);
+        ++impl_->revision;
+        return {};
+    }
     ScenePathTraceGpuScene gpuScene;
     if (!buildGpuScene(
             *boundScene,

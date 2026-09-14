@@ -6856,13 +6856,11 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         return;
     }
     if (!startupStreamAssetPath_.empty()) {
+        bool applied = false;
         for (const std::string& target : sample.desc.scenePathTargets) {
             render::RenderGraphNode* node = sample.graph.findNode(target);
-            if (node == nullptr || node->type != "GPUDrivenStreamAssetPass") {
-                renderGraphStatus_ =
-                    "StreamAsset path override requires a GPUDrivenStreamAssetPass target: " + target;
-                spdlog::warn("[Startup] {}", renderGraphStatus_);
-                return;
+            if (node == nullptr || (node->type != "GPUDrivenStreamAssetPass" && node->type != "VisibilityBufferPass")) {
+                continue;
             }
             render::RenderGraphProperties properties = node->properties.is_object()
                 ? node->properties
@@ -6873,6 +6871,12 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
                 spdlog::warn("[Startup] {}", renderGraphStatus_);
                 return;
             }
+            applied = true;
+        }
+        if (!applied) {
+            renderGraphStatus_ = "StreamAsset path override requires a streaming raster producer";
+            spdlog::warn("[Startup] {}", renderGraphStatus_);
+            return;
         }
         sample.graph.clearDirty();
     }

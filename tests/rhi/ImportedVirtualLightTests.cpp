@@ -1,6 +1,6 @@
 #include "RhiTest.h"
 #include "Runtime/Render/SceneLightResources.h"
-#include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Scene/SceneDocument.h"

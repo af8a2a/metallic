@@ -1,9 +1,9 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/Rhi.h"
-#include "Runtime/Render/MeshletStreamLatency.h"
-#include "Runtime/Render/MeshletStreamPageLoader.h"
-#include "Runtime/Render/StreamingTaskQueue.h"
+#include "Runtime/Render/Streamer/MeshletStreamLatency.h"
+#include "Runtime/Render/Streamer/MeshletStreamPageLoader.h"
+#include "Runtime/Render/Streamer/StreamingTaskQueue.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include <array>

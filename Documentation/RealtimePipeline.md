@@ -2,6 +2,8 @@
 
 在 Samples → Lighting 中选择 **Real-time / Physical Lighting**（ID：`realtime-lighting`）。图资产为 `Pipelines/Samples/realtime_lighting.metallic_graph.json`。
 
+GPUDrivenSample 使用同一组实时 Pass，默认场景为 MiniZorah，入口图为 `gpu_driven_realtime.metallic_graph.json`。VisibilityBuffer 从 Streamer 页池生成可见性，Deferred 根据统一可见性 ID 解码 resident/stream 三角形，材质分箱、LightGrid、SH/HDRI、曝光和 SR/NR 共用原实时实现。流式场景只申请 OpenPBR 材质资源；光追阴影借用该帧发布的流式 TLAS，不创建全量源几何或常驻 RTAS。具体边界见 [Streamer](Streamer.md)。
+
 链路：`VisibilityBuffer → Deferred → DLSS-SR → AutoExposure → DLSS-NR（默认关闭）→ FinalBlit`。
 
 - **可见性与灯光**：mesh/task shader 光栅化主可见性；VisibilityBuffer 内部构建当前视图、当前 frame slot 的 LightGrid。灯光按影响范围与渲染视锥相交筛选；即使冻结几何剔除相机，照明仍跟随渲染相机。开启抖动时，视锥和分簇边界保留一像素余量。延迟照明查询像素对应的 XY/Z 分簇，方向光和无范围灯光额外求值一次。容量溢出或深度越界使用完整候选列表，避免丢光。灯光索引直接引用网格的 GPUScene 槽位，不依赖另一个灯光列表的排序。

@@ -54,7 +54,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/HistoryResources.cpp
     Runtime/Render/ImportanceSampling.cpp
     Runtime/Render/ReGIR.cpp
-    Runtime/Render/SceneResourceManager.cpp
+    Runtime/Render/Streamer/SceneResourceManager.cpp
     Runtime/Render/SceneLightResources.cpp
     Runtime/Render/Subsystem/BuiltinRenderSubsystems.cpp
     Runtime/Render/Subsystem/EnvironmentLightingSubsystem.cpp
@@ -63,24 +63,25 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Subsystem/RenderSubsystem.cpp
     Runtime/Render/Subsystem/RenderWorld.cpp
     Runtime/Render/RenderView.cpp
-    Runtime/Render/MeshletStreamClas.cpp
-    Runtime/Render/MeshletStreamClasPool.cpp
-    Runtime/Render/MeshletStreamCompactClasPool.cpp
-    Runtime/Render/MeshletStreamPageLoader.cpp
-    Runtime/Render/MeshletStreamResidency.cpp
-    Runtime/Render/MeshletStreamRuntime.cpp
+    Runtime/Render/Streamer/MeshletStreamClas.cpp
+    Runtime/Render/Streamer/MeshletStreamClasPool.cpp
+    Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp
+    Runtime/Render/Streamer/MeshletStreamPageLoader.cpp
+    Runtime/Render/Streamer/MeshletStreamResidency.cpp
+    Runtime/Render/Streamer/MeshletStreamRuntime.cpp
     Runtime/Render/NeuralTextureResources.cpp
     Runtime/Render/RayTracing/SceneAccelerationStructure.cpp
     Runtime/Render/RayTracing/OpacityMicromapBake.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp
-    Runtime/Render/GAPI/Streamer.cpp
+    Runtime/Render/Streamer/UploadStreamer.cpp
     Runtime/Render/RenderSample.cpp
     Runtime/Render/SlangCompiler.cpp
     Runtime/Render/RenderGraph/RenderGraph.cpp
     Runtime/Render/RenderGraph/RenderGraphNode.cpp
     Runtime/Render/RenderGraph/RenderGraphExecutor.cpp
-    Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.cpp
+    Runtime/Render/Streamer/StreamingUploads.cpp
+    Runtime/Render/Streamer/StreamerSubsystem.cpp
     Runtime/Render/RenderGraph/NrdRuntime.cpp
     Runtime/Render/ScreenSpaceShadows.cpp
     Runtime/Render/RenderPass/BuiltinRenderPasses.cpp
@@ -109,7 +110,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/StreamlineDlssRrPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/DlssNrPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
-    Runtime/Render/RenderPass/ScenePathTraceResources.cpp
+    Runtime/Render/Streamer/ScenePathTraceResources.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/Profiling/NsightGraphicsCapture.cpp
     Runtime/Render/Profiling/TracyProfiler.cpp

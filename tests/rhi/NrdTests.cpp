@@ -2,7 +2,7 @@
 #include "Runtime/Render/Denoising/NrdPlan.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
-#include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include <fstream>
 

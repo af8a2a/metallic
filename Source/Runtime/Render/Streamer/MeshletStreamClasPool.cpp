@@ -1,7 +1,7 @@
-#include "Runtime/Render/MeshletStreamClas.h"
-#include "Runtime/Render/MeshletStreamCompactClasPool.h"
+#include "Runtime/Render/Streamer/MeshletStreamClas.h"
+#include "Runtime/Render/Streamer/MeshletStreamCompactClasPool.h"
 
-#include "Runtime/Render/MeshletStreamResidency.h"
+#include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 
 #include <algorithm>
 #include <cstring>

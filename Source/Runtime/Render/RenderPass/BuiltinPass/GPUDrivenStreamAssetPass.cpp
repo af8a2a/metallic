@@ -1,4 +1,4 @@
-#include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/ClusterLightGrid.h"
@@ -7,7 +7,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
-#include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
@@ -361,6 +361,7 @@ public:
     {
         static constexpr std::array required{
             GPUSceneSubsystem::kSubsystemId,
+            StreamerSubsystem::kSubsystemId,
         };
         return required;
     }
@@ -509,7 +510,7 @@ public:
         // restart page uploads, or allocate another set of bindless handles.
         if (compiled_ && device_ == context.device && gpuSceneView_.valid() &&
             frameSlotCount_ == std::max(gpuSceneSubsystem_->frameSlotCount(), 1u) &&
-            streamRuntime_.ready() && compiledRuntimeDesc_ == runtimeDesc &&
+            (streamRuntime_ && streamRuntime_->ready()) && compiledRuntimeDesc_ == runtimeDesc &&
             compiledSourceIdentity_ == sourceIdentity &&
             compiledSourceContentRevision_ == sourceContentRevision &&
             compiledStreamAssetOnly_ == streamAssetOnly &&
@@ -518,7 +519,7 @@ public:
             rtasVisualization_ == rtasVisualization) {
             Result result;
             if (runtimeScene != nullptr) {
-                result = streamRuntime_.syncRuntimeScene(*runtimeScene, log);
+                result = streamRuntime_->syncRuntimeScene(*runtimeScene, log);
                 if (!result) { return result; }
             }
             result = ensureFrameResources(context.width, context.height, context.subsystems());
@@ -539,8 +540,7 @@ public:
             log += resultMessage("createPipelineCache(GPUDrivenStreamAssetPass)", result);
             return result ? makeError(Error::Failure) : result;
         }
-        streamRuntime_.setDebugReadbackEnabled(context.debugReadback);
-        result = streamRuntime_.initialize(*context.device, runtimeDesc, log, pipelineCache_.get());
+        result = context.subsystem<StreamerSubsystem>()->acquireStream(runtimeDesc, context.debugReadback, streamRuntime_, log, pipelineCache_.get());
         if (!result) {
             return result;
         }
@@ -548,12 +548,12 @@ public:
             gpuSceneSubsystem_->scene().ensureDrawSet();
             // This pass owns its visibility-state slots. Cache instance IDs are
             // stable within the asset; no resident GPUScene geometry is needed.
-            std::vector<uint32_t> mapping(streamRuntime_.asset().instanceCount());
+            std::vector<uint32_t> mapping(streamRuntime_->asset().instanceCount());
             std::iota(mapping.begin(), mapping.end(), 0u);
-            result = streamRuntime_.syncGPUSceneInstanceMapping(mapping);
+            result = streamRuntime_->syncGPUSceneInstanceMapping(mapping);
             if (!result) { return result; }
             spdlog::info("[GPUDrivenStreamAssetPass] Cache-only scene: {} geometries, {} instances; ordinary Scene/RTAS import bypassed",
-                streamRuntime_.asset().primitiveCount(), streamRuntime_.asset().instanceCount());
+                streamRuntime_->asset().primitiveCount(), streamRuntime_->asset().instanceCount());
         }
         rtasVisualization_ = rtasVisualization;
 
@@ -729,10 +729,10 @@ public:
         }
         frameSlotCount_ = requestedFrameSlotCount;
         instanceCapacity_ = std::max<uint32_t>(
-            static_cast<uint32_t>(streamRuntime_.asset().instances().size()),
+            static_cast<uint32_t>(streamRuntime_->asset().instances().size()),
             1u);
         for (const scene::MeshletStreamInstanceInfo& instance :
-             streamRuntime_.asset().instances()) {
+             streamRuntime_->asset().instances()) {
             if (instance.renderNodeIndex != std::numeric_limits<uint32_t>::max()) {
                 instanceCapacity_ = std::max(
                     instanceCapacity_,
@@ -776,7 +776,7 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
 
-        BindlessHeap* heap = streamRuntime_.bindlessHeap();
+        BindlessHeap* heap = streamRuntime_->bindlessHeap();
         result = heap->allocateSampledImage(visibilityImageHandle_);
         if (!result || !visibilityImageHandle_.valid()) {
             log += resultMessage("allocateSampledImage(GPUDrivenStreamAsset visibility)", result);
@@ -840,7 +840,7 @@ public:
                 return result;
             }
         }
-        result = streamRuntime_.updateRasterBindings(MeshletStreamGpuRasterBindings{
+        result = streamRuntime_->updateRasterBindings(MeshletStreamGpuRasterBindings{
             .instanceVisibilityBuffer = instanceVisibilityHandle_.index,
             .hzbBuffer0 = hzbHandles_[0].index,
             .hzbBuffer1 = hzbHandles_[1].index,
@@ -886,6 +886,9 @@ public:
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        if (streamRuntime_) {
+            if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(streamRuntime_); }
+        }
         GPUSceneSubsystem* gpuSceneSubsystem = context.subsystem<GPUSceneSubsystem>();
         if (gpuSceneSubsystem == nullptr ||
             gpuSceneSubsystem != gpuSceneSubsystem_ ||
@@ -896,7 +899,7 @@ public:
             context.runtimeScene(), scenePathFromProperties(context.properties()));
         if (runtimeScene != nullptr) {
             std::string syncLog;
-            Result syncResult = streamRuntime_.syncRuntimeScene(*runtimeScene, syncLog);
+            Result syncResult = streamRuntime_->syncRuntimeScene(*runtimeScene, syncLog);
             if (!syncResult) {
                 spdlog::warn("[GPUDrivenStreamAssetPass] Runtime scene sync failed: {}", syncLog);
                 return syncResult;
@@ -906,15 +909,15 @@ public:
         Result result;
         if (!compiledStreamAssetOnly_) {
             std::vector<uint32_t> gpuSceneInstanceMapping(
-                streamRuntime_.asset().instances().size(),
+                streamRuntime_->asset().instances().size(),
                 std::numeric_limits<uint32_t>::max());
             uint32_t mappedInstanceCount = 0;
             for (size_t instanceIndex = 0;
-                 instanceIndex < streamRuntime_.asset().instances().size();
+                 instanceIndex < streamRuntime_->asset().instances().size();
                  ++instanceIndex) {
                 const GPUSceneInstanceId gpuSceneInstance =
                     gpuSceneSubsystem->instanceForRenderNode(
-                        streamRuntime_.asset().instances()[instanceIndex].renderNodeIndex);
+                        streamRuntime_->asset().instances()[instanceIndex].renderNodeIndex);
                 if (gpuSceneInstance.valid()) {
                     gpuSceneInstanceMapping[instanceIndex] = gpuSceneInstance.index;
                     ++mappedInstanceCount;
@@ -926,7 +929,7 @@ public:
                     gpuSceneInstanceMapping.size(),
                     gpuSceneSubsystem->instances().size());
             }
-            result = streamRuntime_.syncGPUSceneInstanceMapping(gpuSceneInstanceMapping);
+            result = streamRuntime_->syncGPUSceneInstanceMapping(gpuSceneInstanceMapping);
             if (!result) { return result; }
         }
 
@@ -937,8 +940,8 @@ public:
             !visibility.valid() ||
             !depth.valid() ||
             context.streamer() == nullptr ||
-            !streamRuntime_.ready() ||
-            streamRuntime_.bindlessHeap() == nullptr ||
+            !(streamRuntime_ && streamRuntime_->ready()) ||
+            streamRuntime_->bindlessHeap() == nullptr ||
             visibilityPipelines_[0] == nullptr || visibilityPipelines_[1] == nullptr ||
             deferredPipeline_ == nullptr ||
             compositePipeline_ == nullptr ||
@@ -958,14 +961,14 @@ public:
         }
 
         const MeshletStreamFrameDesc frame = frameDescFromContext(context);
-        result = streamRuntime_.bindlessHeap()->writeSampledImage(
+        result = streamRuntime_->bindlessHeap()->writeSampledImage(
             visibilityImageHandle_,
             *visibility.view(),
             ResourceState::ShaderRead);
         if (!result) {
             return result;
         }
-        result = streamRuntime_.bindlessHeap()->writeSampledImage(
+        result = streamRuntime_->bindlessHeap()->writeSampledImage(
             depthImageHandle_,
             *depth.view(),
             ResourceState::ShaderRead);
@@ -974,7 +977,7 @@ public:
         }
         {
             auto profile = context.profileScope("Stream Begin");
-            result = streamRuntime_.cmdBeginFrame(context.commandBuffer(), *context.streamer(), frame);
+            result = streamRuntime_->cmdBeginFrame(context.commandBuffer(), *context.streamer(), frame);
         }
         if (!result) {
             return result;
@@ -982,12 +985,12 @@ public:
         if (rtasVisualization_) {
             {
                 auto profile = context.profileScope("Stream traversal / RTAS");
-                result = streamRuntime_.cmdPreTraversal(context.commandBuffer(), frame);
+                result = streamRuntime_->cmdPreTraversal(context.commandBuffer(), frame);
             }
             if (!result) {
                 return result;
             }
-            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, UINT32_MAX);
+            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), UINT32_MAX);
             {
                 auto profile = context.profileScope("Ray query");
                 result = drawRayQuery(context, color, frame);
@@ -1038,12 +1041,12 @@ public:
             // from traversal so the early instance state also prunes page demand.
             {
                 auto profile = context.profileScope("Stream traversal / RTAS");
-                result = streamRuntime_.cmdPreTraversal(context.commandBuffer(), frame);
+                result = streamRuntime_->cmdPreTraversal(context.commandBuffer(), frame);
             }
             if (!result) {
                 return result;
             }
-            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, UINT32_MAX);
+            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), UINT32_MAX);
             {
                 auto profile = context.profileScope("Early Instance cull");
                 result = dispatchInstanceCull(
@@ -1053,8 +1056,8 @@ public:
             if (!result) {
                 return result;
             }
-            gpuDrivenDebugCheckpoint(context, "AfterEarlyCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, 0);
-            result = streamRuntime_.cmdPrepareVisibility(context.commandBuffer());
+            gpuDrivenDebugCheckpoint(context, "AfterEarlyCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), 0);
+            result = streamRuntime_->cmdPrepareVisibility(context.commandBuffer());
             if (result) {
                 {
                     auto profile = context.profileScope("Early Hardware raster");
@@ -1092,8 +1095,8 @@ public:
                 }
             }
             if (result) {
-                gpuDrivenDebugCheckpoint(context, "AfterLateCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, 1);
-                result = streamRuntime_.cmdPrepareVisibility(context.commandBuffer());
+                gpuDrivenDebugCheckpoint(context, "AfterLateCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), 1);
+                result = streamRuntime_->cmdPrepareVisibility(context.commandBuffer());
             }
             if (result) {
                 {
@@ -1150,17 +1153,17 @@ public:
         }
         {
             auto profile = context.profileScope("Stream feedback");
-            result = streamRuntime_.cmdPostTraversal(context.commandBuffer());
+            result = streamRuntime_->cmdPostTraversal(context.commandBuffer());
         }
         if (!result) {
             return result;
         }
         {
             auto profile = context.profileScope("Stream End");
-            result = streamRuntime_.cmdEndFrame(context.commandBuffer());
+            result = streamRuntime_->cmdEndFrame(context.commandBuffer());
         }
-        if (result) { context.publishStreamingProfile(streamRuntime_.profilingStats()); }
-        if (result) { gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, rtasVisualization_ ? UINT32_MAX : 1); }
+        if (result) { context.publishStreamingProfile(streamRuntime_->profilingStats()); }
+        if (result) { gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), rtasVisualization_ ? UINT32_MAX : 1); }
         return result;
     }
 
@@ -1218,7 +1221,7 @@ private:
             gpuSceneSubsystem_ == nullptr ||
             !gpuSceneView_.valid() ||
             subsystemHost == nullptr ||
-            streamRuntime_.bindlessHeap() == nullptr ||
+            streamRuntime_->bindlessHeap() == nullptr ||
             !deferredColorHandle_.valid()) {
             return makeError(Error::InvalidArgument);
         }
@@ -1261,7 +1264,7 @@ private:
             return result;
         }
 
-        result = streamRuntime_.bindlessHeap()->writeStorageBuffer(
+        result = streamRuntime_->bindlessHeap()->writeStorageBuffer(
             deferredColorHandle_,
             *resizedDeferredColorBuffer);
         if (!result) {
@@ -1365,7 +1368,7 @@ private:
         Result result = subsystem.publishViewGpuResources(
             gpuSceneView_,
             activeFrameSlot_,
-            streamRuntime_.frameIndex() & 1u,
+            streamRuntime_->frameIndex() & 1u,
             log);
         if (!result) {
             spdlog::error("[GPUDrivenStreamAssetPass] {}", log);
@@ -1388,11 +1391,11 @@ private:
             resources.visibleInstanceCounter.view == nullptr ||
             resources.hzbHistory[0].view == nullptr ||
             resources.hzbHistory[1].view == nullptr ||
-            streamRuntime_.bindlessHeap() == nullptr) {
+            streamRuntime_->bindlessHeap() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        BindlessHeap& heap = *streamRuntime_.bindlessHeap();
+        BindlessHeap& heap = *streamRuntime_->bindlessHeap();
         Result result = heap.writeBufferView(
             instanceVisibilityHandle_,
             *resources.instanceVisibilityStates.view);
@@ -1417,7 +1420,7 @@ private:
             return result;
         }
 
-        return streamRuntime_.updateRasterBindings(MeshletStreamGpuRasterBindings{
+        return streamRuntime_->updateRasterBindings(MeshletStreamGpuRasterBindings{
             .instanceVisibilityBuffer = instanceVisibilityHandle_.index,
             .hzbBuffer0 = hzbHandles_[0].index,
             .hzbBuffer1 = hzbHandles_[1].index,
@@ -1441,18 +1444,18 @@ private:
         if (gpuSceneSubsystem_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        MeshletStreamUserPush push = streamRuntime_.userPush();
+        MeshletStreamUserPush push = streamRuntime_->userPush();
         push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
         const GPUSceneInstanceCullRecordDesc desc{
             .phase = phase,
-            .bindlessHeap = streamRuntime_.bindlessHeap(),
+            .bindlessHeap = streamRuntime_->bindlessHeap(),
             .resetPipeline = cullResetPipeline_.get(),
             .instanceCullPipeline = instanceCullPipeline_.get(),
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .instanceGroupCountX = std::max(
                 divideRoundUp(
-                    static_cast<uint32_t>(streamRuntime_.asset().instances().size()),
+                    static_cast<uint32_t>(streamRuntime_->asset().instances().size()),
                     64u),
                 1u),
         };
@@ -1477,7 +1480,7 @@ private:
         std::vector<MeshletStreamUserPush> pushes;
         pushes.reserve(hzbMipCount_);
         for (uint32_t mipLevel = 0; mipLevel < hzbMipCount_; ++mipLevel) {
-            MeshletStreamUserPush push = streamRuntime_.userPush();
+            MeshletStreamUserPush push = streamRuntime_->userPush();
             push.activeBuildPhase = mipLevel;
             pushes.push_back(push);
         }
@@ -1497,7 +1500,7 @@ private:
             mipHeight = std::max(1u, (mipHeight + 1u) / 2u);
         }
         const GPUSceneHzbRecordDesc desc{
-            .bindlessHeap = streamRuntime_.bindlessHeap(),
+            .bindlessHeap = streamRuntime_->bindlessHeap(),
             .pipeline = hzbPipeline_.get(),
             .dispatches = dispatches,
         };
@@ -1575,7 +1578,7 @@ private:
 
     MeshletStreamFrameDesc frameDescFromContext(const RenderGraphExecutionContext& context) const
     {
-        const scene::Bounds& bounds = streamRuntime_.bounds();
+        const scene::Bounds& bounds = streamRuntime_->bounds();
         const float3 center = bounds.center();
         const float radius = std::max(bounds.radius(), 1.0f);
         const RenderGraphProperties* camera = cameraPropertiesFrom(context.properties());
@@ -1673,13 +1676,13 @@ private:
             .maxDepth = 1.0f,
         });
         context.commandBuffer().setScissor(renderArea);
-        if (streamRuntime_.drawTaskCount() > 0) {
-            context.commandBuffer().bindBindlessHeap(*streamRuntime_.bindlessHeap());
+        if (streamRuntime_->drawTaskCount() > 0) {
+            context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
             context.commandBuffer().bindGraphicsPipeline(*visibilityPipelines_[reversedZ ? 1u : 0u]);
-            MeshletStreamUserPush push = streamRuntime_.userPush();
+            MeshletStreamUserPush push = streamRuntime_->userPush();
             push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
             context.commandBuffer().pushBindlessData(&push, sizeof(push));
-            streamRuntime_.cmdDrawMeshTasks(context.commandBuffer());
+            streamRuntime_->cmdDrawMeshTasks(context.commandBuffer());
         }
         context.commandBuffer().endRendering();
         return {};
@@ -1708,13 +1711,13 @@ private:
             .bufferCount = 1,
         });
         deferredColorState_ = ResourceState::General;
-        Result result = streamRuntime_.cmdPrepareDeferred(context.commandBuffer());
+        Result result = streamRuntime_->cmdPrepareDeferred(context.commandBuffer());
         if (!result) {
             return result;
         }
-        context.commandBuffer().bindBindlessHeap(*streamRuntime_.bindlessHeap());
+        context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
         context.commandBuffer().bindComputePipeline(*deferredPipeline_);
-        const MeshletStreamUserPush push = streamRuntime_.userPush();
+        const MeshletStreamUserPush push = streamRuntime_->userPush();
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
         context.commandBuffer().dispatch(
             (frameWidth_ + 7u) / 8u,
@@ -1768,9 +1771,9 @@ private:
             .maxDepth = 1.0f,
         });
         context.commandBuffer().setScissor(renderArea);
-        context.commandBuffer().bindBindlessHeap(*streamRuntime_.bindlessHeap());
+        context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
         context.commandBuffer().bindGraphicsPipeline(*compositePipeline_);
-        const MeshletStreamUserPush push = streamRuntime_.userPush();
+        const MeshletStreamUserPush push = streamRuntime_->userPush();
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
         context.commandBuffer().draw(3u, 1u, 0u, 0u);
         context.commandBuffer().endRendering();
@@ -1782,8 +1785,8 @@ private:
         TextureHandle color,
         const MeshletStreamFrameDesc& frame)
     {
-        if (!streamRuntime_.tlasReady() ||
-            streamRuntime_.accelerationStructure() == nullptr ||
+        if (!streamRuntime_->tlasReady() ||
+            streamRuntime_->accelerationStructure() == nullptr ||
             color.view() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
@@ -1817,7 +1820,7 @@ private:
         const ComputeDispatchBinding bindings[] = {
             ComputeDispatchBinding{
                 .binding = 0,
-                .accelerationStructure = streamRuntime_.accelerationStructure(),
+                .accelerationStructure = streamRuntime_->accelerationStructure(),
             },
             ComputeDispatchBinding{
                 .binding = 1,
@@ -1837,7 +1840,7 @@ private:
     }
 
     std::unique_ptr<PipelineCache> pipelineCache_;
-    MeshletStreamRuntime streamRuntime_;
+    std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<ShaderModule> deferredShader_;

@@ -1,7 +1,7 @@
 #include "RhiTest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
-#include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderSample.h"
 

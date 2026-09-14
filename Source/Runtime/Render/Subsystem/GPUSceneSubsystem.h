@@ -2,7 +2,7 @@
 
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/ClusterLightGrid.h"
-#include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include <span>

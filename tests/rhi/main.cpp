@@ -205,6 +205,7 @@ public:
                 .enableComputeFullSubgroups = options_.enableRealtime,
                 .enableRayTracingAccelerationStructure = options_.enableStreamline,
                 .enableRayQuery = options_.enableStreamline,
+                .enableClusterAccelerationStructure = options_.enableRealtime,
                 .enableStreamline = options_.enableStreamline,
                 .enableAftermath = options_.enableAftermath,
                 .validationSink = {.callback = [](void* data, const render::ValidationMessage& message) noexcept {

@@ -20,16 +20,16 @@ struct RenderGraphStreamingStats {
     StreamerStats streamer;
 };
 
-class RenderGraphStreamingSubsystem {
+class StreamingUploads {
 public:
-    RenderGraphStreamingSubsystem() = default;
-    ~RenderGraphStreamingSubsystem();
+    StreamingUploads() = default;
+    ~StreamingUploads();
 
-    RenderGraphStreamingSubsystem(RenderGraphStreamingSubsystem&&) noexcept = delete;
-    RenderGraphStreamingSubsystem& operator=(RenderGraphStreamingSubsystem&&) noexcept = delete;
+    StreamingUploads(StreamingUploads&&) noexcept = delete;
+    StreamingUploads& operator=(StreamingUploads&&) noexcept = delete;
 
-    RenderGraphStreamingSubsystem(const RenderGraphStreamingSubsystem&) = delete;
-    RenderGraphStreamingSubsystem& operator=(const RenderGraphStreamingSubsystem&) = delete;
+    StreamingUploads(const StreamingUploads&) = delete;
+    StreamingUploads& operator=(const StreamingUploads&) = delete;
 
     Result initialize(Device& device, std::string& log, uint32_t frameSlotCount = 3);
     void reset();
@@ -49,16 +49,16 @@ private:
     bool frameActive_ = false;
 };
 
-class RenderGraphStreamingFrameScope {
+class StreamingUploadFrameScope {
 public:
-    explicit RenderGraphStreamingFrameScope(RenderGraphStreamingSubsystem& subsystem);
-    ~RenderGraphStreamingFrameScope();
+    explicit StreamingUploadFrameScope(StreamingUploads& subsystem);
+    ~StreamingUploadFrameScope();
 
-    RenderGraphStreamingFrameScope(const RenderGraphStreamingFrameScope&) = delete;
-    RenderGraphStreamingFrameScope& operator=(const RenderGraphStreamingFrameScope&) = delete;
+    StreamingUploadFrameScope(const StreamingUploadFrameScope&) = delete;
+    StreamingUploadFrameScope& operator=(const StreamingUploadFrameScope&) = delete;
 
 private:
-    RenderGraphStreamingSubsystem* subsystem_ = nullptr;
+    StreamingUploads* subsystem_ = nullptr;
 };
 
 } // namespace metallic::render

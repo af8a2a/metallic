@@ -7,7 +7,7 @@
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/RenderSample.h"
-#include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
@@ -2194,9 +2194,9 @@ public:
         if (gpuDrivenSample.desc.id != "gpu-driven-sample" ||
             gpuDrivenSample.desc.name != "GPUDrivenSample" ||
             gpuDrivenSample.desc.category != "GPUDriven" ||
-            gpuDrivenSample.desc.scenePath != "Asset/Sponza/glTF/Sponza.gltf" ||
-            !gpuDrivenSample.desc.loadSceneInEditor ||
-            gpuDrivenSample.desc.graphPath != "Pipelines/Samples/realtime_lighting.metallic_graph.json" ||
+            gpuDrivenSample.desc.scenePath != "Asset/MiniZorah/zorah_main_public.v2.gltf" ||
+            gpuDrivenSample.desc.loadSceneInEditor ||
+            gpuDrivenSample.desc.graphPath != "Pipelines/Samples/gpu_driven_realtime.metallic_graph.json" ||
             !gpuDrivenSample.desc.environment.has_value() ||
             gpuDrivenSample.desc.previewOutput != "FinalBlit.color" ||
             !gpuDrivenSample.desc.requiresStreamline) {
@@ -2210,6 +2210,9 @@ public:
             !gpuDriven->properties.is_object() ||
             gpuDriven->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||
             gpuDriven->properties.value("visualization", "") != "none" ||
+            !gpuDriven->properties.value("streamAssetOnly", false) ||
+            !gpuDriven->properties.value("enableMeshletStreaming", false) ||
+            gpuDriven->properties.value("autoBuildStreamAsset", true) ||
             gpuDrivenDeferred == nullptr ||
             gpuDrivenDeferred->type != "VisibilityBufferDeferredPass" ||
             gpuDrivenDeferred->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||

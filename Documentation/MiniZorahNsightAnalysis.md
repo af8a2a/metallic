@@ -83,7 +83,7 @@ Nanite 使用 wave 聚合计数写出可见 cluster，并为 main-pass 被遮挡
 
 ### P3：对前置 1.27 ms 细分后，再决定 persistent traversal
 
-Nanite 提供 [PersistentNodeAndClusterCull](E:/UnrealEngine/Engine/Shaders/Private/Nanite/NaniteClusterCulling.usf:985) 等调度路径，将节点/cluster 工作放入 GPU 队列。当前 [buildActiveTable](E:/metallic/Source/Runtime/Render/MeshletStreamRuntime.cpp:3195) 是 reset/frontier/prefix/emit/finalize，以及按需 prefetch，多阶段协作遍历已实现。
+Nanite 提供 [PersistentNodeAndClusterCull](E:/UnrealEngine/Engine/Shaders/Private/Nanite/NaniteClusterCulling.usf:985) 等调度路径，将节点/cluster 工作放入 GPU 队列。当前 [buildActiveTable](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp:3195) 是 reset/frontier/prefix/emit/finalize，以及按需 prefetch，多阶段协作遍历已实现。
 
 下一步补齐这些内部阶段的 marker，并统计每 instance 的访问节点数、各组工作量分布和 prefetch 成本。只有确认实例粒度的尾部不均衡仍显著，再引入共享工作队列或分片调度。不要把本次未拆分段的 1.27 ms 全部作为 persistent traversal 的可优化预算。
 

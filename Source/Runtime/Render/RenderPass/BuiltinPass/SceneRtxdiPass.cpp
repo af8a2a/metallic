@@ -2,7 +2,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderGraph/NrdRuntime.h"
 #include "Runtime/Render/SceneLightResources.h"
-#include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
 #ifndef METALLIC_HAS_NTC

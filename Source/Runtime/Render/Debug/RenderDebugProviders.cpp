@@ -2,7 +2,7 @@
 
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
-#include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 
 namespace metallic::render {
 using debug::DebugFieldDesc;

@@ -1,9 +1,9 @@
-#include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 
-#include "Runtime/Render/MeshletStreamClas.h"
+#include "Runtime/Render/Streamer/MeshletStreamClas.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <algorithm>
@@ -2598,6 +2598,7 @@ MeshletStreamDeferredGpuResourcesView MeshletStreamRuntime::deferredGpuResources
         .paramsBuffer = paramsBuffer_.get(),
         .visibleClusterBuffer = visibleClusterBuffer_.get(),
         .visibleRecordCapacity = visibleClusterCapacity(),
+        .accelerationStructure = accelerationStructure(),
     };
 }
 

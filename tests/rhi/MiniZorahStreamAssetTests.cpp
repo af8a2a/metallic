@@ -1,9 +1,9 @@
 #include "RhiTest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
-#include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderSample.h"
-#include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include <algorithm>

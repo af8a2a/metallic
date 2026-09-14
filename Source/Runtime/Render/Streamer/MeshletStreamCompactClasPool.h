@@ -1,5 +1,5 @@
 #pragma once
-#include "Runtime/Render/MeshletStreamClas.h"
+#include "Runtime/Render/Streamer/MeshletStreamClas.h"
 
 namespace metallic::render {
 // Optional compact backend. The existing pool remains the temporary builder and

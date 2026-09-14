@@ -217,7 +217,7 @@ public:
         // Review artifact with actual materials/lighting at the failing camera.
         // Native resolution isolates culling from temporal reconstruction.
         render::RenderSampleLoadResult sample;
-        if (!render::loadBuiltInRenderSample(render::kDefaultGPUDrivenSampleId, sample, log)) { return RhiTestResult::fail(log); }
+        if (!render::loadBuiltInRenderSample("realtime-lighting", sample, log)) { return RhiTestResult::fail(log); }
         const auto* sr = sample.graph.findNode("DlssSr");
         const auto* nr = sample.graph.findNode("DlssNr");
         if (sr == nullptr || nr == nullptr || !sample.desc.environment.has_value()) {

@@ -8,34 +8,17 @@
 
 namespace {
 
-constexpr const char* kGPUDrivenSampleId = metallic::render::kDefaultGPUDrivenSampleId;
-constexpr const char* kGPUDrivenVisibilitySampleId = metallic::render::kGPUDrivenVisibilitySampleId;
-constexpr const char* kGPUDrivenUsdSampleId = "gpu-driven-usd";
-constexpr const char* kGPUDrivenStreamAssetSampleId = "gpu-driven-streamasset";
-constexpr const char* kGPUDrivenMiniZorahSampleId = "gpu-driven-minizorah";
-constexpr const char* kGPUDrivenTerrainP0SampleId = "gpu-driven-terrain-p0";
-constexpr const char* kGPUDrivenTerrainP1SampleId = "gpu-driven-terrain-p1-unified";
-constexpr const char* kGPUDrivenRtasVisualizationSampleId = "gpu-driven-rtas-visualization";
-
 void printUsage()
 {
     spdlog::info(
         "MetallicGPUDrivenSample options:\n"
-        "  Default: repository Sponza through realtime deferred lighting, auto exposure and DLSS-SR\n"
+        "  Default: streamed MiniZorah with realtime deferred lighting, auto exposure and DLSS-SR\n"
         "  --smoke-test                 Render one frame and exit\n"
         "  --debug-control              Enable local Agent debug control\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization\n"
-        "  --visibility-buffer          Load visibility-buffer diagnostics without lighting\n"
-        "  --usd                        Load Super Sponza through OpenUSD\n"
-        "  --streamasset                Load the default meshlet StreamAsset variant\n"
-        "  --minizorah                  Load the complete cooked MiniZorah scene\n"
-        "  --minizorah-vbuffer          Load MiniZorah through unified VBuffer and scalar materials\n"
-        "  --terrain-p0                 Load the generated Houdini height-field StreamAsset\n"
-        "  --terrain-p1                 Load the unified GPUScene/StreamAsset terrain pipeline\n"
-        "  --legacy-preloaded           Alias for the visibility-buffer variant\n"
-        "  --rtas-visualization         Load the RTAS visualization variant\n"
-        "  --scene <source>             Override the sample source scene (glTF or USD)\n"
-        "  --streamasset-path <file>    Override the StreamAsset cache path");
+        "  --scene <source>             Override streaming metadata scene (requires matching cook)\n"
+        "  --streamasset-path <file>    Override the cooked StreamAsset path\n"
+        "  --sample <id>                Explicitly select a diagnostic or another sample");
 }
 
 } // namespace
@@ -45,7 +28,7 @@ int main(int argc, char** argv)
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
     bool debugControl = false;
-    const char* sampleId = kGPUDrivenSampleId;
+    const char* sampleId = metallic::render::kDefaultGPUDrivenSampleId;
     std::string scenePath;
     std::string streamAssetPath;
     for (int index = 1; index < argc; ++index) {
@@ -62,40 +45,17 @@ int main(int argc, char** argv)
             waitForGraphicsDebugger = true;
             continue;
         }
-        if (argument == "--streamasset") {
-            sampleId = kGPUDrivenStreamAssetSampleId;
+        if (argument == "--sample") {
+            if (index + 1 >= argc) { spdlog::error("--sample requires an id"); return 1; }
+            sampleId = argv[++index];
             continue;
         }
-        if (argument == "--minizorah") {
-            sampleId = kGPUDrivenMiniZorahSampleId;
-            continue;
-        }
-        if (argument == "--minizorah-vbuffer") {
-            sampleId = "gpu-driven-minizorah-vbuffer";
+        if (argument == "--minizorah" || argument == "--minizorah-vbuffer" || argument == "--streamasset") {
+            sampleId = metallic::render::kDefaultGPUDrivenSampleId;
             continue;
         }
         if (argument == "--debug-control") {
             debugControl = true;
-            continue;
-        }
-        if (argument == "--usd") {
-            sampleId = kGPUDrivenUsdSampleId;
-            continue;
-        }
-        if (argument == "--terrain-p0") {
-            sampleId = kGPUDrivenTerrainP0SampleId;
-            continue;
-        }
-        if (argument == "--terrain-p1") {
-            sampleId = kGPUDrivenTerrainP1SampleId;
-            continue;
-        }
-        if (argument == "--visibility-buffer" || argument == "--legacy-preloaded") {
-            sampleId = kGPUDrivenVisibilitySampleId;
-            continue;
-        }
-        if (argument == "--rtas-visualization") {
-            sampleId = kGPUDrivenRtasVisualizationSampleId;
             continue;
         }
         if (argument == "--scene" || argument == "--streamasset-path") {
@@ -113,9 +73,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (!streamAssetPath.empty() &&
-        (std::string_view(sampleId) == kGPUDrivenSampleId || std::string_view(sampleId) == kGPUDrivenVisibilitySampleId)) {
-        spdlog::error("--streamasset-path requires a StreamAsset variant");
+    if (!scenePath.empty() && streamAssetPath.empty() &&
+        std::string_view(sampleId) == metallic::render::kDefaultGPUDrivenSampleId) {
+        spdlog::error("--scene requires --streamasset-path with a matching pre-cooked stream asset");
         return 1;
     }
 

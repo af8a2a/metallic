@@ -41,6 +41,9 @@ struct alignas(16) VisibilityBufferFrameInfo {
     uint64_t frameIndex = 0;
 };
 static_assert(sizeof(VisibilityBufferFrameInfo) == 144);
+// VisibilityBufferDeferred.slang reads these words from the shared frame buffer.
+static_assert(offsetof(VisibilityBufferFrameInfo, residentRecordCount) == 88);
+static_assert(offsetof(VisibilityBufferFrameInfo, hasStreamGeometry) == 92);
 
 inline constexpr uint32_t kVisibilityTriangleBits = 7u;
 inline constexpr uint32_t kVisibilityTriangleMask =

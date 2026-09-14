@@ -1,5 +1,5 @@
-#include "Runtime/Render/MeshletStreamPageLoader.h"
-#include "Runtime/Render/MeshletStreamLatency.h"
+#include "Runtime/Render/Streamer/MeshletStreamPageLoader.h"
+#include "Runtime/Render/Streamer/MeshletStreamLatency.h"
 #include "Runtime/Task/TaskSystem.h"
 
 #include <condition_variable>

@@ -1,5 +1,5 @@
 #include "RhiTest.h"
-#include "Runtime/Render/MeshletStreamCompactClasPool.h"
+#include "Runtime/Render/Streamer/MeshletStreamCompactClasPool.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Scene/Scene.h"
 #include "Runtime/Render/RenderSample.h"
@@ -439,7 +439,8 @@ class MiniZorahClasInFlightTest final : public RhiTest {
         executor.bindRuntimeScene(&runtimeScene);
         if (std::getenv("METALLIC_TEST_CLAS_SCENE_SWITCH")) {
             RenderSampleLoadResult previous;
-            if (!loadBuiltInRenderSample("gpu-driven-sample", previous, log)) { return RhiTestResult::fail(log); }
+            if (!loadBuiltInRenderSample("realtime-lighting", previous, log) ||
+                !setRenderSampleScenePath(previous, "Asset/Sponza/glTF/Sponza.gltf", log)) { return RhiTestResult::fail(log); }
             if (!runtimeScene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / previous.desc.scenePath)) {
                 return RhiTestResult::fail("Sponza load failed");
             }

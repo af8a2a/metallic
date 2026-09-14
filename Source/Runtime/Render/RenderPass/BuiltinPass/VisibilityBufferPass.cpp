@@ -6,9 +6,9 @@
 #include "Runtime/Render/ResidentMeshletLod.h"
 #include "Runtime/Render/HzbSpd.h"
 #include "Runtime/Render/ClusterLightGrid.h"
-#include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
-#include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
@@ -284,12 +284,16 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
                 128),
             1u),
         .queuedFrameCount = 3,
-        .enableClusterRtx = false,
+        .enableClusterRtx = boolProperty(&properties, "enableClusterRtx", false),
         .enableClas = boolProperty(&properties, "enableClas", false),
         .compactClas = boolProperty(&properties, "compactClas", false),
         .coldPageRetentionFrames = previewStreamUintProperty(properties, "coldPageRetentionFrames", 0),
         .maxClasBytes = previewStreamUint64Property(properties, "maxClasBytes", 512ull * 1024ull * 1024ull),
         .maxClasBuildClusters = previewStreamUintProperty(properties, "maxClasBuildClusters", 0),
+        .maxBlasClusterReferences = previewStreamUintProperty(properties, "maxBlasClusterReferences", 0),
+        .maxBlasBytes = previewStreamUint64Property(properties, "maxBlasBytes", 512ull * 1024ull * 1024ull),
+        .maxBlasBuilds = previewStreamUintProperty(properties, "maxBlasBuilds", kMeshletStreamDefaultMaxBlasBuilds),
+        .maxFallbackBlasBytes = previewStreamUint64Property(properties, "maxFallbackBlasBytes", 512ull * 1024ull * 1024ull),
         .screenSpacePagePriority = boolProperty(&properties, "screenSpacePagePriority", true),
         .viewDrivenPageDemand = boolProperty(&properties, "viewDrivenPageDemand", true),
         .measurePageLatency = boolProperty(&properties, "measurePageLatency", true),
@@ -618,6 +622,7 @@ public:
     {
         static constexpr std::array required{
             GPUSceneSubsystem::kSubsystemId,
+            StreamerSubsystem::kSubsystemId,
         };
         return required;
     }
@@ -897,13 +902,11 @@ public:
         }
         if (requestedStreamEnabled) {
             resetStreamIntegration();
-            streamRuntime_.setDebugReadbackEnabled(context.debugReadback);
-            Result streamResult = streamRuntime_.initialize(
-                *context.device,
+            Result streamResult = context.subsystem<StreamerSubsystem>()->acquireStream(
                 previewStreamRuntimeDesc(
                     properties(),
                     requestedStreamSource.sourcePath),
-                log, pipelineCache_.get());
+                context.debugReadback, streamRuntime_, log, pipelineCache_.get());
             if (!streamResult) {
                 log = "VisibilityBufferPass stream integration failed: " + log;
                 return streamResult;
@@ -943,7 +946,7 @@ public:
         streamOwnerMask_.assign(std::max(instanceCount_, 1u), 0u);
         if (streamEnabled_ && !visibilityRecordRangeFitsId(
                 residentRecordCapacity_,
-                streamRuntime_.visibleClusterCapacity())) {
+                streamRuntime_->visibleClusterCapacity())) {
             log = "VisibilityBufferPass resident + stream records exceed the visibility ID range";
             return makeError(Error::InvalidArgument);
         }
@@ -1112,6 +1115,9 @@ public:
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        if (streamRuntime_) {
+            if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(streamRuntime_); }
+        }
         Result syncResult = syncRuntimeGeometry(context.runtimeScene());
         if (!syncResult) {
             return syncResult;
@@ -1137,7 +1143,7 @@ public:
             (drawTaskCount_ == 0 && !streamEnabled_) ||
             (streamEnabled_ &&
                 (context.streamer() == nullptr ||
-                    !streamRuntime_.ready() ||
+                    !(streamRuntime_ && streamRuntime_->ready()) ||
                     streamVisibilityPipeline_ == nullptr ||
                     streamCullResetPipeline_ == nullptr ||
                     streamInstanceCullPipeline_ == nullptr))) {
@@ -1177,7 +1183,7 @@ public:
             }
             {
                 auto profile = context.profileScope("Stream Begin");
-                result = streamRuntime_.cmdBeginFrame(
+                result = streamRuntime_->cmdBeginFrame(
                     context.commandBuffer(),
                     *context.streamer(),
                     streamFrame);
@@ -1186,7 +1192,7 @@ public:
                 return result;
             }
             // Both producer families must select the same HZB history index.
-            frameIndex_ = streamRuntime_.frameIndex();
+            frameIndex_ = streamRuntime_->frameIndex();
         }
         bool cameraCut = false;
         if (HistoryResourceManager* historyResources = context.historyResources()) {
@@ -1271,7 +1277,7 @@ public:
             streamFrame = streamFrameDesc(context);
             auto traversalProfile = context.profileScope("Stream traversal");
             auto phaseProfile = context.profileScope("Traversal setup");
-            result = streamRuntime_.cmdPreTraversal(
+            result = streamRuntime_->cmdPreTraversal(
                 context.commandBuffer(),
                 streamFrame, [&](std::string_view checkpoint) {
                     if (checkpoint == "BeforeStreamUpdates") { phaseProfile.next("Page updates"); }
@@ -1283,7 +1289,7 @@ public:
                     else if (checkpoint == "BeforeStreamClasBuild") { phaseProfile.next("CLAS build"); }
                     else if (checkpoint == "AfterStreamClasBuild") { phaseProfile.end(); }
                     gpuDrivenDebugCheckpoint(context, checkpoint, gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_,
-                        &streamRuntime_, UINT32_MAX, residentRecordCapacity_);
+                        streamRuntime_.get(), UINT32_MAX, residentRecordCapacity_);
                 });
             if (!result) {
                 return result;
@@ -1291,7 +1297,7 @@ public:
         }
 
         if (streamEnabled_) {
-            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, &streamRuntime_, UINT32_MAX, residentRecordCapacity_);
+            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), UINT32_MAX, residentRecordCapacity_);
         }
         {
             auto profile = context.profileScope("Alpha texture upload");
@@ -1358,7 +1364,7 @@ public:
             }
         }
         earlyCullProfile.end();
-        gpuDrivenDebugCheckpoint(context, "AfterEarlyCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? &streamRuntime_ : nullptr, 0, residentRecordCapacity_);
+        gpuDrivenDebugCheckpoint(context, "AfterEarlyCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? streamRuntime_.get() : nullptr, 0, residentRecordCapacity_);
         if (freezeCullingCamera_) {
             result = drawVisibility(
                 context,
@@ -1431,7 +1437,7 @@ public:
             }
         }
         lateCullProfile.end();
-        gpuDrivenDebugCheckpoint(context, "AfterLateCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? &streamRuntime_ : nullptr, 1, residentRecordCapacity_);
+        gpuDrivenDebugCheckpoint(context, "AfterLateCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? streamRuntime_.get() : nullptr, 1, residentRecordCapacity_);
         if (freezeCullingCamera_) {
             result = drawVisibility(
                 context,
@@ -1486,7 +1492,7 @@ public:
         }
         // Debug colors now consume the records written by stream rasterization.
         if (streamEnabled_) {
-            result = streamRuntime_.cmdPrepareDeferred(context.commandBuffer());
+            result = streamRuntime_->cmdPrepareDeferred(context.commandBuffer());
             if (!result) { return result; }
         }
         // Display the final IDs/depth while the images are shader-readable.
@@ -1506,24 +1512,24 @@ public:
         if (streamEnabled_) {
             {
                 auto profile = context.profileScope("Stream feedback");
-                result = streamRuntime_.cmdPostTraversal(context.commandBuffer());
+                result = streamRuntime_->cmdPostTraversal(context.commandBuffer());
             }
             if (!result) {
                 return result;
             }
             {
                 auto profile = context.profileScope("Stream End");
-                result = streamRuntime_.cmdEndFrame(context.commandBuffer());
+                result = streamRuntime_->cmdEndFrame(context.commandBuffer());
             }
             if (!result) {
                 return result;
             }
         }
-        if (streamEnabled_) { context.publishStreamingProfile(streamRuntime_.profilingStats()); }
+        if (streamEnabled_) { context.publishStreamingProfile(streamRuntime_->profilingStats()); }
         gpuSceneSubsystem->publishVisibilityStream(gpuSceneView_, context.frameIndex(), sceneResourceIdentity_,
-            streamEnabled_ ? streamRuntime_.deferredGpuResources() : MeshletStreamDeferredGpuResourcesView{});
+            streamEnabled_ ? streamRuntime_->deferredGpuResources() : MeshletStreamDeferredGpuResourcesView{});
         ++frameIndex_;
-        gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? &streamRuntime_ : nullptr, 1, residentRecordCapacity_);
+        gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? streamRuntime_.get() : nullptr, 1, residentRecordCapacity_);
         return {};
     }
 
@@ -1616,7 +1622,7 @@ private:
 
     Result allocateStreamRasterBindings(std::string& log)
     {
-        BindlessHeap* heap = streamRuntime_.bindlessHeap();
+        BindlessHeap* heap = streamRuntime_->bindlessHeap();
         if (!streamEnabled_ || heap == nullptr) {
             log = "VisibilityBufferPass stream runtime has no bindless heap";
             return makeError(Error::InvalidArgument);
@@ -2249,7 +2255,7 @@ private:
             views.meshletDraws.size / sizeof(VisibleClusterRecord));
         if (!visibilityRecordRangeFitsId(
                 residentRecordCapacity,
-                streamEnabled_ ? streamRuntime_.visibleClusterCapacity() : 0u)) {
+                streamEnabled_ ? streamRuntime_->visibleClusterCapacity() : 0u)) {
             log = "VisibilityBufferPass resident + stream records exceed the visibility ID range";
             return makeError(Error::Failure);
         }
@@ -2360,7 +2366,7 @@ private:
             (streamOwnerMaskBuffer_ == nullptr ||
                 streamOwnerMaskBuffer_->desc().size != expectedOwnerMaskBytes);
         const bool clusterCapacityChanged = (hybridRasterizer_ && hybridRasterizer_->clusterCapacity() <
-            std::max(residentRecordCapacity_, streamEnabled_ ? streamRuntime_.visibleClusterCapacity() : 0u)) ||
+            std::max(residentRecordCapacity_, streamEnabled_ ? streamRuntime_->visibleClusterCapacity() : 0u)) ||
             residentLods_.empty() || residentLods_.front()->capacity() < std::max(adaptiveMeshletRange_.count, 1u);
         if (!gpuSceneBindings_.drawSetGeneration &&
             !clusterCapacityChanged &&
@@ -2370,7 +2376,7 @@ private:
             return subsystem.createBindings(*bindlessHeap_, gpuSceneBindings_, log);
         }
         const auto streamDebugResources = streamEnabled_
-            ? streamRuntime_.deferredGpuResources() : MeshletStreamDeferredGpuResourcesView{};
+            ? streamRuntime_->deferredGpuResources() : MeshletStreamDeferredGpuResourcesView{};
         const bool streamDebugBindingsChanged =
             streamDebugResources.visibleClusterBuffer != streamDebugResources_.visibleClusterBuffer ||
             streamDebugResources.activeGroupBuffer != streamDebugResources_.activeGroupBuffer;
@@ -2901,7 +2907,7 @@ private:
         Result result = subsystem.publishViewGpuResources(
             gpuSceneView_,
             activeFrameSlot_,
-            (streamEnabled_ ? streamRuntime_.frameIndex() : frameIndex_) & 1u,
+            (streamEnabled_ ? streamRuntime_->frameIndex() : frameIndex_) & 1u,
             log);
         if (!result) {
             spdlog::error("[VisibilityBufferPass] {}", log);
@@ -2970,18 +2976,18 @@ private:
         runtimeScene = runtimeSceneForPath(
             runtimeScene,
             scenePathFromProperties(properties()));
-        if (runtimeScene == nullptr || !streamRuntime_.ready()) {
+        if (runtimeScene == nullptr || !(streamRuntime_ && streamRuntime_->ready())) {
             log = "VisibilityBufferPass stream integration requires its runtime scene";
             return makeError(Error::InvalidArgument);
         }
         std::vector<uint32_t> runtimeRenderNodeIndices(
-            streamRuntime_.asset().instances().size(),
+            streamRuntime_->asset().instances().size(),
             std::numeric_limits<uint32_t>::max());
         for (size_t streamInstanceIndex = 0;
-             streamInstanceIndex < streamRuntime_.asset().instances().size();
+             streamInstanceIndex < streamRuntime_->asset().instances().size();
              ++streamInstanceIndex) {
             const uint32_t localRenderNodeIndex =
-                streamRuntime_.asset().instances()[streamInstanceIndex].renderNodeIndex;
+                streamRuntime_->asset().instances()[streamInstanceIndex].renderNodeIndex;
             if (compiledStreamSourceId_.empty()) {
                 runtimeRenderNodeIndices[streamInstanceIndex] = localRenderNodeIndex;
                 continue;
@@ -3002,7 +3008,7 @@ private:
                 static_cast<uint32_t>(runtimeRenderNodeIndex);
         }
 
-        Result result = streamRuntime_.syncRuntimeScene(
+        Result result = streamRuntime_->syncRuntimeScene(
             *runtimeScene,
             runtimeRenderNodeIndices,
             log);
@@ -3011,12 +3017,12 @@ private:
         }
 
         std::vector<uint32_t> mapping(
-            streamRuntime_.asset().instances().size(),
+            streamRuntime_->asset().instances().size(),
             std::numeric_limits<uint32_t>::max());
         streamOwnerMask_.assign(std::max(instanceCount_, 1u), 0u);
         uint32_t mappedCount = 0;
         for (size_t streamInstanceIndex = 0;
-             streamInstanceIndex < streamRuntime_.asset().instances().size();
+             streamInstanceIndex < streamRuntime_->asset().instances().size();
              ++streamInstanceIndex) {
             const GPUSceneInstanceId instance = subsystem.instanceForRenderNode(
                 runtimeRenderNodeIndices[streamInstanceIndex]);
@@ -3031,7 +3037,7 @@ private:
             log = "VisibilityBufferPass stream metadata contains instances without cooked geometry";
             return makeError(Error::InvalidArgument);
         }
-        result = streamRuntime_.syncGPUSceneInstanceMapping(mapping);
+        result = streamRuntime_->syncGPUSceneInstanceMapping(mapping);
         if (!result) {
             log = "VisibilityBufferPass failed to upload the stream GPUScene mapping";
             return result;
@@ -3071,7 +3077,7 @@ private:
         TextureHandle visibility,
         TextureHandle depth)
     {
-        if (!streamEnabled_ || streamRuntime_.bindlessHeap() == nullptr ||
+        if (!streamEnabled_ || streamRuntime_->bindlessHeap() == nullptr ||
             !visibility.valid() || !depth.valid()) {
             return makeError(Error::InvalidArgument);
         }
@@ -3088,7 +3094,7 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        BindlessHeap& heap = *streamRuntime_.bindlessHeap();
+        BindlessHeap& heap = *streamRuntime_->bindlessHeap();
         Result instanceBinding = heap.writeBufferView(streamGPUSceneInstanceHandle_,
             *subsystem.globalBufferViews().instances.view);
         if (!instanceBinding) { return instanceBinding; }
@@ -3136,13 +3142,13 @@ private:
         }
 
         const uint32_t streamRecordCapacity =
-            streamRuntime_.visibleClusterCapacity();
+            streamRuntime_->visibleClusterCapacity();
         if (!visibilityRecordRangeFitsId(
                 residentRecordCapacity_,
                 streamRecordCapacity)) {
             return makeError(Error::InvalidArgument);
         }
-        result = streamRuntime_.updateRasterBindings(
+        result = streamRuntime_->updateRasterBindings(
             MeshletStreamGpuRasterBindings{
                 .instanceVisibilityBuffer =
                     streamInstanceVisibilityHandle_.index,
@@ -3240,11 +3246,11 @@ private:
             streamInstanceCullPipeline_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        MeshletStreamUserPush push = streamRuntime_.userPush();
+        MeshletStreamUserPush push = streamRuntime_->userPush();
         push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
         const GPUSceneInstanceCullRecordDesc desc{
             .phase = phase,
-            .bindlessHeap = streamRuntime_.bindlessHeap(),
+            .bindlessHeap = streamRuntime_->bindlessHeap(),
             .resetPipeline = streamCullResetPipeline_.get(),
             .instanceCullPipeline = streamInstanceCullPipeline_.get(),
             .pushData = &push,
@@ -3252,7 +3258,7 @@ private:
             .instanceGroupCountX = std::max(
                 divideRoundUp(
                     static_cast<uint32_t>(
-                        streamRuntime_.asset().instances().size()),
+                        streamRuntime_->asset().instances().size()),
                     64u),
                 1u),
         };
@@ -3281,10 +3287,10 @@ private:
         auto rasterProfile = context.profileScope(phase == GPUSceneCullPhase::Early ? "Stream early" : "Stream late");
         CommandBuffer& commandBuffer = context.commandBuffer();
         if (!streamEnabled_ || streamVisibilityPipeline_ == nullptr ||
-            streamRuntime_.bindlessHeap() == nullptr) {
+            streamRuntime_->bindlessHeap() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        Result result = streamRuntime_.cmdPrepareVisibility(commandBuffer);
+        Result result = streamRuntime_->cmdPrepareVisibility(commandBuffer);
         if (!result) {
             return result;
         }
@@ -3312,17 +3318,17 @@ private:
             .clearDepth = depthClearValue(reversedZ),
         };
         const bool prebin = clusterPrebinEnabled();
-        MeshletStreamUserPush push = streamRuntime_.userPush();
+        MeshletStreamUserPush push = streamRuntime_->userPush();
         push.hybridQueueBuffer = hybridRasterEnabled() && !prebin ? streamHybridQueueHandle_.index : UINT32_MAX;
         push.hybridClusterBuffer = prebin ? streamHybridClusterHandle_.index : UINT32_MAX;
         push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
         if (prebin) {
             auto binProfile = context.profileScope("Candidates");
-            const uint32_t count = streamRuntime_.visibleClusterCapacity();
+            const uint32_t count = streamRuntime_->visibleClusterCapacity();
             result = hybridRasterizer_->beginClusters(commandBuffer,
                 softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.index, count, true, true);
             if (!result) { return result; }
-            commandBuffer.bindBindlessHeap(*streamRuntime_.bindlessHeap());
+            commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: compact stream candidates"});
             // The prepare entry uses this otherwise unused handle for its
             // indirect dispatches; raster entries retain the queue contract.
@@ -3368,7 +3374,7 @@ private:
                     .after = ResourceState::General, .acquireFromQueue = true}};
             if (async) { commands.barrier({.buffers = acquires, .bufferCount = 3}); }
             commands.beginDebugLabel({.name = "Hybrid raster: stream software clusters"});
-            commands.bindBindlessHeap(*streamRuntime_.bindlessHeap());
+            commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             commands.bindComputePipeline(*streamClusterRasterPipeline_);
 
             commands.pushBindlessData(&push, sizeof(push));
@@ -3395,13 +3401,13 @@ private:
                 .maxDepth = 1.0f,
             });
             commands.setScissor(renderArea);
-            commands.bindBindlessHeap(*streamRuntime_.bindlessHeap());
+            commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             commands.bindGraphicsPipeline(*(reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_));
             commands.pushBindlessData(&push, sizeof(push));
             if (prebin) {
                 commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments());
             } else {
-                streamRuntime_.cmdDrawMeshTasks(commands);
+                streamRuntime_->cmdDrawMeshTasks(commands);
             }
             commands.endRendering();
             commands.endDebugLabel();
@@ -3672,7 +3678,7 @@ private:
         height = height != 0 ? height : frameHeight_;
         GPUDrivenPreviewBindingBundle bundle;
         const uint32_t clusterCapacity = std::max({1u, residentRecordCapacity_,
-            streamEnabled_ ? streamRuntime_.visibleClusterCapacity() : 0u});
+            streamEnabled_ ? streamRuntime_->visibleClusterCapacity() : 0u});
         if (device_->capabilities().shaderBufferInt64Atomics &&
             device_->capabilities().subPixelPrecisionBits >= 1 &&
             device_->capabilities().subPixelPrecisionBits <= 8) {
@@ -3821,7 +3827,7 @@ private:
         result = bindBuffer(*bundle.hzbSpdCounterBuffer, bundle.hzbSpdCounterHandle, "SPD HZB counter");
         if (!result) { return result; }
         if (streamEnabled_) {
-            bundle.streamDebugResources = streamRuntime_.deferredGpuResources();
+            bundle.streamDebugResources = streamRuntime_->deferredGpuResources();
             if (!bundle.streamDebugResources.valid()) {
                 log = "VisibilityBufferPass stream debug resources are unavailable";
                 return makeError(Error::InvalidArgument);
@@ -4951,7 +4957,7 @@ private:
     std::unique_ptr<Buffer> hzbSpdResetBuffer_;
     BindlessHandle hzbSpdCounterHandle_;
     GPUDrivenPreviewCullingTargets cullingTargets_;
-    MeshletStreamRuntime streamRuntime_;
+    std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
     std::vector<GPUDrivenPreviewTextureResource> materialTextures_;
     Device* device_ = nullptr;
     GPUSceneSubsystem* gpuSceneSubsystem_ = nullptr;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/RenderPass/ScenePathTraceResources.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 
 #include <filesystem>
 #include <memory>

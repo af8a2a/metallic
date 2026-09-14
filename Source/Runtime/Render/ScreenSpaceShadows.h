@@ -7,6 +7,7 @@
 namespace metallic::render {
 
 class ScenePathTraceResources;
+struct MeshletStreamDeferredGpuResourcesView;
 
 struct ScreenSpaceShadowSettings {
     bool enabled = true;
@@ -49,13 +50,14 @@ public:
     Result record(Device& device, CommandBuffer& commands, Streamer& streamer,
         TextureView& depth, const ViewConstants& view, std::span<const GpuPunctualLight> lights,
         uint64_t sceneRevision, uint64_t transformRevision, const ScreenSpaceShadowSettings& settings,
-        ScreenSpaceShadowResult& output, std::string& log, ScenePathTraceResources* geometry);
+        ScreenSpaceShadowResult& output, std::string& log, ScenePathTraceResources* geometry,
+        const MeshletStreamDeferredGpuResourcesView* streamGeometry = nullptr);
     void clear();
 
 private:
     struct State;
     std::shared_ptr<State> state_;
-    std::array<ComputeProgram, 3> traces_; // conventional textures, NTC, NTC cooperative vector
+    std::array<ComputeProgram, 5> traces_; // conventional, NTC, NTC cooperative, streamed TLAS, stream pending
 };
 
 } // namespace metallic::render

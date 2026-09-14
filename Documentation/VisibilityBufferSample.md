@@ -1,12 +1,12 @@
 # Visibility Buffer Sample
 
-`MetallicGPUDrivenSample` 无参数启动时默认加载 `gpu-driven-sample`，复用 [实时渲染 pipeline](RealtimePipeline.md)，默认场景为 Git 仓库常驻的 `Asset/Sponza/glTF/Sponza.gltf`。链路为 `VisibilityBuffer → Deferred → DLSS-SR → AutoExposure → DLSS-NR（默认关闭）→ FinalBlit`，场景在编辑器中加载并使用共享 ViewConstants。入口命令：
+`MetallicGPUDrivenSample` 无参数启动时默认加载 MiniZorah 的预构建 StreamAsset。仅导入场景元数据，由 [Streamer 子系统](Streamer.md) 管理驻留与流送，接入 [实时延迟渲染](RealtimePipeline.md)。图资产为 `Pipelines/Samples/gpu_driven_realtime.metallic_graph.json`，共享 ViewConstants 驱动相机与历史。入口命令：
 
 ```powershell
 cmake-build-release-visual-studio\Source\MetallicGPUDrivenSample.exe --smoke-test
 ```
 
-原始可见性调试模式通过 `--visibility-buffer`（或兼容别名 `--legacy-preloaded`）加载，Sample ID 为 `gpu-driven-visibility-buffer`，同样默认使用仓库常驻 Sponza。`--scene <path>` 可覆盖所选模式的场景。下面描述该调试模式的可见性 pass；`--usd`、StreamAsset 和地形选项保留各自的专用图与资源。
+诊断场景通过 `--sample <id>` 显式选择，例如 `--sample gpu-driven-visibility-buffer` 加载 Sponza 可见性诊断。默认流式模式的场景覆盖需要同时提供 `--scene <metadata.gltf>` 与 `--streamasset-path <cook.meshstream.bin>`；缺失或过期的缓存会明确报错。旧 `--minizorah`、`--minizorah-vbuffer`、`--streamasset` 参数统一进入默认实时管线。
 
 ## 帧内数据流
 

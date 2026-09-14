@@ -25,6 +25,9 @@ struct ShadowGeometryPush
 
 float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
 {
+#if METALLIC_STREAM_SHADOWS && !METALLIC_STREAM_TLAS
+    return kNrdFp16Max;
+#else
     ShadowGeometryPush geometry = getConstants<ShadowGeometryPush>();
     ScenePathTracePush push = (ScenePathTracePush)0;
     push.materialTextureCount = geometry.materialTextureCount;
@@ -35,6 +38,12 @@ float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
     ray.TMin = 0.001;
     ray.TMax = max(maxDistance, ray.TMin);
     // SIGMA needs the closest blocker's distance, not the first traversal hit.
+#if METALLIC_STREAM_SHADOWS
+    // Stream cooks currently expose opaque, position-only geometry.
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+    query.TraceRayInline(gScene, RAY_FLAG_FORCE_OPAQUE, 0xff, ray);
+    while (query.Proceed()) {}
+#else
     RayQuery<RAY_FLAG_NONE> query;
     query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, ray);
     while (query.Proceed()) {
@@ -44,8 +53,10 @@ float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
             query.CommitNonOpaqueTriangleHit();
         }
     }
+#endif
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT
         ? min(query.CommittedRayT(), kNrdFp16Max - 1.0) : kNrdFp16Max;
+#endif
 }
 
 void shadowCameraBasis(ViewCameraConstants camera, out float3 forward, out float3 right, out float3 up)

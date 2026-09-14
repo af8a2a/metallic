@@ -3,11 +3,11 @@
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
-#include "Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.h"
+#include "Runtime/Render/Streamer/StreamingUploads.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/Profiling/TracyProfiler.h"
-#include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Render/Subsystem/BuiltinRenderSubsystems.h"
 
@@ -501,14 +501,9 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    RenderUploadSubsystem* uploadSubsystem() const
+    StreamerSubsystem* streamerSubsystem() const
     {
-        return subsystemHost != nullptr ? subsystemHost->get<RenderUploadSubsystem>() : nullptr;
-    }
-
-    SceneResourcesSubsystem* sceneResourcesSubsystem() const
-    {
-        return subsystemHost != nullptr ? subsystemHost->get<SceneResourcesSubsystem>() : nullptr;
+        return subsystemHost != nullptr ? subsystemHost->get<StreamerSubsystem>() : nullptr;
     }
 
     std::vector<RenderSubsystemId> requiredSubsystemViews() const
@@ -632,7 +627,7 @@ struct RenderGraphExecutor::Impl {
     Result resolveSceneBindings(std::vector<SceneBinding>& bindings, std::string& log)
     {
         bindings.assign(executionList.size(), {});
-        auto* resources = sceneResourcesSubsystem();
+        auto* resources = streamerSubsystem();
         if (resources == nullptr) { return makeError(Error::InvalidArgument); }
         for (size_t index = 0; index < executionList.size(); ++index) {
             const auto& node = executionList[index];
@@ -705,7 +700,7 @@ struct RenderGraphExecutor::Impl {
         if (history != nullptr) { history->invalidateAll(); }
         const RenderGraphCompileContext context{
             .device = device, .graphicsQueue = device->getQueue(QueueType::Graphics),
-            .runtimeScene = runtimeScene, .sceneResourceManager = &sceneResourcesSubsystem()->manager(),
+            .runtimeScene = runtimeScene, .sceneResourceManager = &streamerSubsystem()->manager(),
             .renderWorld = world, .subsystemHost = subsystemHost, .width = width, .height = height,
             .defaultFormat = defaultFormat, .debugReadback = debugObserver != nullptr,
             .renderView = renderView(),
@@ -1732,7 +1727,7 @@ struct RenderGraphExecutor::Impl {
             commandBuffer.bindBindlessHeap(*bindlessHeap);
         }
 
-        RenderUploadSubsystem* upload = uploadSubsystem();
+        StreamerSubsystem* upload = streamerSubsystem();
         const bool usesView = frameViewBuffer != nullptr && !node.sceneBinding.localView;
         auto executionProperties = node.effectiveProperties;
         if (usesView) {
@@ -1815,6 +1810,11 @@ struct RenderGraphExecutor::Impl {
         context.streamingProfile_ = [&](SceneStreamingProfile sample) { lastExecutionStats.streaming.push_back(std::move(sample)); };
         const auto cpuBegin = std::chrono::steady_clock::now();
         Result result = node.pass->execute(context);
+        if (!result) {
+            const auto& sections = lastExecutionStats.nodes[nodeIndex].sections;
+            spdlog::error("[RenderGraph] Pass '{}' ({}) failed in '{}': {}", node.name, node.type,
+                sections.empty() ? std::string_view("execute") : std::string_view(sections.back().name), resultToString(result));
+        }
         if (result && upload != nullptr) { upload->flush(context.commandBuffer()); }
         lastExecutionStats.nodes[nodeIndex].cpuMilliseconds = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - cpuBegin).count();
@@ -1965,7 +1965,7 @@ Result RenderGraphExecutor::compile(
     impl_->subsystemHost->setWorld(impl_->world);
 
     impl_->requiredSubsystemIds.clear();
-    impl_->requiredSubsystemIds.emplace_back(SceneResourcesSubsystem::kSubsystemId);
+    impl_->requiredSubsystemIds.emplace_back(StreamerSubsystem::kSubsystemId);
     std::unordered_set<std::string> requiredSubsystemSet(impl_->requiredSubsystemIds.begin(), impl_->requiredSubsystemIds.end());
     std::vector<std::pair<std::string, std::string>> passSubsystemRequirements;
     for (const std::string& passName : activeGraph.executionOrder) {
@@ -1986,7 +1986,7 @@ Result RenderGraphExecutor::compile(
             }
         }
     }
-    subsystemResult = impl_->subsystemHost->activate(SceneResourcesSubsystem::kSubsystemId, log);
+    subsystemResult = impl_->subsystemHost->activate(StreamerSubsystem::kSubsystemId, log);
     if (!subsystemResult) {
         impl_->isCompiled = false;
         return subsystemResult;
@@ -2015,9 +2015,9 @@ Result RenderGraphExecutor::compile(
     impl_->width = width;
     impl_->height = height;
 
-    SceneResourcesSubsystem* sceneResources = impl_->sceneResourcesSubsystem();
+    StreamerSubsystem* sceneResources = impl_->streamerSubsystem();
     if (sceneResources == nullptr) {
-        log = "RenderGraph compile failed: render.scene-resources was not activated";
+        log = "RenderGraph compile failed: render.streamer was not activated";
         impl_->isCompiled = false;
         return makeError(Error::Failure);
     }
@@ -2178,9 +2178,9 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
         return result;
     }
 
-    SceneResourcesSubsystem* sceneResources = impl_->sceneResourcesSubsystem();
+    StreamerSubsystem* sceneResources = impl_->streamerSubsystem();
     if (sceneResources == nullptr) {
-        log = "RenderGraph shader reload requires render.scene-resources";
+        log = "RenderGraph shader reload requires render.streamer";
         return makeError(Error::Failure);
     }
     const RenderGraphCompileContext compileContext{
@@ -2379,7 +2379,7 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
         impl_->historyResources = nullptr;
         return result;
     }
-    RenderUploadSubsystem* upload = impl_->uploadSubsystem();
+    StreamerSubsystem* upload = impl_->streamerSubsystem();
     const std::vector<RenderSubsystemId> requiredSubsystems = impl_->requiredSubsystemViews();
     impl_->beginDebugExecution(frameIndex, frameResources ? frameResources->slotIndex() : 0);
     debugScope.observer = impl_->debugObserver;
@@ -2490,11 +2490,11 @@ Result RenderGraphExecutor::beginSceneResourcePreparation(
     if (!result) {
         return result;
     }
-    result = impl_->subsystemHost->activate(SceneResourcesSubsystem::kSubsystemId, log);
+    result = impl_->subsystemHost->activate(StreamerSubsystem::kSubsystemId, log);
     if (!result) {
         return result;
     }
-    SceneResourcesSubsystem* sceneResources = impl_->sceneResourcesSubsystem();
+    StreamerSubsystem* sceneResources = impl_->streamerSubsystem();
     if (sceneResources == nullptr) {
         return makeError(Error::Failure);
     }
@@ -2523,7 +2523,7 @@ Result RenderGraphExecutor::pumpSceneResourcePreparation(
     if (impl_->pendingSceneResourceSnapshot == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    SceneResourcesSubsystem* sceneResources = impl_->sceneResourcesSubsystem();
+    StreamerSubsystem* sceneResources = impl_->streamerSubsystem();
     if (sceneResources == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -2539,7 +2539,7 @@ Result RenderGraphExecutor::pumpSceneResourcePreparation(
 
 void RenderGraphExecutor::cancelSceneResourcePreparation()
 {
-    SceneResourcesSubsystem* sceneResources = impl_->sceneResourcesSubsystem();
+    StreamerSubsystem* sceneResources = impl_->streamerSubsystem();
     if (sceneResources != nullptr) {
         sceneResources->manager().discard(impl_->pendingSceneResourceSnapshot);
     }
@@ -2689,7 +2689,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     phase.next("graph.record");
     impl_->beginDebugExecution(frameIndex, slot.frame.slotIndex());
     debugScope.observer = impl_->debugObserver;
-    RenderUploadSubsystem* upload = impl_->uploadSubsystem();
+    StreamerSubsystem* upload = impl_->streamerSubsystem();
     const auto requiredSubsystems = impl_->requiredSubsystemViews();
     std::vector<Impl::SubmissionSegment> segments;
     const bool graphicsTimings = desc.graphicsQueue && impl_->gpuTimestampQueryPools[0];
@@ -2996,8 +2996,8 @@ Result RenderGraphExecutor::collectCompletedGpuExecutionStats(
 const RenderGraphStreamingStats& RenderGraphExecutor::streamingStats() const
 {
     static const RenderGraphStreamingStats kEmptyStats;
-    const RenderUploadSubsystem* upload = impl_->subsystemHost != nullptr
-        ? impl_->subsystemHost->get<RenderUploadSubsystem>()
+    const StreamerSubsystem* upload = impl_->subsystemHost != nullptr
+        ? impl_->subsystemHost->get<StreamerSubsystem>()
         : nullptr;
     return upload != nullptr ? upload->stats() : kEmptyStats;
 }

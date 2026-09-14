@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/MeshletStreamPageLoader.h"
+#include "Runtime/Render/Streamer/MeshletStreamPageLoader.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 
 #include <algorithm>

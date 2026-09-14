@@ -6,74 +6,19 @@
 
 namespace metallic::render {
 
-Result RenderUploadSubsystem::initialize(
-    const RenderSubsystemInitContext& context,
-    std::string& log)
-{
-    return streaming_.initialize(context.device, log, context.host.frameSlotCount());
-}
-
-Result RenderUploadSubsystem::beginFrame(
-    const RenderSubsystemFrameContext& context,
-    RenderChangeBits&,
-    std::string&)
-{
-    if (context.frameResources != nullptr) {
-        return streaming_.beginFrame(*context.frameResources);
-    }
-    streaming_.beginFrame();
-    return {};
-}
-
-void RenderUploadSubsystem::endFrame(const RenderSubsystemFrameContext&)
-{
-    streaming_.endFrame();
-}
-
-void RenderUploadSubsystem::shutdown()
-{
-    streaming_.reset();
-}
-
-void RenderUploadSubsystem::flush(CommandBuffer& commandBuffer)
-{
-    if (Streamer* currentStreamer = streaming_.streamer();
-        currentStreamer == nullptr || currentStreamer->stats().pendingCopies.copyCount() == 0) {
-        return;
-    }
-    streaming_.flush(commandBuffer);
-}
-
-void SceneResourcesSubsystem::shutdown()
-{
-    manager_.clear();
-}
-
 bool registerBuiltInRenderSubsystems(RenderSubsystemHost& host, std::string& log)
 {
-    if (!host.isRegistered(RenderUploadSubsystem::kSubsystemId) &&
-        !host.registerSubsystem<RenderUploadSubsystem>(log)) {
+    if (!host.isRegistered(StreamerSubsystem::kSubsystemId) &&
+        !host.registerSubsystem<StreamerSubsystem>(log)) {
         return false;
     }
-    constexpr std::array<RenderSubsystemId, 1> sceneDependencies{
-        RenderUploadSubsystem::kSubsystemId,
-    };
-    if (!host.isRegistered(SceneResourcesSubsystem::kSubsystemId) &&
-        !host.registerSubsystem<SceneResourcesSubsystem>(sceneDependencies, log)) {
-        return false;
-    }
-    constexpr std::array<RenderSubsystemId, 1> gpuSceneDependencies{
-        RenderUploadSubsystem::kSubsystemId,
-    };
+    constexpr std::array dependencies{StreamerSubsystem::kSubsystemId};
     if (!host.isRegistered(GPUSceneSubsystem::kSubsystemId) &&
-        !host.registerSubsystem<GPUSceneSubsystem>(gpuSceneDependencies, log)) {
+        !host.registerSubsystem<GPUSceneSubsystem>(dependencies, log)) {
         return false;
     }
-    constexpr std::array<RenderSubsystemId, 1> environmentDependencies{
-        RenderUploadSubsystem::kSubsystemId,
-    };
     return host.isRegistered(EnvironmentLightingSubsystem::kSubsystemId) ||
-        host.registerSubsystem<EnvironmentLightingSubsystem>(environmentDependencies, log);
+        host.registerSubsystem<EnvironmentLightingSubsystem>(dependencies, log);
 }
 
 } // namespace metallic::render

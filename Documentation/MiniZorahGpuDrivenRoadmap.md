@@ -46,7 +46,7 @@
 | BVH 遍历长尾 | 已实现每实例 64 线程、按 LOD 分块协作；近景 frontier / emit 从 40.17 / 4.50 ms 降到 1.44 / 0.157 ms | 继续减少不可见细节的需求和分类/光栅成本 |
 | 驻留几何尚未采用紧凑编码 | 源文件 meshopt 压缩不等于运行时页压缩；现有页仅 None/ByteRle，CPU 解压为设备格式，位置使用 float4 | 用 cook 数据判断是否将位置压缩提前为硬门槛 |
 
-源码入口：[GPUScene](../Source/Runtime/Render/Subsystem/GPUSceneSubsystem.cpp)、[ID 上限](../Source/Runtime/Render/GPUDrivenRaster.h)、[VBuffer 与间接派发](../Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp)、[根集合预算验证](../Source/Runtime/Render/MeshletStreamRuntime.cpp)、[frontier、并行 prefix 与候选展开](../Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang)。
+源码入口：[GPUScene](../Source/Runtime/Render/Subsystem/GPUSceneSubsystem.cpp)、[ID 上限](../Source/Runtime/Render/GPUDrivenRaster.h)、[VBuffer 与间接派发](../Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp)、[根集合预算验证](../Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp)、[frontier、并行 prefix 与候选展开](../Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang)。
 
 **不要先把 visibility ID 加宽来容纳 1.48 亿候选。** 当前编码足以容纳合理预算内的每帧可见集合；问题是把全场景实例几何预展开到它的地址空间。应保留真实的 `(asset/geometry, instance, cluster)` 身份，使用本帧紧凑 record 间接引用，且 early/late 与软硬分支共享本帧映射。跨帧历史不能把压缩序号当作稳定身份。
 

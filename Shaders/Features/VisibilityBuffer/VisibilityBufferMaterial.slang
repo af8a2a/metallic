@@ -6,12 +6,7 @@ import Material;
 using Metallic.Material;
 
 struct MaterialPush { uint width, height, residentCount, streamCount, mode; float3 eye; };
-struct ActiveGroup {
-    uint pageOffset, pageIndex, clusterCount, primitiveIndex;
-    uint lodLevel, materialIndex, mask, flags;
-    uint instanceIndex, gpuSceneInstanceIndex, padding0, padding1;
-    float4 world0, world1, world2, world3;
-};
+#include "VisibilityStreamDecode.slang"
 #define gOutput getResource<RWTexture2D<float4>>(0)
 #define gVisibility getResource<Texture2D<uint>>(1)
 #define gInstances getResource<StructuredBuffer<GPUDrivenPreviewInstance>>(2)
@@ -23,7 +18,7 @@ struct ActiveGroup {
 #define gTriangles getResource<StructuredBuffer<uint>>(8)
 #define gGeometries getResource<StructuredBuffer<GPUDrivenPreviewGeometry>>(9)
 #define gStreamRecords getResource<StructuredBuffer<VisibleClusterRecord>>(10)
-#define gGroups getResource<StructuredBuffer<ActiveGroup>>(11)
+#define gGroups getResource<StructuredBuffer<StreamActiveGroup>>(11)
 #define gPages getResource<StructuredBuffer<uint>>(12)
 #define gPageTable getResource<StructuredBuffer<uint2>>(13)
 
@@ -31,8 +26,6 @@ float3 worldPosition(GPUDrivenPreviewInstance instance, float3 p)
 {
     return instance.world0.xyz * p.x + instance.world1.xyz * p.y + instance.world2.xyz * p.z + instance.world3.xyz;
 }
-uint pageByte(uint address) { return (gPages[address / 4] >> ((address & 3u) * 8u)) & 255u; }
-float3 pagePosition(uint address) { return asfloat(uint3(gPages[address], gPages[address + 1], gPages[address + 2])); }
 
 bool decodeTriangle(uint id, MaterialPush push, out uint instanceId, out float3 a, out float3 b, out float3 c)
 {
@@ -55,36 +48,7 @@ bool decodeTriangle(uint id, MaterialPush push, out uint instanceId, out float3 
     } else {
         index -= push.residentCount;
         if (index >= push.streamCount) { return false; }
-        record = gStreamRecords[index];
-        if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) { return false; }
-        uint count, stride;
-        gGroups.GetDimensions(count, stride);
-        if (record.dataIndex >= count) { return false; }
-        ActiveGroup group = gGroups[record.dataIndex];
-        gPageTable.GetDimensions(count, stride);
-        if (group.pageIndex >= count || record.clusterIndex >= group.clusterCount ||
-            record.instanceIndex != group.gpuSceneInstanceIndex) { return false; }
-        uint entry = gPageTable[group.pageIndex].x;
-        if ((entry & 7u) != 2u && (entry & 7u) != 3u) { return false; }
-        uint page = (entry & 0xfffffff8u) / 4u;
-        gPages.GetDimensions(count, stride);
-        if (page > count || count - page < 28u) { return false; }
-        uint bytes = gPages[page + 12];
-        if (bytes < 112u || bytes / 4u > count - page || gPages[page + 20] != 2u ||
-            (gPages[page + 14] & 1u) == 0u || record.clusterIndex >= gPages[page + 2]) { return false; }
-        uint clusters = gPages[page + 9], positions = gPages[page + 10], triangles = gPages[page + 11];
-        if (((clusters | positions) & 3u) != 0u || clusters > bytes || record.clusterIndex >= (bytes - clusters) / 96u) { return false; }
-        uint cluster = page + clusters / 4u + record.clusterIndex * 24u;
-        uint vertexOffset = gPages[cluster], vertexCount = gPages[cluster + 1];
-        uint triangleOffset = gPages[cluster + 2], triangleCount = gPages[cluster + 3];
-        if (triangle >= triangleCount || triangles > bytes || triangleOffset > bytes - triangles ||
-            triangle >= (bytes - triangles - triangleOffset) / 3u || positions > bytes ||
-            vertexOffset > (bytes - positions) / 16u || vertexCount > (bytes - positions) / 16u - vertexOffset) { return false; }
-        uint address = page * 4u + triangles + triangleOffset + triangle * 3u;
-        uint3 local = uint3(pageByte(address), pageByte(address + 1), pageByte(address + 2));
-        if (any(local >= vertexCount)) { return false; }
-        uint base = page + positions / 4u + vertexOffset * 4u;
-        a = pagePosition(base + local.x * 4u); b = pagePosition(base + local.y * 4u); c = pagePosition(base + local.z * 4u);
+        if (!decodeStreamTriangle(index, triangle, gStreamRecords, gGroups, gPages, gPageTable, record, a, b, c)) { return false; }
     }
     uint count, stride;
     gInstances.GetDimensions(count, stride);

@@ -207,7 +207,7 @@ bool EditorApplication::runSceneSwitchSmokeTest()
         const uint32_t frames = frameCount ? uint32_t(std::clamp(std::atoi(frameCount), 16, 2400)) : 1200;
         for (uint32_t cycle = 0; cycle < cycles; ++cycle) {
             if (cycle != 0) {
-                loadBuiltInSample("gpu-driven-sample");
+                loadBuiltInSample("realtime-lighting");
                 if (!waitForPendingSceneLoad(30000)) { return false; }
             }
             for (uint32_t frame = 0; frame < 60; ++frame) {
@@ -237,7 +237,7 @@ bool EditorApplication::runSceneSwitchSmokeTest()
                 if (!waitForFrameSlotBeforeInput() || !renderFrame() || !viewportPreviewValid_) { return false; }
             }
             if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { return false; }
-            spdlog::info("[Smoke MiniZorah Switch] Cycle {} passed Sponza -> MiniZorah and {} frames", cycle, frames);
+            spdlog::info("[Smoke MiniZorah Switch] Cycle {} passed realtime -> MiniZorah and {} frames", cycle, frames);
         }
         return true;
     }

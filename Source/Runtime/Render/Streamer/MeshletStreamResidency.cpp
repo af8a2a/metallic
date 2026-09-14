@@ -1,4 +1,4 @@
-#include "Runtime/Render/MeshletStreamResidency.h"
+#include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 #include "Runtime/Render/GAPI/StreamUploadCompletion.h"
 
 #include <algorithm>

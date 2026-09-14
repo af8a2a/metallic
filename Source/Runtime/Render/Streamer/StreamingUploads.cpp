@@ -1,4 +1,4 @@
-#include "Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.h"
+#include "Runtime/Render/Streamer/StreamingUploads.h"
 
 namespace metallic::render {
 namespace {
@@ -19,12 +19,12 @@ StreamerDesc defaultRenderGraphStreamerDesc()
 
 } // namespace
 
-RenderGraphStreamingSubsystem::~RenderGraphStreamingSubsystem()
+StreamingUploads::~StreamingUploads()
 {
     endFrame();
 }
 
-Result RenderGraphStreamingSubsystem::initialize(Device& device, std::string& log, uint32_t frameSlotCount)
+Result StreamingUploads::initialize(Device& device, std::string& log, uint32_t frameSlotCount)
 {
     log.clear();
     if (streamer_ != nullptr) {
@@ -35,21 +35,21 @@ Result RenderGraphStreamingSubsystem::initialize(Device& device, std::string& lo
     desc.queuedFrameCount = frameSlotCount;
     Result result = device.createStreamer(desc, streamer_);
     if (!result || streamer_ == nullptr) {
-        log = "createStreamer(RenderGraphStreamingSubsystem) returned ";
+        log = "createStreamer(StreamingUploads) returned ";
         log += resultToString(result);
         return result ? makeError(Error::Failure) : result;
     }
     return {};
 }
 
-void RenderGraphStreamingSubsystem::reset()
+void StreamingUploads::reset()
 {
     endFrame();
     streamer_.reset();
     stats_ = {};
 }
 
-void RenderGraphStreamingSubsystem::beginFrame()
+void StreamingUploads::beginFrame()
 {
     frameActive_ = streamer_ != nullptr;
     ++stats_.frameIndex;
@@ -64,7 +64,7 @@ void RenderGraphStreamingSubsystem::beginFrame()
     stats_.streamer = streamer_ != nullptr ? streamer_->stats() : StreamerStats{};
 }
 
-Result RenderGraphStreamingSubsystem::beginFrame(RenderFrameContext& frame)
+Result StreamingUploads::beginFrame(RenderFrameContext& frame)
 {
     if (streamer_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -76,7 +76,7 @@ Result RenderGraphStreamingSubsystem::beginFrame(RenderFrameContext& frame)
     return result;
 }
 
-void RenderGraphStreamingSubsystem::flush(CommandBuffer& commandBuffer)
+void StreamingUploads::flush(CommandBuffer& commandBuffer)
 {
     if (streamer_ != nullptr) {
         const StreamerStats streamerStats = streamer_->stats();
@@ -97,7 +97,7 @@ void RenderGraphStreamingSubsystem::flush(CommandBuffer& commandBuffer)
     }
 }
 
-void RenderGraphStreamingSubsystem::endFrame()
+void StreamingUploads::endFrame()
 {
     if (frameActive_ && streamer_ != nullptr) {
         streamer_->endFrame();
@@ -106,13 +106,13 @@ void RenderGraphStreamingSubsystem::endFrame()
     frameActive_ = false;
 }
 
-RenderGraphStreamingFrameScope::RenderGraphStreamingFrameScope(RenderGraphStreamingSubsystem& subsystem)
+StreamingUploadFrameScope::StreamingUploadFrameScope(StreamingUploads& subsystem)
     : subsystem_(&subsystem)
 {
     subsystem_->beginFrame();
 }
 
-RenderGraphStreamingFrameScope::~RenderGraphStreamingFrameScope()
+StreamingUploadFrameScope::~StreamingUploadFrameScope()
 {
     if (subsystem_ != nullptr) {
         subsystem_->endFrame();

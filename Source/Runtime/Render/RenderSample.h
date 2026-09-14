@@ -10,7 +10,7 @@
 
 namespace metallic::render {
 
-// The standalone GPUDriven executable defaults to realtime lighting on Sponza.
+// The standalone GPUDriven executable defaults to streamed MiniZorah with realtime lighting.
 inline constexpr const char* kDefaultGPUDrivenSampleId = "gpu-driven-sample";
 inline constexpr const char* kGPUDrivenVisibilitySampleId = "gpu-driven-visibility-buffer";
 

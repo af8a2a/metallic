@@ -5,6 +5,9 @@
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/Streamer/StreamerSubsystem.h"
+#include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "stb/stb_image_write.h"
 #include <spdlog/spdlog.h>
@@ -171,10 +174,11 @@ public:
     {
         render::RenderSampleLoadResult sample;
         std::string log;
-        if (!render::loadBuiltInRenderSample(sponza_ ? "gpu-driven-sample" : "realtime-lighting", sample, log) ||
+        if (!render::loadBuiltInRenderSample("realtime-lighting", sample, log) ||
             !sample.desc.requiresStreamline) {
             return realtimeFailure("Realtime sample metadata: " + log);
         }
+        if (sponza_ && !render::setRenderSampleScenePath(sample, "Asset/Sponza/glTF/Sponza.gltf", log)) { return realtimeFailure(log); }
         for (const auto& node : sample.graph.nodes()) {
             if (node.type.find("PathTrace") != std::string::npos || node.type.find("Nrd") != std::string::npos ||
                 node.type == "StreamlineDlssRrPass" || node.type == "SceneRealtimeLightingPass") {
@@ -484,5 +488,173 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(RealtimeShadowTest);
+
+class StreamedRealtimeTest : public RhiTest {
+public:
+    explicit StreamedRealtimeTest(bool miniZorah = false) : miniZorah_(miniZorah)
+    {
+        type = RhiTestType::Rendering;
+        name = miniZorah ? "minizorah_realtime_pipeline" : "streamed_realtime_pipeline";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        const auto require = [](bool condition, const std::string& message) {
+            if (!condition) { throw std::runtime_error(message); }
+        };
+        if (miniZorah_ && std::getenv("METALLIC_TEST_MINIZORAH") == nullptr) {
+            return RhiTestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for the default full scene");
+        }
+        if (!context.device.capabilities().meshShader || !context.device.capabilities().clusterAccelerationStructure ||
+            (miniZorah_ && !context.device.capabilities().streamlineDlssSr)) {
+            return RhiTestResult::skip("Requires --rhi-realtime with mesh shaders, CLAS and DLSS-SR");
+        }
+        try {
+            std::string log;
+            RenderSampleLoadResult sample;
+            require(loadBuiltInRenderSample(kDefaultGPUDrivenSampleId, sample, log), log);
+            auto& graph = sample.graph;
+            if (!miniZorah_) {
+                const auto source = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
+                const auto cache = std::filesystem::absolute(context.outputDirectory / "RealtimeBunny.meshstream.bin");
+                require(scene::buildMeshletStreamAssetOffline({.sourcePath = source, .outputPath = cache,
+                    .meshletOptions = {.maxWorkers = 1}}, log), log);
+                require(setRenderSampleScenePath(sample, source.generic_string(), log), log);
+                auto& props = graph.findNode("VBuffer")->properties;
+                props["streamAssetPath"] = cache.generic_string();
+                props["maxResidentPages"] = 64; props["maxResidentBytes"] = 16777216;
+                props["maxLockedFallbackPages"] = 64; props["maxActiveGroups"] = 1024;
+                props["maxClasBytes"] = 16777216; props["maxClasBuildClusters"] = 2048;
+                props["maxGpuPageRequests"] = 1024; props["maxGpuPageUnloadRequests"] = 1024;
+                props["maxTraversalWorkers"] = 32; props["maxTraversalWorkItems"] = 2048;
+                props["autoLod"] = false; props["lodLevel"] = 0;
+                graph.setViewProperties({{"camera", {{"eye", {0, .2, 2.5}}, {"center", {0, 0, 0}},
+                    {"znear", .01}, {"zfar", 100}, {"fovDegrees", 50}, {"reversedZ", true}}}, {"temporalJitter", false}});
+                scene::Scene fixture;
+                require(fixture.loadStreamMetadata(source), fixture.lastLoadResult().error);
+                const auto center = fixture.bounds().center();
+                const auto radius = fixture.bounds().radius();
+                auto view = graph.viewProperties();
+                view["camera"]["eye"] = {center.x, center.y + radius * .3f, center.z + radius * 3};
+                view["camera"]["center"] = {center.x, center.y, center.z};
+                graph.setViewProperties(view);
+                graph.removeNode(graph.findNode("DlssSr")->id);
+                graph.removeNode(graph.findNode("DlssNr")->id);
+                graph.addEdge("Deferred.color", "AutoExposure.source");
+                graph.addEdge("AutoExposure.color", "FinalBlit.source");
+                graph.findNode("Shadows")->properties["sigmaDenoise"] = false;
+                graph.findNode("Shadows")->properties["shadowAngularRadius"] = 0.0;
+            }
+            registerRenderGraphPassType("RealtimeReadbackPass", "Realtime GPU regression readback",
+                [] { return std::make_unique<RealtimeReadbackPass>(); });
+            graph.addNode("RealtimeReadbackPass", "Readback");
+            graph.addEdge("FinalBlit.color", "Readback.color");
+            graph.addEdge(miniZorah_ ? "DlssSr.motionVectors" : "Deferred.motionVectors", "Readback.motion");
+            graph.addEdge(miniZorah_ ? "DlssSr.depth" : "Deferred.deviceDepth", "Readback.depth");
+            graph.markOutput("Readback.pixels"); graph.markOutput("Readback.guides");
+            RenderWorld world;
+            world.setEnvironment({.enabled = true, .path = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.environment->path});
+            scene::LightingSettings lighting;
+            lighting.autoExposure.enabled = miniZorah_;
+            lighting.exposureEV100 = 2;
+            scene::PunctualLight sun;
+            sun.properties.type = "directional"; sun.properties.intensity = 10;
+            sun.direction = float3(.6f, -1, -.3f);
+            lighting.lights.push_back(sun);
+            world.setLighting(lighting);
+            RenderGraphExecutor executor;
+            executor.bindRenderWorld(&world);
+            uint32_t width = 512, height = 320;
+            require(bool(executor.compile(context.device, graph, width, height, log)), log);
+            auto* streamer = executor.subsystemHost()->get<StreamerSubsystem>();
+            require(streamer != nullptr && streamer->streamCount() == 1, "Streamer must own exactly one raster session");
+            const scene::Scene* metadata = nullptr;
+            require(bool(streamer->manager().resolveScene(graph.findNode("VBuffer")->properties, nullptr, metadata, log)), log);
+            require(metadata && metadata->hasStreamGeometry(), "Default producer must resolve streaming metadata");
+            for (const auto& primitive : metadata->renderPrimitives()) {
+                require(primitive.positions.empty() && primitive.indices.empty(), "Full source geometry became resident");
+            }
+            std::shared_ptr<SceneResourceSnapshot> materials;
+            require(bool(streamer->manager().acquire(context.device, context.graphicsQueue,
+                graph.findNode("Deferred")->properties, metadata, SceneResourceFeatureBits::Materials, materials, log)), log);
+            require(materials->pathTraceResources->valid() && materials->pathTraceResources->materialBuffer() != nullptr &&
+                materials->pathTraceResources->shadingVertexBuffer() == nullptr &&
+                materials->pathTraceResources->indexBuffer() == nullptr &&
+                !materials->pathTraceResources->accelerationStructure().valid(), "Material acquisition imported resident geometry/RTAS");
+            std::shared_ptr<SceneResourceSnapshot> rejected;
+            require(!streamer->manager().acquire(context.device, context.graphicsQueue,
+                graph.findNode("Deferred")->properties, metadata, SceneResourceFeatureBits::Geometry, rejected, log),
+                "Metadata must not silently fall back to resident import");
+            const auto draw = [&]() {
+                require(bool(executor.execute({.graphicsQueue = &context.graphicsQueue,
+                    .computeQueue = context.device.getQueue(QueueType::Compute)})), "Streamed realtime execution failed");
+                require(bool(executor.waitForSubmittedWork()), "Streamed realtime submission failed");
+            };
+            for (uint32_t frame = 0; frame < (miniZorah_ ? 180u : 48u); ++frame) { draw(); }
+            const auto pixels = [&]() {
+                auto* buffer = executor.outputResource("Readback.pixels")->buffer;
+                buffer->invalidate(); const auto* bytes = static_cast<const uint32_t*>(buffer->map());
+                require(bytes != nullptr, "Color readback failed");
+                std::vector<uint32_t> result(bytes, bytes + size_t(width) * height); buffer->unmap(); return result;
+            };
+            const auto shaded = pixels();
+            require(std::count_if(shaded.begin(), shaded.end(), [&](uint32_t p) { return p != shaded[0]; }) > 100,
+                "Streamed deferred output has no useful image");
+            const auto* infoData = executor.outputResource("VBuffer.rasterInfo")->buffer->map();
+            VisibilityBufferFrameInfo info; std::memcpy(&info, infoData, sizeof(info));
+            executor.outputResource("VBuffer.rasterInfo")->buffer->unmap();
+            auto* gpuScene = executor.subsystemHost()->get<GPUSceneSubsystem>();
+            const auto* stream = gpuScene->visibilityStream({info.lightGridViewIndex, info.lightGridViewGeneration}, info.frameIndex, info.sceneIdentity);
+            require(stream && stream->accelerationStructure && info.hasStreamGeometry && info.residentRecordCount == 0,
+                "Streamed raster did not publish its TLAS and visibility namespace");
+            require(gpuScene->globalBufferViews().vertices.buffer == nullptr, "GPUScene uploaded resident vertices");
+            require(saveRgba8Png(context.outputDirectory / (miniZorah_ ? "MiniZorahRealtime.png" : "StreamedRealtime.png"),
+                reinterpret_cast<const uint8_t*>(shaded.data()), width, height, log), log);
+            if (!miniZorah_) {
+                graph.setNodeRuntimeProperty(graph.findNode("Deferred")->id, "materialBinning", false);
+                require(bool(executor.compile(context.device, graph, width, height, log)), log);
+                draw();
+                const auto unbinned = pixels();
+                require(shaded == unbinned, "Streamed material classification differs from unbinned deferred shading");
+                graph.setNodeRuntimeProperty(graph.findNode("Deferred")->id, "debugDisableShadows", true);
+                require(bool(executor.compile(context.device, graph, width, height, log)), log); draw();
+                const auto unshadowed = pixels();
+                size_t shadowed = 0;
+                for (size_t i = 0; i < shaded.size(); ++i) {
+                    shadowed += int(unshadowed[i] & 255u) - int(shaded[i] & 255u) > 8;
+                }
+                require(shadowed > 100, "Streamed TLAS did not attenuate direct lighting");
+            }
+            auto camera = executor.renderView()->camera(); camera.eye[0] += .12f;
+            executor.renderView()->setCamera(camera); draw();
+            auto* guides = executor.outputResource("Readback.guides")->buffer;
+            guides->invalidate(); const auto* values = static_cast<const std::array<float, 4>*>(guides->map());
+            size_t covered = 0, moved = 0;
+            for (size_t i = 0; i < size_t(width) * height; ++i) {
+                require(std::isfinite(values[i][0]) && std::isfinite(values[i][1]) && std::isfinite(values[i][2]), "Nonfinite guides");
+                covered += values[i][2] < .99999f;
+                moved += std::abs(values[i][0]) + std::abs(values[i][1]) > .0001f;
+            }
+            guides->unmap(); require(covered > 100 && moved > 100, "Camera change did not reach streamed geometry/upscaler guides");
+            width = 321; height = 217;
+            require(bool(executor.compile(context.device, graph, width, height, log)), log); draw();
+            RenderGraph empty; empty.addNode("FinalBlitPass", "Empty"); empty.markOutput("Empty.color");
+            require(bool(executor.compile(context.device, empty, width, height, log)), log);
+            for (uint32_t frame = 0; frame <= executor.subsystemHost()->frameSlotCount(); ++frame) { draw(); }
+            streamer->collectReleasedStreams();
+            require(streamer->streamCount() == 0, "Streamer retained an unused raster session after graph removal");
+            return RhiTestResult::pass("Stream-only materials, unified lighting/TLAS, guides, resize and Streamer retirement verified");
+        } catch (const std::exception& error) { return realtimeFailure(error.what()); }
+    }
+private:
+    bool miniZorah_;
+};
+class MiniZorahRealtimeTest final : public StreamedRealtimeTest {
+public:
+    MiniZorahRealtimeTest() : StreamedRealtimeTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(StreamedRealtimeTest);
+METALLIC_REGISTER_RHI_TEST(MiniZorahRealtimeTest);
 } // namespace
 } // namespace metallic::tests

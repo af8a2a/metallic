@@ -1,6 +1,6 @@
 #include "RhiTest.h"
 #include "Runtime/Render/MeshletLod.h"
-#include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include <algorithm>

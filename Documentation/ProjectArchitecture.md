@@ -122,7 +122,7 @@ flowchart LR
 | `MetallicMaterialVisualizationSample` | 可执行文件 | 材质诊断样例 |
 | `MetallicPathTracingSample` | 可执行文件 | OpenPBR 路径追踪，可切换 DLSS-RR |
 | `MetallicRtxdiSample` | 可执行文件 | RTXDI/ReSTIR DI 样例 |
-| `MetallicGPUDrivenSample` | 可执行文件 | 常驻 Sponza 实时延迟渲染（默认）、Visibility Buffer 调试、StreamAsset 和 RTAS 可视化变体 |
+| `MetallicGPUDrivenSample` | 可执行文件 | MiniZorah 流式实时延迟渲染（默认），显式选择诊断 Sample |
 | `MetallicTaskTests` | 测试可执行文件 | TaskSystem GoogleTest |
 | `MetallicSceneTests` | 测试可执行文件 | Scene GoogleTest |
 | `MetallicRhiTests` | 测试可执行文件 | 自定义 RHI 用例注册表适配到 GoogleTest |
@@ -242,7 +242,7 @@ sequenceDiagram
 
 `HistoryResourceManager` 按名字维护纹理/缓冲的 Current/Previous 双槽，负责尺寸变化后的重建、有效性、写入标记、失效和状态转换。相机、环境或带 `invalidateHistory` 的运行时参数变化时，编辑器会清空相关历史。
 
-`RenderGraphStreamingSubsystem` 为图创建统一 `Streamer`。每帧 `beginFrame()`，每个成功 Pass 后 `flush()`，帧末 `endFrame()`，并统计 buffer/texture 传输次数和字节数。Pass 应优先使用 `RenderGraphExecutionContext::streamer()`，避免各自维护重复上传环。
+`StreamerSubsystem`（`render.streamer`）统一拥有场景资源、流式会话及上传环；内部 `StreamingUploads` 管理 RHI `Streamer`。每帧 `beginFrame()`，每个成功 Pass 后 `flush()`，帧末 `endFrame()`，并统计 buffer/texture 传输次数和字节数。Pass 应优先使用 `RenderGraphExecutionContext::streamer()`，避免各自维护重复上传环。
 
 ## 7. 内置 Render Pass
 
@@ -312,6 +312,8 @@ flowchart LR
     PageBuffer --> Draw
     PageBuffer --> AS
 ```
+
+`Source/Runtime/Render/Streamer/` 收拢场景资源缓存、上传、分页驻留、页面读取与 CLAS 池。子系统创建按视图隔离的会话，Pass 借用并由提交帧保活，完成后回收。详见 [Streamer](Streamer.md)。
 
 `MeshletStreamRuntime` 管理 GPU 元数据、page table、请求/回读缓冲、活动 group、遍历 work queue、indirect draw 和可选光追资源。`MeshletStreamResidencyManager` 在 resident byte/page 预算内维护页面状态，通过 LRU/年龄策略卸载，并限制每帧上传数量和并发读取数。
 
@@ -516,6 +518,6 @@ RHI 测试支持原有便捷参数 `--list`/`--filter`，并会转换到 GoogleT
 - Vulkan 后端：[`Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp`](../Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp)
 - 场景数据：[`Source/Runtime/Scene/Scene.h`](../Source/Runtime/Scene/Scene.h)
 - StreamAsset 格式：[`Source/Runtime/Scene/MeshletStreamAsset.h`](../Source/Runtime/Scene/MeshletStreamAsset.h)
-- 分页运行时：[`Source/Runtime/Render/MeshletStreamRuntime.h`](../Source/Runtime/Render/MeshletStreamRuntime.h)
+- 分页运行时：[`Source/Runtime/Render/Streamer/MeshletStreamRuntime.h`](../Source/Runtime/Render/Streamer/MeshletStreamRuntime.h)
 - TaskSystem：[`Source/Runtime/Task/TaskSystem.h`](../Source/Runtime/Task/TaskSystem.h)
 - 构建目标：[`Source/CMakeLists.txt`](../Source/CMakeLists.txt)

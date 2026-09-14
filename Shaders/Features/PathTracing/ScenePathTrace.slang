@@ -1102,6 +1102,9 @@ float3 faceForwardShadingNormal(float3 normal, float3 geometryNormal, float3 ray
 
 bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTracePush push)
 {
+#if METALLIC_STREAM_MATERIALS
+    return false; // Streamed opaque shading consumes the main-light shadow pass.
+#else
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = direction;
@@ -1121,10 +1124,15 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTr
         }
     }
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+#endif
 }
 
 bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
 {
+#if METALLIC_STREAM_MATERIALS
+    hit = (HitInfo)0;
+    return false; // Streamed opaque shading consumes the main-light shadow pass.
+#else
     hit = HitInfo();
     hit.t = 0.0;
     hit.position = ray.origin;
@@ -1247,6 +1255,7 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.triangleIndex = triangleIndex;
     hit.rayConeLodConstant = instance.rayConeLodConstant;
     return true;
+#endif
 }
 
 float luminanceMax(float3 value)

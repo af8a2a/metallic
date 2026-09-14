@@ -20,6 +20,8 @@ struct MaterialBinningDesc {
     Buffer* shadingMaterials = nullptr;
     uint32_t width = 0;
     uint32_t height = 0;
+    Buffer* streamRecords = nullptr;
+    uint32_t residentRecordCount = UINT32_MAX;
 };
 
 struct MaterialBinningResult {

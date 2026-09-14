@@ -1,9 +1,9 @@
 #include "RhiTest.h"
 
-#include "Runtime/Render/MeshletStreamClas.h"
+#include "Runtime/Render/Streamer/MeshletStreamClas.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
-#include "Runtime/Render/RenderPass/ScenePathTraceResources.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
 

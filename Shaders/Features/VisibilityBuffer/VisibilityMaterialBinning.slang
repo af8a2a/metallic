@@ -13,13 +13,14 @@ using Metallic.Material;
 #define gBins getResource<RWStructuredBuffer<MaterialBin>>(5)
 #define gTiles getResource<RWStructuredBuffer<MaterialTile>>(6)
 #define gIndirect getResource<RWStructuredBuffer<uint>>(7)
+#define gStreamRecords getResource<StructuredBuffer<VisibleClusterRecord>>(8)
 
 struct MaterialBinningPush
 {
     uint width;
     uint height;
     uint tileCount;
-    uint padding;
+    uint residentRecordCount;
 };
 
 uint materialClassForPixel(uint2 pixel)
@@ -27,10 +28,20 @@ uint materialClassForPixel(uint2 pixel)
     uint recordIndex, triangleIndex;
     if (!unpackVisibilityId(gVisibility.Load(int3(pixel, 0)), recordIndex, triangleIndex)) { return kMaterialClassBackground; }
     uint count, stride;
-    gRecords.GetDimensions(count, stride);
-    if (recordIndex >= count) { return kMaterialClassBackground; }
-    VisibleClusterRecord record = gRecords[recordIndex];
-    if (visibleClusterSource(record) != kVisibleClusterSourceResident) { return kMaterialClassBackground; }
+    MaterialBinningPush push = getConstants<MaterialBinningPush>();
+    VisibleClusterRecord record;
+    if (recordIndex < push.residentRecordCount) {
+        gRecords.GetDimensions(count, stride);
+        if (recordIndex >= count) { return kMaterialClassBackground; }
+        record = gRecords[recordIndex];
+        if (visibleClusterSource(record) != kVisibleClusterSourceResident) { return kMaterialClassBackground; }
+    } else {
+        recordIndex -= push.residentRecordCount;
+        gStreamRecords.GetDimensions(count, stride);
+        if (recordIndex >= count) { return kMaterialClassBackground; }
+        record = gStreamRecords[recordIndex];
+        if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) { return kMaterialClassBackground; }
+    }
     gInstances.GetDimensions(count, stride);
     if (record.instanceIndex >= count) { return kMaterialClassBackground; }
     uint material = gInstances[record.instanceIndex].identity.y;

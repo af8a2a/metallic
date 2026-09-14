@@ -41,7 +41,7 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
     const ComputeProgramBindingDesc layout[] = {
         {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
         {.binding = 1}, {.binding = 2}, {.binding = 3}, {.binding = 4},
-        {.binding = 5}, {.binding = 6}, {.binding = 7},
+        {.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8},
     };
     const char* entries[] = {"materialBinningResetMain", "materialBinningClassifyMain", "materialBinningArgumentsMain"};
     const char* capabilities[] = {"spvGroupNonUniformBallot", "spvGroupNonUniformArithmetic"};
@@ -55,7 +55,7 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
         if (!result) { log = shader.diagnostics; return result; }
         result = programs_[i].initialize(device, {.spirv = shader.spirv.data(),
             .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = 16,
-            .bindings = layout, .bindingCount = 8, .debugName = entries[i], .requiresRayQuery = false}, log);
+            .bindings = layout, .bindingCount = 9, .debugName = entries[i], .requiresRayQuery = false}, log);
         if (!result) { return result; }
     }
 
@@ -99,11 +99,12 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
         {.binding = 3, .buffer = desc.materials}, {.binding = 4, .buffer = desc.shadingMaterials},
         {.binding = 5, .buffer = buffers[0].get()}, {.binding = 6, .buffer = buffers[1].get()},
         {.binding = 7, .buffer = buffers[2].get()},
+        {.binding = 8, .buffer = desc.streamRecords != nullptr ? desc.streamRecords : desc.records},
     };
-    const uint32_t push[] = {desc.width, desc.height, static_cast<uint32_t>(tileCount), 0};
+    const uint32_t push[] = {desc.width, desc.height, static_cast<uint32_t>(tileCount), desc.residentRecordCount};
     for (size_t i = 0; i < programs_.size(); ++i) {
         auto result = programs_[i].dispatch({.commandBuffer = &commands, .bindings = bindings,
-            .bindingCount = 8, .pushData = push, .pushDataSize = sizeof(push),
+            .bindingCount = 9, .pushData = push, .pushDataSize = sizeof(push),
             .groupCountX = i == 1 ? static_cast<uint32_t>(columns) : 1,
             .groupCountY = i == 1 ? static_cast<uint32_t>(rows) : 1});
         if (!result) { return result; }

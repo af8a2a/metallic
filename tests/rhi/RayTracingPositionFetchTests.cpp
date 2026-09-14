@@ -2,7 +2,7 @@
 
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/RenderFrameContext.h"
-#include "Runtime/Render/RenderPass/ScenePathTraceResources.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Scene/Scene.h"
 
