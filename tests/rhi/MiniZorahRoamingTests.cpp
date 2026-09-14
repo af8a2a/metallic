@@ -7,6 +7,9 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Profiling/CpuPhaseTrace.h"
+#include "Runtime/Render/HistoryResources.h"
+#include "Runtime/Render/RenderView.h"
+#include "Runtime/Scene/Scene.h"
 
 #include <algorithm>
 #include <array>
@@ -18,6 +21,7 @@
 #include <fstream>
 #include <map>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 #ifdef _WIN32
 #include <Windows.h>
@@ -105,6 +109,7 @@ public:
     }
     template<typename T> std::vector<T> read(const std::string& name)
     {
+        checkRoam(copies.contains(name), "Missing roaming snapshot: " + name);
         auto& buffer = copies.at(name);
         std::vector<T> result(buffer->desc().size / sizeof(T));
         buffer->invalidate();
@@ -601,5 +606,282 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
 }
 
 METALLIC_REGISTER_RHI_TEST(MiniZorahRoamingTest);
+
+// Fixed input replay, separate from the wall-clock-driven quality/roaming test.
+// Timing runs keep multiple submissions in flight and have no debug observer.
+class MiniZorahBaselineTest final : public RhiTest {
+public:
+    MiniZorahBaselineTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "minizorah_fixed_baseline";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        if (!std::getenv("METALLIC_TEST_MINIZORAH")) {
+            return RhiTestResult::skip("Set METALLIC_TEST_MINIZORAH=1");
+        }
+        const auto setting = [](const char* name, uint32_t fallback) {
+            const char* value = std::getenv(name);
+            return value ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : fallback;
+        };
+        const bool clas = setting("METALLIC_MINIZORAH_BENCH_CLAS", 1) != 0;
+        const bool quality = setting("METALLIC_MINIZORAH_BENCH_QUALITY", 0) != 0;
+        const uint32_t frameCount = setting("METALLIC_MINIZORAH_BENCH_FRAMES", 8400);
+        Json report{{"protocol", "minizorah-fixed-v1"}, {"status", "running"},
+            {"clasEnabled", clas}, {"qualityRun", quality}, {"validation", context.enableValidation},
+            {"resolution", {1920, 1080}}, {"lodPixelError", 1.5}, {"frameCount", frameCount},
+            {"routeStepSeconds", 1.0 / 60.0}, {"paced", false},
+            {"timingScope", "Multi-frame offscreen GPUDriven + MaterialResolve; GPU graphics envelope includes async joins. CPU execute includes frame-slot wait. No UI, presentation, Streamline, Aftermath or timed-frame debug readback."},
+            {"cacheScope", "New process/device GPU residency; existing cook, OS file cache and persistent PSO cache. Repeated route retains normal eviction policy."},
+            {"quality", Json::array()}};
+        std::filesystem::create_directories(context.outputDirectory);
+        const auto save = [&]() { std::ofstream(context.outputDirectory / "Baseline.json") << report.dump(2) << '\n'; };
+        std::unique_ptr<Device> device;
+        RoamingObserver observer;
+        try {
+            checkRoam(frameCount >= 600 && frameCount <= 8400, "Baseline frame count must be 600..8400");
+            RenderSampleLoadResult sample;
+            std::string log;
+            checkRoam(loadBuiltInRenderSample("gpu-driven-minizorah-vbuffer", sample, log), log);
+            auto graph = std::move(sample.graph);
+            graph.removeNode(graph.findNode("FinalBlit")->id);
+            graph.markOutput("MaterialResolve.color");
+            graph.markOutput("GPUDriven.visibility");
+            auto& props = graph.findNode("GPUDriven")->properties;
+            props["enableClas"] = clas;
+            props["compactClas"] = true;
+            props["maxResidentBytes"] = 1ull << 30;
+            props["maxClasBytes"] = 512ull << 20;
+            props["maxClasBuildClusters"] = 8192;
+            props["coldPageRetentionFrames"] = 120;
+            props["debugStreamingPages"] = false;
+            for (const char* key : {"screenSpacePagePriority", "viewDrivenPageDemand", "prefetchPages",
+                     "lowLatencyRequests", "completionDrivenUploads", "measurePageLatency"}) { props[key] = true; }
+            report["graph"] = Json::parse(serializeRenderGraphToString(graph));
+            const Json original = graph.viewProperties().at("camera");
+            scene::MeshletStreamAsset asset;
+            const auto assetPath = std::filesystem::path(PROJECT_SOURCE_DIR) / props.at("streamAssetPath").get<std::string>();
+            checkRoam(asset.open(assetPath, log), log);
+            report["asset"] = {{"path", assetPath.generic_string()}, {"fileBytes", std::filesystem::file_size(assetPath)},
+                {"pages", asset.pageCount()}, {"instances", asset.instanceCount()}};
+            scene::Bounds bounds;
+            for (const auto& instance : asset.instances()) {
+                const auto& b = asset.primitives()[instance.primitiveIndex].bounds;
+                const auto& m = instance.worldMatrix;
+                for (uint32_t corner = 0; corner < 8; ++corner) {
+                    const float x = corner & 1 ? b.max[0] : b.min[0], y = corner & 2 ? b.max[1] : b.min[1], z = corner & 4 ? b.max[2] : b.min[2];
+                    bounds.include(float3(m[0]*x + m[4]*y + m[8]*z + m[12], m[1]*x + m[5]*y + m[9]*z + m[13], m[2]*x + m[6]*y + m[10]*z + m[14]));
+                }
+            }
+            const auto center = (bounds.min + bounds.max) * .5f;
+            const float radius = length(bounds.max - bounds.min) * .5f;
+            Json farCamera = original;
+            farCamera["eye"] = {center.x + radius*2, center.y + radius*1.4f, center.z + radius*2};
+            farCamera["center"] = {center.x, center.y, center.z};
+            farCamera["znear"] = radius*.001f; farCamera["zfar"] = radius*5;
+            const auto cameraAt = [&](uint32_t f) {
+                if (f < 600 || f >= 7800) { return original; }
+                const double phase = double((f - 600) % 3600) / 60.0;
+                if ((phase >= 20 && phase < 25) || (phase >= 50 && phase < 55)) { return farCamera; }
+                Json camera = original;
+                const float move = phase >= 15 && phase < 30 ? 2.7f : 2.f * (1.f - std::cos(float(phase) * .2f));
+                const float yaw = phase >= 30 && phase < 50 ? .9f * std::sin(float(phase - 30) * .3f) : .25f * std::sin(float(phase) * .3f);
+                const float dx = original["center"][0].get<float>() - original["eye"][0].get<float>();
+                const float dz = original["center"][2].get<float>() - original["eye"][2].get<float>();
+                const float distance = std::sqrt(dx*dx + dz*dz);
+                camera["eye"][0] = original["eye"][0].get<float>() + dx / distance * move;
+                camera["eye"][2] = original["eye"][2].get<float>() + dz / distance * move;
+                camera["center"][0] = camera["eye"][0].get<float>() + dx*std::cos(yaw) - dz*std::sin(yaw);
+                camera["center"][2] = camera["eye"][2].get<float>() + dx*std::sin(yaw) + dz*std::cos(yaw);
+                return camera;
+            };
+            const auto phaseAt = [](uint32_t f) -> const char* {
+                if (f < 300) { return "cold_start"; }
+                if (f < 600) { return "static_warm"; }
+                if (f < 4200) { return "roam_first"; }
+                if (f < 7800) { return "roam_repeat"; }
+                return f < 8100 ? "settle" : "static_return";
+            };
+            std::vector<Json> cameras;
+            for (uint32_t f = 0; f < frameCount; ++f) { cameras.push_back(cameraAt(f)); }
+            std::ofstream(context.outputDirectory / "Cameras.json") << Json(cameras).dump();
+            DeviceDesc desc;
+            desc.applicationName = "MiniZorah fixed baseline";
+            desc.enableValidation = context.enableValidation;
+            desc.enableBindlessDescriptorHeap = true;
+            desc.enableShaderObject = true;
+            desc.enableMeshShader = true;
+            desc.enableTaskShader = true;
+            desc.enableTaskShaderSubgroupBallot = true;
+            desc.enableGeometryShader = true;
+            desc.enableSubgroupSizeControl = true;
+            desc.enableComputeFullSubgroups = true;
+            desc.preferredTaskSubgroupSize = 32;
+            desc.enableAsyncCompute = true;
+            // Both configurations use the same enabled device capabilities.
+            desc.enableRayTracingAccelerationStructure = true;
+            desc.enablePushDescriptor = true;
+            desc.enableRayQuery = true;
+            desc.enableClusterAccelerationStructure = true;
+            auto start = Clock::now();
+            const auto result = createDevice(desc, device);
+            checkRoam(bool(result), std::string("Baseline device: ") + toString(result));
+            report["deviceCreateMs"] = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+            RenderView view;
+            checkRoam(view.setCameraProperties(original), "Invalid initial camera");
+            scene::Scene runtimeScene;
+            HistoryResourceManager history;
+            checkRoam(bool(history.initialize(*device)), "History initialization failed");
+            RenderGraphExecutor executor;
+            executor.bindRenderView(&view);
+            executor.bindRuntimeScene(&runtimeScene);
+            // Register transfer-readable debug resources before compilation. The
+            // observer is detached during timed frames, so no copies are recorded.
+            executor.setDebugObserver(&observer);
+            start = Clock::now();
+            checkRoam(bool(executor.compile(*device, graph, 1920, 1080, log)), log);
+            report["compileMs"] = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+            struct Frame {
+                double executeMs = 0, hostMs = 0;
+                bool overlap = false;
+                RenderGraphExecutionStats stats;
+            };
+            std::vector<Frame> frames(frameCount);
+            std::unordered_map<uint64_t, uint32_t> executionFrames;
+            const auto collect = [&]() {
+                std::vector<RenderGraphExecutionStats> completed;
+                checkRoam(bool(executor.collectCompletedGpuExecutionStats(completed)), "GPU timing collection failed");
+                for (auto& stats : completed) {
+                    const auto found = executionFrames.find(stats.executionId);
+                    if (found == executionFrames.end()) { continue; } // Final diagnostic frame is untimed.
+                    auto& frame = frames[found->second];
+                    checkRoam(!frame.stats.gpuTimingAvailable && stats.gpuTimingAvailable && !stats.profilingOverflow,
+                        "Missing, duplicate or overflowing GPU timing sample");
+                    frame.stats = std::move(stats);
+                }
+            };
+            const auto submit = [&]() {
+                checkRoam(bool(executor.execute({.graphicsQueue = device->getQueue(QueueType::Graphics),
+                    .computeQueue = device->getQueue(QueueType::Compute), .historyResources = &history,
+                    .slotWaitTimeoutNanoseconds = 30000000000ull})), "Baseline execute failed");
+            };
+            const auto checkpoint = [&](uint32_t f, const Json& camera, bool final) {
+                checkRoam(bool(executor.waitForSubmittedWork(30000000000ull)), "Checkpoint completion failed");
+                collect();
+                Json entry{{"frame", f}, {"phase", final ? "final_diagnostic" : phaseAt(f)},
+                    {"camera", camera}, {"stream", observer.latest}};
+                if (observer.latest.value("terminalReady", false)) {
+                    const auto cut = validateRoamingCut(observer, asset, camera);
+                    entry["cut"] = cut;
+                    const auto info = observer.read<VisibilityBufferFrameInfo>("rasterInfo").front();
+                    for (uint32_t axis = 0; axis < 3; ++axis) {
+                        checkRoam(std::abs(info.eye[axis] - camera["eye"][axis].get<float>()) < 1e-5f &&
+                            std::abs(info.center[axis] - camera["center"][axis].get<float>()) < 1e-5f,
+                            "Camera replay did not reach VBuffer");
+                    }
+                    if (final) { checkRoam(cut.at("visibleOverTargetRefinements") == 0, "Final held view did not converge to 1.5 px"); }
+                } else { checkRoam(!final, "Final terminal cut not ready"); }
+                report["quality"].push_back(std::move(entry));
+            };
+            const auto runStart = Clock::now();
+            for (uint32_t f = 0; f < frameCount; ++f) {
+                const bool capture = quality && (f == 29 || f == 59 || f == 119 || f == 179 || (f + 1) % 300 == 0);
+                if (capture) { checkRoam(bool(executor.waitForSubmittedWork(30000000000ull)), "Pre-checkpoint drain failed"); }
+                observer.capture = capture;
+                executor.setDebugObserver(capture ? &observer : nullptr);
+                const auto hostStart = Clock::now();
+                checkRoam(view.setCameraProperties(cameras[f]), "Invalid replay camera");
+                frames[f].overlap = executor.lastSubmittedCompletion().valid() && !executor.lastSubmittedCompletion().isComplete();
+                const auto executeStart = Clock::now();
+                submit();
+                frames[f].executeMs = std::chrono::duration<double, std::milli>(Clock::now() - executeStart).count();
+                executionFrames.emplace(executor.executionStats().executionId, f);
+                collect();
+                frames[f].hostMs = std::chrono::duration<double, std::milli>(Clock::now() - hostStart).count();
+                if (capture) { checkpoint(f, cameras[f], false); }
+            }
+            checkRoam(bool(executor.waitForSubmittedWork(30000000000ull)), "Final GPU drain failed");
+            collect();
+            report["runWallSeconds"] = std::chrono::duration<double>(Clock::now() - runStart).count();
+            report["memoryAfterReplay"] = roamingMemory();
+            // No diagnostic work perturbs the preceding performance samples.
+            executor.setDebugObserver(&observer);
+            observer.capture = true;
+            submit();
+            checkpoint(frameCount, cameras.back(), true);
+            executor.setDebugObserver(nullptr);
+            report["finalStream"] = observer.latest;
+            std::ofstream output(context.outputDirectory / "Frames.jsonl");
+            std::map<std::string, std::vector<double>> gpuByPhase, cpuByPhase, hostByPhase;
+            uint32_t overlapCount = 0;
+            bool sawCompute = false;
+            for (uint32_t f = 0; f < frameCount; ++f) {
+                const auto& frame = frames[f];
+                const auto& stats = frame.stats;
+                checkRoam(stats.gpuTimingAvailable && stats.streaming.size() == 1, "Frame timing/stream sample missing");
+                const auto& s = stats.streaming.front();
+                checkRoam(s.clasEnabled == clas && s.geometryUsedBytes <= s.geometryBudgetBytes &&
+                    s.clasUsedBytes <= s.clasCapacityBytes && !s.loadFailures && !s.requestOverflows,
+                    "Streaming budget, loading or request invariant failed");
+                checkRoam(s.clasBuiltClusters <= 8192, "CLAS build budget exceeded");
+                Json nodes = Json::array();
+                for (const auto& pass : stats.nodes) {
+                    checkRoam(pass.gpuTimingAvailable, "Pass GPU timing missing");
+                    Json sections = Json::array();
+                    for (const auto& section : pass.sections) {
+                        checkRoam(section.gpuTimingAvailable, "Scope GPU timing missing");
+                        sawCompute |= section.queue == QueueType::Compute;
+                        sections.push_back({{"name", section.name}, {"parent", section.parent},
+                            {"queue", section.queue == QueueType::Compute ? "compute" : "graphics"},
+                            {"gpuMs", section.gpuMilliseconds}, {"cpuMs", section.cpuMilliseconds}});
+                    }
+                    nodes.push_back({{"name", pass.name}, {"gpuMs", pass.gpuMilliseconds},
+                        {"cpuMs", pass.cpuMilliseconds}, {"sections", std::move(sections)}});
+                }
+                const std::string phase = phaseAt(f);
+                gpuByPhase[phase].push_back(stats.gpuMilliseconds);
+                cpuByPhase[phase].push_back(frame.executeMs);
+                hostByPhase[phase].push_back(frame.hostMs);
+                overlapCount += frame.overlap;
+                output << Json{{"frame", f}, {"phase", phase}, {"executionId", stats.executionId},
+                    {"gpuMs", stats.gpuMilliseconds}, {"cpuRecordMs", stats.cpuMilliseconds},
+                    {"cpuExecuteMs", frame.executeMs}, {"hostFrameMs", frame.hostMs},
+                    {"overlap", frame.overlap}, {"nodes", std::move(nodes)},
+                    {"stream", {{"frame", s.frameIndex}, {"feedbackFrame", s.feedbackFrame},
+                        {"geometryBytes", s.geometryUsedBytes}, {"geometryBudgetBytes", s.geometryBudgetBytes},
+                        {"clasBytes", s.clasUsedBytes}, {"clasEncodedBytes", s.clasEncodedBytes},
+                        {"clasCapacityBytes", s.clasCapacityBytes}, {"clasScratchBytes", s.clasScratchBytes},
+                        {"clasPages", s.clasResidentPages}, {"clasClusters", s.clasResidentClusters},
+                        {"clasPending", s.clasPendingPages}, {"clasRetiring", s.clasRetiringPages},
+                        {"clasBuilt", s.clasBuiltClusters}, {"clasMoved", s.clasMovedClusters},
+                        {"clasDeferred", s.clasRejectedPages}, {"residentPages", s.residentPages},
+                        {"pendingPages", s.pendingPages}, {"ioQueued", s.ioQueued}, {"ioActive", s.ioActive},
+                        {"uploadQueued", s.uploadQueued}, {"requests", s.requests}, {"evictions", s.evictions},
+                        {"allocationFailures", s.allocationFailures}, {"uploadBytes", s.uploadBytes},
+                        {"totalUploadBytes", s.totalUploadBytes}}}}.dump() << '\n';
+            }
+            for (const auto& [phase, values] : gpuByPhase) {
+                report["phases"][phase] = {{"gpuMs", percentiles(values)},
+                    {"cpuExecuteMs", percentiles(cpuByPhase[phase])}, {"hostFrameMs", percentiles(hostByPhase[phase])}};
+            }
+            checkRoam(sawCompute && overlapCount > frameCount / 2, "Async compute/submission overlap not exercised");
+            if (clas) {
+                const auto& last = frames.back().stats.streaming.front();
+                checkRoam(last.clasPendingPages == 0 && last.clasResidentPages == last.residentPages,
+                    "Final held view CLAS backlog did not converge");
+            }
+            report["overlappingFrames"] = overlapCount;
+            report["status"] = "passed";
+            save();
+            return RhiTestResult::pass(std::to_string(frameCount) + " fixed-step frames with complete timing, budget and final quality checks");
+        } catch (const std::exception& error) {
+            report["status"] = "failed"; report["error"] = error.what(); save();
+            return RhiTestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MiniZorahBaselineTest);
 } // namespace
 } // namespace metallic::tests
