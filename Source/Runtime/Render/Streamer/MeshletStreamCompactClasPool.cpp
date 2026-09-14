@@ -4,6 +4,7 @@
 #include "Runtime/Render/RenderFrameContext.h"
 #include <algorithm>
 #include <cstring>
+#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -47,6 +48,11 @@ struct MeshletStreamCompactClasPool::Impl {
     MeshletStreamStorage storage, addressStorage;
     std::unique_ptr<Buffer> storageBuffer, scratch, addresses, pageTable;
     std::unordered_map<uint32_t, Page> pages;
+    struct Retirement {
+        uint64_t deadline;
+        uint32_t pageIndex;
+    };
+    std::deque<Retirement> retirements;
     std::vector<Batch> batches;
     MeshletStreamClasPoolStats stats;
     uint64_t frame = 0, alignment = 0, stride = 0, scratchOffset = 0;
@@ -306,17 +312,21 @@ void MeshletStreamCompactClasPool::beginFrame(CpuProfileRecorder* profiler)
     CpuProfileScope profile(profiler, "Collect completed CLAS");
     p.collect();
     profile.next("Expire retired CLAS");
-    for (auto it = p.pages.begin(); it != p.pages.end();) {
+    // The queued-frame delay is fixed, so retirement deadlines arrive in order.
+    while (!p.retirements.empty() && p.retirements.front().deadline <= p.frame) {
+        const auto retirement = p.retirements.front();
+        p.retirements.pop_front();
+        const auto it = p.pages.find(retirement.pageIndex);
+        if (it == p.pages.end()) { continue; }
         auto& page = it->second;
-        if (page.state == Impl::State::Retiring && page.retireFrame <= p.frame) {
+        // A revived page may have been retired again with a later deadline.
+        if (page.state == Impl::State::Retiring && page.retireFrame == retirement.deadline) {
             --p.stats.retiringPageCount;
             p.stats.retiringClusterCount -= uint32_t(page.offsets.size());
             p.stats.retiringStorageBytes -= page.allocation.allocatedSize;
             p.release(page);
             p.publish(it->first, nullptr);
-            it = p.pages.erase(it);
-        } else {
-            ++it;
+            p.pages.erase(it);
         }
     }
 }
@@ -512,6 +522,7 @@ void MeshletStreamCompactClasPool::retirePages(std::span<const uint32_t> ids)
         }
         page.state = Impl::State::Retiring;
         page.retireFrame = p.frame + p.queuedFrames;
+        p.retirements.push_back({page.retireFrame, id});
         --p.stats.builtPageCount;
         p.stats.builtClusterCount -= uint32_t(page.offsets.size());
         ++p.stats.retiringPageCount;

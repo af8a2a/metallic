@@ -350,9 +350,12 @@ class CompactClasLifecycleTest final : public RhiTest {
                     "Retiring reload rebuilt CLAS");
             pool.retirePages(std::span(&pageIndex, 1));
             pool.beginFrame();
-            require(pool.stats().usedStorageBytes > 0, "Storage freed before retirement delay");
+            require(pool.stats().usedStorageBytes > 0 && pool.stats().retiringPageCount == 1 &&
+                        pool.clusterAddress(pageIndex, 0) == address,
+                    "Stale retirement expired a revived page before its new deadline");
             pool.beginFrame();
-            require(pool.stats().usedStorageBytes == 0 && !pool.pageHasClas(pageIndex), "Retirement leaked storage");
+            require(pool.stats().usedStorageBytes == 0 && pool.stats().retiringPageCount == 0 &&
+                        !pool.pageHasClas(pageIndex), "Retirement leaked storage or double-counted a stale entry");
             record(true, true);
             pool.beginFrame();
             require(!pool.pageBuildPending(pageIndex) && pool.stats().trackedPageCount == 0,

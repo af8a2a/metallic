@@ -282,6 +282,7 @@ bool MeshletStreamResidencyManager::initialize(
         pages_.reserve(residentReserve);
         activePages_.reserve(residentReserve);
         residentPages_.reserve(residentReserve);
+        residentPageEntries_.reserve(residentReserve);
         pendingPages_.reserve(residentReserve);
     }
     if (desc.pageLoadConcurrency != 0) {
@@ -312,6 +313,7 @@ void MeshletStreamResidencyManager::reset()
     completionDrivenUploads_ = true;
     asset_ = nullptr;
     storage_.reset();
+    residentPageEntries_.clear();
     pages_.clear();
     uploadQueue_.clear();
     preparedPageLoads_.clear();
@@ -870,8 +872,9 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
         residentDemandFeedback_ = true;
         const bool complete = requests.unloadOverflowCounter == 0 && requests.invalidPageCounter == 0 &&
             requests.unloadRequestCounter <= requests.unloadPageIds.size();
-        for (uint32_t pageIndex : residentPages_) {
-            PageEntry& page = pages_.at(pageIndex);
+        for (size_t i = 0; i < residentPages_.size(); ++i) {
+            const uint32_t pageIndex = residentPages_[i];
+            PageEntry& page = *residentPageEntries_[i];
             // This page was not in an older frame's resident list. Its absence
             // from that frame's unused list cannot imply a prefetch hit.
             if (requests.frameIndex != 0 && page.residentSinceFrame > requests.frameIndex) { continue; }
@@ -1336,21 +1339,22 @@ void MeshletStreamResidencyManager::prepareEvictionCandidates(CpuProfileRecorder
     CpuProfileScope profile(profiler, "Scan resident candidates");
     evictionCandidatesBuilt_ = true;
     ++stats_.frameEvictionScanCount;
-    for (uint32_t candidate : residentPages_) {
+    for (size_t i = 0; i < residentPages_.size(); ++i) {
+        const uint32_t candidate = residentPages_[i];
         ++stats_.frameEvictionCandidateTests;
-        const PageEntry& entry = pages_.at(candidate);
+        const PageEntry& entry = *residentPageEntries_[i];
         if (entry.lockedFallback || !streamableEvictionState(entry.state) ||
             (residentDemandFeedback_ && !entry.gpuUnused)) { continue; }
-        if (pageAge(candidate) < evictionAgeThresholdFrames_) {
+        const uint64_t age = frameIndex_ >= entry.lastUsedFrame ? frameIndex_ - entry.lastUsedFrame : 0;
+        if (age < evictionAgeThresholdFrames_) {
             evictionAgeRejected_ = true;
             continue;
         }
-        evictionCandidates_.push_back(candidate);
+        evictionCandidates_.push_back({entry.lastUsedFrame, candidate});
     }
     profile.next("Sort cold candidates");
-    std::sort(evictionCandidates_.begin(), evictionCandidates_.end(), [this](uint32_t a, uint32_t b) {
-        const auto ageA = pages_.at(a).lastUsedFrame, ageB = pages_.at(b).lastUsedFrame;
-        return ageA != ageB ? ageA < ageB : a < b;
+    std::sort(evictionCandidates_.begin(), evictionCandidates_.end(), [](const EvictionCandidate& a, const EvictionCandidate& b) {
+        return a.lastUsedFrame != b.lastUsedFrame ? a.lastUsedFrame < b.lastUsedFrame : a.pageIndex < b.pageIndex;
     });
 }
 
@@ -1363,9 +1367,12 @@ uint32_t MeshletStreamResidencyManager::reclaimColdPages(const MeshletStreamCold
     uint64_t clas = subtract(desc.clasUsedBytes, desc.clasRetiringBytes);
     // Credit already scheduled frees before selecting more victims. A delayed
     // free must not drive repeated evictions while its GPU readers drain.
-    for (uint32_t id : activePages_) {
-        const auto& page = pages_.at(id);
-        if (page.state == MeshletStreamPageResidencyState::PendingUnload) {
+    for (uint32_t taskIndex = 0; taskIndex < unloadTaskPages_.size(); ++taskIndex) {
+        for (uint32_t id : unloadTaskPages_[taskIndex]) {
+            const auto found = pages_.find(id);
+            if (found == pages_.end()) { continue; }
+            const auto& page = found->second;
+            if (page.state != MeshletStreamPageResidencyState::PendingUnload || page.taskIndex != taskIndex) { continue; }
             geometry = subtract(geometry, page.allocationBytes);
             if (desc.clasPageBytes) { clas = subtract(clas, desc.clasPageBytes(id)); }
         }
@@ -1381,7 +1388,8 @@ uint32_t MeshletStreamResidencyManager::reclaimColdPages(const MeshletStreamCold
     prepareEvictionCandidates(profiler);
     profile.next("Schedule cold evictions");
     uint32_t reclaimed = 0;
-    for (uint32_t id : evictionCandidates_) {
+    for (const EvictionCandidate& candidate : evictionCandidates_) {
+        const uint32_t id = candidate.pageIndex;
         if (reclaimed >= desc.maxPages || stats_.frameEvictedPageCount >= 256) { break; }
         const auto& page = pages_.at(id);
         if (page.lockedFallback || !page.gpuUnused || !streamableEvictionState(page.state)) { continue; }
@@ -1422,7 +1430,7 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
         // At most 256 evictions per frame; one delayed-free task batches them.
         // Retrying after an exhausted scan/task budget is constant time.
         while (evictionCandidateCursor_ < evictionCandidates_.size() && stats_.frameEvictedPageCount < 256u) {
-            const uint32_t candidate = evictionCandidates_[evictionCandidateCursor_++];
+            const uint32_t candidate = evictionCandidates_[evictionCandidateCursor_++].pageIndex;
             const auto candidateIter = pages_.find(candidate);
             if (candidateIter == pages_.end()) {
                 continue;
@@ -1661,6 +1669,9 @@ void MeshletStreamResidencyManager::addToTable(
     }
     position = static_cast<uint32_t>(table.size());
     table.push_back(pageIndex);
+    if (&table == &residentPages_) {
+        residentPageEntries_.push_back(&pageIter->second);
+    }
 }
 
 void MeshletStreamResidencyManager::removeFromTable(
@@ -1678,6 +1689,10 @@ void MeshletStreamResidencyManager::removeFromTable(
         return;
     }
     const uint32_t movedPage = table.back();
+    if (&table == &residentPages_) {
+        residentPageEntries_[position] = residentPageEntries_.back();
+        residentPageEntries_.pop_back();
+    }
     table[position] = movedPage;
     auto movedIter = pages_.find(movedPage);
     if (movedIter != pages_.end()) {

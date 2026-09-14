@@ -2569,7 +2569,35 @@ public:
         for (uint32_t root : roots) {
             if (!residency.pageResident(root)) { return RhiTestResult::fail("Joint reclaim lost a fallback page"); }
         }
-        return RhiTestResult::pass("CLAS-only pressure, recent/hot/root protection, delayed credit, shared scan and eager cold expiry");
+        // Reinsert erased entries in reverse order. Age wins over page ID,
+        // and equal-age pages keep ID order despite resident-table swaps.
+        std::sort(pages.begin(), pages.end());
+        reclaim.clasUsedBytes = reclaim.clasRetiringBytes = reclaim.clasCapacityBytes = 0;
+        reclaim.retentionFrames = reclaim.pressureAgeFrames = reclaim.maxPages = 1;
+        for (uint32_t cycle = 0; cycle < 2; ++cycle) {
+            residency.beginFrame();
+            for (auto it = pages.rbegin(); it != pages.rend(); ++it) {
+                (void)residency.requestPage(*it);
+            }
+            if (residency.processUploads(*streamer, *destination, 3) != 3) {
+                return RhiTestResult::fail("Cannot upload cold-sort fixture");
+            }
+            for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
+            (void)residency.requestPage(pages[0]);
+            residency.beginFrame();
+            (void)residency.consumeGpuRequests({.unloadPageIds = pages, .unloadRequestCounter = 3,
+                                               .residentDemandFeedback = true});
+            for (uint32_t expected : {pages[1], pages[2], pages[0]}) {
+                if (residency.reclaimColdPages(reclaim) != 1 ||
+                    residency.pageState(expected) != MeshletStreamPageResidencyState::PendingUnload) {
+                    return RhiTestResult::fail("Cold eviction changed age/ID order after erase and reinsertion");
+                }
+            }
+            if (residency.reclaimColdPages(reclaim) != 0 || residency.stats().frameEvictionScanCount != 1) {
+                return RhiTestResult::fail("Cached cold candidates scheduled a duplicate victim");
+            }
+        }
+        return RhiTestResult::pass("CLAS pressure, delayed credit, shared scan, cold expiry and age/ID order across reloads");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerJointColdReclaimTest);

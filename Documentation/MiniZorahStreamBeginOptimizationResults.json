@@ -1,0 +1,5100 @@
+{
+  "baselineCommit": "379600d42e128297df44ff9c87f6feea144aee15",
+  "replaySha256": "feb79872154850af32db25a54ba3d22b48b9a04a10f7f2e8dadaf19f98f2f2d2",
+  "manifests": {
+    "before": {
+      "gitHead": "379600d42e128297df44ff9c87f6feea144aee15",
+      "start": "2026-09-14T22:25:21.5179532+08:00",
+      "protocol": "minizorah-cfg-roam-v1",
+      "sourceSha256": "A3B88E9CC67A1124576063F1890055EF20C64EEBF64BB842B20C46E015DDCE30",
+      "executableSha256": "5C55AC0D99D927961234A5C55998CF16E51344822E0AF86465B32022CB04DC03",
+      "replaySha256": "FEB79872154850AF32DB25A54BA3D22B48B9A04A10F7F2E8DADAF19F98F2F2D2"
+    },
+    "after": {
+      "gitHead": "379600d42e128297df44ff9c87f6feea144aee15",
+      "protocol": "minizorah-cfg-roam-v1",
+      "replaySha256": "FEB79872154850AF32DB25A54BA3D22B48B9A04A10F7F2E8DADAF19F98F2F2D2",
+      "executableSha256": "5A809F633CA695C9ED228A4E5D7C9AF029AC3759DE2F41C31BCB1B18D15A943E",
+      "start": "2026-09-14T22:38:20.7492659+08:00",
+      "sourceSha256": "A3B88E9CC67A1124576063F1890055EF20C64EEBF64BB842B20C46E015DDCE30"
+    }
+  },
+  "comparison": {
+    "warmup": {
+      "Stream Begin": {
+        "beforeMs": [
+          1.393489,
+          1.0044556666666666
+        ],
+        "afterMs": [
+          0.4891666666666667,
+          0.447981
+        ],
+        "reductionPercent": 60.91871177455581
+      },
+      "Stream Begin/CLAS completion / expiry": {
+        "beforeMs": [
+          0.3313586666666667,
+          0.19452166666666668
+        ],
+        "afterMs": [
+          0.05047533333333333,
+          0.04251566666666667
+        ],
+        "reductionPercent": 82.31707974120856
+      },
+      "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+        "beforeMs": [
+          0.07640066666666667,
+          0.043771
+        ],
+        "afterMs": [
+          0.049230666666666666,
+          0.041329333333333336
+        ],
+        "reductionPercent": 24.64113837149634
+      },
+      "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+        "beforeMs": [
+          0.254615,
+          0.15045466666666668
+        ],
+        "afterMs": [
+          0.0009676666666666667,
+          0.0009523333333333334
+        ],
+        "reductionPercent": 99.52600746044507
+      },
+      "Stream Begin/Discard obsolete CLAS plans": {
+        "beforeMs": [
+          0.006574333333333333,
+          0.0022213333333333334
+        ],
+        "afterMs": [
+          0.002909333333333333,
+          0.0022836666666666665
+        ],
+        "reductionPercent": 40.95956342138175
+      },
+      "Stream Begin/GPU request feedback": {
+        "beforeMs": [
+          0.3659766666666667,
+          0.2569613333333333
+        ],
+        "afterMs": [
+          0.16487766666666667,
+          0.13858766666666666
+        ],
+        "reductionPercent": 51.284825563164645
+      },
+      "Stream Begin/GPU request feedback/Consume requests": {
+        "beforeMs": [
+          0.36464033333333334,
+          0.2559536666666667
+        ],
+        "afterMs": [
+          0.16404266666666667,
+          0.13776733333333332
+        ],
+        "reductionPercent": 51.36756075630766
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+        "beforeMs": [
+          0.05695066666666667,
+          0.023591
+        ],
+        "afterMs": [
+          0.032638,
+          0.020373
+        ],
+        "reductionPercent": 34.18189342990171
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+        "beforeMs": [
+          0.05170333333333333,
+          0.019766
+        ],
+        "afterMs": [
+          0.033401,
+          0.017888333333333332
+        ],
+        "reductionPercent": 28.235886720644753
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+        "beforeMs": [
+          0.019419666666666665,
+          0.019244333333333332
+        ],
+        "afterMs": [
+          0.015351333333333333,
+          0.015815333333333334
+        ],
+        "reductionPercent": 19.390992482240144
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+        "beforeMs": [
+          0.235453,
+          0.1928
+        ],
+        "afterMs": [
+          0.08219,
+          0.083263
+        ],
+        "reductionPercent": 61.365594636815146
+      },
+      "Stream Begin/GPU request feedback/Map feedback": {
+        "beforeMs": [
+          0.0007906666666666666,
+          0.000556
+        ],
+        "afterMs": [
+          0.00045733333333333335,
+          0.0004496666666666667
+        ],
+        "reductionPercent": 32.648514851485146
+      },
+      "Stream Begin/GPU request feedback/Unmap feedback": {
+        "beforeMs": [
+          0.000237,
+          0.00019233333333333334
+        ],
+        "afterMs": [
+          0.00016833333333333335,
+          0.000163
+        ],
+        "reductionPercent": 22.826086956521742
+      },
+      "Stream Begin/Joint cold page reclaim": {
+        "beforeMs": [
+          0.333448,
+          0.320826
+        ],
+        "afterMs": [
+          0.042627333333333337,
+          0.045256
+        ],
+        "reductionPercent": 86.56780900152943
+      },
+      "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+        "beforeMs": [
+          0.11928633333333333,
+          0.10630233333333333
+        ],
+        "afterMs": [
+          9.033333333333334e-05,
+          8.566666666666667e-05
+        ],
+        "reductionPercent": 99.92198189625366
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+        "beforeMs": [
+          0.19829666666666668,
+          0.20116166666666666
+        ],
+        "afterMs": [
+          0.029773666666666667,
+          0.031129333333333332
+        ],
+        "reductionPercent": 84.75360383853135
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+        "beforeMs": [
+          0.12186566666666666,
+          0.118749
+        ],
+        "afterMs": [
+          0.020785666666666668,
+          0.021329666666666667
+        ],
+        "reductionPercent": 82.49677215575663
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+        "beforeMs": [
+          0.075915,
+          0.08203066666666667
+        ],
+        "afterMs": [
+          0.008757666666666667,
+          0.009564333333333333
+        ],
+        "reductionPercent": 88.3998083729215
+      },
+      "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+        "beforeMs": [
+          0.015081333333333334,
+          0.012716
+        ],
+        "afterMs": [
+          0.012428,
+          0.013705666666666666
+        ],
+        "reductionPercent": 5.984986569455108
+      },
+      "Stream Begin/Prepare page uploads": {
+        "beforeMs": [
+          0.30765733333333334,
+          0.20815833333333333
+        ],
+        "afterMs": [
+          0.20450133333333334,
+          0.19857366666666668
+        ],
+        "reductionPercent": 21.856774416183555
+      },
+      "Stream Begin/Prepare page uploads/Collect decoded pages": {
+        "beforeMs": [
+          0.009569666666666667,
+          0.005025666666666667
+        ],
+        "afterMs": [
+          0.004523666666666666,
+          0.005137
+        ],
+        "reductionPercent": 33.80989357328828
+      },
+      "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+        "beforeMs": [
+          4.8666666666666666e-05,
+          3.766666666666667e-05
+        ],
+        "afterMs": [
+          4.266666666666667e-05,
+          4.166666666666667e-05
+        ],
+        "reductionPercent": 2.316602316602312
+      },
+      "Stream Begin/Prepare page uploads/Schedule page I/O": {
+        "beforeMs": [
+          0.0066426666666666665,
+          0.006801333333333334
+        ],
+        "afterMs": [
+          0.005116333333333334,
+          0.006416333333333333
+        ],
+        "reductionPercent": 14.216998909054857
+      },
+      "Stream Begin/Prepare page uploads/Sort queued loads": {
+        "beforeMs": [
+          0.019579,
+          0.013454666666666667
+        ],
+        "afterMs": [
+          0.015521,
+          0.010906333333333334
+        ],
+        "reductionPercent": 19.998789114136084
+      },
+      "Stream Begin/Prepare page uploads/Sort ready uploads": {
+        "beforeMs": [
+          0.020803333333333333,
+          0.016785
+        ],
+        "afterMs": [
+          0.010035666666666667,
+          0.015632333333333335
+        ],
+        "reductionPercent": 31.71285416574291
+      },
+      "Stream Begin/Prepare page uploads/Stage payloads / CLAS plans": {
+        "beforeMs": [
+          0.24824933333333332,
+          0.162205
+        ],
+        "afterMs": [
+          0.16735833333333333,
+          0.157233
+        ],
+        "reductionPercent": 20.919014133119152
+      },
+      "Stream Begin/Prepare page uploads/Submit upload tracking": {
+        "beforeMs": [
+          0.002028,
+          0.003327
+        ],
+        "afterMs": [
+          0.0013853333333333333,
+          0.002713
+        ],
+        "reductionPercent": 23.46716464363524
+      },
+      "Stream Begin/Publish resident pages": {
+        "beforeMs": [
+          0.002405,
+          0.002119
+        ],
+        "afterMs": [
+          0.0020556666666666666,
+          0.0020536666666666667
+        ],
+        "reductionPercent": 9.165929855585041
+      },
+      "Stream Begin/Queue resident CLAS": {
+        "beforeMs": [
+          0.010711,
+          0.003087
+        ],
+        "afterMs": [
+          0.0034356666666666667,
+          0.002971333333333333
+        ],
+        "reductionPercent": 53.56573416437165
+      },
+      "Stream Begin/Residency completion": {
+        "beforeMs": [
+          0.019593333333333334,
+          0.008246333333333333
+        ],
+        "afterMs": [
+          0.010813666666666666,
+          0.008194666666666666
+        ],
+        "reductionPercent": 31.722123109711564
+      },
+      "Stream Begin/Residency completion/Complete storage tasks": {
+        "beforeMs": [
+          0.007926333333333334,
+          0.004662333333333333
+        ],
+        "afterMs": [
+          0.005746666666666666,
+          0.004575333333333333
+        ],
+        "reductionPercent": 18.005613514801688
+      },
+      "Stream Begin/Residency completion/Complete unload tasks": {
+        "beforeMs": [
+          0.000726,
+          0.000585
+        ],
+        "afterMs": [
+          0.0005153333333333334,
+          0.0005533333333333333
+        ],
+        "reductionPercent": 18.48461734045259
+      },
+      "Stream Begin/Residency completion/Complete update tasks": {
+        "beforeMs": [
+          4.2000000000000004e-05,
+          3.3e-05
+        ],
+        "afterMs": [
+          3.3e-05,
+          3.466666666666667e-05
+        ],
+        "reductionPercent": 9.777777777777786
+      },
+      "Stream Begin/Residency completion/Consume queued requests": {
+        "beforeMs": [
+          0.00013866666666666666,
+          0.000111
+        ],
+        "afterMs": [
+          0.000133,
+          0.000151
+        ],
+        "reductionPercent": -13.751668891855818
+      },
+      "Stream Begin/Residency completion/Reset / latency tracking": {
+        "beforeMs": [
+          0.009999333333333334,
+          0.002412333333333333
+        ],
+        "afterMs": [
+          0.0039763333333333335,
+          0.002497
+        ],
+        "reductionPercent": 47.844769705921856
+      },
+      "Stream Begin/Retire unloaded CLAS": {
+        "beforeMs": [
+          0.000599,
+          0.000555
+        ],
+        "afterMs": [
+          0.0005823333333333334,
+          0.000604
+        ],
+        "reductionPercent": -2.8018486424032485
+      }
+    },
+    "start_hold": {
+      "Stream Begin": {
+        "beforeMs": [
+          0.7885133333333333,
+          0.5925566666666666
+        ],
+        "afterMs": [
+          0.125143,
+          0.12506166666666665
+        ],
+        "reductionPercent": 81.88327407975942
+      },
+      "Stream Begin/CLAS completion / expiry": {
+        "beforeMs": [
+          0.27301533333333333,
+          0.16093666666666667
+        ],
+        "afterMs": [
+          0.00038933333333333333,
+          0.000386
+        ],
+        "reductionPercent": 99.82133200599759
+      },
+      "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+        "beforeMs": [
+          0.00015366666666666667,
+          0.000101
+        ],
+        "afterMs": [
+          0.000131,
+          0.00012366666666666667
+        ],
+        "reductionPercent": -2.220446049250313e-14
+      },
+      "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+        "beforeMs": [
+          0.27259333333333335,
+          0.16059066666666666
+        ],
+        "afterMs": [
+          2.2666666666666668e-05,
+          2.4e-05
+        ],
+        "reductionPercent": 99.98922705670877
+      },
+      "Stream Begin/Discard obsolete CLAS plans": {
+        "beforeMs": [
+          0.000174,
+          0.00016800000000000002
+        ],
+        "afterMs": [
+          0.00018666666666666666,
+          0.00018700000000000002
+        ],
+        "reductionPercent": -9.259259259259256
+      },
+      "Stream Begin/GPU request feedback": {
+        "beforeMs": [
+          0.235374,
+          0.178523
+        ],
+        "afterMs": [
+          0.08592333333333334,
+          0.08621533333333334
+        ],
+        "reductionPercent": 58.41026471159088
+      },
+      "Stream Begin/GPU request feedback/Consume requests": {
+        "beforeMs": [
+          0.23411866666666667,
+          0.177388
+        ],
+        "afterMs": [
+          0.08489866666666666,
+          0.08527133333333334
+        ],
+        "reductionPercent": 58.647085506917676
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+        "beforeMs": [
+          5.766666666666667e-05,
+          4.9000000000000005e-05
+        ],
+        "afterMs": [
+          4.9000000000000005e-05,
+          4.566666666666667e-05
+        ],
+        "reductionPercent": 11.249999999999993
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+        "beforeMs": [
+          0.00024133333333333334,
+          0.00022566666666666666
+        ],
+        "afterMs": [
+          0.00022,
+          0.00021766666666666668
+        ],
+        "reductionPercent": 6.28122769450391
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+        "beforeMs": [
+          0.00013566666666666667,
+          0.00015566666666666666
+        ],
+        "afterMs": [
+          0.00013466666666666667,
+          0.00012366666666666667
+        ],
+        "reductionPercent": 11.327231121281455
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+        "beforeMs": [
+          0.23308366666666666,
+          0.17642633333333332
+        ],
+        "afterMs": [
+          0.084048,
+          0.08446433333333334
+        ],
+        "reductionPercent": 58.850251927099876
+      },
+      "Stream Begin/GPU request feedback/Map feedback": {
+        "beforeMs": [
+          0.0007473333333333334,
+          0.0006349999999999999
+        ],
+        "afterMs": [
+          0.0005873333333333334,
+          0.0005373333333333333
+        ],
+        "reductionPercent": 18.639980708946226
+      },
+      "Stream Begin/GPU request feedback/Unmap feedback": {
+        "beforeMs": [
+          0.00023266666666666667,
+          0.00020733333333333332
+        ],
+        "afterMs": [
+          0.00019833333333333335,
+          0.00018333333333333334
+        ],
+        "reductionPercent": 13.257575757575758
+      },
+      "Stream Begin/Joint cold page reclaim": {
+        "beforeMs": [
+          0.24914433333333333,
+          0.24134533333333333
+        ],
+        "afterMs": [
+          0.027044,
+          0.026218333333333333
+        ],
+        "reductionPercent": 89.1409876796589
+      },
+      "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+        "beforeMs": [
+          0.11729433333333333,
+          0.11413566666666666
+        ],
+        "afterMs": [
+          0.000102,
+          9.366666666666668e-05
+        ],
+        "reductionPercent": 99.91545319679098
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+        "beforeMs": [
+          0.131196,
+          0.12658833333333333
+        ],
+        "afterMs": [
+          0.026544,
+          0.025742
+        ],
+        "reductionPercent": 79.717153744797
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+        "beforeMs": [
+          0.13062966666666667,
+          0.12610466666666667
+        ],
+        "afterMs": [
+          0.026138,
+          0.025407666666666665
+        ],
+        "reductionPercent": 79.92256586899818
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+        "beforeMs": [
+          0.00011766666666666668,
+          7.400000000000001e-05
+        ],
+        "afterMs": [
+          8.866666666666668e-05,
+          8.2e-05
+        ],
+        "reductionPercent": 10.956521739130443
+      },
+      "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+        "beforeMs": [
+          2.8333333333333335e-05,
+          2.566666666666667e-05
+        ],
+        "afterMs": [
+          2.9e-05,
+          2.566666666666667e-05
+        ],
+        "reductionPercent": -1.2345679012345734
+      },
+      "Stream Begin/Prepare page uploads": {
+        "beforeMs": [
+          0.001007,
+          0.000809
+        ],
+        "afterMs": [
+          0.000832,
+          0.0007596666666666666
+        ],
+        "reductionPercent": 12.3531571218796
+      },
+      "Stream Begin/Prepare page uploads/Collect decoded pages": {
+        "beforeMs": [
+          0.00011466666666666667,
+          9.066666666666667e-05
+        ],
+        "afterMs": [
+          0.00010666666666666667,
+          8.533333333333334e-05
+        ],
+        "reductionPercent": 6.493506493506496
+      },
+      "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+        "beforeMs": [
+          3.2e-05,
+          3.233333333333334e-05
+        ],
+        "afterMs": [
+          3.6666666666666666e-05,
+          2.8e-05
+        ],
+        "reductionPercent": -0.5181347150258864
+      },
+      "Stream Begin/Prepare page uploads/Schedule page I/O": {
+        "beforeMs": [
+          7.3e-05,
+          4.5333333333333335e-05
+        ],
+        "afterMs": [
+          4.8333333333333334e-05,
+          4.8e-05
+        ],
+        "reductionPercent": 18.591549295774644
+      },
+      "Stream Begin/Prepare page uploads/Sort queued loads": {
+        "beforeMs": [
+          0.000265,
+          0.00018233333333333334
+        ],
+        "afterMs": [
+          0.00017866666666666668,
+          0.00014166666666666668
+        ],
+        "reductionPercent": 28.390461997019358
+      },
+      "Stream Begin/Prepare page uploads/Sort ready uploads": {
+        "beforeMs": [
+          7.000000000000001e-05,
+          6.233333333333334e-05
+        ],
+        "afterMs": [
+          5.933333333333334e-05,
+          5.6000000000000006e-05
+        ],
+        "reductionPercent": 12.846347607052898
+      },
+      "Stream Begin/Publish resident pages": {
+        "beforeMs": [
+          0.0022863333333333334,
+          0.002208
+        ],
+        "afterMs": [
+          0.0023193333333333334,
+          0.002301
+        ],
+        "reductionPercent": -2.803530371579055
+      },
+      "Stream Begin/Queue resident CLAS": {
+        "beforeMs": [
+          3.733333333333334e-05,
+          2.566666666666667e-05
+        ],
+        "afterMs": [
+          2.8000000000000003e-05,
+          2.9333333333333336e-05
+        ],
+        "reductionPercent": 8.994708994709011
+      },
+      "Stream Begin/Residency completion": {
+        "beforeMs": [
+          0.0008436666666666667,
+          0.0008163333333333333
+        ],
+        "afterMs": [
+          0.00091,
+          0.0008719999999999999
+        ],
+        "reductionPercent": -7.3493975903614395
+      },
+      "Stream Begin/Residency completion/Complete storage tasks": {
+        "beforeMs": [
+          5.6000000000000006e-05,
+          4.7000000000000004e-05
+        ],
+        "afterMs": [
+          7.033333333333334e-05,
+          5.466666666666667e-05
+        ],
+        "reductionPercent": -21.359223300970864
+      },
+      "Stream Begin/Residency completion/Complete unload tasks": {
+        "beforeMs": [
+          3.7000000000000005e-05,
+          3.4e-05
+        ],
+        "afterMs": [
+          4.4e-05,
+          3.6e-05
+        ],
+        "reductionPercent": -12.676056338028152
+      },
+      "Stream Begin/Residency completion/Complete update tasks": {
+        "beforeMs": [
+          4e-05,
+          3.9e-05
+        ],
+        "afterMs": [
+          4.066666666666667e-05,
+          4.066666666666667e-05
+        ],
+        "reductionPercent": -2.9535864978903037
+      },
+      "Stream Begin/Residency completion/Consume queued requests": {
+        "beforeMs": [
+          0.00011066666666666667,
+          0.00010066666666666667
+        ],
+        "afterMs": [
+          0.00013833333333333333,
+          0.00015133333333333334
+        ],
+        "reductionPercent": -37.06624605678235
+      },
+      "Stream Begin/Residency completion/Reset / latency tracking": {
+        "beforeMs": [
+          0.000163,
+          0.00016133333333333334
+        ],
+        "afterMs": [
+          0.000202,
+          0.00018366666666666667
+        ],
+        "reductionPercent": -18.91058581706062
+      },
+      "Stream Begin/Retire unloaded CLAS": {
+        "beforeMs": [
+          8.233333333333333e-05,
+          7.000000000000001e-05
+        ],
+        "afterMs": [
+          6.633333333333334e-05,
+          5.833333333333333e-05
+        ],
+        "reductionPercent": 18.16192560175055
+      }
+    },
+    "allMeasured": {
+      "Stream Begin": {
+        "beforeMs": [
+          1.8701315555555555,
+          1.6137655555555555
+        ],
+        "afterMs": [
+          0.6632341851851852,
+          0.6569461481481481
+        ],
+        "reductionPercent": 62.106219235840435
+      },
+      "Stream Begin/CLAS completion / expiry": {
+        "beforeMs": [
+          0.4294674074074074,
+          0.26579496296296296
+        ],
+        "afterMs": [
+          0.026268518518518517,
+          0.026483407407407407
+        ],
+        "reductionPercent": 92.4126591378986
+      },
+      "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+        "beforeMs": [
+          0.012617703703703704,
+          0.012030777777777777
+        ],
+        "afterMs": [
+          0.012414703703703704,
+          0.012712962962962962
+        ],
+        "reductionPercent": -1.9440758877791398
+      },
+      "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+        "beforeMs": [
+          0.416548,
+          0.25347992592592594
+        ],
+        "afterMs": [
+          0.013567407407407408,
+          0.013489888888888888
+        ],
+        "reductionPercent": 95.96176588327938
+      },
+      "Stream Begin/Discard obsolete CLAS plans": {
+        "beforeMs": [
+          0.001008962962962963,
+          0.0007875555555555556
+        ],
+        "afterMs": [
+          0.0009545185185185185,
+          0.0008625555555555555
+        ],
+        "reductionPercent": -1.1441883478332526
+      },
+      "Stream Begin/GPU request feedback": {
+        "beforeMs": [
+          0.4618159259259259,
+          0.4043491111111111
+        ],
+        "afterMs": [
+          0.2920304814814815,
+          0.2872224814814815
+        ],
+        "reductionPercent": 33.12441183905761
+      },
+      "Stream Begin/GPU request feedback/Consume requests": {
+        "beforeMs": [
+          0.4607944074074074,
+          0.40345662962962964
+        ],
+        "afterMs": [
+          0.2912165925925926,
+          0.2864371851851852
+        ],
+        "reductionPercent": 33.16134398193119
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+        "beforeMs": [
+          0.03041437037037037,
+          0.030253407407407406
+        ],
+        "afterMs": [
+          0.029686555555555556,
+          0.029792444444444444
+        ],
+        "reductionPercent": 1.9594879214666294
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+        "beforeMs": [
+          0.006812962962962963,
+          0.005794111111111111
+        ],
+        "afterMs": [
+          0.0064292592592592596,
+          0.006309296296296296
+        ],
+        "reductionPercent": -1.042918291024142
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+        "beforeMs": [
+          0.08420225925925925,
+          0.0822144074074074
+        ],
+        "afterMs": [
+          0.08473611111111111,
+          0.0853137037037037
+        ],
+        "reductionPercent": -2.1831636343403904
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+        "beforeMs": [
+          0.33864892592592594,
+          0.2845336666666667
+        ],
+        "afterMs": [
+          0.16978907407407406,
+          0.16446692592592593
+        ],
+        "reductionPercent": 46.36307175888644
+      },
+      "Stream Begin/GPU request feedback/Map feedback": {
+        "beforeMs": [
+          0.000486,
+          0.0004061111111111111
+        ],
+        "afterMs": [
+          0.00036355555555555555,
+          0.00036229629629629627
+        ],
+        "reductionPercent": 18.636608959189605
+      },
+      "Stream Begin/GPU request feedback/Unmap feedback": {
+        "beforeMs": [
+          0.0001938888888888889,
+          0.0001802962962962963
+        ],
+        "afterMs": [
+          0.00016877777777777778,
+          0.00015088888888888888
+        ],
+        "reductionPercent": 14.5699297238444
+      },
+      "Stream Begin/Joint cold page reclaim": {
+        "beforeMs": [
+          0.8645336296296297,
+          0.836509074074074
+        ],
+        "afterMs": [
+          0.2345542962962963,
+          0.23217462962962962
+        ],
+        "reductionPercent": 72.56218642190989
+      },
+      "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+        "beforeMs": [
+          0.14186544444444443,
+          0.1350237037037037
+        ],
+        "afterMs": [
+          0.00010837037037037038,
+          9.75925925925926e-05
+        ],
+        "reductionPercent": 99.92561537194923
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+        "beforeMs": [
+          0.6323478148148148,
+          0.6356249259259259
+        ],
+        "afterMs": [
+          0.12299133333333333,
+          0.12181107407407407
+        ],
+        "reductionPercent": 80.69340140038062
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+        "beforeMs": [
+          0.17684166666666667,
+          0.173848
+        ],
+        "afterMs": [
+          0.05028674074074074,
+          0.048136296296296295
+        ],
+        "reductionPercent": 71.93443480312499
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+        "beforeMs": [
+          0.45501044444444444,
+          0.4612869259259259
+        ],
+        "afterMs": [
+          0.07236625925925926,
+          0.073368
+        ],
+        "reductionPercent": 84.09530967000887
+      },
+      "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+        "beforeMs": [
+          0.08941155555555555,
+          0.06502981481481482
+        ],
+        "afterMs": [
+          0.11098407407407407,
+          0.10980422222222222
+        ],
+        "reductionPercent": -42.95929631213282
+      },
+      "Stream Begin/Prepare page uploads": {
+        "beforeMs": [
+          0.08235244444444445,
+          0.07986014814814815
+        ],
+        "afterMs": [
+          0.0801975925925926,
+          0.08211381481481482
+        ],
+        "reductionPercent": -0.06091685807831926
+      },
+      "Stream Begin/Prepare page uploads/Collect decoded pages": {
+        "beforeMs": [
+          0.0016713333333333333,
+          0.0015865555555555555
+        ],
+        "afterMs": [
+          0.0018083333333333332,
+          0.0018234074074074075
+        ],
+        "reductionPercent": -11.47527937882975
+      },
+      "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+        "beforeMs": [
+          7.303703703703704e-05,
+          9.051851851851852e-05
+        ],
+        "afterMs": [
+          6.251851851851853e-05,
+          6.381481481481482e-05
+        ],
+        "reductionPercent": 22.75815217391305
+      },
+      "Stream Begin/Prepare page uploads/Schedule page I/O": {
+        "beforeMs": [
+          0.017689296296296297,
+          0.017398592592592594
+        ],
+        "afterMs": [
+          0.01612662962962963,
+          0.016984296296296296
+        ],
+        "reductionPercent": 5.634317211911255
+      },
+      "Stream Begin/Prepare page uploads/Sort queued loads": {
+        "beforeMs": [
+          0.0018503333333333334,
+          0.001611074074074074
+        ],
+        "afterMs": [
+          0.0016612222222222221,
+          0.0016224074074074075
+        ],
+        "reductionPercent": 5.135996918401853
+      },
+      "Stream Begin/Prepare page uploads/Sort ready uploads": {
+        "beforeMs": [
+          0.0019255555555555556,
+          0.0019326666666666667
+        ],
+        "afterMs": [
+          0.0020054444444444442,
+          0.0017415925925925925
+        ],
+        "reductionPercent": 2.8817724532503974
+      },
+      "Stream Begin/Prepare page uploads/Stage payloads / CLAS plans": {
+        "beforeMs": [
+          0.05781862962962963,
+          0.055963851851851855
+        ],
+        "afterMs": [
+          0.057341333333333334,
+          0.058604333333333335
+        ],
+        "reductionPercent": -1.9011583831006984
+      },
+      "Stream Begin/Prepare page uploads/Submit upload tracking": {
+        "beforeMs": [
+          0.0005364444444444444,
+          0.0005325555555555555
+        ],
+        "afterMs": [
+          0.0004289259259259259,
+          0.0004733333333333333
+        ],
+        "reductionPercent": 15.597824203998211
+      },
+      "Stream Begin/Publish resident pages": {
+        "beforeMs": [
+          0.0028266666666666666,
+          0.002537814814814815
+        ],
+        "afterMs": [
+          0.004186962962962963,
+          0.002729962962962963
+        ],
+        "reductionPercent": -28.93931966777361
+      },
+      "Stream Begin/Queue resident CLAS": {
+        "beforeMs": [
+          0.001358148148148148,
+          0.0012253333333333333
+        ],
+        "afterMs": [
+          0.001330925925925926,
+          0.0014214074074074075
+        ],
+        "reductionPercent": -6.535825902457204
+      },
+      "Stream Begin/Residency completion": {
+        "beforeMs": [
+          0.012144962962962963,
+          0.011337592592592592
+        ],
+        "afterMs": [
+          0.012380444444444444,
+          0.01220662962962963
+        ],
+        "reductionPercent": -4.703570341419705
+      },
+      "Stream Begin/Residency completion/Complete storage tasks": {
+        "beforeMs": [
+          0.0025205925925925925,
+          0.0023954814814814815
+        ],
+        "afterMs": [
+          0.002739888888888889,
+          0.0026231481481481483
+        ],
+        "reductionPercent": -9.091867946419164
+      },
+      "Stream Begin/Residency completion/Complete unload tasks": {
+        "beforeMs": [
+          0.008035851851851851,
+          0.007439111111111111
+        ],
+        "afterMs": [
+          0.007947555555555555,
+          0.00792125925925926
+        ],
+        "reductionPercent": -2.5450907559163793
+      },
+      "Stream Begin/Residency completion/Complete update tasks": {
+        "beforeMs": [
+          3.896296296296297e-05,
+          4.192592592592593e-05
+        ],
+        "afterMs": [
+          4.003703703703704e-05,
+          3.85925925925926e-05
+        ],
+        "reductionPercent": 2.793040293040283
+      },
+      "Stream Begin/Residency completion/Consume queued requests": {
+        "beforeMs": [
+          0.0001227037037037037,
+          0.00011418518518518518
+        ],
+        "afterMs": [
+          0.00015207407407407409,
+          0.00016581481481481482
+        ],
+        "reductionPercent": -34.19324577861165
+      },
+      "Stream Begin/Residency completion/Reset / latency tracking": {
+        "beforeMs": [
+          0.0008739259259259259,
+          0.000837962962962963
+        ],
+        "afterMs": [
+          0.0009733703703703703,
+          0.0009381111111111111
+        ],
+        "reductionPercent": -11.659202526989887
+      },
+      "Stream Begin/Retire unloaded CLAS": {
+        "beforeMs": [
+          0.0021385925925925925,
+          0.0019567037037037036
+        ],
+        "afterMs": [
+          0.0022033703703703703,
+          0.002242740740740741
+        ],
+        "reductionPercent": -8.566286525643685
+      }
+    },
+    "forward_1": {
+      "Stream Begin": {
+        "beforeMs": [
+          2.2890533333333334,
+          1.7547793333333332
+        ],
+        "afterMs": [
+          0.902195,
+          0.8569463333333334
+        ],
+        "reductionPercent": 56.49816700295381
+      },
+      "Stream Begin/CLAS completion / expiry": {
+        "beforeMs": [
+          0.5239793333333334,
+          0.21909866666666666
+        ],
+        "afterMs": [
+          0.027365666666666667,
+          0.028524333333333332
+        ],
+        "reductionPercent": 92.47858232917675
+      },
+      "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+        "beforeMs": [
+          0.019463666666666667,
+          0.017780666666666667
+        ],
+        "afterMs": [
+          0.019257,
+          0.01968666666666667
+        ],
+        "reductionPercent": -4.562662776440263
+      },
+      "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+        "beforeMs": [
+          0.5041886666666666,
+          0.201036
+        ],
+        "afterMs": [
+          0.007785666666666666,
+          0.008514
+        ],
+        "reductionPercent": 97.68872709122482
+      },
+      "Stream Begin/Discard obsolete CLAS plans": {
+        "beforeMs": [
+          0.0013023333333333333,
+          0.0010626666666666666
+        ],
+        "afterMs": [
+          0.0013976666666666666,
+          0.001319
+        ],
+        "reductionPercent": -14.869626497533472
+      },
+      "Stream Begin/GPU request feedback": {
+        "beforeMs": [
+          0.5408546666666667,
+          0.42653266666666667
+        ],
+        "afterMs": [
+          0.36005966666666667,
+          0.35322133333333333
+        ],
+        "reductionPercent": 26.26727935931902
+      },
+      "Stream Begin/GPU request feedback/Consume requests": {
+        "beforeMs": [
+          0.539825,
+          0.425752
+        ],
+        "afterMs": [
+          0.35924466666666666,
+          0.3524583333333333
+        ],
+        "reductionPercent": 26.29246554132918
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+        "beforeMs": [
+          0.019424666666666666,
+          0.017211333333333332
+        ],
+        "afterMs": [
+          0.018312,
+          0.018985
+        ],
+        "reductionPercent": -1.8042362703351689
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+        "beforeMs": [
+          0.010041,
+          0.008227333333333333
+        ],
+        "afterMs": [
+          0.009492,
+          0.009778
+        ],
+        "reductionPercent": -5.483076361645867
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+        "beforeMs": [
+          0.114762,
+          0.10389133333333334
+        ],
+        "afterMs": [
+          0.114594,
+          0.11630133333333334
+        ],
+        "reductionPercent": -5.59881700103666
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+        "beforeMs": [
+          0.394762,
+          0.295844
+        ],
+        "afterMs": [
+          0.216141,
+          0.20675833333333332
+        ],
+        "reductionPercent": 38.764022708558386
+      },
+      "Stream Begin/GPU request feedback/Map feedback": {
+        "beforeMs": [
+          0.000468,
+          0.00029966666666666667
+        ],
+        "afterMs": [
+          0.0003083333333333333,
+          0.00034166666666666666
+        ],
+        "reductionPercent": 15.327833260963974
+      },
+      "Stream Begin/GPU request feedback/Unmap feedback": {
+        "beforeMs": [
+          0.00020366666666666667,
+          0.000177
+        ],
+        "afterMs": [
+          0.000173,
+          0.00013533333333333333
+        ],
+        "reductionPercent": 19.001751313485116
+      },
+      "Stream Begin/Joint cold page reclaim": {
+        "beforeMs": [
+          1.06888,
+          0.974819
+        ],
+        "afterMs": [
+          0.3528523333333333,
+          0.319775
+        ],
+        "reductionPercent": 67.08774954955044
+      },
+      "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+        "beforeMs": [
+          0.15689533333333333,
+          0.13956533333333335
+        ],
+        "afterMs": [
+          0.000101,
+          0.000112
+        ],
+        "reductionPercent": 99.92815235747969
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+        "beforeMs": [
+          0.788029,
+          0.7615943333333334
+        ],
+        "afterMs": [
+          0.14867133333333332,
+          0.14587
+        ],
+        "reductionPercent": 80.99271435854305
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+        "beforeMs": [
+          0.20148533333333332,
+          0.18673066666666666
+        ],
+        "afterMs": [
+          0.06203466666666667,
+          0.05173733333333334
+        ],
+        "reductionPercent": 70.69363447153131
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+        "beforeMs": [
+          0.585984,
+          0.5743996666666666
+        ],
+        "afterMs": [
+          0.08629933333333334,
+          0.09379833333333333
+        ],
+        "reductionPercent": 84.4794724503476
+      },
+      "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+        "beforeMs": [
+          0.1229,
+          0.072839
+        ],
+        "afterMs": [
+          0.203573,
+          0.17328333333333334
+        ],
+        "reductionPercent": -92.53001871539823
+      },
+      "Stream Begin/Prepare page uploads": {
+        "beforeMs": [
+          0.12387733333333334,
+          0.10881333333333333
+        ],
+        "afterMs": [
+          0.11736333333333333,
+          0.12422433333333334
+        ],
+        "reductionPercent": -3.823531097078825
+      },
+      "Stream Begin/Prepare page uploads/Collect decoded pages": {
+        "beforeMs": [
+          0.002666,
+          0.0020473333333333333
+        ],
+        "afterMs": [
+          0.0025383333333333334,
+          0.0026073333333333335
+        ],
+        "reductionPercent": -9.172560113154171
+      },
+      "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+        "beforeMs": [
+          0.00011733333333333333,
+          9.400000000000001e-05
+        ],
+        "afterMs": [
+          8.033333333333334e-05,
+          7.966666666666667e-05
+        ],
+        "reductionPercent": 24.29022082018927
+      },
+      "Stream Begin/Prepare page uploads/Schedule page I/O": {
+        "beforeMs": [
+          0.024683,
+          0.022925
+        ],
+        "afterMs": [
+          0.022578333333333332,
+          0.0235
+        ],
+        "reductionPercent": 3.213045426538952
+      },
+      "Stream Begin/Prepare page uploads/Sort queued loads": {
+        "beforeMs": [
+          0.0029103333333333333,
+          0.0020883333333333335
+        ],
+        "afterMs": [
+          0.002631333333333333,
+          0.0023193333333333334
+        ],
+        "reductionPercent": 0.9602560682848815
+      },
+      "Stream Begin/Prepare page uploads/Sort ready uploads": {
+        "beforeMs": [
+          0.003175,
+          0.0026256666666666668
+        ],
+        "afterMs": [
+          0.002564,
+          0.002573
+        ],
+        "reductionPercent": 11.441213653603032
+      },
+      "Stream Begin/Prepare page uploads/Stage payloads / CLAS plans": {
+        "beforeMs": [
+          0.088602,
+          0.077189
+        ],
+        "afterMs": [
+          0.08543566666666667,
+          0.09149766666666667
+        ],
+        "reductionPercent": -6.720710613563674
+      },
+      "Stream Begin/Prepare page uploads/Submit upload tracking": {
+        "beforeMs": [
+          0.000785,
+          0.001021
+        ],
+        "afterMs": [
+          0.000619,
+          0.0007103333333333333
+        ],
+        "reductionPercent": 26.39350313768918
+      },
+      "Stream Begin/Publish resident pages": {
+        "beforeMs": [
+          0.0031906666666666667,
+          0.002608
+        ],
+        "afterMs": [
+          0.016368666666666667,
+          0.003156
+        ],
+        "reductionPercent": -236.70958841112895
+      },
+      "Stream Begin/Queue resident CLAS": {
+        "beforeMs": [
+          0.002206,
+          0.0017263333333333334
+        ],
+        "afterMs": [
+          0.002119,
+          0.0021626666666666665
+        ],
+        "reductionPercent": -8.883614478257162
+      },
+      "Stream Begin/Residency completion": {
+        "beforeMs": [
+          0.011247333333333333,
+          0.009030333333333333
+        ],
+        "afterMs": [
+          0.011835333333333333,
+          0.011272333333333334
+        ],
+        "reductionPercent": -13.956240856114267
+      },
+      "Stream Begin/Residency completion/Complete storage tasks": {
+        "beforeMs": [
+          0.003920666666666667,
+          0.003501666666666667
+        ],
+        "afterMs": [
+          0.004000333333333333,
+          0.0039763333333333335
+        ],
+        "reductionPercent": -7.468451071091753
+      },
+      "Stream Begin/Residency completion/Complete unload tasks": {
+        "beforeMs": [
+          0.005212,
+          0.003796
+        ],
+        "afterMs": [
+          0.005393,
+          0.00489
+        ],
+        "reductionPercent": -14.154085257548864
+      },
+      "Stream Begin/Residency completion/Complete update tasks": {
+        "beforeMs": [
+          3.866666666666667e-05,
+          4e-05
+        ],
+        "afterMs": [
+          4.766666666666667e-05,
+          3.8333333333333334e-05
+        ],
+        "reductionPercent": -9.322033898305104
+      },
+      "Stream Begin/Residency completion/Consume queued requests": {
+        "beforeMs": [
+          0.00012166666666666667,
+          0.00010933333333333334
+        ],
+        "afterMs": [
+          0.000189,
+          0.00020800000000000001
+        ],
+        "reductionPercent": -71.86147186147184
+      },
+      "Stream Begin/Residency completion/Reset / latency tracking": {
+        "beforeMs": [
+          0.001385,
+          0.001125
+        ],
+        "afterMs": [
+          0.0015536666666666667,
+          0.00147
+        ],
+        "reductionPercent": -20.464807436918985
+      },
+      "Stream Begin/Retire unloaded CLAS": {
+        "beforeMs": [
+          0.0021086666666666667,
+          0.0018113333333333334
+        ],
+        "afterMs": [
+          0.0024106666666666664,
+          0.0024186666666666666
+        ],
+        "reductionPercent": -23.197278911564624
+      }
+    },
+    "forward_2": {
+      "Stream Begin": {
+        "beforeMs": [
+          2.864778,
+          2.029142333333333
+        ],
+        "afterMs": [
+          0.772015,
+          0.84159
+        ],
+        "reductionPercent": 67.028376228165
+      },
+      "Stream Begin/CLAS completion / expiry": {
+        "beforeMs": [
+          0.7126646666666666,
+          0.284415
+        ],
+        "afterMs": [
+          0.028740666666666668,
+          0.032382
+        ],
+        "reductionPercent": 93.86983119703909
+      },
+      "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+        "beforeMs": [
+          0.019818333333333334,
+          0.01718
+        ],
+        "afterMs": [
+          0.015811,
+          0.017573
+        ],
+        "reductionPercent": 9.768908509392327
+      },
+      "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+        "beforeMs": [
+          0.692474,
+          0.2669323333333333
+        ],
+        "afterMs": [
+          0.012662,
+          0.014505
+        ],
+        "reductionPercent": 97.16835306833845
+      },
+      "Stream Begin/Discard obsolete CLAS plans": {
+        "beforeMs": [
+          0.0025643333333333334,
+          0.0009883333333333333
+        ],
+        "afterMs": [
+          0.0014466666666666666,
+          0.0010776666666666667
+        ],
+        "reductionPercent": 28.945393131919683
+      },
+      "Stream Begin/GPU request feedback": {
+        "beforeMs": [
+          0.6932563333333334,
+          0.4972236666666667
+        ],
+        "afterMs": [
+          0.326805,
+          0.36149033333333336
+        ],
+        "reductionPercent": 42.18337701319356
+      },
+      "Stream Begin/GPU request feedback/Consume requests": {
+        "beforeMs": [
+          0.6921856666666667,
+          0.49643866666666664
+        ],
+        "afterMs": [
+          0.326165,
+          0.36079833333333333
+        ],
+        "reductionPercent": 42.20517668464356
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+        "beforeMs": [
+          0.04672066666666667,
+          0.041321666666666666
+        ],
+        "afterMs": [
+          0.03775233333333333,
+          0.041896333333333334
+        ],
+        "reductionPercent": 9.533671302063018
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+        "beforeMs": [
+          0.012135333333333333,
+          0.008287666666666667
+        ],
+        "afterMs": [
+          0.007765666666666666,
+          0.008492
+        ],
+        "reductionPercent": 20.395305945910657
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+        "beforeMs": [
+          0.14422133333333334,
+          0.12038133333333334
+        ],
+        "afterMs": [
+          0.10545266666666667,
+          0.12607666666666667
+        ],
+        "reductionPercent": 12.499244149718812
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+        "beforeMs": [
+          0.4881876666666667,
+          0.3257656666666667
+        ],
+        "afterMs": [
+          0.17467066666666667,
+          0.18374833333333335
+        ],
+        "reductionPercent": 55.96565732679186
+      },
+      "Stream Begin/GPU request feedback/Map feedback": {
+        "beforeMs": [
+          0.0004586666666666667,
+          0.000307
+        ],
+        "afterMs": [
+          0.000241,
+          0.00026766666666666665
+        ],
+        "reductionPercent": 33.565520243796264
+      },
+      "Stream Begin/GPU request feedback/Unmap feedback": {
+        "beforeMs": [
+          0.000206,
+          0.000158
+        ],
+        "afterMs": [
+          0.00013533333333333333,
+          0.00013033333333333335
+        ],
+        "reductionPercent": 27.014652014652007
+      },
+      "Stream Begin/Joint cold page reclaim": {
+        "beforeMs": [
+          1.2771463333333333,
+          1.1082566666666667
+        ],
+        "afterMs": [
+          0.28533433333333336,
+          0.30189866666666665
+        ],
+        "reductionPercent": 75.38223101086064
+      },
+      "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+        "beforeMs": [
+          0.178855,
+          0.14613
+        ],
+        "afterMs": [
+          8.1e-05,
+          9.433333333333334e-05
+        ],
+        "reductionPercent": 99.94604879199552
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+        "beforeMs": [
+          0.92814,
+          0.86843
+        ],
+        "afterMs": [
+          0.154237,
+          0.168801
+        ],
+        "reductionPercent": 82.01918099489582
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+        "beforeMs": [
+          0.220214,
+          0.197659
+        ],
+        "afterMs": [
+          0.052435999999999997,
+          0.056878333333333336
+        ],
+        "reductionPercent": 73.84029757047396
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+        "beforeMs": [
+          0.7073073333333333,
+          0.6702703333333333
+        ],
+        "afterMs": [
+          0.10150533333333334,
+          0.111603
+        ],
+        "reductionPercent": 84.53021281558716
+      },
+      "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+        "beforeMs": [
+          0.16896033333333332,
+          0.09282766666666667
+        ],
+        "afterMs": [
+          0.13057066666666667,
+          0.13249066666666667
+        ],
+        "reductionPercent": -0.48639866354964756
+      },
+      "Stream Begin/Prepare page uploads": {
+        "beforeMs": [
+          0.13787566666666667,
+          0.108561
+        ],
+        "afterMs": [
+          0.10060366666666666,
+          0.11271466666666667
+        ],
+        "reductionPercent": 13.43888220097118
+      },
+      "Stream Begin/Prepare page uploads/Collect decoded pages": {
+        "beforeMs": [
+          0.002415333333333333,
+          0.0020253333333333334
+        ],
+        "afterMs": [
+          0.001988,
+          0.002093666666666667
+        ],
+        "reductionPercent": 8.08437171595855
+      },
+      "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+        "beforeMs": [
+          9.733333333333333e-05,
+          8.933333333333334e-05
+        ],
+        "afterMs": [
+          6.833333333333333e-05,
+          7.666666666666667e-05
+        ],
+        "reductionPercent": 22.32142857142858
+      },
+      "Stream Begin/Prepare page uploads/Schedule page I/O": {
+        "beforeMs": [
+          0.030379333333333335,
+          0.023934666666666667
+        ],
+        "afterMs": [
+          0.019189,
+          0.023558333333333334
+        ],
+        "reductionPercent": 21.295921248051464
+      },
+      "Stream Begin/Prepare page uploads/Sort queued loads": {
+        "beforeMs": [
+          0.003212,
+          0.002011666666666667
+        ],
+        "afterMs": [
+          0.0018543333333333333,
+          0.0018666666666666666
+        ],
+        "reductionPercent": 28.766511390466466
+      },
+      "Stream Begin/Prepare page uploads/Sort ready uploads": {
+        "beforeMs": [
+          0.002818,
+          0.002401
+        ],
+        "afterMs": [
+          0.00206,
+          0.00213
+        ],
+        "reductionPercent": 19.7164207702625
+      },
+      "Stream Begin/Prepare page uploads/Stage payloads / CLAS plans": {
+        "beforeMs": [
+          0.09680766666666667,
+          0.07643633333333333
+        ],
+        "afterMs": [
+          0.07408233333333333,
+          0.081317
+        ],
+        "reductionPercent": 10.300308620596777
+      },
+      "Stream Begin/Prepare page uploads/Submit upload tracking": {
+        "beforeMs": [
+          0.001069,
+          0.000735
+        ],
+        "afterMs": [
+          0.0005703333333333333,
+          0.00067
+        ],
+        "reductionPercent": 31.245380635624542
+      },
+      "Stream Begin/Publish resident pages": {
+        "beforeMs": [
+          0.0036916666666666664,
+          0.0025826666666666667
+        ],
+        "afterMs": [
+          0.0030356666666666665,
+          0.002935333333333333
+        ],
+        "reductionPercent": 4.834510970621054
+      },
+      "Stream Begin/Queue resident CLAS": {
+        "beforeMs": [
+          0.0022,
+          0.0016983333333333334
+        ],
+        "afterMs": [
+          0.001665,
+          0.0020236666666666667
+        ],
+        "reductionPercent": 5.378366823428826
+      },
+      "Stream Begin/Residency completion": {
+        "beforeMs": [
+          0.017457,
+          0.013245
+        ],
+        "afterMs": [
+          0.013082,
+          0.014213
+        ],
+        "reductionPercent": 11.09699693831021
+      },
+      "Stream Begin/Residency completion/Complete storage tasks": {
+        "beforeMs": [
+          0.0041396666666666665,
+          0.003426666666666667
+        ],
+        "afterMs": [
+          0.003220666666666667,
+          0.003627333333333333
+        ],
+        "reductionPercent": 9.493810300013216
+      },
+      "Stream Begin/Residency completion/Complete unload tasks": {
+        "beforeMs": [
+          0.011085,
+          0.008030333333333334
+        ],
+        "afterMs": [
+          0.007983666666666667,
+          0.008667333333333332
+        ],
+        "reductionPercent": 12.891919227147486
+      },
+      "Stream Begin/Residency completion/Complete update tasks": {
+        "beforeMs": [
+          3.7000000000000005e-05,
+          3.366666666666667e-05
+        ],
+        "afterMs": [
+          3.566666666666667e-05,
+          4.066666666666667e-05
+        ],
+        "reductionPercent": -8.018867924528305
+      },
+      "Stream Begin/Residency completion/Consume queued requests": {
+        "beforeMs": [
+          0.00016366666666666667,
+          0.00011066666666666667
+        ],
+        "afterMs": [
+          0.00013833333333333333,
+          0.000157
+        ],
+        "reductionPercent": -7.654921020656125
+      },
+      "Stream Begin/Residency completion/Reset / latency tracking": {
+        "beforeMs": [
+          0.0013813333333333334,
+          0.0011116666666666666
+        ],
+        "afterMs": [
+          0.0012,
+          0.001173
+        ],
+        "reductionPercent": 4.813477737665462
+      },
+      "Stream Begin/Retire unloaded CLAS": {
+        "beforeMs": [
+          0.0031593333333333334,
+          0.0024113333333333335
+        ],
+        "afterMs": [
+          0.002722,
+          0.002779666666666667
+        ],
+        "reductionPercent": 1.2386309238870186
+      }
+    },
+    "forward_3": {
+      "Stream Begin": {
+        "beforeMs": [
+          2.642684,
+          2.164126
+        ],
+        "afterMs": [
+          0.8145093333333333,
+          0.8559436666666667
+        ],
+        "reductionPercent": 65.24819994965476
+      },
+      "Stream Begin/CLAS completion / expiry": {
+        "beforeMs": [
+          0.591124,
+          0.3428156666666667
+        ],
+        "afterMs": [
+          0.03998533333333333,
+          0.039865
+        ],
+        "reductionPercent": 91.45016148437854
+      },
+      "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+        "beforeMs": [
+          0.018067,
+          0.015064333333333334
+        ],
+        "afterMs": [
+          0.014985333333333333,
+          0.015138666666666667
+        ],
+        "reductionPercent": 9.077006660361796
+      },
+      "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+        "beforeMs": [
+          0.5727183333333333,
+          0.32743
+        ],
+        "afterMs": [
+          0.024709333333333333,
+          0.024438333333333333
+        ],
+        "reductionPercent": 94.54004802912112
+      },
+      "Stream Begin/Discard obsolete CLAS plans": {
+        "beforeMs": [
+          0.0011656666666666666,
+          0.0009286666666666666
+        ],
+        "afterMs": [
+          0.0008886666666666666,
+          0.0009323333333333333
+        ],
+        "reductionPercent": 13.051090243514253
+      },
+      "Stream Begin/GPU request feedback": {
+        "beforeMs": [
+          0.6171383333333333,
+          0.5103053333333334
+        ],
+        "afterMs": [
+          0.34922733333333333,
+          0.35812733333333335
+        ],
+        "reductionPercent": 37.26030953209488
+      },
+      "Stream Begin/GPU request feedback/Consume requests": {
+        "beforeMs": [
+          0.615935,
+          0.5095293333333333
+        ],
+        "afterMs": [
+          0.3485453333333333,
+          0.35742633333333335
+        ],
+        "reductionPercent": 37.272853012075316
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+        "beforeMs": [
+          0.040212333333333336,
+          0.038281333333333334
+        ],
+        "afterMs": [
+          0.037511333333333334,
+          0.038253333333333334
+        ],
+        "reductionPercent": 3.476713620207139
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+        "beforeMs": [
+          0.011093,
+          0.00767
+        ],
+        "afterMs": [
+          0.007451666666666666,
+          0.007575666666666666
+        ],
+        "reductionPercent": 19.909751461209126
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+        "beforeMs": [
+          0.14511466666666667,
+          0.12818833333333332
+        ],
+        "afterMs": [
+          0.12971,
+          0.12639
+        ],
+        "reductionPercent": 6.2944790214523705
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+        "beforeMs": [
+          0.4186546666666667,
+          0.33461766666666665
+        ],
+        "afterMs": [
+          0.17329333333333333,
+          0.18461233333333332
+        ],
+        "reductionPercent": 52.48655090213057
+      },
+      "Stream Begin/GPU request feedback/Map feedback": {
+        "beforeMs": [
+          0.00041433333333333334,
+          0.00029
+        ],
+        "afterMs": [
+          0.0002523333333333333,
+          0.0002866666666666667
+        ],
+        "reductionPercent": 23.473734027449122
+      },
+      "Stream Begin/GPU request feedback/Unmap feedback": {
+        "beforeMs": [
+          0.00020133333333333334,
+          0.00016733333333333333
+        ],
+        "afterMs": [
+          0.00014466666666666667,
+          0.00014033333333333335
+        ],
+        "reductionPercent": 22.694394213381553
+      },
+      "Stream Begin/Joint cold page reclaim": {
+        "beforeMs": [
+          1.27716,
+          1.16872
+        ],
+        "afterMs": [
+          0.29183433333333336,
+          0.316275
+        ],
+        "reductionPercent": 75.13740112624767
+      },
+      "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+        "beforeMs": [
+          0.160443,
+          0.14121366666666665
+        ],
+        "afterMs": [
+          0.000109,
+          9.166666666666667e-05
+        ],
+        "reductionPercent": 99.93347845784943
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+        "beforeMs": [
+          0.9592613333333333,
+          0.919458
+        ],
+        "afterMs": [
+          0.17116566666666666,
+          0.17122833333333334
+        ],
+        "reductionPercent": 81.77513831230424
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+        "beforeMs": [
+          0.20890566666666666,
+          0.19316166666666668
+        ],
+        "afterMs": [
+          0.05438266666666667,
+          0.05620666666666667
+        ],
+        "reductionPercent": 72.49482259190417
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+        "beforeMs": [
+          0.7497776666666667,
+          0.725644
+        ],
+        "afterMs": [
+          0.11630133333333334,
+          0.11471566666666666
+        ],
+        "reductionPercent": 84.3423066626151
+      },
+      "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+        "beforeMs": [
+          0.156303,
+          0.10698633333333334
+        ],
+        "afterMs": [
+          0.12006333333333333,
+          0.14447966666666667
+        ],
+        "reductionPercent": -0.47615550952817554
+      },
+      "Stream Begin/Prepare page uploads": {
+        "beforeMs": [
+          0.11338266666666667,
+          0.10405633333333333
+        ],
+        "afterMs": [
+          0.09682166666666667,
+          0.103698
+        ],
+        "reductionPercent": 7.781186141093976
+      },
+      "Stream Begin/Prepare page uploads/Collect decoded pages": {
+        "beforeMs": [
+          0.002165,
+          0.001945
+        ],
+        "afterMs": [
+          0.001538,
+          0.002225
+        ],
+        "reductionPercent": 8.442822384428228
+      },
+      "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+        "beforeMs": [
+          9.366666666666668e-05,
+          0.00017033333333333334
+        ],
+        "afterMs": [
+          6.933333333333334e-05,
+          7.500000000000001e-05
+        ],
+        "reductionPercent": 45.32828282828283
+      },
+      "Stream Begin/Prepare page uploads/Schedule page I/O": {
+        "beforeMs": [
+          0.027591,
+          0.024543
+        ],
+        "afterMs": [
+          0.02167933333333333,
+          0.023466666666666667
+        ],
+        "reductionPercent": 13.403920665976143
+      },
+      "Stream Begin/Prepare page uploads/Sort queued loads": {
+        "beforeMs": [
+          0.0024326666666666667,
+          0.0019203333333333334
+        ],
+        "afterMs": [
+          0.0016403333333333333,
+          0.0018
+        ],
+        "reductionPercent": 20.96638333716211
+      },
+      "Stream Begin/Prepare page uploads/Sort ready uploads": {
+        "beforeMs": [
+          0.002269,
+          0.001966
+        ],
+        "afterMs": [
+          0.00195,
+          0.0019306666666666667
+        ],
+        "reductionPercent": 8.366784730421095
+      },
+      "Stream Begin/Prepare page uploads/Stage payloads / CLAS plans": {
+        "beforeMs": [
+          0.07702366666666667,
+          0.071823
+        ],
+        "afterMs": [
+          0.06845766666666667,
+          0.072565
+        ],
+        "reductionPercent": 5.256415998566755
+      },
+      "Stream Begin/Prepare page uploads/Submit upload tracking": {
+        "beforeMs": [
+          0.000767,
+          0.0007406666666666667
+        ],
+        "afterMs": [
+          0.0006286666666666667,
+          0.0006976666666666666
+        ],
+        "reductionPercent": 12.027415432235234
+      },
+      "Stream Begin/Publish resident pages": {
+        "beforeMs": [
+          0.003203,
+          0.002793
+        ],
+        "afterMs": [
+          0.0027356666666666666,
+          0.0028683333333333334
+        ],
+        "reductionPercent": 6.537691794529687
+      },
+      "Stream Begin/Queue resident CLAS": {
+        "beforeMs": [
+          0.001727,
+          0.001519
+        ],
+        "afterMs": [
+          0.0015266666666666666,
+          0.0017046666666666666
+        ],
+        "reductionPercent": 0.4518381597863885
+      },
+      "Stream Begin/Residency completion": {
+        "beforeMs": [
+          0.020958333333333332,
+          0.018807
+        ],
+        "afterMs": [
+          0.018666,
+          0.018882333333333334
+        ],
+        "reductionPercent": 5.575207886266087
+      },
+      "Stream Begin/Residency completion/Complete storage tasks": {
+        "beforeMs": [
+          0.0035,
+          0.0034213333333333335
+        ],
+        "afterMs": [
+          0.0032853333333333332,
+          0.0033586666666666665
+        ],
+        "reductionPercent": 4.006935079946061
+      },
+      "Stream Begin/Residency completion/Complete unload tasks": {
+        "beforeMs": [
+          0.015268,
+          0.013522333333333334
+        ],
+        "afterMs": [
+          0.013662333333333334,
+          0.013739666666666667
+        ],
+        "reductionPercent": 4.822220421206191
+      },
+      "Stream Begin/Residency completion/Complete update tasks": {
+        "beforeMs": [
+          4.166666666666667e-05,
+          3.6e-05
+        ],
+        "afterMs": [
+          3.366666666666667e-05,
+          3.6e-05
+        ],
+        "reductionPercent": 10.300429184549365
+      },
+      "Stream Begin/Residency completion/Consume queued requests": {
+        "beforeMs": [
+          0.00013466666666666667,
+          0.00012
+        ],
+        "afterMs": [
+          0.00013966666666666668,
+          0.00014966666666666668
+        ],
+        "reductionPercent": -13.612565445026203
+      },
+      "Stream Begin/Residency completion/Reset / latency tracking": {
+        "beforeMs": [
+          0.0011336666666666667,
+          0.0010583333333333334
+        ],
+        "afterMs": [
+          0.0010123333333333334,
+          0.0010666666666666667
+        ],
+        "reductionPercent": 5.155109489051101
+      },
+      "Stream Begin/Retire unloaded CLAS": {
+        "beforeMs": [
+          0.0037863333333333334,
+          0.0032976666666666666
+        ],
+        "afterMs": [
+          0.003415333333333333,
+          0.003622
+        ],
+        "reductionPercent": 0.6587615283267567
+      }
+    },
+    "far_hold": {
+      "Stream Begin": {
+        "beforeMs": [
+          1.07369,
+          0.7923993333333333
+        ],
+        "afterMs": [
+          0.267306,
+          0.26000033333333333
+        ],
+        "reductionPercent": 71.74270685147621
+      },
+      "Stream Begin/CLAS completion / expiry": {
+        "beforeMs": [
+          0.35315166666666664,
+          0.190179
+        ],
+        "afterMs": [
+          0.012769333333333334,
+          0.012713666666666667
+        ],
+        "reductionPercent": 95.30985428149341
+      },
+      "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+        "beforeMs": [
+          0.00043,
+          0.000334
+        ],
+        "afterMs": [
+          0.00041533333333333336,
+          0.000391
+        ],
+        "reductionPercent": -5.541012216404906
+      },
+      "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+        "beforeMs": [
+          0.35242433333333334,
+          0.1896
+        ],
+        "afterMs": [
+          0.012084,
+          0.012059
+        ],
+        "reductionPercent": 95.5457719302885
+      },
+      "Stream Begin/Discard obsolete CLAS plans": {
+        "beforeMs": [
+          0.000203,
+          0.00018133333333333334
+        ],
+        "afterMs": [
+          0.000197,
+          0.00019133333333333334
+        ],
+        "reductionPercent": -1.0407632263659927
+      },
+      "Stream Begin/GPU request feedback": {
+        "beforeMs": [
+          0.29225,
+          0.21362566666666666
+        ],
+        "afterMs": [
+          0.15393866666666667,
+          0.14668666666666666
+        ],
+        "reductionPercent": 40.573276569275585
+      },
+      "Stream Begin/GPU request feedback/Consume requests": {
+        "beforeMs": [
+          0.291013,
+          0.21264466666666668
+        ],
+        "afterMs": [
+          0.15296266666666666,
+          0.145771
+        ],
+        "reductionPercent": 40.687159863213964
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+        "beforeMs": [
+          0.0005276666666666666,
+          0.000474
+        ],
+        "afterMs": [
+          0.0005073333333333334,
+          0.00047766666666666666
+        ],
+        "reductionPercent": 1.6638935108152952
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+        "beforeMs": [
+          0.0003266666666666667,
+          0.00031
+        ],
+        "afterMs": [
+          0.00031666666666666665,
+          0.000314
+        ],
+        "reductionPercent": 0.9424083769633551
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+        "beforeMs": [
+          0.024293,
+          0.023376333333333332
+        ],
+        "afterMs": [
+          0.024264333333333332,
+          0.024254666666666667
+        ],
+        "reductionPercent": -1.782417766838229
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+        "beforeMs": [
+          0.26517066666666667,
+          0.18794666666666668
+        ],
+        "afterMs": [
+          0.12733733333333333,
+          0.12021
+        ],
+        "reductionPercent": 45.36794001847939
+      },
+      "Stream Begin/GPU request feedback/Map feedback": {
+        "beforeMs": [
+          0.0006936666666666667,
+          0.00053
+        ],
+        "afterMs": [
+          0.000528,
+          0.00048166666666666665
+        ],
+        "reductionPercent": 17.488422773086356
+      },
+      "Stream Begin/GPU request feedback/Unmap feedback": {
+        "beforeMs": [
+          0.00022566666666666666,
+          0.00017833333333333335
+        ],
+        "afterMs": [
+          0.00018766666666666668,
+          0.00018233333333333334
+        ],
+        "reductionPercent": 8.415841584158423
+      },
+      "Stream Begin/Joint cold page reclaim": {
+        "beforeMs": [
+          0.404096,
+          0.3683166666666667
+        ],
+        "afterMs": [
+          0.07879066666666666,
+          0.07885533333333333
+        ],
+        "reductionPercent": 79.59044345034908
+      },
+      "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+        "beforeMs": [
+          0.11727233333333334,
+          0.10094566666666667
+        ],
+        "afterMs": [
+          0.00011966666666666667,
+          9.7e-05
+        ],
+        "reductionPercent": 99.90071090988522
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+        "beforeMs": [
+          0.2653703333333333,
+          0.247766
+        ],
+        "afterMs": [
+          0.05420333333333333,
+          0.054217
+        ],
+        "reductionPercent": 78.87104726554152
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+        "beforeMs": [
+          0.13316366666666665,
+          0.119508
+        ],
+        "afterMs": [
+          0.03256866666666667,
+          0.031628333333333335
+        ],
+        "reductionPercent": 74.59271914144179
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+        "beforeMs": [
+          0.13172366666666666,
+          0.12785133333333334
+        ],
+        "afterMs": [
+          0.021360666666666667,
+          0.022287666666666667
+        ],
+        "reductionPercent": 83.18469292754182
+      },
+      "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+        "beforeMs": [
+          0.02068,
+          0.018956
+        ],
+        "afterMs": [
+          0.024029666666666668,
+          0.024114666666666666
+        ],
+        "reductionPercent": -21.466175530662348
+      },
+      "Stream Begin/Prepare page uploads": {
+        "beforeMs": [
+          0.0020136666666666666,
+          0.0017566666666666668
+        ],
+        "afterMs": [
+          0.0018926666666666666,
+          0.0019313333333333333
+        ],
+        "reductionPercent": -1.423393157103714
+      },
+      "Stream Begin/Prepare page uploads/Collect decoded pages": {
+        "beforeMs": [
+          0.00014166666666666668,
+          0.000111
+        ],
+        "afterMs": [
+          0.00013866666666666666,
+          0.00011533333333333334
+        ],
+        "reductionPercent": -0.5277044854881341
+      },
+      "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+        "beforeMs": [
+          3.1333333333333334e-05,
+          3.566666666666667e-05
+        ],
+        "afterMs": [
+          3.7000000000000005e-05,
+          3.566666666666667e-05
+        ],
+        "reductionPercent": -8.457711442786087
+      },
+      "Stream Begin/Prepare page uploads/Schedule page I/O": {
+        "beforeMs": [
+          0.000364,
+          0.00034533333333333334
+        ],
+        "afterMs": [
+          0.0003556666666666667,
+          0.000356
+        ],
+        "reductionPercent": -0.328947368421062
+      },
+      "Stream Begin/Prepare page uploads/Sort queued loads": {
+        "beforeMs": [
+          0.00025433333333333335,
+          0.000247
+        ],
+        "afterMs": [
+          0.000219,
+          0.00017833333333333335
+        ],
+        "reductionPercent": 20.744680851063823
+      },
+      "Stream Begin/Prepare page uploads/Sort ready uploads": {
+        "beforeMs": [
+          0.00010233333333333333,
+          8.566666666666667e-05
+        ],
+        "afterMs": [
+          8.066666666666667e-05,
+          7.833333333333333e-05
+        ],
+        "reductionPercent": 15.42553191489362
+      },
+      "Stream Begin/Prepare page uploads/Stage payloads / CLAS plans": {
+        "beforeMs": [
+          0.0005676666666666666,
+          0.0005133333333333333
+        ],
+        "afterMs": [
+          0.0005716666666666666,
+          0.0006723333333333334
+        ],
+        "reductionPercent": -15.078630897317291
+      },
+      "Stream Begin/Prepare page uploads/Submit upload tracking": {
+        "beforeMs": [
+          1.7e-05,
+          2.3333333333333332e-05
+        ],
+        "afterMs": [
+          1.4e-05,
+          1.6e-05
+        ],
+        "reductionPercent": 25.619834710743806
+      },
+      "Stream Begin/Publish resident pages": {
+        "beforeMs": [
+          0.002431333333333333,
+          0.0019616666666666667
+        ],
+        "afterMs": [
+          0.002167333333333333,
+          0.002139
+        ],
+        "reductionPercent": 1.9728355717429147
+      },
+      "Stream Begin/Queue resident CLAS": {
+        "beforeMs": [
+          6.433333333333333e-05,
+          5.566666666666667e-05
+        ],
+        "afterMs": [
+          5.1666666666666664e-05,
+          6.7e-05
+        ],
+        "reductionPercent": 1.1111111111111072
+      },
+      "Stream Begin/Residency completion": {
+        "beforeMs": [
+          0.007641333333333333,
+          0.006953
+        ],
+        "afterMs": [
+          0.007452,
+          0.007451
+        ],
+        "reductionPercent": -2.1149761322887706
+      },
+      "Stream Begin/Residency completion/Complete storage tasks": {
+        "beforeMs": [
+          0.00012366666666666667,
+          0.00011133333333333333
+        ],
+        "afterMs": [
+          0.00013533333333333333,
+          0.000126
+        ],
+        "reductionPercent": -11.205673758865252
+      },
+      "Stream Begin/Residency completion/Complete unload tasks": {
+        "beforeMs": [
+          0.006637333333333334,
+          0.006079
+        ],
+        "afterMs": [
+          0.006403,
+          0.006458
+        ],
+        "reductionPercent": -1.1376444992005075
+      },
+      "Stream Begin/Residency completion/Complete update tasks": {
+        "beforeMs": [
+          4.666666666666667e-05,
+          3.633333333333333e-05
+        ],
+        "afterMs": [
+          4.1e-05,
+          3.966666666666667e-05
+        ],
+        "reductionPercent": 2.8112449799196915
+      },
+      "Stream Begin/Residency completion/Consume queued requests": {
+        "beforeMs": [
+          0.000131,
+          0.00011300000000000001
+        ],
+        "afterMs": [
+          0.00015033333333333335,
+          0.000163
+        ],
+        "reductionPercent": -28.415300546448073
+      },
+      "Stream Begin/Residency completion/Reset / latency tracking": {
+        "beforeMs": [
+          0.00020800000000000001,
+          0.00018166666666666667
+        ],
+        "afterMs": [
+          0.0002486666666666667,
+          0.00021066666666666667
+        ],
+        "reductionPercent": -17.87852865697177
+      },
+      "Stream Begin/Retire unloaded CLAS": {
+        "beforeMs": [
+          0.001437,
+          0.0013456666666666667
+        ],
+        "afterMs": [
+          0.0014443333333333333,
+          0.0014706666666666666
+        ],
+        "reductionPercent": -4.755630091039764
+      }
+    },
+    "return_1": {
+      "Stream Begin": {
+        "beforeMs": [
+          1.9770883333333333,
+          1.9237956666666667
+        ],
+        "afterMs": [
+          1.096904,
+          0.8972633333333333
+        ],
+        "reductionPercent": 48.87909167939027
+      },
+      "Stream Begin/CLAS completion / expiry": {
+        "beforeMs": [
+          0.36322666666666664,
+          0.33233833333333335
+        ],
+        "afterMs": [
+          0.040278666666666664,
+          0.036242666666666666
+        ],
+        "reductionPercent": 88.99867973038704
+      },
+      "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+        "beforeMs": [
+          0.022173333333333333,
+          0.022972333333333334
+        ],
+        "afterMs": [
+          0.025981333333333332,
+          0.023648666666666665
+        ],
+        "reductionPercent": -9.933031594025255
+      },
+      "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+        "beforeMs": [
+          0.340739,
+          0.30906266666666665
+        ],
+        "afterMs": [
+          0.013917333333333334,
+          0.012290333333333334
+        ],
+        "reductionPercent": 95.96682064527381
+      },
+      "Stream Begin/Discard obsolete CLAS plans": {
+        "beforeMs": [
+          0.001337,
+          0.0014006666666666666
+        ],
+        "afterMs": [
+          0.0020776666666666665,
+          0.0015993333333333332
+        ],
+        "reductionPercent": -34.311457445513184
+      },
+      "Stream Begin/GPU request feedback": {
+        "beforeMs": [
+          0.48494166666666666,
+          0.479381
+        ],
+        "afterMs": [
+          0.459659,
+          0.3766293333333333
+        ],
+        "reductionPercent": 13.277125775328313
+      },
+      "Stream Begin/GPU request feedback/Consume requests": {
+        "beforeMs": [
+          0.484111,
+          0.47845866666666664
+        ],
+        "afterMs": [
+          0.45866566666666664,
+          0.375808
+        ],
+        "reductionPercent": 13.30771209979954
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+        "beforeMs": [
+          0.058348333333333335,
+          0.061483333333333334
+        ],
+        "afterMs": [
+          0.06389133333333333,
+          0.058500666666666666
+        ],
+        "reductionPercent": -2.1366082977510192
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+        "beforeMs": [
+          0.010228,
+          0.010234
+        ],
+        "afterMs": [
+          0.014605,
+          0.01238
+        ],
+        "reductionPercent": -31.87860424200959
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+        "beforeMs": [
+          0.09941766666666667,
+          0.09899666666666666
+        ],
+        "afterMs": [
+          0.11788633333333333,
+          0.103775
+        ],
+        "reductionPercent": -11.716391456934394
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+        "beforeMs": [
+          0.31542333333333333,
+          0.3070083333333333
+        ],
+        "afterMs": [
+          0.26150966666666664,
+          0.20050466666666666
+        ],
+        "reductionPercent": 25.772681874047766
+      },
+      "Stream Begin/GPU request feedback/Map feedback": {
+        "beforeMs": [
+          0.0003553333333333333,
+          0.00043433333333333334
+        ],
+        "afterMs": [
+          0.00040733333333333333,
+          0.0003516666666666667
+        ],
+        "reductionPercent": 3.883495145631055
+      },
+      "Stream Begin/GPU request feedback/Unmap feedback": {
+        "beforeMs": [
+          0.00016633333333333333,
+          0.00017
+        ],
+        "afterMs": [
+          0.00020733333333333332,
+          0.000145
+        ],
+        "reductionPercent": -4.757185332011882
+      },
+      "Stream Begin/Joint cold page reclaim": {
+        "beforeMs": [
+          0.9556243333333333,
+          0.9314956666666667
+        ],
+        "afterMs": [
+          0.3847253333333333,
+          0.29990933333333336
+        ],
+        "reductionPercent": 63.720660759958726
+      },
+      "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+        "beforeMs": [
+          0.13721966666666666,
+          0.136946
+        ],
+        "afterMs": [
+          0.00011133333333333333,
+          0.00010633333333333333
+        ],
+        "reductionPercent": 99.92060761315847
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+        "beforeMs": [
+          0.7082796666666666,
+          0.70993
+        ],
+        "afterMs": [
+          0.16422833333333334,
+          0.13928933333333332
+        ],
+        "reductionPercent": 78.5985335031562
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+        "beforeMs": [
+          0.17311066666666666,
+          0.17409166666666667
+        ],
+        "afterMs": [
+          0.07745966666666666,
+          0.055709666666666664
+        ],
+        "reductionPercent": 61.64503502760639
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+        "beforeMs": [
+          0.5346993333333333,
+          0.535354
+        ],
+        "afterMs": [
+          0.08632566666666666,
+          0.08322866666666667
+        ],
+        "reductionPercent": 84.15459042539936
+      },
+      "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+        "beforeMs": [
+          0.10924766666666667,
+          0.08370999999999999
+        ],
+        "afterMs": [
+          0.21977766666666668,
+          0.15998633333333334
+        ],
+        "reductionPercent": -96.81208140645703
+      },
+      "Stream Begin/Prepare page uploads": {
+        "beforeMs": [
+          0.14238766666666666,
+          0.14926266666666665
+        ],
+        "afterMs": [
+          0.17192566666666667,
+          0.149308
+        ],
+        "reductionPercent": -10.143425174666909
+      },
+      "Stream Begin/Prepare page uploads/Collect decoded pages": {
+        "beforeMs": [
+          0.0031336666666666665,
+          0.0031576666666666667
+        ],
+        "afterMs": [
+          0.005266666666666667,
+          0.003742
+        ],
+        "reductionPercent": -43.19169227508743
+      },
+      "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+        "beforeMs": [
+          0.000107,
+          0.00015466666666666667
+        ],
+        "afterMs": [
+          8.266666666666667e-05,
+          9.833333333333334e-05
+        ],
+        "reductionPercent": 30.828025477707
+      },
+      "Stream Begin/Prepare page uploads/Schedule page I/O": {
+        "beforeMs": [
+          0.029759999999999998,
+          0.030509333333333333
+        ],
+        "afterMs": [
+          0.033285666666666665,
+          0.029138
+        ],
+        "reductionPercent": -3.574509977434648
+      },
+      "Stream Begin/Prepare page uploads/Sort queued loads": {
+        "beforeMs": [
+          0.0029603333333333335,
+          0.0031523333333333334
+        ],
+        "afterMs": [
+          0.0037113333333333334,
+          0.003405
+        ],
+        "reductionPercent": -16.419456865525127
+      },
+      "Stream Begin/Prepare page uploads/Sort ready uploads": {
+        "beforeMs": [
+          0.003961666666666666,
+          0.0047413333333333335
+        ],
+        "afterMs": [
+          0.006295333333333333,
+          0.0038226666666666665
+        ],
+        "reductionPercent": -16.258761346662087
+      },
+      "Stream Begin/Prepare page uploads/Stage payloads / CLAS plans": {
+        "beforeMs": [
+          0.100784,
+          0.10583433333333334
+        ],
+        "afterMs": [
+          0.12129133333333333,
+          0.10729
+        ],
+        "reductionPercent": -10.629744053044664
+      },
+      "Stream Begin/Prepare page uploads/Submit upload tracking": {
+        "beforeMs": [
+          0.000749,
+          0.0007646666666666666
+        ],
+        "afterMs": [
+          0.0007806666666666667,
+          0.000691
+        ],
+        "reductionPercent": 2.7747192248403385
+      },
+      "Stream Begin/Publish resident pages": {
+        "beforeMs": [
+          0.002694666666666667,
+          0.002613
+        ],
+        "afterMs": [
+          0.003194,
+          0.0030893333333333333
+        ],
+        "reductionPercent": -18.382214406832876
+      },
+      "Stream Begin/Queue resident CLAS": {
+        "beforeMs": [
+          0.0024433333333333334,
+          0.0022963333333333334
+        ],
+        "afterMs": [
+          0.002753666666666667,
+          0.002735
+        ],
+        "reductionPercent": -15.802799071664687
+      },
+      "Stream Begin/Residency completion": {
+        "beforeMs": [
+          0.012917,
+          0.012783666666666667
+        ],
+        "afterMs": [
+          0.017493666666666668,
+          0.014302
+        ],
+        "reductionPercent": -23.71533812352469
+      },
+      "Stream Begin/Residency completion/Complete storage tasks": {
+        "beforeMs": [
+          0.004029,
+          0.003900666666666667
+        ],
+        "afterMs": [
+          0.006523,
+          0.004543666666666666
+        ],
+        "reductionPercent": -39.56030097944427
+      },
+      "Stream Begin/Residency completion/Complete unload tasks": {
+        "beforeMs": [
+          0.006952666666666667,
+          0.006823666666666667
+        ],
+        "afterMs": [
+          0.008008333333333333,
+          0.0072963333333333335
+        ],
+        "reductionPercent": -11.09390500616998
+      },
+      "Stream Begin/Residency completion/Complete update tasks": {
+        "beforeMs": [
+          3.433333333333333e-05,
+          3.9e-05
+        ],
+        "afterMs": [
+          5e-05,
+          3.966666666666667e-05
+        ],
+        "reductionPercent": -22.272727272727288
+      },
+      "Stream Begin/Residency completion/Consume queued requests": {
+        "beforeMs": [
+          0.00011833333333333334,
+          0.000111
+        ],
+        "afterMs": [
+          0.00020966666666666668,
+          0.00019366666666666667
+        ],
+        "reductionPercent": -75.87209302325581
+      },
+      "Stream Begin/Residency completion/Reset / latency tracking": {
+        "beforeMs": [
+          0.0012876666666666666,
+          0.0014203333333333333
+        ],
+        "afterMs": [
+          0.0020626666666666666,
+          0.0016543333333333334
+        ],
+        "reductionPercent": -37.259970457902504
+      },
+      "Stream Begin/Retire unloaded CLAS": {
+        "beforeMs": [
+          0.001766,
+          0.0017506666666666666
+        ],
+        "afterMs": [
+          0.002371,
+          0.0020453333333333335
+        ],
+        "reductionPercent": -25.582938388625575
+      }
+    },
+    "return_2": {
+      "Stream Begin": {
+        "beforeMs": [
+          2.3376656666666666,
+          2.1530583333333335
+        ],
+        "afterMs": [
+          0.8998253333333334,
+          1.0117156666666667
+        ],
+        "reductionPercent": 57.43356750492794
+      },
+      "Stream Begin/CLAS completion / expiry": {
+        "beforeMs": [
+          0.39887333333333336,
+          0.29225466666666666
+        ],
+        "afterMs": [
+          0.038119,
+          0.04163033333333333
+        ],
+        "reductionPercent": 88.46098937775155
+      },
+      "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+        "beforeMs": [
+          0.018071666666666666,
+          0.017093333333333332
+        ],
+        "afterMs": [
+          0.017636333333333334,
+          0.020467333333333334
+        ],
+        "reductionPercent": -8.356794160860703
+      },
+      "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+        "beforeMs": [
+          0.380496,
+          0.27486866666666665
+        ],
+        "afterMs": [
+          0.020184333333333332,
+          0.020862
+        ],
+        "reductionPercent": 93.73687117706477
+      },
+      "Stream Begin/Discard obsolete CLAS plans": {
+        "beforeMs": [
+          0.0011403333333333333,
+          0.0010226666666666667
+        ],
+        "afterMs": [
+          0.0011403333333333333,
+          0.0012309999999999999
+        ],
+        "reductionPercent": -9.631684388965933
+      },
+      "Stream Begin/GPU request feedback": {
+        "beforeMs": [
+          0.569241,
+          0.5286073333333333
+        ],
+        "afterMs": [
+          0.3922,
+          0.4238923333333333
+        ],
+        "reductionPercent": 25.66438290656421
+      },
+      "Stream Begin/GPU request feedback/Consume requests": {
+        "beforeMs": [
+          0.5684056666666667,
+          0.527824
+        ],
+        "afterMs": [
+          0.3915113333333333,
+          0.42310333333333333
+        ],
+        "reductionPercent": 25.689416056063674
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+        "beforeMs": [
+          0.056674333333333334,
+          0.055723
+        ],
+        "afterMs": [
+          0.055121666666666666,
+          0.05548566666666667
+        ],
+        "reductionPercent": 1.592564473652991
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+        "beforeMs": [
+          0.009508333333333334,
+          0.008336
+        ],
+        "afterMs": [
+          0.009239,
+          0.009551666666666667
+        ],
+        "reductionPercent": -5.303270879644328
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+        "beforeMs": [
+          0.126302,
+          0.12517566666666666
+        ],
+        "afterMs": [
+          0.12898366666666666,
+          0.131484
+        ],
+        "reductionPercent": -3.5748701342597666
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+        "beforeMs": [
+          0.3751466666666667,
+          0.3378873333333333
+        ],
+        "afterMs": [
+          0.19756666666666667,
+          0.22597233333333333
+        ],
+        "reductionPercent": 40.60044822547031
+      },
+      "Stream Begin/GPU request feedback/Map feedback": {
+        "beforeMs": [
+          0.000346,
+          0.00031766666666666667
+        ],
+        "afterMs": [
+          0.0002613333333333333,
+          0.00033
+        ],
+        "reductionPercent": 10.899045705675558
+      },
+      "Stream Begin/GPU request feedback/Unmap feedback": {
+        "beforeMs": [
+          0.00017566666666666666,
+          0.00016833333333333335
+        ],
+        "afterMs": [
+          0.00015533333333333333,
+          0.000146
+        ],
+        "reductionPercent": 12.4031007751938
+      },
+      "Stream Begin/Joint cold page reclaim": {
+        "beforeMs": [
+          1.2131416666666666,
+          1.1764406666666667
+        ],
+        "afterMs": [
+          0.31822633333333333,
+          0.3782043333333333
+        ],
+        "reductionPercent": 70.8555483963934
+      },
+      "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+        "beforeMs": [
+          0.15640266666666666,
+          0.151498
+        ],
+        "afterMs": [
+          8.7e-05,
+          0.00010533333333333334
+        ],
+        "reductionPercent": 99.9375339665823
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+        "beforeMs": [
+          0.9379853333333333,
+          0.9269633333333334
+        ],
+        "afterMs": [
+          0.173474,
+          0.181504
+        ],
+        "reductionPercent": 80.96580316955999
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+        "beforeMs": [
+          0.21154666666666666,
+          0.206375
+        ],
+        "afterMs": [
+          0.05904,
+          0.069074
+        ],
+        "reductionPercent": 69.34497294150019
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+        "beforeMs": [
+          0.725916,
+          0.7201013333333334
+        ],
+        "afterMs": [
+          0.11410833333333334,
+          0.11209533333333334
+        ],
+        "reductionPercent": 84.35678041664784
+      },
+      "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+        "beforeMs": [
+          0.117753,
+          0.09698666666666667
+        ],
+        "afterMs": [
+          0.14415166666666668,
+          0.19609066666666666
+        ],
+        "reductionPercent": -58.4441005310306
+      },
+      "Stream Begin/Prepare page uploads": {
+        "beforeMs": [
+          0.120207,
+          0.121121
+        ],
+        "afterMs": [
+          0.11536233333333333,
+          0.12838866666666668
+        ],
+        "reductionPercent": -1.004027713319644
+      },
+      "Stream Begin/Prepare page uploads/Collect decoded pages": {
+        "beforeMs": [
+          0.0023166666666666665,
+          0.002497
+        ],
+        "afterMs": [
+          0.0024666666666666665,
+          0.0030086666666666664
+        ],
+        "reductionPercent": -13.745585485769674
+      },
+      "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+        "beforeMs": [
+          8.233333333333333e-05,
+          8.533333333333334e-05
+        ],
+        "afterMs": [
+          7.6e-05,
+          7.7e-05
+        ],
+        "reductionPercent": 8.747514910536768
+      },
+      "Stream Begin/Prepare page uploads/Schedule page I/O": {
+        "beforeMs": [
+          0.027966333333333333,
+          0.027335333333333333
+        ],
+        "afterMs": [
+          0.024672,
+          0.028048333333333335
+        ],
+        "reductionPercent": 4.66773153310629
+      },
+      "Stream Begin/Prepare page uploads/Sort queued loads": {
+        "beforeMs": [
+          0.0023166666666666665,
+          0.002266
+        ],
+        "afterMs": [
+          0.0022203333333333333,
+          0.002464333333333333
+        ],
+        "reductionPercent": -2.2257782950247496
+      },
+      "Stream Begin/Prepare page uploads/Sort ready uploads": {
+        "beforeMs": [
+          0.00272,
+          0.0026496666666666665
+        ],
+        "afterMs": [
+          0.002390666666666667,
+          0.0027286666666666666
+        ],
+        "reductionPercent": 4.661990191818233
+      },
+      "Stream Begin/Prepare page uploads/Stage payloads / CLAS plans": {
+        "beforeMs": [
+          0.08313066666666667,
+          0.08455433333333333
+        ],
+        "afterMs": [
+          0.08196633333333334,
+          0.09034966666666666
+        ],
+        "reductionPercent": -2.7617258550257873
+      },
+      "Stream Begin/Prepare page uploads/Submit upload tracking": {
+        "beforeMs": [
+          0.000752,
+          0.0008056666666666667
+        ],
+        "afterMs": [
+          0.000632,
+          0.0006979999999999999
+        ],
+        "reductionPercent": 14.61587845067408
+      },
+      "Stream Begin/Publish resident pages": {
+        "beforeMs": [
+          0.0028576666666666668,
+          0.00286
+        ],
+        "afterMs": [
+          0.0028206666666666666,
+          0.003114
+        ],
+        "reductionPercent": -3.7952544744359384
+      },
+      "Stream Begin/Queue resident CLAS": {
+        "beforeMs": [
+          0.001828,
+          0.0017306666666666666
+        ],
+        "afterMs": [
+          0.0019793333333333334,
+          0.002093666666666667
+        ],
+        "reductionPercent": -14.452978643686777
+      },
+      "Stream Begin/Residency completion": {
+        "beforeMs": [
+          0.017441,
+          0.016557333333333334
+        ],
+        "afterMs": [
+          0.017677666666666668,
+          0.019029666666666667
+        ],
+        "reductionPercent": -7.968037648904347
+      },
+      "Stream Begin/Residency completion/Complete storage tasks": {
+        "beforeMs": [
+          0.0038836666666666668,
+          0.0035009999999999998
+        ],
+        "afterMs": [
+          0.0036796666666666666,
+          0.004151
+        ],
+        "reductionPercent": -6.039541392073677
+      },
+      "Stream Begin/Residency completion/Complete unload tasks": {
+        "beforeMs": [
+          0.011738333333333333,
+          0.011181
+        ],
+        "afterMs": [
+          0.012066666666666667,
+          0.012783333333333334
+        ],
+        "reductionPercent": -8.423747054888153
+      },
+      "Stream Begin/Residency completion/Complete update tasks": {
+        "beforeMs": [
+          4.3666666666666666e-05,
+          7.000000000000001e-05
+        ],
+        "afterMs": [
+          3.966666666666667e-05,
+          3.8e-05
+        ],
+        "reductionPercent": 31.671554252199417
+      },
+      "Stream Begin/Residency completion/Consume queued requests": {
+        "beforeMs": [
+          0.00011833333333333334,
+          0.000143
+        ],
+        "afterMs": [
+          0.00013766666666666666,
+          0.00018333333333333334
+        ],
+        "reductionPercent": -22.831632653061206
+      },
+      "Stream Begin/Residency completion/Reset / latency tracking": {
+        "beforeMs": [
+          0.0011116666666666666,
+          0.0010973333333333334
+        ],
+        "afterMs": [
+          0.0011866666666666666,
+          0.0013323333333333334
+        ],
+        "reductionPercent": -14.033499320959697
+      },
+      "Stream Begin/Retire unloaded CLAS": {
+        "beforeMs": [
+          0.00298,
+          0.0028176666666666667
+        ],
+        "afterMs": [
+          0.003119666666666667,
+          0.003454333333333333
+        ],
+        "reductionPercent": -13.390444431667925
+      }
+    },
+    "return_3": {
+      "Stream Begin": {
+        "beforeMs": [
+          1.870402,
+          2.1131953333333335
+        ],
+        "afterMs": [
+          0.815602,
+          0.839986
+        ],
+        "reductionPercent": 58.43987578396478
+      },
+      "Stream Begin/CLAS completion / expiry": {
+        "beforeMs": [
+          0.36384,
+          0.31806
+        ],
+        "afterMs": [
+          0.035597333333333335,
+          0.03556566666666667
+        ],
+        "reductionPercent": 89.56401231852178
+      },
+      "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+        "beforeMs": [
+          0.015024666666666667,
+          0.017317666666666665
+        ],
+        "afterMs": [
+          0.017101333333333333,
+          0.017020333333333332
+        ],
+        "reductionPercent": -5.50156142104774
+      },
+      "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+        "beforeMs": [
+          0.348573,
+          0.3004386666666667
+        ],
+        "afterMs": [
+          0.018213,
+          0.018262333333333332
+        ],
+        "reductionPercent": 94.3798647687381
+      },
+      "Stream Begin/Discard obsolete CLAS plans": {
+        "beforeMs": [
+          0.0010113333333333333,
+          0.0011516666666666667
+        ],
+        "afterMs": [
+          0.0010746666666666667,
+          0.001051
+        ],
+        "reductionPercent": 1.7259978425026912
+      },
+      "Stream Begin/GPU request feedback": {
+        "beforeMs": [
+          0.45900266666666667,
+          0.5322333333333333
+        ],
+        "afterMs": [
+          0.35606933333333335,
+          0.36378699999999997
+        ],
+        "reductionPercent": 27.37790664046369
+      },
+      "Stream Begin/GPU request feedback/Consume requests": {
+        "beforeMs": [
+          0.4582983333333333,
+          0.5314236666666666
+        ],
+        "afterMs": [
+          0.35539733333333334,
+          0.36311766666666667
+        ],
+        "reductionPercent": 27.402341263506315
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+        "beforeMs": [
+          0.051401333333333334,
+          0.057355333333333335
+        ],
+        "afterMs": [
+          0.053683,
+          0.054143333333333335
+        ],
+        "reductionPercent": 0.855426487265154
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+        "beforeMs": [
+          0.0074526666666666665,
+          0.008516333333333334
+        ],
+        "afterMs": [
+          0.008496333333333333,
+          0.008215666666666666
+        ],
+        "reductionPercent": -4.65276473166758
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+        "beforeMs": [
+          0.08216033333333334,
+          0.11472566666666667
+        ],
+        "afterMs": [
+          0.11504233333333333,
+          0.113211
+        ],
+        "reductionPercent": -15.931723603167992
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+        "beforeMs": [
+          0.316781,
+          0.350088
+        ],
+        "afterMs": [
+          0.17761466666666667,
+          0.18697866666666665
+        ],
+        "reductionPercent": 45.32759307550158
+      },
+      "Stream Begin/GPU request feedback/Map feedback": {
+        "beforeMs": [
+          0.000327,
+          0.0002973333333333333
+        ],
+        "afterMs": [
+          0.000244,
+          0.00026033333333333334
+        ],
+        "reductionPercent": 19.220501868659902
+      },
+      "Stream Begin/GPU request feedback/Unmap feedback": {
+        "beforeMs": [
+          0.00013033333333333335,
+          0.00017333333333333334
+        ],
+        "afterMs": [
+          0.00014666666666666666,
+          0.00013833333333333335
+        ],
+        "reductionPercent": 6.147091108671809
+      },
+      "Stream Begin/Joint cold page reclaim": {
+        "beforeMs": [
+          0.9177316666666666,
+          1.1038736666666666
+        ],
+        "afterMs": [
+          0.27473333333333333,
+          0.28912166666666667
+        ],
+        "reductionPercent": 72.108552015428
+      },
+      "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+        "beforeMs": [
+          0.13025933333333334,
+          0.15412166666666666
+        ],
+        "afterMs": [
+          8.633333333333334e-05,
+          8.833333333333334e-05
+        ],
+        "reductionPercent": 99.9385800504722
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+        "beforeMs": [
+          0.7022893333333333,
+          0.8577066666666666
+        ],
+        "afterMs": [
+          0.15574533333333335,
+          0.15519466666666668
+        ],
+        "reductionPercent": 80.06789760999386
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+        "beforeMs": [
+          0.16694633333333334,
+          0.20515166666666668
+        ],
+        "afterMs": [
+          0.05511766666666667,
+          0.05610066666666667
+        ],
+        "reductionPercent": 70.11047268909445
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+        "beforeMs": [
+          0.534956,
+          0.6520133333333333
+        ],
+        "afterMs": [
+          0.100316,
+          0.09878366666666667
+        ],
+        "reductionPercent": 83.22621645939743
+      },
+      "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+        "beforeMs": [
+          0.08441866666666667,
+          0.09116066666666667
+        ],
+        "afterMs": [
+          0.11844633333333333,
+          0.13336166666666666
+        ],
+        "reductionPercent": -43.41551207621244
+      },
+      "Stream Begin/Prepare page uploads": {
+        "beforeMs": [
+          0.09897633333333333,
+          0.122721
+        ],
+        "afterMs": [
+          0.115413,
+          0.11656966666666667
+        ],
+        "reductionPercent": -4.6393581639833315
+      },
+      "Stream Begin/Prepare page uploads/Collect decoded pages": {
+        "beforeMs": [
+          0.0019766666666666665,
+          0.002279666666666667
+        ],
+        "afterMs": [
+          0.002125,
+          0.0024406666666666665
+        ],
+        "reductionPercent": -7.267601221708819
+      },
+      "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+        "beforeMs": [
+          6.633333333333334e-05,
+          0.000124
+        ],
+        "afterMs": [
+          7.366666666666666e-05,
+          7.333333333333333e-05
+        ],
+        "reductionPercent": 22.767075306479867
+      },
+      "Stream Begin/Prepare page uploads/Schedule page I/O": {
+        "beforeMs": [
+          0.018258333333333335,
+          0.026634
+        ],
+        "afterMs": [
+          0.023155,
+          0.024544666666666666
+        ],
+        "reductionPercent": -6.253480549759782
+      },
+      "Stream Begin/Prepare page uploads/Sort queued loads": {
+        "beforeMs": [
+          0.002095,
+          0.0023806666666666668
+        ],
+        "afterMs": [
+          0.002297,
+          0.0022713333333333335
+        ],
+        "reductionPercent": -2.070455053250919
+      },
+      "Stream Begin/Prepare page uploads/Sort ready uploads": {
+        "beforeMs": [
+          0.0021336666666666665,
+          0.0027790000000000002
+        ],
+        "afterMs": [
+          0.0025833333333333333,
+          0.0022853333333333332
+        ],
+        "reductionPercent": 0.8956439136924899
+      },
+      "Stream Begin/Prepare page uploads/Stage payloads / CLAS plans": {
+        "beforeMs": [
+          0.07297433333333334,
+          0.086898
+        ],
+        "afterMs": [
+          0.08368433333333333,
+          0.083267
+        ],
+        "reductionPercent": -4.427908101672795
+      },
+      "Stream Begin/Prepare page uploads/Submit upload tracking": {
+        "beforeMs": [
+          0.000683,
+          0.000695
+        ],
+        "afterMs": [
+          0.00061,
+          0.0007706666666666667
+        ],
+        "reductionPercent": -0.19351717464926033
+      },
+      "Stream Begin/Publish resident pages": {
+        "beforeMs": [
+          0.0027983333333333332,
+          0.0028473333333333332
+        ],
+        "afterMs": [
+          0.0026886666666666665,
+          0.002822
+        ],
+        "reductionPercent": 2.3912145007970786
+      },
+      "Stream Begin/Queue resident CLAS": {
+        "beforeMs": [
+          0.0016663333333333333,
+          0.0019216666666666666
+        ],
+        "afterMs": [
+          0.001807,
+          0.0019323333333333334
+        ],
+        "reductionPercent": -4.217762913415091
+      },
+      "Stream Begin/Residency completion": {
+        "beforeMs": [
+          0.014186333333333334,
+          0.017035333333333333
+        ],
+        "afterMs": [
+          0.016736333333333332,
+          0.017004
+        ],
+        "reductionPercent": -8.06704745636042
+      },
+      "Stream Begin/Residency completion/Complete storage tasks": {
+        "beforeMs": [
+          0.002952666666666667,
+          0.0035626666666666667
+        ],
+        "afterMs": [
+          0.003653,
+          0.00368
+        ],
+        "reductionPercent": -12.549882328865248
+      },
+      "Stream Begin/Residency completion/Complete unload tasks": {
+        "beforeMs": [
+          0.009606666666666666,
+          0.011537333333333333
+        ],
+        "afterMs": [
+          0.011277666666666667,
+          0.011422
+        ],
+        "reductionPercent": -7.357485180981205
+      },
+      "Stream Begin/Residency completion/Complete update tasks": {
+        "beforeMs": [
+          3.566666666666667e-05,
+          3.9e-05
+        ],
+        "afterMs": [
+          3.8e-05,
+          3.966666666666667e-05
+        ],
+        "reductionPercent": -4.01785714285714
+      },
+      "Stream Begin/Residency completion/Consume queued requests": {
+        "beforeMs": [
+          9.933333333333334e-05,
+          0.00011433333333333334
+        ],
+        "afterMs": [
+          0.00012766666666666666,
+          0.000155
+        ],
+        "reductionPercent": -32.293291731669235
+      },
+      "Stream Begin/Residency completion/Reset / latency tracking": {
+        "beforeMs": [
+          0.0010353333333333334,
+          0.0011976666666666668
+        ],
+        "afterMs": [
+          0.0011113333333333333,
+          0.0011733333333333333
+        ],
+        "reductionPercent": -2.3137781758471254
+      },
+      "Stream Begin/Retire unloaded CLAS": {
+        "beforeMs": [
+          0.0024476666666666666,
+          0.002733
+        ],
+        "afterMs": [
+          0.0027276666666666664,
+          0.00292
+        ],
+        "reductionPercent": -9.014283875949026
+      }
+    },
+    "return_hold": {
+      "Stream Begin": {
+        "beforeMs": [
+          0.9873093333333334,
+          1.000837
+        ],
+        "afterMs": [
+          0.275608,
+          0.22400833333333334
+        ],
+        "reductionPercent": 74.8702434545814
+      },
+      "Stream Begin/CLAS completion / expiry": {
+        "beforeMs": [
+          0.28533166666666665,
+          0.25205666666666665
+        ],
+        "afterMs": [
+          0.013171333333333334,
+          0.011041
+        ],
+        "reductionPercent": 95.49444380693043
+      },
+      "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+        "beforeMs": [
+          0.000357,
+          0.0004336666666666667
+        ],
+        "afterMs": [
+          0.0004136666666666667,
+          0.00036733333333333334
+        ],
+        "reductionPercent": 1.2225969645868529
+      },
+      "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+        "beforeMs": [
+          0.28472533333333333,
+          0.25136033333333335
+        ],
+        "afterMs": [
+          0.012528333333333334,
+          0.010454
+        ],
+        "reductionPercent": 95.7129364274491
+      },
+      "Stream Begin/Discard obsolete CLAS plans": {
+        "beforeMs": [
+          0.00018266666666666667,
+          0.000184
+        ],
+        "afterMs": [
+          0.00018133333333333334,
+          0.00017433333333333333
+        ],
+        "reductionPercent": 3.0000000000000027
+      },
+      "Stream Begin/GPU request feedback": {
+        "beforeMs": [
+          0.26428466666666667,
+          0.27271
+        ],
+        "afterMs": [
+          0.144392,
+          0.11495266666666666
+        ],
+        "reductionPercent": 51.70442412835883
+      },
+      "Stream Begin/GPU request feedback/Consume requests": {
+        "beforeMs": [
+          0.26325733333333334,
+          0.27165066666666665
+        ],
+        "afterMs": [
+          0.14355866666666667,
+          0.11418033333333333
+        ],
+        "reductionPercent": 51.816200169001014
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+        "beforeMs": [
+          0.0003623333333333333,
+          0.00038166666666666666
+        ],
+        "afterMs": [
+          0.00035099999999999997,
+          0.0003443333333333333
+        ],
+        "reductionPercent": 6.5412186379928405
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+        "beforeMs": [
+          0.0002903333333333333,
+          0.00033999999999999997
+        ],
+        "afterMs": [
+          0.000277,
+          0.000259
+        ],
+        "reductionPercent": 14.965626652564767
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+        "beforeMs": [
+          0.021413666666666668,
+          0.025038666666666667
+        ],
+        "afterMs": [
+          0.026557,
+          0.026207
+        ],
+        "reductionPercent": -13.587405010153786
+      },
+      "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+        "beforeMs": [
+          0.24063066666666666,
+          0.245219
+        ],
+        "afterMs": [
+          0.11592033333333333,
+          0.08695333333333333
+        ],
+        "reductionPercent": 58.243530749223524
+      },
+      "Stream Begin/GPU request feedback/Map feedback": {
+        "beforeMs": [
+          0.0005636666666666666,
+          0.000544
+        ],
+        "afterMs": [
+          0.0004423333333333333,
+          0.00040366666666666665
+        ],
+        "reductionPercent": 23.6232320192597
+      },
+      "Stream Begin/GPU request feedback/Unmap feedback": {
+        "beforeMs": [
+          0.00020333333333333333,
+          0.000223
+        ],
+        "afterMs": [
+          0.00017066666666666668,
+          0.000157
+        ],
+        "reductionPercent": 23.143080531665372
+      },
+      "Stream Begin/Joint cold page reclaim": {
+        "beforeMs": [
+          0.41787833333333335,
+          0.455314
+        ],
+        "afterMs": [
+          0.097448,
+          0.079314
+        ],
+        "reductionPercent": 79.75680806481351
+      },
+      "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+        "beforeMs": [
+          0.12214733333333333,
+          0.13065733333333332
+        ],
+        "afterMs": [
+          0.00017800000000000002,
+          8.966666666666667e-05
+        ],
+        "reductionPercent": 99.89412115282683
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+        "beforeMs": [
+          0.27057933333333334,
+          0.3021876666666667
+        ],
+        "afterMs": [
+          0.058653,
+          0.05445333333333333
+        ],
+        "reductionPercent": 80.25264490912826
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+        "beforeMs": [
+          0.145573,
+          0.15584966666666666
+        ],
+        "afterMs": [
+          0.033403333333333333,
+          0.030484
+        ],
+        "reductionPercent": 78.80473487948262
+      },
+      "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+        "beforeMs": [
+          0.12461233333333334,
+          0.14587433333333333
+        ],
+        "afterMs": [
+          0.024991,
+          0.023717666666666668
+        ],
+        "reductionPercent": 81.9922115692702
+      },
+      "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+        "beforeMs": [
+          0.024413,
+          0.021776333333333335
+        ],
+        "afterMs": [
+          0.03821533333333333,
+          0.024405333333333334
+        ],
+        "reductionPercent": -35.573869868945195
+      },
+      "Stream Begin/Prepare page uploads": {
+        "beforeMs": [
+          0.0014446666666666666,
+          0.0016403333333333333
+        ],
+        "afterMs": [
+          0.001564,
+          0.0014299999999999998
+        ],
+        "reductionPercent": 2.949756888168553
+      },
+      "Stream Begin/Prepare page uploads/Collect decoded pages": {
+        "beforeMs": [
+          0.00011233333333333333,
+          0.00012533333333333334
+        ],
+        "afterMs": [
+          0.000107,
+          9.266666666666666e-05
+        ],
+        "reductionPercent": 15.988779803646569
+      },
+      "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+        "beforeMs": [
+          3e-05,
+          2.9e-05
+        ],
+        "afterMs": [
+          3.866666666666667e-05,
+          3.066666666666667e-05
+        ],
+        "reductionPercent": -17.514124293785315
+      },
+      "Stream Begin/Prepare page uploads/Schedule page I/O": {
+        "beforeMs": [
+          0.00012866666666666666,
+          0.00031533333333333337
+        ],
+        "afterMs": [
+          0.00017633333333333333,
+          0.00019866666666666668
+        ],
+        "reductionPercent": 15.540540540540547
+      },
+      "Stream Begin/Prepare page uploads/Sort queued loads": {
+        "beforeMs": [
+          0.00020666666666666666,
+          0.000251
+        ],
+        "afterMs": [
+          0.00019866666666666668,
+          0.000155
+        ],
+        "reductionPercent": 22.72396212672978
+      },
+      "Stream Begin/Prepare page uploads/Sort ready uploads": {
+        "beforeMs": [
+          8.033333333333334e-05,
+          8.333333333333333e-05
+        ],
+        "afterMs": [
+          6.566666666666667e-05,
+          6.966666666666668e-05
+        ],
+        "reductionPercent": 17.31160896130346
+      },
+      "Stream Begin/Prepare page uploads/Stage payloads / CLAS plans": {
+        "beforeMs": [
+          0.00047766666666666666,
+          0.00042633333333333336
+        ],
+        "afterMs": [
+          0.0005826666666666667,
+          0.00048033333333333337
+        ],
+        "reductionPercent": -17.58849557522124
+      },
+      "Stream Begin/Prepare page uploads/Submit upload tracking": {
+        "beforeMs": [
+          6e-06,
+          7.666666666666667e-06
+        ],
+        "afterMs": [
+          5.666666666666667e-06,
+          6.3333333333333326e-06
+        ],
+        "reductionPercent": 12.195121951219512
+      },
+      "Stream Begin/Publish resident pages": {
+        "beforeMs": [
+          0.0022863333333333334,
+          0.0023666666666666667
+        ],
+        "afterMs": [
+          0.0023526666666666665,
+          0.0021446666666666667
+        ],
+        "reductionPercent": 3.345511856150152
+      },
+      "Stream Begin/Queue resident CLAS": {
+        "beforeMs": [
+          5.1e-05,
+          5.433333333333334e-05
+        ],
+        "afterMs": [
+          4.8e-05,
+          4.433333333333334e-05
+        ],
+        "reductionPercent": 12.341772151898722
+      },
+      "Stream Begin/Residency completion": {
+        "beforeMs": [
+          0.006612666666666667,
+          0.006810333333333333
+        ],
+        "afterMs": [
+          0.007571,
+          0.006833333333333334
+        ],
+        "reductionPercent": -7.310834637065722
+      },
+      "Stream Begin/Residency completion/Complete storage tasks": {
+        "beforeMs": [
+          8e-05,
+          8.7e-05
+        ],
+        "afterMs": [
+          9.133333333333334e-05,
+          9.066666666666667e-05
+        ],
+        "reductionPercent": -8.982035928143727
+      },
+      "Stream Begin/Residency completion/Complete unload tasks": {
+        "beforeMs": [
+          0.005785666666666666,
+          0.005948333333333333
+        ],
+        "afterMs": [
+          0.006689333333333334,
+          0.005998666666666667
+        ],
+        "reductionPercent": -8.130219873870814
+      },
+      "Stream Begin/Residency completion/Complete update tasks": {
+        "beforeMs": [
+          3.3e-05,
+          4.433333333333334e-05
+        ],
+        "afterMs": [
+          3.4e-05,
+          3.466666666666667e-05
+        ],
+        "reductionPercent": 11.206896551724144
+      },
+      "Stream Begin/Residency completion/Consume queued requests": {
+        "beforeMs": [
+          0.00010666666666666667,
+          0.00010566666666666667
+        ],
+        "afterMs": [
+          0.000138,
+          0.00013133333333333335
+        ],
+        "reductionPercent": -26.84458398744114
+      },
+      "Stream Begin/Residency completion/Reset / latency tracking": {
+        "beforeMs": [
+          0.00015966666666666668,
+          0.00018833333333333335
+        ],
+        "afterMs": [
+          0.000183,
+          0.00017900000000000001
+        ],
+        "reductionPercent": -4.022988505747138
+      },
+      "Stream Begin/Retire unloaded CLAS": {
+        "beforeMs": [
+          0.00148,
+          0.001373
+        ],
+        "afterMs": [
+          0.0015533333333333332,
+          0.0014156666666666666
+        ],
+        "reductionPercent": -4.065895548545373
+      }
+    }
+  },
+  "endpoints": {
+    "before": {
+      "m1": {
+        "finalCounters": {
+          "activePageLoadCount": 0,
+          "frameAdmissionDeferredCount": 0,
+          "frameAllocationDeferredCount": 0,
+          "frameAllocationFailureCount": 0,
+          "frameCachedUnusedPageCount": 0,
+          "frameEvictedPageCount": 0,
+          "frameEvictionCandidateTests": 11598,
+          "frameEvictionScanCount": 1,
+          "frameGpuInvalidRequestCount": 0,
+          "frameGpuRequestCount": 0,
+          "frameGpuRequestOverflowCount": 0,
+          "frameResidentDemandCount": 11598,
+          "frameUploadBytes": 0,
+          "freeResidentBytes": 809534976,
+          "pendingPageCount": 0,
+          "pendingPageLoadCount": 0,
+          "pendingPatchCount": 0,
+          "queuedUploadCount": 0,
+          "residentPageCount": 11598,
+          "totalCancelledQueuedLoadCount": 0,
+          "totalCancelledUploads": 0,
+          "totalCompletedPageLoadCount": 36381,
+          "totalCompletedUnloadCount": 24783,
+          "totalCompletedUploadCount": 36381,
+          "totalCompletionDrivenUploads": 36381,
+          "totalEvictedPageCount": 24783,
+          "totalGpuInvalidRequestCount": 0,
+          "totalPageLoadFailureCount": 0,
+          "totalPrefetchAdmitted": 24656,
+          "totalPrefetchDeferred": 937,
+          "totalPrefetchUsed": 16875,
+          "totalUploadBytes": 1216542544,
+          "usedResidentBytes": 264206848
+        },
+        "finalFrameStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 268052864,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 143820,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 268052864,
+          "clasMoved": 0,
+          "clasPages": 11598,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163840497,
+          "evictions": 0,
+          "feedbackFrame": 2999,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 264206848,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 11598,
+          "totalUploadBytes": 1216542544,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "finalCut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      "m2": {
+        "finalCounters": {
+          "activePageLoadCount": 0,
+          "frameAdmissionDeferredCount": 0,
+          "frameAllocationDeferredCount": 0,
+          "frameAllocationFailureCount": 0,
+          "frameCachedUnusedPageCount": 0,
+          "frameEvictedPageCount": 0,
+          "frameEvictionCandidateTests": 11598,
+          "frameEvictionScanCount": 1,
+          "frameGpuInvalidRequestCount": 0,
+          "frameGpuRequestCount": 0,
+          "frameGpuRequestOverflowCount": 0,
+          "frameResidentDemandCount": 11598,
+          "frameUploadBytes": 0,
+          "freeResidentBytes": 809534976,
+          "pendingPageCount": 0,
+          "pendingPageLoadCount": 0,
+          "pendingPatchCount": 0,
+          "queuedUploadCount": 0,
+          "residentPageCount": 11598,
+          "totalCancelledQueuedLoadCount": 0,
+          "totalCancelledUploads": 0,
+          "totalCompletedPageLoadCount": 36385,
+          "totalCompletedUnloadCount": 24787,
+          "totalCompletedUploadCount": 36385,
+          "totalCompletionDrivenUploads": 36385,
+          "totalEvictedPageCount": 24787,
+          "totalGpuInvalidRequestCount": 0,
+          "totalPageLoadFailureCount": 0,
+          "totalPrefetchAdmitted": 24680,
+          "totalPrefetchDeferred": 896,
+          "totalPrefetchUsed": 16895,
+          "totalUploadBytes": 1216733904,
+          "usedResidentBytes": 264206848
+        },
+        "finalFrameStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 268052864,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 143820,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 268052864,
+          "clasMoved": 0,
+          "clasPages": 11598,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163840497,
+          "evictions": 0,
+          "feedbackFrame": 2999,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 264206848,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 11598,
+          "totalUploadBytes": 1216733904,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "finalCut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      }
+    },
+    "after": {
+      "m1": {
+        "finalCounters": {
+          "activePageLoadCount": 0,
+          "frameAdmissionDeferredCount": 0,
+          "frameAllocationDeferredCount": 0,
+          "frameAllocationFailureCount": 0,
+          "frameCachedUnusedPageCount": 0,
+          "frameEvictedPageCount": 0,
+          "frameEvictionCandidateTests": 11598,
+          "frameEvictionScanCount": 1,
+          "frameGpuInvalidRequestCount": 0,
+          "frameGpuRequestCount": 0,
+          "frameGpuRequestOverflowCount": 0,
+          "frameResidentDemandCount": 11598,
+          "frameUploadBytes": 0,
+          "freeResidentBytes": 809534976,
+          "pendingPageCount": 0,
+          "pendingPageLoadCount": 0,
+          "pendingPatchCount": 0,
+          "queuedUploadCount": 0,
+          "residentPageCount": 11598,
+          "totalCancelledQueuedLoadCount": 0,
+          "totalCancelledUploads": 0,
+          "totalCompletedPageLoadCount": 36387,
+          "totalCompletedUnloadCount": 24789,
+          "totalCompletedUploadCount": 36387,
+          "totalCompletionDrivenUploads": 36387,
+          "totalEvictedPageCount": 24789,
+          "totalGpuInvalidRequestCount": 0,
+          "totalPageLoadFailureCount": 0,
+          "totalPrefetchAdmitted": 24658,
+          "totalPrefetchDeferred": 1206,
+          "totalPrefetchUsed": 16871,
+          "totalUploadBytes": 1216808976,
+          "usedResidentBytes": 264206848
+        },
+        "finalFrameStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 268052864,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 143820,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 268052864,
+          "clasMoved": 0,
+          "clasPages": 11598,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163840497,
+          "evictions": 0,
+          "feedbackFrame": 2999,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 264206848,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 11598,
+          "totalUploadBytes": 1216808976,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "finalCut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      "m2": {
+        "finalCounters": {
+          "activePageLoadCount": 0,
+          "frameAdmissionDeferredCount": 0,
+          "frameAllocationDeferredCount": 0,
+          "frameAllocationFailureCount": 0,
+          "frameCachedUnusedPageCount": 0,
+          "frameEvictedPageCount": 0,
+          "frameEvictionCandidateTests": 11598,
+          "frameEvictionScanCount": 1,
+          "frameGpuInvalidRequestCount": 0,
+          "frameGpuRequestCount": 0,
+          "frameGpuRequestOverflowCount": 0,
+          "frameResidentDemandCount": 11598,
+          "frameUploadBytes": 0,
+          "freeResidentBytes": 809534976,
+          "pendingPageCount": 0,
+          "pendingPageLoadCount": 0,
+          "pendingPatchCount": 0,
+          "queuedUploadCount": 0,
+          "residentPageCount": 11598,
+          "totalCancelledQueuedLoadCount": 0,
+          "totalCancelledUploads": 0,
+          "totalCompletedPageLoadCount": 36385,
+          "totalCompletedUnloadCount": 24787,
+          "totalCompletedUploadCount": 36385,
+          "totalCompletionDrivenUploads": 36385,
+          "totalEvictedPageCount": 24787,
+          "totalGpuInvalidRequestCount": 0,
+          "totalPageLoadFailureCount": 0,
+          "totalPrefetchAdmitted": 24656,
+          "totalPrefetchDeferred": 865,
+          "totalPrefetchUsed": 16871,
+          "totalUploadBytes": 1216698224,
+          "usedResidentBytes": 264206848
+        },
+        "finalFrameStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 268052864,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 143820,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 268052864,
+          "clasMoved": 0,
+          "clasPages": 11598,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163840497,
+          "evictions": 0,
+          "feedbackFrame": 2999,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 264206848,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 11598,
+          "totalUploadBytes": 1216698224,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "finalCut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      }
+    }
+  },
+  "quality": {
+    "status": "passed",
+    "frameCount": 3000,
+    "validation": true,
+    "checkpoints": [
+      {
+        "frame": 29,
+        "phase": "warmup",
+        "cut": {
+          "activeGroups": 14944,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 75773,
+          "earlyHardware": 28670,
+          "earlySoftware": 13124,
+          "fineGroups": 6021,
+          "lateCandidates": 21791,
+          "lateHardware": 194,
+          "lateSoftware": 45,
+          "maxFiniteRefinementErrorPixels": 1553139.5,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38,
+          "nearPlaneUnboundedRefinements": 217,
+          "overTargetRefinements": 2877,
+          "selectedClusters": 86916,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 2781,
+          "visibleUnboundedRefinements": 140
+        }
+      },
+      {
+        "frame": 59,
+        "phase": "warmup",
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 119,
+        "phase": "warmup",
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 179,
+        "phase": "warmup",
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 299,
+        "phase": "warmup",
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 599,
+        "phase": "start_hold",
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 899,
+        "phase": "forward_1",
+        "cut": {
+          "activeGroups": 21002,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 213762,
+          "earlyHardware": 41451,
+          "earlySoftware": 27103,
+          "fineGroups": 12928,
+          "lateCandidates": 81775,
+          "lateHardware": 621,
+          "lateSoftware": 329,
+          "maxFiniteRefinementErrorPixels": 50630.72265625,
+          "maxVisibleRefinementErrorPixels": 1.5008572340011597,
+          "nearPlaneUnboundedRefinements": 205,
+          "overTargetRefinements": 1530,
+          "selectedClusters": 231895,
+          "verifiedInstances": 12558,
+          "visibleOverTargetRefinements": 2,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 1199,
+        "phase": "forward_2",
+        "cut": {
+          "activeGroups": 20272,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 212811,
+          "earlyHardware": 40829,
+          "earlySoftware": 24648,
+          "fineGroups": 12952,
+          "lateCandidates": 79547,
+          "lateHardware": 143,
+          "lateSoftware": 175,
+          "maxFiniteRefinementErrorPixels": 12798.048828125,
+          "maxVisibleRefinementErrorPixels": 1.5947452783584595,
+          "nearPlaneUnboundedRefinements": 231,
+          "overTargetRefinements": 1599,
+          "selectedClusters": 233606,
+          "verifiedInstances": 11532,
+          "visibleOverTargetRefinements": 1,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 1499,
+        "phase": "forward_3",
+        "cut": {
+          "activeGroups": 19524,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 221701,
+          "earlyHardware": 37225,
+          "earlySoftware": 26897,
+          "fineGroups": 12894,
+          "lateCandidates": 82699,
+          "lateHardware": 229,
+          "lateSoftware": 341,
+          "maxFiniteRefinementErrorPixels": 202257.40625,
+          "maxVisibleRefinementErrorPixels": 1.4997859001159668,
+          "nearPlaneUnboundedRefinements": 266,
+          "overTargetRefinements": 2468,
+          "selectedClusters": 234644,
+          "verifiedInstances": 10691,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 1799,
+        "phase": "far_hold",
+        "cut": {
+          "activeGroups": 19524,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 221716,
+          "earlyHardware": 37303,
+          "earlySoftware": 27040,
+          "fineGroups": 12894,
+          "lateCandidates": 82457,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 202257.40625,
+          "maxVisibleRefinementErrorPixels": 1.4997859001159668,
+          "nearPlaneUnboundedRefinements": 266,
+          "overTargetRefinements": 2468,
+          "selectedClusters": 234644,
+          "verifiedInstances": 10691,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 2099,
+        "phase": "return_1",
+        "cut": {
+          "activeGroups": 20273,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 212842,
+          "earlyHardware": 40999,
+          "earlySoftware": 24702,
+          "fineGroups": 12953,
+          "lateCandidates": 79321,
+          "lateHardware": 92,
+          "lateSoftware": 170,
+          "maxFiniteRefinementErrorPixels": 12798.048828125,
+          "maxVisibleRefinementErrorPixels": 1.4999611377716064,
+          "nearPlaneUnboundedRefinements": 231,
+          "overTargetRefinements": 1598,
+          "selectedClusters": 233617,
+          "verifiedInstances": 11532,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 2399,
+        "phase": "return_2",
+        "cut": {
+          "activeGroups": 21004,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 202203,
+          "earlyHardware": 41312,
+          "earlySoftware": 27030,
+          "fineGroups": 12930,
+          "lateCandidates": 71783,
+          "lateHardware": 339,
+          "lateSoftware": 301,
+          "maxFiniteRefinementErrorPixels": 50630.72265625,
+          "maxVisibleRefinementErrorPixels": 1.4999496936798096,
+          "nearPlaneUnboundedRefinements": 205,
+          "overTargetRefinements": 1528,
+          "selectedClusters": 231918,
+          "verifiedInstances": 12558,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 2699,
+        "phase": "return_3",
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 223438,
+          "earlyHardware": 42727,
+          "earlySoftware": 24270,
+          "fineGroups": 13968,
+          "lateCandidates": 81032,
+          "lateHardware": 219,
+          "lateSoftware": 161,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 2999,
+        "phase": "return_hold",
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 3000,
+        "phase": "final_diagnostic",
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      }
+    ]
+  },
+  "limitations": [
+    "CPU steady-clock elapsed time includes scheduling/preemption.",
+    "Two serial runs per build; ranges are observations, not confidence intervals.",
+    "Fixed frame camera steps are identical; asynchronous I/O timing can change page events.",
+    "Conditional CPU scopes are amortized across every frame in the phase."
+  ],
+  "sourceSha256": {
+    "Source/Runtime/Render/Streamer/MeshletStreamResidency.h": "8cff249d0df99287de91e927674934d319c668262d77eedea5247be8118eb4ce",
+    "Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp": "382ae1bd181a411f9d37ee01696d43e5a1d04f7a5cb6d548310be96f9489c555",
+    "Source/Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp": "144e83fd906ff99c0f8aea31e7a0bfde4ec765d0fd6d4390e8cae4605643bfdc"
+  }
+}

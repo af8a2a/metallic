@@ -460,10 +460,16 @@ private:
     std::vector<uint32_t> unloadRequestedPages_;
     std::vector<uint32_t> activePages_;
     std::vector<uint32_t> residentPages_;
+    // unordered_map nodes survive rehash; remove these pointers before erasing a page.
+    std::vector<PageEntry*> residentPageEntries_;
     std::vector<uint32_t> pendingPages_;
     std::vector<uint32_t> newlyResidentPages_;
     std::vector<uint32_t> newlyUnloadedPages_;
-    std::vector<uint32_t> evictionCandidates_;
+    struct EvictionCandidate {
+        uint64_t lastUsedFrame;
+        uint32_t pageIndex;
+    };
+    std::vector<EvictionCandidate> evictionCandidates_;
     size_t evictionCandidateCursor_ = 0;
     bool evictionCandidatesBuilt_ = false;
     bool evictionAgeRejected_ = false;
