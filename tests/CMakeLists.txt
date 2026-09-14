@@ -225,6 +225,9 @@ add_executable(MetallicRhiTests
     "${CMAKE_SOURCE_DIR}/Source/Editor/EditorProfiler.cpp"
     rhi/FrameContextTests.cpp
     rhi/FinalBlitTests.cpp
+    rhi/DisplayOutputTests.cpp
+    rhi/EditorDisplayTests.cpp
+    ../Source/Editor/EditorDisplayRenderer.cpp
     rhi/GPUSceneSubsystemTests.cpp
     rhi/MeshletLodTests.cpp
     rhi/StreamMeshletLodTests.cpp

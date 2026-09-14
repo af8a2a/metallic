@@ -333,6 +333,7 @@ struct RenderGraphExecutor::Impl {
     uint32_t width = 0;
     uint32_t height = 0;
     Format defaultFormat = Format::Rgba8Unorm;
+    DisplayOutputParameters displayOutput;
     HistoryResourceManager* historyResources = nullptr;
     const scene::Scene* runtimeScene = nullptr;
     RenderSubsystemHost ownedSubsystemHost;
@@ -708,6 +709,7 @@ struct RenderGraphExecutor::Impl {
             .renderWorld = world, .subsystemHost = subsystemHost, .width = width, .height = height,
             .defaultFormat = defaultFormat, .debugReadback = debugObserver != nullptr,
             .renderView = renderView(),
+            .displayOutput = displayOutput,
         };
         for (size_t index = 0; index < executionList.size(); ++index) {
             auto& node = executionList[index];
@@ -1210,6 +1212,7 @@ struct RenderGraphExecutor::Impl {
                         .texture = slot.texture.get(),
                         .view = slot.textureView.get(),
                         .desc = desc,
+                        .colorEncoding = field.colorEncoding,
                         .state = ResourceState::Undefined,
                     };
                 } else {
@@ -2000,7 +2003,13 @@ Result RenderGraphExecutor::compile(
     }
 
     const bool dimensionsChanged = impl_->width != width || impl_->height != height;
-    const bool canReuseCompiledPasses = impl_->canReuseCompiledPasses(device, graph, activeGraph);
+    if (!options.displayOutput.valid()) {
+        log = "Invalid display output parameters";
+        return makeError(Error::InvalidArgument);
+    }
+    const bool canReuseCompiledPasses = impl_->displayOutput == options.displayOutput &&
+        impl_->canReuseCompiledPasses(device, graph, activeGraph);
+    impl_->displayOutput = options.displayOutput;
 
     impl_->device = &device;
     impl_->width = width;
@@ -2025,6 +2034,7 @@ Result RenderGraphExecutor::compile(
         .defaultFormat = impl_->defaultFormat,
         .debugReadback = impl_->debugObserver != nullptr,
         .renderView = impl_->renderView(),
+        .displayOutput = impl_->displayOutput,
     };
 
     if (auto* gpuScene = impl_->subsystemHost->get<GPUSceneSubsystem>()) {
@@ -2185,6 +2195,7 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
         .defaultFormat = impl_->defaultFormat,
         .debugReadback = impl_->debugObserver != nullptr,
         .renderView = impl_->renderView(),
+        .displayOutput = impl_->displayOutput,
     };
 
     result = impl_->refreshFrameSceneBindings(nullptr, log);

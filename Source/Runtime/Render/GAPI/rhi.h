@@ -451,6 +451,11 @@ struct TextureViewDesc {
     uint32_t layerCount = 1;
 };
 
+enum class DisplayOutputMode : uint8_t {
+    Sdr,
+    HdrScRgb,
+};
+
 struct SwapchainDesc {
     WindowHandle window;
     uint32_t width = 0;
@@ -459,6 +464,8 @@ struct SwapchainDesc {
     uint32_t framesInFlight = 2;
     Format format = Format::Bgra8Srgb;
     bool vsync = true;
+    DisplayOutputMode outputMode = DisplayOutputMode::Sdr;
+    bool allowSdrFallback = true;
 };
 
 struct TextureBarrierDesc {
@@ -1927,6 +1934,8 @@ public:
     uint32_t width() const;
     uint32_t height() const;
     Format format() const;
+    // The negotiated mode, including any SDR fallback.
+    DisplayOutputMode outputMode() const;
     Texture* texture(uint32_t imageIndex);
     Result acquireNextImage(SwapchainSemaphore& semaphore, uint32_t& imageIndex);
     Result present(Queue& queue, uint32_t imageIndex, SwapchainSemaphore& waitSemaphore);

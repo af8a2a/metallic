@@ -222,8 +222,11 @@ public:
     {
         const std::unordered_map<std::string, std::string> expectedSources{
             {"default.metallic_graph.json", "PathTrace.color"},
+            {"hdr_calibration.metallic_graph.json", ""},
             {"material_shader_object.metallic_graph.json", "MaterialScene.color"},
             {"gpu_driven_sponza.metallic_graph.json", "GPUDriven.color"},
+            {"gpu_driven_minizorah.metallic_graph.json", "GPUDriven.color"},
+            {"gpu_driven_minizorah_vbuffer.metallic_graph.json", "MaterialResolve.color"},
             {"gpu_driven_sponza_rtas_visualization.metallic_graph.json", "GPUDriven.color"},
             {"gpu_driven_sponza_streamasset.metallic_graph.json", "GPUDriven.color"},
             {"gpu_driven_terrain_p0_streamasset.metallic_graph.json", "GPUDriven.color"},
@@ -331,7 +334,8 @@ private:
                 ++connections;
             }
         }
-        return connections == 1;
+        return sourceOutput.empty() ? connections == 0 && final->properties.value("calibrationPattern", false)
+            : connections == 1;
     }
 };
 

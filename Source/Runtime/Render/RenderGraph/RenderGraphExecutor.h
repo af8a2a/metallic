@@ -20,6 +20,7 @@ struct RenderGraphSubmitDesc {
 struct RenderGraphCompileOptions {
     std::vector<std::string> extraOutputs;
     bool enablePreviewOutputAccess = false;
+    DisplayOutputParameters displayOutput;
 };
 
 struct RenderGraphNodeExecutionStat {

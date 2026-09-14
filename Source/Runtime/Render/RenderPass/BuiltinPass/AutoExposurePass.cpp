@@ -15,8 +15,9 @@ struct AutoExposurePush {
     float speedUp, speedDown, transitionDistance, deltaSeconds;
     uint32_t automatic, toneCurve;
     float sourceExposure, artisticExposure;
+    uint32_t outputLinear;
 };
-static_assert(sizeof(AutoExposurePush) == 80);
+static_assert(sizeof(AutoExposurePush) == 84);
 
 class AutoExposurePass final : public ComputePass {
 public:
@@ -31,8 +32,11 @@ public:
         auto& source = reflection.addTextureInput("source", "Linear physical HDR radiance; no tone mapping");
         source.sampledRead();
         source.format = Format::Unknown;
-        reflection.addTextureOutput("color", "Exposed and tone-mapped display color")
-            .storageReadWrite().format = Format::Rgba8Unorm;
+        auto& color = reflection.addTextureOutput("color", "Exposed color; HDR display mapping occurs in FinalBlit");
+        color.storageReadWrite();
+        const bool hdr = context.displayOutput.mode == DisplayOutputMode::HdrScRgb;
+        color.format = hdr ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
+        color.colorEncoding = hdr ? DisplayColorEncoding::ExposedLinear : DisplayColorEncoding::Srgb;
         reflection.addBufferOutput("histogram", "64-bin luminance histogram per 16x16 tile")
             .buffer(uint64_t((context.width + 15) / 16) * ((context.height + 15) / 16) * 64 * 4, 4)
             .storageReadWrite();
@@ -125,6 +129,7 @@ public:
             settings.enabled ? 1u : 0u, toneCurve == "none" ? 2u : (toneCurve == "exponential" ? 1u : 0u),
             finiteProperty(context.properties(), "sourceExposure", 1.0f, 0.000001f, 65536.0f),
             finiteProperty(context.properties(), "artisticExposure", 1.0f, 0.001f, 16.0f),
+            color.desc().format == Format::Rgba16Sfloat ? 1u : 0u,
         };
         auto& commands = context.commandBuffer();
         if (auto* frame = commands.frameContext()) { frame->retain(state_); }

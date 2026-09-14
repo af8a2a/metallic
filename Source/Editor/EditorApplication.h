@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Editor/EditorProfiler.h"
+#include "Editor/EditorDisplayRenderer.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Editor/NvmlMonitor.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
@@ -237,6 +238,11 @@ private:
     std::unique_ptr<render::Device> device_;
     render::Queue* graphicsQueue_ = nullptr;
     std::unique_ptr<render::Swapchain> swapchain_;
+    EditorDisplayRenderer displayRenderer_;
+    render::DisplayOutputParameters displayOutput_;
+    bool hdrOutputRequested_ = true;
+    bool followSystemPaperWhite_ = true;
+    bool displayHdrEnabled_ = false;
     std::vector<std::unique_ptr<render::TextureView>> swapchainImageViews_;
     std::vector<render::ResourceState> swapchainImageStates_;
     static constexpr uint32_t kFrameSlotCount = 2;

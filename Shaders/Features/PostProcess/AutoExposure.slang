@@ -27,6 +27,7 @@ struct AutoExposurePush
     uint toneCurve;
     float sourceExposure;
     float artisticExposure;
+    uint outputLinear;
 };
 
 #define gSource METALLIC_RESOURCE(Texture2D<float4>, 0)
@@ -147,6 +148,11 @@ void autoExposureApplyMain(uint3 pixel : SV_DispatchThreadID)
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float3 color = physicalColor(pixel.xy, push) * gExposure[0].x * push.artisticExposure;
     color = min(color, float3(1e30));
+    if (push.outputLinear != 0u) {
+        // Preserve highlight headroom until the scene-to-display boundary.
+        gOutput[pixel.xy] = float4(min(color, float3(65504.0)), 1.0);
+        return;
+    }
     if (push.toneCurve == 2u) {
         // Reference LookDev: preserve scene-linear values, then encode sRGB.
         // Values above display white clip; the upstream HDR output remains available.

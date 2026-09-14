@@ -1,0 +1,13 @@
+{
+    "version": 1,
+    "name": "HDRCalibration",
+    "nodes": [{
+        "id": 1,
+        "name": "FinalBlit",
+        "type": "FinalBlitPass",
+        "position": {"x": 320, "y": 240},
+        "properties": {"calibrationPattern": true}
+    }],
+    "edges": [],
+    "outputs": []
+}

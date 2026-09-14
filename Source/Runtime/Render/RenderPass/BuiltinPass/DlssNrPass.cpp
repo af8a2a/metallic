@@ -22,7 +22,8 @@ public:
         RenderPassReflection reflection;
         auto& input = reflection.addTextureInput("inputColor", "Tone-mapped sRGB display color (RGBA8 UNORM)")
             .texture2D(context.width, context.height).storageReadWrite();
-        input.format = Format::Rgba8Unorm;
+        const bool hdr = context.displayOutput.mode == DisplayOutputMode::HdrScRgb;
+        input.format = hdr ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
         input.usage = input.usage | TextureUsageBits::TransferSource | TextureUsageBits::Sampled;
         auto& motion = reflection.addTextureInput("motionVectors", "Current-to-previous UV motion, without jitter")
             .texture2D(context.width, context.height).storageReadWrite();
@@ -34,7 +35,8 @@ public:
         depth.usage = depth.usage | TextureUsageBits::Sampled;
         auto& output = reflection.addTextureOutput("color", "Experimental DLSS Neural Rendering output")
             .texture2D(context.width, context.height).storageReadWrite();
-        output.format = Format::Rgba8Unorm;
+        output.format = input.format;
+        output.colorEncoding = hdr ? DisplayColorEncoding::ExposedLinear : DisplayColorEncoding::Srgb;
         output.usage = output.usage | TextureUsageBits::TransferDestination;
         return reflection;
     }
@@ -73,12 +75,19 @@ public:
         device_ = context.device;
         hasHistory_ = false;
         failed_ = false;
+        hdrBypass_ = context.displayOutput.mode == DisplayOutputMode::HdrScRgb;
         if (context.device == nullptr || context.graphicsQueue == nullptr ||
             context.width == 0 || context.height == 0) {
             log = "DlssNrPass requires a device, graphics queue and non-zero dimensions";
             return makeError(Error::InvalidArgument);
         }
         if (!properties().value("enabled", true)) { return {}; }
+        if (hdrBypass_) {
+            log = "DLSS-NR currently requires SDR RGBA8 input; preserving HDR input without NR";
+            if (!properties().value("fallbackToInput", true)) { return makeError(Error::Unsupported); }
+            spdlog::warn("[DLSS-NR] {}", log);
+            return {};
+        }
         auto runtime = std::make_unique<vulkan::DlssNrContext>();
         auto result = runtime->initialize(*context.device, log);
         if (!result) {
@@ -98,6 +107,13 @@ public:
         const auto motion = context.inputTexture("motionVectors");
         const auto depth = context.inputTexture("depth");
         const auto& properties = context.properties();
+        if (hdrBypass_) {
+            if (properties.value("enabled", true) && !properties.value("fallbackToInput", true)) {
+                return makeError(Error::Unsupported);
+            }
+            copyColor(context.commandBuffer(), input, output);
+            return {};
+        }
         // Enabling a bypassed NR node can reuse the compiled pass. Initialize
         // lazily here so the toggle actually activates the feature.
         if (runtime_ == nullptr && !failed_ && properties.value("enabled", true)) {
@@ -252,6 +268,7 @@ private:
     std::unique_ptr<vulkan::DlssNrContext> runtime_;
     bool hasHistory_ = false;
     bool failed_ = false;
+    bool hdrBypass_ = false;
     uint64_t lastFrame_ = 0;
     uint64_t lastRevision_ = 0;
     uint64_t lastScene_ = 0;

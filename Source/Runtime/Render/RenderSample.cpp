@@ -66,6 +66,23 @@ bool applySampleScenePath(RenderGraph& graph, const RenderSampleDesc& desc, std:
     return true;
 }
 
+class HdrCalibrationSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "hdr-calibration"; }
+    std::string_view name() const override { return "HDR / scRGB Calibration"; }
+    std::string_view category() const override { return "Display"; }
+    std::string_view description() const override { return "80 / 203 / 400 / 1000 nit patches and gray/RGB ramps; no scene required."; }
+    std::string scenePath() const override { return {}; }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override { return "Pipelines/Samples/hdr_calibration.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {}; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        return RenderSampleEnvironmentDesc{.enabled = false};
+    }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class LightGridDebugSample final : public RenderSample {
 public:
     std::string_view id() const override { return "light-grid-debug"; }
@@ -731,6 +748,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
 {
     static const RealtimeLightingSample realtimeLighting;
     static const LightGridDebugSample lightGridDebug;
+    static const HdrCalibrationSample hdrCalibration;
     static const OpenPbrLookDevSample openPbrLookDev;
     static const LookDevShadingCompareSample lookDevShadingCompare;
     static const LookDevVisibilityBufferSample lookDevVisibilityBuffer;
@@ -742,6 +760,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     return {
         &realtimeLighting,
         &lightGridDebug,
+        &hdrCalibration,
         &openPbrLookDev,
         &lookDevShadingCompare,
         &lookDevVisibilityBuffer,

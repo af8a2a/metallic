@@ -2,6 +2,7 @@
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanSurfaceFormat.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanOpacityMicromap.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSpirv.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
@@ -3195,6 +3196,7 @@ struct SwapchainImpl {
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkFormat vkFormat = VK_FORMAT_UNDEFINED;
     Format format = Format::Unknown;
+    DisplayOutputMode outputMode = DisplayOutputMode::Sdr;
     uint32_t width = 0;
     uint32_t height = 0;
     std::vector<std::unique_ptr<Texture>> textures;
@@ -3876,26 +3878,31 @@ Result SwapchainImpl::initialize(const SwapchainDesc& desc)
     }
 
     uint32_t surfaceFormatCount = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(device->physicalDevice, surface, &surfaceFormatCount, nullptr);
+    vkResult = vkGetPhysicalDeviceSurfaceFormatsKHR(device->physicalDevice, surface, &surfaceFormatCount, nullptr);
+    if (vkResult != VK_SUCCESS) { return resultFromVk(vkResult); }
     if (surfaceFormatCount == 0) {
         return makeError(Error::Unsupported);
     }
     std::vector<VkSurfaceFormatKHR> surfaceFormats(surfaceFormatCount);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(
+    vkResult = vkGetPhysicalDeviceSurfaceFormatsKHR(
         device->physicalDevice,
         surface,
         &surfaceFormatCount,
         surfaceFormats.data());
-
-    const VkFormat requestedFormat = toVkFormat(desc.format);
-    VkSurfaceFormatKHR selectedFormat = surfaceFormats.front();
-    for (const VkSurfaceFormatKHR& candidate : surfaceFormats) {
-        if (candidate.format == requestedFormat &&
-            candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            selectedFormat = candidate;
-            break;
-        }
+    if (vkResult != VK_SUCCESS) { return resultFromVk(vkResult); }
+    surfaceFormats.resize(surfaceFormatCount);
+    VkSurfaceFormatKHR selectedFormat{};
+    if (!vulkan::selectSurfaceFormat(surfaceFormats, toVkFormat(desc.format), desc.outputMode,
+            desc.allowSdrFallback, selectedFormat, outputMode)) {
+        spdlog::error("No supported surface format for requested display output mode");
+        return makeError(Error::Unsupported);
     }
+    if (outputMode != desc.outputMode) {
+        spdlog::warn("scRGB surface pair unavailable; falling back to SDR");
+    }
+    spdlog::info("Swapchain output: {}, VkFormat {}, VkColorSpace {}",
+        outputMode == DisplayOutputMode::HdrScRgb ? "scRGB HDR" : "SDR",
+        static_cast<int>(selectedFormat.format), static_cast<int>(selectedFormat.colorSpace));
 
     uint32_t presentModeCount = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(device->physicalDevice, surface, &presentModeCount, nullptr);
@@ -7506,6 +7513,11 @@ Format Swapchain::format() const
     return impl_ != nullptr ? impl_->format : Format::Unknown;
 }
 
+DisplayOutputMode Swapchain::outputMode() const
+{
+    return impl_ != nullptr ? impl_->outputMode : DisplayOutputMode::Sdr;
+}
+
 Texture* Swapchain::texture(uint32_t imageIndex)
 {
     if (impl_ == nullptr || imageIndex >= impl_->textures.size()) {
@@ -9748,6 +9760,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     }
 
     const std::vector<VkExtensionProperties> availableExtensions = enumerateInstanceExtensions();
+    if (hasName(availableExtensions, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME) &&
+        std::none_of(instanceExtensions.begin(), instanceExtensions.end(), [](const char* name) {
+            return std::strcmp(name, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME) == 0;
+        })) {
+        instanceExtensions.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
+    }
     const bool debugUtilsAvailable = hasName(availableExtensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     if (debugUtilsAvailable) {
         instanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);

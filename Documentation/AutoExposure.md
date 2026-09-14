@@ -48,7 +48,7 @@ First use, graph recompilation/resizing, scene identity changes, mode changes an
 
 The GPU builds a 64-bin histogram per 16×16 tile, reduces it, then applies exposure and tone mapping. Adjacent bins share fixed-point sample weights to reduce stepping. Pixels at or below the histogram floor are excluded, following Unreal's default zero black-bucket influence, so a black background does not blow out the subject. An entirely empty meter produces finite output and cannot seed the next frame's adaptation. Partial edge tiles, negative values and non-finite input are handled. No luminance data is read back to the CPU. Adaptation history belongs to each pass instance/view and stays on the graphics queue; explicit barriers order its use between overlapping frames. Canceled submissions invalidate history.
 
-`exposure` is a 16-byte buffer containing four floats: display multiplier, adapted EV100, target EV100 and metered luminance. `histogram` exposes the per-tile counts for GPU inspection. `color` is opaque, gamma-encoded RGBA8 for the existing final blit.
+`exposure` is a 16-byte buffer containing four floats: display multiplier, adapted EV100, target EV100 and metered luminance. `histogram` exposes the per-tile counts for GPU inspection. In SDR, `color` is opaque, gamma-encoded RGBA8. In scRGB HDR, it is exposed scene-linear RGBA16F; FinalBlit applies the display mapping and absolute brightness conversion. See [scRGB HDR output](HdrOutput.md).
 
 For reference LookDev, `toneCurve: "none"` (**None (sRGB)**) applies exposure and
 the exact piecewise linear-to-sRGB transfer without highlight compression.

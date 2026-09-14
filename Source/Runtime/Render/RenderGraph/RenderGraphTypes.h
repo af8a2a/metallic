@@ -4,6 +4,7 @@
 #include <chrono>
 
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/DisplayOutput.h"
 #include "Runtime/Render/RenderView.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
@@ -119,6 +120,7 @@ struct RenderGraphField {
     bool optional = false;
     // Presentation outputs are execution roots without a manual markOutput().
     bool presentationOutput = false;
+    DisplayColorEncoding colorEncoding = DisplayColorEncoding::Srgb;
     // Disable for inputs that can be resampled to a different output extent.
     bool matchOutputExtent = true;
     uint32_t width = 0;
@@ -178,6 +180,7 @@ struct RenderGraphCompileContext {
     Format defaultFormat = Format::Rgba8Unorm;
     bool debugReadback = false;
     RenderView* renderView = nullptr;
+    DisplayOutputParameters displayOutput;
 
     RenderWorld* world() const { return renderWorld; }
     RenderSubsystemHost* subsystems() const { return subsystemHost; }
@@ -194,6 +197,7 @@ struct RenderGraphResource {
     Texture* texture = nullptr;
     TextureView* view = nullptr;
     TextureDesc desc;
+    DisplayColorEncoding colorEncoding = DisplayColorEncoding::Srgb;
     Buffer* buffer = nullptr;
     BufferView* bufferView = nullptr;
     BufferDesc bufferDesc;

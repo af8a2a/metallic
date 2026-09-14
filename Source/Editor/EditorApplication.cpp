@@ -2490,6 +2490,15 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
     }
 
     (void)device_->waitIdle();
+    const auto previousOutput = displayOutput_;
+    const auto previousFormat = swapchain_ ? swapchain_->format() : render::Format::Unknown;
+    const SDL_PropertiesID windowProperties = SDL_GetWindowProperties(window_);
+    displayHdrEnabled_ = SDL_GetBooleanProperty(windowProperties, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false);
+    if (followSystemPaperWhite_) {
+        const float white = SDL_GetFloatProperty(windowProperties, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 1.0f) * 80.0f;
+        displayOutput_.paperWhiteNits = std::isfinite(white) ? std::clamp(white, 80.0f, 10000.0f) : 203.0f;
+        displayOutput_.peakNits = std::max(displayOutput_.peakNits, displayOutput_.paperWhiteNits);
+    }
     destroySwapchainResources();
 
     render::Result result = device_->createSwapchain(
@@ -2504,6 +2513,8 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             .framesInFlight = kFrameSlotCount,
             .format = render::Format::Bgra8Unorm,
             .vsync = true,
+            .outputMode = hdrOutputRequested_ && displayHdrEnabled_
+                ? render::DisplayOutputMode::HdrScRgb : render::DisplayOutputMode::Sdr,
         },
         swapchain_);
     if (!result || swapchain_ == nullptr) {
@@ -2552,9 +2563,24 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
     swapchainWidth_ = swapchain_->width();
     swapchainHeight_ = swapchain_->height();
     swapchainOutOfDate_ = false;
+    displayOutput_.mode = swapchain_->outputMode();
+    if (displayOutput_ != previousOutput) { renderGraph_.markDirty(); }
 
     if (imguiRendererInitialized_) {
         ImGui_ImplVulkan_SetMinImageCount(kMinSwapchainImageCount);
+        const VkFormat colorFormat = render::vulkan::nativeSwapchainFormat(*swapchain_);
+        if (previousFormat != swapchain_->format()) {
+            VkPipelineRenderingCreateInfo renderingInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                .colorAttachmentCount = 1, .pColorAttachmentFormats = &colorFormat};
+            ImGui_ImplVulkan_PipelineInfo pipelineInfo{};
+            pipelineInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+            pipelineInfo.PipelineRenderingCreateInfo = renderingInfo;
+            ImGui_ImplVulkan_CreateMainPipeline(&pipelineInfo);
+        }
+        if (!displayRenderer_.initialize(render::vulkan::nativeDevice(*device_).device, colorFormat,
+                displayOutput_.mode == render::DisplayOutputMode::HdrScRgb, displayOutput_.paperWhiteNits)) {
+            return false;
+        }
     }
     return true;
 }
@@ -2619,7 +2645,8 @@ bool EditorApplication::initializeImGuiBackends()
         spdlog::error("ImGui Vulkan renderer backend initialization failed");
         return false;
     }
-    return true;
+    return displayRenderer_.initialize(nativeDevice.device, colorFormat,
+        displayOutput_.mode == render::DisplayOutputMode::HdrScRgb, displayOutput_.paperWhiteNits);
 }
 
 bool EditorApplication::createViewportSampler()
@@ -2669,6 +2696,7 @@ void EditorApplication::shutdown()
     destroyViewportTexture();
     historyResources_.reset();
     nvmlMonitor_.shutdown();
+    displayRenderer_.shutdown();
 
     if (imguiRendererInitialized_) {
         ImGui_ImplVulkan_Shutdown();
@@ -2725,6 +2753,11 @@ void EditorApplication::pollEvents()
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         ImGui_ImplSDL3_ProcessEvent(&event);
+
+        if ((event.type == SDL_EVENT_WINDOW_HDR_STATE_CHANGED || event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) &&
+            event.window.windowID == SDL_GetWindowID(window_)) {
+            swapchainOutOfDate_ = true;
+        }
 
         if (event.type == SDL_EVENT_QUIT) {
             requestPendingSceneAction(PendingSceneAction::Exit);
@@ -3054,6 +3087,31 @@ void EditorApplication::drawDockspace()
             if (ImGui::MenuItem("Exit")) {
                 requestPendingSceneAction(PendingSceneAction::Exit);
             }
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Display Output")) {
+            if (ImGui::MenuItem("Enable scRGB HDR", nullptr, &hdrOutputRequested_)) { swapchainOutOfDate_ = true; }
+            ImGui::Text("Active: %s", displayOutput_.mode == render::DisplayOutputMode::HdrScRgb ? "scRGB HDR (FP16)" : "SDR");
+            if (!displayHdrEnabled_) { ImGui::TextDisabled("Enable HDR in Windows display settings to use HDR output"); }
+            else if (hdrOutputRequested_ && displayOutput_.mode == render::DisplayOutputMode::Sdr) {
+                ImGui::TextDisabled("scRGB surface unavailable; using SDR fallback");
+            }
+            if (ImGui::Checkbox("Follow system SDR white", &followSystemPaperWhite_)) { swapchainOutOfDate_ = true; }
+            ImGui::BeginDisabled(followSystemPaperWhite_);
+            if (ImGui::SliderFloat("Paper white (nits)", &displayOutput_.paperWhiteNits, 80.0f, 500.0f)) {
+                displayOutput_.peakNits = std::max(displayOutput_.peakNits, displayOutput_.paperWhiteNits);
+                swapchainOutOfDate_ = true;
+                renderGraph_.markDirty();
+            }
+            ImGui::EndDisabled();
+            bool displayChanged = ImGui::SliderFloat("Peak (nits)", &displayOutput_.peakNits,
+                displayOutput_.paperWhiteNits, 10000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+            displayChanged |= ImGui::SliderFloat("HDR exposure (EV)", &displayOutput_.exposureEV, -10.0f, 10.0f);
+            displayChanged |= ImGui::Checkbox("Calibration pattern", &displayOutput_.calibrationPattern);
+            if (displayChanged) { renderGraph_.markDirty(); }
+            ImGui::TextDisabled("Pattern: 80 / 203 / 400 / 1000 nits, then gray / RGB ramps");
+            ImGui::TextDisabled("Detached windows use SDR preview");
             ImGui::EndMenu();
         }
 
@@ -6122,12 +6180,19 @@ void EditorApplication::drawViewportPanel()
     drawList->AddRectFilled(min, max, IM_COL32(16, 18, 22, 255));
 
     if (hasRhiPreview) {
+        const auto* preview = graphExecutor_->outputResource(activePreviewOutput_.empty()
+            ? renderGraph_.firstOutputName() : activePreviewOutput_);
+        const bool scRgbImage = preview && preview->colorEncoding == render::DisplayColorEncoding::ScRgb;
+        if (scRgbImage) {
+            displayRenderer_.beginScRgbImage(*drawList, ImGui::GetWindowViewport());
+        }
         drawList->AddImage(
             static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(viewportDescriptor_)),
             min,
             max,
             ImVec2(0.0f, 0.0f),
             ImVec2(1.0f, 1.0f));
+        if (scRgbImage) { drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr); }
     } else {
         const float gridStep = 32.0f * mainScale_;
         for (float x = min.x; x < max.x; x += gridStep) {
@@ -6408,6 +6473,7 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     render::RenderGraphCompileOptions compileOptions;
     compileOptions.extraOutputs.push_back(previewOutput);
     compileOptions.enablePreviewOutputAccess = true;
+    compileOptions.displayOutput = displayOutput_;
     render::Result result;
     {
         StartupLogScope scope("RenderGraph compile for preview output '" + previewOutput + "'");
@@ -6649,7 +6715,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             auto profileScope = profiler_.scope("Record ImGui Draw");
             ImGui_ImplVulkan_RenderDrawData(
                 ImGui::GetDrawData(),
-                render::vulkan::nativeCommandBuffer(*frame.commandBuffer));
+                render::vulkan::nativeCommandBuffer(*frame.commandBuffer), displayRenderer_.mainPipeline());
         }
 
         frame.commandBuffer->endRendering();

@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -51,7 +52,7 @@ public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
 
-    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    RenderPassReflection reflect(const RenderGraphCompileContext& context) const override
     {
         RenderPassReflection reflection;
         auto& source = reflection.addTextureInput("source", "Color RT; unavailable input displays UV");
@@ -59,9 +60,21 @@ public:
         source.matchOutputExtent = false;
         auto& color = reflection.addTextureOutput("color", "Final image presented by the viewport to the swapchain");
         color.storageReadWrite();
-        color.format = Format::Rgba8Unorm;
+        const bool hdr = context.displayOutput.mode == DisplayOutputMode::HdrScRgb;
+        color.format = hdr ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
+        color.colorEncoding = hdr ? DisplayColorEncoding::ScRgb : DisplayColorEncoding::Srgb;
         color.presentationOutput = true;
         return reflection;
+    }
+
+    std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
+    {
+        return {
+            runtimeEnumSetting("inputEncoding", "Input Color", "auto",
+                {{"Automatic", "auto"}, {"sRGB display color", "srgb"},
+                    {"Exposed scene-linear", "linear"}, {"scRGB (absolute)", "scrgb"}}),
+            runtimeBoolSetting("calibrationPattern", "HDR Calibration Pattern", false),
+        };
     }
 
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
@@ -69,6 +82,7 @@ public:
         if (context.device == nullptr) {
             return makeError(Error::InvalidArgument);
         }
+        displayOutput_ = context.displayOutput;
         Result result = initializeProgram(*context.device, "finalBlitUvMain", false, uvProgram_, log);
         if (!result) {
             return result;
@@ -83,7 +97,21 @@ public:
             return makeError(Error::InvalidArgument);
         }
         const TextureHandle source = context.inputTexture("source");
-        const bool sampleSource = isColorSource(source);
+        const bool calibration = displayOutput_.calibrationPattern ||
+            context.properties().value("calibrationPattern", false);
+        const bool sampleSource = !calibration && isColorSource(source);
+        auto encoding = context.input("source") != nullptr
+            ? context.input("source")->colorEncoding : DisplayColorEncoding::Srgb;
+        const auto inputEncoding = context.properties().value("inputEncoding", "auto");
+        if (inputEncoding == "srgb") { encoding = DisplayColorEncoding::Srgb; }
+        if (inputEncoding == "linear") { encoding = DisplayColorEncoding::ExposedLinear; }
+        if (inputEncoding == "scrgb") { encoding = DisplayColorEncoding::ScRgb; }
+        // sRGB texture sampling already decodes the transfer function.
+        const bool sampledSrgb = sampleSource &&
+            (source.desc().format == Format::Rgba8Srgb || source.desc().format == Format::Bgra8Srgb);
+        const Push push{displayOutput_.mode == DisplayOutputMode::HdrScRgb ? 1u : 0u,
+            static_cast<uint32_t>(encoding), calibration ? 1u : 0u, sampledSrgb ? 1u : 0u,
+            displayOutput_.paperWhiteNits, displayOutput_.peakNits, std::exp2(displayOutput_.exposureEV), 0.0f};
         TextureView* sourceView = sampleSource ? source.view() : nullptr;
         const ComputeDispatchBinding bindings[] = {
             {.binding = 0, .textureView = color.view()},
@@ -94,12 +122,20 @@ public:
             .commandBuffer = &context.commandBuffer(),
             .bindings = bindings,
             .bindingCount = sampleSource ? 2u : 1u,
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
             .groupCountX = (context.width() + 7) / 8,
             .groupCountY = (context.height() + 7) / 8,
         });
     }
 
 private:
+    struct Push {
+        uint32_t hdr, inputEncoding, calibration, sampledSrgb;
+        float paperWhiteNits, peakNits, exposure, padding;
+    };
+    static_assert(sizeof(Push) == 32);
+
     static Result initializeProgram(
         Device& device, const char* entryPoint, bool sampleSource,
         ComputeProgram& program, std::string& log)
@@ -124,6 +160,7 @@ private:
         return program.initialize(device, ComputeProgramDesc{
             .spirv = shader.spirv.data(),
             .byteSize = shader.spirv.size() * sizeof(uint32_t),
+            .pushConstantSize = sizeof(Push),
             .bindings = bindings,
             .bindingCount = sampleSource ? 2u : 1u,
             .debugName = entryPoint,
@@ -133,6 +170,7 @@ private:
 
     ComputeProgram uvProgram_;
     ComputeProgram blitProgram_;
+    DisplayOutputParameters displayOutput_;
 };
 
 } // namespace

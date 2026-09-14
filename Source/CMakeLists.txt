@@ -321,6 +321,7 @@ set_property(SOURCE Editor/EditorApplication.cpp APPEND PROPERTY COMPILE_DEFINIT
 
 set(METALLIC_EDITOR_SOURCES
     Editor/EditorApplication.cpp
+    Editor/EditorDisplayRenderer.cpp
     Editor/EditorApplicationSmokeTests.cpp
     Editor/EditorMaterialInspector.cpp
     Editor/EditorMaterialInspectorSmoke.cpp
