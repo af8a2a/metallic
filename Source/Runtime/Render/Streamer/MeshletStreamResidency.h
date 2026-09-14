@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/Profiling/RenderGraphProfile.h"
 #include "Runtime/Render/Streamer/MeshletStreamLatency.h"
 #include "Runtime/Render/Streamer/MeshletStreamPageLoader.h"
 #include "Runtime/Render/Streamer/StreamingTaskQueue.h"
@@ -13,7 +14,6 @@
 #include <span>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace metallic::render {
@@ -210,6 +210,7 @@ struct MeshletStreamResidencyDesc {
 };
 
 struct MeshletStreamResidencyStats {
+    StreamCpuWorkCounters cpuWork;
     uint64_t frameIndex = 0;
     uint32_t pageCount = 0;
     uint32_t trackedPageCount = 0;
@@ -420,7 +421,7 @@ private:
 
     using PagePositionMember = uint32_t PageEntry::*;
 
-    void prepareEvictionCandidates(CpuProfileRecorder* profiler = nullptr);
+    size_t prepareEvictionCandidates(CpuProfileRecorder* profiler = nullptr, uint32_t minimumAge = 0);
     bool allocatePageStorage(uint32_t pageIndex);
     bool scheduleUnload(uint32_t pageIndex, bool eviction);
     void completeUnloadTask(uint32_t taskIndex);
@@ -437,7 +438,7 @@ private:
         MeshletStreamPageResidencyState newState);
     uint64_t oldestAge(std::span<const uint32_t> pageIndices) const;
     void resetFrameStats();
-    void consumeReadyRequestTasks();
+    void consumeReadyRequestTasks(CpuProfileRecorder* profiler = nullptr);
 
     const scene::MeshletStreamAsset* asset_ = nullptr;
     MeshletStreamStorage storage_;
@@ -471,6 +472,8 @@ private:
     };
     std::vector<EvictionCandidate> evictionCandidates_;
     size_t evictionCandidateCursor_ = 0;
+    size_t evictionSortedCount_ = 0;
+    uint64_t evictionSortedMinimumAge_ = UINT64_MAX;
     bool evictionCandidatesBuilt_ = false;
     bool evictionAgeRejected_ = false;
     bool residentDemandFeedback_ = false;
@@ -478,7 +481,9 @@ private:
     bool clasReclaimPressure_ = false;
     uint32_t frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
     std::unordered_map<uint32_t, size_t> requestMarks_;
-    std::unordered_set<uint32_t> unloadRequestMarks_;
+    // One bit per logical page; clear only words touched by the previous batch.
+    std::vector<uint64_t> unloadRequestBits_;
+    std::vector<uint32_t> unloadRequestTouchedWords_;
     std::vector<StreamPageTablePatch> patches_;
     MeshletStreamResidencyStats stats_;
     uint64_t frameIndex_ = 0;

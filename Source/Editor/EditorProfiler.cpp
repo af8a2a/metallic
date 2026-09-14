@@ -437,6 +437,20 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
             last.requestOverflows, last.allocationFailures, static_cast<unsigned long long>(last.loadFailures));
     }
     ImGui::TextDisabled("CPU-visible counters; requests refer to completed GPU feedback. Upload pipeline includes I/O.");
+    if (ImGui::CollapsingHeader("CPU Request / Reclaim Work")) {
+        const auto& work = last.cpuWork;
+        ImGui::Text("Resident visits %u | Newer than feedback %u", work.demandVisited, work.demandNewerThanFeedback);
+        ImGui::Text("Unused %u | Refreshed %u | Incomplete feedback protected %u",
+            work.demandUnused, work.demandRefreshed, work.demandIncompleteProtected);
+        ImGui::Separator();
+        ImGui::Text("Cold candidates %u | Scheduling visits %u | CLAS lookups %u",
+            work.coldCandidates, work.coldVisited, work.coldClasLookups);
+        ImGui::Text("Rejected: state %u | Age %u | Schedule failed %u",
+            work.coldStateRejected, work.coldAgeRejected, work.coldScheduleFailed);
+        ImGui::Text("Scheduled: pressure %u | Retention %u | Pending free credits %u",
+            work.coldPressureScheduled, work.coldRetentionScheduled, work.pendingFreePages);
+        ImGui::TextDisabled("Current frame work counts, including repeated visits. Timings: Table > Stream Begin.");
+    }
     std::vector<uint64_t> frames;
     std::vector<PlotSeries> memory{{"Geometry", IM_COL32(64, 218, 100, 255), {}}, {"CLAS", IM_COL32(75, 151, 250, 255), {}}};
     std::vector<PlotSeries> pages{{"Requests", IM_COL32(255, 211, 92, 255), {}}, {"Uploads", IM_COL32(92, 217, 161, 255), {}}, {"Evictions", IM_COL32(246, 123, 123, 255), {}}};

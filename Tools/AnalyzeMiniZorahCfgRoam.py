@@ -27,7 +27,7 @@ def main():
                 f'Metallic uses {route["phaseFrames"]} full frames per segment; reference discards reset/delayed-query frames. Means are segment comparisons, not exact timestamp pairs.',
                 'Scope gpuAvgMs/cpuAvgMs are amortized over phaseFrames; recorded averages cover only samples where a conditional Metallic scope exists. Native reports already include inactive frames.',
                 'Memory is the engine-reported endpoint allocation with engine-specific accounting. Device-wide telemetry includes other applications.']}
-    scopes,memory=[],[]
+    scopes,memory,cpu_work=[],[],[]
     for case in ('cfg1','aligned1','aligned2','cfg2','verify'):
         data=read(args.reference/case/'Profile.json')
         if data['status']!='capture_complete':
@@ -98,6 +98,16 @@ def main():
             data['endpoints']={f['phase']:f['stream'] for f in rows}
             data['peaks']={k:max(f['stream'][k] for f in rows) for k in ('geometryBytes','clasBytes','clasScratchBytes','clasPending')}
             data['final']=rows[-1]['stream']
+            if all('cpuWork' in f['stream'] for f in rows):
+                data['cpuWork']={}
+                for phase in route['phases']:
+                    samples=[f['stream']['cpuWork'] for f in rows if f['phase']==phase['name']]
+                    counters={key:{'mean':statistics.mean(s[key] for s in samples),
+                        'min':min(s[key] for s in samples),'max':max(s[key] for s in samples),
+                        'total':sum(s[key] for s in samples)} for key in samples[0]}
+                    data['cpuWork'][phase['name']]=counters
+                    for name,values in counters.items():
+                        cpu_work.append(dict(case=case,phase=phase['name'],name=name,samples=len(samples),**values))
             result['metallic'][case]=data
             for phase,values in data['endpoints'].items():
                 for name,key in (('Geometry','geometryBytes'),('CLAS','clasBytes')):
@@ -110,6 +120,11 @@ def main():
             writer.writeheader()
             writer.writerows(rows)
     (output/'Evidence.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
+    if cpu_work:
+        with (output/'CpuWork.csv').open('w',newline='',encoding='utf-8-sig') as target:
+            writer=csv.DictWriter(target,fieldnames=list(cpu_work[0]))
+            writer.writeheader()
+            writer.writerows(cpu_work)
     if args.plots:
         import matplotlib
         matplotlib.use('Agg')
@@ -158,6 +173,28 @@ def main():
             fig.legend(handles,labels,loc='outside upper center',ncol=3)
             axes[-1].tick_params(axis='x',rotation=25)
             fig.savefig(output/'CpuStreamBegin.png',dpi=160)
+            plt.close(fig)
+        if cpu_work:
+            fig,axes=plt.subplots(2,1,figsize=(12,8),sharex=True,layout='constrained')
+            sets=[('Resident feedback', [('demandRefreshed','Refreshed'),('demandUnused','Unused'),
+                ('demandNewerThanFeedback','Newer than feedback'),('demandIncompleteProtected','Incomplete protected')]),
+                ('Cold scheduling', [('coldAgeRejected','Age rejected'),('coldStateRejected','State rejected'),
+                ('coldPressureScheduled','Pressure scheduled'),('coldRetentionScheduled','Retention scheduled'),
+                ('coldScheduleFailed','Schedule failed')])]
+            for axis,(title,fields) in zip(axes,sets):
+                bottom=[0.0]*len(phase_names)
+                for key,label in fields:
+                    values=[statistics.mean(result['metallic'][case]['cpuWork'][p][key]['mean']
+                        for case in ('m1','m2')) for p in phase_names]
+                    axis.bar(phase_names,values,bottom=bottom,label=label)
+                    bottom=[a+b for a,b in zip(bottom,values)]
+                axis.set_title(title+' | mean of two performance runs')
+                axis.set_ylabel('Page visits / frame')
+                axis.set_ylim(0,max(1.0,max(bottom))*1.22)
+                axis.legend(ncol=3,fontsize=8,loc='upper left')
+                axis.grid(axis='y',alpha=.2)
+            axes[-1].tick_params(axis='x',rotation=25)
+            fig.savefig(output/'CpuWork.png',dpi=160)
             plt.close(fig)
     print(f'Validated routes and exported {len(scopes)} scope rows, {len(memory)} memory/counter rows.')
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <unordered_set>
+
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/GAPI/Rhi.h"

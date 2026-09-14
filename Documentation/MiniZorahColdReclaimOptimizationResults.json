@@ -1,0 +1,1551 @@
+{
+  "manifests": {
+    "before": {
+      "gitHead": "ec2a3884ce78eb9e31d488311fa5325a352333ee",
+      "sourceSha256": "40CEDE314D41C9E4037A11E180F9FDB38ED2649B9CECB5A997F234A7C51E4010",
+      "replaySha256": "FEB79872154850AF32DB25A54BA3D22B48B9A04A10F7F2E8DADAF19F98F2F2D2",
+      "start": "2026-09-14T23:11:15.9709323+08:00",
+      "executableSha256": "CA00CA13B3ACB46BA4C7B91A27F9FDA3AFD17D476B2951733921D24650F5468F",
+      "protocol": "minizorah-cfg-roam-v1"
+    },
+    "after": {
+      "replaySha256": "FEB79872154850AF32DB25A54BA3D22B48B9A04A10F7F2E8DADAF19F98F2F2D2",
+      "protocol": "minizorah-cfg-roam-v1",
+      "gitHead": "ec2a3884ce78eb9e31d488311fa5325a352333ee",
+      "executableSha256": "808A4691786AD2DD7215DE1FE0D12A8447399DCC3A69DB1BE9B0BFBAE5E58105",
+      "start": "2026-09-14T23:17:48.1036174+08:00",
+      "sourceSha256": "40CEDE314D41C9E4037A11E180F9FDB38ED2649B9CECB5A997F234A7C51E4010"
+    }
+  },
+  "replaySha256": "feb79872154850af32db25a54ba3d22b48b9a04a10f7f2e8dadaf19f98f2f2d2",
+  "phaseTotals": {
+    "warmup": {
+      "beforeMs": [
+        0.5735583333333333,
+        0.433346
+      ],
+      "afterMs": [
+        0.42319233333333334,
+        0.40866966666666665
+      ],
+      "reductionPercent": 17.384206973651594
+    },
+    "start_hold": {
+      "beforeMs": [
+        0.199167,
+        0.08838633333333333
+      ],
+      "afterMs": [
+        0.07622733333333333,
+        0.09072033333333333
+      ],
+      "reductionPercent": 41.942016553450955
+    },
+    "allMeasured": {
+      "beforeMs": [
+        0.6879565925925926,
+        0.5800647777777778
+      ],
+      "afterMs": [
+        0.28022314814814814,
+        0.2558800740740741
+      ],
+      "reductionPercent": 57.721278619647066
+    },
+    "forward_1": {
+      "beforeMs": [
+        0.9092633333333333,
+        0.6926366666666667
+      ],
+      "afterMs": [
+        0.321895,
+        0.336514
+      ],
+      "reductionPercent": 58.898245833073226
+    },
+    "forward_2": {
+      "beforeMs": [
+        0.9790663333333334,
+        0.7856916666666667
+      ],
+      "afterMs": [
+        0.367026,
+        0.313619
+      ],
+      "reductionPercent": 61.431255730247436
+    },
+    "forward_3": {
+      "beforeMs": [
+        1.0836063333333332,
+        0.7886143333333333
+      ],
+      "afterMs": [
+        0.36507233333333333,
+        0.301471
+      ],
+      "reductionPercent": 64.39824935166118
+    },
+    "far_hold": {
+      "beforeMs": [
+        0.301945,
+        0.223729
+      ],
+      "afterMs": [
+        0.13095433333333334,
+        0.10208933333333334
+      ],
+      "reductionPercent": 55.66764445898662
+    },
+    "return_1": {
+      "beforeMs": [
+        0.8110273333333333,
+        0.7306313333333333
+      ],
+      "afterMs": [
+        0.3843913333333333,
+        0.32786133333333334
+      ],
+      "reductionPercent": 53.79958728434483
+    },
+    "return_2": {
+      "beforeMs": [
+        0.8602923333333333,
+        0.8774523333333333
+      ],
+      "afterMs": [
+        0.38091966666666666,
+        0.342015
+      ],
+      "reductionPercent": 58.39810758542585
+    },
+    "return_3": {
+      "beforeMs": [
+        0.8139346666666667,
+        0.796241
+      ],
+      "afterMs": [
+        0.3629556666666667,
+        0.362565
+      ],
+      "reductionPercent": 54.94152087339539
+    },
+    "return_hold": {
+      "beforeMs": [
+        0.23330700000000001,
+        0.23720033333333335
+      ],
+      "afterMs": [
+        0.13256666666666667,
+        0.12606566666666666
+      ],
+      "reductionPercent": 45.0311791102087
+    }
+  },
+  "forward2Scopes": {
+    "Stream Begin": {
+      "beforeMs": [
+        0.9790663333333334,
+        0.7856916666666667
+      ],
+      "afterMs": [
+        0.367026,
+        0.313619
+      ],
+      "reductionPercent": 61.431255730247436
+    },
+    "Stream Begin/CLAS completion / expiry": {
+      "beforeMs": [
+        0.03600766666666667,
+        0.029584666666666665
+      ],
+      "afterMs": [
+        0.030786,
+        0.025097333333333333
+      ],
+      "reductionPercent": 14.802034790651353
+    },
+    "Stream Begin/CLAS completion / expiry/Collect completed CLAS": {
+      "beforeMs": [
+        0.019607333333333334,
+        0.016426666666666666
+      ],
+      "afterMs": [
+        0.016582333333333334,
+        0.014317
+      ],
+      "reductionPercent": 14.249505097037973
+    },
+    "Stream Begin/CLAS completion / expiry/Expire retired CLAS": {
+      "beforeMs": [
+        0.016102333333333333,
+        0.012880333333333334
+      ],
+      "afterMs": [
+        0.013923333333333333,
+        0.010552666666666667
+      ],
+      "reductionPercent": 15.549523853337632
+    },
+    "Stream Begin/Discard obsolete CLAS plans": {
+      "beforeMs": [
+        0.0011663333333333332,
+        0.0009383333333333333
+      ],
+      "afterMs": [
+        0.001001,
+        0.000845
+      ],
+      "reductionPercent": 12.290148875514728
+    },
+    "Stream Begin/GPU request feedback": {
+      "beforeMs": [
+        0.4110566666666667,
+        0.34727066666666667
+      ],
+      "afterMs": [
+        0.14179933333333333,
+        0.12286733333333333
+      ],
+      "reductionPercent": 65.0986249561535
+    },
+    "Stream Begin/GPU request feedback/Consume requests": {
+      "beforeMs": [
+        0.410319,
+        0.34662966666666667
+      ],
+      "afterMs": [
+        0.141188,
+        0.12234133333333333
+      ],
+      "reductionPercent": 65.18530979203345
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+      "beforeMs": [
+        0.043499666666666666,
+        0.04196766666666667
+      ],
+      "afterMs": [
+        0.040692,
+        0.037008
+      ],
+      "reductionPercent": 9.088072635938893
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks": {
+      "beforeMs": [
+        0.04231466666666667,
+        0.04113633333333333
+      ],
+      "afterMs": [
+        0.03982733333333333,
+        0.036395333333333335
+      ],
+      "reductionPercent": 8.661769581351141
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch": {
+      "beforeMs": [
+        0.034134,
+        0.033855666666666666
+      ],
+      "afterMs": [
+        0.03253433333333333,
+        0.030169666666666668
+      ],
+      "reductionPercent": 7.774220592344927
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Apply explicit unloads": {
+      "beforeMs": [
+        3.0333333333333333e-05,
+        3.1333333333333334e-05
+      ],
+      "afterMs": [
+        3.1666666666666666e-05,
+        3.1e-05
+      ],
+      "reductionPercent": -1.6216216216216273
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Cancel stale queued loads": {
+      "beforeMs": [
+        8.933333333333334e-05,
+        7.733333333333333e-05
+      ],
+      "afterMs": [
+        8.366666666666668e-05,
+        6.466666666666668e-05
+      ],
+      "reductionPercent": 10.999999999999998
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Refresh request priorities": {
+      "beforeMs": [
+        0.0017183333333333332,
+        0.0015113333333333333
+      ],
+      "afterMs": [
+        0.001504,
+        0.0011693333333333334
+      ],
+      "reductionPercent": 17.225719888533387
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Release request task": {
+      "beforeMs": [
+        2.8666666666666668e-05,
+        2.8333333333333335e-05
+      ],
+      "afterMs": [
+        3.0333333333333333e-05,
+        2.2333333333333335e-05
+      ],
+      "reductionPercent": 7.602339181286554
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Select latest request task": {
+      "beforeMs": [
+        3.366666666666667e-05,
+        3.366666666666667e-05
+      ],
+      "afterMs": [
+        3.1666666666666666e-05,
+        2.566666666666667e-05
+      ],
+      "reductionPercent": 14.851485148514854
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Sort admission priority": {
+      "beforeMs": [
+        0.005486666666666667,
+        0.004898666666666667
+      ],
+      "afterMs": [
+        0.004926333333333333,
+        0.004283
+      ],
+      "reductionPercent": 11.323661574014633
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Admit request batch/Queue request task": {
+      "beforeMs": [
+        0.000941,
+        0.0006233333333333334
+      ],
+      "afterMs": [
+        0.000634,
+        0.0004406666666666667
+      ],
+      "reductionPercent": 31.301939058171747
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+      "beforeMs": [
+        0.010274,
+        0.008034333333333333
+      ],
+      "afterMs": [
+        0.008522666666666666,
+        0.006684333333333333
+      ],
+      "reductionPercent": 16.939462903959956
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Prepare load containers": {
+      "beforeMs": [
+        0.002536333333333333,
+        0.0018549999999999999
+      ],
+      "afterMs": [
+        0.0018173333333333333,
+        0.0011883333333333333
+      ],
+      "reductionPercent": 31.554577197510238
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads": {
+      "beforeMs": [
+        0.007501666666666667,
+        0.005962
+      ],
+      "afterMs": [
+        0.006477333333333333,
+        0.005339
+      ],
+      "reductionPercent": 12.235398975019196
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+      "beforeMs": [
+        0.12920133333333333,
+        0.12010766666666667
+      ],
+      "afterMs": [
+        0.010800666666666667,
+        0.007847666666666666
+      ],
+      "reductionPercent": 92.51999192434556
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Prepare unused-page set": {
+      "beforeMs": [
+        0.03954133333333333,
+        0.03332333333333334
+      ],
+      "afterMs": [
+        0.0010373333333333332,
+        0.00076
+      ],
+      "reductionPercent": 97.53332662378656
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Validate / insert unused pages": {
+      "beforeMs": [
+        0.08939433333333334,
+        0.08654566666666666
+      ],
+      "afterMs": [
+        0.009562666666666667,
+        0.006942
+      ],
+      "reductionPercent": 90.61915046796256
+    },
+    "Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+      "beforeMs": [
+        0.22667966666666667,
+        0.175974
+      ],
+      "afterMs": [
+        0.080648,
+        0.07043033333333333
+      ],
+      "reductionPercent": 62.4793350116436
+    },
+    "Stream Begin/GPU request feedback/Map feedback": {
+      "beforeMs": [
+        0.0002846666666666667,
+        0.00021933333333333334
+      ],
+      "afterMs": [
+        0.000238,
+        0.00021766666666666668
+      ],
+      "reductionPercent": 9.589947089947081
+    },
+    "Stream Begin/GPU request feedback/Unmap feedback": {
+      "beforeMs": [
+        0.00016900000000000002,
+        0.00013733333333333333
+      ],
+      "afterMs": [
+        0.00011566666666666667,
+        0.00010166666666666667
+      ],
+      "reductionPercent": 29.053318824809594
+    },
+    "Stream Begin/Joint cold page reclaim": {
+      "beforeMs": [
+        0.375016,
+        0.2750646666666667
+      ],
+      "afterMs": [
+        0.061153,
+        0.04803933333333334
+      ],
+      "reductionPercent": 83.20326400518499
+    },
+    "Stream Begin/Joint cold page reclaim/Credit pending frees": {
+      "beforeMs": [
+        5.066666666666667e-05,
+        4.933333333333334e-05
+      ],
+      "afterMs": [
+        5.766666666666667e-05,
+        4.5333333333333335e-05
+      ],
+      "reductionPercent": -3.0000000000000027
+    },
+    "Stream Begin/Joint cold page reclaim/Evaluate budget pressure": {
+      "beforeMs": [
+        4.5e-05,
+        5.2000000000000004e-05
+      ],
+      "afterMs": [
+        5.433333333333334e-05,
+        4.2000000000000004e-05
+      ],
+      "reductionPercent": 0.6872852233676952
+    },
+    "Stream Begin/Joint cold page reclaim/Prepare cold candidates": {
+      "beforeMs": [
+        0.176552,
+        0.163965
+      ],
+      "afterMs": [
+        0.055287,
+        0.043133
+      ],
+      "reductionPercent": 71.09689090412519
+    },
+    "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates": {
+      "beforeMs": [
+        0.06613933333333333,
+        0.053781
+      ],
+      "afterMs": [
+        0.053526,
+        0.04178266666666667
+      ],
+      "reductionPercent": 20.523347444553465
+    },
+    "Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates": {
+      "beforeMs": [
+        0.11003566666666667,
+        0.109881
+      ],
+      "afterMs": [
+        0.001398,
+        0.001079
+      ],
+      "reductionPercent": 98.87366426676772
+    },
+    "Stream Begin/Joint cold page reclaim/Schedule cold evictions": {
+      "beforeMs": [
+        0.19773033333333334,
+        0.11047933333333333
+      ],
+      "afterMs": [
+        0.005277666666666667,
+        0.004457666666666667
+      ],
+      "reductionPercent": 96.8413277108981
+    },
+    "Stream Begin/Prepare page uploads": {
+      "beforeMs": [
+        0.118901,
+        0.10227933333333333
+      ],
+      "afterMs": [
+        0.10056933333333333,
+        0.08930066666666667
+      ],
+      "reductionPercent": 14.156020502124223
+    },
+    "Stream Begin/Prepare page uploads/Collect decoded pages": {
+      "beforeMs": [
+        0.002392,
+        0.001917
+      ],
+      "afterMs": [
+        0.0017286666666666665,
+        0.0012813333333333333
+      ],
+      "reductionPercent": 30.146205616152255
+    },
+    "Stream Begin/Prepare page uploads/Prepare transfer batch": {
+      "beforeMs": [
+        0.00011366666666666667,
+        8.366666666666668e-05
+      ],
+      "afterMs": [
+        6.2e-05,
+        5.433333333333334e-05
+      ],
+      "reductionPercent": 41.047297297297305
+    },
+    "Stream Begin/Prepare page uploads/Schedule page I/O": {
+      "beforeMs": [
+        0.025331,
+        0.021359666666666666
+      ],
+      "afterMs": [
+        0.021135666666666667,
+        0.015745333333333333
+      ],
+      "reductionPercent": 21.00990918955966
+    },
+    "Stream Begin/Prepare page uploads/Sort queued loads": {
+      "beforeMs": [
+        0.0026146666666666666,
+        0.0019373333333333332
+      ],
+      "afterMs": [
+        0.0015283333333333334,
+        0.0011913333333333333
+      ],
+      "reductionPercent": 40.25336848271821
+    },
+    "Stream Begin/Prepare page uploads/Sort ready uploads": {
+      "beforeMs": [
+        0.0026136666666666665,
+        0.002138
+      ],
+      "afterMs": [
+        0.0020903333333333334,
+        0.0015993333333333332
+      ],
+      "reductionPercent": 22.350052613118198
+    },
+    "Stream Begin/Prepare page uploads/Stage payloads / CLAS plans": {
+      "beforeMs": [
+        0.084119,
+        0.07328533333333333
+      ],
+      "afterMs": [
+        0.07263033333333334,
+        0.06820533333333334
+      ],
+      "reductionPercent": 10.526182040731591
+    },
+    "Stream Begin/Prepare page uploads/Submit upload tracking": {
+      "beforeMs": [
+        0.0007153333333333333,
+        0.0006743333333333333
+      ],
+      "afterMs": [
+        0.0005943333333333333,
+        0.000598
+      ],
+      "reductionPercent": 14.200047973135032
+    },
+    "Stream Begin/Publish resident pages": {
+      "beforeMs": [
+        0.0031393333333333334,
+        0.002633
+      ],
+      "afterMs": [
+        0.0028823333333333335,
+        0.0026073333333333335
+      ],
+      "reductionPercent": 4.896922099670842
+    },
+    "Stream Begin/Queue resident CLAS": {
+      "beforeMs": [
+        0.0021073333333333335,
+        0.001558
+      ],
+      "afterMs": [
+        0.0015813333333333332,
+        0.0014886666666666666
+      ],
+      "reductionPercent": 16.242269916333218
+    },
+    "Stream Begin/Residency completion": {
+      "beforeMs": [
+        0.015142333333333334,
+        0.013156
+      ],
+      "afterMs": [
+        0.013545333333333333,
+        0.011201333333333334
+      ],
+      "reductionPercent": 12.550798044643386
+    },
+    "Stream Begin/Residency completion/Complete storage tasks": {
+      "beforeMs": [
+        0.003684666666666667,
+        0.003382
+      ],
+      "afterMs": [
+        0.003446,
+        0.0028856666666666666
+      ],
+      "reductionPercent": 10.400943396226436
+    },
+    "Stream Begin/Residency completion/Complete unload tasks": {
+      "beforeMs": [
+        0.009407333333333334,
+        0.008028666666666667
+      ],
+      "afterMs": [
+        0.008330333333333334,
+        0.006857333333333333
+      ],
+      "reductionPercent": 12.894777089546528
+    },
+    "Stream Begin/Residency completion/Complete update tasks": {
+      "beforeMs": [
+        3.4e-05,
+        3.266666666666667e-05
+      ],
+      "afterMs": [
+        4.233333333333334e-05,
+        3.966666666666667e-05
+      ],
+      "reductionPercent": -23.00000000000002
+    },
+    "Stream Begin/Residency completion/Consume queued requests": {
+      "beforeMs": [
+        0.00010333333333333334,
+        0.00012233333333333334
+      ],
+      "afterMs": [
+        9.933333333333334e-05,
+        8.233333333333333e-05
+      ],
+      "reductionPercent": 19.49778434268834
+    },
+    "Stream Begin/Residency completion/Reset / latency tracking": {
+      "beforeMs": [
+        0.0012913333333333334,
+        0.0010736666666666666
+      ],
+      "afterMs": [
+        0.0010863333333333332,
+        0.0009626666666666667
+      ],
+      "reductionPercent": 13.361522198731501
+    },
+    "Stream Begin/Retire unloaded CLAS": {
+      "beforeMs": [
+        0.0029259999999999998,
+        0.0025223333333333335
+      ],
+      "afterMs": [
+        0.0029593333333333333,
+        0.0025603333333333333
+      ],
+      "reductionPercent": -1.3092688895686821
+    }
+  },
+  "runs": {
+    "before": {
+      "m1": {
+        "finalCounters": {
+          "activePageLoadCount": 0,
+          "frameAdmissionDeferredCount": 0,
+          "frameAllocationDeferredCount": 0,
+          "frameAllocationFailureCount": 0,
+          "frameCachedUnusedPageCount": 0,
+          "frameEvictedPageCount": 0,
+          "frameEvictionCandidateTests": 11598,
+          "frameEvictionScanCount": 1,
+          "frameGpuInvalidRequestCount": 0,
+          "frameGpuRequestCount": 0,
+          "frameGpuRequestOverflowCount": 0,
+          "frameResidentDemandCount": 11598,
+          "frameUploadBytes": 0,
+          "freeResidentBytes": 809534976,
+          "pendingPageCount": 0,
+          "pendingPageLoadCount": 0,
+          "pendingPatchCount": 0,
+          "queuedUploadCount": 0,
+          "residentPageCount": 11598,
+          "totalCancelledQueuedLoadCount": 0,
+          "totalCancelledUploads": 0,
+          "totalCompletedPageLoadCount": 36383,
+          "totalCompletedUnloadCount": 24785,
+          "totalCompletedUploadCount": 36383,
+          "totalCompletionDrivenUploads": 36383,
+          "totalEvictedPageCount": 24785,
+          "totalGpuInvalidRequestCount": 0,
+          "totalPageLoadFailureCount": 0,
+          "totalPrefetchAdmitted": 24644,
+          "totalPrefetchDeferred": 1081,
+          "totalPrefetchUsed": 16861,
+          "totalUploadBytes": 1216629392,
+          "usedResidentBytes": 264206848
+        },
+        "finalFrameStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 268052864,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 143820,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 268052864,
+          "clasMoved": 0,
+          "clasPages": 11598,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163840497,
+          "cpuWork": {
+            "coldAgeRejected": 0,
+            "coldCandidates": 0,
+            "coldClasLookups": 0,
+            "coldPressureScheduled": 0,
+            "coldRetentionScheduled": 0,
+            "coldScheduleFailed": 0,
+            "coldStateRejected": 0,
+            "coldVisited": 0,
+            "demandIncompleteProtected": 0,
+            "demandNewerThanFeedback": 0,
+            "demandRefreshed": 11598,
+            "demandUnused": 0,
+            "demandVisited": 11598,
+            "pendingFreePages": 0
+          },
+          "evictions": 0,
+          "feedbackFrame": 2999,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 264206848,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 11598,
+          "totalUploadBytes": 1216629392,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "finalCut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "forward2WorkMean": {
+          "coldAgeRejected": 1941.86,
+          "coldCandidates": 1953.5033333333333,
+          "coldClasLookups": 1953.5033333333333,
+          "coldPressureScheduled": 0,
+          "coldRetentionScheduled": 11.643333333333333,
+          "coldScheduleFailed": 0,
+          "coldStateRejected": 0,
+          "coldVisited": 1953.5033333333333,
+          "demandIncompleteProtected": 0,
+          "demandNewerThanFeedback": 12.723333333333333,
+          "demandRefreshed": 11111.876666666667,
+          "demandUnused": 1953.5033333333333,
+          "demandVisited": 13078.103333333333,
+          "pendingFreePages": 0
+        }
+      },
+      "m2": {
+        "finalCounters": {
+          "activePageLoadCount": 0,
+          "frameAdmissionDeferredCount": 0,
+          "frameAllocationDeferredCount": 0,
+          "frameAllocationFailureCount": 0,
+          "frameCachedUnusedPageCount": 0,
+          "frameEvictedPageCount": 0,
+          "frameEvictionCandidateTests": 11598,
+          "frameEvictionScanCount": 1,
+          "frameGpuInvalidRequestCount": 0,
+          "frameGpuRequestCount": 0,
+          "frameGpuRequestOverflowCount": 0,
+          "frameResidentDemandCount": 11598,
+          "frameUploadBytes": 0,
+          "freeResidentBytes": 809534976,
+          "pendingPageCount": 0,
+          "pendingPageLoadCount": 0,
+          "pendingPatchCount": 0,
+          "queuedUploadCount": 0,
+          "residentPageCount": 11598,
+          "totalCancelledQueuedLoadCount": 0,
+          "totalCancelledUploads": 0,
+          "totalCompletedPageLoadCount": 36385,
+          "totalCompletedUnloadCount": 24787,
+          "totalCompletedUploadCount": 36385,
+          "totalCompletionDrivenUploads": 36385,
+          "totalEvictedPageCount": 24787,
+          "totalGpuInvalidRequestCount": 0,
+          "totalPageLoadFailureCount": 0,
+          "totalPrefetchAdmitted": 24658,
+          "totalPrefetchDeferred": 786,
+          "totalPrefetchUsed": 16873,
+          "totalUploadBytes": 1216736464,
+          "usedResidentBytes": 264206848
+        },
+        "finalFrameStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 268052864,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 143820,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 268052864,
+          "clasMoved": 0,
+          "clasPages": 11598,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163840497,
+          "cpuWork": {
+            "coldAgeRejected": 0,
+            "coldCandidates": 0,
+            "coldClasLookups": 0,
+            "coldPressureScheduled": 0,
+            "coldRetentionScheduled": 0,
+            "coldScheduleFailed": 0,
+            "coldStateRejected": 0,
+            "coldVisited": 0,
+            "demandIncompleteProtected": 0,
+            "demandNewerThanFeedback": 0,
+            "demandRefreshed": 11598,
+            "demandUnused": 0,
+            "demandVisited": 11598,
+            "pendingFreePages": 0
+          },
+          "evictions": 0,
+          "feedbackFrame": 2999,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 264206848,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 11598,
+          "totalUploadBytes": 1216736464,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "finalCut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "forward2WorkMean": {
+          "coldAgeRejected": 1941.8866666666668,
+          "coldCandidates": 1953.53,
+          "coldClasLookups": 1953.53,
+          "coldPressureScheduled": 0,
+          "coldRetentionScheduled": 11.643333333333333,
+          "coldScheduleFailed": 0,
+          "coldStateRejected": 0,
+          "coldVisited": 1953.53,
+          "demandIncompleteProtected": 0,
+          "demandNewerThanFeedback": 12.72,
+          "demandRefreshed": 11111.86,
+          "demandUnused": 1953.53,
+          "demandVisited": 13078.11,
+          "pendingFreePages": 0
+        }
+      }
+    },
+    "after": {
+      "m1": {
+        "finalCounters": {
+          "activePageLoadCount": 0,
+          "frameAdmissionDeferredCount": 0,
+          "frameAllocationDeferredCount": 0,
+          "frameAllocationFailureCount": 0,
+          "frameCachedUnusedPageCount": 0,
+          "frameEvictedPageCount": 0,
+          "frameEvictionCandidateTests": 11598,
+          "frameEvictionScanCount": 1,
+          "frameGpuInvalidRequestCount": 0,
+          "frameGpuRequestCount": 0,
+          "frameGpuRequestOverflowCount": 0,
+          "frameResidentDemandCount": 11598,
+          "frameUploadBytes": 0,
+          "freeResidentBytes": 809534976,
+          "pendingPageCount": 0,
+          "pendingPageLoadCount": 0,
+          "pendingPatchCount": 0,
+          "queuedUploadCount": 0,
+          "residentPageCount": 11598,
+          "totalCancelledQueuedLoadCount": 0,
+          "totalCancelledUploads": 0,
+          "totalCompletedPageLoadCount": 36385,
+          "totalCompletedUnloadCount": 24787,
+          "totalCompletedUploadCount": 36385,
+          "totalCompletionDrivenUploads": 36385,
+          "totalEvictedPageCount": 24787,
+          "totalGpuInvalidRequestCount": 0,
+          "totalPageLoadFailureCount": 0,
+          "totalPrefetchAdmitted": 24651,
+          "totalPrefetchDeferred": 1122,
+          "totalPrefetchUsed": 16866,
+          "totalUploadBytes": 1216699968,
+          "usedResidentBytes": 264206848
+        },
+        "finalFrameStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 268052864,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 143820,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 268052864,
+          "clasMoved": 0,
+          "clasPages": 11598,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163840497,
+          "cpuWork": {
+            "coldAgeRejected": 0,
+            "coldCandidates": 0,
+            "coldClasLookups": 0,
+            "coldPressureScheduled": 0,
+            "coldRetentionScheduled": 0,
+            "coldScheduleFailed": 0,
+            "coldStateRejected": 0,
+            "coldVisited": 0,
+            "demandIncompleteProtected": 0,
+            "demandNewerThanFeedback": 0,
+            "demandRefreshed": 11598,
+            "demandUnused": 0,
+            "demandVisited": 11598,
+            "pendingFreePages": 0
+          },
+          "evictions": 0,
+          "feedbackFrame": 2999,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 264206848,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 11598,
+          "totalUploadBytes": 1216699968,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "finalCut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "forward2WorkMean": {
+          "coldAgeRejected": 0,
+          "coldCandidates": 1953.3833333333334,
+          "coldClasLookups": 11.643333333333333,
+          "coldPressureScheduled": 0,
+          "coldRetentionScheduled": 11.643333333333333,
+          "coldScheduleFailed": 0,
+          "coldStateRejected": 0,
+          "coldVisited": 11.643333333333333,
+          "demandIncompleteProtected": 0,
+          "demandNewerThanFeedback": 12.716666666666667,
+          "demandRefreshed": 11111.87,
+          "demandUnused": 1953.3833333333334,
+          "demandVisited": 13077.97,
+          "pendingFreePages": 0
+        }
+      },
+      "m2": {
+        "finalCounters": {
+          "activePageLoadCount": 0,
+          "frameAdmissionDeferredCount": 0,
+          "frameAllocationDeferredCount": 0,
+          "frameAllocationFailureCount": 0,
+          "frameCachedUnusedPageCount": 0,
+          "frameEvictedPageCount": 0,
+          "frameEvictionCandidateTests": 11598,
+          "frameEvictionScanCount": 1,
+          "frameGpuInvalidRequestCount": 0,
+          "frameGpuRequestCount": 0,
+          "frameGpuRequestOverflowCount": 0,
+          "frameResidentDemandCount": 11598,
+          "frameUploadBytes": 0,
+          "freeResidentBytes": 809534976,
+          "pendingPageCount": 0,
+          "pendingPageLoadCount": 0,
+          "pendingPatchCount": 0,
+          "queuedUploadCount": 0,
+          "residentPageCount": 11598,
+          "totalCancelledQueuedLoadCount": 0,
+          "totalCancelledUploads": 0,
+          "totalCompletedPageLoadCount": 36385,
+          "totalCompletedUnloadCount": 24787,
+          "totalCompletedUploadCount": 36385,
+          "totalCompletionDrivenUploads": 36385,
+          "totalEvictedPageCount": 24787,
+          "totalGpuInvalidRequestCount": 0,
+          "totalPageLoadFailureCount": 0,
+          "totalPrefetchAdmitted": 24680,
+          "totalPrefetchDeferred": 885,
+          "totalPrefetchUsed": 16895,
+          "totalUploadBytes": 1216697200,
+          "usedResidentBytes": 264206848
+        },
+        "finalFrameStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 268052864,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 143820,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 268052864,
+          "clasMoved": 0,
+          "clasPages": 11598,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163840497,
+          "cpuWork": {
+            "coldAgeRejected": 0,
+            "coldCandidates": 0,
+            "coldClasLookups": 0,
+            "coldPressureScheduled": 0,
+            "coldRetentionScheduled": 0,
+            "coldScheduleFailed": 0,
+            "coldStateRejected": 0,
+            "coldVisited": 0,
+            "demandIncompleteProtected": 0,
+            "demandNewerThanFeedback": 0,
+            "demandRefreshed": 11598,
+            "demandUnused": 0,
+            "demandVisited": 11598,
+            "pendingFreePages": 0
+          },
+          "evictions": 0,
+          "feedbackFrame": 2999,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 264206848,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 11598,
+          "totalUploadBytes": 1216697200,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "finalCut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "forward2WorkMean": {
+          "coldAgeRejected": 0,
+          "coldCandidates": 1953.11,
+          "coldClasLookups": 11.643333333333333,
+          "coldPressureScheduled": 0,
+          "coldRetentionScheduled": 11.643333333333333,
+          "coldScheduleFailed": 0,
+          "coldStateRejected": 0,
+          "coldVisited": 11.643333333333333,
+          "demandIncompleteProtected": 0,
+          "demandNewerThanFeedback": 12.72,
+          "demandRefreshed": 11111.856666666667,
+          "demandUnused": 1953.11,
+          "demandVisited": 13077.686666666666,
+          "pendingFreePages": 0
+        }
+      }
+    }
+  },
+  "limitations": [
+    "CPU steady-clock elapsed time includes scheduling/preemption.",
+    "Two serial runs per build; ranges are observations, not confidence intervals.",
+    "Fixed frame camera steps are identical; asynchronous I/O timing can change page events.",
+    "Conditional CPU scopes are amortized across every frame in the phase."
+  ],
+  "quality": {
+    "status": "passed",
+    "validation": true,
+    "frames": 3000,
+    "checkpoints": [
+      {
+        "phase": "warmup",
+        "frame": 29,
+        "cut": {
+          "activeGroups": 14894,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 74984,
+          "earlyHardware": 28227,
+          "earlySoftware": 13191,
+          "fineGroups": 5971,
+          "lateCandidates": 21837,
+          "lateHardware": 188,
+          "lateSoftware": 44,
+          "maxFiniteRefinementErrorPixels": 1553139.5,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38,
+          "nearPlaneUnboundedRefinements": 198,
+          "overTargetRefinements": 2823,
+          "selectedClusters": 86089,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 2736,
+          "visibleUnboundedRefinements": 130
+        }
+      },
+      {
+        "phase": "warmup",
+        "frame": 59,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "warmup",
+        "frame": 119,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "warmup",
+        "frame": 179,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "warmup",
+        "frame": 299,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "start_hold",
+        "frame": 599,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "forward_1",
+        "frame": 899,
+        "cut": {
+          "activeGroups": 21002,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 213762,
+          "earlyHardware": 41451,
+          "earlySoftware": 27103,
+          "fineGroups": 12928,
+          "lateCandidates": 81775,
+          "lateHardware": 621,
+          "lateSoftware": 329,
+          "maxFiniteRefinementErrorPixels": 50630.72265625,
+          "maxVisibleRefinementErrorPixels": 1.5008572340011597,
+          "nearPlaneUnboundedRefinements": 205,
+          "overTargetRefinements": 1530,
+          "selectedClusters": 231895,
+          "verifiedInstances": 12558,
+          "visibleOverTargetRefinements": 2,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "forward_2",
+        "frame": 1199,
+        "cut": {
+          "activeGroups": 20272,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 212811,
+          "earlyHardware": 40829,
+          "earlySoftware": 24648,
+          "fineGroups": 12952,
+          "lateCandidates": 79547,
+          "lateHardware": 143,
+          "lateSoftware": 175,
+          "maxFiniteRefinementErrorPixels": 12798.048828125,
+          "maxVisibleRefinementErrorPixels": 1.5947452783584595,
+          "nearPlaneUnboundedRefinements": 231,
+          "overTargetRefinements": 1599,
+          "selectedClusters": 233606,
+          "verifiedInstances": 11532,
+          "visibleOverTargetRefinements": 1,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "forward_3",
+        "frame": 1499,
+        "cut": {
+          "activeGroups": 19524,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 221701,
+          "earlyHardware": 37225,
+          "earlySoftware": 26897,
+          "fineGroups": 12894,
+          "lateCandidates": 82699,
+          "lateHardware": 229,
+          "lateSoftware": 341,
+          "maxFiniteRefinementErrorPixels": 202257.40625,
+          "maxVisibleRefinementErrorPixels": 1.4997859001159668,
+          "nearPlaneUnboundedRefinements": 266,
+          "overTargetRefinements": 2468,
+          "selectedClusters": 234644,
+          "verifiedInstances": 10691,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "far_hold",
+        "frame": 1799,
+        "cut": {
+          "activeGroups": 19524,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 221716,
+          "earlyHardware": 37303,
+          "earlySoftware": 27040,
+          "fineGroups": 12894,
+          "lateCandidates": 82457,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 202257.40625,
+          "maxVisibleRefinementErrorPixels": 1.4997859001159668,
+          "nearPlaneUnboundedRefinements": 266,
+          "overTargetRefinements": 2468,
+          "selectedClusters": 234644,
+          "verifiedInstances": 10691,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "return_1",
+        "frame": 2099,
+        "cut": {
+          "activeGroups": 20273,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 212842,
+          "earlyHardware": 40999,
+          "earlySoftware": 24702,
+          "fineGroups": 12953,
+          "lateCandidates": 79321,
+          "lateHardware": 92,
+          "lateSoftware": 170,
+          "maxFiniteRefinementErrorPixels": 12798.048828125,
+          "maxVisibleRefinementErrorPixels": 1.4999611377716064,
+          "nearPlaneUnboundedRefinements": 231,
+          "overTargetRefinements": 1598,
+          "selectedClusters": 233617,
+          "verifiedInstances": 11532,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "return_2",
+        "frame": 2399,
+        "cut": {
+          "activeGroups": 21004,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 202203,
+          "earlyHardware": 41312,
+          "earlySoftware": 27030,
+          "fineGroups": 12930,
+          "lateCandidates": 71783,
+          "lateHardware": 339,
+          "lateSoftware": 301,
+          "maxFiniteRefinementErrorPixels": 50630.72265625,
+          "maxVisibleRefinementErrorPixels": 1.4999496936798096,
+          "nearPlaneUnboundedRefinements": 205,
+          "overTargetRefinements": 1528,
+          "selectedClusters": 231918,
+          "verifiedInstances": 12558,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "return_3",
+        "frame": 2699,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 223438,
+          "earlyHardware": 42727,
+          "earlySoftware": 24270,
+          "fineGroups": 13968,
+          "lateCandidates": 81032,
+          "lateHardware": 219,
+          "lateSoftware": 161,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "return_hold",
+        "frame": 2999,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "final_diagnostic",
+        "frame": 3000,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      }
+    ]
+  },
+  "sourceSha256": {
+    "Source/Runtime/Render/Streamer/MeshletStreamResidency.h": "2a70344bb7ec7bc4cc826ae54e256082c4090dc223a69ad69670afac9a2a7ec4",
+    "Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp": "dc3593255d4ff89c353b889edf719a560d2f57487ba351b1796f711090b9ea99",
+    "Source/Runtime/Render/Streamer/MeshletStreamRuntime.h": "e1b578e90693f2a2eb57df1e0e5ec2766d4e9637b6959bea99dea72971e11de7",
+    "tests/rhi/StreamerTests.cpp": "d9e5e461ce88e33291694ad1e89c3b70b733b6518e296c4cb3985c4c677e6587",
+    "tests/rhi/MiniZorahRoamingTests.cpp": "40cede314d41c9e4037a11e180f9fdb38ed2649b9cecb5a997f234a7c51e4010"
+  },
+  "bitmap": {
+    "logicalPages": 1356959,
+    "bitmapBytes": 169624,
+    "maxTouchedWordPayloadBytes": 84812
+  }
+}

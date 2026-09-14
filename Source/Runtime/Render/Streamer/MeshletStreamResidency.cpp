@@ -277,6 +277,7 @@ bool MeshletStreamResidencyManager::initialize(
     unloadDelayFrames_ = std::max(desc.unloadDelayFrames, 1u);
     evictionAgeThresholdFrames_ = desc.evictionAgeThresholdFrames;
     pageCount_ = asset_->pageCount();
+    unloadRequestBits_.assign((uint64_t(pageCount_) + 63) / 64, 0);
     if (maxResidentPages_ != 0) {
         const uint32_t residentReserve = std::min(maxResidentPages_, pageCount_);
         pages_.reserve(residentReserve);
@@ -352,7 +353,8 @@ void MeshletStreamResidencyManager::reset()
     evictionAgeRejected_ = false;
     frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
     requestMarks_.clear();
-    unloadRequestMarks_.clear();
+    unloadRequestBits_.clear();
+    unloadRequestTouchedWords_.clear();
     patches_.clear();
     stats_ = {};
     frameIndex_ = 0;
@@ -502,7 +504,7 @@ void MeshletStreamResidencyManager::beginFrame(CpuProfileRecorder* profiler)
     }
 
     profile.next("Consume queued requests");
-    consumeReadyRequestTasks();
+    consumeReadyRequestTasks(profiler);
 }
 
 void MeshletStreamResidencyManager::completeUploadPages(
@@ -529,9 +531,10 @@ void MeshletStreamResidencyManager::completeUploadPages(
     }
 }
 
-void MeshletStreamResidencyManager::consumeReadyRequestTasks()
+void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder* profiler)
 {
     if (requestTaskQueue_.canPop(frameIndex_, true)) {
+        CpuProfileScope profile(profiler, "Select latest request task");
         const uint32_t taskIndex = requestTaskQueue_.pop();
         uint32_t latestTaskIndex = taskIndex;
         while (requestTaskQueue_.canPop(frameIndex_, false)) {
@@ -548,6 +551,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks()
         uint32_t consumed = 0;
         uint32_t consumedUnloads = 0;
         if (latestTaskIndex < requestTaskPages_.size()) {
+            profile.next("Apply explicit unloads");
             for (uint32_t pageIndex : requestTaskUnloadPages_[latestTaskIndex]) {
                 if (pageIndex >= pageCount_) {
                     continue;
@@ -558,6 +562,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks()
                 }
             }
             auto& taskPages = requestTaskPages_[latestTaskIndex];
+            profile.next("Refresh request priorities");
             // Refresh the complete batch before reclaiming stale, unissued I/O.
             // Already submitted loads/uploads retain their completion lifetime.
             const bool prioritized = std::any_of(taskPages.begin(), taskPages.end(),
@@ -578,6 +583,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks()
                         asset_->pages()[request.pageIndex].uncompressedSize, age);
                 }
             }
+            profile.next("Sort admission priority");
             if (prioritized) {
                 std::stable_sort(taskPages.begin(), taskPages.end(), [this](const PageRequest& a, const PageRequest& b) {
                     if (a.prefetch != b.prefetch) { return !a.prefetch; }
@@ -590,6 +596,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks()
                     return left != right ? left > right : a.pageIndex < b.pageIndex;
                 });
             } else { std::reverse(taskPages.begin(), taskPages.end()); }
+            profile.next("Cancel stale queued loads");
             std::erase_if(uploadQueue_, [this](uint32_t pageIndex) {
                 const auto found = pages_.find(pageIndex);
                 if (found == pages_.end()) { return true; }
@@ -602,6 +609,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks()
                 }
                 return false;
             });
+            profile.next("Admit demand / prefetch");
             for (const auto& request : taskPages) {
                 const uint32_t pageIndex = request.pageIndex;
                 if (pageIndex >= pageCount_) {
@@ -631,6 +639,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks()
                 }
                 ++consumed;
             }
+            profile.next("Release request task");
             taskPages.clear();
             requestTaskUnloadPages_[latestTaskIndex].clear();
         }
@@ -812,9 +821,11 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     stats_.totalGpuInvalidRequestCount += requests.invalidPageCounter;
 
     std::vector<PageRequest> uniqueRequests;
+    CpuProfileScope detail(profiler, "Prepare load containers");
     uniqueRequests.reserve(requests.loadPageIds.size());
     requestMarks_.clear();
     requestMarks_.reserve(requests.loadPageIds.size());
+    detail.next("Validate / merge loads");
     for (size_t index = 0; index < requests.loadPageIds.size(); ++index) {
         const uint32_t encodedPage = requests.loadPageIds[index];
         const bool prefetch = requests.taggedPrefetchRequests && (encodedPage & kStreamPrefetchPageTag) != 0;
@@ -848,45 +859,62 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     stats_.frameUniqueGpuRequestCount += static_cast<uint32_t>(uniqueRequests.size());
     stats_.totalUniqueGpuRequestCount += uniqueRequests.size();
 
+    detail.end();
     profile.next("Deduplicate unloads");
     std::vector<uint32_t> uniqueUnloadRequests;
+    CpuProfileScope unloadDetail(profiler, "Prepare unused-page set");
     uniqueUnloadRequests.reserve(requests.unloadPageIds.size());
-    unloadRequestMarks_.clear();
-    unloadRequestMarks_.reserve(requests.unloadPageIds.size());
+    for (uint32_t word : unloadRequestTouchedWords_) { unloadRequestBits_[word] = 0; }
+    unloadRequestTouchedWords_.clear();
+    unloadRequestTouchedWords_.reserve(std::min(requests.unloadPageIds.size(), unloadRequestBits_.size()));
+    unloadDetail.next("Validate / insert unused pages");
     for (uint32_t pageIndex : requests.unloadPageIds) {
-        if (pageIndex >= pageCount_ || !unloadRequestMarks_.insert(pageIndex).second) {
-            if (pageIndex >= pageCount_) {
-                ++stats_.frameGpuInvalidRequestCount;
-                ++stats_.totalGpuInvalidRequestCount;
-            }
+        if (pageIndex >= pageCount_) {
+            ++stats_.frameGpuInvalidRequestCount;
+            ++stats_.totalGpuInvalidRequestCount;
             continue;
         }
+        const uint32_t wordIndex = pageIndex / 64;
+        const uint64_t bit = uint64_t(1) << (pageIndex % 64);
+        uint64_t& word = unloadRequestBits_[wordIndex];
+        if (word & bit) { continue; }
+        if (!word) { unloadRequestTouchedWords_.push_back(wordIndex); }
+        word |= bit;
         uniqueUnloadRequests.push_back(pageIndex);
         unloadRequestedPages_.push_back(pageIndex);
     }
     stats_.frameUniqueGpuUnloadRequestCount += static_cast<uint32_t>(uniqueUnloadRequests.size());
     stats_.totalUniqueGpuUnloadRequestCount += uniqueUnloadRequests.size();
 
+    unloadDetail.end();
     profile.next("Update resident demand");
     if (requests.residentDemandFeedback) {
         residentDemandFeedback_ = true;
         const bool complete = requests.unloadOverflowCounter == 0 && requests.invalidPageCounter == 0 &&
             requests.unloadRequestCounter <= requests.unloadPageIds.size();
         for (size_t i = 0; i < residentPages_.size(); ++i) {
+            ++stats_.cpuWork.demandVisited;
             const uint32_t pageIndex = residentPages_[i];
             PageEntry& page = *residentPageEntries_[i];
             // This page was not in an older frame's resident list. Its absence
             // from that frame's unused list cannot imply a prefetch hit.
-            if (requests.frameIndex != 0 && page.residentSinceFrame > requests.frameIndex) { continue; }
+            if (requests.frameIndex != 0 && page.residentSinceFrame > requests.frameIndex) {
+                ++stats_.cpuWork.demandNewerThanFeedback;
+                continue;
+            }
             // Only explicitly unused pages may be budget victims. Truncated
             // feedback must not infer that an omitted page is cold.
-            page.gpuUnused = unloadRequestMarks_.contains(pageIndex);
+            page.gpuUnused = (unloadRequestBits_[pageIndex / 64] & (uint64_t(1) << (pageIndex % 64))) != 0;
             if (page.gpuUnused) {
+                ++stats_.cpuWork.demandUnused;
                 ++stats_.frameCachedUnusedPageCount;
             } else if (complete) {
+                ++stats_.cpuWork.demandRefreshed;
                 page.lastUsedFrame = frameIndex_;
                 if (page.prefetch) { ++stats_.totalPrefetchUsed; page.prefetch = false; }
                 ++stats_.frameResidentDemandCount;
+            } else {
+                ++stats_.cpuWork.demandIncompleteProtected;
             }
         }
         uniqueUnloadRequests.clear();
@@ -897,6 +925,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
         return 0;
     }
 
+    CpuProfileScope admission(profiler, "Queue request task");
     const uint32_t taskIndex = requestTaskQueue_.acquireTaskIndex();
     if (taskIndex == kInvalidStreamingTaskIndex) {
         ++stats_.frameRequestTaskFailureCount;
@@ -912,7 +941,10 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     ++stats_.frameScheduledRequestTaskCount;
     ++stats_.totalScheduledRequestTaskCount;
     const uint32_t count = static_cast<uint32_t>(taskPages.size() + taskUnloadPages.size());
-    if (immediateGpuRequests_) { consumeReadyRequestTasks(); }
+    if (immediateGpuRequests_) {
+        admission.next("Consume ready request tasks");
+        consumeReadyRequestTasks(profiler);
+    }
     return count;
 }
 
@@ -1333,29 +1365,51 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats(bool detailed) 
     return result;
 }
 
-void MeshletStreamResidencyManager::prepareEvictionCandidates(CpuProfileRecorder* profiler)
+size_t MeshletStreamResidencyManager::prepareEvictionCandidates(CpuProfileRecorder* profiler, uint32_t minimumAge)
 {
-    if (evictionCandidatesBuilt_) { return; }
-    CpuProfileScope profile(profiler, "Scan resident candidates");
-    evictionCandidatesBuilt_ = true;
-    ++stats_.frameEvictionScanCount;
-    for (size_t i = 0; i < residentPages_.size(); ++i) {
-        const uint32_t candidate = residentPages_[i];
-        ++stats_.frameEvictionCandidateTests;
-        const PageEntry& entry = *residentPageEntries_[i];
-        if (entry.lockedFallback || !streamableEvictionState(entry.state) ||
-            (residentDemandFeedback_ && !entry.gpuUnused)) { continue; }
-        const uint64_t age = frameIndex_ >= entry.lastUsedFrame ? frameIndex_ - entry.lastUsedFrame : 0;
-        if (age < evictionAgeThresholdFrames_) {
-            evictionAgeRejected_ = true;
-            continue;
+    if (!evictionCandidatesBuilt_) {
+        CpuProfileScope profile(profiler, "Scan resident candidates");
+        evictionCandidatesBuilt_ = true;
+        evictionSortedCount_ = 0;
+        evictionSortedMinimumAge_ = UINT64_MAX;
+        ++stats_.frameEvictionScanCount;
+        for (size_t i = 0; i < residentPages_.size(); ++i) {
+            const uint32_t candidate = residentPages_[i];
+            ++stats_.frameEvictionCandidateTests;
+            const PageEntry& entry = *residentPageEntries_[i];
+            if (entry.lockedFallback || !streamableEvictionState(entry.state) ||
+                (residentDemandFeedback_ && !entry.gpuUnused)) { continue; }
+            const uint64_t age = frameIndex_ >= entry.lastUsedFrame ? frameIndex_ - entry.lastUsedFrame : 0;
+            if (age < evictionAgeThresholdFrames_) {
+                evictionAgeRejected_ = true;
+                continue;
+            }
+            evictionCandidates_.push_back({entry.lastUsedFrame, candidate});
+            ++stats_.cpuWork.coldCandidates;
         }
-        evictionCandidates_.push_back({entry.lastUsedFrame, candidate});
     }
-    profile.next("Sort cold candidates");
-    std::sort(evictionCandidates_.begin(), evictionCandidates_.end(), [](const EvictionCandidate& a, const EvictionCandidate& b) {
+    CpuProfileScope profile(profiler, "Sort cold candidates");
+    const auto due = [this, minimumAge](const EvictionCandidate& candidate) {
+        return minimumAge == 0 || (frameIndex_ >= candidate.lastUsedFrame &&
+            frameIndex_ - candidate.lastUsedFrame >= minimumAge);
+    };
+    const auto older = [](const EvictionCandidate& a, const EvictionCandidate& b) {
         return a.lastUsedFrame != b.lastUsedFrame ? a.lastUsedFrame < b.lastUsedFrame : a.pageIndex < b.pageIndex;
-    });
+    };
+    // Keep young candidates for later allocation pressure, but sort only the
+    // due prefix. A lower age threshold expands it without another page scan.
+    if (minimumAge < evictionSortedMinimumAge_) {
+        auto middle = evictionCandidates_.begin() + evictionSortedCount_;
+        auto end = std::partition(middle, evictionCandidates_.end(), due);
+        std::sort(middle, end, older);
+        if (middle != evictionCandidates_.begin() && middle != end) {
+            std::inplace_merge(evictionCandidates_.begin(), middle, end, older);
+        }
+        evictionSortedCount_ = static_cast<size_t>(end - evictionCandidates_.begin());
+        evictionSortedMinimumAge_ = minimumAge;
+    }
+    return static_cast<size_t>(std::partition_point(evictionCandidates_.begin(),
+        evictionCandidates_.begin() + evictionSortedCount_, due) - evictionCandidates_.begin());
 }
 
 uint32_t MeshletStreamResidencyManager::reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc, CpuProfileRecorder* profiler)
@@ -1373,10 +1427,12 @@ uint32_t MeshletStreamResidencyManager::reclaimColdPages(const MeshletStreamCold
             if (found == pages_.end()) { continue; }
             const auto& page = found->second;
             if (page.state != MeshletStreamPageResidencyState::PendingUnload || page.taskIndex != taskIndex) { continue; }
+            ++stats_.cpuWork.pendingFreePages;
             geometry = subtract(geometry, page.allocationBytes);
             if (desc.clasPageBytes) { clas = subtract(clas, desc.clasPageBytes(id)); }
         }
     }
+    profile.next("Evaluate budget pressure");
     const uint64_t geometryTarget = storage_.capacityBytes() * 70 / 100;
     const uint64_t clasTarget = desc.clasCapacityBytes * 70 / 100;
     const auto pressure = [](bool current, uint64_t used, uint64_t capacity) {
@@ -1384,23 +1440,52 @@ uint32_t MeshletStreamResidencyManager::reclaimColdPages(const MeshletStreamCold
     };
     geometryReclaimPressure_ = pressure(geometryReclaimPressure_, geometry, storage_.capacityBytes());
     clasReclaimPressure_ = pressure(clasReclaimPressure_, clas, desc.clasCapacityBytes);
+    const auto minimumPossibleAge = [&]() {
+        return (geometryReclaimPressure_ && geometry > geometryTarget) ||
+            (clasReclaimPressure_ && clas > clasTarget)
+            ? std::min(desc.pressureAgeFrames, desc.retentionFrames) : desc.retentionFrames;
+    };
     profile.next("Prepare cold candidates");
-    prepareEvictionCandidates(profiler);
+    const size_t dueCount = prepareEvictionCandidates(profiler, minimumPossibleAge());
     profile.next("Schedule cold evictions");
     uint32_t reclaimed = 0;
-    for (const EvictionCandidate& candidate : evictionCandidates_) {
+    for (size_t i = 0; i < dueCount; ++i) {
+        const EvictionCandidate& candidate = evictionCandidates_[i];
         const uint32_t id = candidate.pageIndex;
         if (reclaimed >= desc.maxPages || stats_.frameEvictedPageCount >= 256) { break; }
+        const uint32_t possibleAge = minimumPossibleAge();
+        // Pressure can end after a victim is credited. Only the sorted snapshot
+        // key proves that every following candidate is too young as well.
+        if (possibleAge && (frameIndex_ < candidate.lastUsedFrame ||
+            frameIndex_ - candidate.lastUsedFrame < possibleAge)) { break; }
+        ++stats_.cpuWork.coldVisited;
         const auto& page = pages_.at(id);
-        if (page.lockedFallback || !page.gpuUnused || !streamableEvictionState(page.state)) { continue; }
+        if (page.lockedFallback || !page.gpuUnused || !streamableEvictionState(page.state)) {
+            ++stats_.cpuWork.coldStateRejected;
+            continue;
+        }
+        const uint64_t age = pageAge(id);
+        if (age < possibleAge || frameIndex_ - page.residentSinceFrame < desc.pressureAgeFrames) {
+            ++stats_.cpuWork.coldAgeRejected;
+            continue;
+        }
+        stats_.cpuWork.coldClasLookups += bool(desc.clasPageBytes);
         const uint64_t clasBytes = desc.clasPageBytes ? desc.clasPageBytes(id) : 0;
         const bool needGeometry = geometryReclaimPressure_ && geometry > geometryTarget;
         const bool needClas = clasReclaimPressure_ && clas > clasTarget && clasBytes > 0;
         const uint64_t minimumAge = needGeometry || needClas ? desc.pressureAgeFrames : desc.retentionFrames;
         // Recently uploaded / recently used pages must survive delayed feedback.
-        if (pageAge(id) < minimumAge || frameIndex_ - page.residentSinceFrame < desc.pressureAgeFrames) { continue; }
+        if (age < minimumAge) {
+            ++stats_.cpuWork.coldAgeRejected;
+            continue;
+        }
         const uint64_t geometryBytes = page.allocationBytes;
-        if (!scheduleUnload(id, true)) { break; }
+        if (!scheduleUnload(id, true)) {
+            ++stats_.cpuWork.coldScheduleFailed;
+            break;
+        }
+        if (needGeometry || needClas) { ++stats_.cpuWork.coldPressureScheduled; }
+        else { ++stats_.cpuWork.coldRetentionScheduled; }
         geometry = subtract(geometry, geometryBytes); clas = subtract(clas, clasBytes);
         ++reclaimed; ++stats_.frameEvictedPageCount; ++stats_.totalEvictedPageCount;
     }
@@ -1766,6 +1851,7 @@ void MeshletStreamResidencyManager::resetFrameStats()
     stats_.frameAllocationFailureCount = 0;
     stats_.frameEvictionScanCount = 0;
     stats_.frameEvictionCandidateTests = 0;
+    stats_.cpuWork = {};
     stats_.frameAllocationDeferredCount = 0;
     stats_.frameCachedUnusedPageCount = 0;
     stats_.frameResidentDemandCount = 0;

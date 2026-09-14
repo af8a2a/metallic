@@ -844,6 +844,13 @@ public:
                     s.clasUsedBytes <= s.clasCapacityBytes && !s.loadFailures && !s.requestOverflows,
                     "Streaming budget, loading or request invariant failed");
                 checkRoam(s.clasBuiltClusters <= 8192, "CLAS build budget exceeded");
+                const auto& work = s.cpuWork;
+                checkRoam(work.demandVisited == work.demandNewerThanFeedback + work.demandUnused +
+                    work.demandRefreshed + work.demandIncompleteProtected, "Resident feedback work counts do not partition visits");
+                checkRoam(work.coldVisited == work.coldStateRejected + work.coldAgeRejected +
+                    work.coldScheduleFailed + work.coldPressureScheduled + work.coldRetentionScheduled &&
+                    work.coldClasLookups <= work.coldVisited - work.coldStateRejected,
+                    "Cold scheduling work counts do not partition visits");
                 Json nodes = Json::array();
                 for (const auto& pass : stats.nodes) {
                     checkRoam(pass.gpuTimingAvailable, "Pass GPU timing missing");
@@ -863,16 +870,24 @@ public:
                         const auto beginIndex = uint32_t(streamBegin - pass.sections.begin());
                         uint32_t children = 0;
                         double childCpuMs = 0;
+                        std::vector<double> childSums(pass.sections.size(), 0.0);
                         for (uint32_t i = 0; i < pass.sections.size(); ++i) {
                             const auto& section = pass.sections[i];
                             if (!section.cpuOnly) { continue; }
                             checkRoam(section.parent < i && std::isfinite(section.cpuMilliseconds) &&
                                 section.cpuMilliseconds >= 0 && section.gpuMilliseconds == 0,
                                 "Invalid CPU profile hierarchy or duration");
+                            childSums[section.parent] += section.cpuMilliseconds;
                             if (section.parent == beginIndex) { ++children; childCpuMs += section.cpuMilliseconds; }
                         }
                         checkRoam(children >= 7 && childCpuMs <= streamBegin->cpuMilliseconds + .01,
                             "Stream Begin CPU breakdown missing or double-counted");
+                        for (uint32_t i = 0; i < pass.sections.size(); ++i) {
+                            if (pass.sections[i].cpuOnly) {
+                                checkRoam(childSums[i] <= pass.sections[i].cpuMilliseconds + .01,
+                                    "Nested request/reclaim CPU scopes overlap or exceed their parent");
+                            }
+                        }
                     }
                     nodes.push_back({{"name", pass.name}, {"gpuMs", pass.gpuMilliseconds},
                         {"cpuMs", pass.cpuMilliseconds}, {"sections", std::move(sections)}});
@@ -897,6 +912,15 @@ public:
                         {"pendingPages", s.pendingPages}, {"ioQueued", s.ioQueued}, {"ioActive", s.ioActive},
                         {"uploadQueued", s.uploadQueued}, {"requests", s.requests}, {"evictions", s.evictions},
                         {"allocationFailures", s.allocationFailures}, {"uploadBytes", s.uploadBytes},
+                        {"cpuWork", {{"demandVisited", work.demandVisited},
+                            {"demandNewerThanFeedback", work.demandNewerThanFeedback},
+                            {"demandUnused", work.demandUnused}, {"demandRefreshed", work.demandRefreshed},
+                            {"demandIncompleteProtected", work.demandIncompleteProtected},
+                            {"coldCandidates", work.coldCandidates}, {"coldVisited", work.coldVisited},
+                            {"coldStateRejected", work.coldStateRejected}, {"coldClasLookups", work.coldClasLookups},
+                            {"coldAgeRejected", work.coldAgeRejected}, {"coldScheduleFailed", work.coldScheduleFailed},
+                            {"coldPressureScheduled", work.coldPressureScheduled},
+                            {"coldRetentionScheduled", work.coldRetentionScheduled}, {"pendingFreePages", work.pendingFreePages}}},
                         {"totalUploadBytes", s.totalUploadBytes}}}}.dump() << '\n';
             }
             for (const auto& [phase, values] : gpuByPhase) {

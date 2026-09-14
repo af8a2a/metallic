@@ -17,6 +17,24 @@ struct RenderGraphProfileSection {
     bool cpuOnly = false;
 };
 
+// Per-frame work counts for aggregate CPU timings; no per-page clock reads.
+struct StreamCpuWorkCounters {
+    uint32_t demandVisited = 0;
+    uint32_t demandNewerThanFeedback = 0;
+    uint32_t demandUnused = 0;
+    uint32_t demandRefreshed = 0;
+    uint32_t demandIncompleteProtected = 0;
+    uint32_t coldCandidates = 0;
+    uint32_t coldVisited = 0;
+    uint32_t coldStateRejected = 0;
+    uint32_t coldClasLookups = 0;
+    uint32_t coldAgeRejected = 0;
+    uint32_t coldScheduleFailed = 0;
+    uint32_t coldPressureScheduled = 0;
+    uint32_t coldRetentionScheduled = 0;
+    uint32_t pendingFreePages = 0;
+};
+
 // CPU-visible streaming counters; never triggers a GPU readback or page scan.
 struct SceneStreamingProfile {
     std::string passName;
@@ -56,6 +74,7 @@ struct SceneStreamingProfile {
     uint64_t uploadBytes = 0;
     uint64_t totalUploadBytes = 0;
     uint64_t loadFailures = 0;
+    StreamCpuWorkCounters cpuWork;
 };
 
 } // namespace metallic::render

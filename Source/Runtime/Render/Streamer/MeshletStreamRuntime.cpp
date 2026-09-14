@@ -3691,6 +3691,7 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.uploadBytes = stats.frameUploadBytes;
     result.totalUploadBytes = stats.totalUploadBytes;
     result.loadFailures = stats.totalPageLoadFailureCount;
+    result.cpuWork = stats.cpuWork;
     result.clasEnabled = clasPool_ && clasPool_->ready();
     if (result.clasEnabled) {
         const auto clas = clasPool_->stats();

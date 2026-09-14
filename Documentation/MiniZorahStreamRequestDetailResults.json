@@ -1,0 +1,3122 @@
+{
+  "manifest": {
+    "replaySha256": "FEB79872154850AF32DB25A54BA3D22B48B9A04A10F7F2E8DADAF19F98F2F2D2",
+    "sourceSha256": "40CEDE314D41C9E4037A11E180F9FDB38ED2649B9CECB5A997F234A7C51E4010",
+    "protocol": "minizorah-cfg-roam-v1",
+    "gitHead": "ec2a3884ce78eb9e31d488311fa5325a352333ee",
+    "executableSha256": "CA00CA13B3ACB46BA4C7B91A27F9FDA3AFD17D476B2951733921D24650F5468F",
+    "start": "2026-09-14T22:55:58.1177503+08:00"
+  },
+  "referenceReplaySha256": "feb79872154850af32db25a54ba3d22b48b9a04a10f7f2e8dadaf19f98f2f2d2",
+  "runs": {
+    "m1": {
+      "cpuWork": {
+        "warmup": {
+          "coldAgeRejected": {
+            "mean": 329.87,
+            "min": 0,
+            "max": 841,
+            "total": 98961
+          },
+          "coldCandidates": {
+            "mean": 332.67333333333335,
+            "min": 0,
+            "max": 841,
+            "total": 99802
+          },
+          "coldClasLookups": {
+            "mean": 332.67333333333335,
+            "min": 0,
+            "max": 841,
+            "total": 99802
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 2.8033333333333332,
+            "min": 0,
+            "max": 144,
+            "total": 841
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 332.67333333333335,
+            "min": 0,
+            "max": 841,
+            "total": 99802
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 41.46333333333333,
+            "min": 0,
+            "max": 256,
+            "total": 12439
+          },
+          "demandRefreshed": {
+            "mean": 10200.863333333333,
+            "min": 0,
+            "max": 11598,
+            "total": 3060259
+          },
+          "demandUnused": {
+            "mean": 332.67333333333335,
+            "min": 0,
+            "max": 841,
+            "total": 99802
+          },
+          "demandVisited": {
+            "mean": 10575,
+            "min": 0,
+            "max": 12439,
+            "total": 3172500
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "start_hold": {
+          "coldAgeRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldCandidates": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldClasLookups": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandRefreshed": {
+            "mean": 11598,
+            "min": 11598,
+            "max": 11598,
+            "total": 3479400
+          },
+          "demandUnused": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandVisited": {
+            "mean": 11598,
+            "min": 11598,
+            "max": 11598,
+            "total": 3479400
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "forward_1": {
+          "coldAgeRejected": {
+            "mean": 1741.15,
+            "min": 0,
+            "max": 2400,
+            "total": 522345
+          },
+          "coldCandidates": {
+            "mean": 1750.3666666666666,
+            "min": 0,
+            "max": 2498,
+            "total": 525110
+          },
+          "coldClasLookups": {
+            "mean": 1750.3666666666666,
+            "min": 0,
+            "max": 2498,
+            "total": 525110
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 9.216666666666667,
+            "min": 0,
+            "max": 182,
+            "total": 2765
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 1750.3666666666666,
+            "min": 0,
+            "max": 2498,
+            "total": 525110
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 13.596666666666666,
+            "min": 0,
+            "max": 256,
+            "total": 4079
+          },
+          "demandRefreshed": {
+            "mean": 11249.143333333333,
+            "min": 11003,
+            "max": 11638,
+            "total": 3374743
+          },
+          "demandUnused": {
+            "mean": 1750.3666666666666,
+            "min": 0,
+            "max": 2498,
+            "total": 525110
+          },
+          "demandVisited": {
+            "mean": 13013.106666666667,
+            "min": 11598,
+            "max": 13658,
+            "total": 3903932
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "forward_2": {
+          "coldAgeRejected": {
+            "mean": 1941.6833333333334,
+            "min": 1660,
+            "max": 2383,
+            "total": 582505
+          },
+          "coldCandidates": {
+            "mean": 1953.3266666666666,
+            "min": 1672,
+            "max": 2395,
+            "total": 585998
+          },
+          "coldClasLookups": {
+            "mean": 1953.3266666666666,
+            "min": 1672,
+            "max": 2395,
+            "total": 585998
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 11.643333333333333,
+            "min": 1,
+            "max": 114,
+            "total": 3493
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 1953.3266666666666,
+            "min": 1672,
+            "max": 2395,
+            "total": 585998
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 12.72,
+            "min": 3,
+            "max": 26,
+            "total": 3816
+          },
+          "demandRefreshed": {
+            "mean": 11111.866666666667,
+            "min": 10864,
+            "max": 11343,
+            "total": 3333560
+          },
+          "demandUnused": {
+            "mean": 1953.3266666666666,
+            "min": 1672,
+            "max": 2395,
+            "total": 585998
+          },
+          "demandVisited": {
+            "mean": 13077.913333333334,
+            "min": 12845,
+            "max": 13352,
+            "total": 3923374
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "forward_3": {
+          "coldAgeRejected": {
+            "mean": 2008.0266666666666,
+            "min": 1770,
+            "max": 2367,
+            "total": 602408
+          },
+          "coldCandidates": {
+            "mean": 2023.5433333333333,
+            "min": 1779,
+            "max": 2378,
+            "total": 607063
+          },
+          "coldClasLookups": {
+            "mean": 2023.5433333333333,
+            "min": 1779,
+            "max": 2378,
+            "total": 607063
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 15.516666666666667,
+            "min": 1,
+            "max": 134,
+            "total": 4655
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 2023.5433333333333,
+            "min": 1779,
+            "max": 2378,
+            "total": 607063
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 10.753333333333334,
+            "min": 0,
+            "max": 21,
+            "total": 3226
+          },
+          "demandRefreshed": {
+            "mean": 10401.416666666666,
+            "min": 9990,
+            "max": 10902,
+            "total": 3120425
+          },
+          "demandUnused": {
+            "mean": 2023.5433333333333,
+            "min": 1779,
+            "max": 2378,
+            "total": 607063
+          },
+          "demandVisited": {
+            "mean": 12435.713333333333,
+            "min": 11792,
+            "max": 13244,
+            "total": 3730714
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "far_hold": {
+          "coldAgeRejected": {
+            "mean": 398.44666666666666,
+            "min": 0,
+            "max": 1833,
+            "total": 119534
+          },
+          "coldCandidates": {
+            "mean": 404.6933333333333,
+            "min": 0,
+            "max": 1839,
+            "total": 121408
+          },
+          "coldClasLookups": {
+            "mean": 404.6933333333333,
+            "min": 0,
+            "max": 1839,
+            "total": 121408
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 6.246666666666667,
+            "min": 0,
+            "max": 70,
+            "total": 1874
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 404.6933333333333,
+            "min": 0,
+            "max": 1839,
+            "total": 121408
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 0.14666666666666667,
+            "min": 0,
+            "max": 15,
+            "total": 44
+          },
+          "demandRefreshed": {
+            "mean": 9976,
+            "min": 9976,
+            "max": 9976,
+            "total": 2992800
+          },
+          "demandUnused": {
+            "mean": 404.6933333333333,
+            "min": 0,
+            "max": 1839,
+            "total": 121408
+          },
+          "demandVisited": {
+            "mean": 10380.84,
+            "min": 9976,
+            "max": 11821,
+            "total": 3114252
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "return_1": {
+          "coldAgeRejected": {
+            "mean": 1580.8033333333333,
+            "min": 0,
+            "max": 2238,
+            "total": 474241
+          },
+          "coldCandidates": {
+            "mean": 1588.2333333333333,
+            "min": 0,
+            "max": 2258,
+            "total": 476470
+          },
+          "coldClasLookups": {
+            "mean": 1588.2333333333333,
+            "min": 0,
+            "max": 2258,
+            "total": 476470
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 7.43,
+            "min": 0,
+            "max": 191,
+            "total": 2229
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 1588.2333333333333,
+            "min": 0,
+            "max": 2258,
+            "total": 476470
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 16.466666666666665,
+            "min": 0,
+            "max": 252,
+            "total": 4940
+          },
+          "demandRefreshed": {
+            "mean": 10394.71,
+            "min": 9959,
+            "max": 10903,
+            "total": 3118413
+          },
+          "demandUnused": {
+            "mean": 1588.2333333333333,
+            "min": 0,
+            "max": 2258,
+            "total": 476470
+          },
+          "demandVisited": {
+            "mean": 11999.41,
+            "min": 9976,
+            "max": 12700,
+            "total": 3599823
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "return_2": {
+          "coldAgeRejected": {
+            "mean": 2032.3233333333333,
+            "min": 1756,
+            "max": 2225,
+            "total": 609697
+          },
+          "coldCandidates": {
+            "mean": 2044.75,
+            "min": 1762,
+            "max": 2241,
+            "total": 613425
+          },
+          "coldClasLookups": {
+            "mean": 2044.75,
+            "min": 1762,
+            "max": 2241,
+            "total": 613425
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 12.426666666666666,
+            "min": 1,
+            "max": 26,
+            "total": 3728
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 2044.75,
+            "min": 1762,
+            "max": 2241,
+            "total": 613425
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 13.2,
+            "min": 1,
+            "max": 109,
+            "total": 3960
+          },
+          "demandRefreshed": {
+            "mean": 11110.823333333334,
+            "min": 10858,
+            "max": 11343,
+            "total": 3333247
+          },
+          "demandUnused": {
+            "mean": 2044.75,
+            "min": 1762,
+            "max": 2241,
+            "total": 613425
+          },
+          "demandVisited": {
+            "mean": 13168.773333333333,
+            "min": 12702,
+            "max": 13433,
+            "total": 3950632
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "return_3": {
+          "coldAgeRejected": {
+            "mean": 1790.5,
+            "min": 1604,
+            "max": 1947,
+            "total": 537150
+          },
+          "coldCandidates": {
+            "mean": 1801.7766666666666,
+            "min": 1613,
+            "max": 1962,
+            "total": 540533
+          },
+          "coldClasLookups": {
+            "mean": 1801.7766666666666,
+            "min": 1613,
+            "max": 1962,
+            "total": 540533
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 11.276666666666667,
+            "min": 2,
+            "max": 36,
+            "total": 3383
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 1801.7766666666666,
+            "min": 1613,
+            "max": 1962,
+            "total": 540533
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 12.81,
+            "min": 0,
+            "max": 191,
+            "total": 3843
+          },
+          "demandRefreshed": {
+            "mean": 11238.246666666666,
+            "min": 11003,
+            "max": 11638,
+            "total": 3371474
+          },
+          "demandUnused": {
+            "mean": 1801.7766666666666,
+            "min": 1613,
+            "max": 1962,
+            "total": 540533
+          },
+          "demandVisited": {
+            "mean": 13052.833333333334,
+            "min": 12866,
+            "max": 13415,
+            "total": 3915850
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "return_hold": {
+          "coldAgeRejected": {
+            "mean": 429.75,
+            "min": 0,
+            "max": 1777,
+            "total": 128925
+          },
+          "coldCandidates": {
+            "mean": 435.81333333333333,
+            "min": 0,
+            "max": 1788,
+            "total": 130744
+          },
+          "coldClasLookups": {
+            "mean": 435.81333333333333,
+            "min": 0,
+            "max": 1788,
+            "total": 130744
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 6.0633333333333335,
+            "min": 0,
+            "max": 44,
+            "total": 1819
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 435.81333333333333,
+            "min": 0,
+            "max": 1788,
+            "total": 130744
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 0.12666666666666668,
+            "min": 0,
+            "max": 18,
+            "total": 38
+          },
+          "demandRefreshed": {
+            "mean": 11598,
+            "min": 11598,
+            "max": 11598,
+            "total": 3479400
+          },
+          "demandUnused": {
+            "mean": 435.81333333333333,
+            "min": 0,
+            "max": 1788,
+            "total": 130744
+          },
+          "demandVisited": {
+            "mean": 12033.94,
+            "min": 11598,
+            "max": 13395,
+            "total": 3610182
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        }
+      },
+      "final": {
+        "allocationFailures": 0,
+        "clasBuilt": 0,
+        "clasBytes": 268052864,
+        "clasCapacityBytes": 536870912,
+        "clasClusters": 143820,
+        "clasDeferred": 0,
+        "clasEncodedBytes": 268052864,
+        "clasMoved": 0,
+        "clasPages": 11598,
+        "clasPending": 0,
+        "clasRetiring": 0,
+        "clasScratchBytes": 163840497,
+        "cpuWork": {
+          "coldAgeRejected": 0,
+          "coldCandidates": 0,
+          "coldClasLookups": 0,
+          "coldPressureScheduled": 0,
+          "coldRetentionScheduled": 0,
+          "coldScheduleFailed": 0,
+          "coldStateRejected": 0,
+          "coldVisited": 0,
+          "demandIncompleteProtected": 0,
+          "demandNewerThanFeedback": 0,
+          "demandRefreshed": 11598,
+          "demandUnused": 0,
+          "demandVisited": 11598,
+          "pendingFreePages": 0
+        },
+        "evictions": 0,
+        "feedbackFrame": 2999,
+        "frame": 3000,
+        "geometryBudgetBytes": 1073741824,
+        "geometryBytes": 264206848,
+        "ioActive": 0,
+        "ioQueued": 0,
+        "pendingPages": 0,
+        "requests": 0,
+        "residentPages": 11598,
+        "totalUploadBytes": 1216697200,
+        "uploadBytes": 0,
+        "uploadQueued": 0
+      },
+      "finalCut": {
+        "activeGroups": 22891,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 226893,
+        "earlyHardware": 42879,
+        "earlySoftware": 24354,
+        "fineGroups": 13968,
+        "lateCandidates": 80778,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 6266.0703125,
+        "maxVisibleRefinementErrorPixels": 1.49992036819458,
+        "nearPlaneUnboundedRefinements": 456,
+        "overTargetRefinements": 1484,
+        "selectedClusters": 248855,
+        "verifiedInstances": 13782,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "counters": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 0,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 11598,
+        "frameEvictionScanCount": 1,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11598,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 809534976,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 11598,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 36385,
+        "totalCompletedUnloadCount": 24787,
+        "totalCompletedUploadCount": 36385,
+        "totalCompletionDrivenUploads": 36385,
+        "totalEvictedPageCount": 24787,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 24654,
+        "totalPrefetchDeferred": 1097,
+        "totalPrefetchUsed": 16869,
+        "totalUploadBytes": 1216697200,
+        "usedResidentBytes": 264206848
+      },
+      "phaseCpuMs": {
+        "warmup": {
+          "GPUDriven/Stream Begin [graphics]": 0.544303,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.20166466666666666,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.05798266666666667
+        },
+        "start_hold": {
+          "GPUDriven/Stream Begin [graphics]": 0.11019233333333332,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.074794,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.02357633333333333
+        },
+        "forward_1": {
+          "GPUDriven/Stream Begin [graphics]": 0.7411106666666667,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.31812666666666667,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.25539666666666666
+        },
+        "forward_2": {
+          "GPUDriven/Stream Begin [graphics]": 0.816027,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.359331,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.28983166666666665
+        },
+        "forward_3": {
+          "GPUDriven/Stream Begin [graphics]": 0.809075,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.352234,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.28952500000000003
+        },
+        "far_hold": {
+          "GPUDriven/Stream Begin [graphics]": 0.23174833333333333,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.12280233333333333,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.07592233333333333
+        },
+        "return_1": {
+          "GPUDriven/Stream Begin [graphics]": 0.7423043333333333,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.32333233333333333,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.2290046666666667
+        },
+        "return_2": {
+          "GPUDriven/Stream Begin [graphics]": 0.8401826666666666,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.37543966666666667,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.28996733333333335
+        },
+        "return_3": {
+          "GPUDriven/Stream Begin [graphics]": 0.7756393333333333,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.34741500000000003,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.25486566666666666
+        },
+        "return_hold": {
+          "GPUDriven/Stream Begin [graphics]": 0.2632936666666667,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.14165966666666668,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.08959099999999999
+        }
+      },
+      "forward2Scopes": {
+        "GPUDriven/Stream Begin [graphics]": {
+          "cpuAvgMs": 0.816027,
+          "cpuMinMs": 0.5453,
+          "cpuMaxMs": 1.3373,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion [cpu]": {
+          "cpuAvgMs": 0.013778,
+          "cpuMinMs": 0.0058,
+          "cpuMaxMs": 0.0847,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion/Reset / latency tracking [cpu]": {
+          "cpuAvgMs": 0.0011409999999999999,
+          "cpuMinMs": 0.0006,
+          "cpuMaxMs": 0.0028,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion/Complete update tasks [cpu]": {
+          "cpuAvgMs": 4.4e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0001,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion/Complete storage tasks [cpu]": {
+          "cpuAvgMs": 0.003432,
+          "cpuMinMs": 0.0018,
+          "cpuMaxMs": 0.0061,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion/Complete unload tasks [cpu]": {
+          "cpuAvgMs": 0.008542333333333334,
+          "cpuMinMs": 0.0008,
+          "cpuMaxMs": 0.0794,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion/Consume queued requests [cpu]": {
+          "cpuAvgMs": 9.466666666666667e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0002,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/CLAS completion / expiry [cpu]": {
+          "cpuAvgMs": 0.03108666666666667,
+          "cpuMinMs": 0.0122,
+          "cpuMaxMs": 0.1839,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/CLAS completion / expiry/Collect completed CLAS [cpu]": {
+          "cpuAvgMs": 0.017164,
+          "cpuMinMs": 0.0024,
+          "cpuMaxMs": 0.0319,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/CLAS completion / expiry/Expire retired CLAS [cpu]": {
+          "cpuAvgMs": 0.013633000000000001,
+          "cpuMinMs": 0.0002,
+          "cpuMaxMs": 0.1656,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Retire unloaded CLAS [cpu]": {
+          "cpuAvgMs": 0.002631,
+          "cpuMinMs": 0.0003,
+          "cpuMaxMs": 0.0232,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback [cpu]": {
+          "cpuAvgMs": 0.359331,
+          "cpuMinMs": 0.225,
+          "cpuMaxMs": 0.5839,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Map feedback [cpu]": {
+          "cpuAvgMs": 0.000237,
+          "cpuMinMs": 0.0001,
+          "cpuMaxMs": 0.0007,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests [cpu]": {
+          "cpuAvgMs": 0.3586823333333333,
+          "cpuMinMs": 0.2245,
+          "cpuMaxMs": 0.5832,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads [cpu]": {
+          "cpuAvgMs": 0.008333666666666668,
+          "cpuMinMs": 0.0035,
+          "cpuMaxMs": 0.0176,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Prepare load containers [cpu]": {
+          "cpuAvgMs": 0.001821,
+          "cpuMinMs": 0.0008,
+          "cpuMaxMs": 0.0049,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads [cpu]": {
+          "cpuAvgMs": 0.0062896666666666665,
+          "cpuMinMs": 0.0025,
+          "cpuMaxMs": 0.0134,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads [cpu]": {
+          "cpuAvgMs": 0.12206866666666667,
+          "cpuMinMs": 0.0639,
+          "cpuMaxMs": 0.2075,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Prepare unused-page set [cpu]": {
+          "cpuAvgMs": 0.034293000000000004,
+          "cpuMinMs": 0.0175,
+          "cpuMaxMs": 0.0737,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Validate / insert unused pages [cpu]": {
+          "cpuAvgMs": 0.087539,
+          "cpuMinMs": 0.046,
+          "cpuMaxMs": 0.1715,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Update resident demand [cpu]": {
+          "cpuAvgMs": 0.18676733333333334,
+          "cpuMinMs": 0.1287,
+          "cpuMaxMs": 0.3185,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch [cpu]": {
+          "cpuAvgMs": 0.040953666666666666,
+          "cpuMinMs": 0.0131,
+          "cpuMaxMs": 0.1403,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Queue request task [cpu]": {
+          "cpuAvgMs": 0.0006513333333333333,
+          "cpuMinMs": 0.0001,
+          "cpuMaxMs": 0.0013,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks [cpu]": {
+          "cpuAvgMs": 0.040052,
+          "cpuMinMs": 0.0122,
+          "cpuMaxMs": 0.1393,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Select latest request task [cpu]": {
+          "cpuAvgMs": 3.1666666666666666e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0003,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Apply explicit unloads [cpu]": {
+          "cpuAvgMs": 3.266666666666666e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0003,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Refresh request priorities [cpu]": {
+          "cpuAvgMs": 0.0015573333333333333,
+          "cpuMinMs": 0.0006,
+          "cpuMaxMs": 0.003,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Sort admission priority [cpu]": {
+          "cpuAvgMs": 0.005030333333333334,
+          "cpuMinMs": 0.0016,
+          "cpuMaxMs": 0.0095,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Cancel stale queued loads [cpu]": {
+          "cpuAvgMs": 8.1e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0003,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch [cpu]": {
+          "cpuAvgMs": 0.032574,
+          "cpuMinMs": 0.0078,
+          "cpuMaxMs": 0.1254,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Release request task [cpu]": {
+          "cpuAvgMs": 3.266666666666666e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0002,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Unmap feedback [cpu]": {
+          "cpuAvgMs": 0.000146,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0005,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": {
+          "cpuAvgMs": 0.28983166666666665,
+          "cpuMinMs": 0.1807,
+          "cpuMaxMs": 0.5199,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Credit pending frees [cpu]": {
+          "cpuAvgMs": 5e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0003,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Evaluate budget pressure [cpu]": {
+          "cpuAvgMs": 5.4e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0001,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Prepare cold candidates [cpu]": {
+          "cpuAvgMs": 0.16534333333333334,
+          "cpuMinMs": 0.1155,
+          "cpuMaxMs": 0.2654,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates [cpu]": {
+          "cpuAvgMs": 0.05458966666666666,
+          "cpuMinMs": 0.0384,
+          "cpuMaxMs": 0.0931,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates [cpu]": {
+          "cpuAvgMs": 0.110441,
+          "cpuMinMs": 0.0761,
+          "cpuMaxMs": 0.2074,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Schedule cold evictions [cpu]": {
+          "cpuAvgMs": 0.123842,
+          "cpuMinMs": 0.0626,
+          "cpuMaxMs": 0.3019,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Discard obsolete CLAS plans [cpu]": {
+          "cpuAvgMs": 0.0010033333333333333,
+          "cpuMinMs": 0.0004,
+          "cpuMaxMs": 0.0028,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads [cpu]": {
+          "cpuAvgMs": 0.103084,
+          "cpuMinMs": 0.0394,
+          "cpuMaxMs": 0.2252,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Sort queued loads [cpu]": {
+          "cpuAvgMs": 0.001859,
+          "cpuMinMs": 0.0006,
+          "cpuMaxMs": 0.0052,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Schedule page I/O [cpu]": {
+          "cpuAvgMs": 0.021308666666666667,
+          "cpuMinMs": 0.0138,
+          "cpuMaxMs": 0.0736,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Collect decoded pages [cpu]": {
+          "cpuAvgMs": 0.001663,
+          "cpuMinMs": 0.0004,
+          "cpuMaxMs": 0.005,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Sort ready uploads [cpu]": {
+          "cpuAvgMs": 0.002258333333333333,
+          "cpuMinMs": 0.0005,
+          "cpuMaxMs": 0.0054,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Prepare transfer batch [cpu]": {
+          "cpuAvgMs": 8.2e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0002,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Stage payloads / CLAS plans [cpu]": {
+          "cpuAvgMs": 0.074433,
+          "cpuMinMs": 0.0159,
+          "cpuMaxMs": 0.1995,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Submit upload tracking [cpu]": {
+          "cpuAvgMs": 0.000618,
+          "cpuMinMs": 0.0004,
+          "cpuMaxMs": 0.0011,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Queue resident CLAS [cpu]": {
+          "cpuAvgMs": 0.0016516666666666667,
+          "cpuMinMs": 0.0004,
+          "cpuMaxMs": 0.0081,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Publish resident pages [cpu]": {
+          "cpuAvgMs": 0.0026349999999999998,
+          "cpuMinMs": 0.0019,
+          "cpuMaxMs": 0.0081,
+          "samples": 300,
+          "phaseFrames": 300
+        }
+      }
+    },
+    "m2": {
+      "cpuWork": {
+        "warmup": {
+          "coldAgeRejected": {
+            "mean": 329.67333333333335,
+            "min": 0,
+            "max": 841,
+            "total": 98902
+          },
+          "coldCandidates": {
+            "mean": 332.4766666666667,
+            "min": 0,
+            "max": 841,
+            "total": 99743
+          },
+          "coldClasLookups": {
+            "mean": 332.4766666666667,
+            "min": 0,
+            "max": 841,
+            "total": 99743
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 2.8033333333333332,
+            "min": 0,
+            "max": 204,
+            "total": 841
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 332.4766666666667,
+            "min": 0,
+            "max": 841,
+            "total": 99743
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 41.46333333333333,
+            "min": 0,
+            "max": 256,
+            "total": 12439
+          },
+          "demandRefreshed": {
+            "mean": 10587.583333333334,
+            "min": 0,
+            "max": 11598,
+            "total": 3176275
+          },
+          "demandUnused": {
+            "mean": 332.4766666666667,
+            "min": 0,
+            "max": 841,
+            "total": 99743
+          },
+          "demandVisited": {
+            "mean": 10961.523333333333,
+            "min": 0,
+            "max": 12439,
+            "total": 3288457
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "start_hold": {
+          "coldAgeRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldCandidates": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldClasLookups": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandRefreshed": {
+            "mean": 11598,
+            "min": 11598,
+            "max": 11598,
+            "total": 3479400
+          },
+          "demandUnused": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandVisited": {
+            "mean": 11598,
+            "min": 11598,
+            "max": 11598,
+            "total": 3479400
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "forward_1": {
+          "coldAgeRejected": {
+            "mean": 1741.29,
+            "min": 0,
+            "max": 2400,
+            "total": 522387
+          },
+          "coldCandidates": {
+            "mean": 1750.5066666666667,
+            "min": 0,
+            "max": 2498,
+            "total": 525152
+          },
+          "coldClasLookups": {
+            "mean": 1750.5066666666667,
+            "min": 0,
+            "max": 2498,
+            "total": 525152
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 9.216666666666667,
+            "min": 0,
+            "max": 182,
+            "total": 2765
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 1750.5066666666667,
+            "min": 0,
+            "max": 2498,
+            "total": 525152
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 13.593333333333334,
+            "min": 0,
+            "max": 254,
+            "total": 4078
+          },
+          "demandRefreshed": {
+            "mean": 11249.173333333334,
+            "min": 11003,
+            "max": 11638,
+            "total": 3374752
+          },
+          "demandUnused": {
+            "mean": 1750.5066666666667,
+            "min": 0,
+            "max": 2498,
+            "total": 525152
+          },
+          "demandVisited": {
+            "mean": 13013.273333333333,
+            "min": 11598,
+            "max": 13658,
+            "total": 3903982
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "forward_2": {
+          "coldAgeRejected": {
+            "mean": 1941.9233333333334,
+            "min": 1660,
+            "max": 2383,
+            "total": 582577
+          },
+          "coldCandidates": {
+            "mean": 1953.57,
+            "min": 1672,
+            "max": 2395,
+            "total": 586071
+          },
+          "coldClasLookups": {
+            "mean": 1953.57,
+            "min": 1672,
+            "max": 2395,
+            "total": 586071
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 11.646666666666667,
+            "min": 1,
+            "max": 114,
+            "total": 3494
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 1953.57,
+            "min": 1672,
+            "max": 2395,
+            "total": 586071
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 12.726666666666667,
+            "min": 3,
+            "max": 28,
+            "total": 3818
+          },
+          "demandRefreshed": {
+            "mean": 11111.85,
+            "min": 10864,
+            "max": 11343,
+            "total": 3333555
+          },
+          "demandUnused": {
+            "mean": 1953.57,
+            "min": 1672,
+            "max": 2395,
+            "total": 586071
+          },
+          "demandVisited": {
+            "mean": 13078.146666666667,
+            "min": 12846,
+            "max": 13352,
+            "total": 3923444
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "forward_3": {
+          "coldAgeRejected": {
+            "mean": 2008.2533333333333,
+            "min": 1770,
+            "max": 2367,
+            "total": 602476
+          },
+          "coldCandidates": {
+            "mean": 2023.77,
+            "min": 1779,
+            "max": 2378,
+            "total": 607131
+          },
+          "coldClasLookups": {
+            "mean": 2023.77,
+            "min": 1779,
+            "max": 2378,
+            "total": 607131
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 15.516666666666667,
+            "min": 1,
+            "max": 134,
+            "total": 4655
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 2023.77,
+            "min": 1779,
+            "max": 2378,
+            "total": 607131
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 10.753333333333334,
+            "min": 1,
+            "max": 22,
+            "total": 3226
+          },
+          "demandRefreshed": {
+            "mean": 10401.423333333334,
+            "min": 9990,
+            "max": 10902,
+            "total": 3120427
+          },
+          "demandUnused": {
+            "mean": 2023.77,
+            "min": 1779,
+            "max": 2378,
+            "total": 607131
+          },
+          "demandVisited": {
+            "mean": 12435.946666666667,
+            "min": 11792,
+            "max": 13244,
+            "total": 3730784
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "far_hold": {
+          "coldAgeRejected": {
+            "mean": 398.36333333333334,
+            "min": 0,
+            "max": 1833,
+            "total": 119509
+          },
+          "coldCandidates": {
+            "mean": 404.61,
+            "min": 0,
+            "max": 1838,
+            "total": 121383
+          },
+          "coldClasLookups": {
+            "mean": 404.61,
+            "min": 0,
+            "max": 1838,
+            "total": 121383
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 6.246666666666667,
+            "min": 0,
+            "max": 71,
+            "total": 1874
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 404.61,
+            "min": 0,
+            "max": 1838,
+            "total": 121383
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 0.14666666666666667,
+            "min": 0,
+            "max": 15,
+            "total": 44
+          },
+          "demandRefreshed": {
+            "mean": 9976,
+            "min": 9976,
+            "max": 9976,
+            "total": 2992800
+          },
+          "demandUnused": {
+            "mean": 404.61,
+            "min": 0,
+            "max": 1838,
+            "total": 121383
+          },
+          "demandVisited": {
+            "mean": 10380.756666666666,
+            "min": 9976,
+            "max": 11821,
+            "total": 3114227
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "return_1": {
+          "coldAgeRejected": {
+            "mean": 1581.0566666666666,
+            "min": 0,
+            "max": 2234,
+            "total": 474317
+          },
+          "coldCandidates": {
+            "mean": 1588.49,
+            "min": 0,
+            "max": 2255,
+            "total": 476547
+          },
+          "coldClasLookups": {
+            "mean": 1588.49,
+            "min": 0,
+            "max": 2255,
+            "total": 476547
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 7.433333333333334,
+            "min": 0,
+            "max": 188,
+            "total": 2230
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 1588.49,
+            "min": 0,
+            "max": 2255,
+            "total": 476547
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 16.493333333333332,
+            "min": 0,
+            "max": 252,
+            "total": 4948
+          },
+          "demandRefreshed": {
+            "mean": 10394.71,
+            "min": 9959,
+            "max": 10903,
+            "total": 3118413
+          },
+          "demandUnused": {
+            "mean": 1588.49,
+            "min": 0,
+            "max": 2255,
+            "total": 476547
+          },
+          "demandVisited": {
+            "mean": 11999.693333333333,
+            "min": 9976,
+            "max": 12703,
+            "total": 3599908
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "return_2": {
+          "coldAgeRejected": {
+            "mean": 2032.1133333333332,
+            "min": 1755,
+            "max": 2224,
+            "total": 609634
+          },
+          "coldCandidates": {
+            "mean": 2044.5366666666666,
+            "min": 1760,
+            "max": 2240,
+            "total": 613361
+          },
+          "coldClasLookups": {
+            "mean": 2044.5366666666666,
+            "min": 1760,
+            "max": 2240,
+            "total": 613361
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 12.423333333333334,
+            "min": 1,
+            "max": 26,
+            "total": 3727
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 2044.5366666666666,
+            "min": 1760,
+            "max": 2240,
+            "total": 613361
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 13.173333333333334,
+            "min": 0,
+            "max": 106,
+            "total": 3952
+          },
+          "demandRefreshed": {
+            "mean": 11110.816666666668,
+            "min": 10858,
+            "max": 11343,
+            "total": 3333245
+          },
+          "demandUnused": {
+            "mean": 2044.5366666666666,
+            "min": 1760,
+            "max": 2240,
+            "total": 613361
+          },
+          "demandVisited": {
+            "mean": 13168.526666666667,
+            "min": 12701,
+            "max": 13432,
+            "total": 3950558
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "return_3": {
+          "coldAgeRejected": {
+            "mean": 1790.67,
+            "min": 1604,
+            "max": 1949,
+            "total": 537201
+          },
+          "coldCandidates": {
+            "mean": 1801.9466666666667,
+            "min": 1614,
+            "max": 1965,
+            "total": 540584
+          },
+          "coldClasLookups": {
+            "mean": 1801.9466666666667,
+            "min": 1614,
+            "max": 1965,
+            "total": 540584
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 11.276666666666667,
+            "min": 2,
+            "max": 35,
+            "total": 3383
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 1801.9466666666667,
+            "min": 1614,
+            "max": 1965,
+            "total": 540584
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 12.81,
+            "min": 0,
+            "max": 187,
+            "total": 3843
+          },
+          "demandRefreshed": {
+            "mean": 11238.223333333333,
+            "min": 11003,
+            "max": 11638,
+            "total": 3371467
+          },
+          "demandUnused": {
+            "mean": 1801.9466666666667,
+            "min": 1614,
+            "max": 1965,
+            "total": 540584
+          },
+          "demandVisited": {
+            "mean": 13052.98,
+            "min": 12865,
+            "max": 13415,
+            "total": 3915894
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        },
+        "return_hold": {
+          "coldAgeRejected": {
+            "mean": 429.67333333333335,
+            "min": 0,
+            "max": 1775,
+            "total": 128902
+          },
+          "coldCandidates": {
+            "mean": 435.7366666666667,
+            "min": 0,
+            "max": 1788,
+            "total": 130721
+          },
+          "coldClasLookups": {
+            "mean": 435.7366666666667,
+            "min": 0,
+            "max": 1788,
+            "total": 130721
+          },
+          "coldPressureScheduled": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldRetentionScheduled": {
+            "mean": 6.0633333333333335,
+            "min": 0,
+            "max": 46,
+            "total": 1819
+          },
+          "coldScheduleFailed": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldStateRejected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "coldVisited": {
+            "mean": 435.7366666666667,
+            "min": 0,
+            "max": 1788,
+            "total": 130721
+          },
+          "demandIncompleteProtected": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          },
+          "demandNewerThanFeedback": {
+            "mean": 0.12666666666666668,
+            "min": 0,
+            "max": 14,
+            "total": 38
+          },
+          "demandRefreshed": {
+            "mean": 11598,
+            "min": 11598,
+            "max": 11598,
+            "total": 3479400
+          },
+          "demandUnused": {
+            "mean": 435.7366666666667,
+            "min": 0,
+            "max": 1788,
+            "total": 130721
+          },
+          "demandVisited": {
+            "mean": 12033.863333333333,
+            "min": 11598,
+            "max": 13395,
+            "total": 3610159
+          },
+          "pendingFreePages": {
+            "mean": 0,
+            "min": 0,
+            "max": 0,
+            "total": 0
+          }
+        }
+      },
+      "final": {
+        "allocationFailures": 0,
+        "clasBuilt": 0,
+        "clasBytes": 268052864,
+        "clasCapacityBytes": 536870912,
+        "clasClusters": 143820,
+        "clasDeferred": 0,
+        "clasEncodedBytes": 268052864,
+        "clasMoved": 0,
+        "clasPages": 11598,
+        "clasPending": 0,
+        "clasRetiring": 0,
+        "clasScratchBytes": 163840497,
+        "cpuWork": {
+          "coldAgeRejected": 0,
+          "coldCandidates": 0,
+          "coldClasLookups": 0,
+          "coldPressureScheduled": 0,
+          "coldRetentionScheduled": 0,
+          "coldScheduleFailed": 0,
+          "coldStateRejected": 0,
+          "coldVisited": 0,
+          "demandIncompleteProtected": 0,
+          "demandNewerThanFeedback": 0,
+          "demandRefreshed": 11598,
+          "demandUnused": 0,
+          "demandVisited": 11598,
+          "pendingFreePages": 0
+        },
+        "evictions": 0,
+        "feedbackFrame": 2999,
+        "frame": 3000,
+        "geometryBudgetBytes": 1073741824,
+        "geometryBytes": 264206848,
+        "ioActive": 0,
+        "ioQueued": 0,
+        "pendingPages": 0,
+        "requests": 0,
+        "residentPages": 11598,
+        "totalUploadBytes": 1216715984,
+        "uploadBytes": 0,
+        "uploadQueued": 0
+      },
+      "finalCut": {
+        "activeGroups": 22891,
+        "candidateCapacity": 4194304,
+        "capacityFallback": false,
+        "earlyCandidates": 226893,
+        "earlyHardware": 42879,
+        "earlySoftware": 24354,
+        "fineGroups": 13968,
+        "lateCandidates": 80778,
+        "lateHardware": 0,
+        "lateSoftware": 0,
+        "maxFiniteRefinementErrorPixels": 6266.0703125,
+        "maxVisibleRefinementErrorPixels": 1.49992036819458,
+        "nearPlaneUnboundedRefinements": 456,
+        "overTargetRefinements": 1484,
+        "selectedClusters": 248855,
+        "verifiedInstances": 13782,
+        "visibleOverTargetRefinements": 0,
+        "visibleUnboundedRefinements": 0
+      },
+      "counters": {
+        "activePageLoadCount": 0,
+        "frameAdmissionDeferredCount": 0,
+        "frameAllocationDeferredCount": 0,
+        "frameAllocationFailureCount": 0,
+        "frameCachedUnusedPageCount": 0,
+        "frameEvictedPageCount": 0,
+        "frameEvictionCandidateTests": 11598,
+        "frameEvictionScanCount": 1,
+        "frameGpuInvalidRequestCount": 0,
+        "frameGpuRequestCount": 0,
+        "frameGpuRequestOverflowCount": 0,
+        "frameResidentDemandCount": 11598,
+        "frameUploadBytes": 0,
+        "freeResidentBytes": 809534976,
+        "pendingPageCount": 0,
+        "pendingPageLoadCount": 0,
+        "pendingPatchCount": 0,
+        "queuedUploadCount": 0,
+        "residentPageCount": 11598,
+        "totalCancelledQueuedLoadCount": 0,
+        "totalCancelledUploads": 0,
+        "totalCompletedPageLoadCount": 36386,
+        "totalCompletedUnloadCount": 24788,
+        "totalCompletedUploadCount": 36386,
+        "totalCompletionDrivenUploads": 36386,
+        "totalEvictedPageCount": 24788,
+        "totalGpuInvalidRequestCount": 0,
+        "totalPageLoadFailureCount": 0,
+        "totalPrefetchAdmitted": 24655,
+        "totalPrefetchDeferred": 903,
+        "totalPrefetchUsed": 16869,
+        "totalUploadBytes": 1216715984,
+        "usedResidentBytes": 264206848
+      },
+      "phaseCpuMs": {
+        "warmup": {
+          "GPUDriven/Stream Begin [graphics]": 0.47884233333333337,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.15444666666666668,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.051349
+        },
+        "start_hold": {
+          "GPUDriven/Stream Begin [graphics]": 0.12265266666666666,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.08263000000000001,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.027316333333333335
+        },
+        "forward_1": {
+          "GPUDriven/Stream Begin [graphics]": 0.7101759999999999,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.3087283333333333,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.23989966666666665
+        },
+        "forward_2": {
+          "GPUDriven/Stream Begin [graphics]": 0.8118683333333333,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.35503466666666667,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.290936
+        },
+        "forward_3": {
+          "GPUDriven/Stream Begin [graphics]": 0.8711496666666666,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.3714536666666666,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.3186383333333333
+        },
+        "far_hold": {
+          "GPUDriven/Stream Begin [graphics]": 0.22478900000000002,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.12142800000000001,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.071173
+        },
+        "return_1": {
+          "GPUDriven/Stream Begin [graphics]": 0.7831933333333333,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.3398076666666667,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.24276466666666668
+        },
+        "return_2": {
+          "GPUDriven/Stream Begin [graphics]": 0.8639946666666667,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.3881866666666667,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.29583866666666664
+        },
+        "return_3": {
+          "GPUDriven/Stream Begin [graphics]": 0.7865896666666666,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.34998266666666666,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.25667266666666666
+        },
+        "return_hold": {
+          "GPUDriven/Stream Begin [graphics]": 0.240824,
+          "GPUDriven/Stream Begin/GPU request feedback [cpu]": 0.12779166666666666,
+          "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": 0.081772
+        }
+      },
+      "forward2Scopes": {
+        "GPUDriven/Stream Begin [graphics]": {
+          "cpuAvgMs": 0.8118683333333333,
+          "cpuMinMs": 0.5377,
+          "cpuMaxMs": 1.3513,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion [cpu]": {
+          "cpuAvgMs": 0.013686000000000002,
+          "cpuMinMs": 0.0064,
+          "cpuMaxMs": 0.0757,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion/Reset / latency tracking [cpu]": {
+          "cpuAvgMs": 0.0011029999999999998,
+          "cpuMinMs": 0.0006,
+          "cpuMaxMs": 0.0022,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion/Complete update tasks [cpu]": {
+          "cpuAvgMs": 3.1666666666666666e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0001,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion/Complete storage tasks [cpu]": {
+          "cpuAvgMs": 0.0034720000000000003,
+          "cpuMinMs": 0.0019,
+          "cpuMaxMs": 0.0179,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion/Complete unload tasks [cpu]": {
+          "cpuAvgMs": 0.008473,
+          "cpuMinMs": 0.001,
+          "cpuMaxMs": 0.0709,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Residency completion/Consume queued requests [cpu]": {
+          "cpuAvgMs": 9.366666666666666e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0002,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/CLAS completion / expiry [cpu]": {
+          "cpuAvgMs": 0.03049633333333333,
+          "cpuMinMs": 0.0091,
+          "cpuMaxMs": 0.1638,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/CLAS completion / expiry/Collect completed CLAS [cpu]": {
+          "cpuAvgMs": 0.016691666666666667,
+          "cpuMinMs": 0.0025,
+          "cpuMaxMs": 0.0323,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/CLAS completion / expiry/Expire retired CLAS [cpu]": {
+          "cpuAvgMs": 0.013523333333333335,
+          "cpuMinMs": 0.0002,
+          "cpuMaxMs": 0.1476,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Retire unloaded CLAS [cpu]": {
+          "cpuAvgMs": 0.002631,
+          "cpuMinMs": 0.0003,
+          "cpuMaxMs": 0.0223,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback [cpu]": {
+          "cpuAvgMs": 0.35503466666666667,
+          "cpuMinMs": 0.2275,
+          "cpuMaxMs": 0.5716,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Map feedback [cpu]": {
+          "cpuAvgMs": 0.000223,
+          "cpuMinMs": 0.0001,
+          "cpuMaxMs": 0.0005,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests [cpu]": {
+          "cpuAvgMs": 0.3543863333333333,
+          "cpuMinMs": 0.2271,
+          "cpuMaxMs": 0.5709,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads [cpu]": {
+          "cpuAvgMs": 0.008235666666666667,
+          "cpuMinMs": 0.0037,
+          "cpuMaxMs": 0.0181,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Prepare load containers [cpu]": {
+          "cpuAvgMs": 0.001919,
+          "cpuMinMs": 0.0008,
+          "cpuMaxMs": 0.005,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads [cpu]": {
+          "cpuAvgMs": 0.006087666666666667,
+          "cpuMinMs": 0.002,
+          "cpuMaxMs": 0.0156,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads [cpu]": {
+          "cpuAvgMs": 0.11952866666666667,
+          "cpuMinMs": 0.063,
+          "cpuMaxMs": 0.1823,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Prepare unused-page set [cpu]": {
+          "cpuAvgMs": 0.033735666666666664,
+          "cpuMinMs": 0.0177,
+          "cpuMaxMs": 0.0601,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Validate / insert unused pages [cpu]": {
+          "cpuAvgMs": 0.08555533333333333,
+          "cpuMinMs": 0.0451,
+          "cpuMaxMs": 0.147,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Update resident demand [cpu]": {
+          "cpuAvgMs": 0.18397766666666668,
+          "cpuMinMs": 0.1288,
+          "cpuMaxMs": 0.3679,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch [cpu]": {
+          "cpuAvgMs": 0.04210166666666666,
+          "cpuMinMs": 0.0124,
+          "cpuMaxMs": 0.1282,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Queue request task [cpu]": {
+          "cpuAvgMs": 0.0006443333333333333,
+          "cpuMinMs": 0.0002,
+          "cpuMaxMs": 0.0023,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks [cpu]": {
+          "cpuAvgMs": 0.041242,
+          "cpuMinMs": 0.0116,
+          "cpuMaxMs": 0.1276,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Select latest request task [cpu]": {
+          "cpuAvgMs": 3.433333333333333e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0001,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Apply explicit unloads [cpu]": {
+          "cpuAvgMs": 2.9666666666666665e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0004,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Refresh request priorities [cpu]": {
+          "cpuAvgMs": 0.0015276666666666665,
+          "cpuMinMs": 0.0006,
+          "cpuMaxMs": 0.0041,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Sort admission priority [cpu]": {
+          "cpuAvgMs": 0.005006666666666667,
+          "cpuMinMs": 0.0014,
+          "cpuMaxMs": 0.0109,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Cancel stale queued loads [cpu]": {
+          "cpuAvgMs": 8.266666666666668e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0004,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch [cpu]": {
+          "cpuAvgMs": 0.033848666666666666,
+          "cpuMinMs": 0.008,
+          "cpuMaxMs": 0.1172,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Release request task [cpu]": {
+          "cpuAvgMs": 3.3e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0001,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/GPU request feedback/Unmap feedback [cpu]": {
+          "cpuAvgMs": 0.00013700000000000002,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.002,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim [cpu]": {
+          "cpuAvgMs": 0.290936,
+          "cpuMinMs": 0.1782,
+          "cpuMaxMs": 0.7215,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Credit pending frees [cpu]": {
+          "cpuAvgMs": 5.466666666666667e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0002,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Evaluate budget pressure [cpu]": {
+          "cpuAvgMs": 4.3333333333333334e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0001,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Prepare cold candidates [cpu]": {
+          "cpuAvgMs": 0.168536,
+          "cpuMinMs": 0.1166,
+          "cpuMaxMs": 0.4881,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates [cpu]": {
+          "cpuAvgMs": 0.056494,
+          "cpuMinMs": 0.0383,
+          "cpuMaxMs": 0.2449,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates [cpu]": {
+          "cpuAvgMs": 0.111721,
+          "cpuMinMs": 0.0777,
+          "cpuMaxMs": 0.4292,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Joint cold page reclaim/Schedule cold evictions [cpu]": {
+          "cpuAvgMs": 0.121744,
+          "cpuMinMs": 0.0612,
+          "cpuMaxMs": 0.3075,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Discard obsolete CLAS plans [cpu]": {
+          "cpuAvgMs": 0.0009670000000000001,
+          "cpuMinMs": 0.0004,
+          "cpuMaxMs": 0.0038,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads [cpu]": {
+          "cpuAvgMs": 0.10328033333333334,
+          "cpuMinMs": 0.0411,
+          "cpuMaxMs": 0.1908,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Sort queued loads [cpu]": {
+          "cpuAvgMs": 0.0019310000000000002,
+          "cpuMinMs": 0.0006,
+          "cpuMaxMs": 0.0175,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Schedule page I/O [cpu]": {
+          "cpuAvgMs": 0.022012666666666666,
+          "cpuMinMs": 0.0161,
+          "cpuMaxMs": 0.0629,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Collect decoded pages [cpu]": {
+          "cpuAvgMs": 0.0017119999999999998,
+          "cpuMinMs": 0.0005,
+          "cpuMaxMs": 0.0042,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Sort ready uploads [cpu]": {
+          "cpuAvgMs": 0.0021646666666666667,
+          "cpuMinMs": 0.0003,
+          "cpuMaxMs": 0.0377,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Prepare transfer batch [cpu]": {
+          "cpuAvgMs": 7.333333333333334e-05,
+          "cpuMinMs": 0.0,
+          "cpuMaxMs": 0.0003,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Stage payloads / CLAS plans [cpu]": {
+          "cpuAvgMs": 0.073838,
+          "cpuMinMs": 0.0181,
+          "cpuMaxMs": 0.1604,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Prepare page uploads/Submit upload tracking [cpu]": {
+          "cpuAvgMs": 0.0006583333333333333,
+          "cpuMinMs": 0.0004,
+          "cpuMaxMs": 0.007,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Queue resident CLAS [cpu]": {
+          "cpuAvgMs": 0.0015726666666666667,
+          "cpuMinMs": 0.0003,
+          "cpuMaxMs": 0.0055,
+          "samples": 300,
+          "phaseFrames": 300
+        },
+        "GPUDriven/Stream Begin/Publish resident pages [cpu]": {
+          "cpuAvgMs": 0.002655,
+          "cpuMinMs": 0.002,
+          "cpuMaxMs": 0.0105,
+          "samples": 300,
+          "phaseFrames": 300
+        }
+      }
+    }
+  },
+  "quality": {
+    "status": "passed",
+    "validation": true,
+    "frames": 3000,
+    "checkpoints": [
+      {
+        "phase": "warmup",
+        "frame": 29,
+        "cut": {
+          "activeGroups": 14865,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 74387,
+          "earlyHardware": 28070,
+          "earlySoftware": 12991,
+          "fineGroups": 5942,
+          "lateCandidates": 21608,
+          "lateHardware": 188,
+          "lateSoftware": 45,
+          "maxFiniteRefinementErrorPixels": 1553139.5,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38,
+          "nearPlaneUnboundedRefinements": 211,
+          "overTargetRefinements": 2783,
+          "selectedClusters": 85486,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 2688,
+          "visibleUnboundedRefinements": 135
+        }
+      },
+      {
+        "phase": "warmup",
+        "frame": 59,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "warmup",
+        "frame": 119,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "warmup",
+        "frame": 179,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "warmup",
+        "frame": 299,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "start_hold",
+        "frame": 599,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "forward_1",
+        "frame": 899,
+        "cut": {
+          "activeGroups": 21002,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 213762,
+          "earlyHardware": 41451,
+          "earlySoftware": 27103,
+          "fineGroups": 12928,
+          "lateCandidates": 81775,
+          "lateHardware": 621,
+          "lateSoftware": 329,
+          "maxFiniteRefinementErrorPixels": 50630.72265625,
+          "maxVisibleRefinementErrorPixels": 1.5008572340011597,
+          "nearPlaneUnboundedRefinements": 205,
+          "overTargetRefinements": 1530,
+          "selectedClusters": 231895,
+          "verifiedInstances": 12558,
+          "visibleOverTargetRefinements": 2,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "forward_2",
+        "frame": 1199,
+        "cut": {
+          "activeGroups": 20272,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 212811,
+          "earlyHardware": 40829,
+          "earlySoftware": 24648,
+          "fineGroups": 12952,
+          "lateCandidates": 79547,
+          "lateHardware": 143,
+          "lateSoftware": 175,
+          "maxFiniteRefinementErrorPixels": 12798.048828125,
+          "maxVisibleRefinementErrorPixels": 1.5947452783584595,
+          "nearPlaneUnboundedRefinements": 231,
+          "overTargetRefinements": 1599,
+          "selectedClusters": 233606,
+          "verifiedInstances": 11532,
+          "visibleOverTargetRefinements": 1,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "forward_3",
+        "frame": 1499,
+        "cut": {
+          "activeGroups": 19524,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 221701,
+          "earlyHardware": 37225,
+          "earlySoftware": 26897,
+          "fineGroups": 12894,
+          "lateCandidates": 82699,
+          "lateHardware": 229,
+          "lateSoftware": 341,
+          "maxFiniteRefinementErrorPixels": 202257.40625,
+          "maxVisibleRefinementErrorPixels": 1.4997859001159668,
+          "nearPlaneUnboundedRefinements": 266,
+          "overTargetRefinements": 2468,
+          "selectedClusters": 234644,
+          "verifiedInstances": 10691,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "far_hold",
+        "frame": 1799,
+        "cut": {
+          "activeGroups": 19524,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 221716,
+          "earlyHardware": 37303,
+          "earlySoftware": 27040,
+          "fineGroups": 12894,
+          "lateCandidates": 82457,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 202257.40625,
+          "maxVisibleRefinementErrorPixels": 1.4997859001159668,
+          "nearPlaneUnboundedRefinements": 266,
+          "overTargetRefinements": 2468,
+          "selectedClusters": 234644,
+          "verifiedInstances": 10691,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "return_1",
+        "frame": 2099,
+        "cut": {
+          "activeGroups": 20273,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 212842,
+          "earlyHardware": 40999,
+          "earlySoftware": 24702,
+          "fineGroups": 12953,
+          "lateCandidates": 79321,
+          "lateHardware": 92,
+          "lateSoftware": 170,
+          "maxFiniteRefinementErrorPixels": 12798.048828125,
+          "maxVisibleRefinementErrorPixels": 1.4999611377716064,
+          "nearPlaneUnboundedRefinements": 231,
+          "overTargetRefinements": 1598,
+          "selectedClusters": 233617,
+          "verifiedInstances": 11532,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "return_2",
+        "frame": 2399,
+        "cut": {
+          "activeGroups": 21004,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 202203,
+          "earlyHardware": 41312,
+          "earlySoftware": 27030,
+          "fineGroups": 12930,
+          "lateCandidates": 71783,
+          "lateHardware": 339,
+          "lateSoftware": 301,
+          "maxFiniteRefinementErrorPixels": 50630.72265625,
+          "maxVisibleRefinementErrorPixels": 1.4999496936798096,
+          "nearPlaneUnboundedRefinements": 205,
+          "overTargetRefinements": 1528,
+          "selectedClusters": 231918,
+          "verifiedInstances": 12558,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "return_3",
+        "frame": 2699,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 223438,
+          "earlyHardware": 42727,
+          "earlySoftware": 24270,
+          "fineGroups": 13968,
+          "lateCandidates": 81032,
+          "lateHardware": 219,
+          "lateSoftware": 161,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "return_hold",
+        "frame": 2999,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "phase": "final_diagnostic",
+        "frame": 3000,
+        "cut": {
+          "activeGroups": 22891,
+          "candidateCapacity": 4194304,
+          "capacityFallback": false,
+          "earlyCandidates": 226893,
+          "earlyHardware": 42879,
+          "earlySoftware": 24354,
+          "fineGroups": 13968,
+          "lateCandidates": 80778,
+          "lateHardware": 0,
+          "lateSoftware": 0,
+          "maxFiniteRefinementErrorPixels": 6266.0703125,
+          "maxVisibleRefinementErrorPixels": 1.49992036819458,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1484,
+          "selectedClusters": 248855,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      }
+    ]
+  },
+  "sourceSha256": {
+    "Source/Runtime/Render/Profiling/RenderGraphProfile.h": "ef0161c82946d9ac1a469fff69871444d81a6406581e2183c1e4d2c2190ba062",
+    "Source/Runtime/Render/Streamer/MeshletStreamResidency.h": "802d5b3c1b268ca5469964c0422a18a9d37a2507c14343f959dc896e4f3f26e0",
+    "Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp": "23c6becd84e6efb584d9b70bc1266fd0e77ab848d7d0d2d05eb7f84d46c018e5",
+    "Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp": "b368adb09c17f393368f923cefe16f812644555308a473c7cae10ea7d87bc744",
+    "Source/Editor/EditorProfiler.cpp": "e24c6cf7784923fec52954483de0a76922253f2da4be37470cad41f6ec193d91",
+    "tests/rhi/MiniZorahRoamingTests.cpp": "40cede314d41c9e4037a11e180f9fdb38ed2649b9cecb5a997f234a7c51e4010",
+    "tests/rhi/StreamerTests.cpp": "74028abc665b55458837da1a7e1af5563159a957f4d5cef52a7fb9b9a3b7989a"
+  },
+  "fullEvidence": "E:/metallic/build-release/stream-request-detail/analysis/Evidence.json"
+}

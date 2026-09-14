@@ -2457,13 +2457,21 @@ public:
         if (!residency.pageResident(pages[0]) || !residency.pageResident(pages[1])) {
             return RhiTestResult::fail("Demand-cache setup is not resident");
         }
-        const std::array<uint32_t, 1> firstUnused{pages[0]};
-        (void)residency.consumeGpuRequests({.unloadPageIds = firstUnused, .unloadRequestCounter = 1,
+        const std::array<uint32_t, 2> firstUnused{pages[0], pages[0]};
+        (void)residency.consumeGpuRequests({.unloadPageIds = firstUnused, .unloadRequestCounter = 2,
             .residentDemandFeedback = true});
         if (residency.stats().queuedUnloadTaskCount != 0 || residency.stats().frameCachedUnusedPageCount != 1) {
             return RhiTestResult::fail("Unused feedback eagerly unloaded cached geometry");
         }
+        const auto initialWork = residency.stats().cpuWork;
+        if (initialWork.demandUnused != 1 || initialWork.demandVisited != roots.size() + 2 ||
+            initialWork.demandRefreshed + initialWork.demandUnused != initialWork.demandVisited) {
+            return RhiTestResult::fail("Complete feedback counters do not match resident work");
+        }
         residency.beginFrame();
+        if (residency.stats().cpuWork.demandVisited != 0) {
+            return RhiTestResult::fail("CPU work counters did not reset at beginFrame");
+        }
         // An empty complete batch means the previously unused page is needed
         // again. Returning to it must neither reload nor leave it evictable.
         (void)residency.consumeGpuRequests(StreamGpuRequestBatch{.residentDemandFeedback = true});
@@ -2482,6 +2490,11 @@ public:
         const std::array<uint32_t, 1> secondUnused{pages[1]};
         (void)residency.consumeGpuRequests({.unloadPageIds = secondUnused, .unloadRequestCounter = 2,
             .unloadOverflowCounter = 1, .residentDemandFeedback = true});
+        const auto incompleteWork = residency.stats().cpuWork;
+        if (incompleteWork.demandUnused != 1 || incompleteWork.demandRefreshed != 0 ||
+            incompleteWork.demandIncompleteProtected + 1 != incompleteWork.demandVisited) {
+            return RhiTestResult::fail("Truncated feedback counters lost protected pages");
+        }
         (void)residency.requestPage(pages[2]);
         if (!residency.pageResident(pages[0]) || residency.pageState(pages[1]) != MeshletStreamPageResidencyState::PendingUnload ||
             residency.stats().frameEvictedPageCount != 1 || residency.pageAllocated(pages[2])) {
@@ -2496,6 +2509,22 @@ public:
             if (!residency.pageResident(page) || residency.unloadPage(page)) { return RhiTestResult::fail("Demand cache lost a root"); }
         }
         if (!residency.unloadPage(pages[0])) { return RhiTestResult::fail("Explicit unload no longer works"); }
+        // Exercise duplicate bits, every asset word (including the final partial
+        // word), invalid IDs, and clearing/reusing all touched words.
+        std::vector<uint32_t> allUnused;
+        for (uint32_t id = 0; id < asset.pageCount(); ++id) {
+            allUnused.push_back(id); allUnused.push_back(id);
+        }
+        allUnused.push_back(asset.pageCount()); allUnused.push_back(UINT32_MAX);
+        for (uint32_t repeat = 0; repeat < 2; ++repeat) {
+            residency.beginFrame();
+            (void)residency.consumeGpuRequests({.unloadPageIds = allUnused,
+                .unloadRequestCounter = static_cast<uint32_t>(allUnused.size()), .residentDemandFeedback = true});
+            const auto stats = residency.stats();
+            if (stats.frameUniqueGpuUnloadRequestCount != asset.pageCount() || stats.frameGpuInvalidRequestCount != 2) {
+                return RhiTestResult::fail("Unused page marks lost duplicates, bounds checks or touched-word clearing");
+            }
+        }
         return RhiTestResult::pass("Cache reuse, empty/truncated demand feedback, hot-page protection and delayed budget eviction");
     }
 };
@@ -2588,6 +2617,9 @@ public:
             (void)residency.consumeGpuRequests({.unloadPageIds = pages, .unloadRequestCounter = 3,
                                                .residentDemandFeedback = true});
             for (uint32_t expected : {pages[1], pages[2], pages[0]}) {
+                // Start with a nonempty sorted prefix, then admit its younger
+                // suffix on the next call without disturbing age/ID order.
+                reclaim.retentionFrames = cycle == 1 && expected == pages[1] ? 4 : 1;
                 if (residency.reclaimColdPages(reclaim) != 1 ||
                     residency.pageState(expected) != MeshletStreamPageResidencyState::PendingUnload) {
                     return RhiTestResult::fail("Cold eviction changed age/ID order after erase and reinsertion");
@@ -2597,7 +2629,35 @@ public:
                 return RhiTestResult::fail("Cached cold candidates scheduled a duplicate victim");
             }
         }
-        return RhiTestResult::pass("CLAS pressure, delayed credit, shared scan, cold expiry and age/ID order across reloads");
+        residency.beginFrame();
+        for (uint32_t id : pages) { (void)residency.requestPage(id); }
+        if (residency.processUploads(*streamer, *destination, 3) != 3) {
+            return RhiTestResult::fail("Cannot upload partial-sort fixture");
+        }
+        for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
+        (void)residency.consumeGpuRequests({.unloadPageIds = pages, .unloadRequestCounter = 3,
+                                           .residentDemandFeedback = true});
+        uint32_t clasQueries = 0;
+        reclaim.retentionFrames = 120;
+        reclaim.clasPageBytes = [&](uint32_t) -> uint64_t { ++clasQueries; return 512; };
+        if (residency.reclaimColdPages(reclaim) != 0 || clasQueries != 0 || residency.stats().cpuWork.coldVisited != 0) {
+            return RhiTestResult::fail("Unexpired retention suffix was visited or queried for CLAS sizes");
+        }
+        // Expand the same cached candidates when CLAS pressure appears later in
+        // the frame. Once one victim is credited, the remaining young suffix
+        // must be skipped even though the requested per-call limit is larger.
+        reclaim.clasUsedBytes = reclaim.clasCapacityBytes = 1024;
+        reclaim.maxPages = 3;
+        if (residency.reclaimColdPages(reclaim) != 1 || clasQueries != 1 ||
+            residency.pageState(pages[0]) != MeshletStreamPageResidencyState::PendingUnload ||
+            residency.stats().frameEvictionScanCount != 1) {
+            return RhiTestResult::fail("Partial cold sort missed new pressure, changed ID order or over-evicted after pressure ended");
+        }
+        // Pending-free credit ends pressure on another call in the same frame.
+        if (residency.reclaimColdPages(reclaim) != 0 || clasQueries != 2) {
+            return RhiTestResult::fail("Partial cold sort ignored pending free credit");
+        }
+        return RhiTestResult::pass("CLAS pressure, delayed credit, partial-sort expansion, due cutoff and age/ID order across reloads");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerJointColdReclaimTest);
