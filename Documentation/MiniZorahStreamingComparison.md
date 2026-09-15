@@ -1,5 +1,7 @@
 # MiniZorah 流送收敛与可感知变化对比
 
+> 历史调查：下文针对 `ae7b3c5`。其中前三项建议已由 [StreamingConvergence](StreamingConvergence.md) 落实；剩余差距见 [2026-09-15 审核](GPUDrivenAudit-2026-09-15.md)。
+
 2026-09-15。对比 Metallic `ae7b3c5567fb4a94f46917fcb9873f51b18c1690` 与本机 `E:/vk_lod_clusters` 的 `1febfa7694ebdc8f97005a07897029272ca9e85a`。本次是源码、配置和用户录像调查，没有重新运行同条件的双端性能基准，也没有修改运行时代码。录像中的可执行文件是否恰好由该参考源码版本构建，尚未验证。
 
 ## 结论

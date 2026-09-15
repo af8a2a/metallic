@@ -1,5 +1,7 @@
 # Metallic 与 Nanite / vk_lod_clusters：当前实现差距
 
+> 历史快照：本文基于 `0c2aeccb5`。实时渲染整合、流送协议和调试覆盖等已有后续改进；当前状态以 [2026-09-15 审核](GPUDrivenAudit-2026-09-15.md) 为准。下文保留当时的代码和测量背景。
+
 基于 Metallic 提交 `0c2aeccb5`，包含 CLAS MOVE scratch 崩溃修复。本次核对源代码与既有实验记录，未运行新的性能基准，未修改运行时。
 
 参考源码为 `E:/vk_lod_clusters` 和 `E:/UnrealEngine`。后者 `Engine/Build/Build.version` 标识为 **5.7.4**，包含 `Nanite/RayTracing/` 下的 ClusterOps/CLAS 实现。本文将这些能力称为“本机 Nanite CLAS 路径”，不把分支代码的存在等同于所有发行版、平台或默认配置均启用。公开功能与压缩设计同时核对了 [Epic 文档](https://dev.epicgames.com/documentation/en-us/unreal-engine/nanite-technical-details) 和 [GPU-driven materials 介绍](https://www.unrealengine.com/blog/take-a-deep-dive-into-nanite-gpu-driven-materials?lang=en)。
