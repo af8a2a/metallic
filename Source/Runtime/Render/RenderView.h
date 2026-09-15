@@ -59,6 +59,9 @@ public:
     nlohmann::json cameraProperties() const;
     void setTemporalJitter(bool enabled) { temporalJitter_ = enabled; }
     bool temporalJitter() const { return temporalJitter_; }
+    // Raw previews have no temporal reconstruction to remove sample jitter.
+    // Keep the user's temporal setting separate from this presentation policy.
+    void setTemporalJitterSuppressed(bool suppressed) { temporalJitterSuppressed_ = suppressed; }
     void cameraCut() { ++cutSerial_; }
     uint32_t cutSerial() const { return cutSerial_; }
     uint64_t revision() const { return revision_; }
@@ -68,6 +71,7 @@ public:
 private:
     ViewCamera camera_;
     bool temporalJitter_ = false;
+    bool temporalJitterSuppressed_ = false;
     uint32_t cutSerial_ = 1;
     uint64_t revision_ = 1;
 };

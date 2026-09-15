@@ -124,6 +124,28 @@ public:
             otherView.current.center[0] != first.current.center[0]) {
             return RhiTestResult::fail("GPU ABI, shared pass data, previous frame or independent view isolation");
         }
+        executor.renderView()->setTemporalJitterSuppressed(true);
+        if (!execute(executor)) { return RhiTestResult::fail("Unjittered preview dispatch"); }
+        const auto raw = read(executor, "A.view");
+        const auto rawOther = read(executor, "Asset.view");
+        if (raw.frame[1] || raw.frame[2] || raw.jitter[0] || raw.jitter[1] ||
+            std::memcmp(&raw, &rawOther, sizeof(raw)) != 0 || !executor.renderView()->temporalJitter()) {
+            return RhiTestResult::fail("Raw preview shares zero jitter, invalidates history and preserves requested sampling");
+        }
+        camera.center[0] += .1f;
+        executor.renderView()->setCamera(camera);
+        if (!execute(executor)) { return RhiTestResult::fail("Unjittered camera motion dispatch"); }
+        const auto rawMoved = read(executor, "A.view");
+        if (!rawMoved.frame[1] || rawMoved.jitter[0] || rawMoved.jitter[1] ||
+            rawMoved.previous.center[0] != raw.current.center[0] || rawMoved.current.center[0] != camera.center[0]) {
+            return RhiTestResult::fail("Raw camera motion preserves unjittered previous/current views");
+        }
+        executor.renderView()->setTemporalJitterSuppressed(false);
+        if (!execute(executor)) { return RhiTestResult::fail("Restore temporal sampling dispatch"); }
+        const auto resumed = read(executor, "A.view");
+        if (resumed.frame[1] || resumed.frame[2] != 1 || (resumed.jitter[0] == 0 && resumed.jitter[1] == 0)) {
+            return RhiTestResult::fail("Returning to reconstruction restores samples with invalidated history");
+        }
         executor.renderView()->cameraCut();
         if (!execute(executor) || read(executor, "A.view").frame[1]) { return RhiTestResult::fail("GPU camera cut history"); }
         if (!executor.compile(*device, restored, 321, 181, log) || !execute(executor)) { return RhiTestResult::fail(log); }

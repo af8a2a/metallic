@@ -190,3 +190,19 @@ cmake-build-release-visual-studio\tests\MetallicRhiTests.exe --rhi-validation --
 2026-09-12 编辑器可视化路由回归：`METALLIC_SMOKE_TEST_VBUFFER_PREVIEW=1` 在实时 pipeline 中运行 120 帧，读回 Coverage、Meshlet ID、Triangle ID、Depth 四种图像，对照串行/异步像素，检查 Off 恢复、手动预览优先及相机/图连接不变。测试通过且同步验证无错误。日志 `.tmp/VBufferPreviewSmokeFinal.log`；设置 `METALLIC_SMOKE_TEST_OUTPUT_DIR` 可保存实际读回图。
 
 同一回归在 `MetallicGPUDrivenSample` 默认仓库 Sponza 场景运行 120 帧通过，四种图像串行/异步逐像素一致；日志 `.tmp/VBufferSponzaSmoke.log`，图像 `.tmp/VBufferSponzaImages/`，无 VUID / SYNC 错误。主编辑器与 GPUDriven Sample 均已重新构建。
+
+### 原始调试预览的时序采样
+
+2026-09-15：编辑器切换 Meshlet ID 等模式时直接呈现 `VBuffer.color`，此输出没有经过 DLSS 重建。
+此前全局 View 仍按 DLSS 的 Halton 序列抖动，造成静止和移动相机时都能看到子像素跳动。
+`vk_lod_clusters` 的对应 RT 调试画面仍调用 DLSS 重建，不能与带 jitter 的原始光栅输出直接比较。
+
+现在由视口呈现策略通过 `RenderView::setTemporalJitterSuppressed` 暂停原始 VisibilityBuffer 预览的采样抖动。
+所有 pass 使用同一份全局 View；相机参数、图连接以及用户保存的 temporalJitter 设置不变。
+手动选择原始输出同样生效，返回重建输出自动恢复采样。有效采样模式变化使 View 历史失效，避免混用两种历史。
+这处理的是未经重建的采样抖动；原始调试输出本身仍不提供 DLSS 抗锯齿。
+
+验证：`render_view_shared_constants_history` 在验证层开启时通过，覆盖 GPU 常量共享、无抖动相机运动和恢复采样的历史切换。
+`METALLIC_SMOKE_TEST_VBUFFER_PREVIEW=1 MetallicGPUDrivenSample.exe --smoke-test --sample realtime-lighting`
+在全局 jitter 配置开启时通过 138 帧编辑器回归：四种调试图连续帧稳定、旋转后稳定、串行/异步一致、Off 恢复、手动输出优先。
+日志位于 `.cache/debug-jitter/`；编辑器测试未开启验证层。渲染检查完成后遇到已有的 Streamline 退出卡住，测试进程已停止。

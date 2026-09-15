@@ -4014,6 +4014,7 @@ void EditorApplication::initializeViewportView()
     }
     viewportView_.setCameraProperties(properties.value("camera", render::RenderGraphProperties::object()));
     viewportView_.setTemporalJitter(properties.value("temporalJitter", false));
+    viewportView_.setTemporalJitterSuppressed(false);
     viewportView_.cameraCut();
 }
 
@@ -6433,6 +6434,13 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
         renderGraphStatus_ = "No active preview output";
         return false;
     }
+
+    // Diagnostic raster outputs bypass temporal reconstruction. Apply their
+    // sampling policy to the global View before any pass records this frame.
+    // This also covers manual output selection and preserves the saved DLSS setting.
+    const auto* previewNode = findRenderGraphNodeForOutput(renderGraph_, previewOutput);
+    const bool rawVisibilityPreview = previewNode != nullptr && previewNode->type == "VisibilityBufferPass";
+    viewportView_.setTemporalJitterSuppressed(rawVisibilityPreview);
 
     const bool textureSizeMatches =
         viewportDescriptor_ != VK_NULL_HANDLE &&

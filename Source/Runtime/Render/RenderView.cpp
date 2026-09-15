@@ -78,13 +78,14 @@ ViewConstants RenderView::constants(uint64_t frameIndex, uint32_t renderWidth, u
     view.current.clipOrtho[2] = camera_.orthoHeight;
     view.current.clipOrtho[3] = camera_.reversedZ ? 1.0f : 0.0f;
     view.frame[0] = static_cast<uint32_t>(frameIndex);
-    view.frame[2] = temporalJitter_ ? 1u : 0u;
+    const bool jitterEnabled = temporalJitter_ && !temporalJitterSuppressed_;
+    view.frame[2] = jitterEnabled ? 1u : 0u;
     view.frame[3] = cutSerial_;
     view.outputSize[0] = float(outputWidth);
     view.outputSize[1] = float(outputHeight);
     view.outputSize[2] = 1.0f / float(std::max(outputWidth, 1u));
     view.outputSize[3] = 1.0f / float(std::max(outputHeight, 1u));
-    if (temporalJitter_) {
+    if (jitterEnabled) {
         const auto radicalInverse = [](uint64_t index, uint32_t base) {
             float value = 0.0f, scale = 1.0f / float(base);
             while (index != 0) { value += float(index % base) * scale; index /= base; scale /= float(base); }

@@ -122,7 +122,7 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
     const uint32_t nodeId = node->id;
     const std::string presentation = renderGraph_.presentationOutputName();
     const size_t edgeCount = renderGraph_.edges().size();
-    viewportView_.setTemporalJitter(false);
+    viewportView_.setTemporalJitter(true);
     if (!renderFrames(8)) { return false; }
     const auto camera = viewportCameraProperties();
     const auto select = [&](const char* mode) {
@@ -175,6 +175,23 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
             if (!select(mode) || !expect(activePreviewOutput_ == "VBuffer.color", "Visualization selects its diagnostic output")) { return false; }
             std::vector<uint32_t> pixels;
             if (!expect(readPixels(pixels, mode), "Read diagnostic pixels")) { return false; }
+            if (!expect(viewportView_.temporalJitter() && viewportView_.constants(0, 128, 128, 128, 128).frame[2] == 0,
+                    "Raw preview suppresses sampling jitter without changing the user's setting")) { return false; }
+            if (!renderFrames(1)) { return false; }
+            std::vector<uint32_t> nextPixels;
+            if (!readPixels(nextPixels, mode) || !expect(nextPixels == pixels, "Static raw preview is stable across temporal samples")) { return false; }
+            if (modeIndex == 1) {
+                auto rotated = camera;
+                rotated["camera"]["center"][0] = rotated["camera"]["center"][0].get<float>() + .15f;
+                applyViewportCameraProperties(rotated, "Smoke unjittered debug rotation");
+                if (!renderFrames(2) || !readPixels(nextPixels, mode) ||
+                    !expect(nextPixels != pixels, "Camera rotation reaches the debug image")) { return false; }
+                const auto rotatedPixels = nextPixels;
+                if (!renderFrames(1) || !readPixels(nextPixels, mode) ||
+                    !expect(nextPixels == rotatedPixels, "Rotated debug view remains stable across samples")) { return false; }
+                applyViewportCameraProperties(camera, "Restore debug camera");
+                if (!renderFrames(2)) { return false; }
+            }
             if (modeIndex == 0) {
                 const size_t covered = std::count(pixels.begin(), pixels.end(), 0xffffffffu);
                 if (!expect(covered > 50, "Coverage displays white geometry")) { return false; }
@@ -185,6 +202,8 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
             ++modeIndex;
         }
         if (!select("none") || !expect(activePreviewOutput_ == presentation, "Off restores the presentation output")) { return false; }
+        if (!expect(viewportView_.constants(0, 128, 128, 128, 128).frame[2] == 1,
+                "Presentation restores temporal sampling")) { return false; }
     }
     setActivePreviewOutput("Deferred.color");
     if (!select("coverage") || !select("none") ||
