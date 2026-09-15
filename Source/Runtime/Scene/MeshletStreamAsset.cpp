@@ -503,7 +503,8 @@ bool validatePayloadHeader(
     const uint64_t payloadSize = page.uncompressedSize;
     const uint64_t clusterBytes =
         static_cast<uint64_t>(payloadHeader.clusterCount) * sizeof(MeshletStreamPayloadCluster);
-    const uint64_t positionBytes = static_cast<uint64_t>(payloadHeader.vertexCount) * sizeof(float) * 4u;
+    const uint32_t positionStride = meshletStreamPositionStride(payloadHeader.positionFormat);
+    const uint64_t positionBytes = static_cast<uint64_t>(payloadHeader.vertexCount) * positionStride;
     const uint64_t normalBytes =
         (payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeNormal) != 0u
             ? static_cast<uint64_t>(payloadHeader.vertexCount) * sizeof(float) * 4u
@@ -551,7 +552,8 @@ bool validatePayloadHeader(
         return false;
     }
     if ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributePosition) == 0u ||
-        payloadHeader.positionFormat != static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4) ||
+        positionStride == 0u ||
+        ((page.payloadFlags & kMeshletStreamPayloadCompactPositions) != 0u) != (positionStride == 12u) ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeNormal) != 0u &&
             payloadHeader.normalFormat != static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4)) ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeTangent) != 0u &&
@@ -729,7 +731,6 @@ struct PayloadPosition {
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
-    float w = 1.0f;
 };
 
 struct PayloadNormal {
@@ -835,7 +836,7 @@ bool buildPagePayload(
                 return false;
             }
             const float3& position = input.primitive->positions[sourceVertex];
-            payloadPositions.push_back(PayloadPosition{position.x, position.y, position.z, 1.0f});
+            payloadPositions.push_back(PayloadPosition{position.x, position.y, position.z});
             if (hasNormals) {
                 const float3& normal = input.primitive->normals[sourceVertex];
                 payloadNormals.push_back(PayloadNormal{normal.x, normal.y, normal.z, 0.0f});
@@ -912,7 +913,7 @@ bool buildPagePayload(
     header.lodGroupIndex = input.lodGroupIndex;
     header.attributeFlags = kMeshletStreamPayloadAttributePosition | kMeshletStreamPayloadAttributeMaterial;
     header.compressionMode = static_cast<uint32_t>(MeshletStreamPayloadCompression::None);
-    header.positionFormat = static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4);
+    header.positionFormat = static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x3);
     header.materialFormat = static_cast<uint32_t>(MeshletStreamPayloadFormat::Uint32);
     header.materialCount = static_cast<uint32_t>(payloadMaterials.size());
     if (hasNormals) {
@@ -935,6 +936,7 @@ bool buildPagePayload(
     appendPadding(outPayload, 16);
     header.positionOffsetBytes = static_cast<uint32_t>(outPayload.size());
     appendBytes(outPayload, payloadPositions.data(), payloadPositions.size() * sizeof(PayloadPosition));
+    appendPadding(outPayload, 16);
     if (hasNormals) {
         appendPadding(outPayload, 16);
         header.normalOffsetBytes = static_cast<uint32_t>(outPayload.size());
@@ -975,6 +977,7 @@ bool buildPagePayload(
     outPageInfo.triangleIndexCount = header.triangleIndexCount;
     outPageInfo.materialIndex = input.materialIndex;
     outPageInfo.attributeFlags = header.attributeFlags;
+    outPageInfo.payloadFlags = kMeshletStreamPayloadCompactPositions;
     outPageInfo.compressionMode = header.compressionMode;
     outPageInfo.primitiveGroupOffset = input.groupIndexOffset;
     outPageInfo.bounds = pageBounds.valid ? makeStreamBounds(pageBounds) : makeStreamBounds(input.bounds);
@@ -4742,6 +4745,59 @@ std::span<const uint8_t> MeshletStreamAsset::pagePayload(uint32_t pageIndex) con
         static_cast<size_t>(page.payloadSize));
 }
 
+namespace {
+bool compactDevicePositions(
+    const MeshletStreamPageInfo& page,
+    std::span<const uint8_t> payload,
+    std::vector<uint8_t>& storage,
+    std::span<const uint8_t>& output,
+    std::string& reason)
+{
+    if ((page.payloadFlags & kMeshletStreamPayloadCompactPositions) != 0u) {
+        output = payload;
+        return true;
+    }
+    MeshletStreamPayloadHeader header;
+    std::memcpy(&header, payload.data(), sizeof(header));
+    const uint64_t end = uint64_t(header.positionOffsetBytes) + uint64_t(header.vertexCount) * 16u;
+    const uint64_t clusterEnd = uint64_t(header.clusterOffsetBytes) +
+        uint64_t(header.clusterCount) * sizeof(MeshletStreamPayloadCluster);
+    // Only canonical, disjoint sections can be shifted. Validate before writing
+    // so malformed caches cannot underflow an offset or corrupt another array.
+    if (end > payload.size() || header.positionOffsetBytes < clusterEnd ||
+        header.clusterOffsetBytes < sizeof(header)) {
+        reason = "streamasset legacy position section is not disjoint";
+        return false;
+    }
+    for (uint32_t offset : {header.normalOffsetBytes, header.tangentOffsetBytes,
+             header.texcoord0OffsetBytes, header.materialOffsetBytes, header.triangleOffsetBytes}) {
+        if (offset != 0u && offset < end) {
+            reason = "streamasset legacy attribute overlaps its position section";
+            return false;
+        }
+    }
+    if (payload.data() != storage.data()) {
+        storage.assign(payload.begin(), payload.end());
+    }
+    const uint32_t saved = uint32_t(payload.size() - meshletStreamDevicePayloadSize(page));
+    auto* positions = storage.data() + header.positionOffsetBytes;
+    for (uint32_t i = 0; i < header.vertexCount; ++i) {
+        std::memmove(positions + uint64_t(i) * 12u, positions + uint64_t(i) * 16u, 12u);
+    }
+    std::memmove(storage.data() + end - saved, storage.data() + end, storage.size() - end);
+    for (uint32_t* offset : {&header.normalOffsetBytes, &header.tangentOffsetBytes,
+             &header.texcoord0OffsetBytes, &header.materialOffsetBytes, &header.triangleOffsetBytes}) {
+        if (*offset != 0u) { *offset -= saved; }
+    }
+    storage.resize(storage.size() - saved);
+    header.positionFormat = static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x3);
+    header.payloadByteSize = header.uncompressedPayloadByteSize = uint32_t(storage.size());
+    std::memcpy(storage.data(), &header, sizeof(header));
+    output = storage;
+    return true;
+}
+} // namespace
+
 bool decodeMeshletStreamPayloadForDevice(
     const MeshletStreamPageInfo& page,
     std::span<const uint8_t> storedPayload,
@@ -4778,8 +4834,7 @@ bool decodeMeshletStreamPayloadForDevice(
         if (!validateDevicePayloadClusters(storedPayload, page, reason)) {
             return false;
         }
-        outDevicePayload = storedPayload;
-        return true;
+        return compactDevicePositions(page, storedPayload, scratchPayload, outDevicePayload, reason);
     }
 
     if (page.compressionMode != static_cast<uint32_t>(MeshletStreamPayloadCompression::ByteRle)) {
@@ -4822,8 +4877,7 @@ bool decodeMeshletStreamPayloadForDevice(
     if (!validateDevicePayloadClusters(scratchPayload, page, reason)) {
         return false;
     }
-    outDevicePayload = std::span<const uint8_t>(scratchPayload.data(), scratchPayload.size());
-    return true;
+    return compactDevicePositions(page, scratchPayload, scratchPayload, outDevicePayload, reason);
 }
 
 std::filesystem::path meshletStreamAssetPathFor(const std::filesystem::path& sourcePath)

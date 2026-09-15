@@ -14,7 +14,7 @@ static_assert(sizeof(SliderDebugPush) == 12);
 
 class DlssNrPass final : public UnsafePass {
 public:
-    bool supportsFrameOverlap() const override { return false; }
+    bool supportsFrameOverlap() const override { return !properties().value("enabled", true); }
     bool supportsAsyncQueue() const override { return false; }
 
     RenderPassReflection reflect(const RenderGraphCompileContext& context) const override

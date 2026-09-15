@@ -944,7 +944,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     fallbackPages.erase(std::unique(fallbackPages.begin(), fallbackPages.end()), fallbackPages.end());
     uint64_t lockedFallbackBytes = 0;
     for (uint32_t pageIndex : fallbackPages) {
-        lockedFallbackBytes += residencyStorage.allocationSize(asset_.pages()[pageIndex].uncompressedSize);
+        lockedFallbackBytes += residencyStorage.allocationSize(scene::meshletStreamDevicePayloadSize(asset_.pages()[pageIndex]));
     }
     const bool needsStreamingReserve = fallbackPages.size() < asset_.pageCount();
     const uint64_t streamedPageReserveBytes = needsStreamingReserve
@@ -1161,9 +1161,9 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         result = createNamedBuffer(
             device,
             BufferDesc{
-                .size = sizeof(MeshletStreamGpuBlasHeader),
+                .size = sizeof(MeshletStreamGpuBlasHeader) + uint64_t(maxActiveGroups_) * 16u,
                 .structureStride = sizeof(MeshletStreamGpuBlasHeader),
-                .usage = BufferUsageBits::Storage |
+                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource |
                     BufferUsageBits::Indirect |
                     BufferUsageBits::AccelerationStructureBuildInput |
                     BufferUsageBits::ShaderDeviceAddress,
@@ -2091,6 +2091,17 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         }
     }
 
+    frameUploads_.resize(std::max(desc.queuedFrameCount, 1u));
+    for (size_t i = 1; i < frameUploads_.size(); ++i) {
+        auto& slot = frameUploads_[i];
+        if (!(result = device.createBuffer(paramsBuffer_->desc(), slot.params)) ||
+            !(result = device.createBuffer(rasterBindingsBuffer_->desc(), slot.raster)) ||
+            !(result = device.createBuffer(requestClearBuffer_->desc(), slot.clear)) ||
+            !(result = allocateAndWriteBuffer(*bindlessHeap_, *slot.params, slot.paramsHandle, log, "stream frame params")) ||
+            !(result = allocateAndWriteBuffer(*bindlessHeap_, *slot.raster, slot.rasterHandle, log, "stream frame raster"))) {
+            return result;
+        }
+    }
     return {};
 }
 
@@ -2114,6 +2125,8 @@ void MeshletStreamRuntime::reset()
     requestBuffer_.reset();
     requestReadbackBuffer_.reset();
     requestClearBuffer_.reset();
+    frameUploads_.clear();
+    currentUploadSlot_ = 0;
     paramsBuffer_.reset();
     visibleClusterBuffer_.reset();
     rasterBindingsBuffer_.reset();
@@ -2131,6 +2144,7 @@ void MeshletStreamRuntime::reset()
     traversalHeaderBuffer_.reset();
     traversalWorkBuffer_.reset();
     blasHeaderBuffer_.reset();
+    blasCacheInitialized_ = std::make_shared<bool>(false);
     instanceBlasBuffer_.reset();
     blasBuildInfoBuffer_.reset();
     blasClusterReferenceBuffer_.reset();
@@ -2325,6 +2339,25 @@ Result MeshletStreamRuntime::cmdBeginFrame(
     auto* profiler = &beginFrameCpuProfile_;
     CpuProfileScope profile(profiler, "Residency completion");
     ++frameIndex_;
+    const uint32_t uploadSlot = frameIndex_ % uint32_t(frameUploads_.size());
+    auto& nextUpload = frameUploads_[uploadSlot];
+    if (nextUpload.completion.isSubmitted() && !nextUpload.completion.isComplete()) {
+        const auto result = nextUpload.completion.wait(UINT64_MAX);
+        if (!result) { return result; }
+    }
+    const auto swapUpload = [&](FrameUploads& slot) {
+        slot.params.swap(paramsBuffer_);
+        slot.raster.swap(rasterBindingsBuffer_);
+        slot.clear.swap(requestClearBuffer_);
+        std::swap(slot.paramsHandle, paramsHandle_);
+        std::swap(slot.rasterHandle, rasterBindingsHandle_);
+    };
+    if (uploadSlot != currentUploadSlot_) {
+        swapUpload(frameUploads_[currentUploadSlot_]);
+        swapUpload(nextUpload);
+        currentUploadSlot_ = uploadSlot;
+    }
+    nextUpload.completion = commandBuffer.frameContext() ? commandBuffer.frameContext()->completion() : GpuCompletionPoint{};
     residency_.beginFrame(profiler);
     if (clasPool_ != nullptr) {
         profile.next("CLAS completion / expiry");
@@ -2575,6 +2608,7 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
             : 0u,
         .tlasInstanceBuffer = tlasInstanceHandle_.valid() ? tlasInstanceHandle_.index : 0u,
         .rasterBindingsBuffer = rasterBindingsHandle_.index,
+        .clasPublicationRevision = clasPool_ ? uint32_t(clasPool_->stats().publicationRevision) : 0u,
     };
 }
 
@@ -3375,6 +3409,7 @@ Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
     auto dispatchPhase = [this, &commandBuffer](uint32_t phase, uint32_t threadCount) {
         MeshletStreamUserPush push = userPush();
         push.activeBuildPhase = phase;
+        push.traversalPhase = *blasCacheInitialized_ ? 0u : 1u;
         return blasInputPass_->dispatch(
             commandBuffer,
             *bindlessHeap_,
@@ -3400,6 +3435,16 @@ Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
     if (!result) {
         return result;
     }
+    // Compare the complete logical cut before resetting any cached instance.
+    // CLAS publication revisions invalidate relocated/retired references as well.
+    result = dispatchPhase(4u, maxActiveGroups_);
+    if (!result) { return result; }
+    result = dispatchPhase(5u, std::max(asset_.instanceCount(), 1u));
+    if (!result) { return result; }
+    result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(nullptr,
+        [valid = blasCacheInitialized_] { *valid = false; }));
+    if (!result) { return result; }
+    *blasCacheInitialized_ = true;
     result = dispatchPhase(kMeshletStreamBlasInputCountPhase, maxActiveGroups_);
     if (!result) {
         return result;
@@ -3697,6 +3742,8 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     }
     add("pageTable", pageTableBuffer_.get(), pageTableState_, "StreamPageTableEntry");
     add("activeHeader", activeHeaderBuffer_.get(), activeHeaderBufferState_, "MeshletStreamGpuActiveHeader");
+    add("blasHeader", blasHeaderBuffer_.get(), blasHeaderBufferState_, "MeshletStreamGpuBlasHeader", 0,
+        sizeof(MeshletStreamGpuBlasHeader));
     add("activeGroups", activeGroupBuffer_.get(), activeGroupBufferState_, "MeshletStreamGpuActiveGroup");
     add("lodState", lodStateBuffer_.get(), lodStateBufferState_, "u32");
     add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "VisibleClusterRecord");

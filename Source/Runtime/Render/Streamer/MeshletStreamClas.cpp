@@ -53,7 +53,7 @@ bool buildMeshletStreamClasPagePlan(
 {
     outPlan = {};
     reason.clear();
-    if (devicePayload.size() != page.uncompressedSize ||
+    if (devicePayload.size() != scene::meshletStreamDevicePayloadSize(page) ||
         devicePayload.size() < sizeof(scene::MeshletStreamPayloadHeader) ||
         devicePayload.size() > std::numeric_limits<uint32_t>::max()) {
         reason = "meshlet stream CLAS payload does not match its page directory";
@@ -64,7 +64,8 @@ bool buildMeshletStreamClasPagePlan(
     std::memcpy(&header, devicePayload.data(), sizeof(header));
     const uint64_t clusterBytes =
         static_cast<uint64_t>(header.clusterCount) * sizeof(scene::MeshletStreamPayloadCluster);
-    const uint64_t positionBytes = static_cast<uint64_t>(header.vertexCount) * sizeof(float) * 4u;
+    const uint32_t positionStride = scene::meshletStreamPositionStride(header.positionFormat);
+    const uint64_t positionBytes = static_cast<uint64_t>(header.vertexCount) * positionStride;
     const uint64_t triangleBytes = header.triangleIndexCount;
     if (header.clusterCount == 0 ||
         header.clusterCount != page.clusterCount ||
@@ -75,7 +76,7 @@ bool buildMeshletStreamClasPagePlan(
         header.lodLevel != page.lodLevel ||
         header.lodGroupIndex != page.lodGroupIndex ||
         header.payloadByteSize != devicePayload.size() ||
-        header.positionFormat != static_cast<uint32_t>(scene::MeshletStreamPayloadFormat::Float32x4) ||
+        positionStride == 0u ||
         (header.attributeFlags & scene::kMeshletStreamPayloadAttributePosition) == 0u ||
         !byteRangeWithin(devicePayload.size(), header.clusterOffsetBytes, clusterBytes) ||
         !byteRangeWithin(devicePayload.size(), header.positionOffsetBytes, positionBytes) ||
@@ -116,7 +117,7 @@ bool buildMeshletStreamClasPagePlan(
 
         const uint64_t vertexOffsetBytes =
             static_cast<uint64_t>(header.positionOffsetBytes) +
-            static_cast<uint64_t>(cluster.vertexOffset) * sizeof(float) * 4u;
+            static_cast<uint64_t>(cluster.vertexOffset) * positionStride;
         const uint64_t triangleOffsetBytes =
             static_cast<uint64_t>(header.triangleOffsetBytes) + cluster.triangleOffset;
         if (vertexOffsetBytes > std::numeric_limits<uint32_t>::max() ||
@@ -142,6 +143,7 @@ bool buildMeshletStreamClasPagePlan(
             .materialIndex = cluster.materialIndex,
             .vertexOffsetBytes = static_cast<uint32_t>(vertexOffsetBytes),
             .vertexCount = cluster.vertexCount,
+            .vertexStrideBytes = positionStride,
             .triangleOffsetBytes = static_cast<uint32_t>(triangleOffsetBytes),
             .triangleCount = cluster.triangleCount,
         });

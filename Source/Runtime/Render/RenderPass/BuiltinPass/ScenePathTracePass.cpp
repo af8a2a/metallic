@@ -579,7 +579,7 @@ public:
     bool supportsFrameOverlap() const override
     {
         return cacheMode_ == kScenePathTraceCacheModeOff &&
-            !(visibilityDeferred_ && properties().value("lightingMode", "reference") == "realtime");
+            (!METALLIC_HAS_NRD || !visibilityDeferred_ || properties().value("lightingMode", "reference") != "realtime");
     }
 
     ~ScenePathTracePass() override
@@ -1746,6 +1746,27 @@ public:
             std::memcpy(&info, mapped, sizeof(info));
             rasterInfo.buffer()->unmap();
             deferredFrameInfo = rasterInfo.buffer();
+            if (auto* frame = context.commandBuffer().frameContext()) {
+                // rasterInfo is also CPU metadata for downstream passes. Bind an
+                // immutable snapshot so the next recording cannot overwrite it
+                // while this frame's material classification/decode reads it.
+                auto free = std::find_if(deferredFrameInfoPool_.begin(), deferredFrameInfoPool_.end(),
+                    [](const auto& buffer) { return buffer.use_count() == 1; });
+                if (free == deferredFrameInfoPool_.end()) {
+                    std::unique_ptr<Buffer> buffer;
+                    auto allocated = device_->createBuffer(rasterInfo.buffer()->desc(), buffer);
+                    if (!allocated) { return allocated; }
+                    deferredFrameInfoPool_.emplace_back(std::move(buffer));
+                    free = std::prev(deferredFrameInfoPool_.end());
+                }
+                void* destination = (*free)->map();
+                if (!destination) { return makeError(Error::Failure); }
+                std::memcpy(destination, &info, sizeof(info));
+                (*free)->flush(0, sizeof(info));
+                (*free)->unmap();
+                deferredFrameInfo = free->get();
+                frame->retain(*free);
+            }
             deferredStream = gpuScene->visibilityStream({info.lightGridViewIndex, info.lightGridViewGeneration},
                 info.frameIndex, info.sceneIdentity);
             if (info.hasStreamGeometry && !deferredStream) { return makeError(Error::InvalidArgument); }
@@ -2153,6 +2174,8 @@ public:
     }
 
 private:
+    std::vector<std::shared_ptr<Buffer>> deferredFrameInfoPool_;
+
     static bool validTexture(TextureHandle texture)
     {
         return texture.valid() && texture.texture() != nullptr && texture.view() != nullptr;

@@ -39,7 +39,10 @@ bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<VisibleClu
     pages.GetDimensions(count, stride);
     if (page > count || count - page < 28u) { return false; }
     uint bytes = pages[page + 12];
-    if (bytes < 112u || bytes / 4u > count - page || pages[page + 20] != 2u ||
+    uint positionFormat = pages[page + 20];
+    uint positionStrideWords = positionFormat == 4u ? 3u : 4u;
+    uint positionStrideBytes = positionStrideWords * 4u;
+    if (bytes < 112u || bytes / 4u > count - page || (positionFormat != 2u && positionFormat != 4u) ||
         (pages[page + 14] & 1u) == 0u || record.clusterIndex >= pages[page + 2]) { return false; }
     uint clusters = pages[page + 9], positions = pages[page + 10], triangles = pages[page + 11];
     if (((clusters | positions) & 3u) != 0u || clusters > bytes || record.clusterIndex >= (bytes - clusters) / 96u) { return false; }
@@ -48,11 +51,14 @@ bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<VisibleClu
     uint triangleOffset = pages[cluster + 2], triangleCount = pages[cluster + 3];
     if (triangle >= triangleCount || triangles > bytes || triangleOffset > bytes - triangles ||
         triangle >= (bytes - triangles - triangleOffset) / 3u || positions > bytes ||
-        vertexOffset > (bytes - positions) / 16u || vertexCount > (bytes - positions) / 16u - vertexOffset) { return false; }
+        vertexOffset > (bytes - positions) / positionStrideBytes ||
+        vertexCount > (bytes - positions) / positionStrideBytes - vertexOffset) { return false; }
     uint address = page * 4u + triangles + triangleOffset + triangle * 3u;
     uint3 local = uint3(streamPageByte(pages, address), streamPageByte(pages, address + 1), streamPageByte(pages, address + 2));
     if (any(local >= vertexCount)) { return false; }
-    uint base = page + positions / 4u + vertexOffset * 4u;
-    a = streamPagePosition(pages, base + local.x * 4u); b = streamPagePosition(pages, base + local.y * 4u); c = streamPagePosition(pages, base + local.z * 4u);
+    uint base = page + positions / 4u + vertexOffset * positionStrideWords;
+    a = streamPagePosition(pages, base + local.x * positionStrideWords);
+    b = streamPagePosition(pages, base + local.y * positionStrideWords);
+    c = streamPagePosition(pages, base + local.z * positionStrideWords);
     return true;
 }

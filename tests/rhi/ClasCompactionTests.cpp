@@ -309,6 +309,10 @@ class CompactClasLifecycleTest final : public RhiTest {
                         bool(commandPool->createCommandBuffer(cmd)),
                     "Commands failed");
             uint64_t frameId = 0;
+            std::unique_ptr<Buffer> publicationReadback;
+            require(bool(device->createBuffer({.size = 4, .usage = BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::HostReadback}, publicationReadback)), "Publication readback failed");
+            uint32_t gpuPageEntry = 0;
             auto record = [&](bool request, bool cancel = false) {
                 require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)),
                         "Begin failed");
@@ -316,6 +320,13 @@ class CompactClasLifecycleTest final : public RhiTest {
                             *cmd, *pageBuffer,
                             request ? std::span(&build, 1) : std::span<const MeshletStreamClasPageBuild>{}, log)),
                         log);
+                BufferBarrierDesc tableBarrier{.buffer = pool.pageTableBuffer(), .before = ResourceState::General,
+                    .after = ResourceState::TransferSource};
+                cmd->barrier({.buffers = &tableBarrier, .bufferCount = 1});
+                cmd->copyBuffer({.source = pool.pageTableBuffer(), .destination = publicationReadback.get(),
+                    .sourceOffset = uint64_t(pageIndex) * 4u, .size = 4});
+                std::swap(tableBarrier.before, tableBarrier.after);
+                cmd->barrier({.buffers = &tableBarrier, .bufferCount = 1});
                 require(bool(cmd->end()), "End failed");
                 if (cancel) {
                     frame.cancel();
@@ -325,6 +336,11 @@ class CompactClasLifecycleTest final : public RhiTest {
                 require(bool(tracker.submit({.commandBuffers = list, .commandBufferCount = 1}, frame)) &&
                             bool(frame.wait(5000000000ull)),
                         "Tracked submit failed");
+                publicationReadback->invalidate();
+                const auto* mappedEntry = static_cast<const uint32_t*>(publicationReadback->map());
+                require(mappedEntry != nullptr, "Publication map failed");
+                gpuPageEntry = *mappedEntry;
+                publicationReadback->unmap();
             };
             pool.beginFrame();
             record(true);
@@ -335,7 +351,9 @@ class CompactClasLifecycleTest final : public RhiTest {
             pool.beginFrame();
             record(true); // Revive during completed build / size collection.
             require(!pool.pageHasClas(pageIndex) && pool.stats().frameMovedPageCount == 1,
-                    "Move publication must await completion");
+                    "CPU move ownership must await completion collection");
+            require((gpuPageEntry >> kMeshletStreamClasPageStateShift) == uint32_t(MeshletStreamClasPageState::Active),
+                    "GPU traversal cannot use CLAS in the MOVE submission");
             pool.beginFrame();
             require(pool.pageHasClas(pageIndex) && !pool.pageBuildPending(pageIndex), "Move did not publish");
             const auto stats = pool.stats();
@@ -382,7 +400,7 @@ class CompactClasLifecycleTest final : public RhiTest {
             std::ofstream(context.outputDirectory / "CompactClasLifecycle.txt")
                 << "worstCaseBytes=" << stats.worstCaseStorageBytes << " allocatedBytes=" << stats.usedStorageBytes
                 << " encodedBytes=" << stats.encodedStorageBytes << '\n';
-            return RhiTestResult::pass("Actual allocation, deferred publication, revival, retirement, build/move "
+            return RhiTestResult::pass("Actual allocation, ordered GPU publication, revival, retirement, build/move "
                                        "cancellation and abandoned build");
         } catch (const std::exception& error) {
             return RhiTestResult::fail(error.what());

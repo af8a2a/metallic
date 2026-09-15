@@ -10,8 +10,7 @@ namespace {
 
 class RayTracedShadowPass final : public UnsafePass {
 public:
-    // SIGMA reads its previous output and the trace updates singleton uploads.
-    bool supportsFrameOverlap() const override { return false; }
+    bool supportsFrameOverlap() const override { return !METALLIC_HAS_NRD; }
 
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {
@@ -34,9 +33,8 @@ public:
         info.memoryLocation = MemoryLocation::HostUpload;
         reflection.addTextureOutput("shadow", "SIGMA-encoded visibility for deferred direct lighting")
             .transferWrite().format = Format::R8Unorm;
-        auto& parameters = reflection.addBufferOutput("parameters", "Selected light and shadow settings")
-            .buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).shaderRead();
-        parameters.memoryLocation = MemoryLocation::HostUpload;
+        reflection.addBufferOutput("parameters", "Selected light and shadow settings")
+            .buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).transferWrite();
         return reflection;
     }
 
@@ -83,7 +81,6 @@ public:
             !depth.valid() || depth.view() == nullptr || !metadata.valid() || !output.valid() || !parameters.valid() ||
             metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
-            parameters.desc().memoryLocation != MemoryLocation::HostUpload ||
             depth.desc().width != context.width() || depth.desc().height != context.height()) {
             return makeError(Error::InvalidArgument);
         }
@@ -153,13 +150,12 @@ public:
         commands.barrier({.textures = &barrier, .textureCount = 1});
         mapped = shadow.parameters->map();
         if (mapped == nullptr) { return makeError(Error::Failure); }
-        void* destination = parameters.buffer()->map();
-        if (destination == nullptr) { shadow.parameters->unmap(); return makeError(Error::Failure); }
-        std::memcpy(destination, mapped, sizeof(ScreenSpaceShadowParameters));
+        const StreamDataChunk chunk{mapped, sizeof(ScreenSpaceShadowParameters)};
+        const auto uploaded = context.streamer()->streamBufferData({.dataChunks = &chunk, .dataChunkCount = 1,
+            .placementAlignment = 16, .dstBuffer = parameters.buffer()});
         shadow.parameters->unmap();
-        parameters.buffer()->flush(0, sizeof(ScreenSpaceShadowParameters));
-        parameters.buffer()->unmap();
-        commands.hostWriteBarrier();
+        if (!uploaded.valid()) { return makeError(Error::OutOfMemory); }
+        commands.copyStreamedData(*context.streamer());
         history_->view = view;
         history_->sceneIdentity = info.sceneIdentity;
         history_->valid = true;

@@ -40,6 +40,8 @@ struct StreamlineDlssAlphaUserPush {
 
 class StreamlineDlssPass final : public UnsafePass {
 public:
+    // SDK work and graph history are ordered by the graph's GPU completion chain.
+    bool supportsFrameOverlap() const override { return variant_ == DlssVariant::SuperResolution; }
     explicit StreamlineDlssPass(DlssVariant variant)
         : variant_(variant)
     {

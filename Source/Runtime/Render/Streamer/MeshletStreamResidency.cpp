@@ -580,7 +580,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder*
                 if (prioritized) {
                     const uint64_t age = found == pages_.end() ? 0u : frameIndex_ - found->second.firstRequestFrame;
                     request.schedulingPriority = pageBenefitPerByte(request.screenBenefit,
-                        asset_->pages()[request.pageIndex].uncompressedSize, age);
+                        scene::meshletStreamDevicePayloadSize(asset_->pages()[request.pageIndex]), age);
                 }
             }
             profile.next("Sort admission priority");
@@ -618,7 +618,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder*
                 requestedPages_.push_back(pageIndex);
                 const bool alreadyAllocated = pageAllocated(pageIndex);
                 if (request.prefetch && !alreadyAllocated) {
-                    const uint64_t bytes = storage_.allocationSize(asset_->pages()[pageIndex].uncompressedSize);
+                    const uint64_t bytes = storage_.allocationSize(scene::meshletStreamDevicePayloadSize(asset_->pages()[pageIndex]));
                     // Speculation uses spare capacity only and never triggers
                     // eviction. Keep one quarter available for actual demand.
                     if (storage_.usedBytes() + bytes > storage_.capacityBytes() * 3u / 4u || !storage_.canAllocate(bytes) ||
@@ -678,7 +678,7 @@ bool MeshletStreamResidencyManager::lockFallbackPages(
             }
             uniqueNewPages.push_back(pageIndex);
             ++requiredPages;
-            const uint64_t pageBytes = asset_->pages()[pageIndex].uncompressedSize;
+            const uint64_t pageBytes = scene::meshletStreamDevicePayloadSize(asset_->pages()[pageIndex]);
             const uint64_t allocationBytes = storage_.allocationSize(pageBytes);
             if (allocationBytes == 0 ||
                 allocationBytes > std::numeric_limits<uint64_t>::max() - requiredBytes) {
@@ -1508,7 +1508,7 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
 
     const scene::MeshletStreamPageInfo& assetPage = asset_->pages()[pageIndex];
     const bool pageBudgetReached = maxResidentPages_ != 0 && activePages_.size() >= maxResidentPages_;
-    const bool storageBudgetReached = !storage_.canAllocate(assetPage.uncompressedSize);
+    const bool storageBudgetReached = !storage_.canAllocate(scene::meshletStreamDevicePayloadSize(assetPage));
     if (pageBudgetReached || storageBudgetReached) {
         uint32_t evictPage = UINT32_MAX;
         prepareEvictionCandidates();
@@ -1559,7 +1559,7 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
         return false;
     }
 
-    MeshletStreamStorageAllocation allocation = storage_.allocate(assetPage.uncompressedSize);
+    MeshletStreamStorageAllocation allocation = storage_.allocate(scene::meshletStreamDevicePayloadSize(assetPage));
     if (!allocation.valid()) {
         ++stats_.frameResidentBudgetFailureCount;
         ++stats_.totalResidentBudgetFailureCount;

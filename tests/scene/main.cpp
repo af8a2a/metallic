@@ -2442,7 +2442,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_EQ(header.compressionMode, page.compressionMode);
     EXPECT_EQ(
         header.positionFormat,
-        static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadFormat::Float32x4));
+        static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadFormat::Float32x3));
     EXPECT_EQ(
         header.normalFormat,
         static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadFormat::Float32x4));
@@ -2460,7 +2460,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     ASSERT_LE(
         header.clusterOffsetBytes + header.clusterCount * sizeof(metallic::scene::MeshletStreamPayloadCluster),
         payload.size());
-    ASSERT_LE(header.positionOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
+    ASSERT_LE(header.positionOffsetBytes + header.vertexCount * sizeof(float) * 3u, payload.size());
     ASSERT_LE(header.normalOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
     ASSERT_EQ(header.tangentOffsetBytes % 16u, 0u);
     ASSERT_LE(header.tangentOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
@@ -2676,10 +2676,46 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
         decodedHeader.clusterOffsetBytes +
             decodedHeader.clusterCount * sizeof(metallic::scene::MeshletStreamPayloadCluster),
         decodedPayload.size());
-    ASSERT_LE(decodedHeader.positionOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 4u, decodedPayload.size());
+    ASSERT_LE(decodedHeader.positionOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 3u, decodedPayload.size());
     ASSERT_LE(decodedHeader.normalOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 4u, decodedPayload.size());
     ASSERT_LE(decodedHeader.tangentOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 4u, decodedPayload.size());
     ASSERT_LE(decodedHeader.texcoord0OffsetBytes + decodedHeader.vertexCount * sizeof(float) * 2u, decodedPayload.size());
+
+    // Expand a current page to the old float4 disk layout, then normalize it.
+    // XYZ and every authored attribute/index must round-trip bit for bit.
+    {
+        auto legacyPage = page;
+        auto legacyHeader = header;
+        const uint32_t extra = (header.vertexCount * 4u) & ~15u;
+        const uint32_t compactEnd = header.positionOffsetBytes + ((header.vertexCount * 12u + 15u) & ~15u);
+        std::vector<uint8_t> legacy(payload.size() + extra, 0);
+        std::memcpy(legacy.data(), payload.data(), header.positionOffsetBytes);
+        for (uint32_t i = 0; i < header.vertexCount; ++i) {
+            std::memcpy(legacy.data() + header.positionOffsetBytes + i * 16u,
+                payload.data() + header.positionOffsetBytes + i * 12u, 12u);
+        }
+        std::memcpy(legacy.data() + compactEnd + extra, payload.data() + compactEnd, payload.size() - compactEnd);
+        for (uint32_t* offset : {&legacyHeader.normalOffsetBytes, &legacyHeader.tangentOffsetBytes,
+                 &legacyHeader.texcoord0OffsetBytes, &legacyHeader.materialOffsetBytes, &legacyHeader.triangleOffsetBytes}) {
+            if (*offset != 0u) { *offset += extra; }
+        }
+        legacyHeader.positionFormat = static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadFormat::Float32x4);
+        legacyHeader.payloadByteSize = legacyHeader.uncompressedPayloadByteSize = uint32_t(legacy.size());
+        std::memcpy(legacy.data(), &legacyHeader, sizeof(legacyHeader));
+        legacyPage.payloadFlags = 0;
+        legacyPage.payloadSize = legacyPage.uncompressedSize = legacy.size();
+        std::vector<uint8_t> normalized;
+        std::span<const uint8_t> output;
+        ASSERT_TRUE(metallic::scene::decodeMeshletStreamPayloadForDevice(legacyPage, legacy, normalized, output, reason)) << reason;
+        ASSERT_EQ(output.size(), payload.size());
+        // Alignment padding has no semantic content; compare all live sections.
+        EXPECT_EQ(std::memcmp(output.data(), payload.data(), header.positionOffsetBytes + header.vertexCount * 12u), 0);
+        EXPECT_EQ(std::memcmp(output.data() + compactEnd, payload.data() + compactEnd, payload.size() - compactEnd), 0);
+        EXPECT_EQ(metallic::scene::meshletStreamDevicePayloadSize(legacyPage), output.size());
+        legacyHeader.normalOffsetBytes = legacyHeader.positionOffsetBytes;
+        std::memcpy(legacy.data(), &legacyHeader, sizeof(legacyHeader));
+        EXPECT_FALSE(metallic::scene::decodeMeshletStreamPayloadForDevice(legacyPage, legacy, normalized, output, reason));
+    }
 
     const std::filesystem::path lazyValidationPath =
         streamDirectory / "meshlet_lod_grid.lazy_validation.meshstream.bin";
@@ -3040,7 +3076,7 @@ void testMeshoptCompressedMeshletStreamAsset(const std::filesystem::path& direct
             (header.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributeNormal) != 0u);
         ASSERT_TRUE(
             (header.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributeTexcoord0) != 0u);
-        ASSERT_LE(header.positionOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
+        ASSERT_LE(header.positionOffsetBytes + header.vertexCount * sizeof(float) * 3u, payload.size());
         ASSERT_LE(header.normalOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
         ASSERT_LE(header.texcoord0OffsetBytes + header.vertexCount * sizeof(float) * 2u, payload.size());
         ASSERT_LE(
@@ -3054,16 +3090,15 @@ void testMeshoptCompressedMeshletStreamAsset(const std::filesystem::path& direct
         for (uint32_t vertexIndex = 0; vertexIndex < header.vertexCount; ++vertexIndex) {
             size_t expectedIndex = kExpectedPositions.size();
             for (size_t candidate = 0; candidate < kExpectedPositions.size(); ++candidate) {
-                if (nearlyEqual(positions[vertexIndex * 4u], kExpectedPositions[candidate][0]) &&
-                    nearlyEqual(positions[vertexIndex * 4u + 1u], kExpectedPositions[candidate][1]) &&
-                    nearlyEqual(positions[vertexIndex * 4u + 2u], kExpectedPositions[candidate][2])) {
+                if (nearlyEqual(positions[vertexIndex * 3u], kExpectedPositions[candidate][0]) &&
+                    nearlyEqual(positions[vertexIndex * 3u + 1u], kExpectedPositions[candidate][1]) &&
+                    nearlyEqual(positions[vertexIndex * 3u + 2u], kExpectedPositions[candidate][2])) {
                     expectedIndex = candidate;
                     break;
                 }
             }
             ASSERT_LT(expectedIndex, kExpectedPositions.size());
             foundPositions[expectedIndex] = true;
-            EXPECT_TRUE(nearlyEqual(positions[vertexIndex * 4u + 3u], 1.0f));
             EXPECT_TRUE(nearlyEqual(normals[vertexIndex * 4u], 0.0f));
             EXPECT_TRUE(nearlyEqual(normals[vertexIndex * 4u + 1u], 0.0f));
             EXPECT_TRUE(nearlyEqual(normals[vertexIndex * 4u + 2u], 1.0f));

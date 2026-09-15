@@ -68,7 +68,8 @@ uint32_t selectScreenSpaceShadowLight(std::span<const GpuPunctualLight> lights, 
 struct ScreenSpaceShadows::State {
     std::array<std::unique_ptr<Texture>, 5> textures; // penumbra, normal, viewZ, MV, shadow
     std::array<std::unique_ptr<TextureView>, 5> views;
-    std::unique_ptr<Buffer> parameters;
+    std::shared_ptr<Buffer> parameters;
+    std::vector<std::shared_ptr<Buffer>> parameterPool;
     uint32_t width = 0, height = 0;
     uint64_t sceneRevision = 0;
     uint64_t transformRevision = 0;
@@ -181,15 +182,26 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
             result = device.createTextureView(*next->textures[i], {.format = formats[i]}, next->views[i]);
             if (!result) { return result; }
         }
-        auto result = device.createBuffer({.size = sizeof(ScreenSpaceShadowParameters), .structureStride = sizeof(ScreenSpaceShadowParameters),
-            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, next->parameters);
-        if (!result) { return result; }
         next->width = width;
         next->height = height;
         state_ = std::move(next);
     }
     auto state = state_;
     if (auto* frame = commands.frameContext()) { frame->retain(state); }
+    state->parameters.reset();
+    for (auto& candidate : state->parameterPool) {
+        if (candidate.use_count() == 1) { state->parameters = candidate; break; }
+    }
+    if (!state->parameters) {
+        std::unique_ptr<Buffer> buffer;
+        auto allocated = device.createBuffer({.size = sizeof(ScreenSpaceShadowParameters),
+            .structureStride = sizeof(ScreenSpaceShadowParameters), .usage = BufferUsageBits::Storage,
+            .memoryLocation = MemoryLocation::HostUpload}, buffer);
+        if (!allocated) { return allocated; }
+        state->parameters = std::move(buffer);
+        state->parameterPool.push_back(state->parameters);
+    }
+    if (auto* frame = commands.frameContext()) { frame->retain(state->parameters); }
     auto result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>([] {},
         [state] { state->cancelled = true; }));
     if (!result) { return result; }

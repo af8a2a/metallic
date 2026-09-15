@@ -101,6 +101,7 @@ private:
     // programs; failed/discarded reloads must not change either recording path.
     std::vector<uint32_t> programSpirv_;
     std::shared_ptr<Resources> resources_;
+    std::vector<std::shared_ptr<Resources>> resourcePool_;
     std::shared_ptr<SubmissionTransaction> publication_;
     ClusterLightGridSnapshot snapshot_;
     uint64_t nextBuildRevision_ = 1;

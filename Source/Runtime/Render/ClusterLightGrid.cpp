@@ -272,15 +272,23 @@ Result ClusterLightGrid::record(Device& device, CommandBuffer& commands, RenderS
     const std::array<uint64_t, 5> sizes{sizeof(params), lightData.size() * sizeof(GpuPunctualLight),
         candidates.size() * sizeof(uint32_t), cellCount * sizeof(ClusterLightGridCell),
         cellCount * desc.maxLightsPerCell * sizeof(uint32_t)};
-    // Reuse only after the full submission (including every consumer) completed.
-    bool reuse = frame != nullptr && resources_ != nullptr &&
-        resources_->completion.valid() && resources_->completion.isComplete();
-    if (reuse) {
+    // In overlapped recording the newest snapshot is normally still in flight.
+    // Reuse an older completed slot instead of allocating a whole grid per frame.
+    const auto reusable = [&](const std::shared_ptr<Resources>& candidate) {
+        if (!frame || !candidate || candidate->cancelled || !candidate->completion.valid() ||
+            !candidate->completion.isComplete()) { return false; }
         for (size_t index = 0; index < sizes.size(); ++index) {
-            reuse &= resources_->buffers[index]->desc().size >= sizes[index];
+            if (candidate->buffers[index]->desc().size < sizes[index]) { return false; }
         }
+        return true;
+    };
+    auto next = reusable(resources_) ? resources_ : std::shared_ptr<Resources>{};
+    if (!next && frame) {
+        const auto slot = std::find_if(resourcePool_.begin(), resourcePool_.end(), reusable);
+        if (slot != resourcePool_.end()) { next = *slot; }
     }
-    auto next = reuse ? resources_ : std::make_shared<Resources>();
+    const bool reuse = next != nullptr;
+    if (!next) { next = std::make_shared<Resources>(); }
     for (size_t index = 0; index < sizes.size(); ++index) {
         if (!reuse) {
             std::unique_ptr<Buffer> buffer;
@@ -333,7 +341,13 @@ Result ClusterLightGrid::record(Device& device, CommandBuffer& commands, RenderS
         {.buffer = next->buffers[3].get(), .before = ResourceState::General, .after = ResourceState::ShaderRead},
         {.buffer = next->buffers[4].get(), .before = ResourceState::General, .after = ResourceState::ShaderRead}}};
     commands.barrier({.buffers = toRead.data(), .bufferCount = static_cast<uint32_t>(toRead.size())});
-    if (resources_ != next) { host.retire(resources_); }
+    if (frame && !reuse) {
+        std::erase_if(resourcePool_, [&](const auto& candidate) {
+            return candidate->completion.isComplete() && !reusable(candidate);
+        });
+        resourcePool_.push_back(next);
+    }
+    if (resources_ != next && (!frame || !resources_ || !resources_->completion.valid())) { host.retire(resources_); }
     resources_ = std::move(next);
     publication_ = std::move(publication);
     snapshot_ = {.parameters = resources_->buffers[0].get(), .lights = resources_->buffers[1].get(),
@@ -372,6 +386,8 @@ Result ClusterLightGrid::prepareShaderReload(Device& device,
 
 void ClusterLightGrid::clear(RenderSubsystemHost* host)
 {
+    if (host != nullptr) { for (auto& resource : resourcePool_) { host->retire(resource); } }
+    resourcePool_.clear();
     if (host != nullptr) { host->retire(resources_); }
     resources_.reset();
     publication_.reset();

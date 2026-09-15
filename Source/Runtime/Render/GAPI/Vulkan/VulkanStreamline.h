@@ -42,6 +42,11 @@ StreamlineReflexStatus streamlineReflexStatus();
 Result setStreamlineReflexOptions(const StreamlineReflexOptions& options);
 void setStreamlineLatencyMarker(StreamlineLatencyMarker marker);
 
+// Offscreen evaluations do not pass through vkQueuePresentKHR. Advance the
+// common plugin's frame bookkeeping once after submitting each such frame.
+// Never call this in addition to an actual interposed presentation.
+Result notifyStreamlineOffscreenFrame();
+
 // One scope per application frame, before input polling. DLSS evaluations inside
 // the scope share its token. Offscreen callers can continue evaluating without it.
 // Must be externally serialized with device lifetime and other frame scopes.

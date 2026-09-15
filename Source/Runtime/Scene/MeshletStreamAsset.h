@@ -34,6 +34,7 @@ enum class MeshletStreamPayloadFormat : uint32_t {
     Float32x2 = 1,
     Float32x4 = 2,
     Uint32 = 3,
+    Float32x3 = 4,
 };
 
 struct MeshletStreamBounds {
@@ -135,6 +136,21 @@ struct MeshletStreamPageInfo {
     // explicitly so independent/resumed builds produce identical file bytes.
     uint32_t reserved0 = 0;
 };
+
+// Disk metadata keeps the original uncompressed size. Legacy float4 pages are
+// compacted at decode time, without changing their on-disk cache or XYZ bits.
+inline constexpr uint32_t kMeshletStreamPayloadCompactPositions = 1u;
+inline constexpr uint32_t meshletStreamPositionStride(uint32_t format)
+{
+    return format == static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x3) ? 12u :
+        format == static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4) ? 16u : 0u;
+}
+inline constexpr uint64_t meshletStreamDevicePayloadSize(const MeshletStreamPageInfo& page)
+{
+    const uint64_t savings = (page.payloadFlags & kMeshletStreamPayloadCompactPositions) != 0u
+        ? 0u : (uint64_t(page.vertexCount) * 4u & ~uint64_t(15));
+    return savings <= page.uncompressedSize ? page.uncompressedSize - savings : 0u;
+}
 
 struct MeshletStreamPayloadHeader {
     uint32_t magic = 0;

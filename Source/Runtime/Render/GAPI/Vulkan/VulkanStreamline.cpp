@@ -52,6 +52,10 @@ struct StreamlineState {
     bool descriptorHeapWorkaroundEnabled = false;
     uint32_t frameIndex = 1;
     sl::FrameToken* activeFrameToken = nullptr;
+    using PresentHook = VkResult (*)(VkQueue, const VkPresentInfoKHR*, bool&);
+    using AfterPresentHook = VkResult (*)();
+    PresentHook offscreenPresent = nullptr;
+    AfterPresentHook offscreenAfterPresent = nullptr;
 #if METALLIC_HAS_NV_LOW_LATENCY
     PFun_slReflexSleep* reflexSleep = nullptr;
     PFun_slReflexSetOptions* reflexSetOptions = nullptr;
@@ -1183,6 +1187,32 @@ Result setStreamlineReflexOptions(const StreamlineReflexOptions& options)
     }
     // Apply before the next sleep, rather than changing settings midway through a frame.
     state.reflexStatus.options = options;
+    return {};
+#else
+    return makeError(Error::Unsupported);
+#endif
+}
+
+Result notifyStreamlineOffscreenFrame()
+{
+#if METALLIC_HAS_STREAMLINE
+    std::lock_guard lock(streamlineMutex());
+    auto& state = streamlineState();
+    if (!state.initialized || !state.vulkanDeviceSet) { return makeError(Error::Unsupported); }
+    if (!state.offscreenPresent || !state.offscreenAfterPresent) {
+        void* present = nullptr;
+        void* afterPresent = nullptr;
+        if (slGetFeatureFunction(sl::kFeatureCommon, "slHookVkPresent", present) != sl::Result::eOk ||
+            slGetFeatureFunction(sl::kFeatureCommon, "slHookVkAfterPresent", afterPresent) != sl::Result::eOk ||
+            !present || !afterPresent) { return makeError(Error::Unsupported); }
+        state.offscreenPresent = reinterpret_cast<StreamlineState::PresentHook>(present);
+        state.offscreenAfterPresent = reinterpret_cast<StreamlineState::AfterPresentHook>(afterPresent);
+    }
+    // The common Vulkan hook explicitly accepts a null presentation (no swapchain).
+    // It performs bookkeeping/garbage collection; it does not submit or present.
+    bool skip = false;
+    if (state.offscreenPresent(VK_NULL_HANDLE, nullptr, skip) != VK_SUCCESS ||
+        state.offscreenAfterPresent() != VK_SUCCESS) { return makeError(Error::Failure); }
     return {};
 #else
     return makeError(Error::Unsupported);

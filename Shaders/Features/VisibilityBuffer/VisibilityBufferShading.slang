@@ -121,6 +121,7 @@ static const uint kStreamPayloadAttributeTexcoord0 = 1u << 2u;
 static const uint kStreamPayloadAttributeTangent = 1u << 4u;
 static const uint kStreamPayloadFormatFloat32x2 = 1u;
 static const uint kStreamPayloadFormatFloat32x4 = 2u;
+static const uint kStreamPayloadFormatFloat32x3 = 4u;
 static const uint kStreamInvalidDeviceOffset = 0xffffffffu;
 static const uint kStreamStateResident = 2u;
 static const uint kStreamStateLockedFallback = 3u;
@@ -409,6 +410,12 @@ uint streamDeferredReadByte(StructuredBuffer<uint> words, uint byteOffset)
     return (word >> ((byteOffset & 3u) * 8u)) & 0xffu;
 }
 
+float3 streamDeferredLoadPosition(StructuredBuffer<uint> words, uint pageWord, uint offsetBytes, uint index, uint format)
+{
+    uint base = pageWord + offsetBytes / 4u + index * (format == kStreamPayloadFormatFloat32x3 ? 3u : 4u);
+    return asfloat(uint3(words[base], words[base + 1u], words[base + 2u]));
+}
+
 float4 streamDeferredLoadFloat4(
     StructuredBuffer<uint> words,
     uint pageWord,
@@ -597,7 +604,7 @@ bool decodeStreamDeferredSurface(
     bool hasTexcoords = (attributeFlags & kStreamPayloadAttributeTexcoord0) != 0u;
     bool hasTangents = (attributeFlags & kStreamPayloadAttributeTangent) != 0u;
     if ((attributeFlags & kStreamPayloadAttributePosition) == 0u ||
-        positionFormat != kStreamPayloadFormatFloat32x4 ||
+        (positionFormat != kStreamPayloadFormatFloat32x4 && positionFormat != kStreamPayloadFormatFloat32x3) ||
         (clusterOffsetBytes & 3u) != 0u ||
         (positionOffsetBytes & 3u) != 0u ||
         !streamDeferredArrayRangeValid(
@@ -608,7 +615,7 @@ bool decodeStreamDeferredSurface(
         !streamDeferredArrayRangeValid(
             positionOffsetBytes,
             payloadVertexCount,
-            16u,
+            positionFormat == kStreamPayloadFormatFloat32x3 ? 12u : 16u,
             payloadBytes) ||
         !streamDeferredRangeValid(
             triangleOffsetBytes,
@@ -668,21 +675,21 @@ bool decodeStreamDeferredSurface(
     }
 
     uint3 vertexIndices = vertexOffset + localIndices;
-    float3 local0 = streamDeferredLoadFloat4(
+    float3 local0 = streamDeferredLoadPosition(
         pageWords,
         pageWord,
         positionOffsetBytes,
-        vertexIndices.x).xyz;
-    float3 local1 = streamDeferredLoadFloat4(
+        vertexIndices.x, positionFormat);
+    float3 local1 = streamDeferredLoadPosition(
         pageWords,
         pageWord,
         positionOffsetBytes,
-        vertexIndices.y).xyz;
-    float3 local2 = streamDeferredLoadFloat4(
+        vertexIndices.y, positionFormat);
+    float3 local2 = streamDeferredLoadPosition(
         pageWords,
         pageWord,
         positionOffsetBytes,
-        vertexIndices.z).xyz;
+        vertexIndices.z, positionFormat);
     SceneTransform transform = streamDeferredTransform(group);
     float3 world0 = transformPoint(transform, local0);
     float3 world1 = transformPoint(transform, local1);

@@ -706,6 +706,112 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(StreamClasEvictionTest);
 
+class StreamBlasCacheTest final : public RhiTest {
+public:
+    StreamBlasCacheTest() { type = RhiTestType::Rendering; name = "stream_blas_cut_cache"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        std::unique_ptr<Device> device;
+        const auto created = createDevice({.applicationName = "Stream BLAS reuse regression",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .enableShaderObject = true, .enableRayTracingAccelerationStructure = true,
+            .enableRayQuery = true, .enableClusterAccelerationStructure = true}, device);
+        if (!created) { return hasError(created, Error::Unsupported) ? RhiTestResult::skip("CLAS unavailable")
+            : RhiTestResult::fail("Device creation failed"); }
+        const auto path = std::filesystem::absolute(context.outputDirectory / "blas_cache.meshstream.bin");
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(path, asset, scene::MeshletStreamPayloadCompression::ByteRle);
+        if (!built.passed) { return built; }
+        const auto require = [](bool condition, const std::string& reason) {
+            if (!condition) { throw std::runtime_error(reason); }
+        };
+        try {
+            MeshletStreamRuntime runtime;
+            runtime.setDebugReadbackEnabled(true);
+            std::string log;
+            require(bool(runtime.initialize(*device, {.sourcePath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf",
+                .streamAssetPath = path, .maxResidentBytes = 16ull << 20, .maxResidentPages = 1024,
+                .maxPageUploadsPerFrame = 256, .maxGpuPageRequests = 1024, .maxGpuPageUnloadRequests = 1024,
+                .maxActiveGroups = 2048, .maxTraversalWorkers = 64, .maxTraversalWorkItems = 4096,
+                .pageLoadConcurrency = 0, .maxPageLoadsInFlight = 256, .queuedFrameCount = 2,
+                .enableClusterRtx = true, .enableClas = true, .compactClas = true,
+                .maxClasBytes = 16ull << 20, .maxClasBuildClusters = 4096,
+                .maxBlasClusterReferences = 4096, .maxBlasBytes = 16ull << 20, .maxBlasBuilds = 4,
+                .maxFallbackBlasBytes = 4ull << 20, .prefetchPages = false}, log)), log);
+            auto* queue = device->getQueue(QueueType::Graphics);
+            QueueSubmissionTracker tracker;
+            RenderFrameContext frame;
+            std::unique_ptr<CommandPool> pool;
+            std::unique_ptr<CommandBuffer> commands;
+            std::unique_ptr<Streamer> streamer;
+            std::unique_ptr<Buffer> readback;
+            require(bool(tracker.initialize(*device, *queue)) && bool(device->createCommandPool(*queue, pool)) &&
+                bool(pool->createCommandBuffer(commands)) && bool(device->createStreamer(makeTestStreamerDesc(), streamer)) &&
+                bool(device->createBuffer({.size = sizeof(MeshletStreamGpuBlasHeader), .usage = BufferUsageBits::TransferDestination,
+                    .memoryLocation = MemoryLocation::HostReadback}, readback)), "Frame resources failed");
+            MeshletStreamFrameDesc view{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
+            view.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f}, .znear = .001f, .zfar = 10.f};
+            uint64_t frameId = 0;
+            MeshletStreamGpuBlasHeader header;
+            const auto record = [&](bool cancel = false) {
+                require(bool(frame.begin(++frameId)) && bool(pool->reset()) && bool(commands->begin(&frame)) &&
+                    bool(streamer->beginFrame(frame)), "Frame begin failed");
+                require(bool(runtime.cmdBeginFrame(*commands, *streamer, view)), "Stream begin failed");
+                commands->copyStreamedData(*streamer);
+                require(bool(runtime.cmdPreTraversal(*commands, view)) && bool(runtime.cmdPostTraversal(*commands)) &&
+                    bool(runtime.cmdEndFrame(*commands)), "Stream traversal failed");
+                std::vector<DebugResourceBinding> bindings;
+                runtime.appendDebugBindings(bindings, "test.");
+                const auto found = std::find_if(bindings.begin(), bindings.end(), [](const auto& binding) { return binding.id == "test.blasHeader"; });
+                require(found != bindings.end(), "BLAS telemetry missing");
+                BufferBarrierDesc barrier{.buffer = found->buffer, .before = found->state, .after = ResourceState::TransferSource};
+                commands->barrier({.buffers = &barrier, .bufferCount = 1});
+                commands->copyBuffer({.source = found->buffer, .destination = readback.get(), .size = sizeof(header)});
+                std::swap(barrier.before, barrier.after);
+                commands->barrier({.buffers = &barrier, .bufferCount = 1});
+                require(bool(commands->end()), "Frame end failed");
+                if (cancel) { frame.cancel(); streamer->endFrame(); return; }
+                CommandBuffer* list[] = {commands.get()};
+                require(bool(tracker.submit({.commandBuffers = list, .commandBufferCount = 1}, frame)) &&
+                    bool(frame.wait(5000000000ull)), "Frame submit failed");
+                streamer->endFrame();
+                readback->invalidate();
+                const auto* data = readback->map();
+                require(data != nullptr, "BLAS readback failed");
+                std::memcpy(&header, data, sizeof(header));
+                readback->unmap();
+            };
+            uint32_t builds = 0, reused = 0;
+            for (uint32_t i = 0; i < 100; ++i) {
+                record();
+                builds += header.blasBuildCount;
+                reused += i >= 90 && header.padding0 == 0 && header.blasBuildCount == 0;
+            }
+            require(builds > 0 && reused == 10 && header.padding1 > 0 && runtime.tlasReady(), "Stable geometry did not reuse a built BLAS");
+            view.selectedLodLevel = 2;
+            record();
+            require(header.padding0 != 0, "Changed cut reused stale BLAS");
+            view.selectedLodLevel = 0;
+            record(); record();
+            require(header.padding0 == 0, "Restored cut did not settle");
+            view.selectedLodLevel = 2;
+            record(true);
+            view.selectedLodLevel = 0;
+            record();
+            require(header.padding0 != 0 && header.blasBuildCount > 0, "Cancelled recording poisoned BLAS cache");
+            record();
+            require(header.padding0 == 0, "Retry did not restore reuse");
+            const uint32_t page = runtime.residency().residentPages().front();
+            runtime.clasPool()->retirePages(std::span(&page, 1));
+            record();
+            require(header.padding0 != 0, "Retired CLAS did not invalidate cached references");
+            return RhiTestResult::pass("Stable cut reuse, changed LOD, cancellation and CLAS retirement invalidation");
+        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamBlasCacheTest);
+
 
 class StreamerBufferUploadTest : public RhiTest {
 public:

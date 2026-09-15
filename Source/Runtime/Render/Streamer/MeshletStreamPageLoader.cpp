@@ -32,12 +32,16 @@ struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStrea
                         devicePayload,
                         result.failureReason) ||
                     devicePayload.empty() ||
-                    devicePayload.size() != page.uncompressedSize) {
+                    devicePayload.size() != scene::meshletStreamDevicePayloadSize(page)) {
                     if (result.failureReason.empty()) {
                         result.failureReason = "stream page payload decode produced an invalid size";
                     }
                 } else {
-                    result.payload.assign(devicePayload.begin(), devicePayload.end());
+                    if (devicePayload.data() == decodeStorage.data()) {
+                        result.payload = std::move(decodeStorage);
+                    } else {
+                        result.payload.assign(devicePayload.begin(), devicePayload.end());
+                    }
                 }
             }
         } catch (const std::exception& exception) {

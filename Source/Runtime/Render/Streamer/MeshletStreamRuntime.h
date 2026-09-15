@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime/Render/RenderFrameContext.h"
+
 #include <unordered_set>
 
 #include "Runtime/Render/GPUDrivenRaster.h"
@@ -387,6 +389,7 @@ struct MeshletStreamUserPush {
     uint32_t rasterBindingsBuffer = UINT32_MAX;
     uint32_t hybridQueueBuffer = UINT32_MAX;
     uint32_t hybridClusterBuffer = UINT32_MAX;
+    uint32_t clasPublicationRevision = 0;
 };
 
 static_assert(sizeof(MeshletStreamGpuActiveHeader) == 32);
@@ -405,7 +408,7 @@ static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGpuParams) == 384);
 static_assert(sizeof(MeshletStreamGpuRasterBindings) == 80);
-static_assert(sizeof(MeshletStreamUserPush) == 120);
+static_assert(sizeof(MeshletStreamUserPush) == 124);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -530,6 +533,14 @@ public:
 
 private:
     CpuProfileRecorder beginFrameCpuProfile_;
+    std::shared_ptr<bool> blasCacheInitialized_ = std::make_shared<bool>(false);
+    struct FrameUploads {
+        std::unique_ptr<Buffer> params, raster, clear;
+        BindlessHandle paramsHandle, rasterHandle;
+        GpuCompletionPoint completion;
+    };
+    std::vector<FrameUploads> frameUploads_;
+    uint32_t currentUploadSlot_ = 0;
     struct FallbackBlasPrimitive {
         uint32_t primitiveIndex = 0;
         uint32_t referenceCount = 0;

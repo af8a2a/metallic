@@ -16,7 +16,13 @@ uint64_t compactAlign(uint64_t bytes, uint64_t alignment)
 }
 constexpr auto kCompactBufferUsage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress |
                                      BufferUsageBits::AccelerationStructureStorage |
-                                     BufferUsageBits::AccelerationStructureBuildInput;
+                                     BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::TransferSource |
+                                     BufferUsageBits::TransferDestination;
+void publicationBarrier(CommandBuffer& cmd, Buffer& buffer, ResourceState before, ResourceState after)
+{
+    const BufferBarrierDesc barrier{.buffer = &buffer, .before = before, .after = after};
+    cmd.barrier({.buffers = &barrier, .bufferCount = 1});
+}
 } // namespace
 
 struct MeshletStreamCompactClasPool::Impl {
@@ -59,28 +65,86 @@ struct MeshletStreamCompactClasPool::Impl {
     uint32_t maxBuild = 0, queuedFrames = 0;
     bool initialized = false;
     std::string error;
+    struct Publication {
+        uint64_t revision = 0;
+        MeshletStreamClasPageEntry entry;
+        uint32_t addressOffset = 0;
+        std::vector<uint64_t> addresses;
+    };
+    using Publications = std::unordered_map<uint32_t, Publication>;
+    // Shared with cancellation callbacks; never capture a pool's lifetime.
+    std::shared_ptr<Publications> publications = std::make_shared<Publications>();
 
     Result buffer(uint64_t bytes, MemoryLocation location, std::unique_ptr<Buffer>& output)
     {
         return device->createBuffer(
             {.size = std::max(bytes, uint64_t(8)), .usage = kCompactBufferUsage, .memoryLocation = location}, output);
     }
-    void publish(uint32_t id, const Page* page)
+    void publish(uint32_t id, const Page* page, bool orderedMove = false)
     {
-        MeshletStreamClasPageEntry entry;
-        if (page && page->state != State::Pending) {
-            entry.addressOffsetAndState = packMeshletStreamClasPageEntry(
+        Publication update;
+        update.revision = ++stats.publicationRevision;
+        if (page && (page->state != State::Pending || orderedMove)) {
+            update.entry.addressOffsetAndState = packMeshletStreamClasPageEntry(
                 uint32_t(page->addresses.offset), page->state == State::Active ? MeshletStreamClasPageState::Active
-                                                                               : MeshletStreamClasPageState::Retiring);
+                    : orderedMove ? MeshletStreamClasPageState::Active : MeshletStreamClasPageState::Retiring);
+            update.addressOffset = uint32_t(page->addresses.offset);
+            for (uint32_t offset : page->offsets) {
+                update.addresses.push_back(storageBuffer->deviceAddress() + page->allocation.offset + offset);
+            }
         }
-        void* mapped = pageTable->map();
-        if (!mapped) {
-            error = "Compact CLAS page table map failed";
-            return;
+        (*publications)[id] = std::move(update);
+    }
+    Result flushPublications(CommandBuffer& cmd)
+    {
+        if (publications->empty()) { return {}; }
+        auto updates = std::make_shared<Publications>(*publications);
+        uint64_t bytes = 0;
+        for (const auto& [id, update] : *updates) { bytes += update.addresses.size() * 8u + 8u; }
+        std::unique_ptr<Buffer> staging;
+        auto result = buffer(bytes, MemoryLocation::HostUpload, staging);
+        if (!result) { return result; }
+        auto upload = std::shared_ptr<Buffer>(std::move(staging));
+        auto* mapped = static_cast<uint8_t*>(upload->map());
+        if (!mapped) { return makeError(Error::Failure); }
+        uint64_t offset = 0;
+        for (const auto& [id, update] : *updates) {
+            const uint64_t size = update.addresses.size() * 8u;
+            if (size) { std::memcpy(mapped + offset, update.addresses.data(), size); }
+            std::memcpy(mapped + offset + size, &update.entry, sizeof(update.entry));
+            offset += size + 8u;
         }
-        std::memcpy(static_cast<uint8_t*>(mapped) + uint64_t(id) * sizeof(entry), &entry, sizeof(entry));
-        pageTable->flush(uint64_t(id) * sizeof(entry), sizeof(entry));
-        pageTable->unmap();
+        upload->flush();
+        upload->unmap();
+        result = cmd.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(nullptr,
+            [pending = publications, updates] {
+                for (const auto& [id, update] : *updates) {
+                    auto it = pending->find(id);
+                    if (it == pending->end() || it->second.revision < update.revision) { (*pending)[id] = update; }
+                }
+            }));
+        if (!result) { return result; }
+        cmd.frameContext()->retain(upload);
+        for (Buffer* target : {addresses.get(), pageTable.get()}) {
+            publicationBarrier(cmd, *target, ResourceState::General, ResourceState::TransferDestination);
+        }
+        publicationBarrier(cmd, *upload, ResourceState::Undefined, ResourceState::TransferSource);
+        offset = 0;
+        for (const auto& [id, update] : *updates) {
+            const uint64_t size = update.addresses.size() * 8u;
+            if (size) {
+                cmd.copyBuffer({.source = upload.get(), .destination = addresses.get(), .sourceOffset = offset,
+                    .destinationOffset = uint64_t(update.addressOffset) * 8u, .size = size});
+            }
+            cmd.copyBuffer({.source = upload.get(), .destination = pageTable.get(), .sourceOffset = offset + size,
+                .destinationOffset = uint64_t(id) * 4u, .size = 4u});
+            offset += size + 8u;
+        }
+        for (Buffer* target : {addresses.get(), pageTable.get()}) {
+            publicationBarrier(cmd, *target, ResourceState::TransferDestination, ResourceState::General);
+        }
+        publications->clear();
+        return {};
     }
     void release(Page& page)
     {
@@ -166,6 +230,7 @@ struct MeshletStreamCompactClasPool::Impl {
                     auto& page = pages.at(item.page);
                     if (cancelled) {
                         release(page);
+                        publish(item.page, nullptr);
                         item.moving = false;
                         continue;
                     }
@@ -173,23 +238,11 @@ struct MeshletStreamCompactClasPool::Impl {
                         discard(item.page);
                         continue;
                     }
-                    // The move is complete before any shared address is visible,
-                    // including to traversals of older frames still in flight.
-                    auto* mapped = static_cast<uint64_t*>(addresses->map());
-                    if (!mapped) {
-                        error = "Compact CLAS address map failed";
-                        return;
-                    }
-                    for (uint32_t i = 0; i < page.offsets.size(); ++i) {
-                        mapped[page.addresses.offset + i] =
-                            storageBuffer->deviceAddress() + page.allocation.offset + page.offsets[i];
-                    }
-                    addresses->flush(page.addresses.offset * 8, page.offsets.size() * 8);
-                    addresses->unmap();
+                    // GPU publication was ordered directly after MOVE. Only CPU
+                    // ownership/statistics wait for the completion here.
                     page.state = State::Active;
                     ++stats.builtPageCount;
                     stats.builtClusterCount += uint32_t(page.offsets.size());
-                    publish(item.page, &page);
                 }
                 std::erase_if(batch.items, [](const auto& item) { return item.moving; });
             }
@@ -447,6 +500,7 @@ Result MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer& g
         }
         for (const auto& item : batch.items) {
             if (item.moving) {
+                p.publish(item.page, &p.pages.at(item.page), true);
                 ++p.stats.frameMovedPageCount;
                 p.stats.frameMovedClusterCount += uint32_t(item.sizes.size());
             }
@@ -457,7 +511,7 @@ Result MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer& g
     auto freeBatch =
         std::find_if(p.batches.begin(), p.batches.end(), [](const auto& b) { return b.phase == Impl::Phase::Free; });
     if (freeBatch == p.batches.end()) {
-        return {};
+        return p.flushPublications(cmd);
     }
     auto& batch = *freeBatch;
     std::vector<MeshletStreamClasPageBuild> builds;
@@ -481,7 +535,7 @@ Result MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer& g
         count += clusters;
     }
     if (builds.empty()) {
-        return {};
+        return p.flushPublications(cmd);
     }
     batch.builder->beginFrame();
     auto result = batch.builder->cmdBuildPages(cmd, geometry, builds, log, batch.sizes.get());
@@ -504,7 +558,7 @@ Result MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer& g
     p.stats.frameBuiltClusterCount += count;
     p.stats.totalBuiltPageCount += builds.size();
     p.stats.totalBuiltClusterCount += count;
-    return {};
+    return p.flushPublications(cmd);
 }
 
 void MeshletStreamCompactClasPool::retirePages(std::span<const uint32_t> ids)

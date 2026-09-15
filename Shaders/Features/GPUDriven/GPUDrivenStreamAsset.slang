@@ -16,6 +16,7 @@ static const uint kPayloadAttributeTexcoord0 = 1u << 2u;
 static const uint kPayloadAttributeTangent = 1u << 4u;
 static const uint kPayloadFormatFloat32x2 = 1u;
 static const uint kPayloadFormatFloat32x4 = 2u;
+static const uint kPayloadFormatFloat32x3 = 4u;
 static const uint kInvalidStreamDeviceOffset = 0xffffffffu;
 static const uint kInvalidClusterIndex = 0xffffffffu;
 static const uint kUnloadClusterIndex = 0xfffffffeu;
@@ -107,6 +108,7 @@ struct GPUDrivenStreamAssetPush
     uint rasterBindingsBuffer;
     uint hybridQueueBuffer;
     uint hybridClusterBuffer;
+    uint clasPublicationRevision;
 };
 
 struct GPUDrivenStreamAssetRasterBindings
@@ -2824,19 +2826,45 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
     uint itemIndex = dispatchThreadID.x;
 
+    uint activeCount = min(activeHeader[0].activeGroupCount, activeHeader[0].activeGroupCapacity);
+
     if (push.activeBuildPhase == kBlasInputPhaseReset) {
         if (itemIndex == 0u) {
+            GPUDrivenStreamAssetBlasHeader previous = (GPUDrivenStreamAssetBlasHeader)0;
+            if (push.traversalPhase == 0u) { previous = blasHeader[0]; }
             GPUDrivenStreamAssetBlasHeader header;
             header.clusterReferenceCount = 0u;
             header.blasBuildCount = 0u;
             header.clusterReferenceCapacity = params.blasClusterReferenceCapacity;
             header.overflowCount = 0u;
             header.frameIndex = params.frameIndex;
-            header.padding0 = 0u;
-            header.padding1 = 0u;
-            header.padding2 = 0u;
+            header.padding0 = push.traversalPhase != 0u || previous.padding1 != activeCount ||
+                previous.padding2 != push.clasPublicationRevision ? 1u : 0u;
+            header.padding1 = activeCount;
+            header.padding2 = push.clasPublicationRevision;
             blasHeader[0] = header;
         }
+        return;
+    }
+
+    // Stable active-group order makes this an exact comparison, with no hashes
+    // or readback. Transforms do not change object-space BLAS geometry.
+    if (push.activeBuildPhase == 4u) {
+        if (itemIndex < activeCount) {
+            DescriptorHandle<RWStructuredBuffer<uint4>> cacheHandle =
+                DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(push.bufferShaderIndexBase + push.blasHeaderBuffer, 0));
+            RWStructuredBuffer<uint4> cache = cacheHandle;
+            GPUDrivenStreamAssetActiveGroup group = activeGroups[itemIndex];
+            uint4 key = uint4(group.instanceIndex, group.pageIndex, group.clusterSelectionMask, group.clusterCount);
+            if (push.traversalPhase == 0u && any(cache[2u + itemIndex] != key)) {
+                InterlockedOr(blasHeader[0].padding0, 1u);
+            }
+            cache[2u + itemIndex] = key;
+        }
+        return;
+    }
+    if (blasHeader[0].padding0 == 0u) { return; }
+    if (push.activeBuildPhase == 5u) {
         if (itemIndex < params.sceneInstanceCount) {
             GPUDrivenStreamAssetInstanceBlas info = instanceBlas[itemIndex];
             info.selectedClusterCount = 0u;
@@ -2850,7 +2878,6 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         return;
     }
 
-    uint activeCount = min(activeHeader[0].activeGroupCount, activeHeader[0].activeGroupCapacity);
     if (push.activeBuildPhase == kBlasInputPhaseCount) {
         if (itemIndex >= activeCount) {
             return;
@@ -3032,6 +3059,7 @@ struct StreamRasterCluster
     GPUDrivenStreamAssetActiveGroup group;
     uint pageWord;
     uint positionOffsetBytes;
+    uint positionStrideWords;
     uint vertexOffset;
     uint vertexCount;
     uint triangleCount;
@@ -3155,7 +3183,7 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     uint positionFormat = pageWords[pageWord + 20u];
     if (clusterIndex >= clusterCount ||
         (attributeFlags & kPayloadAttributePosition) == 0u ||
-        positionFormat != kPayloadFormatFloat32x4) {
+        (positionFormat != kPayloadFormatFloat32x4 && positionFormat != kPayloadFormatFloat32x3)) {
         return false;
     }
 
@@ -3172,7 +3200,7 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
         !streamPayloadArrayRangeValid(
             positionOffsetBytes,
             payloadVertexCount,
-            16u,
+            positionFormat == kPayloadFormatFloat32x3 ? 12u : 16u,
             payloadBytes) ||
         !streamPayloadRangeValid(
             triangleOffsetBytes,
@@ -3278,6 +3306,7 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     output.group = group;
     output.pageWord = pageWord;
     output.positionOffsetBytes = positionOffsetBytes;
+    output.positionStrideWords = positionFormat == kPayloadFormatFloat32x3 ? 3u : 4u;
     output.vertexOffset = vertexOffset;
     output.vertexCount = vertexCount;
     output.triangleCount = clusterTriangleCount;
@@ -3291,7 +3320,7 @@ float4 streamClusterClip(StreamRasterCluster c, uint vertex, GPUDrivenStreamAsse
 {
     DescriptorHandle<StructuredBuffer<uint>> pages =
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
-    uint word = c.pageWord + c.positionOffsetBytes / 4u + (c.vertexOffset + vertex) * 4u;
+    uint word = c.pageWord + c.positionOffsetBytes / 4u + (c.vertexOffset + vertex) * c.positionStrideWords;
     float3 local = float3(asfloat(pages[word]), asfloat(pages[word + 1u]), asfloat(pages[word + 2u]));
     float3 world = c.group.world0.xyz * local.x + c.group.world1.xyz * local.y +
         c.group.world2.xyz * local.z + c.group.world3.xyz;
@@ -3547,8 +3576,8 @@ void streamClusterCullMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, 
     if (visible) {
         uint item = hybridStreamClassifyBase(base + offset);
         bins[item] = candidate;
-        bins[item + 1u] = cluster.pageWord + cluster.positionOffsetBytes / 4u + cluster.vertexOffset * 4u;
-        bins[item + 2u] = cluster.vertexCount | (cluster.triangleCount << 16u);
+        bins[item + 1u] = cluster.pageWord + cluster.positionOffsetBytes / 4u + cluster.vertexOffset * cluster.positionStrideWords;
+        bins[item + 2u] = cluster.vertexCount | (cluster.triangleCount << 16u) | (cluster.positionStrideWords == 3u ? 0x80000000u : 0u);
         bins[item + 3u] = cluster.triangleBaseByte;
     }
 }
@@ -3575,7 +3604,8 @@ void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, u
         g_StreamRasterCluster.group = groups[record / bins[13]];
         g_StreamRasterCluster.pageWord = bins[item + 1u];
         g_StreamRasterCluster.vertexCount = bins[item + 2u] & 0xffffu;
-        g_StreamRasterCluster.triangleCount = bins[item + 2u] >> 16u;
+        g_StreamRasterCluster.triangleCount = (bins[item + 2u] >> 16u) & 0x7fffu;
+        g_StreamRasterCluster.positionStrideWords = (bins[item + 2u] & 0x80000000u) != 0u ? 3u : 4u;
         g_StreamRasterCluster.triangleBaseByte = bins[item + 3u];
         g_StreamBinHardware = 0u;
     }
@@ -3663,6 +3693,12 @@ float3 streamPerspectiveBarycentrics(
         max(abs(clip2.w), 0.000001));
     float weight = weighted.x + weighted.y + weighted.z;
     return abs(weight) > 0.000001 ? weighted / weight : affine;
+}
+
+float3 loadPayloadPosition(StructuredBuffer<uint> words, uint pageWord, uint offsetBytes, uint index, uint format)
+{
+    uint base = pageWord + offsetBytes / 4u + index * (format == kPayloadFormatFloat32x3 ? 3u : 4u);
+    return asfloat(uint3(words[base], words[base + 1u], words[base + 2u]));
 }
 
 float4 loadPayloadFloat4(
@@ -3829,7 +3865,7 @@ void gpuDrivenStreamAssetDeferredMain(
     bool hasTexcoords = (attributeFlags & kPayloadAttributeTexcoord0) != 0u;
     bool hasTangents = (attributeFlags & kPayloadAttributeTangent) != 0u;
     if ((attributeFlags & kPayloadAttributePosition) == 0u ||
-        positionFormat != kPayloadFormatFloat32x4 ||
+        (positionFormat != kPayloadFormatFloat32x4 && positionFormat != kPayloadFormatFloat32x3) ||
         (clusterOffsetBytes & 3u) != 0u ||
         (positionOffsetBytes & 3u) != 0u ||
         !streamPayloadArrayRangeValid(
@@ -3840,7 +3876,7 @@ void gpuDrivenStreamAssetDeferredMain(
         !streamPayloadArrayRangeValid(
             positionOffsetBytes,
             payloadVertexCount,
-            16u,
+            positionFormat == kPayloadFormatFloat32x3 ? 12u : 16u,
             payloadBytes) ||
         !streamPayloadRangeValid(
             triangleOffsetBytes,
@@ -3902,9 +3938,9 @@ void gpuDrivenStreamAssetDeferredMain(
         return;
     }
     uint3 vertexIndices = vertexOffset + localIndices;
-    float3 local0 = loadPayloadFloat4(pageWords, pageWord, positionOffsetBytes, vertexIndices.x).xyz;
-    float3 local1 = loadPayloadFloat4(pageWords, pageWord, positionOffsetBytes, vertexIndices.y).xyz;
-    float3 local2 = loadPayloadFloat4(pageWords, pageWord, positionOffsetBytes, vertexIndices.z).xyz;
+    float3 local0 = loadPayloadPosition(pageWords, pageWord, positionOffsetBytes, vertexIndices.x, positionFormat);
+    float3 local1 = loadPayloadPosition(pageWords, pageWord, positionOffsetBytes, vertexIndices.y, positionFormat);
+    float3 local2 = loadPayloadPosition(pageWords, pageWord, positionOffsetBytes, vertexIndices.z, positionFormat);
     float3 world0 = group.world0.xyz * local0.x + group.world1.xyz * local0.y +
         group.world2.xyz * local0.z + group.world3.xyz;
     float3 world1 = group.world0.xyz * local1.x + group.world1.xyz * local1.y +

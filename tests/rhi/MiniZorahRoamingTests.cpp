@@ -9,6 +9,8 @@
 #include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/RenderView.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
+#include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Scene/Scene.h"
 
 #include <algorithm>
@@ -89,7 +91,7 @@ public:
             } else if (checkpoint == "AfterPass" && resource.id == "GPUDriven.rasterInfo") {
                 size = sizeof(VisibilityBufferFrameInfo); key = "rasterInfo";
             } else if (checkpoint == "AfterPass" && (resource.id == "streaming.GPUDriven.requestHeader" ||
-                resource.id == "streaming.GPUDriven.loadPriorities")) {
+                resource.id == "streaming.GPUDriven.loadPriorities" || resource.id == "streaming.GPUDriven.blasHeader")) {
                 size = resource.size; key = resource.id;
             }
             if (size == 0 || !resource.buffer) { continue; }
@@ -193,6 +195,7 @@ Json roamingMemory()
 // independently of how many non-background pixels happen to be on screen.
 Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAsset& asset, const Json& camera)
 {
+    const auto rasterInfo = observer.read<VisibilityBufferFrameInfo>("rasterInfo").front();
     const auto header = observer.read<MeshletStreamGpuActiveHeader>("header").at(0);
     const auto rows = observer.read<MeshletStreamGpuActiveGroup>("groups");
     checkRoam(header.activeGroupCount <= rows.size() && header.overflowCount < 2, "Invalid/empty capacity fallback");
@@ -231,7 +234,7 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
         camera.at("center")[2].get<float>() - view.eye[2]);
     direction = normalize(direction);
     view.forward = {direction.x, direction.y, direction.z, 0};
-    view.projection = {1080, std::tan(camera.at("fovDegrees").get<float>() * .00872664626f), 1, 1.5f};
+    view.projection = {float(rasterInfo.height), std::tan(camera.at("fovDegrees").get<float>() * .00872664626f), 1, 1.5f};
     for (uint32_t instance = 0; instance < asset.instanceCount(); ++instance) {
         const auto& masks = selected[instance];
         // MiniZorah metadata preserves the cache's primitive-instance order.
@@ -261,7 +264,7 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
                 }
                 // Measure only the referenced refinement's own error envelope;
                 // ancestor demand bounds deliberately contain additional descendants.
-                if (meshletLodBoundsVisible(bounds, metricInstance, view, {0, 1, 0}, 1920.f / 1080.f,
+                if (meshletLodBoundsVisible(bounds, metricInstance, view, {0, 1, 0}, float(rasterInfo.width) / rasterInfo.height,
                     camera.at("zfar").get<float>())) {
                     visibleOverTarget += error > 1.5001f;
                     visibleUnbounded += error > 1e30f;
@@ -628,6 +631,10 @@ public:
         };
         const bool clas = setting("METALLIC_MINIZORAH_BENCH_CLAS", 1) != 0;
         const bool quality = setting("METALLIC_MINIZORAH_BENCH_QUALITY", 0) != 0;
+        const bool realtime = setting("METALLIC_MINIZORAH_BENCH_REALTIME", 0) != 0;
+        if (realtime && !context.device.capabilities().streamlineDlssSr) {
+            return RhiTestResult::skip("Realtime replay requires --rhi-realtime and DLSS-SR");
+        }
         uint32_t frameCount = setting("METALLIC_MINIZORAH_BENCH_FRAMES", 8400);
         Json replay;
         Json report{{"protocol", "minizorah-fixed-v1"}, {"status", "running"},
@@ -637,6 +644,10 @@ public:
             {"timingScope", "Multi-frame offscreen GPUDriven + MaterialResolve; GPU graphics envelope includes async joins. CPU execute includes frame-slot wait. No UI, presentation, Streamline, Aftermath or timed-frame debug readback."},
             {"cacheScope", "New process/device GPU residency; existing cook, OS file cache and persistent PSO cache. Repeated route retains normal eviction policy."},
             {"quality", Json::array()}};
+        report["realtime"] = realtime;
+        if (realtime) {
+            report["timingScope"] = "Offscreen streamed realtime graph including BLAS/TLAS, shadows, deferred lighting, DLSS-SR, exposure and final blit. No UI/present or timed-frame output readback. CPU phase trace enabled in both baseline and candidate.";
+        }
         std::filesystem::create_directories(context.outputDirectory);
         const auto save = [&]() { std::ofstream(context.outputDirectory / "Baseline.json") << report.dump(2) << '\n'; };
         std::unique_ptr<Device> device;
@@ -655,10 +666,14 @@ public:
             checkRoam(frameCount >= 600 && frameCount <= 8400, "Baseline frame count must be 600..8400");
             RenderSampleLoadResult sample;
             std::string log;
-            checkRoam(loadBuiltInRenderSample("gpu-driven-minizorah-vbuffer", sample, log), log);
+            checkRoam(loadBuiltInRenderSample(realtime ? kDefaultGPUDrivenSampleId : "gpu-driven-minizorah-vbuffer", sample, log), log);
             auto graph = std::move(sample.graph);
-            graph.removeNode(graph.findNode("FinalBlit")->id);
-            graph.markOutput("MaterialResolve.color");
+            if (realtime) {
+                checkRoam(graph.renameNode(graph.findNode("VBuffer")->id, "GPUDriven"), "Cannot name replay producer");
+            } else {
+                graph.removeNode(graph.findNode("FinalBlit")->id);
+                graph.markOutput("MaterialResolve.color");
+            }
             graph.markOutput("GPUDriven.visibility");
             auto& props = graph.findNode("GPUDriven")->properties;
             props["enableClas"] = clas;
@@ -744,26 +759,46 @@ public:
             desc.enableRayQuery = true;
             desc.enableClusterAccelerationStructure = true;
             auto start = Clock::now();
-            const auto result = createDevice(desc, device);
-            checkRoam(bool(result), std::string("Baseline device: ") + toString(result));
+            if (!realtime) {
+                const auto result = createDevice(desc, device);
+                checkRoam(bool(result), std::string("Baseline device: ") + toString(result));
+            }
+            Device* replayDevice = realtime ? &context.device : device.get();
             report["deviceCreateMs"] = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
             RenderView view;
             checkRoam(view.setCameraProperties(original), "Invalid initial camera");
+            view.setTemporalJitter(realtime);
             scene::Scene runtimeScene;
+            RenderWorld world;
+            if (realtime) {
+                world.setEnvironment({.enabled = true, .path = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.environment->path});
+                scene::LightingSettings lighting;
+                lighting.autoExposure.enabled = true;
+                lighting.exposureEV100 = 2;
+                scene::PunctualLight sun;
+                sun.properties.type = "directional"; sun.properties.intensity = 10;
+                sun.direction = float3(.6f, -1, -.3f);
+                lighting.lights.push_back(sun);
+                world.setLighting(lighting);
+                report["lighting"] = {{"sunDirection", {.6f, -1.0f, -.3f}}, {"sunIntensity", 10},
+                    {"environment", sample.desc.environment->path}, {"autoExposure", true}};
+            }
             HistoryResourceManager history;
-            checkRoam(bool(history.initialize(*device)), "History initialization failed");
+            checkRoam(bool(history.initialize(*replayDevice)), "History initialization failed");
             RenderGraphExecutor executor;
             executor.bindRenderView(&view);
-            executor.bindRuntimeScene(&runtimeScene);
+            if (realtime) { executor.bindRenderWorld(&world); }
+            else { executor.bindRuntimeScene(&runtimeScene); }
             // Register transfer-readable debug resources before compilation. The
             // observer is detached during timed frames, so no copies are recorded.
             executor.setDebugObserver(&observer);
             start = Clock::now();
-            checkRoam(bool(executor.compile(*device, graph, 1920, 1080, log)), log);
+            checkRoam(bool(executor.compile(*replayDevice, graph, 1920, 1080, log)), log);
             report["compileMs"] = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
             struct Frame {
                 double executeMs = 0, hostMs = 0;
                 bool overlap = false;
+                std::map<std::string, double> cpuPhases;
                 RenderGraphExecutionStats stats;
             };
             std::vector<Frame> frames(frameCount);
@@ -781,9 +816,10 @@ public:
                 }
             };
             const auto submit = [&]() {
-                checkRoam(bool(executor.execute({.graphicsQueue = device->getQueue(QueueType::Graphics),
-                    .computeQueue = device->getQueue(QueueType::Compute), .historyResources = &history,
+                checkRoam(bool(executor.execute({.graphicsQueue = replayDevice->getQueue(QueueType::Graphics),
+                    .computeQueue = replayDevice->getQueue(QueueType::Compute), .historyResources = &history,
                     .slotWaitTimeoutNanoseconds = 30000000000ull})), "Baseline execute failed");
+                if (realtime) { checkRoam(bool(vulkan::notifyStreamlineOffscreenFrame()), "Streamline offscreen frame bookkeeping failed"); }
             };
             const auto checkpoint = [&](uint32_t f, const Json& camera, bool final) {
                 checkRoam(bool(executor.waitForSubmittedWork(30000000000ull)), "Checkpoint completion failed");
@@ -794,16 +830,24 @@ public:
                     const auto cut = validateRoamingCut(observer, asset, camera);
                     entry["cut"] = cut;
                     const auto info = observer.read<VisibilityBufferFrameInfo>("rasterInfo").front();
+                    entry["renderExtent"] = {info.width, info.height};
+                    if (realtime && observer.copies.contains("streaming.GPUDriven.blasHeader")) {
+                        const auto blas = observer.read<MeshletStreamGpuBlasHeader>("streaming.GPUDriven.blasHeader").front();
+                        entry["blas"] = {{"builds", blas.blasBuildCount}, {"references", blas.clusterReferenceCount},
+                            {"cacheDirty", blas.padding0}, {"activeGroups", blas.padding1}, {"clasRevision", blas.padding2}};
+                    }
                     for (uint32_t axis = 0; axis < 3; ++axis) {
                         checkRoam(std::abs(info.eye[axis] - camera["eye"][axis].get<float>()) < 1e-5f &&
                             std::abs(info.center[axis] - camera["center"][axis].get<float>()) < 1e-5f,
                             "Camera replay did not reach VBuffer");
                     }
-                    if (final) { checkRoam(cut.at("visibleOverTargetRefinements") == 0, "Final held view did not converge to 1.5 px"); }
                 } else { checkRoam(!final, "Final terminal cut not ready"); }
                 report["quality"].push_back(std::move(entry));
+                if (final) { checkRoam(report["quality"].back().at("cut").at("visibleOverTargetRefinements") == 0,
+                    "Final held view did not converge to 1.5 render px"); }
             };
             const auto runStart = Clock::now();
+            profiling::CpuPhaseTrace cpuTrace;
             for (uint32_t f = 0; f < frameCount; ++f) {
                 const bool capture = quality && (f == 29 || f == 59 || f == 119 || f == 179 || (f + 1) % 300 == 0);
                 if (capture) { checkRoam(bool(executor.waitForSubmittedWork(30000000000ull)), "Pre-checkpoint drain failed"); }
@@ -813,11 +857,20 @@ public:
                 checkRoam(view.setCameraProperties(cameras[f]), "Invalid replay camera");
                 frames[f].overlap = executor.lastSubmittedCompletion().valid() && !executor.lastSubmittedCompletion().isComplete();
                 const auto executeStart = Clock::now();
-                submit();
+                cpuTrace.events.clear();
+                cpuTrace.gpuSpans.clear();
+                {
+                    profiling::CpuPhaseTraceFrame traceFrame(&cpuTrace, f);
+                    submit();
+                }
                 frames[f].executeMs = std::chrono::duration<double, std::milli>(Clock::now() - executeStart).count();
                 executionFrames.emplace(executor.executionStats().executionId, f);
                 collect();
                 frames[f].hostMs = std::chrono::duration<double, std::milli>(Clock::now() - hostStart).count();
+                checkRoam(cpuTrace.dropped == 0, "CPU phase trace overflow");
+                for (const auto& event : cpuTrace.events) {
+                    frames[f].cpuPhases[event.name] += double(event.durationNanoseconds) / 1e6;
+                }
                 if (capture) { checkpoint(f, cameras[f], false); }
             }
             checkRoam(bool(executor.waitForSubmittedWork(30000000000ull)), "Final GPU drain failed");
@@ -901,6 +954,7 @@ public:
                     {"gpuMs", stats.gpuMilliseconds}, {"cpuRecordMs", stats.cpuMilliseconds},
                     {"cpuExecuteMs", frame.executeMs}, {"hostFrameMs", frame.hostMs},
                     {"overlap", frame.overlap}, {"nodes", std::move(nodes)},
+                    {"cpuPhases", frame.cpuPhases},
                     {"stream", {{"frame", s.frameIndex}, {"feedbackFrame", s.feedbackFrame},
                         {"geometryBytes", s.geometryUsedBytes}, {"geometryBudgetBytes", s.geometryBudgetBytes},
                         {"clasBytes", s.clasUsedBytes}, {"clasEncodedBytes", s.clasEncodedBytes},

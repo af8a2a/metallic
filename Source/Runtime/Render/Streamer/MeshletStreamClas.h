@@ -21,6 +21,7 @@ struct MeshletStreamClasClusterInput {
     uint32_t materialIndex = 0;
     uint32_t vertexOffsetBytes = 0;
     uint32_t vertexCount = 0;
+    uint32_t vertexStrideBytes = 16;
     uint32_t triangleOffsetBytes = 0;
     uint32_t triangleCount = 0;
 };
@@ -90,6 +91,7 @@ struct MeshletStreamClasPageBuild {
 };
 
 struct MeshletStreamClasPoolStats {
+    uint64_t publicationRevision = 0;
     uint32_t pageCapacity = 0;
     uint32_t trackedPageCount = 0;
     uint32_t clusterSlotCapacity = 0;

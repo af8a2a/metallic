@@ -93,6 +93,7 @@ struct MeshletStreamClasPool::Impl {
 
     void writePageEntry(uint32_t pageIndex)
     {
+        ++stats.publicationRevision;
         if (pageTableBuffer == nullptr || pageIndex >= pageCount) {
             return;
         }
@@ -532,7 +533,7 @@ Result MeshletStreamClasPool::cmdBuildPages(
 
         const scene::MeshletStreamPageInfo& assetPage = impl_->asset->pages()[request.pageIndex];
         if (request.deviceOffsetBytes > pageBuffer.desc().size ||
-            assetPage.uncompressedSize > pageBuffer.desc().size - request.deviceOffsetBytes) {
+            scene::meshletStreamDevicePayloadSize(assetPage) > pageBuffer.desc().size - request.deviceOffsetBytes) {
             rollback();
             log = "MeshletStreamClasPool page-buffer range exceeded its bound";
             return makeError(Error::InvalidArgument);
@@ -568,7 +569,7 @@ Result MeshletStreamClasPool::cmdBuildPages(
         const auto& plan = *pagePlan;
         if (plan.pageIndex != request.pageIndex || plan.clusters.size() != assetPage.clusterCount ||
             plan.firstClusterId != request.pageIndex * impl_->clusterIdStride ||
-            plan.payloadByteSize != assetPage.uncompressedSize) {
+            plan.payloadByteSize != scene::meshletStreamDevicePayloadSize(assetPage)) {
             impl_->storage.release(allocation);
             rollback();
             log = "MeshletStreamClasPool supplied plan does not match its page";
@@ -593,7 +594,7 @@ Result MeshletStreamClasPool::cmdBuildPages(
                 .geometryIndex = 0,
                 .indexFormat = ClusterAccelerationStructureIndexFormat::Uint8,
                 .indexBufferStride = 1,
-                .vertexBufferStride = sizeof(float) * 4u,
+                .vertexBufferStride = static_cast<uint16_t>(cluster.vertexStrideBytes),
                 .indexBuffer = &pageBuffer,
                 .indexBufferOffset = request.deviceOffsetBytes + cluster.triangleOffsetBytes,
                 .vertexBuffer = &pageBuffer,

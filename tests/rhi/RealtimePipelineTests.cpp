@@ -1,5 +1,6 @@
 #include "RhiTest.h"
 #include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
@@ -554,7 +555,9 @@ public:
             graph.addEdge(miniZorah_ ? "DlssSr.depth" : "Deferred.deviceDepth", "Readback.depth");
             graph.markOutput("Readback.pixels"); graph.markOutput("Readback.guides");
             RenderWorld world;
-            world.setEnvironment({.enabled = true, .path = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.environment->path});
+            // The compact-cook fixture must produce lit geometry without an HDRI
+            // that could hide a failed visibility-to-surface decode.
+            world.setEnvironment({.enabled = miniZorah_, .path = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.environment->path});
             scene::LightingSettings lighting;
             lighting.autoExposure.enabled = miniZorah_;
             lighting.exposureEV100 = 2;
@@ -591,6 +594,7 @@ public:
             const auto draw = [&]() {
                 require(bool(executor.execute({.graphicsQueue = &context.graphicsQueue,
                     .computeQueue = context.device.getQueue(QueueType::Compute)})), "Streamed realtime execution failed");
+                if (miniZorah_) { require(bool(vulkan::notifyStreamlineOffscreenFrame()), "Offscreen Streamline frame failed"); }
                 require(bool(executor.waitForSubmittedWork()), "Streamed realtime submission failed");
             };
             const auto rebuildAndDraw = [&](uint32_t newWidth, uint32_t newHeight) {
