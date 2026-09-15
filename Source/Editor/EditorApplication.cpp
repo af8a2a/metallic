@@ -9,6 +9,7 @@
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "imnodes.h"
@@ -6163,7 +6164,10 @@ void EditorApplication::drawViewportPanel()
     const ImVec2 max(min.x + imageWidth, min.y + imageHeight);
     const float width = max.x - min.x;
     const float height = max.y - min.y;
-    const bool loadingScene = pendingSceneLoad_.valid() || pendingSceneResourcePreparation_;
+    const auto* sceneStreamer = subsystemHost_.get<render::StreamerSubsystem>();
+    const auto streamReadiness = sceneStreamer ? sceneStreamer->sceneReadiness() : render::StreamSceneReadiness{};
+    const bool loadingStream = !streamReadiness.ready;
+    const bool loadingScene = pendingSceneLoad_.valid() || pendingSceneResourcePreparation_ || loadingStream;
     const bool previewMatchesRequestedExtent = hasRhiPreview &&
         viewportTextureWidth_ == previewWidth && viewportTextureHeight_ == previewHeight;
     const bool popupOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
@@ -6221,9 +6225,11 @@ void EditorApplication::drawViewportPanel()
     }
 
     if (loadingScene) {
-        const scene::SceneLoadProgress progress = pendingSceneResourcePreparation_
-            ? pendingSceneResourceProgress_
-            : pendingSceneLoad_.progress();
+        // Continue executing the graph and collecting feedback behind a loading
+        // surface until every primitive has a complete fallback representation.
+        if (loadingStream) { drawList->AddRectFilled(min, max, IM_COL32(16, 18, 22, 255)); }
+        const scene::SceneLoadProgress progress = loadingStream ? scene::SceneLoadProgress{} :
+            pendingSceneResourcePreparation_ ? pendingSceneResourceProgress_ : pendingSceneLoad_.progress();
         const float panelWidth = std::min(width * 0.70f, 520.0f * mainScale_);
         const float panelHeight = 72.0f * mainScale_;
         const ImVec2 panelMin(
@@ -6232,7 +6238,9 @@ void EditorApplication::drawViewportPanel()
         const ImVec2 panelMax(panelMin.x + panelWidth, panelMin.y + panelHeight);
         drawList->AddRectFilled(panelMin, panelMax, IM_COL32(10, 12, 16, 220), 5.0f * mainScale_);
         drawList->AddRect(panelMin, panelMax, IM_COL32(100, 115, 138, 255), 5.0f * mainScale_);
-        const std::string label = std::string("Loading scene - ") + scene::sceneLoadPhaseName(progress.phase);
+        const std::string label = loadingStream ? "Preparing scene - " +
+            std::to_string(static_cast<uint32_t>(streamReadiness.fraction() * 100.f)) + "%" :
+            std::string("Loading scene - ") + scene::sceneLoadPhaseName(progress.phase);
         drawList->AddText(
             ImVec2(panelMin.x + 12.0f * mainScale_, panelMin.y + 10.0f * mainScale_),
             IM_COL32(235, 238, 242, 255),
@@ -6245,7 +6253,8 @@ void EditorApplication::drawViewportPanel()
             panelMin.y + 58.0f * mainScale_);
         drawList->AddRectFilled(barMin, barMax, IM_COL32(35, 40, 48, 255), 3.0f * mainScale_);
         const ImVec2 fillMax(
-            barMin.x + (barMax.x - barMin.x) * scene::clampSceneLoadFraction(progress.fraction),
+            barMin.x + (barMax.x - barMin.x) * scene::clampSceneLoadFraction(
+                loadingStream ? streamReadiness.fraction() : progress.fraction),
             barMax.y);
         drawList->AddRectFilled(barMin, fillMax, IM_COL32(71, 140, 255, 255), 3.0f * mainScale_);
     }

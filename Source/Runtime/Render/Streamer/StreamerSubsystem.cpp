@@ -46,6 +46,19 @@ Result StreamerSubsystem::acquireStream(const MeshletStreamRuntimeDesc& desc, bo
     return {};
 }
 
+StreamSceneReadiness StreamerSubsystem::sceneReadiness() const
+{
+    StreamSceneReadiness result;
+    for (const auto& stream : streams_) {
+        if (stream.use_count() == 1) { continue; }
+        const auto state = stream->sceneReadiness();
+        result.requiredPages += state.requiredPages;
+        result.completedPages += state.completedPages;
+        result.ready = result.ready && state.ready;
+    }
+    return result;
+}
+
 void StreamerSubsystem::collectReleasedStreams()
 {
     std::erase_if(streams_, [](const auto& session) { return session.use_count() == 1; });

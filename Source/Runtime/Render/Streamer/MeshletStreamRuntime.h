@@ -27,6 +27,12 @@
 namespace metallic::render {
 
 class MeshletStreamClasPool;
+struct StreamSceneReadiness {
+    uint32_t requiredPages = 0;
+    uint32_t completedPages = 0;
+    bool ready = true;
+    float fraction() const { return requiredPages ? float(completedPages) / float(requiredPages) : 0.f; }
+};
 struct DebugResourceBinding;
 
 inline constexpr const char* kMeshletStreamShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
@@ -488,10 +494,14 @@ public:
     void reset();
 
     bool ready() const;
+    // Complete fallback coverage, including RT fallback resources when used.
+    // Resource initialization alone does not make a scene presentable.
+    StreamSceneReadiness sceneReadiness() const;
     bool tlasReady() const { return tlasBuilt_; }
     RayTracingAccelerationStructure* accelerationStructure() const;
 
-    Result cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame);
+    Result cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame,
+        const std::function<void()>& flushUploads = {});
     const CpuProfileRecorder& beginFrameCpuProfile() const { return beginFrameCpuProfile_; }
     using TraversalCheckpoint = std::function<void(std::string_view)>;
     Result cmdPreTraversal(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame,
@@ -660,7 +670,8 @@ private:
     ResourceState blasBuildInfoBufferState_ = ResourceState::Undefined;
     ResourceState blasClusterReferenceBufferState_ = ResourceState::Undefined;
     ResourceState tlasInstanceBufferState_ = ResourceState::Undefined;
-    bool pageTableInitialized_ = false;
+    std::shared_ptr<bool> pageTableInitialized_ = std::make_shared<bool>(false);
+    uint32_t currentFrameOrderedUploadCount_ = 0;
     bool requestReadbackValid_ = false;
     uint32_t frameIndex_ = 0;
     bool debugReadbackEnabled_ = false;

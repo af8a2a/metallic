@@ -5,6 +5,7 @@
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/GAPI/StreamUploadCompletion.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
 #include "Runtime/Render/Streamer/StreamingTaskQueue.h"
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -2765,6 +2767,9 @@ public:
                 }
                 const auto receipt = streamer->pendingCopyCompletion();
                 UPLOAD_REQUIRE(receipt && !receipt->isComplete() && !receipt->isCancelled());
+                std::vector<StreamPageTablePatch> orderedPatches;
+                UPLOAD_REQUIRE(!receipt->isRecordedBefore(*commands));
+                UPLOAD_REQUIRE(residency.buildOrderedUploadPatches(*commands, orderedPatches) == 0);
                 UPLOAD_REQUIRE(residency.residentPageCount() == 0);
                 if (scenario != 1 || attempt != 0) {
                     const BufferBarrierDesc barrier{.buffer = destination.get(),
@@ -2772,8 +2777,29 @@ public:
                         .size = capacity};
                     commands->barrier({.buffers = &barrier, .bufferCount = 1});
                     commands->copyStreamedData(*streamer);
+                    const bool sameRecording = !(scenario == 5 && attempt == 0);
+                    UPLOAD_REQUIRE(receipt->isRecordedBefore(*commands) == sameRecording);
+                    UPLOAD_REQUIRE(residency.buildOrderedUploadPatches(*commands, orderedPatches) ==
+                        (sameRecording ? pageCount : 0u));
+                    if (sameRecording) {
+                        for (uint32_t page = 0; page < pageCount; ++page) {
+                            const auto matching = std::count_if(orderedPatches.begin(), orderedPatches.end(),
+                                [page](const auto& patch) { return patch.pageId == page; });
+                            UPLOAD_REQUIRE(matching == 1);
+                            const auto patch = std::find_if(orderedPatches.begin(), orderedPatches.end(),
+                                [page](const auto& entry) { return entry.pageId == page; });
+                            UPLOAD_REQUIRE(streamPageTablePatchState(*patch) == (page == root && scenario != 2
+                                ? MeshletStreamPageResidencyState::LockedFallback : MeshletStreamPageResidencyState::Resident));
+                        }
+                        UPLOAD_REQUIRE(prefix->begin(&frame));
+                        UPLOAD_REQUIRE(!receipt->isRecordedBefore(*prefix));
+                        UPLOAD_REQUIRE(residency.buildOrderedUploadPatches(*prefix, orderedPatches) == 0);
+                        UPLOAD_REQUIRE(prefix->end());
+                    }
+                    UPLOAD_REQUIRE(residency.residentPageCount() == 0);
                 }
                 UPLOAD_REQUIRE(commands->end());
+                UPLOAD_REQUIRE(!receipt->isRecordedBefore(*commands));
                 streamer->endFrame();
                 CommandBuffer* buffers[] = {commands.get()};
                 if (cancel && attempt == 0) {
@@ -2846,6 +2872,103 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletUploadCompletionTest);
+
+class StreamerOrderedPublicationTest final : public RhiTest {
+public:
+    StreamerOrderedPublicationTest() { type = RhiTestType::Command; name = "streamer_ordered_publication_retry"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        std::atomic_uint validationMessages = 0;
+        std::unique_ptr<Device> ownedDevice;
+        const auto created = createDevice({.applicationName = "Stream ordered publication",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .enableShaderObject = true,
+            .validationSink = {.callback = [](void* data, const ValidationMessage& message) noexcept {
+                if (message.messageIdName && std::strstr(message.messageIdName, "VUID-")) {
+                    ++*static_cast<std::atomic_uint*>(data);
+                }
+            }, .context = &validationMessages}}, ownedDevice);
+        if (!created) {
+            return hasError(created, Error::Unsupported) ? RhiTestResult::skip("Bindless device unavailable") :
+                RhiTestResult::fail("Cannot create ordered publication device");
+        }
+        auto& device = *ownedDevice;
+        auto& queue = *device.getQueue(QueueType::Graphics);
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "ordered.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        MeshletStreamRuntime runtime;
+        std::unique_ptr<Streamer> streamer;
+        std::unique_ptr<CommandPool> pool;
+        std::unique_ptr<CommandBuffer> commands;
+        std::unique_ptr<Buffer> readback;
+        QueueSubmissionTracker tracker;
+        RenderFrameContext frame0(0), frame1(1);
+        RenderFrameContext* frames[]{&frame0, &frame1};
+        struct Drain {
+            Queue& queue; RenderFrameContext& a; RenderFrameContext& b;
+            ~Drain() { a.cancel(); b.cancel(); (void)queue.waitIdle(); }
+        } drain{queue, frame0, frame1};
+#define ORDERED_REQUIRE(expression) \
+        if (!(expression)) { return RhiTestResult::fail("Ordered publication: " #expression); }
+        std::string log;
+        runtime.setDebugReadbackEnabled(true);
+        ORDERED_REQUIRE(runtime.initialize(device, {
+            .sourcePath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf",
+            .streamAssetPath = asset.path(), .maxResidentPages = 64, .maxLockedFallbackPages = 64,
+            .maxPageUploadsPerFrame = 64, .maxGpuPageRequests = 256, .maxGpuPageUnloadRequests = 256,
+            .maxActiveGroups = 4096, .maxTraversalWorkers = 64, .maxTraversalWorkItems = 4096,
+            .pageLoadConcurrency = 0, .queuedFrameCount = 2}, log));
+        ORDERED_REQUIRE(!runtime.sceneReadiness().ready);
+        ORDERED_REQUIRE(device.createStreamer(makeTestStreamerDesc(), streamer));
+        ORDERED_REQUIRE(device.createCommandPool(queue, pool));
+        ORDERED_REQUIRE(pool->createCommandBuffer(commands));
+        ORDERED_REQUIRE(tracker.initialize(device, queue));
+        ORDERED_REQUIRE(device.createBuffer({.size = sizeof(MeshletStreamGpuActiveHeader),
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, readback));
+        MeshletStreamFrameDesc view{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
+        view.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f},
+            .znear = .001f, .zfar = 10.f};
+        for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+            auto& frame = *frames[attempt % 2];
+            ORDERED_REQUIRE(frame.begin(attempt + 1));
+            ORDERED_REQUIRE(pool->reset());
+            ORDERED_REQUIRE(commands->begin(&frame));
+            ORDERED_REQUIRE(streamer->beginFrame(frame));
+            ORDERED_REQUIRE(runtime.cmdBeginFrame(*commands, *streamer, view));
+            ORDERED_REQUIRE(runtime.cmdPreTraversal(*commands, view));
+            if (attempt < 2) {
+                ORDERED_REQUIRE(runtime.residency().residentPageCount() == 0);
+                ORDERED_REQUIRE(runtime.debugSnapshot(false).at("orderedUploadPages").get<uint32_t>() != 0);
+            } else { ORDERED_REQUIRE(runtime.sceneReadiness().ready); }
+            std::vector<DebugResourceBinding> bindings;
+            runtime.appendDebugBindings(bindings, "proof.");
+            const auto header = std::find_if(bindings.begin(), bindings.end(), [](const auto& b) { return b.id == "proof.activeHeader"; });
+            ORDERED_REQUIRE(header != bindings.end());
+            BufferBarrierDesc barrier{.buffer = header->buffer, .before = header->state, .after = ResourceState::TransferSource,
+                .size = sizeof(MeshletStreamGpuActiveHeader)};
+            commands->barrier({.buffers = &barrier, .bufferCount = 1});
+            commands->copyBuffer({.source = header->buffer, .destination = readback.get(), .size = sizeof(MeshletStreamGpuActiveHeader)});
+            std::swap(barrier.before, barrier.after);
+            commands->barrier({.buffers = &barrier, .bufferCount = 1});
+            ORDERED_REQUIRE(runtime.cmdEndFrame(*commands));
+            ORDERED_REQUIRE(commands->end());
+            streamer->endFrame();
+            if (attempt == 0) { frame.cancel(); continue; }
+            CommandBuffer* buffers[]{commands.get()};
+            ORDERED_REQUIRE(tracker.submit({.commandBuffers = buffers, .commandBufferCount = 1}, frame));
+            ORDERED_REQUIRE(frame.wait(5'000'000'000ull));
+            MeshletStreamGpuActiveHeader result;
+            ORDERED_REQUIRE(readBufferBytes(*readback, &result, sizeof(result)));
+            ORDERED_REQUIRE(result.activeGroupCount != 0 && result.overflowCount == 0);
+        }
+        ORDERED_REQUIRE(validationMessages == 0);
+#undef ORDERED_REQUIRE
+        return RhiTestResult::pass("Cancelled initial publication retries; GPU selects uploaded roots before CPU confirmation across frame slots");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerOrderedPublicationTest);
 
 METALLIC_REGISTER_RHI_TEST(StreamingTaskQueueLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(MeshletStreamPageLoaderTaskGraphTest);

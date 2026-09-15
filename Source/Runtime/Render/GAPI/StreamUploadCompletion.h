@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderFrameContext.h"
 
 #include <utility>
+#include <algorithm>
 
 namespace metallic::render {
 
@@ -19,6 +20,18 @@ public:
     bool isCancelled() const
     {
         return submission_->cancelled() || completion_.isCancelled();
+    }
+
+    // Only commands recorded after this receipt's copies in the SAME recording
+    // may consume them without a CPU completion round trip. Queue acceptance or
+    // sharing a frame context alone is insufficient (including cancelled tails).
+    bool isRecordedBefore(const CommandBuffer& commands) const
+    {
+        return !isCancelled() && commands.recording_ && commands.submission_ &&
+            commands.submission_->canSubmit() && commands.frameContext_ &&
+            completion_.sameSubmission(commands.frameContext_->completion()) &&
+            std::find(commands.submission_->transactions.begin(), commands.submission_->transactions.end(),
+                submission_) != commands.submission_->transactions.end();
     }
 
 private:

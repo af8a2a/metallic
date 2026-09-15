@@ -61,6 +61,7 @@ public:
             {"path", sourcePath.generic_string()}, {"streamAssetPath", assetPath.generic_string()},
             {"enableMeshletStreaming", true}, {"maxResidentPages", 64}, {"maxLockedFallbackPages", 64},
             {"maxPageUploadsPerFrame", 64}, {"maxActiveGroups", capacity},
+            {"pageLoadConcurrency", 0},
             {"maxGpuPageRequests", 256}, {"maxGpuPageUnloadRequests", 256},
             {"maxTraversalWorkers", 64}, {"maxTraversalWorkItems", 4096},
             {"visualization", "triangle"}, {"dlssJitter", false},
@@ -210,6 +211,11 @@ public:
 
         try {
             render();
+            const auto ordered = call("eval", {{"expression", "streaming.instances[0].orderedUploadPages"}}).at("value").get<uint32_t>();
+            const auto confirmed = call("eval", {{"expression", "streaming.instances[0].terminalResidentPageCount"}}).at("value").get<uint32_t>();
+            if (ordered == 0 || confirmed != 0) {
+                return RhiTestResult::fail("Initial page publication did not precede CPU upload completion");
+            }
             auto* gpuScene = preview.subsystemHost()->get<GPUSceneSubsystem>();
             if (!gpuScene) { return RhiTestResult::fail("Missing GPUScene"); }
             const bool independent = preview.subsystemHost()->device()->capabilities().independentComputeQueue;

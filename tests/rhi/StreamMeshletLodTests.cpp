@@ -109,6 +109,20 @@ public:
             }
         }
         std::fill(fixture.drawable.begin(), fixture.drawable.end(), uint8_t{1});
+        // Request all desired levels in one feedback round while only the
+        // terminal cut is drawable. Arrival order must not expose orphans.
+        for (uint32_t group : {0u, 1u, 3u, 4u}) { fixture.drawable[group] = 0; }
+        cut = fixture.select(0);
+        if (!fixture.coversExactlyOnce(cut) || cut.requestedGroups != std::vector<uint32_t>{0, 1, 3, 4} ||
+            cut.selectedClusters != std::vector<uint32_t>{4, 8, 9}) {
+            return RhiTestResult::fail("detail requests waited for ancestors or changed the safe terminal cut");
+        }
+        for (uint32_t group : {0u, 1u}) { fixture.drawable[group] = 1; }
+        cut = fixture.select(0);
+        if (!fixture.coversExactlyOnce(cut) || cut.selectedClusters != std::vector<uint32_t>{4, 8, 9}) {
+            return RhiTestResult::fail("early arriving detail escaped the safe cut");
+        }
+        std::fill(fixture.drawable.begin(), fixture.drawable.end(), uint8_t{1});
         cut = fixture.select(UINT32_MAX, 2);
         if (!fixture.coversExactlyOnce(cut) || !cut.capacityExceeded || !cut.capacityFallback ||
             cut.selectedClusters != std::vector<uint32_t>{4, 8, 9}) {
@@ -604,6 +618,13 @@ private:
             uint32_t manual, capacity;
             std::vector<uint8_t> available;
             configureStreamLodCase(fixture, large, test, manual, capacity, available);
+            // Keep a genuinely speculative leaf below the demand threshold;
+            // missing ancestors no longer turn desired leaves into forecasts.
+            if (prefetch && !large && (test == 1 || test == 9)) { fixture.view.projection[3] = 5.1f; }
+            if (prefetch && large && test == 17) {
+                fixture.view.projection[3] = .021f;
+                fixture.drawable[128] = 0; available[128] = 0;
+            }
             if (viewDriven) {
                 if (prefetch && large && test == 7) { fixture.drawable[128] = 0; available[128] = 0; }
                 if (test % 6 == 0) { fixture.instance.worldMatrix[12] = 500.f; }

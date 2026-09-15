@@ -1721,6 +1721,46 @@ void MeshletStreamResidencyManager::queueUpload(uint32_t pageIndex)
     ++stats_.totalQueuedUploadCount;
 }
 
+void MeshletStreamResidencyManager::rebuildPendingPatches()
+{
+    patches_.clear();
+    for (const auto& [page, entry] : pages_) { recordPatch(page); }
+}
+
+uint32_t MeshletStreamResidencyManager::buildOrderedUploadPatches(
+    const CommandBuffer& commands, std::vector<StreamPageTablePatch>& outPatches) const
+{
+    outPatches = patches_;
+    std::unordered_map<uint32_t, size_t> indices;
+    // Keep only the latest state for each page: parallel GPU patch writes must
+    // never race a PendingUpload entry against its drawable replacement.
+    size_t count = 0;
+    for (const auto patch : patches_) {
+        const auto [entry, inserted] = indices.try_emplace(patch.pageId, count);
+        outPatches[entry->second] = patch;
+        if (inserted) { ++count; }
+    }
+    outPatches.resize(count);
+    uint32_t ordered = 0;
+    for (uint32_t task = 0; task < storageCompletions_.size(); ++task) {
+        const auto& receipt = storageCompletions_[task];
+        if (!receipt || !receipt->isRecordedBefore(commands)) { continue; }
+        for (uint32_t pageIndex : storageTaskPages_[task]) {
+            const auto found = pages_.find(pageIndex);
+            if (found == pages_.end()) { continue; }
+            const auto& page = found->second;
+            if (page.state != MeshletStreamPageResidencyState::PendingUpload || page.taskIndex != task) { continue; }
+            const StreamPageTablePatch patch{pageIndex, packStreamPageTableEntry(page.deviceOffsetBytes,
+                page.lockedFallback ? MeshletStreamPageResidencyState::LockedFallback : MeshletStreamPageResidencyState::Resident)};
+            const auto [entry, inserted] = indices.try_emplace(pageIndex, outPatches.size());
+            if (inserted) { outPatches.push_back(patch); }
+            else { outPatches[entry->second] = patch; }
+            ++ordered;
+        }
+    }
+    return ordered;
+}
+
 void MeshletStreamResidencyManager::recordPatch(uint32_t pageIndex)
 {
     auto pageIter = pages_.find(pageIndex);

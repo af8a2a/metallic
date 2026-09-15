@@ -275,25 +275,20 @@ Result createSlangShaderModule(
 
 class MeshletStreamRuntime::UpdatePass {
 public:
-    Result initialize(Device& device, BindlessHeap& bindlessHeap, uint64_t updateByteSize, std::string& log,
+    Result initialize(Device& device, BindlessHeap& bindlessHeap, uint64_t updateByteSize, uint32_t frameSlots, std::string& log,
         PipelineCache* pipelineCache)
     {
-        if (updateByteSize == 0) {
+        if (updateByteSize == 0 || frameSlots == 0) {
             return makeError(Error::InvalidArgument);
         }
-        Result result = createHostStorageBuffer(
-            device,
-            updateByteSize,
-            updateBuffer_,
-            log,
-            "MeshletStreamRuntime update");
-        if (!result) {
-            return result;
-        }
-
-        result = allocateAndWriteBuffer(bindlessHeap, *updateBuffer_, updateHandle_, log, "meshlet stream update");
-        if (!result) {
-            return result;
+        Result result;
+        updateBuffers_.resize(frameSlots);
+        updateHandles_.resize(frameSlots);
+        for (uint32_t slot = 0; slot < frameSlots; ++slot) {
+            result = createHostStorageBuffer(device, updateByteSize, updateBuffers_[slot], log, "MeshletStreamRuntime update");
+            if (!result) { return result; }
+            result = allocateAndWriteBuffer(bindlessHeap, *updateBuffers_[slot], updateHandles_[slot], log, "meshlet stream update");
+            if (!result) { return result; }
         }
 
         result = createSlangShaderModule(
@@ -349,14 +344,14 @@ public:
 
     bool ready() const
     {
-        return updateBuffer_ != nullptr &&
-            updateHandle_.valid() &&
+        return !updateBuffers_.empty() && updateBuffers_.front() != nullptr &&
+            updateHandles_.front().valid() &&
             pageTableInitShader_ != nullptr &&
             pageTableInitPipeline_ != nullptr &&
             updatePipeline_ != nullptr;
     }
 
-    BindlessHandle updateHandle() const { return updateHandle_; }
+    BindlessHandle updateHandle() const { return updateHandles_.empty() ? BindlessHandle{} : updateHandles_.front(); }
 
     Result initializePageTable(
         CommandBuffer& commandBuffer,
@@ -388,7 +383,7 @@ public:
     Result apply(
         CommandBuffer& commandBuffer,
         BindlessHeap& bindlessHeap,
-        const MeshletStreamUserPush& push,
+        MeshletStreamUserPush push,
         std::span<const StreamPageTablePatch> patches,
         uint32_t maxUpdatePatches,
         uint32_t frameIndex,
@@ -410,7 +405,12 @@ public:
             }
         }
 
-        void* mapped = updateBuffer_->map();
+        const uint32_t slot = commandBuffer.frameContext() ? commandBuffer.frameContext()->slotIndex() :
+            frameIndex % static_cast<uint32_t>(updateBuffers_.size());
+        if (slot >= updateBuffers_.size()) { return makeError(Error::InvalidArgument); }
+        auto& updateBuffer = *updateBuffers_[slot];
+        push.updateBuffer = updateHandles_[slot].index;
+        void* mapped = updateBuffer.map();
         if (mapped == nullptr) {
             return makeError(Error::Failure);
         }
@@ -433,10 +433,10 @@ public:
                 patchData[writeIndex++] = patch;
             }
         }
-        updateBuffer_->flush(
+        updateBuffer.flush(
             0,
             sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(patchCount) * sizeof(StreamPageTablePatch));
-        updateBuffer_->unmap();
+        updateBuffer.unmap();
 
         transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General);
         commandBuffer.bindBindlessHeap(bindlessHeap);
@@ -448,12 +448,12 @@ public:
     }
 
 private:
-    std::unique_ptr<Buffer> updateBuffer_;
+    std::vector<std::unique_ptr<Buffer>> updateBuffers_;
     std::unique_ptr<ShaderModule> pageTableInitShader_;
     std::unique_ptr<ComputePipeline> pageTableInitPipeline_;
     std::unique_ptr<ShaderModule> updateShader_;
     std::unique_ptr<ComputePipeline> updatePipeline_;
-    BindlessHandle updateHandle_;
+    std::vector<BindlessHandle> updateHandles_;
 };
 
 class MeshletStreamRuntime::TraversalPass {
@@ -2062,7 +2062,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
 
     phase.next("streamInit.updatePass");
     updatePass_ = std::make_unique<UpdatePass>();
-    result = updatePass_->initialize(device, *bindlessHeap_, updateByteSize, log, pipelineCache);
+    result = updatePass_->initialize(device, *bindlessHeap_, updateByteSize, desc.queuedFrameCount, log, pipelineCache);
     if (!result) {
         return result;
     }
@@ -2201,7 +2201,8 @@ void MeshletStreamRuntime::reset()
     blasBuildInfoBufferState_ = ResourceState::Undefined;
     blasClusterReferenceBufferState_ = ResourceState::Undefined;
     tlasInstanceBufferState_ = ResourceState::Undefined;
-    pageTableInitialized_ = false;
+    pageTableInitialized_ = std::make_shared<bool>(false);
+    currentFrameOrderedUploadCount_ = 0;
     requestReadbackValid_ = false;
     frameIndex_ = 0;
     maxResidentPages_ = 0;
@@ -2289,6 +2290,21 @@ bool MeshletStreamRuntime::ready() const
                 tlas_->valid()));
 }
 
+StreamSceneReadiness MeshletStreamRuntime::sceneReadiness() const
+{
+    StreamSceneReadiness result;
+    const bool needsClas = clusterRtxEnabled_ && clasPool_;
+    result.requiredPages = static_cast<uint32_t>(lockedFallbackPages_.size()) * (needsClas ? 2u : 1u);
+    for (uint32_t page : lockedFallbackPages_) {
+        result.completedPages += residency_.pageResident(page) ? 1u : 0u;
+        if (needsClas) { result.completedPages += clasPool_->pageHasClas(page) ? 1u : 0u; }
+    }
+    result.ready = ready() && result.requiredPages != 0 && result.completedPages == result.requiredPages &&
+        (!clusterRtxEnabled_ || std::all_of(fallbackBlasPrimitives_.begin(), fallbackBlasPrimitives_.end(),
+            [](const auto& fallback) { return fallback.built; }));
+    return result;
+}
+
 RayTracingAccelerationStructure* MeshletStreamRuntime::accelerationStructure() const
 {
     return tlasBuilt_ ? tlas_.get() : nullptr;
@@ -2297,9 +2313,9 @@ RayTracingAccelerationStructure* MeshletStreamRuntime::accelerationStructure() c
 Result MeshletStreamRuntime::cmdBeginFrame(
     CommandBuffer& commandBuffer,
     Streamer& streamer,
-    const MeshletStreamFrameDesc& frame)
+    const MeshletStreamFrameDesc& frame,
+    const std::function<void()>& flushUploads)
 {
-    (void)commandBuffer;
     (void)frame;
     if (!ready()) {
         return makeError(Error::InvalidArgument);
@@ -2347,6 +2363,13 @@ Result MeshletStreamRuntime::cmdBeginFrame(
     if (!planError.empty()) {
         spdlog::error("[MeshletStreamRuntime] CLAS upload plan failed: {}", planError);
         return makeError(Error::Failure);
+    }
+    if (currentFrameUploadCount_ != 0) {
+        profile.next("Record page copies");
+        transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::TransferDestination);
+        if (flushUploads) { flushUploads(); }
+        else { commandBuffer.copyStreamedData(streamer); }
+        transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::ShaderRead);
     }
     profile.next("Queue resident CLAS");
     if (clasPool_) {
@@ -3056,7 +3079,7 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
 
 Result MeshletStreamRuntime::initializePageTableIfNeeded(CommandBuffer& commandBuffer)
 {
-    if (pageTableInitialized_) {
+    if (*pageTableInitialized_) {
         return {};
     }
 
@@ -3070,13 +3093,25 @@ Result MeshletStreamRuntime::initializePageTableIfNeeded(CommandBuffer& commandB
     if (!result) {
         return result;
     }
-    pageTableInitialized_ = true;
+    // Reconstruct CPU-confirmed state after an abandoned recording as well as
+    // on first use. Capture only the shared validity flag, never a runtime pointer.
+    result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(nullptr,
+        [valid = pageTableInitialized_] { *valid = false; }));
+    if (!result) { return result; }
+    residency_.rebuildPendingPatches();
+    *pageTableInitialized_ = true;
     return {};
 }
 
 Result MeshletStreamRuntime::applyPageTablePatches(CommandBuffer& commandBuffer)
 {
-    const std::span<const StreamPageTablePatch> patches = residency_.pendingPatches();
+    std::vector<StreamPageTablePatch> patches;
+    currentFrameOrderedUploadCount_ = residency_.buildOrderedUploadPatches(commandBuffer, patches);
+    if (!patches.empty()) {
+        const auto tracked = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(nullptr,
+            [valid = pageTableInitialized_] { *valid = false; }));
+        if (!tracked) { return tracked; }
+    }
     Result result = updatePass_->apply(
         commandBuffer,
         *bindlessHeap_,
@@ -3737,7 +3772,10 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         pages.push_back({{"index", i}, {"state", static_cast<uint32_t>(residency_.pageState(i))},
             {"deviceOffset", residency_.deviceOffsetForPage(i)}, {"deviceSize", residency_.deviceSizeForPage(i)}, {"age", residency_.pageAge(i)}});
     }
+    const auto readiness = sceneReadiness();
     return {{"generation", debugGeneration_}, {"frame", frameIndex_},
+        {"orderedUploadPages", currentFrameOrderedUploadCount_},
+        {"sceneReady", readiness.ready}, {"scenePreparationFraction", readiness.fraction()},
         {"primitiveCount", asset_.primitiveCount()}, {"instanceCount", asset_.instanceCount()},
         {"terminalPageCount", lockedFallbackPages_.size()}, {"terminalResidentPageCount", terminalResidentPages},
         {"terminalReady", !lockedFallbackPages_.empty() && terminalResidentPages == lockedFallbackPages_.size()},

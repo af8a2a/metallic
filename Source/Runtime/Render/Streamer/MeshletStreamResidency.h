@@ -359,6 +359,11 @@ public:
     void buildInitialPageTable(std::span<StreamPageTableEntry> outEntries) const;
     std::span<const StreamPageTablePatch> pendingPatches() const { return patches_; }
     void clearPendingPatches() { patches_.clear(); }
+    void rebuildPendingPatches();
+    // GPU visibility only: CPU residency and allocation retirement still wait
+    // for completion. Never use these patches in a different recording.
+    uint32_t buildOrderedUploadPatches(const CommandBuffer& commands,
+        std::vector<StreamPageTablePatch>& outPatches) const;
 
     MeshletStreamPageResidencyState pageState(uint32_t pageIndex) const;
     uint64_t deviceOffsetForPage(uint32_t pageIndex) const;

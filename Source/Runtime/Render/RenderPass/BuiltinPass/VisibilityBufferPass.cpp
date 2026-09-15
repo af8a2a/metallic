@@ -1190,7 +1190,7 @@ public:
                 result = streamRuntime_->cmdBeginFrame(
                     context.commandBuffer(),
                     *context.streamer(),
-                    streamFrame);
+                    streamFrame, [&] { context.subsystem<StreamerSubsystem>()->flush(context.commandBuffer()); });
                 context.publishCpuProfile(streamRuntime_->beginFrameCpuProfile().sections);
             }
             if (!result) {

@@ -1990,7 +1990,8 @@ void buildStreamLodBvhFrontier(uint instanceIndex,
             bool desired = meshletLodGroupNeedsFine(sphere, group.maxQuadricError,
                 group.lodLevel, group.flags, instance.world0, instance.world1, instance.world2,
                 instance.world3, lodEye, lodForward, lodProjection, manualLevel);
-            bool demanded = terminal || (parentsActive && desired && streamRefinementDemandVisible(group, instance, params));
+            // Demand comes from resident metadata, independently of the safe cut.
+            bool demanded = terminal || (desired && streamRefinementDemandVisible(group, instance, params));
             if (demanded) {
                 if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) {
                     markStreamPageDemand(pageTable, params, group.pageIndex);
@@ -1999,7 +2000,7 @@ void buildStreamLodBvhFrontier(uint instanceIndex,
                 }
             }
             bool drawable = groupPageDrawable(pageTable, params, group);
-            if (demanded && drawable) {
+            if (parentsActive && demanded && drawable) {
                 state[base + localGroup * 2u] = 1u;
                 state[sparse + 4u + activeCount++] = localGroup;
             }
@@ -2106,7 +2107,7 @@ void buildStreamLodFrontier(
         bool desired = meshletLodGroupNeedsFine(sphere, group.maxQuadricError,
             group.lodLevel, group.flags, instance.world0, instance.world1, instance.world2,
             instance.world3, lodEye, lodForward, lodProjection, manualLevel);
-        bool demanded = terminal || (parentsActive && desired && streamRefinementDemandVisible(group, instance, params));
+        bool demanded = terminal || (desired && streamRefinementDemandVisible(group, instance, params));
         if (demanded) {
             if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) {
                 markStreamPageDemand(pageTable, params, group.pageIndex);
@@ -2115,7 +2116,7 @@ void buildStreamLodFrontier(
             }
         }
         bool drawable = groupPageDrawable(pageTable, params, group);
-        bool active = demanded && drawable;
+        bool active = parentsActive && demanded && drawable;
         state[base + localGroup * 2u] = active ? 1u : 0u;
         state[base + localGroup * 2u + 1u] = 0u;
         if (terminal) {
@@ -2459,7 +2460,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             bool desired = meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
                 group.maxQuadricError, group.lodLevel, group.flags, instance.world0, instance.world1,
                 instance.world2, instance.world3, eye, direction, projection, manual);
-            bool demanded = terminal || (parentsActive && desired && streamRefinementDemandVisible(group, instance, params));
+            bool demanded = terminal || (desired && streamRefinementDemandVisible(group, instance, params));
             if (demanded) {
                 if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { markStreamPageDemand(pageTable, params, group.pageIndex); }
                 else {
@@ -2472,7 +2473,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
                 }
             }
             bool drawable = groupPageDrawable(pageTable, params, group);
-            active = demanded && drawable;
+            active = parentsActive && demanded && drawable;
             if (active) { state[base + localGroup * 2u] = 1u; }
             if (terminal) {
                 InterlockedAdd(g_CooperativeRoots, 1u);

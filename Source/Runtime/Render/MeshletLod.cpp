@@ -496,16 +496,16 @@ StreamMeshletLodReference selectStreamMeshletLodReference(
 
     const auto visitGroup = [&](uint32_t group) {
         ++result.testedGroups;
-        if (!meshletLodNeedsFine(groups[group], instance, view, manualLevel) ||
-            !std::all_of(parents[group].begin(), parents[group].end(),
-                [&](uint32_t parent) { return result.activeGroups[parent] != 0; })) {
+        if (!meshletLodNeedsFine(groups[group], instance, view, manualLevel)) {
             return;
         }
         if (drawableGroups[group] == 0) {
             if (availableGroups.empty() || availableGroups[group] == 0) {
                 result.requestedGroups.push_back(group);
             }
-        } else {
+        } else if (std::all_of(parents[group].begin(), parents[group].end(),
+            [&](uint32_t parent) { return result.activeGroups[parent] != 0; })) {
+            // Residency gates the safe cut, never the request for desired detail.
             result.activeGroups[group] = 1;
         }
     };

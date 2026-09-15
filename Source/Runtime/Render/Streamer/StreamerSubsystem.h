@@ -22,6 +22,7 @@ public:
     Result acquireStream(const MeshletStreamRuntimeDesc& desc, bool debugReadback,
         std::shared_ptr<MeshletStreamRuntime>& outSession, std::string& log, PipelineCache* cache = nullptr);
     size_t streamCount() const { return streams_.size(); }
+    StreamSceneReadiness sceneReadiness() const;
     void collectReleasedStreams();
     void flush(CommandBuffer& commands);
     Streamer* streamer() const { return uploads_.streamer(); }

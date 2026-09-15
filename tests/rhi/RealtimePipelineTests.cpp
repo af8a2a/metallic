@@ -569,6 +569,8 @@ public:
             require(bool(executor.compile(context.device, graph, width, height, log)), log);
             auto* streamer = executor.subsystemHost()->get<StreamerSubsystem>();
             require(streamer != nullptr && streamer->streamCount() == 1, "Streamer must own exactly one raster session");
+            require(!streamer->sceneReadiness().ready && streamer->sceneReadiness().requiredPages != 0,
+                "Scene became presentable before fallback uploads");
             const scene::Scene* metadata = nullptr;
             require(bool(streamer->manager().resolveScene(graph.findNode("VBuffer")->properties, nullptr, metadata, log)), log);
             require(metadata && metadata->hasStreamGeometry(), "Default producer must resolve streaming metadata");
@@ -609,6 +611,7 @@ public:
                 spdlog::info("Stream preserved across {}x{} rebuild: generation={} frame={} compile={:.3f} ms",
                     width, height, after.generation, after.frameIndex, compileMs);
             };
+            uint32_t sceneReadyFrame = 0;
             for (uint32_t frame = 0; frame < (miniZorah_ ? 180u : 48u); ++frame) {
                 // Dock layout settles after the first visible frames, while pages
                 // are still loading. Exercise that resize, then a resource-only
@@ -617,6 +620,13 @@ public:
                 else if (frame == 4) { rebuildAndDraw(512, 320); }
                 else if (frame == 6) { rebuildAndDraw(width, height); }
                 else { draw(); }
+                const auto readiness = streamer->sceneReadiness();
+                if (sceneReadyFrame != 0) { require(readiness.ready, "Scene readiness regressed during streaming/resize"); }
+                if (sceneReadyFrame == 0 && readiness.ready) {
+                    sceneReadyFrame = frame + 1;
+                    spdlog::info("Complete fallback coverage at frame {} ({} / {} geometry + CLAS pages)",
+                        sceneReadyFrame, readiness.completedPages, readiness.requiredPages);
+                }
             }
             const auto pixels = [&]() {
                 auto* buffer = executor.outputResource("Readback.pixels")->buffer;
@@ -663,6 +673,7 @@ public:
                 moved += std::abs(values[i][0]) + std::abs(values[i][1]) > .0001f;
             }
             guides->unmap(); require(covered > 100 && moved > 100, "Camera change did not reach streamed geometry/upscaler guides");
+            require(streamer->sceneReadiness().ready, "Fallback coverage never became presentable");
             rebuildAndDraw(321, 217);
             RenderGraph empty; empty.addNode("FinalBlitPass", "Empty"); empty.markOutput("Empty.color");
             require(bool(executor.compile(context.device, empty, width, height, log)), log);

@@ -1892,6 +1892,7 @@ private:
 
     friend class QueueSubmissionTracker;
     friend class CommandPool;
+    friend class StreamUploadCompletion;
     friend class Queue;
     friend struct detail::CommandPoolImpl;
     friend struct detail::VulkanNativeAccess;
