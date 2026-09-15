@@ -705,7 +705,8 @@ public:
         // Resource-only graph rebuilds may hand off a path-resolved fallback
         // scene to the asynchronously loaded editor document. Recheck the source
         // lease, identity and geometry revisions before publishing rasterInfo.
-        // compile() keeps existing resources when its scene/view key still matches.
+        // compile() keeps scene resources and streaming progress across viewport
+        // resizes; execute() updates screen resources at the actual render extent.
         return visibilityPipelines_[0] != nullptr ? compile(context, log) : Result{};
     }
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
@@ -835,6 +836,10 @@ public:
         const uint64_t runtimeContentRevision = runtimeScene != nullptr
             ? runtimeScene->contentRevision()
             : 0;
+        // Graph dimensions are display dimensions and can differ from the DLSS
+        // render extent in frameWidth_/frameHeight_. Neither a layout resize nor
+        // a resource-only rebuild should reopen the asset and discard residency.
+        // ensureFrameResources() resizes the raster/HZB resources in execute().
         if (visibilityPipelines_[0] != nullptr &&
             (drawTaskCount_ > 0 || streamEnabled_) &&
             compiledScene_ == runtimeScene &&
@@ -842,8 +847,6 @@ public:
             sceneLifetimeRevision_ == runtimeLifetimeRevision &&
             sceneStructuralRevision_ == runtimeStructuralRevision &&
             sceneContentRevision_ == runtimeContentRevision &&
-            frameWidth_ == context.width &&
-            frameHeight_ == context.height &&
             frameSlotResources_.size() == requestedFrameSlotCount &&
             streamEnabled_ == requestedStreamEnabled &&
             (!requestedStreamEnabled ||

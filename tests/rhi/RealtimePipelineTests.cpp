@@ -591,7 +591,33 @@ public:
                     .computeQueue = context.device.getQueue(QueueType::Compute)})), "Streamed realtime execution failed");
                 require(bool(executor.waitForSubmittedWork()), "Streamed realtime submission failed");
             };
-            for (uint32_t frame = 0; frame < (miniZorah_ ? 180u : 48u); ++frame) { draw(); }
+            const auto rebuildAndDraw = [&](uint32_t newWidth, uint32_t newHeight) {
+                require(executor.executionStats().streaming.size() == 1, "Missing stream continuity telemetry");
+                const auto before = executor.executionStats().streaming.front();
+                const auto begin = std::chrono::steady_clock::now();
+                width = newWidth; height = newHeight;
+                require(bool(executor.compile(context.device, graph, width, height, log)), log);
+                const auto compileMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - begin).count();
+                draw();
+                require(executor.executionStats().streaming.size() == 1, "Stream missing after graph rebuild");
+                const auto& after = executor.executionStats().streaming.front();
+                require(after.generation == before.generation && after.frameIndex == before.frameIndex + 1 &&
+                    after.totalUploadBytes >= before.totalUploadBytes,
+                    "Viewport graph rebuild restarted streaming and discarded loaded pages");
+                require(streamer->streamCount() == 1, "Viewport graph rebuild allocated another streaming session");
+                spdlog::info("Stream preserved across {}x{} rebuild: generation={} frame={} compile={:.3f} ms",
+                    width, height, after.generation, after.frameIndex, compileMs);
+            };
+            for (uint32_t frame = 0; frame < (miniZorah_ ? 180u : 48u); ++frame) {
+                // Dock layout settles after the first visible frames, while pages
+                // are still loading. Exercise that resize, then a resource-only
+                // rebuild (DLSS render dimensions differ from graph dimensions).
+                if (frame == 2) { rebuildAndDraw(481, 301); }
+                else if (frame == 4) { rebuildAndDraw(512, 320); }
+                else if (frame == 6) { rebuildAndDraw(width, height); }
+                else { draw(); }
+            }
             const auto pixels = [&]() {
                 auto* buffer = executor.outputResource("Readback.pixels")->buffer;
                 buffer->invalidate(); const auto* bytes = static_cast<const uint32_t*>(buffer->map());
@@ -637,8 +663,7 @@ public:
                 moved += std::abs(values[i][0]) + std::abs(values[i][1]) > .0001f;
             }
             guides->unmap(); require(covered > 100 && moved > 100, "Camera change did not reach streamed geometry/upscaler guides");
-            width = 321; height = 217;
-            require(bool(executor.compile(context.device, graph, width, height, log)), log); draw();
+            rebuildAndDraw(321, 217);
             RenderGraph empty; empty.addNode("FinalBlitPass", "Empty"); empty.markOutput("Empty.color");
             require(bool(executor.compile(context.device, empty, width, height, log)), log);
             for (uint32_t frame = 0; frame <= executor.subsystemHost()->frameSlotCount(); ++frame) { draw(); }
