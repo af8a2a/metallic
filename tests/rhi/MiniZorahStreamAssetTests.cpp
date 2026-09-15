@@ -442,6 +442,157 @@ public:
 METALLIC_REGISTER_RHI_TEST(StreamMetadataVBufferTest);
 METALLIC_REGISTER_RHI_TEST(MiniZorahVBufferTest);
 
+class MiniZorahGroundCoverageTest final : public RhiTest {
+public:
+    MiniZorahGroundCoverageTest() { type = RhiTestType::Rendering; name = "minizorah_ground_coverage"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        const char* enabled = std::getenv("METALLIC_TEST_MINIZORAH");
+        if (!enabled || std::string_view(enabled) != "1") { return RhiTestResult::skip("Requires MiniZorah cache"); }
+        try {
+            RenderSampleLoadResult sample;
+            std::string log;
+            require(loadBuiltInRenderSample("gpu-driven-minizorah-vbuffer", sample, log), log);
+            auto& graph = sample.graph;
+            const auto node = graph.findNode("GPUDriven")->id;
+            auto camera = graph.viewProperties().at("camera");
+            camera["eye"] = {64.801514f, 5.373773f, .592118f};
+            camera["center"] = {69.286797f, -.135649f, -4.914468f};
+            RenderView viewport;
+            require(viewport.setCameraProperties(camera), "Invalid ground camera");
+            StreamStartupObserver observer;
+            RenderGraphPreviewRenderer preview;
+            require(bool(preview.initialize(context.enableValidation, false, false)), preview.lastLog());
+            preview.bindRenderView(&viewport);
+            preview.setDebugObserver(&observer);
+            graph.setNodeRuntimeProperty(node, "visualization", "meshlet");
+            graph.markOutput("GPUDriven.color");
+            graph.markOutput("GPUDriven.visibility");
+            constexpr uint32_t width = 1074, height = 510;
+            const auto render = [&](const char* output = "GPUDriven.color") {
+                require(bool(preview.render(graph, width, height, output)), preview.lastLog());
+                observer.debug.poll();
+            };
+            Json report = Json::array();
+            const auto capture = [&](const char* label) {
+                render();
+                const auto colors = preview.pixels();
+                require(saveRgba8Png(context.outputDirectory / (std::string("Ground-") + label + ".png"),
+                    reinterpret_cast<const uint8_t*>(preview.pixels().data()), width, height, log), log);
+                render("GPUDriven.visibility");
+                std::ofstream pixels(context.outputDirectory / (std::string("Ground-") + label + ".bin"), std::ios::binary);
+                pixels.write(reinterpret_cast<const char*>(preview.pixels().data()), preview.pixels().size() * sizeof(uint32_t));
+                report.push_back({{"case", label}, {"streaming", observer.latest}});
+                std::ofstream out(context.outputDirectory / "GroundReport.json"); out << report.dump(2);
+                std::printf("[Ground] %s\n", label); std::fflush(stdout);
+                return colors;
+            };
+            for (uint32_t frame = 0; frame < 240; ++frame) { render(); }
+            require(observer.latest.value("terminalReady", false), "Ground camera terminal cut is incomplete");
+            const auto baseline = capture("default");
+            graph.setNodeRuntimeProperty(node, "instanceHzbCull", false);
+            graph.setNodeRuntimeProperty(node, "meshletHzbCull", false);
+            for (uint32_t frame = 0; frame < 8; ++frame) { render(); }
+            require(capture("no-hzb") == baseline, "HZB changed converged ground coverage");
+            graph.setNodeRuntimeProperty(node, "instanceFrustumCull", false);
+            graph.setNodeRuntimeProperty(node, "meshletFrustumCull", false);
+            for (uint32_t frame = 0; frame < 8; ++frame) { render(); }
+            require(capture("no-cull") == baseline, "Frustum culling changed converged ground coverage");
+            graph.setNodeRuntimeProperty(node, "hybridRaster", false);
+            for (uint32_t frame = 0; frame < 8; ++frame) { render(); }
+            const auto hardware = capture("hardware");
+            uint32_t mismatch = 0;
+            for (size_t i = 0; i < baseline.size(); ++i) { mismatch += baseline[i] != hardware[i]; }
+            // HW/SW subpixel edge ties may select adjacent triangle IDs.
+            require(mismatch <= baseline.size() / 500, "HW/hybrid ground images diverged");
+            return RhiTestResult::pass("Ground camera culling and HW/hybrid coverage verified");
+        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MiniZorahGroundCoverageTest);
+
+class StreamReflectedWindingTest final : public RhiTest {
+public:
+    StreamReflectedWindingTest() { type = RhiTestType::Rendering; name = "stream_reflected_winding"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        try {
+            const auto path = std::filesystem::absolute(context.outputDirectory / "ReflectedTriangle.gltf");
+            const auto cache = path.parent_path() / "ReflectedTriangle.meshstream.bin";
+            const float positions[] = {-.8f, -.8f, 0, .8f, -.8f, 0, 0, .8f, 0};
+            { std::ofstream out(path.parent_path() / "ReflectedTriangle.bin", std::ios::binary);
+                out.write(reinterpret_cast<const char*>(positions), sizeof(positions)); }
+            Json asset = {{"asset", {{"version", "2.0"}}}, {"scene", 0},
+                {"scenes", {{{"nodes", {0, 1}}}}},
+                {"nodes", {{{"mesh", 0}, {"translation", {-1, 0, 0}}},
+                    {{"mesh", 0}, {"translation", {1, 0, 0}}, {"scale", {-1, 1, 1}}}}},
+                {"buffers", {{{"uri", "ReflectedTriangle.bin"}, {"byteLength", sizeof(positions)}}}},
+                {"bufferViews", {{{"buffer", 0}, {"byteLength", sizeof(positions)}}}},
+                {"accessors", {{{"bufferView", 0}, {"componentType", 5126}, {"count", 3},
+                    {"type", "VEC3"}, {"min", {-.8, -.8, 0}}, {"max", {.8, .8, 0}}}}},
+                {"meshes", {{{"primitives", {{{"attributes", {{"POSITION", 0}}}, {"material", 0}}}}}}},
+                {"materials", {{{"doubleSided", false}}}}};
+            { std::ofstream out(path); out << asset.dump(); }
+            std::string log;
+            require(scene::buildMeshletStreamAssetOffline({.sourcePath = path, .outputPath = cache}, log), log);
+            scene::Scene source;
+            require(source.loadStreamMetadata(path), source.lastLoadResult().error);
+            RenderGraphPreviewRenderer preview;
+            require(bool(preview.initialize(context.enableValidation, false, false)), preview.lastLog());
+            preview.bindRuntimeScene(&source);
+            RenderGraph graph;
+            Json camera = {{"eye", {0, 0, 5}}, {"center", {0, 0, 0}}, {"up", {0, 1, 0}},
+                {"znear", .01}, {"zfar", 10}, {"fovDegrees", 60}, {"reversedZ", true}};
+            graph.addNode("VisibilityBufferPass", "Raster", {{"path", path.generic_string()},
+                {"streamAssetPath", cache.generic_string()}, {"streamAssetOnly", true},
+                {"maxResidentPages", 4}, {"maxLockedFallbackPages", 4}, {"maxActiveGroups", 64},
+                {"maxGpuPageRequests", 64}, {"maxTraversalWorkers", 32}, {"maxTraversalWorkItems", 128},
+                {"autoLod", false}, {"instanceHzbCull", false}, {"meshletHzbCull", false},
+                {"meshletNormalConeCull", false}, {"hybridRaster", false}, {"camera", camera}});
+            graph.markOutput("Raster.visibility");
+            const auto node = graph.findNode("Raster")->id;
+            const auto render = [&]() {
+                require(bool(preview.render(graph, 128, 64, "Raster.visibility")), preview.lastLog());
+            };
+            for (uint32_t frame = 0; frame < 16; ++frame) { render(); }
+            const auto hardware = preview.pixels();
+            uint32_t covered = 0;
+            for (uint32_t y = 0; y < 64; ++y) {
+                for (uint32_t x = 0; x < 64; ++x) {
+                    const bool left = hardware[y * 128 + x] != 0;
+                    const bool right = hardware[y * 128 + 127 - x] != 0;
+                    require(left == right, "Reflected single-sided instance lost front-face coverage");
+                    covered += left;
+                }
+            }
+            require(covered > 64, "Winding fixture produced no useful front coverage");
+            for (bool cone : {false, true}) {
+                graph.setNodeRuntimeProperty(node, "meshletNormalConeCull", cone);
+                for (bool hybrid : {false, true}) {
+                    graph.setNodeRuntimeProperty(node, "hybridRaster", hybrid);
+                    graph.setNodeRuntimeProperty(node, "asyncSoftwareRaster", true);
+                    graph.setNodeRuntimeProperty(node, "softwareRasterMaxPixels", 1024.f);
+                    render();
+                    const auto actual = preview.pixels();
+                    uint32_t mismatch = 0, actualCovered = 0;
+                    for (size_t i = 0; i < hardware.size(); ++i) { mismatch += hardware[i] != actual[i]; actualCovered += actual[i] != 0; }
+                    require(mismatch == 0, "Reflected HW/SW or normal cone coverage/IDs differ: cone=" + std::to_string(cone) +
+                        " hybrid=" + std::to_string(hybrid) + " mismatch=" + std::to_string(mismatch) + " covered=" + std::to_string(actualCovered));
+                    camera["eye"] = {0, 0, -5};
+                    graph.setNodeRuntimeProperty(node, "camera", camera);
+                    render();
+                    require(std::all_of(preview.pixels().begin(), preview.pixels().end(), [](uint32_t id) { return id == 0; }),
+                        "Reflected single-sided instance did not reject back faces");
+                    camera["eye"] = {0, 0, 5};
+                    graph.setNodeRuntimeProperty(node, "camera", camera);
+                }
+            }
+            return RhiTestResult::pass("Reflected and regular instances preserve front/back coverage in HW/SW rasterization");
+        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamReflectedWindingTest);
+
 class StreamMetadataContractTest final : public RhiTest {
 public:
     StreamMetadataContractTest() { type = RhiTestType::Rendering; name = "stream_metadata_contract"; }

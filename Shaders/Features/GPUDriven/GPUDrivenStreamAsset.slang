@@ -3236,6 +3236,11 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
             group,
             localConeAxis,
             float3(0.0, 0.0, 1.0));
+        // Cofactors include the determinant sign. Match the corrected raster
+        // winding without changing authored normals used by material shading.
+        if (dot(cross(group.world0.xyz, group.world1.xyz), group.world2.xyz) < 0.0) {
+            worldConeAxis = -worldConeAxis;
+        }
         float3 viewDirection = safeNormalize(
             worldConeApex - rasterCamera.eye.xyz,
             -worldConeAxis);
@@ -3302,8 +3307,13 @@ uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStrea
     uint address = c.triangleBaseByte + triangle * 3u;
     uint3 indices = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));
     // Retain the existing malformed-index fallback in the stream HW decoder.
-    return uint3(indices.x < c.vertexCount ? indices.x : 0u,
+    indices = uint3(indices.x < c.vertexCount ? indices.x : 0u,
         indices.y < c.vertexCount ? indices.y : 0u, indices.z < c.vertexCount ? indices.z : 0u);
+    // A reflected instance reverses projected winding. Keep authored front
+    // faces front-facing in both hardware and software rasterization; the
+    // visibility ID still names the original payload triangle for shading.
+    bool reflected = dot(cross(c.group.world0.xyz, c.group.world1.xyz), c.group.world2.xyz) < 0.0;
+    return reflected ? indices.xzy : indices;
 }
 
 groupshared StreamRasterCluster g_StreamMeshCluster;
