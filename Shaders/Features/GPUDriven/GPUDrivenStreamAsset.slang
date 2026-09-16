@@ -3,6 +3,8 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 #include "WaveWorkDistribution.slang"
+#define VISIBILITY_TESSELLATION_STREAM 1
+#include "../VisibilityBuffer/VisibilityTessellation.slang"
 
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
@@ -136,8 +138,8 @@ struct GPUDrivenStreamAssetRasterBindings
     uint height;
     uint visibleInstanceCounterBuffer;
     uint gpuSceneInstanceBuffer;
-    uint padding0;
-    uint padding1;
+    uint tessellationBuffer;
+    float displacementBound;
     uint padding2;
 };
 
@@ -886,7 +888,7 @@ void gpuDrivenStreamAssetInstanceCullMain(
     }
 
     float3 center = instance.boundsCenterRadius.xyz;
-    float radius = max(instance.boundsCenterRadius.w, 0.000001);
+    float radius = max(instance.boundsCenterRadius.w, 0.000001) + bindings.displacementBound;
     GPUDrivenStreamAssetCameraData currentCamera = currentStreamCamera(params);
     if ((bindings.cullingFlags & (1u << 0u)) != 0u &&
         !streamSphereInsideFrustum(center, radius, currentCamera)) {
@@ -2086,7 +2088,7 @@ void buildStreamLodFrontier(
             DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
         if ((bindings[0].cullingFlags & 1u) != 0u &&
             !streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
-                max(instance.boundsCenterRadius.w, 0.000001), currentStreamCamera(params))) {
+                max(instance.boundsCenterRadius.w, 0.000001) + bindings[0].displacementBound, currentStreamCamera(params))) {
             instance.visible = 0u;
         }
     }
@@ -2696,7 +2698,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindings =
             DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
         if ((bindings[0].cullingFlags & 1u) != 0u && !streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
-                max(instance.boundsCenterRadius.w, 0.000001), currentStreamCamera(params))) { instance.visible = 0u; }
+                max(instance.boundsCenterRadius.w, 0.000001) + bindings[0].displacementBound, currentStreamCamera(params))) { instance.visible = 0u; }
     }
     if (instance.visible == 0u) { return; }
     if (push.activeBuildPhase == kActiveBuildPhaseClear) {
@@ -3563,7 +3565,7 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
         group.world2.xyz * localSphereCenter.z +
         group.world3.xyz;
     float worldScale = conservativeTransformScale(group.world0.xyz, group.world1.xyz, group.world2.xyz);
-    float worldSphereRadius = localSphereRadius * worldScale;
+    float worldSphereRadius = localSphereRadius * worldScale + rasterBindings.displacementBound;
     GPUDrivenStreamAssetCameraData rasterCamera = currentStreamCamera(params);
     if (testVisibility && (rasterBindings.cullingFlags & (1u << 2u)) != 0u &&
         !streamSphereInsideFrustum(
@@ -3574,7 +3576,7 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     }
 
     float coneCutoff = asfloat(pageWords[clusterWord + 19u]);
-    if (testVisibility && (instanceFlags & 2u) == 0u &&
+    if (testVisibility && rasterBindings.displacementBound == 0.0 && (instanceFlags & 2u) == 0u &&
         (rasterBindings.cullingFlags & (1u << 3u)) != 0u && coneCutoff < 0.9999) {
         float3 localConeApex = float3(
             asfloat(pageWords[clusterWord + 16u]),
@@ -3923,6 +3925,11 @@ void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, u
     uint item = hybridStreamClassifyBase(work);
     uint candidate = bins[item];
     uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> raster = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
+    if (raster[0].tessellationBuffer != 0xffffffffu) {
+        if (lane == 0u) { hybridClassifyCluster(bins, 0u, record, candidate); }
+        return;
+    }
     if (lane == 0u) {
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> params =
             DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
@@ -4445,3 +4452,5 @@ uint gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, ui
     if (!frontFace && input.doubleSided == 0u) { discard; }
     return visibilityId;
 }
+
+#include "../VisibilityBuffer/VisibilityTessellationStream.slang"

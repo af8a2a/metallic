@@ -76,7 +76,7 @@ void gpuDrivenPreviewInstanceCullMain(
     float3 center = transformPoint(transform, instance.localBoundingSphere.xyz);
     float radius = max(
         instance.localBoundingSphere.w * transformMaxScale(transform),
-        0.000001);
+        0.000001) + params.displacementBound;
     CameraData camera = cullingCamera(params);
 
     if ((params.cullingFlags & kCullInstanceFrustum) != 0 &&

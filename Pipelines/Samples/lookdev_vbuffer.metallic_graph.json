@@ -165,6 +165,11 @@
             "id": 7,
             "src": "AutoExposure.color",
             "dst": "FinalBlit.source"
+        },
+        {
+            "id": 8,
+            "src": "VBuffer.domain",
+            "dst": "Deferred.domain"
         }
     ],
     "outputs": []

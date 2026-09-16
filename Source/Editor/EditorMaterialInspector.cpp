@@ -128,6 +128,11 @@ void EditorApplication::drawMaterialInspector(int32_t materialIndex)
     color("Emission", edited.emissiveFactor, true);
 
     if (ImGui::CollapsingHeader("Surface details")) {
+        if (edited.displacementTexture.textureIndex >= 0) {
+            scalar("Displacement magnitude", edited.displacementMagnitude, -1000000.0f, 1000000.0f);
+            scalar("Displacement center", edited.displacementCenter, 0.0f, 1.0f);
+            ImGui::TextWrapped("Enable Material Displacement Tessellation in VBuffer. Magnitude uses world units; ray-traced shadows use the base mesh.");
+        }
         scalar("Normal scale", edited.normalTextureScale, -10.0f, 10.0f);
         scalar("Occlusion", edited.occlusionTextureStrength, 0.0f, 1.0f);
         if (ImGui::BeginCombo("Alpha mode", edited.alphaMode.c_str())) {
@@ -190,6 +195,7 @@ void EditorApplication::drawMaterialInspector(int32_t materialIndex)
         texture("Base color", properties.baseColorTexture);
         texture("Metallic / roughness", properties.metallicRoughnessTexture);
         texture("Normal", properties.normalTexture);
+        texture("Displacement", properties.displacementTexture);
         texture("Occlusion", properties.occlusionTexture);
         texture("Emission", properties.emissiveTexture);
         texture("Transmission", properties.transmissionTexture);

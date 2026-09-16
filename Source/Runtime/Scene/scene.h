@@ -222,6 +222,9 @@ struct RenderMaterial {
     std::string alphaMode = "OPAQUE";
     bool doubleSided = false;
     float normalTextureScale = 1.0f;
+    // GPU raster displacement in world units: (linear height.r - centre) * magnitude.
+    float displacementMagnitude = 0.0f;
+    float displacementCenter = 0.5f;
     float occlusionTextureStrength = 1.0f;
     float transmissionFactor = 0.0f;
     float ior = 1.5f;
@@ -243,6 +246,7 @@ struct RenderMaterial {
     RenderTextureInfo baseColorTexture;
     RenderTextureInfo metallicRoughnessTexture;
     RenderTextureInfo normalTexture;
+    RenderTextureInfo displacementTexture;
     RenderTextureInfo occlusionTexture;
     RenderTextureInfo emissiveTexture;
     RenderTextureInfo transmissionTexture;

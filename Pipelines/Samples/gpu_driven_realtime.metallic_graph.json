@@ -212,6 +212,11 @@
             "id": 16,
             "src": "Shadows.parameters",
             "dst": "Deferred.shadowParameters"
+        },
+        {
+            "id": 17,
+            "src": "VBuffer.domain",
+            "dst": "Deferred.domain"
         }
     ],
     "outputs": [],

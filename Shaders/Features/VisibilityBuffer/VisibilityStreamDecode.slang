@@ -62,3 +62,34 @@ bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<VisibleClu
     c = streamPagePosition(pages, base + local.z * positionStrideWords);
     return true;
 }
+
+// Optional shading streams. Position-only pages continue to use geometric
+// normals and zero UV; every optional range is validated before dereferencing.
+bool decodeStreamAttributes(VisibleClusterRecord record, uint triangle,
+    StructuredBuffer<StreamActiveGroup> groups, StructuredBuffer<uint> pages,
+    StructuredBuffer<uint2> pageTable, out float3 normals[3], out float2 uvs[3])
+{
+    for (uint i = 0; i < 3; ++i) { normals[i] = float3(0); uvs[i] = float2(0); }
+    uint page = (pageTable[groups[record.dataIndex].pageIndex].x & 0xfffffff8u) / 4u;
+    uint bytes = pages[page + 12u], flags = pages[page + 14u];
+    uint cluster = page + pages[page + 9u] / 4u + record.clusterIndex * 24u;
+    uint address = page * 4u + pages[page + 11u] + pages[cluster + 2u] + triangle * 3u;
+    uint normalOffset = pages[page + 16u], uvOffset = pages[page + 17u];
+    uint required = pages[cluster] + pages[cluster + 1u];
+    bool hasNormal = (flags & 2u) != 0u && pages[page + 21u] == 2u && normalOffset % 4u == 0u &&
+        normalOffset <= bytes && required <= (bytes - normalOffset) / 16u;
+    bool hasUv = (flags & 4u) != 0u && pages[page + 22u] == 1u && uvOffset % 4u == 0u &&
+        uvOffset <= bytes && required <= (bytes - uvOffset) / 8u;
+    for (uint i = 0; i < 3; ++i) {
+        uint v = pages[cluster] + streamPageByte(pages, address + i);
+        if (hasNormal) {
+            uint n = page + normalOffset / 4u + v * 4u;
+            normals[i] = asfloat(uint3(pages[n], pages[n + 1u], pages[n + 2u]));
+        }
+        if (hasUv) {
+            uint uv = page + uvOffset / 4u + v * 2u;
+            uvs[i] = asfloat(uint2(pages[uv], pages[uv + 1u]));
+        }
+    }
+    return hasNormal && hasUv;
+}

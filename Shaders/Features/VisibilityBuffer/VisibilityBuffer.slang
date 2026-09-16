@@ -2,6 +2,7 @@ import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
+#include "VisibilityTessellation.slang"
 
 #ifndef GPU_DRIVEN_AMPLIFICATION_WAVE_OPS
 #define GPU_DRIVEN_AMPLIFICATION_WAVE_OPS 1
@@ -162,7 +163,7 @@ bool residentClusterVisible(uint meshletDrawIndex, GPUDrivenPreviewPush push)
                 SceneTransform transform = instanceTransform(instance);
                 visible = meshletVisibleInOcclusionPhase(
                     transformPoint(transform, meshlet.boundingSphere.xyz),
-                    max(meshlet.boundingSphere.w * transformMaxScale(transform), 0.0),
+                    max(meshlet.boundingSphere.w * transformMaxScale(transform), 0.0) + params.displacementBound,
                     visibility[meshletDraw.instanceIndex], params, push);
             }
         }
@@ -506,7 +507,7 @@ void visibilityClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupInde
     GroupMemoryBarrierWithGroupSync();
     if (g_PrebinVisible == 0u) { return; }
     uint bucket = visibleClusterDrawBucket(g_PrebinCluster.record);
-    if (bucket >= 2u) {
+    if (bucket >= 2u || params.tessellationBuffer != 0xffffffffu) {
         if (lane == 0u) { hybridClassifyCluster(bins, bucket, index, hybridFlatGroup(group)); }
         return;
     }
@@ -549,3 +550,5 @@ void visibilityClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupI
             bins[6], bins[7], bins[9], bins[10], bins[11], push.bufferShaderIndexBase);
     }
 }
+
+#include "VisibilityTessellationResident.slang"

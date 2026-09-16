@@ -50,6 +50,29 @@ ScenePathTracePush deferredViewPush()
 #define gStreamPages getResource<StructuredBuffer<uint>>(85)
 #define gStreamPageTable getResource<StructuredBuffer<uint2>>(86)
 #define gRasterFrameInfo getResource<ByteAddressBuffer>(87)
+#define gRasterDomain getResource<Texture2D<float4>>(88)
+
+float4 rasterDomain(uint2 pixel)
+{
+    return (gRasterFrameInfo.Load(104) & 1u) != 0u ? gRasterDomain.Load(int3(pixel, 0)) : float4(-1, -1, 0, 0);
+}
+float3 domainNormal(float packed)
+{
+    uint bits = uint(packed);
+    float2 xy = float2(bits & 4095u, (bits >> 12u) & 4095u) / 4095.0 * 2.0 - 1.0;
+    float3 n = float3(xy, 1.0 - abs(xy.x) - abs(xy.y));
+    if (n.z < 0.0) { n.xy = (1.0 - abs(n.yx)) * float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0); }
+    return normalize(n);
+}
+float rasterRayDistance(uint2 pixel, Ray ray, ScenePathTracePush push)
+{
+    float depth = gVisibilityDepth.Load(int3(pixel, 0));
+    float standard = push.clipOrtho.w > 0.5 ? 1.0 - depth : depth;
+    float viewDepth = push.upProjection.w > 0.5 ? lerp(push.clipOrtho.x, push.clipOrtho.y, standard)
+        : push.clipOrtho.x * push.clipOrtho.y / max(push.clipOrtho.y - standard * (push.clipOrtho.y - push.clipOrtho.x), 1e-6);
+    float3 forward = cameraForwardFrom(push.eye, push.center);
+    return (viewDepth - dot(ray.origin - push.eye.xyz, forward)) / max(dot(ray.direction, forward), 1e-6);
+}
 #define gMaterialBins getResource<StructuredBuffer<MaterialBin>>(70)
 #define gMaterialTiles getResource<StructuredBuffer<MaterialTile>>(71)
 #if METALLIC_DEFERRED_UPSCALER_GUIDES
@@ -74,7 +97,7 @@ float3 rasterWorldNormal(GPUDrivenPreviewInstance instance, float3 normal)
         (determinant < 0.0 ? -1.0 : 1.0), normal);
 }
 
-bool reconstructStreamSurface(uint recordIndex, uint triangleIndex, Ray ray, ScenePathTracePush push, out HitInfo hit)
+bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex, Ray ray, ScenePathTracePush push, out HitInfo hit)
 {
     hit = (HitInfo)0;
     if (gRasterFrameInfo.Load(92) == 0u) { return false; }
@@ -90,17 +113,42 @@ bool reconstructStreamSurface(uint recordIndex, uint triangleIndex, Ray ray, Sce
     float3 p = rasterWorldPosition(instance, a);
     hit.geometryNormal = rasterWorldNormal(instance, localNormal);
     hit.normal = hit.geometryNormal;
+    float4 domain = rasterDomain(pixel);
     float denominator = dot(ray.direction, hit.geometryNormal);
-    if (abs(denominator) < 1e-8) { return false; }
-    hit.t = dot(p - ray.origin, hit.geometryNormal) / denominator;
+    if (domain.x < 0.0 && abs(denominator) < 1e-8) { return false; }
+    hit.t = domain.x >= 0.0 ? rasterRayDistance(pixel, ray, push) : dot(p - ray.origin, hit.geometryNormal) / denominator;
     hit.position = ray.origin + ray.direction * hit.t;
+    float3 world[3] = {p, rasterWorldPosition(instance, b), rasterWorldPosition(instance, c)};
+    float3 e0 = world[1] - p, e1 = world[2] - p, crossEdges = cross(e0, e1);
+    float area = dot(crossEdges, crossEdges);
+    if (area < 1e-20) { return false; }
+    float2 yz = float2(dot(cross(hit.position - p, e1), crossEdges), dot(cross(e0, hit.position - p), crossEdges)) / area;
+    if (domain.x >= 0.0) {
+        yz = domain.xy;
+        hit.geometryNormal = domainNormal(domain.w);
+    }
+    float3 bary = float3(1.0 - yz.x - yz.y, yz);
+    float3 normals[3]; float2 uv[3];
+    for (uint vertex = 0; vertex < 3u; ++vertex) { normals[vertex] = float3(0); uv[vertex] = float2(0); }
+    if (domain.x >= 0.0) {
+        decodeStreamAttributes(record, triangleIndex, gStreamGroups, gStreamPages, gStreamPageTable, normals, uv);
+    }
+    hit.normal = domain.x >= 0.0 ? hit.geometryNormal : rasterWorldNormal(instance,
+        safeNormalize(normals[0] * bary.x + normals[1] * bary.y + normals[2] * bary.z, localNormal));
+    hit.texcoord = uv[0] * bary.x + uv[1] * bary.y + uv[2] * bary.z;
+    float2 du = uv[1] - uv[0], dv = uv[2] - uv[0];
+    float uvArea = abs(du.x * dv.y - du.y * dv.x);
+    hit.rayConeLodConstant = domain.x >= 0.0 ? domain.z : (uvArea > 1e-7 ? 0.5 * log2(uvArea / sqrt(area)) : 0.0);
+    float3 uvTangent, uvBitangent;
+    computeTriangleTangentSpace(world[0], world[1], world[2], uv[0], uv[1], uv[2], hit.normal, uvTangent, uvBitangent);
     hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
     // The position-only cook has scalar materials. Keep the authored geometric
     // normal stable; face-forward happens after material normal evaluation.
     float3 axis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
-    float3 tangent = safeNormalize(cross(axis, hit.normal), float3(1, 0, 0));
-    hit.tangent = float4(tangent, push.bitangentFlip);
-    hit.bitangent = cross(hit.normal, tangent) * push.bitangentFlip;
+    float3 tangent = safeNormalize(uvTangent - hit.normal * dot(hit.normal, uvTangent), safeNormalize(cross(axis, hit.normal), float3(1, 0, 0)));
+    float tangentSign = dot(cross(hit.normal, tangent), uvBitangent) < 0.0 ? -1.0 : 1.0;
+    hit.tangent = float4(tangent, tangentSign * push.bitangentFlip);
+    hit.bitangent = cross(hit.normal, tangent) * tangentSign * push.bitangentFlip;
     gRasterMaterials.GetDimensions(count, stride);
     if (instance.identity.y >= count) { return false; }
     hit.materialIndex = gRasterMaterials[instance.identity.y].identity.z;
@@ -119,7 +167,7 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
     if (!unpackVisibilityId(gVisibility.Load(int3(pixel, 0)), recordIndex, triangleIndex)) { return false; }
     uint residentCount = gRasterFrameInfo.Load(88);
     if (recordIndex >= residentCount) {
-        return reconstructStreamSurface(recordIndex - residentCount, triangleIndex, ray, push, hit);
+        return reconstructStreamSurface(pixel, recordIndex - residentCount, triangleIndex, ray, push, hit);
     }
     uint count, stride;
     gRasterRecords.GetDimensions(count, stride);
@@ -150,12 +198,7 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
     float3 p0 = rasterWorldPosition(instance, v0.position.xyz);
     float3 p1 = rasterWorldPosition(instance, v1.position.xyz);
     float3 p2 = rasterWorldPosition(instance, v2.position.xyz);
-    float depth = gVisibilityDepth.Load(int3(pixel, 0));
-    float zNear = push.clipOrtho.x, zFar = push.clipOrtho.y;
-    float standardDepth = push.clipOrtho.w > 0.5 ? 1.0 - depth : depth;
-    float viewDepth = push.upProjection.w > 0.5 ? lerp(zNear, zFar, standardDepth)
-        : zNear * zFar / max(zFar - standardDepth * (zFar - zNear), 0.000001);
-    hit.t = viewDepth / max(dot(ray.direction, cameraForwardFrom(push.eye, push.center)), 0.000001);
+    hit.t = rasterRayDistance(pixel, ray, push);
     float3 position = ray.origin + ray.direction * hit.t;
     float3 e0 = p1 - p0, e1 = p2 - p0, offset = position - p0;
     float3 crossEdges = cross(e0, e1);
@@ -163,14 +206,17 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
     if (determinant < 1e-20) { return false; }
     float b1 = dot(cross(offset, e1), crossEdges) / determinant;
     float b2 = dot(cross(e0, offset), crossEdges) / determinant;
+    float4 domain = rasterDomain(pixel);
+    if (domain.x >= 0.0) { b1 = domain.x; b2 = domain.y; }
     float3 bary = float3(1.0 - b1 - b2, b1, b2);
-    hit.position = p0 * bary.x + p1 * bary.y + p2 * bary.z;
+    hit.position = domain.x >= 0.0 ? position : p0 * bary.x + p1 * bary.y + p2 * bary.z;
     float3 localNormal = v0.normal.xyz * bary.x + v1.normal.xyz * bary.y + v2.normal.xyz * bary.z;
     float3 localGeometryNormal = safeTriangleNormal(v1.position.xyz - v0.position.xyz,
         v2.position.xyz - v0.position.xyz, safeNormalize(localNormal, float3(0, 1, 0)));
     localNormal = safeNormalize(localNormal, localGeometryNormal);
     hit.geometryNormal = rasterWorldNormal(instance, localGeometryNormal);
     hit.normal = rasterWorldNormal(instance, localNormal);
+    if (domain.x >= 0.0) { hit.geometryNormal = domainNormal(domain.w); hit.normal = hit.geometryNormal; }
     hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
     hit.texcoord = v0.texcoord * bary.x + v1.texcoord * bary.y + v2.texcoord * bary.z;
     float4 localTangent = v0.tangent * bary.x + v1.tangent * bary.y + v2.tangent * bary.z;
@@ -203,7 +249,7 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
     hit.triangleIndex = triangleIndex;
     float2 uv0 = v1.texcoord - v0.texcoord, uv1 = v2.texcoord - v0.texcoord;
     float uvArea = abs(uv0.x * uv1.y - uv0.y * uv1.x);
-    hit.rayConeLodConstant = uvArea > 1e-7 ? 0.5 * log2(uvArea / sqrt(determinant)) : 0.0;
+    hit.rayConeLodConstant = domain.x >= 0.0 ? domain.z : (uvArea > 1e-7 ? 0.5 * log2(uvArea / sqrt(determinant)) : 0.0);
     return true;
 }
 

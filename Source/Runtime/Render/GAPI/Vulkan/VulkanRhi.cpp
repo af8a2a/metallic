@@ -8966,6 +8966,8 @@ Result Device::createGraphicsPipeline(
         return makeError(Error::Unsupported);
     }
     const bool hasColorFormat = desc.colorFormat != Format::Unknown;
+    const uint32_t colorCount = desc.secondColorFormat != Format::Unknown ? 2u : (hasColorFormat ? 1u : 0u);
+    if (colorCount == 2u && !hasColorFormat) { return makeError(Error::InvalidArgument); }
     const bool hasDepthStencilFormat = desc.depthStencilFormat != Format::Unknown;
     if (!hasColorFormat && !hasDepthStencilFormat) {
         return makeError(Error::InvalidArgument);
@@ -9133,10 +9135,11 @@ Result Device::createGraphicsPipeline(
             VK_COLOR_COMPONENT_B_BIT |
             VK_COLOR_COMPONENT_A_BIT,
     };
+    const VkPipelineColorBlendAttachmentState colorBlendAttachments[] = {colorBlendAttachment, colorBlendAttachment};
     VkPipelineColorBlendStateCreateInfo colorBlendState{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .attachmentCount = hasColorFormat ? 1u : 0u,
-        .pAttachments = hasColorFormat ? &colorBlendAttachment : nullptr,
+        .attachmentCount = colorCount,
+        .pAttachments = colorBlendAttachments,
     };
     std::array<VkDynamicState, 2> dynamicStates = {
         VK_DYNAMIC_STATE_VIEWPORT,
@@ -9167,12 +9170,12 @@ Result Device::createGraphicsPipeline(
         }
     }
 
-    const VkFormat colorFormat = toVkFormat(desc.colorFormat);
+    const VkFormat colorFormats[] = {toVkFormat(desc.colorFormat), toVkFormat(desc.secondColorFormat)};
     const VkFormat depthStencilFormat = toVkFormat(desc.depthStencilFormat);
     VkPipelineRenderingCreateInfo renderingInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-        .colorAttachmentCount = hasColorFormat ? 1u : 0u,
-        .pColorAttachmentFormats = hasColorFormat ? &colorFormat : nullptr,
+        .colorAttachmentCount = colorCount,
+        .pColorAttachmentFormats = colorFormats,
         .depthAttachmentFormat = depthStencilFormat,
     };
     VkPipelineCreateFlags2CreateInfo bindlessPipelineFlags{

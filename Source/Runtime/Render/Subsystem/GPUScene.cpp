@@ -235,6 +235,9 @@ uint64_t materialFingerprint(const scene::RenderMaterial& material)
     hashString(hash, material.alphaMode);
     hashValue(hash, material.doubleSided);
     hashValue(hash, material.normalTextureScale);
+    hashValue(hash, material.displacementMagnitude);
+    hashValue(hash, material.displacementCenter);
+    hashTextureInfo(hash, material.displacementTexture);
     hashValue(hash, material.occlusionTextureStrength);
     hashValue(hash, material.transmissionFactor);
     hashValue(hash, material.ior);

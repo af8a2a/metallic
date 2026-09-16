@@ -213,6 +213,8 @@ constexpr std::array kMaterialScalarFields{
     std::pair{"roughnessFactor", &RenderMaterial::roughnessFactor},
     std::pair{"alphaCutoff", &RenderMaterial::alphaCutoff},
     std::pair{"normalTextureScale", &RenderMaterial::normalTextureScale},
+    std::pair{"displacementMagnitude", &RenderMaterial::displacementMagnitude},
+    std::pair{"displacementCenter", &RenderMaterial::displacementCenter},
     std::pair{"occlusionTextureStrength", &RenderMaterial::occlusionTextureStrength},
     std::pair{"transmissionFactor", &RenderMaterial::transmissionFactor},
     std::pair{"ior", &RenderMaterial::ior},

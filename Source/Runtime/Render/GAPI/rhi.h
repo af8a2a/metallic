@@ -1031,6 +1031,8 @@ struct GraphicsPipelineDesc {
     // Full-subgroup mode is accepted only with a fixed required subgroup size.
     bool taskRequireFullSubgroups = false;
     Format colorFormat = Format::Unknown;
+    // Optional second MRT; single-target callers leave this Unknown.
+    Format secondColorFormat = Format::Unknown;
     Format depthStencilFormat = Format::Unknown;
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
     RasterizationState rasterization;

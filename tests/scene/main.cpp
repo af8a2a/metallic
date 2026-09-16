@@ -5143,6 +5143,8 @@ TEST(SceneEditing, MaterialProperties)
     changed.roughnessFactor = 0.2f;
     changed.emissiveFactor = float3(2.0f, 4.0f, 6.0f);
     changed.normalTextureScale = -0.2f;
+    changed.displacementMagnitude = -0.6f;
+    changed.displacementCenter = 0.3f;
     changed.occlusionTextureStrength = 0.3f;
     changed.transmissionFactor = 0.4f;
     changed.ior = 1.7f;
@@ -5190,6 +5192,8 @@ TEST(SceneEditing, MaterialProperties)
     invalid.roughnessFactor = std::numeric_limits<float>::quiet_NaN();
     reject(invalid);
     invalid = changed; invalid.metallicFactor = 1.01f; reject(invalid);
+    invalid = changed; invalid.displacementMagnitude = std::numeric_limits<float>::infinity(); reject(invalid);
+    invalid = changed; invalid.displacementCenter = -0.1f; reject(invalid);
     invalid = changed; invalid.emissiveFactor.x = -1.0f; reject(invalid);
     invalid = changed; invalid.ior = 0.9f; reject(invalid);
     invalid = changed; invalid.thicknessFactor = -1.0f; reject(invalid);
@@ -5218,6 +5222,8 @@ TEST(SceneEditing, MaterialDocumentRoundTrip)
     changed.roughnessFactor = 0.25f;
     changed.emissiveFactor = float3(2.0f, 4.0f, 8.0f);
     changed.normalTextureScale = 0.75f;
+    changed.displacementMagnitude = 0.35f;
+    changed.displacementCenter = 0.7f;
     changed.occlusionTextureStrength = 0.45f;
     changed.transmissionFactor = 0.35f;
     changed.ior = 1.8f;

@@ -1868,7 +1868,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     result = device.createBindlessHeap(
         BindlessHeapDesc{
             .maxSamplers = 0,
-            .maxSampledImages = 4,
+            .maxSampledImages = 4u + std::min(desc.rasterMaterialTextureCapacity, 4096u),
             .maxBuffers = 64u +
                 static_cast<uint32_t>(residentPageFrames_.size()),
         },

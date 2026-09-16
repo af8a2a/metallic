@@ -700,6 +700,9 @@ struct GPUDrivenPreviewGpuParams {
     uint32_t visibleMeshletCapacity = 0;
     uint32_t lodSelectionBuffer = UINT32_MAX;
     uint32_t lodSelectionEnabled = 0;
+    uint32_t tessellationBuffer = UINT32_MAX;
+    float displacementBound = 0.0f;
+    uint32_t tessellationPadding[2] = {};
 };
 
 struct GPUDrivenPreviewUserPush {
@@ -748,7 +751,7 @@ static_assert(sizeof(GPUDrivenPreviewGpuMeshlet) == sizeof(GPUSceneGpuMeshletRec
 static_assert(sizeof(GPUSceneGpuMeshletDrawRecord) == 16);
 static_assert(sizeof(GPUSceneGpuInstanceRecord) == 160);
 static_assert(sizeof(GPUSceneGpuGeometryRecord) == 96);
-static_assert(sizeof(GPUDrivenPreviewGpuParams) == 336);
+static_assert(sizeof(GPUDrivenPreviewGpuParams) == 352);
 static_assert(sizeof(GPUDrivenPreviewUserPush) == 120);
 
 struct SceneMaterialVisualizationPush {

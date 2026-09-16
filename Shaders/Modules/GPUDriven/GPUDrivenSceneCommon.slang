@@ -183,6 +183,9 @@ public struct GPUDrivenPreviewParams
     public uint visibleMeshletCapacity;
     public uint lodSelectionBuffer;
     public uint lodSelectionEnabled;
+    public uint tessellationBuffer;
+    public float displacementBound;
+    public uint2 tessellationPadding;
 };
 
 public uint residentLodRecordIndex(uint candidate, GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)

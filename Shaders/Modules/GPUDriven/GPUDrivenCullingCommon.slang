@@ -266,7 +266,7 @@ public bool meshletVisible(
     GPUDrivenPreviewParams params)
 {
     CameraData camera = cullingCamera(params);
-    float radius = max(meshlet.boundingSphere.w * transformMaxScale(transform), 0.0);
+    float radius = max(meshlet.boundingSphere.w * transformMaxScale(transform), 0.0) + params.displacementBound;
     float3 center = transformPoint(transform, meshlet.boundingSphere.xyz);
     if ((params.cullingFlags & kCullMeshletFrustum) != 0 &&
         radius > 0.0 &&
@@ -274,7 +274,7 @@ public bool meshletVisible(
         return false;
     }
 
-    if ((params.cullingFlags & kCullMeshletNormalCone) != 0 &&
+    if (params.displacementBound == 0.0 && (params.cullingFlags & kCullMeshletNormalCone) != 0 &&
         (meshletFlags & kInstanceDoubleSided) == 0 &&
         meshlet.coneApexCutoff.w < 0.9999) {
         float3 coneApex = transformPoint(transform, meshlet.coneApexCutoff.xyz);

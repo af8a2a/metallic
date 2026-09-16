@@ -614,6 +614,8 @@ public:
         if (visibilityDeferred_) {
             reflection.addTextureInput("visibility", "Resident GPUScene visibility IDs").sampledRead().format = Format::R32Uint;
             reflection.addTextureInput("depth", "Depth from the same visibility raster").sampledRead().format = Format::D32Sfloat;
+            auto& domain = reflection.addTextureInput("domain", "Optional displaced barycentrics and geometric normal").sampledRead().setOptional();
+            domain.format = Format::Unknown; // R32G32B32A32 when active, inexpensive dummy when disabled.
             reflection.addBufferInput("rasterInfo", "CPU-authored raster camera and scene identity")
                 .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
             if (properties().value("lightingMode", "reference") == "realtime") {
@@ -1081,6 +1083,7 @@ public:
             }
             baseBindings.push_back({.binding = 60, .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = 61, .kind = ComputeResourceBindingKind::SampledImage});
+            baseBindings.push_back({.binding = 88, .kind = ComputeResourceBindingKind::SampledImage});
             for (uint32_t binding = 62; binding <= 69; ++binding) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
@@ -1726,6 +1729,7 @@ public:
             boolProperty(context.properties(), "outputLinear", false) ? 1u : 0u;
         TextureView* visibilityView = nullptr;
         TextureView* visibilityDepthView = nullptr;
+        TextureView* domainView = nullptr;
         const GPUSceneGlobalBufferViews* deferredViews = nullptr;
         const ClusterLightGridSnapshot* deferredGrid = nullptr;
         const MeshletStreamDeferredGpuResourcesView* deferredStream = nullptr;
@@ -1745,6 +1749,12 @@ public:
             if (mapped == nullptr) { return makeError(Error::Failure); }
             std::memcpy(&info, mapped, sizeof(info));
             rasterInfo.buffer()->unmap();
+            const auto domain = context.inputTexture("domain");
+            if ((info.reserved & 1u) != 0u && (!domain.valid() || domain.texture()->desc().format != Format::Rgba32Sfloat)) {
+                spdlog::error("Displaced VBuffer requires the matching domain graph input");
+                return makeError(Error::InvalidArgument);
+            }
+            domainView = domain.valid() ? domain.view() : visibilityDepth.view();
             deferredFrameInfo = rasterInfo.buffer();
             if (auto* frame = context.commandBuffer().frameContext()) {
                 // rasterInfo is also CPU metadata for downstream passes. Bind an
@@ -1998,6 +2008,7 @@ public:
             }
             bindings.push_back({.binding = 60, .textureViews = &visibilityView, .textureViewCount = 1});
             bindings.push_back({.binding = 61, .textureViews = &visibilityDepthView, .textureViewCount = 1});
+            bindings.push_back({.binding = 88, .textureViews = &domainView, .textureViewCount = 1});
             const GPUSceneBufferView* views[] = {&deferredViews->vertices, &deferredViews->meshlets,
                 &deferredViews->meshletDraws, &deferredViews->meshletVertices, &deferredViews->meshletTriangleWords,
                 &deferredViews->geometries, &deferredViews->instances, &deferredViews->materials};

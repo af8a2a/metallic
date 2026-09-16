@@ -128,6 +128,20 @@ public:
     bool requiresStreamline() const override { return true; }
 };
 
+class GPUDrivenTessellationSample final : public RealtimeLightingSample {
+public:
+    std::string_view id() const override { return "gpu-driven-tessellation"; }
+    std::string_view name() const override { return "GPU Driven / Material Displacement"; }
+    std::string_view category() const override { return "GPU Driven"; }
+    std::string_view description() const override
+    {
+        return "GPU adaptive triangle patches with an authored height texture, deferred lighting and DLSS-SR. "
+            "Resident demo; see Documentation/GPUDrivenTessellation.md for the streaming cook.";
+    }
+    std::string scenePath() const override { return "Asset/Tessellation/DisplacedPlane.gltf"; }
+    std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_tessellation.metallic_graph.json"; }
+};
+
 class OpenPbrLookDevSample final : public RenderSample {
 public:
     std::string_view id() const override { return "openpbr-lookdev"; }
@@ -751,6 +765,7 @@ const RenderSample& gpuDrivenTerrainP1UnifiedSample()
 std::vector<const RenderSample*> builtInRenderSamples()
 {
     static const RealtimeLightingSample realtimeLighting;
+    static const GPUDrivenTessellationSample gpuDrivenTessellation;
     static const LightGridDebugSample lightGridDebug;
     static const HdrCalibrationSample hdrCalibration;
     static const OpenPbrLookDevSample openPbrLookDev;
@@ -763,6 +778,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const GPUDrivenMiniZorahVBufferSample gpuDrivenMiniZorahVBuffer;
     return {
         &realtimeLighting,
+        &gpuDrivenTessellation,
         &lightGridDebug,
         &hdrCalibration,
         &openPbrLookDev,

@@ -79,6 +79,7 @@ uint64_t graphicsPipelineStateHash(const GraphicsPipelineDesc& desc)
     hash = hashValue(hash, desc.fragmentShader != nullptr ? desc.fragmentShader->contentHash() : 0ull);
     hash = hashString(hash, desc.fragmentEntryPoint);
     hash = hashValue(hash, static_cast<uint32_t>(desc.colorFormat));
+    hash = hashValue(hash, static_cast<uint32_t>(desc.secondColorFormat));
     hash = hashValue(hash, static_cast<uint32_t>(desc.depthStencilFormat));
     hash = hashValue(hash, static_cast<uint32_t>(desc.topology));
     hash = hashValue(hash, static_cast<uint32_t>(desc.rasterization.cullMode));

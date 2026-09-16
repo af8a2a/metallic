@@ -1,5 +1,5 @@
 {
-    "name": "Realtime Clustered Deferred DLSS",
+    "name": "GPUDriven Material Displacement",
     "version": 1,
     "nodes": [
         {
@@ -11,28 +11,15 @@
                 "y": 250
             },
             "properties": {
-                "path": "Asset/meet_mat.glb",
+                "path": "Asset/Tessellation/DisplacedPlane.gltf",
                 "visualization": "none",
-                "instanceFrustumCull": true
-            }
-        },
-        {
-            "id": 7,
-            "name": "Shadows",
-            "type": "RayTracedShadowPass",
-            "position": {
-                "x": 420,
-                "y": 0
-            },
-            "properties": {
-                "sigmaDenoise": true,
-                "shadowLightIndex": -1,
-                "shadowBias": 0.01,
-                "shadowAngularRadius": 0.266,
-                "sigmaHistoryLength": 5,
-                "shadowLightRadius": 0.05,
-                "rayTracedShadows": true,
-                "shadowRayLength": 100000.0
+                "instanceFrustumCull": true,
+                "tessellation": true,
+                "tessellationEdgePixels": 1.0,
+                "tessellationMaxFactor": 8,
+                "enableMeshletStreaming": false,
+                "streamAssetPath": "Asset/MeshletCache/Tessellation/DisplacedPlane.meshstream.bin",
+                "autoLod": false
             }
         },
         {
@@ -44,12 +31,14 @@
                 "y": 250
             },
             "properties": {
-                "path": "Asset/meet_mat.glb",
+                "path": "Asset/Tessellation/DisplacedPlane.gltf",
                 "lightingMode": "realtime",
                 "exportUpscalerGuides": true,
                 "materialBinning": true,
                 "accumulate": false,
-                "outputLinear": true
+                "outputLinear": true,
+                "debugView": "final",
+                "debugDisableShadows": true
             }
         },
         {
@@ -160,26 +149,6 @@
             "dst": "FinalBlit.source"
         },
         {
-            "id": 13,
-            "src": "VBuffer.depth",
-            "dst": "Shadows.depth"
-        },
-        {
-            "id": 14,
-            "src": "VBuffer.rasterInfo",
-            "dst": "Shadows.rasterInfo"
-        },
-        {
-            "id": 15,
-            "src": "Shadows.shadow",
-            "dst": "Deferred.shadow"
-        },
-        {
-            "id": 16,
-            "src": "Shadows.parameters",
-            "dst": "Deferred.shadowParameters"
-        },
-        {
             "id": 17,
             "src": "VBuffer.domain",
             "dst": "Deferred.domain"
@@ -189,14 +158,14 @@
     "view": {
         "camera": {
             "eye": [
-                0.0,
-                1.35,
-                4.4
+                0,
+                -1.9,
+                3.0
             ],
             "center": [
-                0.0,
-                1.2,
-                0.0
+                0,
+                0,
+                0
             ],
             "up": [
                 0,
@@ -204,8 +173,8 @@
                 0
             ],
             "fovDegrees": 50.0,
-            "znear": 0.05,
-            "zfar": 1000.0,
+            "znear": 0.02,
+            "zfar": 20,
             "reversedZ": true,
             "projection": "perspective"
         },

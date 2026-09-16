@@ -5,6 +5,7 @@
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
 #include "Runtime/Render/ResidentMeshletLod.h"
 #include "Runtime/Render/HzbSpd.h"
+#include "Runtime/Render/GPUDrivenTessellation.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -303,6 +304,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .lowLatencyRequests = boolProperty(&properties, "lowLatencyRequests", true),
         .completionDrivenUploads = boolProperty(&properties, "completionDrivenUploads", true),
         .prefetchPages = boolProperty(&properties, "prefetchPages", true),
+        .rasterMaterialTextureCapacity = boolProperty(&properties, "tessellation", false) ? kGPUDrivenMaxMaterialTextures : 0u,
     };
 }
 
@@ -579,6 +581,8 @@ struct GPUDrivenPreviewBindingBundle {
     BindlessHandle hybridClusterHandle;
     BindlessHandle hybridPixelHandle;
     std::unique_ptr<Buffer> materialTextureRemapBuffer;
+    std::unique_ptr<Buffer> tessellationBuffer;
+    std::unique_ptr<Buffer> streamTessellationBuffer;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer;
     std::unique_ptr<Buffer> hzbSpdCounterBuffer;
     std::unique_ptr<Buffer> hzbSpdResetBuffer;
@@ -586,6 +590,7 @@ struct GPUDrivenPreviewBindingBundle {
     std::unique_ptr<BindlessHeap> heap;
     GPUSceneConsumerBindings gpuSceneBindings;
     BindlessHandle materialTextureRemapHandle;
+    BindlessHandle tessellationHandle;
     std::vector<GPUDrivenPreviewFrameSlotBindings> frameSlots;
     std::array<BindlessHandle, 2> hzbHandles;
     BindlessHandle depthImageHandle;
@@ -603,6 +608,8 @@ struct GPUDrivenPreviewRetiredViewResources {
     std::shared_ptr<VisibilityHybridRasterizer> hybridRasterizer;
     GPUDrivenPreviewCullingTargets cullingTargets;
     std::unique_ptr<Buffer> materialTextureRemapBuffer;
+    std::unique_ptr<Buffer> tessellationBuffer;
+    std::unique_ptr<Buffer> streamTessellationBuffer;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer;
     std::unique_ptr<Buffer> hzbSpdCounterBuffer;
     std::unique_ptr<Buffer> hzbSpdResetBuffer;
@@ -662,6 +669,12 @@ public:
             "Visibility pass depth and HZB source");
         depth.depthStencilWrite();
         depth.usage = depth.usage | TextureUsageBits::Sampled;
+        auto& domain = reflection.addTextureOutput("domain", "Displaced domain barycentrics and geometric normal");
+        domain.colorWrite();
+        // Inactive consumers are gated by rasterInfo; keep the graph port cheap
+        // without changing the viewport extent shared by this pass's outputs.
+        domain.format = tessellationEnabled() ? Format::Rgba32Sfloat : Format::R8Unorm;
+        domain.usage = domain.usage | TextureUsageBits::Sampled;
         auto& rasterInfo = reflection.addBufferOutput("rasterInfo", "Raster camera and resident GPUScene identity")
             .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
         rasterInfo.memoryLocation = MemoryLocation::HostUpload;
@@ -701,6 +714,10 @@ public:
             runtimeBoolSetting("freezeCullingCamera", "Freeze Culling Camera", false),
             runtimeBoolSetting("temporalJitter", "DLSS Temporal Jitter", false, true),
         };
+        auto tessellation = runtimeBoolSetting("tessellation", "Material Displacement Tessellation", false, true);
+        auto edgePixels = runtimeFloatSetting("tessellationEdgePixels", "Tessellation Edge (render px)", 8.0f, 1.0f, 256.0f, true);
+        auto factor = runtimeIntSetting("tessellationMaxFactor", "Tessellation Max Edge Factor", 4, 1, 8, true);
+        for (auto* setting : {&tessellation, &edgePixels, &factor}) { setting->rebuildGraph = true; settings.push_back(*setting); }
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 2.0f, 8.0f},
@@ -733,7 +750,8 @@ public:
             log = "VisibilityBufferPass requires taskShader, meshShader, geometryShader, and bindlessDescriptorHeap capabilities";
             return makeError(Error::Unsupported);
         }
-        amplificationWaveOps_ = capabilities.taskShaderSubgroupBallot;
+        amplificationWaveOps_ = capabilities.taskShaderSubgroupBallot &&
+            (!tessellationEnabled() || capabilities.computeSubgroupBallotArithmetic);
         amplificationWave32_ =
             amplificationWaveOps_ &&
             capabilities.subgroupSizeControl &&
@@ -843,14 +861,17 @@ public:
             ? runtimeScene->sceneGraph().structuralRevision()
             : 0;
         const uint64_t runtimeContentRevision = runtimeScene != nullptr
-            ? runtimeScene->contentRevision()
+            ? runtimeScene->sceneGraph().contentRevision()
             : 0;
         // Graph dimensions are display dimensions and can differ from the DLSS
         // render extent in frameWidth_/frameHeight_. Neither a layout resize nor
         // a resource-only rebuild should reopen the asset and discard residency.
         // ensureFrameResources() resizes the raster/HZB resources in execute().
+        // Material revisions are consumed by syncRuntimeGeometry/GPUScene. They
+        // must not reopen Streamer and discard the currently resident safe cut.
         if (visibilityPipelines_[0] != nullptr &&
             (drawTaskCount_ > 0 || streamEnabled_) &&
+            compiledTessellationKey_ == tessellationKey() &&
             compiledScene_ == runtimeScene &&
             sceneResourceIdentity_ == runtimeResourceIdentity &&
             sceneLifetimeRevision_ == runtimeLifetimeRevision &&
@@ -1054,6 +1075,7 @@ public:
                     : 0u,
                 .taskRequireFullSubgroups = amplificationWave32_,
                 .colorFormat = Format::R32Uint,
+                .secondColorFormat = tessellationEnabled() ? Format::Rgba32Sfloat : Format::Unknown,
                 .depthStencilFormat = Format::D32Sfloat,
                 .rasterization = RasterizationState{
                     .cullMode = doubleSided ? CullMode::None : CullMode::Back,
@@ -1113,6 +1135,7 @@ public:
             }
         }
 
+        compiledTessellationKey_ = tessellationKey();
         sceneResourceIdentity_ = runtimeResourceIdentity;
         sceneRevision_ = runtimeRevision;
         sceneVisibilityRevision_ = runtimeScene != nullptr ? runtimeScene->visibilityRevision() : 0;
@@ -1252,6 +1275,7 @@ public:
         info.residentRecordCount = residentRecordCapacity_;
         info.hasStreamGeometry = streamEnabled_ ? 1u : 0u;
         info.sceneIdentity = sceneResourceIdentity_;
+        info.reserved = tessellationEnabled() ? 1u : 0u;
         info.lightGridViewIndex = gpuSceneView_.index;
         info.lightGridViewGeneration = gpuSceneView_.generation;
         info.lightGridFrameSlot = activeFrameSlot_;
@@ -1552,14 +1576,20 @@ public:
     }
 
 private:
+    bool tessellationEnabled() const { return boolProperty(&properties(), "tessellation", false); }
+    std::string tessellationKey() const
+    {
+        return nlohmann::json::array({tessellationEnabled(), properties().value("tessellationEdgePixels", 8.0f),
+            properties().value("tessellationMaxFactor", 4)}).dump();
+    }
     bool hybridRasterEnabled() const
     {
-        return hybridRasterizer_ && boolProperty(&properties(), "hybridRaster", true);
+        return hybridRasterizer_ && !tessellationEnabled() && boolProperty(&properties(), "hybridRaster", true);
     }
 
     bool clusterPrebinEnabled() const
     {
-        return hybridRasterEnabled() && boolProperty(&properties(), "clusterPrebin", true);
+        return hybridRasterizer_ && (hybridRasterEnabled() || tessellationEnabled()) && boolProperty(&properties(), "clusterPrebin", true);
     }
 
     float softwareRasterMaxPixels() const
@@ -1607,6 +1637,8 @@ private:
         streamCullResetPipeline_.reset();
         streamInstanceCullPipeline_.reset();
         streamHybridQueueHandle_ = {};
+        streamTessellationHandle_ = {};
+        streamTessellationTextures_.clear();
         streamHybridClusterHandle_ = {};
         streamHybridPixelHandle_ = {};
         streamCandidateArgumentsHandle_ = {};
@@ -1673,6 +1705,7 @@ private:
         };
 
         Result result = allocateBuffer(streamHybridQueueHandle_, "hybrid queue");
+        if (result && tessellationEnabled()) { result = allocateBuffer(streamTessellationHandle_, "tessellation"); }
         if (result) { result = allocateBuffer(streamGPUSceneInstanceHandle_, "GPUScene instances"); }
         if (result) { result = allocateBuffer(streamHybridClusterHandle_, "hybrid clusters"); }
         if (result) { result = allocateBuffer(streamHybridPixelHandle_, "hybrid pixels"); }
@@ -1914,11 +1947,11 @@ private:
             std::unique_ptr<ShaderModule>* shader = nullptr;
         };
         const std::array<ShaderRequest, 11> requests{
-            ShaderRequest{kVisibilityBufferShaderModuleName, kVisibilityBufferAmplificationEntryPoint, true, &amplificationShader_},
-            ShaderRequest{kVisibilityBufferShaderModuleName, kVisibilityBufferMeshEntryPoint, true, &meshShader_},
-            ShaderRequest{kVisibilityBufferShaderModuleName, kVisibilityBufferMeshEntryPoint, true, &maskedMeshShader_},
-            ShaderRequest{kVisibilityBufferShaderModuleName, kVisibilityBufferFragmentEntryPoint, false, &fragmentShader_},
-            ShaderRequest{kVisibilityBufferShaderModuleName, kVisibilityBufferMaskedFragmentEntryPoint, false, &maskedFragmentShader_},
+            ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationTask" : kVisibilityBufferAmplificationEntryPoint, true, &amplificationShader_},
+            ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationMesh" : kVisibilityBufferMeshEntryPoint, true, &meshShader_},
+            ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationMesh" : kVisibilityBufferMeshEntryPoint, true, &maskedMeshShader_},
+            ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationFragment" : kVisibilityBufferFragmentEntryPoint, false, &fragmentShader_},
+            ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationFragment" : kVisibilityBufferMaskedFragmentEntryPoint, false, &maskedFragmentShader_},
             ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewResetEntryPoint, false, &resetShader_},
             ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewInstanceCullEntryPoint, false, &instanceCullShader_},
             ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewHzbEntryPoint, false, &hzbShader_},
@@ -1939,7 +1972,7 @@ private:
             if (isAmplification) {
                 macroDefines = &amplificationDefine;
                 macroDefineCount = 1u;
-            } else if (request.shader == &maskedMeshShader_) {
+            } else if (request.shader == &maskedMeshShader_ || (tessellationEnabled() && request.shader == &maskedFragmentShader_)) {
                 macroDefines = &maskedMeshDefine;
                 macroDefineCount = 1u;
             } else if (request.shader == &hzbSpdShader_) {
@@ -1964,9 +1997,13 @@ private:
                 shaderCompileBegin);
         }
         if (streamEnabled_) {
+            if (tessellationEnabled()) {
+                Result taskResult = createShader(device, kMeshletStreamShaderModuleName, "streamTessellationTask", true, streamTaskShader_, log);
+                if (!taskResult) { return taskResult; }
+            } else { streamTaskShader_.reset(); }
             const std::array<ShaderRequest, 4> streamRequests{
-                ShaderRequest{kMeshletStreamShaderModuleName, kMeshletStreamMeshEntryPoint, true, &streamMeshShader_},
-                ShaderRequest{kMeshletStreamShaderModuleName, kMeshletStreamFragmentEntryPoint, false, &streamFragmentShader_},
+                ShaderRequest{kMeshletStreamShaderModuleName, tessellationEnabled() ? "streamTessellationMesh" : kMeshletStreamMeshEntryPoint, true, &streamMeshShader_},
+                ShaderRequest{kMeshletStreamShaderModuleName, tessellationEnabled() ? "streamTessellationFragment" : kMeshletStreamFragmentEntryPoint, false, &streamFragmentShader_},
                 ShaderRequest{kMeshletStreamShaderModuleName, kMeshletStreamCullResetEntryPoint, false, &streamCullResetShader_},
                 ShaderRequest{kMeshletStreamShaderModuleName, kMeshletStreamInstanceCullEntryPoint, false, &streamInstanceCullShader_},
             };
@@ -2105,9 +2142,11 @@ private:
             return result;
         }
         GraphicsPipelineDesc pipelineDesc{
+            .taskShader = streamTaskShader_.get(),
             .meshShader = streamMeshShader_.get(),
             .fragmentShader = streamFragmentShader_.get(),
             .colorFormat = Format::R32Uint,
+            .secondColorFormat = tessellationEnabled() ? Format::Rgba32Sfloat : Format::Unknown,
             .depthStencilFormat = Format::D32Sfloat,
             .rasterization = RasterizationState{
                 .cullMode = CullMode::None,
@@ -2417,6 +2456,8 @@ private:
         retired->residentLods = residentLods_;
         retired->hybridRasterizer = hybridRasterizer_;
         retired->bindlessHeap = std::move(bindlessHeap_);
+        retired->tessellationBuffer = std::move(tessellationBuffer_);
+        retired->streamTessellationBuffer = std::move(streamTessellationBuffer_);
         retired->materialTextureRemapBuffer =
             std::move(materialTextureRemapBuffer_);
         retired->streamOwnerMaskBuffer = std::move(streamOwnerMaskBuffer_);
@@ -2630,6 +2671,13 @@ private:
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
         };
+        TextureHandle domain = context.outputTexture("domain");
+        if (tessellationEnabled()) {
+            transitionTexture(commandBuffer, *domain.texture(), ResourceState::ColorAttachment, ResourceState::ColorAttachment);
+        }
+        const RenderingAttachmentDesc colors[] = {visibilityAttachment, {
+            .view = domain.view(), .state = ResourceState::ColorAttachment,
+            .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}};
         const RenderingAttachmentDesc depthAttachment{
             .view = &depth,
             .state = ResourceState::DepthStencilAttachment,
@@ -2640,8 +2688,8 @@ private:
         if (!hasResidentGeometry) {
             commandBuffer.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
-                .colorAttachments = &visibilityAttachment,
-                .colorAttachmentCount = 1,
+                .colorAttachments = colors,
+                .colorAttachmentCount = tessellationEnabled() ? 2u : 1u,
                 .depthStencilAttachment = &depthAttachment,
             });
             commandBuffer.endRendering();
@@ -2676,10 +2724,10 @@ private:
         } else if (hybridRasterEnabled()) {
             beginHybridRaster(commandBuffer, reversedZ);
         }
-        const bool async = prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
+        const bool async = !tessellationEnabled() && prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
             context.supportsParallelCompute();
         const auto software = [&](CommandBuffer& commands) -> Result {
-            if (!prebin) { return {}; }
+            if (!prebin || tessellationEnabled()) { return {}; }
             auto profile = context.profileScope(commands, "Software raster");
             const BufferBarrierDesc acquires[] = {
                 {.buffer = &hybridRasterizer_->clusterBuffer(), .before = ResourceState::ShaderRead,
@@ -2704,8 +2752,8 @@ private:
             commands.beginDebugLabel({.name = "Hybrid raster: resident hardware clusters"});
             commands.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
-                .colorAttachments = &visibilityAttachment,
-                .colorAttachmentCount = 1,
+                .colorAttachments = colors,
+                .colorAttachmentCount = tessellationEnabled() ? 2u : 1u,
                 .depthStencilAttachment = &depthAttachment,
             });
             commands.setViewport(Viewport{
@@ -2977,6 +3025,7 @@ private:
                 // including when the view allocation itself remains unchanged.
                 bindingViewAllocationId_ = 0;
             }
+            if (tessellationEnabled()) { bindingViewAllocationId_ = 0; }
             sceneMaterialRevision_ = runtimeScene->materialRevision();
             invalidateHzbHistory();
         }
@@ -3142,6 +3191,10 @@ private:
             if (hybridResult) { hybridResult = heap.writeStorageBuffer(streamCandidateArgumentsHandle_, hybridRasterizer_->candidateArguments()); }
             if (!hybridResult) { return hybridResult; }
         }
+        if (tessellationEnabled()) {
+            Result tessResult = heap.writeStorageBuffer(streamTessellationHandle_, *streamTessellationBuffer_);
+            if (!tessResult) { return tessResult; }
+        }
         Result result = heap.writeSampledImage(
             streamVisibilityImageHandle_,
             *visibility.view(),
@@ -3205,6 +3258,8 @@ private:
                 .visibleInstanceCounterBuffer =
                     streamVisibleInstanceCounterHandle_.index,
                 .gpuSceneInstanceBuffer = streamGPUSceneInstanceHandle_.index,
+                .tessellationBuffer = tessellationEnabled() ? streamTessellationHandle_.index : UINT32_MAX,
+                .displacementBound = previousParams_.displacementBound,
             });
         if (!result || streamOwnerMaskBuffer_ == nullptr) {
             return result ? makeError(Error::InvalidArgument) : result;
@@ -3347,6 +3402,13 @@ private:
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
         };
+        TextureHandle domain = context.outputTexture("domain");
+        if (tessellationEnabled()) {
+            transitionTexture(commandBuffer, *domain.texture(), ResourceState::ColorAttachment, ResourceState::ColorAttachment);
+        }
+        const RenderingAttachmentDesc colors[] = {visibilityAttachment, {
+            .view = domain.view(), .state = ResourceState::ColorAttachment,
+            .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}};
         const RenderingAttachmentDesc depthAttachment{
             .view = &depth,
             .state = ResourceState::DepthStencilAttachment,
@@ -3397,11 +3459,11 @@ private:
         } else if (hybridRasterEnabled()) {
             beginHybridRaster(commandBuffer, reversedZ);
         }
-        const bool async = prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
+        const bool async = !tessellationEnabled() && prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
             (phase == GPUSceneCullPhase::Early || boolProperty(&properties(), "asyncLateRaster", false)) &&
             context.supportsParallelCompute();
         const auto software = [&](CommandBuffer& commands) -> Result {
-            if (!prebin) { return {}; }
+            if (!prebin || tessellationEnabled()) { return {}; }
             auto profile = context.profileScope(commands, "Software raster");
             const BufferBarrierDesc acquires[] = {
                 {.buffer = &hybridRasterizer_->clusterBuffer(), .before = ResourceState::ShaderRead,
@@ -3426,8 +3488,8 @@ private:
             commands.beginDebugLabel({.name = "Hybrid raster: stream hardware clusters"});
             commands.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
-                .colorAttachments = &visibilityAttachment,
-                .colorAttachmentCount = 1,
+                .colorAttachments = colors,
+                .colorAttachmentCount = tessellationEnabled() ? 2u : 1u,
                 .depthStencilAttachment = &depthAttachment,
             });
             commands.setViewport(Viewport{
@@ -3465,10 +3527,14 @@ private:
         return result;
     }
 
-    static std::vector<uint32_t> alphaTestTextureIndices(const scene::Scene& loadedScene)
+    std::vector<uint32_t> alphaTestTextureIndices(const scene::Scene& loadedScene) const
     {
         std::vector<uint32_t> indices;
         for (const scene::RenderMaterial& material : loadedScene.materials()) {
+            if (tessellationEnabled() && material.displacementTexture.textureIndex >= 0 &&
+                size_t(material.displacementTexture.textureIndex) < loadedScene.textures().size()) {
+                indices.push_back(uint32_t(material.displacementTexture.textureIndex));
+            }
             const int32_t textureIndex = material.baseColorTexture.textureIndex;
             if (material.alphaMode == "MASK" && textureIndex >= 0 &&
                 static_cast<size_t>(textureIndex) < loadedScene.textures().size()) {
@@ -3515,8 +3581,7 @@ private:
             std::string warning;
             bool decoded = false;
         };
-        // Opaque rasterization does not sample material textures. Retain only
-        // the base-color alpha images needed to preserve MASK coverage.
+        // Retain MASK coverage and explicitly authored displacement images.
         const std::vector<uint32_t> alphaTextureIndices = alphaTestTextureIndices(loadedScene);
         const size_t textureCount = alphaTextureIndices.size();
         const size_t hardwareThreads =
@@ -3732,7 +3797,7 @@ private:
         Result result = device_->createBindlessHeap(
             BindlessHeapDesc{
                 .maxSampledImages = 3u + static_cast<uint32_t>(materialTextures_.size()),
-                .maxBuffers = 7u + frameSlotCount_ * 11u +
+                .maxBuffers = 8u + frameSlotCount_ * 11u +
                     static_cast<uint32_t>(kGPUSceneGlobalBufferKindCount) +
                     (streamEnabled_ ? 3u : 0u),
             },
@@ -4014,8 +4079,62 @@ private:
             }
         }
 
+        if (tessellationEnabled()) {
+            result = createTessellationBuffers(bundle, log);
+            if (!result) { return result; }
+        }
         outBundle = std::move(bundle);
         return {};
+    }
+
+    Result createTessellationBuffers(GPUDrivenPreviewBindingBundle& bundle, std::string& log)
+    {
+        if (!gpuSceneSource_) { return makeError(Error::InvalidArgument); }
+        const auto materials = gpuSceneSource_->materials();
+        const auto makeData = [&](const std::vector<BindlessHandle>& handles) {
+            std::vector<uint32_t> descriptors(logicalTextureToMaterialTexture_.size(), UINT32_MAX);
+            for (size_t i = 0; i < descriptors.size(); ++i) {
+                const uint32_t mapped = logicalTextureToMaterialTexture_[i];
+                if (mapped < handles.size()) { descriptors[i] = handles[mapped].index; }
+            }
+            return buildTessellationData(materials, descriptors,
+                finiteOr(properties().value("tessellationEdgePixels", 8.0f), 8.0f),
+                uint32_t(std::clamp(properties().value("tessellationMaxFactor", 4), 1, 8)));
+        };
+        auto data = makeData(bundle.materialTextureHandles);
+        for (size_t i = 0; i < materials.size(); ++i) {
+            const auto& material = materials[i];
+            if (material.displacementMagnitude == 0.0f || material.displacementTexture.textureIndex < 0) { continue; }
+            if (streamEnabled_ && material.alphaMode != "OPAQUE") {
+                log = "Streamed displacement currently requires OPAQUE materials";
+                return makeError(Error::Unsupported);
+            }
+            if (data[16 + i * 16 + 3] == 0u) {
+                log = "Displacement material " + std::to_string(i) +
+                    " requires a decoded height texture within the texture budget and TEXCOORD_0";
+                return makeError(Error::InvalidArgument);
+            }
+        }
+        Result result = uploadStorageBuffer(*device_, data.data(), data.size() * sizeof(uint32_t),
+            bundle.tessellationBuffer, log, "Tessellation patterns and materials");
+        if (!result) { return result; }
+        result = allocateAndWriteBuffer(*bundle.heap, *bundle.tessellationBuffer,
+            bundle.tessellationHandle, log, "tessellation");
+        if (!result || !streamEnabled_) { return result; }
+        auto& heap = *streamRuntime_->bindlessHeap();
+        while (streamTessellationTextures_.size() < materialTextures_.size()) {
+            BindlessHandle handle;
+            result = heap.allocateSampledImage(handle);
+            if (!result) { return result; }
+            streamTessellationTextures_.push_back(handle);
+        }
+        for (size_t i = 0; i < materialTextures_.size(); ++i) {
+            result = heap.writeSampledImage(streamTessellationTextures_[i], *materialTextures_[i].view, ResourceState::ShaderRead);
+            if (!result) { return result; }
+        }
+        data = makeData(streamTessellationTextures_);
+        return uploadStorageBuffer(*device_, data.data(), data.size() * sizeof(uint32_t),
+            bundle.streamTessellationBuffer, log, "Stream tessellation patterns and materials");
     }
 
     void installBindingBundle(GPUDrivenPreviewBindingBundle&& bundle)
@@ -4027,6 +4146,9 @@ private:
         hybridPixelHandle_ = bundle.hybridPixelHandle;
         bindlessHeap_ = std::move(bundle.heap);
         materialTextureRemapBuffer_ = std::move(bundle.materialTextureRemapBuffer);
+        tessellationBuffer_ = std::move(bundle.tessellationBuffer);
+        streamTessellationBuffer_ = std::move(bundle.streamTessellationBuffer);
+        tessellationHandle_ = bundle.tessellationHandle;
         streamOwnerMaskBuffer_ = std::move(bundle.streamOwnerMaskBuffer);
         hzbSpdCounterBuffer_ = std::move(bundle.hzbSpdCounterBuffer);
         hzbSpdResetBuffer_ = std::move(bundle.hzbSpdResetBuffer);
@@ -4119,6 +4241,8 @@ private:
         retired->cullingTargets = std::move(cullingTargets_);
         retired->residentLods = residentLods_;
         retired->bindlessHeap = std::move(bindlessHeap_);
+        retired->tessellationBuffer = std::move(tessellationBuffer_);
+        retired->streamTessellationBuffer = std::move(streamTessellationBuffer_);
         retired->materialTextureRemapBuffer = std::move(materialTextureRemapBuffer_);
         retired->streamOwnerMaskBuffer = std::move(streamOwnerMaskBuffer_);
         retired->hzbSpdCounterBuffer = std::move(hzbSpdCounterBuffer_);
@@ -4948,6 +5072,8 @@ private:
         params.meshletCount = adaptiveMeshletRange_.count;
         params.lodSelectionBuffer = slot.lodSelectionHandle.index;
         params.lodSelectionEnabled = 1u;
+        params.tessellationBuffer = tessellationEnabled() ? tessellationHandle_.index : UINT32_MAX;
+        params.displacementBound = tessellationEnabled() && gpuSceneSource_ ? tessellationDisplacementBound(gpuSceneSource_->materials()) : 0.0f;
         void* mapped = slot.paramsBuffer->map();
         if (mapped == nullptr) {
             return makeError(Error::Failure);
@@ -4988,6 +5114,13 @@ private:
     std::unique_ptr<ComputePipeline> streamClusterRasterPipeline_;
     BindlessHandle streamHybridQueueHandle_;
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
+    std::unique_ptr<Buffer> tessellationBuffer_;
+    std::unique_ptr<Buffer> streamTessellationBuffer_;
+    BindlessHandle tessellationHandle_;
+    BindlessHandle streamTessellationHandle_;
+    std::vector<BindlessHandle> streamTessellationTextures_;
+    std::unique_ptr<ShaderModule> streamTaskShader_;
+    std::string compiledTessellationKey_;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer_;
     std::vector<GPUDrivenPreviewFrameSlotResources> frameSlotResources_;
     std::array<Buffer*, 2> hzbBuffers_{};

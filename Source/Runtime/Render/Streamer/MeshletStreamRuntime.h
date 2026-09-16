@@ -340,8 +340,8 @@ struct MeshletStreamGpuRasterBindings {
     uint32_t height = 0;
     uint32_t visibleInstanceCounterBuffer = 0;
     uint32_t gpuSceneInstanceBuffer = UINT32_MAX;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
+    uint32_t tessellationBuffer = UINT32_MAX;
+    float displacementBound = 0.0f;
     uint32_t padding2 = 0;
 };
 
@@ -458,6 +458,7 @@ struct MeshletStreamRuntimeDesc {
     bool lowLatencyRequests = true;
     bool completionDrivenUploads = true;
     bool prefetchPages = true;
+    uint32_t rasterMaterialTextureCapacity = 0;
 
     bool operator==(const MeshletStreamRuntimeDesc&) const = default;
 };

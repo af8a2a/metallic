@@ -3106,6 +3106,7 @@ bool Scene::compose(
             rebaseTexture(material.thicknessTexture);
             rebaseTexture(material.diffuseTransmissionTexture);
             rebaseTexture(material.diffuseTransmissionColorTexture);
+            rebaseTexture(material.displacementTexture);
             composed.materials_.push_back(std::move(material));
         }
         for (RenderPrimitive primitive : source.renderPrimitives()) {
@@ -3980,6 +3981,15 @@ bool Scene::loadInternal(
         material.alphaMode = gltfMaterial.alphaMode.empty() ? "OPAQUE" : gltfMaterial.alphaMode;
         material.doubleSided = gltfMaterial.doubleSided;
         material.normalTextureScale = static_cast<float>(gltfMaterial.normalTexture.scale);
+        // Project-authored extras, deliberately not a claimed glTF extension.
+        if (gltfMaterial.extras.Has("METALLIC_displacement")) {
+            const auto& displacement = gltfMaterial.extras.Get("METALLIC_displacement");
+            material.displacementMagnitude = readFloatValue(displacement, "magnitude", 0.0f);
+            if (!std::isfinite(material.displacementMagnitude)) { material.displacementMagnitude = 0.0f; }
+            material.displacementCenter = std::clamp(readFloatValue(displacement, "center", 0.5f), 0.0f, 1.0f);
+            if (!std::isfinite(material.displacementCenter)) { material.displacementCenter = 0.5f; }
+            readExtensionTextureInfo(displacement, "texture", material.displacementTexture);
+        }
         material.occlusionTextureStrength = static_cast<float>(gltfMaterial.occlusionTexture.strength);
         material.baseColorTexture = makeRenderTextureInfo(gltfMaterial.pbrMetallicRoughness.baseColorTexture);
         material.metallicRoughnessTexture = makeRenderTextureInfo(
@@ -4720,6 +4730,7 @@ bool materialPropertiesEqual(const RenderMaterial& lhs, const RenderMaterial& rh
         sameColor(lhs.emissiveFactor, rhs.emissiveFactor) && lhs.alphaCutoff == rhs.alphaCutoff &&
         lhs.alphaMode == rhs.alphaMode && lhs.doubleSided == rhs.doubleSided &&
         lhs.normalTextureScale == rhs.normalTextureScale && lhs.occlusionTextureStrength == rhs.occlusionTextureStrength &&
+        lhs.displacementMagnitude == rhs.displacementMagnitude && lhs.displacementCenter == rhs.displacementCenter &&
         lhs.transmissionFactor == rhs.transmissionFactor && lhs.ior == rhs.ior &&
         lhs.thicknessFactor == rhs.thicknessFactor && lhs.attenuationDistance == rhs.attenuationDistance &&
         sameColor(lhs.attenuationColor, rhs.attenuationColor) &&
@@ -4739,6 +4750,7 @@ bool validMaterialProperties(const RenderMaterial& properties)
         unit(properties.alphaCutoff) &&
         (properties.alphaMode == "OPAQUE" || properties.alphaMode == "MASK" || properties.alphaMode == "BLEND") &&
         std::isfinite(properties.normalTextureScale) && unit(properties.occlusionTextureStrength) &&
+        std::isfinite(properties.displacementMagnitude) && unit(properties.displacementCenter) &&
         unit(properties.transmissionFactor) && std::isfinite(properties.ior) && properties.ior >= 1.0f &&
         positive(properties.thicknessFactor) && positive(properties.attenuationDistance) &&
         color(properties.attenuationColor) && unit(properties.diffuseTransmissionFactor) &&
@@ -4759,6 +4771,8 @@ bool Scene::setMaterialProperties(int32_t materialIndex, const RenderMaterial& p
     current.alphaMode = properties.alphaMode;
     current.doubleSided = properties.doubleSided;
     current.normalTextureScale = properties.normalTextureScale;
+    current.displacementMagnitude = properties.displacementMagnitude;
+    current.displacementCenter = properties.displacementCenter;
     current.occlusionTextureStrength = properties.occlusionTextureStrength;
     current.transmissionFactor = properties.transmissionFactor;
     current.ior = properties.ior;
