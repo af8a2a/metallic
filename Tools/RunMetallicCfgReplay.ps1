@@ -5,6 +5,7 @@ param(
     [string[]]$Cases = @("m1", "m2", "quality"),
     [switch]$Realtime,
     [switch]$QualityWithoutValidation,
+    [ValidateSet('Default', 'Off', 'Early', 'All')][string]$RasterQueues = 'Default',
     [int]$TimeoutSeconds = 900
 )
 $ErrorActionPreference = "Stop"
@@ -16,7 +17,7 @@ if (Test-Path -LiteralPath $outputPath) { throw "Choose a new output directory" 
 $route = Get-Content -LiteralPath $replayPath -Raw | ConvertFrom-Json
 if ($route.protocol -ne "minizorah-cfg-roam-v1") { throw "Unexpected replay protocol" }
 New-Item -ItemType Directory -Path $outputPath | Out-Null
-$keys = @("METALLIC_TEST_MINIZORAH", "METALLIC_MINIZORAH_BENCH_CLAS", "METALLIC_MINIZORAH_BENCH_QUALITY", "METALLIC_MINIZORAH_REPLAY", "METALLIC_MINIZORAH_BENCH_REALTIME")
+$keys = @("METALLIC_TEST_MINIZORAH", "METALLIC_MINIZORAH_BENCH_CLAS", "METALLIC_MINIZORAH_BENCH_QUALITY", "METALLIC_MINIZORAH_REPLAY", "METALLIC_MINIZORAH_BENCH_REALTIME", "METALLIC_MINIZORAH_RASTER_QUEUES")
 $previous = @{}
 foreach ($key in $keys) { $previous[$key] = [Environment]::GetEnvironmentVariable($key, "Process") }
 function Get-ShaderTreeDigest {
@@ -37,6 +38,7 @@ $manifest = @{
     shaderTreeSha256 = Get-ShaderTreeDigest
     gitHead = (& git -C $repo rev-parse HEAD)
     realtime = [bool]$Realtime
+    rasterQueues = $RasterQueues
     qualityWithoutValidation = [bool]$QualityWithoutValidation
     start = (Get-Date).ToString('o')
 }
@@ -51,6 +53,7 @@ try {
         $env:METALLIC_MINIZORAH_BENCH_QUALITY = if ($case -eq 'quality') { '1' } else { '0' }
         $env:METALLIC_MINIZORAH_REPLAY = $replayPath
         $env:METALLIC_MINIZORAH_BENCH_REALTIME = if ($Realtime) { '1' } else { '0' }
+        $env:METALLIC_MINIZORAH_RASTER_QUEUES = if ($RasterQueues -eq 'Default') { $null } else { $RasterQueues }
         $validation = if ($case -eq 'quality' -and -not $QualityWithoutValidation) { '--rhi-validation' } else { '--rhi-no-validation' }
         Write-Output "Starting Metallic $case on the reference camera replay"
         $monitor = Start-Process nvidia-smi.exe -ArgumentList @('--query-gpu=timestamp,name,driver_version,utilization.gpu,memory.used,clocks.gr,temperature.gpu,power.draw', '--format=csv', '-l', '1') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $casePath 'Gpu.csv') -RedirectStandardError (Join-Path $casePath 'Gpu.stderr.txt')

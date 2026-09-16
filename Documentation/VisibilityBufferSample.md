@@ -13,7 +13,7 @@ cmake-build-release-visual-studio\Source\MetallicGPUDrivenSample.exe --smoke-tes
 ```text
 GPUScene → instance cull → compute cluster cull / stable bins
                              ├─ HW bins → AS / MS + visibility PS
-                             └─ SW bin  → async compute atomic depth/ID
+                             └─ SW bin  → compute atomic depth/ID
                                                         ↓ merge
                                                  R32Uint ID + D32 depth
                                                         ↓
@@ -33,7 +33,7 @@ GPUScene → instance cull → compute cluster cull / stable bins
 7. 可选的 `VisibilityBufferComposite.slang` 直接读取原始 ID / depth，输出 `GPUDriven.color`（Rgba8Unorm）供视口调试显示，不改变原始输出。关闭可视化时只清空 color，不绘制全屏三角形。内置图将 `GPUDriven.color` 连接到 `FinalBlit.source`，样例的 `previewOutput` 为自动呈现输出 `FinalBlit.color`，JSON 的 `outputs` 数组为空。原始 visibility / depth 仍是节点输出，可供后续 Pass 使用；整数 ID 应先经过可视化再呈现。
 
 两阶段 meshlet 划分通过重算不变的早期遮挡条件完成，不需要有容量上限的延后候选追加队列。
-默认由 compute 在两个阶段分类并生成稳定的硬件/软件列表，AS 仅间接消费对应硬件箱。`asyncSoftwareRaster=true` 时软件箱在独立 compute 队列执行，与硬件光栅重叠，在深度合并和 HZB 前通过 timeline semaphore 汇合；无独立队列时自动串行。`clusterPrebin=false` 保留 AS 扫描候选与 Mesh Shader 按三角形分流的对照路径。
+默认由 compute 在两个阶段分类并生成稳定的硬件/软件列表，AS 仅间接消费对应硬件箱。MiniZorah 的实时图和 VBuffer 诊断图默认 `asyncSoftwareRaster=false`：软光栅 compute 与硬件光栅在 graphics 队列执行，仍然使用混合光栅。设为 `true` 时 stream early 软件箱可在独立 compute 队列执行，与硬件光栅重叠，在深度合并和 HZB 前通过 timeline semaphore 汇合；stream late 还要求 `asyncLateRaster=true`（默认 false），避免少量补绘承担一次跨队列分支。resident 生产者仍由 `asyncSoftwareRaster` 同时控制两个阶段。无独立队列时自动串行。`clusterPrebin=false` 保留 AS 扫描候选与 Mesh Shader 按三角形分流的对照路径。队列对照与成本解释见 [StreamRasterCost.md](StreamRasterCost.md)。
 StreamAsset 的 cluster 使用同一阶段划分和保守遮挡规则。历史无效时全部通过早期遮挡测试，
 第二阶段始终读取本帧第一阶段构建的 HZB；相机切换、尺寸变化及场景修改沿用 GPUScene 的历史失效机制。
 

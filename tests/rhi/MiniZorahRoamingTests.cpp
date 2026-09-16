@@ -710,6 +710,14 @@ public:
             props["maxClasBuildClusters"] = 8192;
             props["coldPageRetentionFrames"] = 120;
             props["debugStreamingPages"] = false;
+            if (const char* queues = std::getenv("METALLIC_MINIZORAH_RASTER_QUEUES")) {
+                const std::string policy(queues);
+                checkRoam(policy == "Off" || policy == "Early" || policy == "All", "Invalid raster queue policy");
+                props["asyncSoftwareRaster"] = policy != "Off";
+                props["asyncLateRaster"] = policy == "All";
+            }
+            report["rasterQueues"] = {{"asyncSoftwareRaster", props.value("asyncSoftwareRaster", true)},
+                {"asyncLateRaster", props.value("asyncLateRaster", false)}};
             for (const char* key : {"screenSpacePagePriority", "viewDrivenPageDemand", "prefetchPages",
                      "lowLatencyRequests", "completionDrivenUploads", "measurePageLatency"}) { props[key] = true; }
             if (!replay.is_null()) {
@@ -914,7 +922,7 @@ public:
             std::ofstream output(context.outputDirectory / "Frames.jsonl");
             std::map<std::string, std::vector<double>> gpuByPhase, cpuByPhase, hostByPhase;
             uint32_t overlapCount = 0;
-            bool sawCompute = false;
+            bool sawAsyncRaster = false;
             for (uint32_t f = 0; f < frameCount; ++f) {
                 const auto& frame = frames[f];
                 const auto& stats = frame.stats;
@@ -938,7 +946,7 @@ public:
                     for (const auto& section : pass.sections) {
                         checkRoam(section.cpuOnly ? !section.gpuTimingAvailable : section.gpuTimingAvailable,
                             "Scope timing domain mismatch");
-                        sawCompute |= section.queue == QueueType::Compute;
+                        sawAsyncRaster |= section.name == "Software raster" && section.queue == QueueType::Compute;
                         sections.push_back({{"name", section.name}, {"parent", section.parent},
                             {"queue", section.cpuOnly ? "cpu" : section.queue == QueueType::Compute ? "compute" : "graphics"},
                             {"cpuOnly", section.cpuOnly}, {"gpuTimingAvailable", section.gpuTimingAvailable},
@@ -1008,7 +1016,9 @@ public:
                 report["phases"][phase] = {{"gpuMs", percentiles(values)},
                     {"cpuExecuteMs", percentiles(cpuByPhase[phase])}, {"hostFrameMs", percentiles(hostByPhase[phase])}};
             }
-            checkRoam(sawCompute && overlapCount > frameCount / 2, "Async compute/submission overlap not exercised");
+            checkRoam(sawAsyncRaster == props.value("asyncSoftwareRaster", true), "Raster queue policy not exercised");
+            checkRoam(overlapCount > frameCount / 2, "CPU recording/submission overlap not exercised");
+            report["sawAsyncRaster"] = sawAsyncRaster;
             if (clas) {
                 const auto& last = frames.back().stats.streaming.front();
                 checkRoam(last.clasPendingPages == 0 && last.clasResidentPages == last.residentPages,

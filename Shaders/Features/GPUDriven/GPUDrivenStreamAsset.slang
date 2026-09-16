@@ -2490,6 +2490,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
     float4 projection = float4(params.viewport.z, tan(params.viewport.w * 0.5), params.clipOrtho.z, params.lodPixelError);
     uint manual = params.enableGpuLodSelection != 0u ? 0xffffffffu : params.selectedLodLevel;
     uint count = 0u, tested = 0u, visited = 0u;
+    uint previousLevel = 0xffffffffu;
     uint tiles = topology[primitive.lodTileOffset];
     for (uint tile = 0u; tile < tiles;) {
         uint offset = primitive.lodTileOffset + 1u + tile * 10u;
@@ -2501,6 +2502,15 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         ++tile;
         uint tileCount = topology[offset + 9u];
         if (tileCount == 0u) { continue; }
+        // Ordered leaves contain one LOD level. Sibling tiles are independent;
+        // only a finer level can read the active flags written by this level.
+        // Prefix scans still synchronize LDS, but device state only needs to be
+        // published at the level boundary (and before the final mask pass).
+        uint level = topology[offset + 5u];
+        if (previousLevel != 0xffffffffu && level != previousLevel) {
+            AllMemoryBarrierWithGroupSync();
+        }
+        previousLevel = level;
         uint localGroup = topology[offset + 8u] + tileCount - 1u - min(lane, tileCount - 1u);
         bool active = false;
         if (lane < tileCount) {
@@ -2539,10 +2549,8 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         if (active) { state[sparse + 4u + count + rank] = localGroup; }
         count += added;
         tested += tileCount;
-        // Each tile belongs to one LOD level. All parents have strictly higher
-        // levels, so no lane in this tile depends on another lane's result.
-        AllMemoryBarrierWithGroupSync();
     }
+    AllMemoryBarrierWithGroupSync();
     uint selected = 0u;
     if (g_CooperativeMissingRoots == 0u) {
         for (uint index = lane; index < count; index += 64u) {

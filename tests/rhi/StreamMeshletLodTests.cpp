@@ -171,9 +171,9 @@ METALLIC_REGISTER_RHI_TEST(StreamMeshletLodReferenceTest);
 // Keep transitions consecutive: State is initialized only once for each GPU
 // algorithm, so pruning must clear yesterday's finer active bits and masks.
 void configureStreamLodCase(StreamLodFixture& fixture, bool large, uint32_t test,
-    uint32_t& manual, uint32_t& capacity, std::vector<uint8_t>& available)
+    uint32_t& manual, uint32_t& capacity, std::vector<uint8_t>& available, uint32_t leafCount = 256)
 {
-    fixture = StreamLodFixture{large};
+    fixture = StreamLodFixture{large, leafCount};
     manual = UINT32_MAX;
     capacity = static_cast<uint32_t>(fixture.groups.size());
     if (!large) {
@@ -210,7 +210,7 @@ void configureStreamLodCase(StreamLodFixture& fixture, bool large, uint32_t test
     case 3: fixture.instance.identity[3] = 0; break;
     case 5: case 7: fixture.drawable[root - 1] = 0; break;
     case 9: fixture.drawable[root] = 0; break;
-    case 11: case 18: fixture.view.projection[3] = 16.f; break;
+    case 11: case 18: fixture.view.projection[3] = 16.f * float(leafCount) / 256.f; break;
     case 12: fixture.view.projection[3] = .005f; break;
     case 13:
         fixture.view.forward[3] = 0;
@@ -443,12 +443,18 @@ public:
     {
         const auto small = runFixture(context, false);
         if (!small.passed) { return small; }
-        return runFixture(context, true);
+        const auto large = runFixture(context, true);
+        if (!large.passed) { return large; }
+        // Many sibling tiles per level exercise deferred device-memory
+        // publication, with the same CPU oracle and residency changes.
+        const auto tiled = runFixture(context, true, 4096);
+        if (!tiled.passed) { return tiled; }
+        return RhiTestResult::pass("545 linear/BVH/cooperative/view-driven/prefetch GPU-reference cuts across shared-parent, 511- and 8191-group fixtures");
     }
 private:
-    RhiTestResult runFixture(RhiTestContext& context, bool large)
+    RhiTestResult runFixture(RhiTestContext& context, bool large, uint32_t leafCount = 256)
     {
-        StreamLodFixture fixture{large};
+        StreamLodFixture fixture{large, leafCount};
         const uint32_t kGroupCount = static_cast<uint32_t>(fixture.groups.size());
         const uint32_t kRequestCapacity = kGroupCount + 2;
         const uint32_t kPriorityOffset = 16 + kRequestCapacity * 2;
@@ -481,7 +487,7 @@ private:
         MeshletStreamGpuPrimitive primitive;
         primitive.groupCount = kGroupCount;
         primitive.pageCount = kGroupCount;
-        primitive.lodLevelCount = large ? 9 : 3;
+        primitive.lodLevelCount = fixture.groups.back().level + 1;
         std::vector<MeshletLodBvhNode> nodes;
         std::string reason;
         std::vector<MeshletLodRefinementBounds> refinementBounds;
@@ -617,7 +623,7 @@ private:
             primitive.lodBvhNodeCount = useBvh ? static_cast<uint32_t>(nodes.size()) : 0;
             uint32_t manual, capacity;
             std::vector<uint8_t> available;
-            configureStreamLodCase(fixture, large, test, manual, capacity, available);
+            configureStreamLodCase(fixture, large, test, manual, capacity, available, leafCount);
             // Keep a genuinely speculative leaf below the demand threshold;
             // missing ancestors no longer turn desired leaves into forecasts.
             if (prefetch && !large && (test == 1 || test == 9)) { fixture.view.projection[3] = 5.1f; }
@@ -648,7 +654,7 @@ private:
             const auto expectedState = selectStreamMeshletLodReference(demandMetrics, fixture.ranges, fixture.refined,
                 fixture.drawable, fixture.instance, fixture.view, manual, UINT32_MAX, available,
                 useBvh ? std::span<const MeshletLodBvhNode>(nodes) : std::span<const MeshletLodBvhNode>{});
-            const std::string caseLabel = std::string(large ? "511 groups, " : "shared parents, ") +
+            const std::string caseLabel = (large ? std::to_string(kGroupCount) + " groups, " : "shared parents, ") +
                 (viewDriven ? "view demand, case " : cooperative ? "cooperative, case " : useBvh ? "BVH, case " : "linear, case ") + std::to_string(test);
             MeshletStreamGpuInstance instance;
             instance.visible = fixture.instance.identity[3] != 0;
@@ -903,7 +909,7 @@ private:
         if (positivePriorities == 0) { return RhiTestResult::fail("Visible requests never generated screen benefit"); }
         if (speculativeRequests == 0) { return RhiTestResult::fail("Lookahead never requested a missing descendant"); }
         if (viewDemandReductions == 0) { return RhiTestResult::fail("View demand never pruned an offscreen refinement"); }
-        return RhiTestResult::pass("365 linear/BVH/cooperative/view-driven/prefetch GPU-reference cuts; tagged forecasts preserve demand prefix, quota, availability, sparse state and fallback");
+        return RhiTestResult::pass("GPU-reference cuts, requests, sparse state and fallback agree");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLodGpuTest);

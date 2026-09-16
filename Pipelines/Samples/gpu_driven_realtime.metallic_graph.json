@@ -44,7 +44,7 @@
                 "meshletFrustumCull": true,
                 "meshletNormalConeCull": false,
                 "hybridRaster": true,
-                "asyncSoftwareRaster": true,
+                "asyncSoftwareRaster": false,
                 "maxBlasBytes": 268435456
             }
         },

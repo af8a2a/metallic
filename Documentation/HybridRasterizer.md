@@ -18,7 +18,8 @@ Stream producer 在分类前以 setup → block count → block prefix → scatt
 
 - `hybridRaster` / **Hybrid Software Rasterization**：默认 `true`，关闭可做纯硬件对照。
 - `clusterPrebin` / **Cluster Prebinning**：默认 `true`。关闭后切回 Mesh Shader 按三角形追加的软件队列路径，便于比较；`hybridRaster=false` 切回纯硬件。
-- `asyncSoftwareRaster` / **Async Software Rasterization**：默认 `true`；需要 cluster 预分箱、独立 compute 队列和 RenderGraph 自提交路径。关闭可对照串行 cluster 光栅。没有独立队列、仅录制外部命令缓冲或关闭预分箱时自动串行。
+- `asyncSoftwareRaster` / **Async Software Rasterization**：Pass 属性缺省为 `true`，MiniZorah 实时/诊断 sample 显式设为 `false`。需要 cluster 预分箱、独立 compute 队列和 RenderGraph 自提交路径。关闭时软硬光栅在 graphics 队列串行执行。没有独立队列、仅录制外部命令缓冲或关闭预分箱时自动串行。
+- `asyncLateRaster` / **Async Late Software Rasterization**：默认 `false`，stream late 必须同时开启该项和 `asyncSoftwareRaster` 才建立异步分支。stream early 和 resident 两阶段只受 `asyncSoftwareRaster` 控制。MiniZorah 的队列选择与回放依据见 [StreamRasterCost.md](StreamRasterCost.md)。
 - `softwareRasterMaxPixels` / **Software Triangle Size (px)**：默认 8，范围 1–32；每个三角形屏幕包围盒的宽和高都不超过阈值才接受该 cluster。
 - Stream 硬件路径要求 Mesh Shader 与 bindless heap。当前 Slang 2026.1.2 对 fragment `SV_PrimitiveID` 还生成 SPIR-V `Geometry` capability，因此独立 `GPUDrivenStreamAssetPass` 与 VBuffer 一样要求设备启用 `geometryShader`。
 - 需要已启用的 `shaderInt64` 与 `shaderBufferInt64Atomics`，以及 1–8 位 `subPixelPrecisionBits`；不满足时保留完整硬件路径。
@@ -28,7 +29,7 @@ Stream producer 在分类前以 setup → block count → block prefix → scatt
 - GPU 捕获包含 clear、stable cluster bins、software triangles、merge 区段。Debug checkpoint 将 Stream 的 `AfterStreamEarlyClusterCull` / `AfterStreamLateClusterCull` 与 `AfterStreamEarlyClassify` / `AfterStreamLateClassify` 分开计时；和旧版本比较时应合计剔除与分类。分箱检查点提供 `AfterResidentEarlyBins`、`AfterResidentLateBins`、`AfterStreamEarlyBins`、`AfterStreamLateBins`；资源 `hybrid.<pass>.clusters` 与 `hybrid.<pass>.arguments` 可读回计数和列表。
 - Cluster buffer 前 16 个 uint 为 header：0–4 为各箱计数，5 为容量，6–7 为尺寸，8 为阈值浮点位，9 为 Reversed-Z，10 为子像素精度，11 为软件像素描述符，12 为候选数，14 为溢出计数。Stream 使用 13 保存每 active group 的 record 槽数，15 保存本次实际 active group 数。箱 `b` 的有效 record ID 位于 `16 + b*C` 起的 `header[b]` 项。
 
-该实现使用 cluster 级 compute 预分箱，并保留硬件深度附件与软件合并步骤。软件通过独立 compute 队列与硬件并行，二者仍使用各自的深度存储并在汇合后合并。实际重叠程度和性能收益取决于 GPU 调度、场景中的软硬工作量及额外提交成本；需要在目标场景测量。
+该实现使用 cluster 级 compute 预分箱，并保留硬件深度附件与软件合并步骤。开启异步时，软件通过独立 compute 队列与硬件并行，二者仍使用各自的深度存储并在汇合后合并。实际重叠程度和性能收益取决于 GPU 调度、场景中的软硬工作量及额外提交成本；需要在目标场景测量。
 
 ## 异步提交与资源生命周期
 

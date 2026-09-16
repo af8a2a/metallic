@@ -235,7 +235,7 @@ public:
                 {"groups", asset.groupCount()}, {"terminalGroups", asset.terminalGroups().size()},
                 {"independentComputeQueue", independent}, {"cases", DebugValue::array()}};
             std::array<size_t, 2> finestCount{}, coarsestCount{};
-            std::array<std::array<uint64_t, 2>, 2> finestGroupTests{}, coarsestGroupTests{};
+            std::array<std::array<uint64_t, 4>, 2> finestGroupTests{}, coarsestGroupTests{};
             for (uint32_t test = 0; test < 8; ++test) {
                 const bool ortho = test >= 4;
                 const uint32_t configuration = test % 4;
@@ -256,11 +256,12 @@ public:
                 if (fullTarget.groups.empty()) { return RhiTestResult::fail("Fully resident Bunny cut is empty"); }
                 std::vector<uint32_t> hardwareVisibility;
                 std::vector<uint32_t> hardwareDepth;
-                for (uint32_t producer = 0; producer < 2; ++producer) {
+                for (uint32_t producer = 0; producer < 4; ++producer) {
                     const bool hybrid = producer != 0;
                     graph.setNodeRuntimeProperty(node, "hybridRaster", hybrid);
                     graph.setNodeRuntimeProperty(node, "clusterPrebin", hybrid);
-                    graph.setNodeRuntimeProperty(node, "asyncSoftwareRaster", hybrid);
+                    graph.setNodeRuntimeProperty(node, "asyncSoftwareRaster", producer >= 2);
+                    graph.setNodeRuntimeProperty(node, "asyncLateRaster", producer == 3);
                     graph.setNodeRuntimeProperty(node, "softwareRasterMaxPixels", 8.f);
                     DebugValue header, pageTable, actual;
                     TraversalStats traversal;
@@ -341,8 +342,9 @@ public:
                     }
                     if (covered < 100) { return RhiTestResult::fail("Stream LOD lost Bunny visibility coverage"); }
                     const uint32_t branches = preview.executionStats().asyncComputeBranches;
-                    if (branches != (hybrid && independent ? 2u : 0u)) {
-                        return RhiTestResult::fail("Stream-only raster must fork exactly its two phases, without empty resident branches");
+                    const uint32_t expectedBranches = independent && producer >= 2 ? producer - 1u : 0u;
+                    if (branches != expectedBranches) {
+                        return RhiTestResult::fail("Stream-only raster queue policy selected the wrong async phases");
                     }
                     const auto visibility = preview.pixels();
                     size_t roundingTies = 0;
@@ -370,7 +372,7 @@ public:
                         }
                     }
                     report["cases"].push_back({{"case", test}, {"orthographic", ortho}, {"reversedZ", reversed},
-                        {"manualLevel", manual}, {"targetPixels", error}, {"hybrid", hybrid},
+                        {"manualLevel", manual}, {"targetPixels", error}, {"hybrid", hybrid}, {"producer", producer},
                         {"activeGroups", activeCount}, {"selectedClusters", selectedCount},
                         {"bvhVisitedNodes", traversal.visitedBvhNodes},
                         {"bvhTestedGroups", traversal.testedGroups},
@@ -451,7 +453,7 @@ public:
                 if (coarsestCount[projection] == 0 || coarsestCount[projection] >= finestCount[projection]) {
                     return RhiTestResult::fail("Stream manual coarse LOD did not reduce the Bunny cluster count");
                 }
-                for (uint32_t producer = 0; producer < 2; ++producer) {
+                for (uint32_t producer = 0; producer < 4; ++producer) {
                     if (coarsestGroupTests[projection][producer] >= capacity ||
                         coarsestGroupTests[projection][producer] >= finestGroupTests[projection][producer]) {
                         return RhiTestResult::fail("Stream BVH did not prune group tests for the coarse Bunny cut: coarse " +

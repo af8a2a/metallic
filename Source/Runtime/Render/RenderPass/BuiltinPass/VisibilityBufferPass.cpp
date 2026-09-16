@@ -683,6 +683,7 @@ public:
             runtimeBoolSetting("hybridRaster", "Hybrid Software Rasterization", true),
             runtimeBoolSetting("clusterPrebin", "Cluster Prebinning", true),
             runtimeBoolSetting("asyncSoftwareRaster", "Async Software Rasterization", true),
+            runtimeBoolSetting("asyncLateRaster", "Async Late Software Rasterization", false),
             runtimeFloatSetting("softwareRasterMaxPixels", "Software Triangle Size (px)", 8.0f, 1.0f, 32.0f),
             runtimeBoolSetting("autoLod", "Auto Meshlet LOD", autoLodFromProperties(properties())),
             runtimeFloatSetting("lodPixelError", "LOD Error (render px)", 1.5f, 0.05f, 16.0f),
@@ -3391,6 +3392,7 @@ private:
             beginHybridRaster(commandBuffer, reversedZ);
         }
         const bool async = prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
+            (phase == GPUSceneCullPhase::Early || boolProperty(&properties(), "asyncLateRaster", false)) &&
             context.supportsParallelCompute();
         const auto software = [&](CommandBuffer& commands) -> Result {
             if (!prebin) { return {}; }

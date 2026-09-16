@@ -8265,8 +8265,8 @@ public:
                     "mixed-producer warmup frame " +
                     std::to_string(frame) + " returned " + toString(result));
             }
-            if (device->capabilities().independentComputeQueue && executor.executionStats().asyncComputeBranches < 4) {
-                return RhiTestResult::fail("Mixed resident/stream rendering did not fork both early and late software raster branches");
+            if (device->capabilities().independentComputeQueue && executor.executionStats().asyncComputeBranches != 3) {
+                return RhiTestResult::fail("Mixed rendering must fork resident early/late and stream early under the default policy");
             }
             debugRuntime.poll();
         }
