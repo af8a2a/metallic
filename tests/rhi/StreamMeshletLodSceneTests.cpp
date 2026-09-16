@@ -3,6 +3,7 @@
 #include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
+#include "Runtime/Render/RenderView.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
@@ -59,6 +60,7 @@ public:
         RenderGraph graph;
         graph.addNode("VisibilityBufferPass", "VBuffer", {
             {"path", sourcePath.generic_string()}, {"streamAssetPath", assetPath.generic_string()},
+            {"streamAssetOnly", true},
             {"enableMeshletStreaming", true}, {"maxResidentPages", 64}, {"maxLockedFallbackPages", 64},
             {"maxPageUploadsPerFrame", 64}, {"maxActiveGroups", capacity},
             {"pageLoadConcurrency", 0},
@@ -72,7 +74,17 @@ public:
         graph.markOutput("VBuffer.color");
         graph.markOutput("VBuffer.depth");
         const auto node = graph.findNode("VBuffer")->id;
+        RenderView renderView;
+        preview.bindRenderView(&renderView);
         const auto render = [&](const char* output = "VBuffer.visibility") {
+            // Exercise the shared view used by the sample, including its Z
+            // convention (legacy pass-local camera defaults to reversed Z).
+            const auto* raster = graph.findNode(node);
+            auto properties = raster->properties;
+            properties.merge_patch(raster->runtimeProperties);
+            if (!renderView.setCameraProperties(properties.at("camera"))) {
+                throw std::runtime_error("Invalid stream test view");
+            }
             const auto result = preview.render(graph, kWidth, kHeight, output);
             debug.poll();
             if (!result) { throw std::runtime_error(preview.lastLog()); }
@@ -329,8 +341,8 @@ public:
                     }
                     if (covered < 100) { return RhiTestResult::fail("Stream LOD lost Bunny visibility coverage"); }
                     const uint32_t branches = preview.executionStats().asyncComputeBranches;
-                    if ((hybrid && independent) ? branches < 2 : branches != 0) {
-                        return RhiTestResult::fail("Stream raster producer did not use the expected queue topology");
+                    if (branches != (hybrid && independent ? 2u : 0u)) {
+                        return RhiTestResult::fail("Stream-only raster must fork exactly its two phases, without empty resident branches");
                     }
                     const auto visibility = preview.pixels();
                     size_t roundingTies = 0;
@@ -413,6 +425,26 @@ public:
                     graph.setNodeRuntimeProperty(node, "camera.center", {-.0168404f, .110154f, -.00153695f});
                     graph.setNodeRuntimeProperty(node, "camera.orthoHeight", .24f);
                     render();
+                }
+            }
+            // Moving away after drawing geometry must clear the previous IDs and
+            // depth even though no resident producer supplies the first raster.
+            graph.setNodeRuntimeProperty(node, "camera.projection", "perspective");
+            graph.setNodeRuntimeProperty(node, "camera.center", {-.0168404f, .110154f, 1.22f});
+            for (bool reversed : {false, true}) {
+                graph.setNodeRuntimeProperty(node, "camera.reversedZ", reversed);
+                render();
+                if (std::any_of(preview.pixels().begin(), preview.pixels().end(), [](uint32_t id) { return id != 0; })) {
+                    return RhiTestResult::fail("Stream-only raster retained visibility after looking away");
+                }
+                render("VBuffer.depth");
+                const uint32_t clearDepth = std::bit_cast<uint32_t>(reversed ? 0.f : 1.f);
+                if (std::any_of(preview.pixels().begin(), preview.pixels().end(),
+                        [clearDepth](uint32_t depth) { return depth != clearDepth; })) {
+                    const auto [minimum, maximum] = std::minmax_element(preview.pixels().begin(), preview.pixels().end());
+                    return RhiTestResult::fail("Stream-only raster did not clear depth: reversed=" +
+                        std::to_string(reversed) + ", expected=" + std::to_string(clearDepth) +
+                        ", min=" + std::to_string(*minimum) + ", max=" + std::to_string(*maximum));
                 }
             }
             for (uint32_t projection = 0; projection < 2; ++projection) {

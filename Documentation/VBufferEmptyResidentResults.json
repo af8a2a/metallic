@@ -1,0 +1,3790 @@
+{
+  "baselineCommit": "e118f5aaabea897f281136e9dc2beb94090a579e",
+  "fix": "Skip resident hybrid raster when the CPU-known resident candidate range is empty; preserve attachment clears.",
+  "timingInterpretation": "Concurrent GPU activity detected; deltas are observations, not isolated implementation speedups or regressions.",
+  "notes": [
+    "All 3000 frames per timing run are retained. Each phase has 300 frames.",
+    "Steady excludes only warmup. Scope paths distinguish each raster producer and child scope.",
+    "Parent GPU scopes span split submissions and queue waits; they are not sums of child shader times.",
+    "Unmodified shaders, replay, resolution, LOD target and budgets; no quality tradeoff.",
+    "Background Unity load changed sharply during the before/after session. Do not interpret the full timing reduction as isolated speedup."
+  ],
+  "before": {
+    "manifest": {
+      "replaySha256": "FEB79872154850AF32DB25A54BA3D22B48B9A04A10F7F2E8DADAF19F98F2F2D2",
+      "start": "2026-09-16T10:22:17.8669909+08:00",
+      "executableSha256": "F45A31B68A39B059D8FFC48572EFD77B15E5DA836B20F33922E273A077F7532C",
+      "gitHead": "e118f5aaabea897f281136e9dc2beb94090a579e",
+      "shaderTreeSha256": "326B12CC7E77DFAE4E401B3A23BA3B49E0F90D57915443922AA3B7AD68E1DC5C",
+      "qualityWithoutValidation": false,
+      "realtime": true,
+      "protocol": "minizorah-cfg-roam-v1",
+      "sourceSha256": "4DB2983A78A04E9D65CB652A3648F5AB2A303E391E385440DB458799E49A6416"
+    },
+    "runs": {
+      "m1": {
+        "status": "passed",
+        "configuration": {
+          "protocol": "minizorah-cfg-roam-v1",
+          "realtime": true,
+          "frameCount": 3000,
+          "resolution": [
+            1920,
+            1080
+          ],
+          "lodPixelError": 1.5,
+          "lighting": {
+            "autoExposure": true,
+            "environment": "Asset/ABeautifulGame/environment.hdr",
+            "sunDirection": [
+              0.6000000238418579,
+              -1.0,
+              -0.30000001192092896
+            ],
+            "sunIntensity": 10
+          },
+          "asset": {
+            "fileBytes": 60916791801,
+            "instances": 19144,
+            "pages": 1356959,
+            "path": "E:/metallic/Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin"
+          },
+          "validation": false
+        },
+        "phases": {
+          "steady": {
+            "hostFrameMs": {
+              "samples": 2700,
+              "mean": 32.00060281481481,
+              "p50": 30.31345,
+              "p95": 42.9671,
+              "p99": 76.7081,
+              "max": 389.5109
+            },
+            "gpuFrameMs": {
+              "samples": 2700,
+              "mean": 31.672396728888888,
+              "p50": 30.149056,
+              "p95": 41.964576,
+              "p99": 72.016032,
+              "max": 387.990016
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 2700,
+                "mean": 20.82869522962963,
+                "p50": 19.49648,
+                "p95": 29.755744,
+                "p99": 52.640512,
+                "max": 350.451168
+              }
+            }
+          },
+          "warmup": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 86.373482,
+              "p50": 30.8397,
+              "p95": 54.2386,
+              "p99": 273.4168,
+              "max": 15161.379
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 34.72750005333333,
+              "p50": 30.506912,
+              "p95": 46.895584,
+              "p99": 138.347296,
+              "max": 384.185056
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 23.491664533333335,
+                "p50": 19.709088,
+                "p95": 30.756832,
+                "p99": 47.344864,
+                "max": 371.559872
+              }
+            }
+          },
+          "start_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 29.917875,
+              "p50": 30.03885,
+              "p95": 38.1282,
+              "p99": 42.2555,
+              "max": 131.152
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 29.90182112,
+              "p50": 29.735632000000003,
+              "p95": 35.81696,
+              "p99": 39.698912,
+              "max": 130.147712
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 19.983100906666667,
+                "p50": 19.463376,
+                "p95": 24.470368,
+                "p99": 26.531456,
+                "max": 115.26848
+              }
+            }
+          },
+          "forward_1": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 33.67020333333333,
+              "p50": 32.51675,
+              "p95": 41.5082,
+              "p99": 76.3308,
+              "max": 159.4329
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 33.48503018666667,
+              "p50": 32.393008,
+              "p95": 40.783552,
+              "p99": 76.106272,
+              "max": 159.738048
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 21.772562026666666,
+                "p50": 20.966079999999998,
+                "p95": 28.81312,
+                "p99": 35.3136,
+                "max": 80.65168
+              }
+            }
+          },
+          "forward_2": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 33.64556133333333,
+              "p50": 30.28315,
+              "p95": 52.6693,
+              "p99": 172.8581,
+              "max": 228.6372
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 33.165266986666666,
+              "p50": 30.036288,
+              "p95": 46.886592,
+              "p99": 172.769984,
+              "max": 229.108768
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 21.35712576,
+                "p50": 19.174751999999998,
+                "p95": 33.210976,
+                "p99": 65.049536,
+                "max": 216.130816
+              }
+            }
+          },
+          "forward_3": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 30.772069,
+              "p50": 28.658,
+              "p95": 38.6425,
+              "p99": 72.2485,
+              "max": 313.5272
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 30.460764906666668,
+              "p50": 28.885664,
+              "p95": 35.518176,
+              "p99": 53.243168,
+              "max": 311.326016
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 20.60028736,
+                "p50": 18.469808,
+                "p95": 25.77488,
+                "p99": 43.247552,
+                "max": 302.837312
+              }
+            }
+          },
+          "far_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 30.295139666666667,
+              "p50": 28.740299999999998,
+              "p95": 41.8389,
+              "p99": 69.1344,
+              "max": 118.5826
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 29.798847893333335,
+              "p50": 28.771936,
+              "p95": 41.252448,
+              "p99": 56.553184,
+              "max": 108.954624
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 19.27680384,
+                "p50": 17.91176,
+                "p95": 29.571392,
+                "p99": 45.231968,
+                "max": 94.144512
+              }
+            }
+          },
+          "return_1": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 32.055833666666665,
+              "p50": 29.0438,
+              "p95": 43.1488,
+              "p99": 74.3683,
+              "max": 389.5109
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 32.02383861333333,
+              "p50": 29.03656,
+              "p95": 44.016928,
+              "p99": 74.22768,
+              "max": 387.990016
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 20.250491733333334,
+                "p50": 18.577248,
+                "p95": 31.635968,
+                "p99": 53.785504,
+                "max": 102.869216
+              }
+            }
+          },
+          "return_2": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 31.689363,
+              "p50": 30.051900000000003,
+              "p95": 46.1434,
+              "p99": 83.5518,
+              "max": 92.9039
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 31.05551872,
+              "p50": 29.827232000000002,
+              "p95": 42.967424,
+              "p99": 72.016032,
+              "max": 92.33632
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 20.7100544,
+                "p50": 19.30592,
+                "p95": 32.416384,
+                "p99": 59.1272,
+                "max": 83.85152
+              }
+            }
+          },
+          "return_3": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 34.442718,
+              "p50": 32.1742,
+              "p95": 46.6217,
+              "p99": 72.4656,
+              "max": 362.0761
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 33.818714453333335,
+              "p50": 32.207136,
+              "p95": 45.652448,
+              "p99": 62.983456,
+              "max": 360.192064
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 23.02196256,
+                "p50": 20.848736000000002,
+                "p95": 33.476896,
+                "p99": 52.640512,
+                "max": 350.451168
+              }
+            }
+          },
+          "return_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 31.516662333333333,
+              "p50": 31.147100000000002,
+              "p95": 40.3944,
+              "p99": 52.2605,
+              "max": 90.2563
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 31.34176768,
+              "p50": 31.327264,
+              "p95": 39.549888,
+              "p99": 52.09648,
+              "max": 89.970848
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 20.48586848,
+                "p50": 19.997999999999998,
+                "p95": 25.516032,
+                "p99": 34.296416,
+                "max": 56.86544
+              },
+              "Stream Begin": {
+                "samples": 300,
+                "mean": 9.269333333333334e-05,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 0.00336,
+                "max": 0.0072
+              },
+              "Stream traversal": {
+                "samples": 300,
+                "mean": 2.608568213333333,
+                "p50": 1.80776,
+                "p95": 6.357856,
+                "p99": 7.900064,
+                "max": 8.849888
+              },
+              "Stream traversal/Traversal setup": {
+                "samples": 300,
+                "mean": 2.88e-06,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 3.2e-05,
+                "max": 3.2e-05
+              },
+              "Stream traversal/Page updates": {
+                "samples": 300,
+                "mean": 0.013831893333333335,
+                "p50": 0.004832,
+                "p95": 0.011744,
+                "p99": 0.01216,
+                "max": 1.923712
+              },
+              "Stream traversal/LOD frontier": {
+                "samples": 300,
+                "mean": 1.5665675733333333,
+                "p50": 1.138448,
+                "p95": 4.125344,
+                "p99": 6.317312,
+                "max": 6.630432
+              },
+              "Stream traversal/LOD prefix": {
+                "samples": 300,
+                "mean": 0.10231253333333333,
+                "p50": 0.078848,
+                "p95": 0.089376,
+                "p99": 1.09232,
+                "max": 2.189152
+              },
+              "Stream traversal/LOD emit": {
+                "samples": 300,
+                "mean": 0.1377024,
+                "p50": 0.095168,
+                "p95": 0.123936,
+                "p99": 1.974272,
+                "max": 4.06432
+              },
+              "Stream traversal/Prefetch": {
+                "samples": 300,
+                "mean": 0.05234933333333333,
+                "p50": 0.01312,
+                "p95": 0.014112,
+                "p99": 0.424,
+                "max": 5.158112
+              },
+              "Stream traversal/Traversal finalize": {
+                "samples": 300,
+                "mean": 0.02560458666666667,
+                "p50": 0.007104,
+                "p95": 0.008416,
+                "p99": 0.010112,
+                "max": 2.119552
+              },
+              "Stream traversal/CLAS build": {
+                "samples": 300,
+                "mean": 0.004172693333333333,
+                "p50": 0.000128,
+                "p95": 0.005504,
+                "p99": 0.08656,
+                "max": 0.125472
+              },
+              "Alpha texture upload": {
+                "samples": 300,
+                "mean": 0.00011936,
+                "p50": 0.000128,
+                "p95": 0.000128,
+                "p99": 0.000128,
+                "max": 0.000256
+              },
+              "Initialize / light grid": {
+                "samples": 300,
+                "mean": 0.06324864,
+                "p50": 0.024352,
+                "p95": 0.025408,
+                "p99": 1.960384,
+                "max": 2.136288
+              },
+              "Resident LOD": {
+                "samples": 300,
+                "mean": 0.03529536,
+                "p50": 0.019776,
+                "p95": 0.020832,
+                "p99": 0.02352,
+                "max": 2.389376
+              },
+              "Early instance cull": {
+                "samples": 300,
+                "mean": 0.03370912,
+                "p50": 0.025056,
+                "p95": 0.028928,
+                "p99": 0.030848,
+                "max": 1.896896
+              },
+              "Resident early": {
+                "samples": 300,
+                "mean": 4.30916064,
+                "p50": 4.313664,
+                "p95": 6.874528,
+                "p99": 8.871712,
+                "max": 20.672384
+              },
+              "Resident early/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.17327445333333333,
+                "p50": 0.037408,
+                "p95": 1.20784,
+                "p99": 3.448352,
+                "max": 4.700736
+              },
+              "Resident early/Stable bins": {
+                "samples": 300,
+                "mean": 0.1673024,
+                "p50": 0.01248,
+                "p95": 1.718016,
+                "p99": 2.151456,
+                "max": 4.4224
+              },
+              "Resident early/Software raster": {
+                "samples": 300,
+                "mean": 0.003966293333333333,
+                "p50": 0.003968,
+                "p95": 0.004544,
+                "p99": 0.004896,
+                "max": 0.006208
+              },
+              "Resident early/Hardware raster": {
+                "samples": 300,
+                "mean": 0.09709482666666666,
+                "p50": 0.006176,
+                "p95": 0.259264,
+                "p99": 2.141056,
+                "max": 3.208544
+              },
+              "Resident early/Raster merge": {
+                "samples": 300,
+                "mean": 0.030236266666666668,
+                "p50": 0.025984,
+                "p95": 0.027008,
+                "p99": 0.029344,
+                "max": 1.574272
+              },
+              "Stream early": {
+                "samples": 300,
+                "mean": 5.304133226666667,
+                "p50": 4.527744,
+                "p95": 9.2392,
+                "p99": 15.14208,
+                "max": 42.84864
+              },
+              "Stream early/Candidates": {
+                "samples": 300,
+                "mean": 0.07075936,
+                "p50": 0.065056,
+                "p95": 0.069664,
+                "p99": 0.071616,
+                "max": 2.176672
+              },
+              "Stream early/Cluster cull": {
+                "samples": 300,
+                "mean": 0.05411797333333333,
+                "p50": 0.055168,
+                "p95": 0.061408,
+                "p99": 0.073632,
+                "max": 0.8816
+              },
+              "Stream early/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.7259389866666667,
+                "p50": 0.443104,
+                "p95": 2.9704,
+                "p99": 4.986368,
+                "max": 5.195456
+              },
+              "Stream early/Stable bins": {
+                "samples": 300,
+                "mean": 0.03618997333333333,
+                "p50": 0.026688,
+                "p95": 0.028224,
+                "p99": 0.029152,
+                "max": 2.12928
+              },
+              "Stream early/Software raster": {
+                "samples": 300,
+                "mean": 1.6650868266666667,
+                "p50": 1.05376,
+                "p95": 4.936608,
+                "p99": 6.458336,
+                "max": 8.337024
+              },
+              "Stream early/Hardware raster": {
+                "samples": 300,
+                "mean": 1.2437565866666667,
+                "p50": 0.7944,
+                "p95": 3.755392,
+                "p99": 5.463104,
+                "max": 7.045696
+              },
+              "Stream early/Raster merge": {
+                "samples": 300,
+                "mean": 0.03093472,
+                "p50": 0.032384,
+                "p95": 0.036832,
+                "p99": 0.0384,
+                "max": 0.039744
+              },
+              "Early HZB": {
+                "samples": 300,
+                "mean": 0.043932266666666664,
+                "p50": 0.039072,
+                "p95": 0.040832,
+                "p99": 0.042144,
+                "max": 1.01216
+              },
+              "Late instance cull": {
+                "samples": 300,
+                "mean": 0.033053226666666664,
+                "p50": 0.027168,
+                "p95": 0.027424,
+                "p99": 0.02944,
+                "max": 2.132032
+              },
+              "Resident late": {
+                "samples": 300,
+                "mean": 4.0176304,
+                "p50": 3.9798400000000003,
+                "p95": 6.744544,
+                "p99": 8.671616,
+                "max": 17.375072
+              },
+              "Resident late/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.0531568,
+                "p50": 0.037408,
+                "p95": 0.037472,
+                "p99": 0.04096,
+                "max": 2.163264
+              },
+              "Resident late/Stable bins": {
+                "samples": 300,
+                "mean": 0.030027413333333332,
+                "p50": 0.012448,
+                "p95": 0.01264,
+                "p99": 0.0136,
+                "max": 5.316352
+              },
+              "Resident late/Software raster": {
+                "samples": 300,
+                "mean": 0.00396448,
+                "p50": 0.003968,
+                "p95": 0.004544,
+                "p99": 0.004832,
+                "max": 0.005024
+              },
+              "Resident late/Hardware raster": {
+                "samples": 300,
+                "mean": 0.004415253333333333,
+                "p50": 0.004384,
+                "p95": 0.004608,
+                "p99": 0.004736,
+                "max": 0.005056
+              },
+              "Resident late/Raster merge": {
+                "samples": 300,
+                "mean": 0.048693546666666664,
+                "p50": 0.026208,
+                "p95": 0.02736,
+                "p99": 0.029696,
+                "max": 2.741376
+              },
+              "Stream late": {
+                "samples": 300,
+                "mean": 3.8131735466666665,
+                "p50": 3.664576,
+                "p95": 6.844064,
+                "p99": 7.646496,
+                "max": 9.378656
+              },
+              "Stream late/Candidates": {
+                "samples": 300,
+                "mean": 0.09183893333333333,
+                "p50": 0.056527999999999995,
+                "p95": 0.062464,
+                "p99": 1.767296,
+                "max": 3.675712
+              },
+              "Stream late/Cluster cull": {
+                "samples": 300,
+                "mean": 0.02131744,
+                "p50": 0.0264,
+                "p95": 0.032992,
+                "p99": 0.034752,
+                "max": 0.03488
+              },
+              "Stream late/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.007124586666666667,
+                "p50": 0.006944,
+                "p95": 0.011072,
+                "p99": 0.013088,
+                "max": 0.015104
+              },
+              "Stream late/Stable bins": {
+                "samples": 300,
+                "mean": 0.017360426666666668,
+                "p50": 0.017504,
+                "p95": 0.01952,
+                "p99": 0.019744,
+                "max": 0.020704
+              },
+              "Stream late/Software raster": {
+                "samples": 300,
+                "mean": 0.03569290666666667,
+                "p50": 0.016128,
+                "p95": 0.024192,
+                "p99": 0.025024,
+                "max": 4.30816
+              },
+              "Stream late/Hardware raster": {
+                "samples": 300,
+                "mean": 0.019562239999999998,
+                "p50": 0.017152,
+                "p95": 0.021984,
+                "p99": 0.026208,
+                "max": 0.729568
+              },
+              "Stream late/Raster merge": {
+                "samples": 300,
+                "mean": 0.024790826666666668,
+                "p50": 0.02624,
+                "p95": 0.027232,
+                "p99": 0.027648,
+                "max": 0.028192
+              },
+              "Late HZB": {
+                "samples": 300,
+                "mean": 0.08342784,
+                "p50": 0.041728,
+                "p95": 0.043712,
+                "p99": 2.14096,
+                "max": 4.3392
+              },
+              "Debug composite": {
+                "samples": 300,
+                "mean": 0.0016827733333333334,
+                "p50": 0.001664,
+                "p95": 0.001824,
+                "p99": 0.00192,
+                "max": 0.00208
+              },
+              "Stream feedback": {
+                "samples": 300,
+                "mean": 3.3066666666666666e-06,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 3.2e-05,
+                "max": 3.2e-05
+              },
+              "Stream End": {
+                "samples": 300,
+                "mean": 0.10716704,
+                "p50": 0.065472,
+                "p95": 0.065792,
+                "p99": 2.174624,
+                "max": 4.504192
+              }
+            }
+          }
+        },
+        "finalCut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 147410,
+          "earlyHardware": 26806,
+          "earlySoftware": 19172,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 42382,
+          "lateHardware": 200,
+          "lateSoftware": 361,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "finalStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 191882752,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 102254,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 191882752,
+          "clasMoved": 0,
+          "clasPages": 9290,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163839729,
+          "cpuWork": {
+            "coldAgeRejected": 0,
+            "coldCandidates": 0,
+            "coldClasLookups": 0,
+            "coldPressureScheduled": 0,
+            "coldRetentionScheduled": 0,
+            "coldScheduleFailed": 0,
+            "coldStateRejected": 0,
+            "coldVisited": 0,
+            "demandIncompleteProtected": 0,
+            "demandNewerThanFeedback": 0,
+            "demandRefreshed": 9290,
+            "demandUnused": 0,
+            "demandVisited": 9290,
+            "pendingFreePages": 0
+          },
+          "evictions": 0,
+          "feedbackFrame": 2998,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 150612224,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 9290,
+          "totalUploadBytes": 762880864,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "gpuCompetition": {
+          "available": true,
+          "other3dEngineProcesses": {
+            "dwm": {
+              "samples": 125,
+              "mean": 1.1342137917302546,
+              "p50": 1.1158389115528,
+              "p95": 1.41496572949292,
+              "p99": 1.53872779034109,
+              "max": 1.86111736101864
+            },
+            "Unity": {
+              "samples": 125,
+              "mean": 76.55044822852773,
+              "p50": 72.552892203458,
+              "p95": 97.3536361680481,
+              "p99": 97.8636914483475,
+              "max": 98.1412850560049
+            },
+            "ChatGPT": {
+              "samples": 125,
+              "mean": 0.9031317658790694,
+              "p50": 0.869001285984676,
+              "p95": 1.1979681363522,
+              "p99": 1.32629460081496,
+              "max": 1.46024373671765
+            },
+            "msedge": {
+              "samples": 8,
+              "mean": 0.30290030709455823,
+              "p50": 0.27414543162006,
+              "p95": 0.331841858440777,
+              "p99": 0.331841858440777,
+              "max": 0.669039080544216
+            },
+            "csrss": {
+              "samples": 20,
+              "mean": 0.2298561733703291,
+              "p50": 0.193418437302041,
+              "p95": 0.426512675379769,
+              "p99": 0.426512675379769,
+              "max": 0.464211647712189
+            },
+            "QQ": {
+              "samples": 82,
+              "mean": 0.18172086300733434,
+              "p50": 0.15565601503640802,
+              "p95": 0.290300702162776,
+              "p99": 0.398505549198938,
+              "max": 0.551494704659207
+            },
+            "Feishu": {
+              "samples": 1,
+              "mean": 0.137848045232988,
+              "p50": 0.137848045232988,
+              "p95": 0.137848045232988,
+              "p99": 0.137848045232988,
+              "max": 0.137848045232988
+            }
+          },
+          "note": "Per-engine activity samples, not whole-card ownership; absent/idle intervals are not emitted."
+        },
+        "process": {
+          "exitCode": -1,
+          "arguments": [
+            "--gtest_filter=RhiRendering.minizorah_fixed_baseline",
+            "--rhi-no-validation",
+            "--rhi-async-compute",
+            "--output-dir",
+            "\"E:\\metallic\\.cache\\vbuffer-empty-resident\\before\\m1\"",
+            "--rhi-realtime"
+          ],
+          "forcedCleanupAfterCapture": true
+        }
+      },
+      "m2": {
+        "status": "passed",
+        "configuration": {
+          "protocol": "minizorah-cfg-roam-v1",
+          "realtime": true,
+          "frameCount": 3000,
+          "resolution": [
+            1920,
+            1080
+          ],
+          "lodPixelError": 1.5,
+          "lighting": {
+            "autoExposure": true,
+            "environment": "Asset/ABeautifulGame/environment.hdr",
+            "sunDirection": [
+              0.6000000238418579,
+              -1.0,
+              -0.30000001192092896
+            ],
+            "sunIntensity": 10
+          },
+          "asset": {
+            "fileBytes": 60916791801,
+            "instances": 19144,
+            "pages": 1356959,
+            "path": "E:/metallic/Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin"
+          },
+          "validation": false
+        },
+        "phases": {
+          "steady": {
+            "hostFrameMs": {
+              "samples": 2700,
+              "mean": 10.053835185185186,
+              "p50": 8.1242,
+              "p95": 23.3052,
+              "p99": 45.5352,
+              "max": 304.6925
+            },
+            "gpuFrameMs": {
+              "samples": 2700,
+              "mean": 9.008768509629629,
+              "p50": 8.075568,
+              "p95": 10.296512,
+              "p99": 33.270112,
+              "max": 303.77856
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 2700,
+                "mean": 4.958032213333333,
+                "p50": 4.265024,
+                "p95": 6.364992,
+                "p99": 21.492896,
+                "max": 206.776576
+              }
+            }
+          },
+          "warmup": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 57.612686000000004,
+              "p50": 8.1602,
+              "p95": 16.6369,
+              "p99": 21.1349,
+              "max": 14704.7232
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.054424,
+              "p50": 8.105808,
+              "p95": 9.814304,
+              "p99": 10.7424,
+              "max": 17.528064
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.45204448,
+                "p50": 4.276608,
+                "p95": 5.957664,
+                "p99": 6.950112,
+                "max": 7.972288
+              }
+            }
+          },
+          "start_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.328154333333334,
+              "p50": 8.09665,
+              "p95": 12.8878,
+              "p99": 16.0859,
+              "max": 21.8757
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.9482170666666665,
+              "p50": 8.025808000000001,
+              "p95": 9.560192,
+              "p99": 10.14592,
+              "max": 12.659616
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.293114026666666,
+                "p50": 4.243024,
+                "p95": 5.745952,
+                "p99": 5.906304,
+                "max": 7.755264
+              }
+            }
+          },
+          "forward_1": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 11.611469666666666,
+              "p50": 9.10205,
+              "p95": 23.532,
+              "p99": 49.9445,
+              "max": 128.0194
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.856523413333333,
+              "p50": 8.788384,
+              "p95": 10.1784,
+              "p99": 11.713952,
+              "max": 21.741408
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 5.031980906666667,
+                "p50": 4.939328,
+                "p95": 6.297472,
+                "p99": 7.052832,
+                "max": 12.389376
+              }
+            }
+          },
+          "forward_2": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.030551333333333,
+              "p50": 8.098849999999999,
+              "p95": 10.2412,
+              "p99": 13.17,
+              "max": 19.1423
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.942406293333334,
+              "p50": 8.019472,
+              "p95": 9.541504,
+              "p99": 9.823872,
+              "max": 10.412128
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.2710702933333335,
+                "p50": 4.2561599999999995,
+                "p95": 5.715744,
+                "p99": 5.901696,
+                "max": 6.71216
+              }
+            }
+          },
+          "forward_3": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 7.802341666666667,
+              "p50": 7.699,
+              "p95": 9.003,
+              "p99": 11.1287,
+              "max": 31.2891
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.7116033066666665,
+              "p50": 7.630352,
+              "p95": 8.312736,
+              "p99": 8.611136,
+              "max": 9.817152
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 3.9587410133333334,
+                "p50": 3.8870240000000003,
+                "p95": 4.45392,
+                "p99": 4.721344,
+                "max": 6.086944
+              }
+            }
+          },
+          "far_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 7.478449666666666,
+              "p50": 7.40995,
+              "p95": 9.1696,
+              "p99": 11.5027,
+              "max": 13.3796
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.448802346666667,
+              "p50": 7.349247999999999,
+              "p95": 7.976864,
+              "p99": 8.501856,
+              "max": 9.318208
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 3.682230826666667,
+                "p50": 3.624032,
+                "p95": 3.982944,
+                "p99": 4.462496,
+                "max": 5.04672
+              }
+            }
+          },
+          "return_1": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 7.991985,
+              "p50": 7.9269,
+              "p95": 9.7735,
+              "p99": 12.869,
+              "max": 20.9281
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.959515626666667,
+              "p50": 7.876512,
+              "p95": 8.578304,
+              "p99": 9.460256,
+              "max": 22.0576
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.116216,
+                "p50": 3.997392,
+                "p95": 4.721952,
+                "p99": 5.35696,
+                "max": 18.085024
+              }
+            }
+          },
+          "return_2": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 11.491251,
+              "p50": 8.43795,
+              "p95": 25.6747,
+              "p99": 69.7784,
+              "max": 281.1706
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.311010773333333,
+              "p50": 8.345407999999999,
+              "p95": 9.695488,
+              "p99": 10.131072,
+              "max": 10.480992
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.49766368,
+                "p50": 4.33112,
+                "p95": 5.799424,
+                "p99": 6.106368,
+                "max": 6.490464
+              }
+            }
+          },
+          "return_3": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 12.03396,
+              "p50": 9.10865,
+              "p95": 41.1997,
+              "p99": 59.9383,
+              "max": 85.7974
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.979752213333333,
+              "p50": 9.119232,
+              "p95": 10.4192,
+              "p99": 11.527904,
+              "max": 15.414688
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 5.1105968,
+                "p50": 4.940272,
+                "p95": 6.499776,
+                "p99": 7.087872,
+                "max": 8.158016
+              }
+            }
+          },
+          "return_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 15.716354,
+              "p50": 9.16755,
+              "p95": 34.5402,
+              "p99": 48.0664,
+              "max": 304.6925
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 15.921085546666667,
+              "p50": 8.822256,
+              "p95": 34.302752,
+              "p99": 48.544288,
+              "max": 303.77856
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 9.660676373333333,
+                "p50": 4.912608,
+                "p95": 23.368704,
+                "p99": 33.34576,
+                "max": 206.776576
+              },
+              "Stream Begin": {
+                "samples": 300,
+                "mean": 8.544e-05,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 0.002944,
+                "max": 0.007296
+              },
+              "Stream traversal": {
+                "samples": 300,
+                "mean": 2.019107946666667,
+                "p50": 1.7924799999999999,
+                "p95": 3.626816,
+                "p99": 6.050944,
+                "max": 8.125696
+              },
+              "Stream traversal/Traversal setup": {
+                "samples": 300,
+                "mean": 3.413333333333333e-06,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 3.2e-05,
+                "max": 3.2e-05
+              },
+              "Stream traversal/Page updates": {
+                "samples": 300,
+                "mean": 0.013873813333333334,
+                "p50": 0.004784,
+                "p95": 0.010432,
+                "p99": 0.011776,
+                "max": 1.460576
+              },
+              "Stream traversal/LOD frontier": {
+                "samples": 300,
+                "mean": 1.2827818666666666,
+                "p50": 1.13384,
+                "p95": 2.14048,
+                "p99": 4.89264,
+                "max": 6.395424
+              },
+              "Stream traversal/LOD prefix": {
+                "samples": 300,
+                "mean": 0.10660554666666666,
+                "p50": 0.078784,
+                "p95": 0.089216,
+                "p99": 1.537728,
+                "max": 2.190976
+              },
+              "Stream traversal/LOD emit": {
+                "samples": 300,
+                "mean": 0.10331008,
+                "p50": 0.093344,
+                "p95": 0.1096,
+                "p99": 0.12976,
+                "max": 2.165568
+              },
+              "Stream traversal/Prefetch": {
+                "samples": 300,
+                "mean": 0.025840746666666668,
+                "p50": 0.013152,
+                "p95": 0.015328,
+                "p99": 0.411776,
+                "max": 0.417696
+              },
+              "Stream traversal/Traversal finalize": {
+                "samples": 300,
+                "mean": 0.006795413333333333,
+                "p50": 0.006432,
+                "p95": 0.008288,
+                "p99": 0.008512,
+                "max": 0.009152
+              },
+              "Stream traversal/CLAS build": {
+                "samples": 300,
+                "mean": 0.006861866666666667,
+                "p50": 0.000128,
+                "p95": 0.005504,
+                "p99": 0.10064,
+                "max": 0.947424
+              },
+              "Alpha texture upload": {
+                "samples": 300,
+                "mean": 0.00011733333333333333,
+                "p50": 0.000128,
+                "p95": 0.000128,
+                "p99": 0.000128,
+                "max": 0.00016
+              },
+              "Initialize / light grid": {
+                "samples": 300,
+                "mean": 0.03400576,
+                "p50": 0.024352,
+                "p95": 0.025376,
+                "p99": 0.221984,
+                "max": 2.17008
+              },
+              "Resident LOD": {
+                "samples": 300,
+                "mean": 0.024087786666666666,
+                "p50": 0.019776,
+                "p95": 0.02128,
+                "p99": 0.219456,
+                "max": 0.667392
+              },
+              "Early instance cull": {
+                "samples": 300,
+                "mean": 0.04911584,
+                "p50": 0.025024,
+                "p95": 0.027296,
+                "p99": 0.248256,
+                "max": 4.359808
+              },
+              "Resident early": {
+                "samples": 300,
+                "mean": 2.1951425066666665,
+                "p50": 0.176832,
+                "p95": 5.390368,
+                "p99": 17.052032,
+                "max": 196.385664
+              },
+              "Resident early/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.057496106666666665,
+                "p50": 0.037408,
+                "p95": 0.038496,
+                "p99": 0.285248,
+                "max": 2.176512
+              },
+              "Resident early/Stable bins": {
+                "samples": 300,
+                "mean": 0.012923626666666667,
+                "p50": 0.012448,
+                "p95": 0.012704,
+                "p99": 0.014304,
+                "max": 0.150144
+              },
+              "Resident early/Software raster": {
+                "samples": 300,
+                "mean": 0.00400736,
+                "p50": 0.004096,
+                "p95": 0.005056,
+                "p99": 0.005376,
+                "max": 0.005984
+              },
+              "Resident early/Hardware raster": {
+                "samples": 300,
+                "mean": 0.00726432,
+                "p50": 0.006144,
+                "p95": 0.0064,
+                "p99": 0.006496,
+                "max": 0.33488
+              },
+              "Resident early/Raster merge": {
+                "samples": 300,
+                "mean": 0.017664533333333333,
+                "p50": 0.014832,
+                "p95": 0.026144,
+                "p99": 0.026624,
+                "max": 0.026976
+              },
+              "Stream early": {
+                "samples": 300,
+                "mean": 2.7409573333333332,
+                "p50": 1.759232,
+                "p95": 7.11504,
+                "p99": 9.314464,
+                "max": 16.241088
+              },
+              "Stream early/Candidates": {
+                "samples": 300,
+                "mean": 0.06081482666666667,
+                "p50": 0.061328,
+                "p95": 0.069088,
+                "p99": 0.07168,
+                "max": 0.0816
+              },
+              "Stream early/Cluster cull": {
+                "samples": 300,
+                "mean": 0.04703168,
+                "p50": 0.053056,
+                "p95": 0.061408,
+                "p99": 0.066976,
+                "max": 0.083744
+              },
+              "Stream early/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.5210916266666666,
+                "p50": 0.441056,
+                "p95": 0.973632,
+                "p99": 2.961152,
+                "max": 5.096224
+              },
+              "Stream early/Stable bins": {
+                "samples": 300,
+                "mean": 0.024923626666666667,
+                "p50": 0.026688,
+                "p95": 0.028736,
+                "p99": 0.029056,
+                "max": 0.029088
+              },
+              "Stream early/Software raster": {
+                "samples": 300,
+                "mean": 1.27731296,
+                "p50": 1.051536,
+                "p95": 3.669824,
+                "p99": 5.643648,
+                "max": 6.355744
+              },
+              "Stream early/Hardware raster": {
+                "samples": 300,
+                "mean": 0.9371784533333333,
+                "p50": 0.79056,
+                "p95": 2.93168,
+                "p99": 5.378208,
+                "max": 5.48176
+              },
+              "Stream early/Raster merge": {
+                "samples": 300,
+                "mean": 0.02703392,
+                "p50": 0.026624,
+                "p95": 0.034464,
+                "p99": 0.035488,
+                "max": 0.037152
+              },
+              "Early HZB": {
+                "samples": 300,
+                "mean": 0.037261333333333334,
+                "p50": 0.036992,
+                "p95": 0.03952,
+                "p99": 0.040288,
+                "max": 0.040512
+              },
+              "Late instance cull": {
+                "samples": 300,
+                "mean": 0.02507456,
+                "p50": 0.025312,
+                "p95": 0.027424,
+                "p99": 0.027456,
+                "max": 0.02944
+              },
+              "Resident late": {
+                "samples": 300,
+                "mean": 1.2513634133333333,
+                "p50": 0.149504,
+                "p95": 5.40336,
+                "p99": 8.937376,
+                "max": 15.457472
+              },
+              "Resident late/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.037396693333333335,
+                "p50": 0.03744,
+                "p95": 0.037472,
+                "p99": 0.037504,
+                "max": 0.055808
+              },
+              "Resident late/Stable bins": {
+                "samples": 300,
+                "mean": 0.01249632,
+                "p50": 0.012448,
+                "p95": 0.01264,
+                "p99": 0.015072,
+                "max": 0.030272
+              },
+              "Resident late/Software raster": {
+                "samples": 300,
+                "mean": 0.00438592,
+                "p50": 0.003984,
+                "p95": 0.00512,
+                "p99": 0.005376,
+                "max": 0.147808
+              },
+              "Resident late/Hardware raster": {
+                "samples": 300,
+                "mean": 0.004392,
+                "p50": 0.004384,
+                "p95": 0.004576,
+                "p99": 0.00464,
+                "max": 0.005312
+              },
+              "Resident late/Raster merge": {
+                "samples": 300,
+                "mean": 0.029803626666666666,
+                "p50": 0.014208,
+                "p95": 0.026368,
+                "p99": 0.026912,
+                "max": 3.885344
+              },
+              "Stream late": {
+                "samples": 300,
+                "mean": 1.1668625066666667,
+                "p50": 0.21510400000000002,
+                "p95": 5.150176,
+                "p99": 6.89616,
+                "max": 10.145056
+              },
+              "Stream late/Candidates": {
+                "samples": 300,
+                "mean": 0.08023733333333333,
+                "p50": 0.053984,
+                "p95": 0.061984,
+                "p99": 1.473632,
+                "max": 2.300448
+              },
+              "Stream late/Cluster cull": {
+                "samples": 300,
+                "mean": 0.025309013333333335,
+                "p50": 0.026144,
+                "p95": 0.02832,
+                "p99": 0.032736,
+                "max": 1.766688
+              },
+              "Stream late/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.006548053333333333,
+                "p50": 0.006944,
+                "p95": 0.01104,
+                "p99": 0.013088,
+                "max": 0.014816
+              },
+              "Stream late/Stable bins": {
+                "samples": 300,
+                "mean": 0.017037013333333333,
+                "p50": 0.017472,
+                "p95": 0.018656,
+                "p99": 0.020608,
+                "max": 0.022144
+              },
+              "Stream late/Software raster": {
+                "samples": 300,
+                "mean": 0.011861546666666667,
+                "p50": 0.013968000000000001,
+                "p95": 0.0192,
+                "p99": 0.023936,
+                "max": 0.024416
+              },
+              "Stream late/Hardware raster": {
+                "samples": 300,
+                "mean": 0.013304106666666666,
+                "p50": 0.016672,
+                "p95": 0.021376,
+                "p99": 0.022368,
+                "max": 0.024544
+              },
+              "Stream late/Raster merge": {
+                "samples": 300,
+                "mean": 0.016787413333333334,
+                "p50": 0.013984,
+                "p95": 0.026656,
+                "p99": 0.0272,
+                "max": 0.027584
+              },
+              "Late HZB": {
+                "samples": 300,
+                "mean": 0.039540266666666664,
+                "p50": 0.038192000000000004,
+                "p95": 0.042976,
+                "p99": 0.056224,
+                "max": 0.176928
+              },
+              "Debug composite": {
+                "samples": 300,
+                "mean": 0.0016837333333333333,
+                "p50": 0.001664,
+                "p95": 0.001824,
+                "p99": 0.002016,
+                "max": 0.002368
+              },
+              "Stream feedback": {
+                "samples": 300,
+                "mean": 4.053333333333333e-06,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 3.2e-05,
+                "max": 3.2e-05
+              },
+              "Stream End": {
+                "samples": 300,
+                "mean": 0.07064672,
+                "p50": 0.065376,
+                "p95": 0.065792,
+                "p99": 0.06688,
+                "max": 1.470336
+              }
+            }
+          }
+        },
+        "finalCut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 147410,
+          "earlyHardware": 26806,
+          "earlySoftware": 19172,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 42382,
+          "lateHardware": 200,
+          "lateSoftware": 361,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "finalStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 191882752,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 102254,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 191882752,
+          "clasMoved": 0,
+          "clasPages": 9290,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163839729,
+          "cpuWork": {
+            "coldAgeRejected": 0,
+            "coldCandidates": 0,
+            "coldClasLookups": 0,
+            "coldPressureScheduled": 0,
+            "coldRetentionScheduled": 0,
+            "coldScheduleFailed": 0,
+            "coldStateRejected": 0,
+            "coldVisited": 0,
+            "demandIncompleteProtected": 0,
+            "demandNewerThanFeedback": 0,
+            "demandRefreshed": 9290,
+            "demandUnused": 0,
+            "demandVisited": 9290,
+            "pendingFreePages": 0
+          },
+          "evictions": 0,
+          "feedbackFrame": 2998,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 150612224,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 9290,
+          "totalUploadBytes": 744252160,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "gpuCompetition": {
+          "available": true,
+          "other3dEngineProcesses": {
+            "dwm": {
+              "samples": 60,
+              "mean": 0.7813556233109271,
+              "p50": 0.7881578725652114,
+              "p95": 1.43239336294705,
+              "p99": 1.59642545611771,
+              "max": 1.66289285422752
+            },
+            "Unity": {
+              "samples": 37,
+              "mean": 79.56362507155971,
+              "p50": 88.9581633207216,
+              "p95": 99.0711200657234,
+              "p99": 100.972391010497,
+              "max": 102.114522814817
+            },
+            "msedge": {
+              "samples": 13,
+              "mean": 0.24312767139592031,
+              "p50": 0.172836656637536,
+              "p95": 0.452463031434917,
+              "p99": 0.452463031434917,
+              "max": 0.538905089814601
+            },
+            "QQ": {
+              "samples": 55,
+              "mean": 0.2006033737807994,
+              "p50": 0.169451711641602,
+              "p95": 0.452158045906763,
+              "p99": 0.472520945566633,
+              "max": 0.477823611409993
+            },
+            "ChatGPT": {
+              "samples": 24,
+              "mean": 2.2063845168713163,
+              "p50": 2.43771497634322,
+              "p95": 2.86045044595185,
+              "p99": 2.89503626379578,
+              "max": 3.10406002971506
+            },
+            "csrss": {
+              "samples": 17,
+              "mean": 0.3261116611636386,
+              "p50": 0.238497880547265,
+              "p95": 0.698218027006083,
+              "p99": 0.698218027006083,
+              "max": 1.15959539467424
+            }
+          },
+          "note": "Per-engine activity samples, not whole-card ownership; absent/idle intervals are not emitted."
+        },
+        "process": {
+          "exitCode": -1,
+          "arguments": [
+            "--gtest_filter=RhiRendering.minizorah_fixed_baseline",
+            "--rhi-no-validation",
+            "--rhi-async-compute",
+            "--output-dir",
+            "\"E:\\metallic\\.cache\\vbuffer-empty-resident\\before\\m2\"",
+            "--rhi-realtime"
+          ],
+          "forcedCleanupAfterCapture": true
+        }
+      }
+    }
+  },
+  "after": {
+    "manifest": {
+      "protocol": "minizorah-cfg-roam-v1",
+      "sourceSha256": "4DB2983A78A04E9D65CB652A3648F5AB2A303E391E385440DB458799E49A6416",
+      "qualityWithoutValidation": true,
+      "realtime": true,
+      "gitHead": "e118f5aaabea897f281136e9dc2beb94090a579e",
+      "start": "2026-09-16T10:44:05.0259767+08:00",
+      "replaySha256": "FEB79872154850AF32DB25A54BA3D22B48B9A04A10F7F2E8DADAF19F98F2F2D2",
+      "shaderTreeSha256": "326B12CC7E77DFAE4E401B3A23BA3B49E0F90D57915443922AA3B7AD68E1DC5C",
+      "executableSha256": "8DAA36C62B0ECFC4C39EAD9C2FE24637A4E054D22753F28A1C1DAFC39139B926"
+    },
+    "runs": {
+      "m1": {
+        "status": "passed",
+        "configuration": {
+          "protocol": "minizorah-cfg-roam-v1",
+          "realtime": true,
+          "frameCount": 3000,
+          "resolution": [
+            1920,
+            1080
+          ],
+          "lodPixelError": 1.5,
+          "lighting": {
+            "autoExposure": true,
+            "environment": "Asset/ABeautifulGame/environment.hdr",
+            "sunDirection": [
+              0.6000000238418579,
+              -1.0,
+              -0.30000001192092896
+            ],
+            "sunIntensity": 10
+          },
+          "asset": {
+            "fileBytes": 60916791801,
+            "instances": 19144,
+            "pages": 1356959,
+            "path": "E:/metallic/Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin"
+          },
+          "validation": false
+        },
+        "phases": {
+          "steady": {
+            "hostFrameMs": {
+              "samples": 2700,
+              "mean": 8.264902481481482,
+              "p50": 7.98095,
+              "p95": 9.8035,
+              "p99": 21.4702,
+              "max": 70.1177
+            },
+            "gpuFrameMs": {
+              "samples": 2700,
+              "mean": 8.053833362962964,
+              "p50": 7.882032000000001,
+              "p95": 8.929248,
+              "p99": 9.76192,
+              "max": 27.666528
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 2700,
+                "mean": 4.145102589629629,
+                "p50": 3.966224,
+                "p95": 5.038592,
+                "p99": 5.57696,
+                "max": 17.361472
+              }
+            }
+          },
+          "warmup": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 44.264725999999996,
+              "p50": 8.19595,
+              "p95": 18.0896,
+              "p99": 25.9114,
+              "max": 10605.5695
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.463921066666666,
+              "p50": 8.105856,
+              "p95": 9.973664,
+              "p99": 16.788448,
+              "max": 62.195872
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.402712213333333,
+                "p50": 4.021696,
+                "p95": 6.227008,
+                "p99": 8.065408,
+                "max": 18.846464
+              }
+            }
+          },
+          "start_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.882897333333334,
+              "p50": 8.07245,
+              "p95": 14.7233,
+              "p99": 32.0642,
+              "max": 61.9138
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.022742506666667,
+              "p50": 8.000112,
+              "p95": 8.672736,
+              "p99": 9.21648,
+              "max": 16.744736
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.09961504,
+                "p50": 3.9434880000000003,
+                "p95": 4.712896,
+                "p99": 5.160608,
+                "max": 5.473344
+              }
+            }
+          },
+          "forward_1": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.722416666666666,
+              "p50": 8.5746,
+              "p95": 10.1575,
+              "p99": 19.0012,
+              "max": 23.8832
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.564904,
+              "p50": 8.535104,
+              "p95": 9.067168,
+              "p99": 9.554752,
+              "max": 9.944704
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.69738496,
+                "p50": 4.59744,
+                "p95": 5.268832,
+                "p99": 5.809824,
+                "max": 6.041984
+              }
+            }
+          },
+          "forward_2": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.002620666666667,
+              "p50": 7.87975,
+              "p95": 9.051,
+              "p99": 14.352,
+              "max": 25.9495
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.8554341333333335,
+              "p50": 7.789248000000001,
+              "p95": 8.35744,
+              "p99": 8.457856,
+              "max": 8.622848
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.00422656,
+                "p50": 3.9332320000000003,
+                "p95": 4.538112,
+                "p99": 4.642048,
+                "max": 4.87904
+              }
+            }
+          },
+          "forward_3": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.204353333333334,
+              "p50": 7.49195,
+              "p95": 9.1145,
+              "p99": 22.5695,
+              "max": 70.1177
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.52840768,
+              "p50": 7.519776,
+              "p95": 8.009824,
+              "p99": 8.396544,
+              "max": 9.550304
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 3.6921828266666665,
+                "p50": 3.562208,
+                "p95": 4.18064,
+                "p99": 4.585984,
+                "max": 5.52448
+              }
+            }
+          },
+          "far_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 7.603459333333333,
+              "p50": 7.50685,
+              "p95": 8.7157,
+              "p99": 11.7296,
+              "max": 16.7706
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.593254826666667,
+              "p50": 7.41128,
+              "p95": 8.03824,
+              "p99": 11.539552,
+              "max": 16.868
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 3.70590016,
+                "p50": 3.58056,
+                "p95": 4.244032,
+                "p99": 5.13472,
+                "max": 11.300704
+              }
+            }
+          },
+          "return_1": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 7.616082333333333,
+              "p50": 7.5869,
+              "p95": 8.8388,
+              "p99": 9.4651,
+              "max": 10.749
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.606585386666667,
+              "p50": 7.5971519999999995,
+              "p95": 8.231008,
+              "p99": 8.32496,
+              "max": 8.456192
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 3.7406772266666666,
+                "p50": 3.6158080000000004,
+                "p95": 4.319392,
+                "p99": 4.613792,
+                "max": 4.750528
+              }
+            }
+          },
+          "return_2": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.001876333333334,
+              "p50": 7.9642,
+              "p95": 9.2733,
+              "p99": 10.988,
+              "max": 15.3866
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.964079466666667,
+              "p50": 7.96968,
+              "p95": 8.569472,
+              "p99": 8.698912,
+              "max": 8.929248
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.06268992,
+                "p50": 3.95456,
+                "p95": 4.688832,
+                "p99": 4.822144,
+                "max": 5.192832
+              }
+            }
+          },
+          "return_3": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 9.160533333333333,
+              "p50": 8.660599999999999,
+              "p95": 10.5752,
+              "p99": 26.4122,
+              "max": 27.0022
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 9.17174016,
+              "p50": 8.63368,
+              "p95": 9.396,
+              "p99": 26.311872,
+              "max": 27.666528
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 5.083125333333333,
+                "p50": 4.602176,
+                "p95": 5.537888,
+                "p99": 15.209024,
+                "max": 17.361472
+              }
+            }
+          },
+          "return_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.189883,
+              "p50": 8.0606,
+              "p95": 9.3432,
+              "p99": 14.1583,
+              "max": 24.0783
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.177352106666667,
+              "p50": 8.008848,
+              "p95": 8.55536,
+              "p99": 14.20608,
+              "max": 24.672256
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.22012128,
+                "p50": 4.01384,
+                "p95": 4.653184,
+                "p99": 7.23824,
+                "max": 13.876992
+              },
+              "Stream Begin": {
+                "samples": 300,
+                "mean": 6.282666666666667e-05,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 0.002048,
+                "max": 0.004832
+              },
+              "Stream traversal": {
+                "samples": 300,
+                "mean": 1.8194752,
+                "p50": 1.7454079999999998,
+                "p95": 2.255936,
+                "p99": 2.763872,
+                "max": 3.927072
+              },
+              "Stream traversal/Traversal setup": {
+                "samples": 300,
+                "mean": 3.5199999999999998e-06,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 3.2e-05,
+                "max": 3.2e-05
+              },
+              "Stream traversal/Page updates": {
+                "samples": 300,
+                "mean": 0.006460373333333333,
+                "p50": 0.00432,
+                "p95": 0.010304,
+                "p99": 0.01072,
+                "max": 0.011232
+              },
+              "Stream traversal/LOD frontier": {
+                "samples": 300,
+                "mean": 1.15874048,
+                "p50": 1.132576,
+                "p95": 1.289344,
+                "p99": 1.566336,
+                "max": 2.246912
+              },
+              "Stream traversal/LOD prefix": {
+                "samples": 300,
+                "mean": 0.08063488,
+                "p50": 0.078784,
+                "p95": 0.087104,
+                "p99": 0.088864,
+                "max": 0.311424
+              },
+              "Stream traversal/LOD emit": {
+                "samples": 300,
+                "mean": 0.094584,
+                "p50": 0.093344,
+                "p95": 0.101664,
+                "p99": 0.109504,
+                "max": 0.118176
+              },
+              "Stream traversal/Prefetch": {
+                "samples": 300,
+                "mean": 0.023428373333333332,
+                "p50": 0.01312,
+                "p95": 0.013792,
+                "p99": 0.411776,
+                "max": 0.731296
+              },
+              "Stream traversal/Traversal finalize": {
+                "samples": 300,
+                "mean": 0.00696032,
+                "p50": 0.006368,
+                "p95": 0.008,
+                "p99": 0.008576,
+                "max": 0.146304
+              },
+              "Stream traversal/CLAS build": {
+                "samples": 300,
+                "mean": 0.00455744,
+                "p50": 0.000128,
+                "p95": 0.005024,
+                "p99": 0.102784,
+                "max": 0.230976
+              },
+              "Alpha texture upload": {
+                "samples": 300,
+                "mean": 0.00011839999999999999,
+                "p50": 0.000128,
+                "p95": 0.000128,
+                "p99": 0.000128,
+                "max": 0.000128
+              },
+              "Initialize / light grid": {
+                "samples": 300,
+                "mean": 0.02533984,
+                "p50": 0.024352,
+                "p95": 0.025376,
+                "p99": 0.0264,
+                "max": 0.24416
+              },
+              "Resident LOD": {
+                "samples": 300,
+                "mean": 0.028592853333333335,
+                "p50": 0.019776,
+                "p95": 0.020864,
+                "p99": 0.160288,
+                "max": 2.126976
+              },
+              "Early instance cull": {
+                "samples": 300,
+                "mean": 0.027136853333333332,
+                "p50": 0.025056,
+                "p95": 0.027072,
+                "p99": 0.02832,
+                "max": 0.245248
+              },
+              "Clear visibility": {
+                "samples": 300,
+                "mean": 0.00341664,
+                "p50": 0.003392,
+                "p95": 0.003552,
+                "p99": 0.003584,
+                "max": 0.003616
+              },
+              "Stream early": {
+                "samples": 300,
+                "mean": 1.8663367466666667,
+                "p50": 1.750992,
+                "p95": 2.24352,
+                "p99": 2.838336,
+                "max": 6.219232
+              },
+              "Stream early/Candidates": {
+                "samples": 300,
+                "mean": 0.06787029333333333,
+                "p50": 0.061456,
+                "p95": 0.065536,
+                "p99": 0.278464,
+                "max": 0.346688
+              },
+              "Stream early/Cluster cull": {
+                "samples": 300,
+                "mean": 0.06084170666666667,
+                "p50": 0.051072,
+                "p95": 0.053216,
+                "p99": 0.2056,
+                "max": 2.020256
+              },
+              "Stream early/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.45702976,
+                "p50": 0.440128,
+                "p95": 0.59264,
+                "p99": 0.775968,
+                "max": 0.971328
+              },
+              "Stream early/Stable bins": {
+                "samples": 300,
+                "mean": 0.02724928,
+                "p50": 0.026688,
+                "p95": 0.026784,
+                "p99": 0.02816,
+                "max": 0.170016
+              },
+              "Stream early/Software raster": {
+                "samples": 300,
+                "mean": 1.0728765866666667,
+                "p50": 1.046448,
+                "p95": 1.238496,
+                "p99": 1.461312,
+                "max": 4.134528
+              },
+              "Stream early/Hardware raster": {
+                "samples": 300,
+                "mean": 0.8112624,
+                "p50": 0.789552,
+                "p95": 0.964576,
+                "p99": 1.076832,
+                "max": 3.864768
+              },
+              "Stream early/Raster merge": {
+                "samples": 300,
+                "mean": 0.02868565333333333,
+                "p50": 0.026592,
+                "p95": 0.032352,
+                "p99": 0.03712,
+                "max": 0.169504
+              },
+              "Early HZB": {
+                "samples": 300,
+                "mean": 0.03814016,
+                "p50": 0.036736,
+                "p95": 0.039264,
+                "p99": 0.040992,
+                "max": 0.184608
+              },
+              "Late instance cull": {
+                "samples": 300,
+                "mean": 0.026226986666666667,
+                "p50": 0.025344,
+                "p95": 0.027424,
+                "p99": 0.027456,
+                "max": 0.209696
+              },
+              "Stream late": {
+                "samples": 300,
+                "mean": 0.27277664,
+                "p50": 0.220384,
+                "p95": 0.311648,
+                "p99": 0.77936,
+                "max": 5.550688
+              },
+              "Stream late/Candidates": {
+                "samples": 300,
+                "mean": 0.05648053333333333,
+                "p50": 0.056768,
+                "p95": 0.05888,
+                "p99": 0.060864,
+                "max": 0.247296
+              },
+              "Stream late/Cluster cull": {
+                "samples": 300,
+                "mean": 0.022781013333333332,
+                "p50": 0.024448,
+                "p95": 0.026528,
+                "p99": 0.026784,
+                "max": 0.026944
+              },
+              "Stream late/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.008057173333333334,
+                "p50": 0.008879999999999999,
+                "p95": 0.012928,
+                "p99": 0.013088,
+                "max": 0.013088
+              },
+              "Stream late/Stable bins": {
+                "samples": 300,
+                "mean": 0.017385386666666666,
+                "p50": 0.017472,
+                "p95": 0.01952,
+                "p99": 0.019584,
+                "max": 0.01968
+              },
+              "Stream late/Software raster": {
+                "samples": 300,
+                "mean": 0.013934186666666667,
+                "p50": 0.014592,
+                "p95": 0.019072,
+                "p99": 0.019584,
+                "max": 0.021088
+              },
+              "Stream late/Hardware raster": {
+                "samples": 300,
+                "mean": 0.01653568,
+                "p50": 0.017424000000000002,
+                "p95": 0.021856,
+                "p99": 0.023968,
+                "max": 0.024416
+              },
+              "Stream late/Raster merge": {
+                "samples": 300,
+                "mean": 0.014436053333333334,
+                "p50": 0.014272,
+                "p95": 0.014752,
+                "p99": 0.020352,
+                "max": 0.02624
+              },
+              "Late HZB": {
+                "samples": 300,
+                "mean": 0.03841269333333333,
+                "p50": 0.037472,
+                "p95": 0.040064,
+                "p99": 0.042624,
+                "max": 0.174432
+              },
+              "Debug composite": {
+                "samples": 300,
+                "mean": 0.00168736,
+                "p50": 0.001664,
+                "p95": 0.001792,
+                "p99": 0.001888,
+                "max": 0.00208
+              },
+              "Stream feedback": {
+                "samples": 300,
+                "mean": 3.2e-06,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 3.2e-05,
+                "max": 3.2e-05
+              },
+              "Stream End": {
+                "samples": 300,
+                "mean": 0.06580032,
+                "p50": 0.065376,
+                "p95": 0.065504,
+                "p99": 0.066112,
+                "max": 0.19808
+              }
+            }
+          }
+        },
+        "finalCut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 147410,
+          "earlyHardware": 26806,
+          "earlySoftware": 19172,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 42382,
+          "lateHardware": 200,
+          "lateSoftware": 361,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "finalStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 191882752,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 102254,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 191882752,
+          "clasMoved": 0,
+          "clasPages": 9290,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163839729,
+          "cpuWork": {
+            "coldAgeRejected": 0,
+            "coldCandidates": 0,
+            "coldClasLookups": 0,
+            "coldPressureScheduled": 0,
+            "coldRetentionScheduled": 0,
+            "coldScheduleFailed": 0,
+            "coldStateRejected": 0,
+            "coldVisited": 0,
+            "demandIncompleteProtected": 0,
+            "demandNewerThanFeedback": 0,
+            "demandRefreshed": 9290,
+            "demandUnused": 0,
+            "demandVisited": 9290,
+            "pendingFreePages": 0
+          },
+          "evictions": 0,
+          "feedbackFrame": 2998,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 150612224,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 9290,
+          "totalUploadBytes": 768777312,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "gpuCompetition": {
+          "available": true,
+          "other3dEngineProcesses": {
+            "dwm": {
+              "samples": 52,
+              "mean": 2.2929949541787837,
+              "p50": 1.3505426724512901,
+              "p95": 6.06134381815526,
+              "p99": 7.49801527680141,
+              "max": 7.68099993422379
+            },
+            "msedge": {
+              "samples": 29,
+              "mean": 0.9268230972770937,
+              "p50": 0.343370576907199,
+              "p95": 3.36759660517621,
+              "p99": 3.43751400394846,
+              "max": 3.79477748249263
+            },
+            "QQ": {
+              "samples": 2,
+              "mean": 0.2793333175794475,
+              "p50": 0.2793333175794475,
+              "p95": 0.125429217354201,
+              "p99": 0.125429217354201,
+              "max": 0.433237417804694
+            },
+            "ChatGPT": {
+              "samples": 52,
+              "mean": 1.607043680636727,
+              "p50": 1.03907721532001,
+              "p95": 4.02544935058768,
+              "p99": 5.17719094398881,
+              "max": 5.21151391251689
+            },
+            "csrss": {
+              "samples": 27,
+              "mean": 0.5085528683710551,
+              "p50": 0.334515099259773,
+              "p95": 0.85576108662924,
+              "p99": 1.41040666687378,
+              "max": 1.97249840849637
+            },
+            "explorer": {
+              "samples": 9,
+              "mean": 0.2307172562760171,
+              "p50": 0.149622881972958,
+              "p95": 0.397064938264496,
+              "p99": 0.397064938264496,
+              "max": 0.483623885123024
+            },
+            "Unity": {
+              "samples": 9,
+              "mean": 10.060080527329404,
+              "p50": 2.96199300589004,
+              "p95": 19.237798977631,
+              "p99": 19.237798977631,
+              "max": 52.9945790547396
+            },
+            "Feishu": {
+              "samples": 2,
+              "mean": 0.19826200979459202,
+              "p50": 0.19826200979459202,
+              "p95": 0.159411170076646,
+              "p99": 0.159411170076646,
+              "max": 0.237112849512538
+            }
+          },
+          "note": "Per-engine activity samples, not whole-card ownership; absent/idle intervals are not emitted."
+        },
+        "process": {
+          "forcedCleanupAfterCapture": true,
+          "arguments": [
+            "--gtest_filter=RhiRendering.minizorah_fixed_baseline",
+            "--rhi-no-validation",
+            "--rhi-async-compute",
+            "--output-dir",
+            "\"E:\\metallic\\.cache\\vbuffer-empty-resident\\after\\m1\"",
+            "--rhi-realtime"
+          ],
+          "exitCode": -1
+        }
+      },
+      "m2": {
+        "status": "passed",
+        "configuration": {
+          "protocol": "minizorah-cfg-roam-v1",
+          "realtime": true,
+          "frameCount": 3000,
+          "resolution": [
+            1920,
+            1080
+          ],
+          "lodPixelError": 1.5,
+          "lighting": {
+            "autoExposure": true,
+            "environment": "Asset/ABeautifulGame/environment.hdr",
+            "sunDirection": [
+              0.6000000238418579,
+              -1.0,
+              -0.30000001192092896
+            ],
+            "sunIntensity": 10
+          },
+          "asset": {
+            "fileBytes": 60916791801,
+            "instances": 19144,
+            "pages": 1356959,
+            "path": "E:/metallic/Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin"
+          },
+          "validation": false
+        },
+        "phases": {
+          "steady": {
+            "hostFrameMs": {
+              "samples": 2700,
+              "mean": 9.223664037037038,
+              "p50": 8.148399999999999,
+              "p95": 21.5604,
+              "p99": 28.7039,
+              "max": 124.0393
+            },
+            "gpuFrameMs": {
+              "samples": 2700,
+              "mean": 8.990960888888889,
+              "p50": 8.085696,
+              "p95": 20.142176,
+              "p99": 27.340736,
+              "max": 40.154496
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 2700,
+                "mean": 4.661823881481482,
+                "p50": 4.063344000000001,
+                "p95": 10.217792,
+                "p99": 14.865152,
+                "max": 28.172032
+              }
+            }
+          },
+          "warmup": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 69.46832166666667,
+              "p50": 25.232599999999998,
+              "p95": 41.7414,
+              "p99": 64.5465,
+              "max": 12964.0268
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 25.27843776,
+              "p50": 25.017648,
+              "p95": 34.0336,
+              "p99": 43.292128,
+              "max": 56.28704
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 13.900404373333334,
+                "p50": 13.497632,
+                "p95": 20.172672,
+                "p99": 29.250144,
+                "max": 31.127616
+              }
+            }
+          },
+          "start_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 16.925406,
+              "p50": 10.93725,
+              "p95": 30.1818,
+              "p99": 43.8581,
+              "max": 124.0393
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 16.210389866666667,
+              "p50": 10.584192,
+              "p95": 28.512896,
+              "p99": 33.235584,
+              "max": 40.154496
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 8.663491413333333,
+                "p50": 5.736079999999999,
+                "p95": 15.526144,
+                "p99": 20.620256,
+                "max": 28.172032
+              }
+            }
+          },
+          "forward_1": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.752196666666666,
+              "p50": 8.7917,
+              "p95": 9.9143,
+              "p99": 11.8541,
+              "max": 13.6195
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.739785813333333,
+              "p50": 8.718512,
+              "p95": 9.37392,
+              "p99": 9.819552,
+              "max": 10.375968
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.800948693333333,
+                "p50": 4.676912,
+                "p95": 5.543136,
+                "p99": 6.016032,
+                "max": 6.344768
+              }
+            }
+          },
+          "forward_2": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.003753333333334,
+              "p50": 7.95375,
+              "p95": 9.33,
+              "p99": 10.2344,
+              "max": 10.7655
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.997254506666667,
+              "p50": 7.986496,
+              "p95": 8.624128,
+              "p99": 8.82384,
+              "max": 9.241952
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.09032448,
+                "p50": 4.009296,
+                "p95": 4.630432,
+                "p99": 4.819616,
+                "max": 5.533536
+              }
+            }
+          },
+          "forward_3": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 7.669937,
+              "p50": 7.6604,
+              "p95": 8.8498,
+              "p99": 9.3355,
+              "max": 10.3153
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.649609386666667,
+              "p50": 7.63048,
+              "p95": 8.29936,
+              "p99": 8.636672,
+              "max": 8.99504
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 3.7464557866666666,
+                "p50": 3.654864,
+                "p95": 4.288576,
+                "p99": 4.520224,
+                "max": 5.322944
+              }
+            }
+          },
+          "far_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 7.533068666666667,
+              "p50": 7.4201,
+              "p95": 8.738,
+              "p99": 10.209,
+              "max": 24.0955
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.487943893333333,
+              "p50": 7.4016,
+              "p95": 7.992704,
+              "p99": 8.188,
+              "max": 17.750176
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 3.59112448,
+                "p50": 3.45768,
+                "p95": 4.146464,
+                "p99": 4.299936,
+                "max": 13.1152
+              }
+            }
+          },
+          "return_1": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 7.8299883333333336,
+              "p50": 7.63755,
+              "p95": 9.1426,
+              "p99": 12.8108,
+              "max": 29.8842
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 7.67398144,
+              "p50": 7.672176,
+              "p95": 8.276352,
+              "p99": 8.603072,
+              "max": 8.821632
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 3.7825217066666665,
+                "p50": 3.670992,
+                "p95": 4.393824,
+                "p99": 4.624256,
+                "max": 4.881824
+              }
+            }
+          },
+          "return_2": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.768886666666667,
+              "p50": 8.1539,
+              "p95": 10.0387,
+              "p99": 28.3155,
+              "max": 103.8379
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.116945493333333,
+              "p50": 8.134319999999999,
+              "p95": 8.86832,
+              "p99": 9.114048,
+              "max": 9.301536
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.147434026666667,
+                "p50": 3.9972,
+                "p95": 4.870208,
+                "p99": 5.188544,
+                "max": 5.419776
+              }
+            }
+          },
+          "return_3": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.823657666666668,
+              "p50": 8.87875,
+              "p95": 10.2066,
+              "p99": 11.199,
+              "max": 12.0069
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.814330026666667,
+              "p50": 8.819776000000001,
+              "p95": 9.558848,
+              "p99": 9.747552,
+              "max": 10.469312
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.84501024,
+                "p50": 4.655648,
+                "p95": 5.590912,
+                "p99": 6.010848,
+                "max": 6.733344
+              }
+            }
+          },
+          "return_hold": {
+            "hostFrameMs": {
+              "samples": 300,
+              "mean": 8.706082,
+              "p50": 8.26635,
+              "p95": 10.9722,
+              "p99": 27.4252,
+              "max": 41.6127
+            },
+            "gpuFrameMs": {
+              "samples": 300,
+              "mean": 8.228407573333334,
+              "p50": 8.206576,
+              "p95": 9.023904,
+              "p99": 9.530816,
+              "max": 10.1064
+            },
+            "gpuScopesMs": {
+              "VBuffer": {
+                "samples": 300,
+                "mean": 4.289104106666667,
+                "p50": 4.1091999999999995,
+                "p95": 5.153856,
+                "p99": 5.79888,
+                "max": 5.896384
+              },
+              "Stream Begin": {
+                "samples": 300,
+                "mean": 7.296e-05,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 0.003392,
+                "max": 0.00592
+              },
+              "Stream traversal": {
+                "samples": 300,
+                "mean": 1.80672032,
+                "p50": 1.73928,
+                "p95": 2.105472,
+                "p99": 2.567808,
+                "max": 3.331232
+              },
+              "Stream traversal/Traversal setup": {
+                "samples": 300,
+                "mean": 4.9066666666666666e-06,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 3.2e-05,
+                "max": 3.2e-05
+              },
+              "Stream traversal/Page updates": {
+                "samples": 300,
+                "mean": 0.0066272,
+                "p50": 0.004544,
+                "p95": 0.010592,
+                "p99": 0.011136,
+                "max": 0.011296
+              },
+              "Stream traversal/LOD frontier": {
+                "samples": 300,
+                "mean": 1.15722976,
+                "p50": 1.1330559999999998,
+                "p95": 1.279936,
+                "p99": 1.625888,
+                "max": 2.659744
+              },
+              "Stream traversal/LOD prefix": {
+                "samples": 300,
+                "mean": 0.08168234666666667,
+                "p50": 0.078752,
+                "p95": 0.081376,
+                "p99": 0.206688,
+                "max": 0.262272
+              },
+              "Stream traversal/LOD emit": {
+                "samples": 300,
+                "mean": 0.09607264,
+                "p50": 0.095072,
+                "p95": 0.099104,
+                "p99": 0.119424,
+                "max": 0.269216
+              },
+              "Stream traversal/Prefetch": {
+                "samples": 300,
+                "mean": 0.022889066666666666,
+                "p50": 0.01312,
+                "p95": 0.014016,
+                "p99": 0.411488,
+                "max": 0.415584
+              },
+              "Stream traversal/Traversal finalize": {
+                "samples": 300,
+                "mean": 0.006711573333333333,
+                "p50": 0.0064,
+                "p95": 0.00816,
+                "p99": 0.008352,
+                "max": 0.008928
+              },
+              "Stream traversal/CLAS build": {
+                "samples": 300,
+                "mean": 0.00379168,
+                "p50": 0.000128,
+                "p95": 0.00528,
+                "p99": 0.092736,
+                "max": 0.136928
+              },
+              "Alpha texture upload": {
+                "samples": 300,
+                "mean": 0.00011370666666666667,
+                "p50": 0.000128,
+                "p95": 0.000128,
+                "p99": 0.000128,
+                "max": 0.000128
+              },
+              "Initialize / light grid": {
+                "samples": 300,
+                "mean": 0.026909333333333334,
+                "p50": 0.024352,
+                "p95": 0.025376,
+                "p99": 0.157184,
+                "max": 0.309664
+              },
+              "Resident LOD": {
+                "samples": 300,
+                "mean": 0.0226448,
+                "p50": 0.01984,
+                "p95": 0.020928,
+                "p99": 0.163808,
+                "max": 0.236544
+              },
+              "Early instance cull": {
+                "samples": 300,
+                "mean": 0.027496426666666667,
+                "p50": 0.025024,
+                "p95": 0.027104,
+                "p99": 0.155744,
+                "max": 0.189536
+              },
+              "Clear visibility": {
+                "samples": 300,
+                "mean": 0.0033949866666666668,
+                "p50": 0.003392,
+                "p95": 0.00352,
+                "p99": 0.003552,
+                "max": 0.003584
+              },
+              "Stream early": {
+                "samples": 300,
+                "mean": 1.98411232,
+                "p50": 1.766528,
+                "p95": 2.596256,
+                "p99": 3.337248,
+                "max": 3.696128
+              },
+              "Stream early/Candidates": {
+                "samples": 300,
+                "mean": 0.07220831999999999,
+                "p50": 0.062272,
+                "p95": 0.069536,
+                "p99": 0.345056,
+                "max": 0.511744
+              },
+              "Stream early/Cluster cull": {
+                "samples": 300,
+                "mean": 0.07655061333333334,
+                "p50": 0.051104,
+                "p95": 0.342912,
+                "p99": 0.47296,
+                "max": 0.482176
+              },
+              "Stream early/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.4880674133333333,
+                "p50": 0.44112,
+                "p95": 0.784064,
+                "p99": 0.887264,
+                "max": 1.350016
+              },
+              "Stream early/Stable bins": {
+                "samples": 300,
+                "mean": 0.028436053333333332,
+                "p50": 0.02672,
+                "p95": 0.027744,
+                "p99": 0.153568,
+                "max": 0.193696
+              },
+              "Stream early/Software raster": {
+                "samples": 300,
+                "mean": 1.0762993066666666,
+                "p50": 1.047984,
+                "p95": 1.297856,
+                "p99": 1.8376,
+                "max": 2.080704
+              },
+              "Stream early/Hardware raster": {
+                "samples": 300,
+                "mean": 0.80378336,
+                "p50": 0.7907040000000001,
+                "p95": 1.007872,
+                "p99": 1.142688,
+                "max": 1.177216
+              },
+              "Stream early/Raster merge": {
+                "samples": 300,
+                "mean": 0.027844373333333332,
+                "p50": 0.02656,
+                "p95": 0.033952,
+                "p99": 0.034976,
+                "max": 0.037184
+              },
+              "Early HZB": {
+                "samples": 300,
+                "mean": 0.03776608,
+                "p50": 0.037568,
+                "p95": 0.04064,
+                "p99": 0.041024,
+                "max": 0.044576
+              },
+              "Late instance cull": {
+                "samples": 300,
+                "mean": 0.025696533333333334,
+                "p50": 0.025344,
+                "p95": 0.027456,
+                "p99": 0.030432,
+                "max": 0.035936
+              },
+              "Stream late": {
+                "samples": 300,
+                "mean": 0.24173642666666667,
+                "p50": 0.229168,
+                "p95": 0.379648,
+                "p99": 0.560288,
+                "max": 0.8216
+              },
+              "Stream late/Candidates": {
+                "samples": 300,
+                "mean": 0.05655317333333333,
+                "p50": 0.056847999999999996,
+                "p95": 0.059392,
+                "p99": 0.062432,
+                "max": 0.07424
+              },
+              "Stream late/Cluster cull": {
+                "samples": 300,
+                "mean": 0.022076053333333335,
+                "p50": 0.024448,
+                "p95": 0.02656,
+                "p99": 0.02688,
+                "max": 0.028512
+              },
+              "Stream late/Soft/hard classification": {
+                "samples": 300,
+                "mean": 0.008188373333333334,
+                "p50": 0.008832,
+                "p95": 0.01104,
+                "p99": 0.013088,
+                "max": 0.146592
+              },
+              "Stream late/Stable bins": {
+                "samples": 300,
+                "mean": 0.017384533333333334,
+                "p50": 0.017504,
+                "p95": 0.019552,
+                "p99": 0.01968,
+                "max": 0.02256
+              },
+              "Stream late/Software raster": {
+                "samples": 300,
+                "mean": 0.013750293333333333,
+                "p50": 0.014528,
+                "p95": 0.0192,
+                "p99": 0.02032,
+                "max": 0.028672
+              },
+              "Stream late/Hardware raster": {
+                "samples": 300,
+                "mean": 0.01623136,
+                "p50": 0.017456,
+                "p95": 0.021696,
+                "p99": 0.024448,
+                "max": 0.034912
+              },
+              "Stream late/Raster merge": {
+                "samples": 300,
+                "mean": 0.015091306666666667,
+                "p50": 0.014272,
+                "p95": 0.015104,
+                "p99": 0.026304,
+                "max": 0.166496
+              },
+              "Late HZB": {
+                "samples": 300,
+                "mean": 0.03973621333333333,
+                "p50": 0.037808,
+                "p95": 0.0408,
+                "p99": 0.064192,
+                "max": 0.188992
+              },
+              "Debug composite": {
+                "samples": 300,
+                "mean": 0.00168,
+                "p50": 0.001664,
+                "p95": 0.001792,
+                "p99": 0.00192,
+                "max": 0.002112
+              },
+              "Stream feedback": {
+                "samples": 300,
+                "mean": 2.3466666666666665e-06,
+                "p50": 0.0,
+                "p95": 3.2e-05,
+                "p99": 3.2e-05,
+                "max": 3.2e-05
+              },
+              "Stream End": {
+                "samples": 300,
+                "mean": 0.06553056,
+                "p50": 0.065472,
+                "p95": 0.065856,
+                "p99": 0.06896,
+                "max": 0.069952
+              }
+            }
+          }
+        },
+        "finalCut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 147410,
+          "earlyHardware": 26806,
+          "earlySoftware": 19172,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 42382,
+          "lateHardware": 200,
+          "lateSoftware": 361,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        },
+        "finalStream": {
+          "allocationFailures": 0,
+          "clasBuilt": 0,
+          "clasBytes": 191882752,
+          "clasCapacityBytes": 536870912,
+          "clasClusters": 102254,
+          "clasDeferred": 0,
+          "clasEncodedBytes": 191882752,
+          "clasMoved": 0,
+          "clasPages": 9290,
+          "clasPending": 0,
+          "clasRetiring": 0,
+          "clasScratchBytes": 163839729,
+          "cpuWork": {
+            "coldAgeRejected": 0,
+            "coldCandidates": 0,
+            "coldClasLookups": 0,
+            "coldPressureScheduled": 0,
+            "coldRetentionScheduled": 0,
+            "coldScheduleFailed": 0,
+            "coldStateRejected": 0,
+            "coldVisited": 0,
+            "demandIncompleteProtected": 0,
+            "demandNewerThanFeedback": 0,
+            "demandRefreshed": 9290,
+            "demandUnused": 0,
+            "demandVisited": 9290,
+            "pendingFreePages": 0
+          },
+          "evictions": 0,
+          "feedbackFrame": 2998,
+          "frame": 3000,
+          "geometryBudgetBytes": 1073741824,
+          "geometryBytes": 150612224,
+          "ioActive": 0,
+          "ioQueued": 0,
+          "pendingPages": 0,
+          "requests": 0,
+          "residentPages": 9290,
+          "totalUploadBytes": 751051440,
+          "uploadBytes": 0,
+          "uploadQueued": 0
+        },
+        "gpuCompetition": {
+          "available": true,
+          "other3dEngineProcesses": {
+            "dwm": {
+              "samples": 60,
+              "mean": 2.369999378782557,
+              "p50": 1.436081117693655,
+              "p95": 7.81487454237782,
+              "p99": 11.2302481000029,
+              "max": 12.7590256615317
+            },
+            "ChatGPT": {
+              "samples": 60,
+              "mean": 1.2644700620563392,
+              "p50": 0.9369779173794995,
+              "p95": 3.55487024537056,
+              "p99": 4.04712212799671,
+              "max": 4.46950884089558
+            },
+            "csrss": {
+              "samples": 23,
+              "mean": 0.5378774058920741,
+              "p50": 0.319740265212443,
+              "p95": 1.1075038003272,
+              "p99": 1.47055174060663,
+              "max": 2.12204405281236
+            },
+            "explorer": {
+              "samples": 5,
+              "mean": 0.2578946649765524,
+              "p50": 0.206799587514547,
+              "p95": 0.22677088529593,
+              "p99": 0.22677088529593,
+              "max": 0.567609257852118
+            },
+            "Feishu": {
+              "samples": 42,
+              "mean": 0.38208551360932336,
+              "p50": 0.200879281495086,
+              "p95": 0.809748560718728,
+              "p99": 1.50026566682373,
+              "max": 3.14112926755291
+            },
+            "msedge": {
+              "samples": 6,
+              "mean": 0.48741280747164717,
+              "p50": 0.2518006736307455,
+              "p95": 0.30622456574844,
+              "p99": 0.30622456574844,
+              "max": 1.79883714444314
+            },
+            "QQ": {
+              "samples": 37,
+              "mean": 0.46323054430344796,
+              "p50": 0.363837367450944,
+              "p95": 0.779496289980545,
+              "p99": 0.816155110185158,
+              "max": 2.95452049834369
+            },
+            "Unity": {
+              "samples": 19,
+              "mean": 45.60200197630682,
+              "p50": 60.8277142526163,
+              "p95": 86.1769621218154,
+              "p99": 86.1769621218154,
+              "max": 90.5964316104492
+            },
+            "NVIDIA Overlay": {
+              "samples": 4,
+              "mean": 0.33066117313426724,
+              "p50": 0.3143000275365305,
+              "p95": 0.363812796082532,
+              "p99": 0.363812796082532,
+              "max": 0.489430280871707
+            },
+            "ZCode": {
+              "samples": 3,
+              "mean": 0.6378826839736683,
+              "p50": 0.431246635677727,
+              "p95": 0.431246635677727,
+              "p99": 0.431246635677727,
+              "max": 1.33888575444112
+            }
+          },
+          "note": "Per-engine activity samples, not whole-card ownership; absent/idle intervals are not emitted."
+        },
+        "process": {
+          "forcedCleanupAfterCapture": true,
+          "arguments": [
+            "--gtest_filter=RhiRendering.minizorah_fixed_baseline",
+            "--rhi-no-validation",
+            "--rhi-async-compute",
+            "--output-dir",
+            "\"E:\\metallic\\.cache\\vbuffer-empty-resident\\after\\m2\"",
+            "--rhi-realtime"
+          ],
+          "exitCode": -1
+        }
+      }
+    }
+  },
+  "quality": {
+    "status": "passed",
+    "validation": false,
+    "frameCount": 3000,
+    "process": {
+      "forcedCleanupAfterCapture": true,
+      "arguments": [
+        "--gtest_filter=RhiRendering.minizorah_fixed_baseline",
+        "--rhi-no-validation",
+        "--rhi-async-compute",
+        "--output-dir",
+        "\"E:\\metallic\\.cache\\vbuffer-empty-resident\\after\\quality\"",
+        "--rhi-realtime"
+      ],
+      "exitCode": -1
+    },
+    "checkpoints": [
+      {
+        "frame": 29,
+        "phase": "warmup",
+        "cut": {
+          "activeGroups": 18404,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 119082,
+          "earlyHardware": 25806,
+          "earlySoftware": 14994,
+          "fallbackInstances": 0,
+          "fineGroups": 8026,
+          "lateCandidates": 29541,
+          "lateHardware": 302,
+          "lateSoftware": 445,
+          "maxFiniteRefinementErrorPixels": 1309.706298828125,
+          "maxVisibleRefinementErrorPixels": 3.4028234663852886e+38,
+          "nearPlaneUnboundedRefinements": 369,
+          "overTargetRefinements": 3209,
+          "selectedClusters": 130204,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 2546,
+          "visibleUnboundedRefinements": 92
+        }
+      },
+      {
+        "frame": 59,
+        "phase": "warmup",
+        "cut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 141653,
+          "earlyHardware": 26686,
+          "earlySoftware": 19178,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 37654,
+          "lateHardware": 128,
+          "lateSoftware": 358,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 119,
+        "phase": "warmup",
+        "cut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 147437,
+          "earlyHardware": 26893,
+          "earlySoftware": 19219,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 42248,
+          "lateHardware": 133,
+          "lateSoftware": 365,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 179,
+        "phase": "warmup",
+        "cut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 141389,
+          "earlyHardware": 26546,
+          "earlySoftware": 19056,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 37914,
+          "lateHardware": 263,
+          "lateSoftware": 474,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 299,
+        "phase": "warmup",
+        "cut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 146986,
+          "earlyHardware": 26790,
+          "earlySoftware": 19107,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 42020,
+          "lateHardware": 142,
+          "lateSoftware": 411,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 599,
+        "phase": "start_hold",
+        "cut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 141662,
+          "earlyHardware": 26686,
+          "earlySoftware": 19238,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 37607,
+          "lateHardware": 130,
+          "lateSoftware": 322,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 899,
+        "phase": "forward_1",
+        "cut": {
+          "activeGroups": 17873,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 139321,
+          "earlyHardware": 25828,
+          "earlySoftware": 20868,
+          "fallbackInstances": 0,
+          "fineGroups": 8892,
+          "lateCandidates": 39151,
+          "lateHardware": 140,
+          "lateSoftware": 783,
+          "maxFiniteRefinementErrorPixels": 33753.8125,
+          "maxVisibleRefinementErrorPixels": 1.4998295307159424,
+          "nearPlaneUnboundedRefinements": 205,
+          "overTargetRefinements": 984,
+          "selectedClusters": 152446,
+          "traversalFlatTileBaseline": 267786,
+          "traversalTestedGroups": 49440,
+          "traversalVisitedNodes": 117966,
+          "verifiedInstances": 12558,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 1199,
+        "phase": "forward_2",
+        "cut": {
+          "activeGroups": 16862,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 127555,
+          "earlyHardware": 25748,
+          "earlySoftware": 19156,
+          "fallbackInstances": 0,
+          "fineGroups": 8707,
+          "lateCandidates": 32011,
+          "lateHardware": 39,
+          "lateSoftware": 280,
+          "maxFiniteRefinementErrorPixels": 8531.9189453125,
+          "maxVisibleRefinementErrorPixels": 1.4996644258499146,
+          "nearPlaneUnboundedRefinements": 231,
+          "overTargetRefinements": 1125,
+          "selectedClusters": 151141,
+          "traversalFlatTileBaseline": 247908,
+          "traversalTestedGroups": 52310,
+          "traversalVisitedNodes": 109001,
+          "verifiedInstances": 11532,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 1499,
+        "phase": "forward_3",
+        "cut": {
+          "activeGroups": 16346,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 132044,
+          "earlyHardware": 22743,
+          "earlySoftware": 20360,
+          "fallbackInstances": 0,
+          "fineGroups": 8853,
+          "lateCandidates": 33873,
+          "lateHardware": 123,
+          "lateSoftware": 298,
+          "maxFiniteRefinementErrorPixels": 134836.921875,
+          "maxVisibleRefinementErrorPixels": 1.499959111213684,
+          "nearPlaneUnboundedRefinements": 266,
+          "overTargetRefinements": 1989,
+          "selectedClusters": 154593,
+          "traversalFlatTileBaseline": 229618,
+          "traversalTestedGroups": 60787,
+          "traversalVisitedNodes": 101664,
+          "verifiedInstances": 10691,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 1799,
+        "phase": "far_hold",
+        "cut": {
+          "activeGroups": 16346,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 131953,
+          "earlyHardware": 22709,
+          "earlySoftware": 20265,
+          "fallbackInstances": 0,
+          "fineGroups": 8853,
+          "lateCandidates": 33968,
+          "lateHardware": 33,
+          "lateSoftware": 177,
+          "maxFiniteRefinementErrorPixels": 134836.921875,
+          "maxVisibleRefinementErrorPixels": 1.499959111213684,
+          "nearPlaneUnboundedRefinements": 266,
+          "overTargetRefinements": 1989,
+          "selectedClusters": 154593,
+          "traversalFlatTileBaseline": 229618,
+          "traversalTestedGroups": 60787,
+          "traversalVisitedNodes": 101664,
+          "verifiedInstances": 10691,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 2099,
+        "phase": "return_1",
+        "cut": {
+          "activeGroups": 16862,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 127879,
+          "earlyHardware": 25979,
+          "earlySoftware": 19157,
+          "fallbackInstances": 0,
+          "fineGroups": 8707,
+          "lateCandidates": 38704,
+          "lateHardware": 62,
+          "lateSoftware": 295,
+          "maxFiniteRefinementErrorPixels": 8531.9189453125,
+          "maxVisibleRefinementErrorPixels": 1.4996644258499146,
+          "nearPlaneUnboundedRefinements": 231,
+          "overTargetRefinements": 1125,
+          "selectedClusters": 151141,
+          "traversalFlatTileBaseline": 247908,
+          "traversalTestedGroups": 52310,
+          "traversalVisitedNodes": 109001,
+          "verifiedInstances": 11532,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 2399,
+        "phase": "return_2",
+        "cut": {
+          "activeGroups": 17873,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 140925,
+          "earlyHardware": 26187,
+          "earlySoftware": 21168,
+          "fallbackInstances": 0,
+          "fineGroups": 8892,
+          "lateCandidates": 40007,
+          "lateHardware": 73,
+          "lateSoftware": 503,
+          "maxFiniteRefinementErrorPixels": 33753.8125,
+          "maxVisibleRefinementErrorPixels": 1.4998295307159424,
+          "nearPlaneUnboundedRefinements": 205,
+          "overTargetRefinements": 984,
+          "selectedClusters": 152446,
+          "traversalFlatTileBaseline": 267786,
+          "traversalTestedGroups": 49440,
+          "traversalVisitedNodes": 117966,
+          "verifiedInstances": 12558,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 2699,
+        "phase": "return_3",
+        "cut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 142077,
+          "earlyHardware": 26729,
+          "earlySoftware": 19198,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 38061,
+          "lateHardware": 169,
+          "lateSoftware": 417,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 2999,
+        "phase": "return_hold",
+        "cut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 142023,
+          "earlyHardware": 26698,
+          "earlySoftware": 19056,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 43505,
+          "lateHardware": 247,
+          "lateSoftware": 396,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      },
+      {
+        "frame": 3000,
+        "phase": "final_diagnostic",
+        "cut": {
+          "activeGroups": 19394,
+          "candidateCapacity": 2097152,
+          "capacityFallback": false,
+          "earlyCandidates": 147410,
+          "earlyHardware": 26806,
+          "earlySoftware": 19172,
+          "fallbackInstances": 0,
+          "fineGroups": 9467,
+          "lateCandidates": 42382,
+          "lateHardware": 200,
+          "lateSoftware": 361,
+          "maxFiniteRefinementErrorPixels": 4177.38037109375,
+          "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+          "nearPlaneUnboundedRefinements": 456,
+          "overTargetRefinements": 1051,
+          "selectedClusters": 162989,
+          "traversalFlatTileBaseline": 289427,
+          "traversalTestedGroups": 80813,
+          "traversalVisitedNodes": 129332,
+          "verifiedInstances": 13782,
+          "visibleOverTargetRefinements": 0,
+          "visibleUnboundedRefinements": 0
+        }
+      }
+    ]
+  },
+  "identicalFinalCutAndRasterCounts": true
+}

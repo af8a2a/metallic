@@ -2596,8 +2596,16 @@ private:
         LoadOp loadOp,
         bool projectWithCullingCamera = false)
     {
-        auto rasterProfile = context.profileScope(projectWithCullingCamera ? (passIndex == 0 ? "Frozen resident early" : "Frozen resident late") :
-            (passIndex == 0 ? "Resident early" : "Resident late"));
+        // Streaming metadata still has instances, but no resident draw records.
+        // Do not fork queues, classify empty bins or merge a full-screen software
+        // buffer for that producer. The first raster must still clear both
+        // attachments, including the separate frozen-camera HZB targets.
+        const bool hasResidentGeometry = activeMeshletCount_ != 0;
+        if (!hasResidentGeometry && loadOp == LoadOp::Load) { return {}; }
+        auto rasterProfile = context.profileScope(!hasResidentGeometry
+            ? (projectWithCullingCamera ? "Clear frozen visibility" : "Clear visibility")
+            : projectWithCullingCamera ? (passIndex == 0 ? "Frozen resident early" : "Frozen resident late")
+            : (passIndex == 0 ? "Resident early" : "Resident late"));
         CommandBuffer& commandBuffer = context.commandBuffer();
         transitionTexture(commandBuffer, visibilityTexture, ResourceState::ColorAttachment, ResourceState::ColorAttachment);
         transitionTexture(commandBuffer, depthTexture, ResourceState::DepthStencilAttachment, ResourceState::DepthStencilAttachment);
@@ -2622,6 +2630,16 @@ private:
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(reversedZ),
         };
+        if (!hasResidentGeometry) {
+            commandBuffer.beginRendering(RenderingDesc{
+                .renderArea = renderArea,
+                .colorAttachments = &visibilityAttachment,
+                .colorAttachmentCount = 1,
+                .depthStencilAttachment = &depthAttachment,
+            });
+            commandBuffer.endRendering();
+            return {};
+        }
         const bool prebin = clusterPrebinEnabled();
         if (prebin) {
             auto binProfile = context.profileScope("Soft/hard classification");
