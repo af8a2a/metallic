@@ -2,6 +2,7 @@ import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
+#include "WaveWorkDistribution.slang"
 
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
@@ -2300,20 +2301,6 @@ void emitStreamLodFrontier(
     }
 }
 
-// Locate the source of a flattened child item. Every lane participates in the
-// shuffle, including empty sources and the final partially occupied batch.
-// This uses subgroup lane IDs, not an assumed mapping from workgroup lanes.
-uint streamWorkSource(uint prefix, uint item)
-{
-    uint source = 0u;
-    for (uint step = WaveGetLaneCount() >> 1u; step != 0u; step >>= 1u) {
-        uint candidate = source + step;
-        uint boundary = WaveReadLaneAt(prefix, min(candidate, WaveGetLaneCount() - 1u));
-        if (candidate < WaveGetLaneCount() && boundary <= item) { source = candidate; }
-    }
-    return source;
-}
-
 // Bounded subtrees form a global queue across visible instances. The preceding
 // clear/seed dispatch publishes all task payloads before workers claim them.
 // Safe-cut state is computed later, after a dispatch barrier, in the original
@@ -2419,15 +2406,15 @@ void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_Gr
             }
         }
         if (!WaveActiveAnyTrue(count != 0u) && WaveActiveAllTrue(exhausted)) { break; }
-        uint prefix = WavePrefixSum(count);
-        uint total = WaveActiveSum(count);
-        for (uint batch = 0u; batch < total; batch += WaveGetLaneCount()) {
+        WaveWorkDistribution work = waveWorkBegin(count);
+        for (uint batch = 0u; batch < work.total; batch += WaveGetLaneCount()) {
             uint item = batch + WaveGetLaneIndex();
-            uint source = streamWorkSource(prefix, item);
-            uint groupIndex = WaveReadLaneAt(firstGroup, source) - (item - WaveReadLaneAt(prefix, source));
+            uint localItem;
+            uint source = waveWorkNext(work, batch, localItem);
+            uint groupIndex = WaveReadLaneAt(firstGroup, source) - localItem;
             uint owner = WaveReadLaneAt(instanceIndex, source);
             uint ownerLeaf = WaveReadLaneAt(leaf, source);
-            if (item < total) {
+            if (item < work.total) {
                 GPUDrivenStreamAssetGroup group = groups[groupIndex];
                 GPUDrivenStreamAssetInstance ownerInstance = instances[owner];
                 bool wanted = (group.flags & 1u) != 0u ||
@@ -2734,19 +2721,22 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
                     wanted = streamLodBvhNeedsFine(topology, primitive.lodTileOffset + 1u + root * 10u,
                         instance, eye, direction, projection, manual);
                 }
-                uint total;
-                uint rank = streamCooperativePrefix(wanted ? 1u : 0u, lane, total);
-                if (lane == 0u && total != 0u) { InterlockedAdd(demand[16], total, g_CooperativeRoots); }
-                GroupMemoryBarrierWithGroupSync();
+                // Task order has no cut/budget semantics. Reserve independently
+                // per wave; a dispatch barrier publishes all payloads to workers.
+                uint total = WaveActiveCountBits(wanted);
+                uint rank = WavePrefixCountBits(wanted);
+                uint firstTask = 0u;
+                if (WaveIsFirstLane() && total != 0u) { InterlockedAdd(demand[16], total, firstTask); }
+                firstTask = WaveReadLaneFirst(firstTask);
                 if (wanted) {
                     GPUDrivenStreamAssetTraversalWorkItem work;
                     work.instanceIndex = instanceIndex; work.nodeIndex = root;
                     work.readyFrame = 0u; work.padding0 = 0u;
-                    tasks[g_CooperativeRoots + rank] = work;
+                    tasks[firstTask + rank] = work;
                 }
             }
             // The lane that cleared this word also publishes the statistic;
-            // the seed prefix synchronizes LDS, not device-memory stores.
+            // no wave operation publishes another lane's device-memory stores.
             if (lane == 3u) { state[sparse + 3u] = count; }
         }
         return;

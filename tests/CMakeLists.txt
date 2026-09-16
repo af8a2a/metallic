@@ -231,6 +231,7 @@ add_executable(MetallicRhiTests
     rhi/GPUSceneSubsystemTests.cpp
     rhi/MeshletLodTests.cpp
     rhi/StreamMeshletLodTests.cpp
+    rhi/WaveWorkDistributionTests.cpp
     rhi/StreamMeshletLodSceneTests.cpp
     rhi/MiniZorahStreamAssetTests.cpp
     rhi/MiniZorahRoamingTests.cpp
