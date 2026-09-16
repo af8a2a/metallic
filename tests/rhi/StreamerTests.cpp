@@ -3092,5 +3092,76 @@ METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyLatestGpuRequestTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestUnloadOverflowTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyEvictionDelayAgeTest);
 
+
+class StreamerUploadByteBudgetTest final : public RhiTest {
+public:
+    StreamerUploadByteBudgetTest() { type = RhiTestType::Validation; name = "streamer_meshlet_upload_byte_budget"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "ByteBudget.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        if (asset.pageCount() < 4) { return RhiTestResult::fail("Need four pages for byte budget test"); }
+        const uint64_t capacity = uint64_t(asset.maxPagePayloadBytes()) * 8;
+        std::unique_ptr<Buffer> destination;
+        auto result = context.device.createBuffer({.size = capacity,
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, destination);
+        if (!result) { return RhiTestResult::fail(toString(result)); }
+        for (bool asynchronous : {false, true}) {
+            for (uint64_t budget : {0ull, 1ull, uint64_t(asset.maxPagePayloadBytes())}) {
+                MeshletStreamResidencyManager residency;
+                std::string reason;
+                if (!residency.initialize({.asset = &asset, .maxResidentBytes = capacity, .queuedFrameCount = 1,
+                        .pageLoadConcurrency = asynchronous ? 2u : 0u, .maxPageLoadsInFlight = 4,
+                        .completionDrivenUploads = false}, reason)) { return RhiTestResult::fail(reason); }
+                std::unique_ptr<Streamer> streamer;
+                result = context.device.createStreamer(makeTestStreamerDesc(capacity + 4096), streamer);
+                if (!result) { return RhiTestResult::fail(toString(result)); }
+                residency.beginFrame();
+                for (uint32_t page = 0; page < 4; ++page) { (void)residency.requestPage(page); }
+                if (asynchronous) {
+                    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                    while (residency.stats().preparedPageLoadCount < 4 && std::chrono::steady_clock::now() < deadline) {
+                        (void)residency.processUploads(*streamer, *destination, 0);
+                        std::this_thread::yield();
+                    }
+                    if (residency.stats().preparedPageLoadCount != 4) { return RhiTestResult::fail("Async pages not prepared"); }
+                }
+                std::vector<uint32_t> seen;
+                uint64_t observedBytes = 0;
+                const auto observer = [&](uint32_t page, std::span<const uint8_t> bytes) {
+                    seen.push_back(page); observedBytes += bytes.size();
+                };
+                for (uint32_t frame = 0; frame < 5 && seen.size() < 4; ++frame) {
+                    if (frame != 0) { residency.beginFrame(); }
+                    const size_t before = seen.size();
+                    (void)residency.processUploads(*streamer, *destination, 4, observer, nullptr, budget);
+                    const auto firstBytes = residency.stats().frameUploadBytes;
+                    const size_t after = seen.size();
+                    // Retrying must share this frame's byte credit.
+                    (void)residency.processUploads(*streamer, *destination, 4, observer, nullptr, budget);
+                    const auto spent = residency.stats().frameUploadBytes;
+                    if (budget != 0 && spent > budget && (seen.size() - before != 1 || spent != firstBytes || seen.size() != after)) {
+                        return RhiTestResult::fail("Byte credit was bypassed by a repeat call or oversized page");
+                    }
+                    if (seen.size() == before || (budget == 1 && seen.size() - before != 1)) {
+                        return RhiTestResult::fail("Oversized page starved or multiple pages escaped the budget");
+                    }
+                }
+                std::sort(seen.begin(), seen.end());
+                uint64_t expectedBytes = 0;
+                for (uint32_t page = 0; page < 4; ++page) { expectedBytes += scene::meshletStreamDevicePayloadSize(asset.pages()[page]); }
+                if (seen != std::vector<uint32_t>{0, 1, 2, 3} || observedBytes != expectedBytes ||
+                    residency.stats().totalUploadBytes != expectedBytes) {
+                    return RhiTestResult::fail("Budget deferral lost/duplicated a page or counted disk bytes");
+                }
+            }
+        }
+        return RhiTestResult::pass("Sync/async uploads: shared frame credit, unlimited mode, oversized progress, exact device bytes and deferred retry");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerUploadByteBudgetTest);
+
 } // namespace
 } // namespace metallic::tests

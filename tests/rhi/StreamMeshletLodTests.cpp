@@ -908,6 +908,181 @@ private:
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLodGpuTest);
 
+
+class StreamLodTileHierarchyTest final : public RhiTest {
+public:
+    StreamLodTileHierarchyTest() { type = RhiTestType::Validation; name = "meshlet_lod_stream_tile_hierarchy"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        StreamLodFixture fixture(true, 8192);
+        std::vector<MeshletLodBvhNode> nodes;
+        std::string reason;
+        if (!buildMeshletLodTiles(fixture.groups, nodes, reason)) { return RhiTestResult::fail(reason); }
+        uint32_t expectedEnd = static_cast<uint32_t>(fixture.groups.size()), leafCount = 0;
+        for (uint32_t i = 0; i < nodes.size(); ++i) {
+            const auto& node = nodes[i];
+            if (node.escapeIndex <= i || node.escapeIndex > nodes.size()) { return RhiTestResult::fail("Invalid tile escape"); }
+            if (node.groupCount == 0) { continue; }
+            ++leafCount;
+            if (node.groupCount > 64 || node.groupOffset + node.groupCount != expectedEnd || node.escapeIndex != i + 1) {
+                return RhiTestResult::fail("Tile leaves lost parent-before-child order");
+            }
+            expectedEnd = node.groupOffset;
+            for (uint32_t j = 0; j < node.groupCount; ++j) {
+                if (fixture.groups[node.groupOffset + j].level != node.maxLevel) {
+                    return RhiTestResult::fail("Dependent LOD levels share a tile");
+                }
+            }
+        }
+        if (expectedEnd != 0 || leafCount < 100) { return RhiTestResult::fail("Incomplete hierarchy fixture"); }
+        uint32_t bestVisited = UINT32_MAX;
+        for (uint32_t test = 0; test < 32; ++test) {
+            fixture.view.projection[3] = std::exp2(float(test) - 12.f);
+            fixture.view.forward[3] = test % 2;
+            const auto needs = [&](const MeshletLodBvhNode& node) {
+                return meshletLodNeedsFine({.sphere = node.sphere, .error = node.maxError,
+                    .level = node.maxLevel, .flags = node.flags}, fixture.instance, fixture.view);
+            };
+            std::vector<uint32_t> expected, actual;
+            for (uint32_t i = 0; i < nodes.size(); ++i) {
+                if (nodes[i].groupCount != 0 && needs(nodes[i])) { expected.push_back(i); }
+            }
+            uint32_t visited = 0;
+            for (uint32_t i = 0; i < nodes.size();) {
+                ++visited;
+                if (!needs(nodes[i])) { i = nodes[i].escapeIndex; }
+                else { if (nodes[i].groupCount != 0) { actual.push_back(i); } ++i; }
+            }
+            if (actual != expected) { return RhiTestResult::fail("Hierarchy pruned a demanded tile"); }
+            bestVisited = std::min(bestVisited, visited);
+        }
+        if (bestVisited >= leafCount / 4) { return RhiTestResult::fail("Coarse traversal still scans the tile list"); }
+        return RhiTestResult::pass("16383 groups: leaf order and demand identical; coarse traversal visits " +
+            std::to_string(bestVisited) + " hierarchy nodes versus " + std::to_string(leafCount) + " flat tiles");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamLodTileHierarchyTest);
+
+class StreamLodCapacityTest final : public RhiTest {
+public:
+    StreamLodCapacityTest() { type = RhiTestType::Rendering; name = "meshlet_lod_stream_per_instance_budget"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<Device> device;
+        const auto created = createDevice({.applicationName = "Stream capacity regression",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless compute"); }
+        STREAM_LOD_REQUIRE(created);
+        constexpr uint32_t count = 257;
+        std::unique_ptr<BindlessHeap> heap;
+        STREAM_LOD_REQUIRE(device->createBindlessHeap({.maxBuffers = 3}, heap));
+        std::array<std::unique_ptr<Buffer>, 3> buffers;
+        std::array<BindlessHandle, 3> handles;
+        const uint64_t sizes[] = {sizeof(MeshletStreamGpuParams), count * 16u, sizeof(MeshletStreamGpuActiveHeader)};
+        const uint32_t strides[] = {sizeof(MeshletStreamGpuParams), 4u, sizeof(MeshletStreamGpuActiveHeader)};
+        for (uint32_t i = 0; i < 3; ++i) {
+            STREAM_LOD_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = strides[i],
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, buffers[i]));
+            STREAM_LOD_REQUIRE(heap->allocateBuffer(handles[i]));
+            STREAM_LOD_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
+        }
+        ShaderCompileResult compiled;
+        STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
+            .entryPointName = kMeshletStreamActiveBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, compiled));
+        std::unique_ptr<ShaderModule> shader;
+        STREAM_LOD_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}, shader));
+        std::unique_ptr<ComputePipeline> pipeline;
+        STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .computeEntryPoint = "main",
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, pipeline));
+        auto* queue = device->getQueue(QueueType::Graphics);
+        std::unique_ptr<CommandPool> pool;
+        std::unique_ptr<CommandBuffer> commands;
+        std::unique_ptr<Fence> fence;
+        STREAM_LOD_REQUIRE(device->createCommandPool(*queue, pool));
+        STREAM_LOD_REQUIRE(pool->createCommandBuffer(commands));
+        STREAM_LOD_REQUIRE(device->createFence(false, fence));
+        const auto write = [&](uint32_t index, const void* source) {
+            auto* data = buffers[index]->map();
+            if (!data) { return false; }
+            std::memcpy(data, source, sizes[index]);
+            buffers[index]->flush(); buffers[index]->unmap(); return true;
+        };
+        uint32_t mixedCuts = 0;
+        for (uint32_t test = 0; test < 24; ++test) {
+            std::vector<uint32_t> state(count * 4);
+            uint64_t selectedTotal = 0, baselineTotal = 0;
+            for (uint32_t i = 0; i < count; ++i) {
+                const uint32_t roots = i % 9 == 0 ? 0u : 1u + i % 3;
+                uint32_t selected = roots == 0 ? 0u : roots + i % 11;
+                if (i % 13 == 0 && roots != 0) { selected = 1; } // A detail cut can be cheaper.
+                if (test >= 16 && i % 53 == 1) { selected = UINT32_MAX; }
+                state[i * 4] = selected; state[i * 4 + 2] = roots; state[i * 4 + 3] = roots != 0;
+                selectedTotal += selected;
+                baselineTotal += std::min(roots, selected);
+            }
+            const uint32_t capacities[] = {0u, 1u, uint32_t(baselineTotal - 1), uint32_t(baselineTotal),
+                uint32_t(baselineTotal + 17), uint32_t(baselineTotal + 400), 4096u, 65536u};
+            MeshletStreamGpuParams params;
+            params.sceneInstanceCount = count;
+            params.lodTopologyBuffer = handles[1].index;
+            params.lodStateBuffer = handles[1].index;
+            params.activeGroupCount = capacities[test % 8];
+            MeshletStreamGpuActiveHeader header{};
+            if (!write(0, &params) || !write(1, state.data()) || !write(2, &header)) { return RhiTestResult::fail("Capacity input map"); }
+            if (test != 0) { STREAM_LOD_REQUIRE(fence->reset()); STREAM_LOD_REQUIRE(pool->reset()); }
+            STREAM_LOD_REQUIRE(commands->begin());
+            commands->hostWriteBarrier();
+            std::array<BufferBarrierDesc, 3> barriers;
+            for (uint32_t i = 0; i < 3; ++i) {
+                barriers[i] = {.buffer = buffers[i].get(), .before = test == 0 ? ResourceState::Undefined : ResourceState::General,
+                    .after = ResourceState::General};
+            }
+            commands->barrier({.buffers = barriers.data(), .bufferCount = 3});
+            commands->bindBindlessHeap(*heap); commands->bindComputePipeline(*pipeline);
+            MeshletStreamUserPush push{};
+            push.paramsBuffer = handles[0].index; push.activeHeaderBuffer = handles[2].index;
+            push.activeBuildPhase = kMeshletStreamActiveBuildPrefixPhase;
+            commands->pushBindlessData(&push, sizeof(push)); commands->dispatch(1, 1, 1);
+            STREAM_LOD_REQUIRE(commands->end());
+            CommandBuffer* list[] = {commands.get()};
+            STREAM_LOD_REQUIRE(queue->submit({.commandBuffers = list, .commandBufferCount = 1, .signalFence = fence.get()}));
+            STREAM_LOD_REQUIRE(fence->wait());
+            buffers[2]->invalidate();
+            auto* headerData = buffers[2]->map();
+            if (!headerData) { return RhiTestResult::fail("Capacity header map"); }
+            std::memcpy(&header, headerData, sizeof(header)); buffers[2]->unmap();
+            buffers[1]->invalidate();
+            auto* output = static_cast<const uint32_t*>(buffers[1]->map());
+            if (!output) { return RhiTestResult::fail("Capacity state map"); }
+            const bool overflow = selectedTotal > params.activeGroupCount;
+            const bool invalid = baselineTotal > params.activeGroupCount;
+            uint64_t extraPrefix = 0;
+            uint32_t outputCount = 0, fallbackCount = 0;
+            for (uint32_t i = 0; i < count && !invalid; ++i) {
+                const auto selected = state[i * 4], roots = state[i * 4 + 2];
+                const uint64_t extra = selected - std::min(selected, roots);
+                const bool fallback = overflow && extra != 0 && extraPrefix + extra > params.activeGroupCount - baselineTotal;
+                extraPrefix += extra;
+                if (output[i * 4 + 1] != outputCount || bool(output[i * 4 + 3] & 2u) != fallback) {
+                    buffers[1]->unmap(); return RhiTestResult::fail("Mixed-cut prefix/decision mismatch");
+                }
+                outputCount += fallback ? roots : selected;
+                fallbackCount += fallback;
+            }
+            buffers[1]->unmap();
+            if (header.activeGroupCount != (invalid ? 0u : outputCount) ||
+                header.overflowCount != (invalid ? 2u : overflow ? 1u : 0u) ||
+                header.padding2 != (invalid ? 0u : fallbackCount) || header.activeGroupCount > params.activeGroupCount) {
+                return RhiTestResult::fail("Capacity did not preserve complete bounded output");
+            }
+            mixedCuts += !invalid && fallbackCount != 0 && outputCount > baselineTotal;
+        }
+        if (mixedCuts == 0) { return RhiTestResult::fail("All instances fell back together"); }
+        return RhiTestResult::pass("24 multi-instance capacity cases; mixed cuts, insufficient roots, exact limits, cheaper detail and uint saturation");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamLodCapacityTest);
+
 #undef STREAM_LOD_REQUIRE
 
 } // namespace

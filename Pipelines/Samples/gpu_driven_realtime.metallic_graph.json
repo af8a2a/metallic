@@ -29,6 +29,7 @@
                 "maxLockedFallbackPages": 4096,
                 "maxActiveGroups": 65536,
                 "maxPageUploadsPerFrame": 256,
+                "maxUploadBytesPerFrame": 8388608,
                 "maxPageLoadsInFlight": 1024,
                 "pageLoadConcurrency": 4,
                 "maxGpuPageRequests": 65536,

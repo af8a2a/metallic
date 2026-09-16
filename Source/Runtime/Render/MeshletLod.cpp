@@ -23,6 +23,45 @@ bool lodSphereContains(const std::array<float, 4>& outer, const std::array<float
     return distance + inner[3] <= double(outer[3]);
 }
 
+template <typename GetRecord>
+MeshletLodBvhNode aggregateLodBounds(uint32_t count, const GetRecord& getRecord)
+{
+    MeshletLodBvhNode result;
+    std::array<double, 3> lower{INFINITY, INFINITY, INFINITY};
+    std::array<double, 3> upper{-INFINITY, -INFINITY, -INFINITY};
+    bool infiniteRadius = false;
+    for (uint32_t index = 0; index < count; ++index) {
+        const auto record = getRecord(index);
+        result.maxError = std::max(result.maxError, record.maxError);
+        result.maxLevel = std::max(result.maxLevel, record.maxLevel);
+        result.flags |= record.flags;
+        infiniteRadius = infiniteRadius || !std::isfinite(record.sphere[3]);
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            lower[axis] = std::min(lower[axis], double(record.sphere[axis]) - record.sphere[3]);
+            upper[axis] = std::max(upper[axis], double(record.sphere[axis]) + record.sphere[3]);
+        }
+    }
+    if (infiniteRadius) {
+        result.sphere = getRecord(0).sphere;
+        result.sphere[3] = INFINITY;
+        return result;
+    }
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        result.sphere[axis] = static_cast<float>((lower[axis] + upper[axis]) * 0.5);
+    }
+    double radius = 0;
+    for (uint32_t index = 0; index < count; ++index) {
+        const auto sphere = getRecord(index).sphere;
+        radius = std::max(radius, std::hypot(double(result.sphere[0]) - sphere[0],
+            double(result.sphere[1]) - sphere[1], double(result.sphere[2]) - sphere[2]) + sphere[3]);
+    }
+    // Recompute about the rounded center, then round the radius outward.
+    // An unrepresentably large union is conservatively never pruned.
+    result.sphere[3] = radius > std::numeric_limits<float>::max() ? INFINITY :
+        (radius > 0 ? std::nextafter(static_cast<float>(radius), INFINITY) : 0);
+    return result;
+}
+
 bool validateMeshletLodBvh(std::span<const MeshletLodGroupRecord> groups,
     std::span<const MeshletLodBvhNode> nodes)
 {
@@ -100,48 +139,12 @@ bool buildMeshletLodBvh(std::span<const MeshletLodGroupRecord> groups,
             return false;
         }
     }
-    const auto aggregate = [](uint32_t count, const auto& getRecord) {
-        MeshletLodBvhNode result;
-        std::array<double, 3> lower{INFINITY, INFINITY, INFINITY};
-        std::array<double, 3> upper{-INFINITY, -INFINITY, -INFINITY};
-        bool infiniteRadius = false;
-        for (uint32_t index = 0; index < count; ++index) {
-            const auto record = getRecord(index);
-            result.maxError = std::max(result.maxError, record.maxError);
-            result.maxLevel = std::max(result.maxLevel, record.maxLevel);
-            result.flags |= record.flags;
-            infiniteRadius = infiniteRadius || !std::isfinite(record.sphere[3]);
-            for (uint32_t axis = 0; axis < 3; ++axis) {
-                lower[axis] = std::min(lower[axis], double(record.sphere[axis]) - record.sphere[3]);
-                upper[axis] = std::max(upper[axis], double(record.sphere[axis]) + record.sphere[3]);
-            }
-        }
-        if (infiniteRadius) {
-            result.sphere = getRecord(0).sphere;
-            result.sphere[3] = INFINITY;
-            return result;
-        }
-        for (uint32_t axis = 0; axis < 3; ++axis) {
-            result.sphere[axis] = static_cast<float>((lower[axis] + upper[axis]) * 0.5);
-        }
-        double radius = 0;
-        for (uint32_t index = 0; index < count; ++index) {
-            const auto sphere = getRecord(index).sphere;
-            radius = std::max(radius, std::hypot(double(result.sphere[0]) - sphere[0],
-                double(result.sphere[1]) - sphere[1], double(result.sphere[2]) - sphere[2]) + sphere[3]);
-        }
-        // Recompute about the rounded center, then round the radius outward.
-        // An unrepresentably large union is conservatively never pruned.
-        result.sphere[3] = radius > std::numeric_limits<float>::max() ? INFINITY :
-            (radius > 0 ? std::nextafter(static_cast<float>(radius), INFINITY) : 0);
-        return result;
-    };
     const auto build = [&](const auto& self, uint32_t offset, uint32_t count) -> uint32_t {
         const uint32_t index = static_cast<uint32_t>(nodes.size());
         nodes.emplace_back();
         MeshletLodBvhNode node;
         if (count <= 4) {
-            node = aggregate(count, [&](uint32_t child) {
+            node = aggregateLodBounds(count, [&](uint32_t child) {
                 const auto& group = groups[offset + child];
                 return MeshletLodBvhNode{.sphere = group.sphere, .maxError = group.error,
                     .maxLevel = group.level, .flags = group.flags};
@@ -156,7 +159,7 @@ bool buildMeshletLodBvh(std::span<const MeshletLodGroupRecord> groups,
                 end -= childSize;
                 children[child] = self(self, end, childSize);
             }
-            node = aggregate(childCount, [&](uint32_t child) { return nodes[children[child]]; });
+            node = aggregateLodBounds(childCount, [&](uint32_t child) { return nodes[children[child]]; });
         }
         node.groupOffset = offset;
         node.escapeIndex = static_cast<uint32_t>(nodes.size());
@@ -188,9 +191,38 @@ bool buildMeshletLodTiles(std::span<const MeshletLodGroupRecord> groups,
         auto tile = nodes.front();
         tile.groupOffset = static_cast<uint32_t>(first);
         tile.groupCount = static_cast<uint32_t>(end - first);
+        tile.escapeIndex = static_cast<uint32_t>(tiles.size()) + 1u;
         tiles.push_back(tile);
         end = first;
     }
+    // Keep tiny forests flat. Larger ordered ranges get conservative BVH4
+    // escape links without reordering leaves: every parent LOD still finishes
+    // before a finer tile can read its state. Interior nodes carry no groups.
+    if (tiles.size() <= 4) { return true; }
+    const auto leaves = std::move(tiles);
+    tiles.clear();
+    const auto build = [&](const auto& self, uint32_t first, uint32_t count) -> uint32_t {
+        const uint32_t index = static_cast<uint32_t>(tiles.size());
+        tiles.emplace_back();
+        MeshletLodBvhNode node;
+        if (count == 1) {
+            node = leaves[first];
+        } else {
+            std::array<uint32_t, 4> children{};
+            const uint32_t childCount = std::min(count, 4u);
+            uint32_t offset = first;
+            for (uint32_t child = 0; child < childCount; ++child) {
+                const uint32_t size = count / childCount + (child < count % childCount ? 1u : 0u);
+                children[child] = self(self, offset, size);
+                offset += size;
+            }
+            node = aggregateLodBounds(childCount, [&](uint32_t child) { return tiles[children[child]]; });
+        }
+        node.escapeIndex = static_cast<uint32_t>(tiles.size());
+        tiles[index] = node;
+        return index;
+    };
+    build(build, 0, static_cast<uint32_t>(leaves.size()));
     return true;
 }
 

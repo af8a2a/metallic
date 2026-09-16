@@ -2153,6 +2153,21 @@ void buildStreamLodFrontier(
 
 groupshared uint2 g_StreamLodPrefix[64];
 
+// Saturate before addition so even malformed/extreme counts cannot wrap.
+uint2 scanStreamLodCounts(uint2 value, uint lane, uint limit)
+{
+    g_StreamLodPrefix[lane] = min(value, limit);
+    GroupMemoryBarrierWithGroupSync();
+    for (uint stride = 1u; stride < 64u; stride *= 2u) {
+        uint2 previous = lane >= stride ? g_StreamLodPrefix[max(lane, stride) - stride] : uint2(0u);
+        GroupMemoryBarrierWithGroupSync();
+        uint2 current = g_StreamLodPrefix[lane];
+        g_StreamLodPrefix[lane] = current + min(previous, limit - current);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    return lane == 0u ? uint2(0u) : g_StreamLodPrefix[lane - 1u];
+}
+
 void prefixStreamLodFrontier(
     RWStructuredBuffer<uint> state,
     RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader,
@@ -2164,30 +2179,56 @@ void prefixStreamLodFrontier(
     uint limit = params.activeGroupCount + 1u;
     uint2 total = 0u;
     for (uint i = first; i < end; ++i) {
-        total = min(total + min(uint2(state[i * 4u], state[i * 4u + 2u]), limit), limit);
+        uint selected = state[i * 4u];
+        uint baseline = min(selected, state[i * 4u + 2u]);
+        total += min(uint2(selected, baseline), limit - total);
     }
-    g_StreamLodPrefix[lane] = total;
-    GroupMemoryBarrierWithGroupSync();
-    for (uint stride = 1u; stride < 64u; stride *= 2u) {
-        uint2 previous = lane >= stride ? g_StreamLodPrefix[max(lane, stride) - stride] : uint2(0u);
+    uint2 before = scanStreamLodCounts(total, lane, limit);
+    uint2 all = g_StreamLodPrefix[63];
+    bool overflow = all.x > params.activeGroupCount;
+    bool invalidCapacity = all.y > params.activeGroupCount;
+    if (overflow && !invalidCapacity) {
+        // Reserve complete coverage for every instance, then spend remaining
+        // slots in stable instance order. Detail cuts cheaper than their roots
+        // are always kept. One view-wide overflow no longer coarsens everyone.
+        // A second scan compacts the mixed full-detail / terminal output.
+        uint extra = 0u;
+        for (uint i = first; i < end; ++i) {
+            uint selected = state[i * 4u];
+            uint baseline = min(selected, state[i * 4u + 2u]);
+            extra += min(selected - baseline, limit - extra);
+        }
         GroupMemoryBarrierWithGroupSync();
-        g_StreamLodPrefix[lane] = min(g_StreamLodPrefix[lane] + previous, limit);
+        uint used = scanStreamLodCounts(uint2(extra, 0u), lane, limit).x;
+        uint spare = params.activeGroupCount - all.y;
+        total = 0u;
+        for (uint i = first; i < end; ++i) {
+            uint header = i * 4u;
+            uint selected = state[header];
+            uint baseline = min(selected, state[header + 2u]);
+            uint cost = selected - baseline;
+            bool keepDetail = cost == 0u || (used <= spare && cost <= spare - used);
+            used += min(cost, limit - used);
+            // bit 0: complete roots ready; bit 1: emit the terminal cut.
+            if (!keepDetail) { state[header + 3u] |= 2u; }
+            total.x += keepDetail ? selected : baseline;
+            total.y += !keepDetail ? 1u : 0u;
+        }
         GroupMemoryBarrierWithGroupSync();
+        before = scanStreamLodCounts(total, lane, limit);
     }
-    bool overflow = g_StreamLodPrefix[63].x > params.activeGroupCount;
-    uint prefix = lane == 0u ? 0u : g_StreamLodPrefix[max(lane, 1u) - 1u][overflow ? 1u : 0u];
-    for (uint instanceIndex = first; instanceIndex < end; ++instanceIndex) {
-        uint header = instanceIndex * 4u;
+    uint prefix = before.x;
+    for (uint i = first; i < end; ++i) {
+        uint header = i * 4u;
         state[header + 1u] = prefix;
-        prefix += state[header + (overflow ? 2u : 0u)];
+        prefix += (state[header + 3u] & 2u) != 0u ? state[header + 2u] : state[header];
     }
     if (lane == 63u) {
-        uint count = g_StreamLodPrefix[63][overflow ? 1u : 0u];
-        bool invalidCapacity = count > params.activeGroupCount;
-        activeHeader[0].activeGroupCount = invalidCapacity ? 0u : count;
+        activeHeader[0].activeGroupCount = invalidCapacity ? 0u : g_StreamLodPrefix[63].x;
         activeHeader[0].overflowCount = invalidCapacity ? 2u : (overflow ? 1u : 0u);
         activeHeader[0].padding0 = overflow ? 1u : 0u;
         activeHeader[0].padding1 = invalidCapacity ? 1u : 0u;
+        activeHeader[0].padding2 = overflow && !invalidCapacity ? g_StreamLodPrefix[63].y : 0u;
     }
 }
 
@@ -2211,7 +2252,7 @@ void emitStreamLodFrontier(
     GPUDrivenStreamAssetPrimitive primitive = primitives[instance.primitiveIndex];
     uint base = topology[params.lodInstanceOffsetsOffset + instanceIndex];
     uint outputIndex = state[header + 1u];
-    bool fallback = activeHeader[0].padding0 != 0u;
+    bool fallback = (state[header + 3u] & 2u) != 0u;
     bool sparseTraversal = primitive.lodBvhNodeCount != 0u;
     uint sparse = base + primitive.groupCount * 2u;
     uint groupCount = sparseTraversal ? state[sparse] : primitive.groupCount;
@@ -2324,13 +2365,18 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         float4 projection = float4(params.viewport.z, tan(params.viewport.w * 0.5), params.clipOrtho.z, forecast.lodPixelError);
         uint table = requests[kStreamRequestPriorityTableOffsetWord];
         uint tiles = topology[primitive.lodTileOffset];
-        for (uint tile = 0u; tile < tiles; ++tile) {
+        for (uint tile = 0u; tile < tiles;) {
             // The CPU publishes only spare admission capacity. Stop searching
             // once it is filled instead of repeatedly reporting deferred work.
             if (requests[kStreamRequestPrefetchCounterWord] >= limit) { return; }
             uint offset = primitive.lodTileOffset + 1u + tile * 10u;
-            if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, 0xffffffffu)) { continue; }
+            if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, 0xffffffffu)) {
+                tile = topology[offset + 7u];
+                continue;
+            }
+            ++tile;
             uint count = topology[offset + 9u];
+            if (count == 0u) { continue; }
             if (lane >= count) { continue; }
             GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + topology[offset + 8u] + count - 1u - lane];
             if ((group.flags & 1u) != 0u || group.pageIndex >= params.scenePageCount ||
@@ -2384,7 +2430,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         if (state[header + 3u] == 0u || activeHeader[0].padding1 != 0u) { return; }
         uint count = state[sparse];
         uint output = state[header + 1u];
-        bool fallback = activeHeader[0].padding0 != 0u;
+        bool fallback = (state[header + 3u] & 2u) != 0u;
         for (uint first = 0u; first < count; first += 64u) {
             uint index = first + lane;
             GPUDrivenStreamAssetGroup source;
@@ -2443,12 +2489,18 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
     float4 direction = float4(forward, params.upProjection.w);
     float4 projection = float4(params.viewport.z, tan(params.viewport.w * 0.5), params.clipOrtho.z, params.lodPixelError);
     uint manual = params.enableGpuLodSelection != 0u ? 0xffffffffu : params.selectedLodLevel;
-    uint count = 0u, tested = 0u;
+    uint count = 0u, tested = 0u, visited = 0u;
     uint tiles = topology[primitive.lodTileOffset];
-    for (uint tile = 0u; tile < tiles; ++tile) {
+    for (uint tile = 0u; tile < tiles;) {
         uint offset = primitive.lodTileOffset + 1u + tile * 10u;
-        if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual)) { continue; }
+        ++visited;
+        if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual)) {
+            tile = topology[offset + 7u];
+            continue;
+        }
+        ++tile;
         uint tileCount = topology[offset + 9u];
+        if (tileCount == 0u) { continue; }
         uint localGroup = topology[offset + 8u] + tileCount - 1u - min(lane, tileCount - 1u);
         bool active = false;
         if (lane < tileCount) {
@@ -2508,7 +2560,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
     uint totalSelected;
     streamCooperativePrefix(selected, lane, totalSelected);
     if (lane == 0u) {
-        state[sparse] = count; state[sparse + 1u] = tiles; state[sparse + 2u] = tested;
+        state[sparse] = count; state[sparse + 1u] = visited; state[sparse + 2u] = tested;
         state[header] = totalSelected;
         state[header + 2u] = g_CooperativeMissingRoots == 0u ? g_CooperativeRoots : 0u;
         state[header + 3u] = g_CooperativeMissingRoots == 0u ? 1u : 0u;

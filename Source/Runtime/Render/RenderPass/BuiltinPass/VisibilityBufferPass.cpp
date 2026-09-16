@@ -249,6 +249,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
             properties,
             "maxPageUploadsPerFrame",
             64),
+        .maxUploadBytesPerFrame = previewStreamUint64Property(properties, "maxUploadBytesPerFrame", 8ull * 1024ull * 1024ull),
         .maxGpuPageRequests = maxGpuPageRequests,
         .maxGpuPageUnloadRequests = std::max(
             previewStreamUintProperty(

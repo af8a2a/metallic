@@ -78,8 +78,9 @@ bool buildMeshletLodMetadata(const scene::RenderPrimitive& primitive,
     std::vector<MeshletLodGroupRecord>& groups, std::string& reason);
 bool buildMeshletLodBvh(std::span<const MeshletLodGroupRecord> groups,
     std::vector<MeshletLodBvhNode>& nodes, std::string& reason);
-// Descending, level-homogeneous ranges of up to 64 independent groups. Bounds
-// use the same conservative aggregation as the BVH; no cooked format change.
+// Ordered BVH4 of same-level tiles (<=64 groups). Zero groupCount denotes an
+// interior, escapeIndex skips a subtree. Leaves stay in descending group order;
+// bounds use the same conservative aggregation as the BVH. No cook change.
 bool buildMeshletLodTiles(std::span<const MeshletLodGroupRecord> groups,
     std::vector<MeshletLodBvhNode>& tiles, std::string& reason);
 float meshletLodPixelError(const MeshletLodGroupRecord& group,

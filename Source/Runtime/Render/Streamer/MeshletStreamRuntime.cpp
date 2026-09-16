@@ -837,6 +837,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     clusterRtxEnabled_ = desc.enableClusterRtx;
     maxResidentPages_ = desc.maxResidentPages;
     maxPageUploadsPerFrame_ = desc.maxPageUploadsPerFrame;
+    maxUploadBytesPerFrame_ = desc.maxUploadBytesPerFrame;
     maxGpuPageRequests_ = std::max(desc.maxGpuPageRequests, 1u);
     screenSpacePagePriority_ = desc.screenSpacePagePriority;
     viewDrivenPageDemand_ = desc.viewDrivenPageDemand;
@@ -2221,6 +2222,7 @@ void MeshletStreamRuntime::reset()
     frameIndex_ = 0;
     maxResidentPages_ = 0;
     maxPageUploadsPerFrame_ = 0;
+    maxUploadBytesPerFrame_ = 0;
     maxGpuPageRequests_ = 0;
     screenSpacePagePriority_ = false;
     viewDrivenPageDemand_ = false;
@@ -2392,7 +2394,8 @@ Result MeshletStreamRuntime::cmdBeginFrame(
         };
     }
     profile.next("Prepare page uploads");
-    currentFrameUploadCount_ = residency_.processUploads(streamer, *pageBuffer_, maxPageUploadsPerFrame_, prepareClas, profiler);
+    currentFrameUploadCount_ = residency_.processUploads(streamer, *pageBuffer_, maxPageUploadsPerFrame_,
+        prepareClas, profiler, maxUploadBytesPerFrame_);
     if (!planError.empty()) {
         spdlog::error("[MeshletStreamRuntime] CLAS upload plan failed: {}", planError);
         return makeError(Error::Failure);
@@ -3366,8 +3369,8 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, cons
             static_cast<uint32_t>(lodStateBuffer_->desc().size / sizeof(uint32_t)));
         if (!result) { return result; }
     }
-    // Prefix chooses a complete terminal cut on overflow before any records
-    // are emitted. Each stage sees the complete result of its predecessor.
+    // Prefix budgets complete per-instance cuts before any records are emitted.
+    // Each stage sees the complete result of its predecessor.
     for (uint32_t phase : {kMeshletStreamActiveBuildResetPhase,
              kMeshletStreamActiveBuildFrontierPhase, kMeshletStreamActiveBuildPrefixPhase,
              kMeshletStreamActiveBuildEmitPhase, kMeshletStreamActiveBuildFinalizePhase}) {
@@ -3827,6 +3830,7 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"terminalPageCount", lockedFallbackPages_.size()}, {"terminalResidentPageCount", terminalResidentPages},
         {"terminalReady", !lockedFallbackPages_.empty() && terminalResidentPages == lockedFallbackPages_.size()},
         {"pageBufferBytes", maxResidentBytes_}, {"clusterRtxEnabled", clusterRtxEnabled_}, {"clasEnabled", clasPool_ != nullptr},
+        {"maxUploadBytesPerFrame", maxUploadBytesPerFrame_},
         {"screenSpacePagePriority", screenSpacePagePriority_},
         {"viewDrivenPageDemand", viewDrivenPageDemand_},
         {"prefetchPages", prefetchPages_}, {"prefetchActive", currentFramePrefetch_},

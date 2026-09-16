@@ -418,6 +418,7 @@ struct MeshletStreamRuntimeDesc {
     uint32_t maxResidentPages = 4096;
     uint32_t maxLockedFallbackPages = 1024;
     uint32_t maxPageUploadsPerFrame = 64;
+    uint64_t maxUploadBytesPerFrame = 8ull * 1024ull * 1024ull; // Zero disables the byte limit.
     uint32_t maxGpuPageRequests = kMeshletStreamDefaultMaxGpuPageRequests;
     uint32_t maxGpuPageUnloadRequests = kMeshletStreamDefaultMaxGpuPageRequests;
     uint32_t maxActiveGroups = kMeshletStreamDefaultMaxActiveGroups;
@@ -691,6 +692,7 @@ private:
     bool debugRequestSourceKnown_ = false;
     uint32_t maxResidentPages_ = 0;
     uint32_t maxPageUploadsPerFrame_ = 0;
+    uint64_t maxUploadBytesPerFrame_ = 0;
     uint32_t maxGpuPageRequests_ = 0;
     bool screenSpacePagePriority_ = false;
     bool viewDrivenPageDemand_ = false;

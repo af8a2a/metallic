@@ -81,6 +81,8 @@ public:
                 size = sizeof(MeshletStreamGpuActiveHeader); key = "header";
             } else if (checkpoint == "AfterTraversal" && resource.id == "streaming.GPUDriven.activeGroups") {
                 size = resource.size != 0 ? resource.size : resource.buffer->desc().size; key = "groups";
+            } else if (checkpoint == "AfterTraversal" && resource.id == "streaming.GPUDriven.lodState") {
+                size = resource.size != 0 ? resource.size : resource.buffer->desc().size; key = "lodState";
             } else if (checkpoint == "AfterEarlyCull" && resource.id.ends_with(".instanceVisibility")) {
                 size = resource.size != 0 ? resource.size : resource.buffer->desc().size; key = "instances";
             } else if (checkpoint == "AfterLateCull" && resource.id.ends_with(".instanceVisibility")) {
@@ -202,6 +204,29 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
     const auto instanceStates = observer.read<uint32_t>("instances");
     const auto lateInstanceStates = observer.read<uint32_t>("lateInstances");
     std::vector<std::map<uint32_t, uint32_t>> selected(asset.instanceCount());
+    const auto lodState = observer.read<uint32_t>("lodState");
+    uint64_t visitedNodes = 0, testedGroups = 0, flatTileTests = 0;
+    uint64_t base = uint64_t(asset.instanceCount()) * 4;
+    std::vector<uint32_t> flatTiles(asset.primitiveCount());
+    for (uint32_t p = 0; p < asset.primitiveCount(); ++p) {
+        const auto& primitive = asset.primitives()[p];
+        for (uint32_t end = primitive.groupCount; end != 0;) {
+            uint32_t first = end - 1;
+            while (first != 0 && end - first < 64 && asset.groups()[primitive.groupOffset + first - 1].lodLevel ==
+                asset.groups()[primitive.groupOffset + end - 1].lodLevel) { --first; }
+            ++flatTiles[p]; end = first;
+        }
+    }
+    for (const auto& instance : asset.instances()) {
+        if (instance.primitiveIndex >= asset.primitiveCount()) { continue; }
+        const auto count = asset.primitives()[instance.primitiveIndex].groupCount;
+        const uint64_t sparse = base + uint64_t(count) * 2;
+        checkRoam(sparse + 3 < lodState.size(), "Traversal stats outside state");
+        visitedNodes += lodState[sparse + 1];
+        testedGroups += lodState[sparse + 2];
+        if (lodState[sparse + 1] != 0) { flatTileTests += flatTiles[instance.primitiveIndex]; }
+        base += 4ull + count * 3ull;
+    }
     uint64_t clusters = 0, fineGroups = 0;
     uint64_t earlyCandidates = 0, lateCandidateLimit = 0, recoveredCandidates = 0;
     for (uint32_t i = 0; i < header.activeGroupCount; ++i) {
@@ -314,7 +339,9 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
         {"selectedClusters", clusters}, {"earlyCandidates", early[12]}, {"lateCandidates", late[12]},
         {"candidateCapacity", early[5]}, {"earlyHardware", early[0]},
         {"earlySoftware", early[4]}, {"lateHardware", late[0]}, {"lateSoftware", late[4]},
-        {"capacityFallback", header.overflowCount != 0}, {"overTargetRefinements", overTarget},
+        {"capacityFallback", header.overflowCount != 0}, {"fallbackInstances", header.padding2},
+        {"traversalVisitedNodes", visitedNodes}, {"traversalTestedGroups", testedGroups},
+        {"traversalFlatTileBaseline", flatTileTests}, {"overTargetRefinements", overTarget},
         {"nearPlaneUnboundedRefinements", unbounded}, {"maxFiniteRefinementErrorPixels", maxFiniteError},
         {"visibleOverTargetRefinements", visibleOverTarget}, {"visibleUnboundedRefinements", visibleUnbounded},
         {"maxVisibleRefinementErrorPixels", maxVisibleError}};

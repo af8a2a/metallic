@@ -351,7 +351,8 @@ public:
     // Called once after an upload is admitted, before the decoded payload is released.
     using UploadObserver = std::function<void(uint32_t, std::span<const uint8_t>)>;
     uint32_t processUploads(Streamer& streamer, Buffer& destination, uint32_t maxUploads,
-        const UploadObserver& observer = {}, CpuProfileRecorder* profiler = nullptr);
+        const UploadObserver& observer = {}, CpuProfileRecorder* profiler = nullptr,
+        uint64_t maxUploadBytesPerFrame = 0);
 
     // Uses confirmed unused feedback; geometry and its CLAS share one victim list.
     uint32_t reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc, CpuProfileRecorder* profiler = nullptr);

@@ -952,7 +952,8 @@ uint32_t MeshletStreamResidencyManager::processUploads(
     Streamer& streamer,
     Buffer& destination,
     uint32_t maxUploads,
-    const UploadObserver& observer, CpuProfileRecorder* profiler)
+    const UploadObserver& observer, CpuProfileRecorder* profiler,
+    uint64_t maxUploadBytesPerFrame)
 {
     CpuProfileScope profile(profiler, "Sort queued loads");
     if (asset_ == nullptr) {
@@ -1123,6 +1124,18 @@ uint32_t MeshletStreamResidencyManager::processUploads(
                 preparedPageLoads_.pop_front();
             }
             continue;
+        }
+
+        // Use device bytes, including legacy float4 -> float3 conversion. A
+        // single oversized page may make progress in an otherwise empty frame;
+        // subsequent calls in the same frame share the already spent budget.
+        if (maxUploadBytesPerFrame != 0 && stats_.frameUploadBytes != 0 &&
+            (stats_.frameUploadBytes >= maxUploadBytesPerFrame ||
+                page.deviceSizeBytes > maxUploadBytesPerFrame - stats_.frameUploadBytes)) {
+            if (!asynchronousLoads) { uploadQueue_.push_front(pageIndex); }
+            ++stats_.frameTransferBudgetFailureCount;
+            ++stats_.totalTransferBudgetFailureCount;
+            break;
         }
 
         std::span<const uint8_t> devicePayload;

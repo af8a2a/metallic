@@ -58,6 +58,10 @@ def read_runs(root, cases):
         runs[case] = {"phases": phases, "steady": {key: distribution([f[key] for f in stable])
             for key in ("hostFrameMs", "gpuMs", "cpuRecordMs")},
             "streamEnd": frames[-1]["stream"], "finalQuality": report["quality"][-1],
+            "streamingActivity": {
+                "uploadBytes": distribution([f["stream"]["uploadBytes"] for f in frames]),
+                "uploadFrames": sum(f["stream"]["uploadBytes"] != 0 for f in frames),
+                "allocationFailureFrames": sum(f["stream"]["allocationFailures"] != 0 for f in frames)},
             "runWallSeconds": report["runWallSeconds"], "process": json.loads((directory / "Process.json").read_text(encoding="utf-8-sig")),
             "gpuCompetition": gpu_competition(directory),
             "gpuFramesInFlight": report.get("gpuFramesInFlight", 2),
