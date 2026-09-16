@@ -8,6 +8,7 @@
 #include <fstream>
 #include <map>
 #include <numeric>
+#include <functional>
 
 namespace metallic::tests {
 namespace {
@@ -81,7 +82,48 @@ float tessTestHeight(float u, float v, const std::vector<uint8_t>& pixels)
         std::lerp(fetch(ix, iy + 1), fetch(ix + 1, iy + 1), x - ix), y - iy) - .5f) * .4f;
 }
 
-bool writeTessFixture(const std::filesystem::path& path, bool baked, const std::vector<uint8_t>& pixels, float edgePixels = 1.0f, bool orthographic = false)
+using TessReferencePatch = std::array<TessTestVertex, 3>;
+
+// Independent CPU baker in world/UV space; the GPU carries packed integer
+// source domains instead. Re-evaluate the metric after every split.
+std::vector<TessReferencePatch> tessReferenceSplit(const TessReferencePatch& source,
+    uint32_t maxDepth, float edgePixels, bool orthographic)
+{
+    const float3 eye(0, -1.8f, 3), forward = normalize(-eye);
+    const float scale = 157.0f / (orthographic ? 3.2f : 2.0f * std::tan(3.14159265358979323846f / 6.0f));
+    const auto midpoint = [](const TessTestVertex& a, const TessTestVertex& b) {
+        return TessTestVertex{(a.x+b.x)*.5f, (a.y+b.y)*.5f, (a.z+b.z)*.5f,
+            0, 0, 1, (a.u+b.u)*.5f, (a.v+b.v)*.5f};
+    };
+    std::vector<TessReferencePatch> leaves;
+    std::function<void(TessReferencePatch, uint32_t)> visit = [&](TessReferencePatch p, uint32_t level) {
+        uint32_t mask = 0;
+        if (level < maxDepth) {
+            for (uint32_t i = 0; i < 3; ++i) {
+                const auto& a = p[i]; const auto& b = p[(i+1)%3];
+                const float3 pa(a.x,a.y,a.z), pb(b.x,b.y,b.z);
+                const float depth = orthographic ? 1.f : std::max(.02f, std::min(dot(pa-eye,forward),dot(pb-eye,forward)));
+                if (length(pb-pa)*scale/(depth*edgePixels) > 8.f) { mask |= 1u << i; }
+            }
+        }
+        if (mask == 0) { leaves.push_back(p); return; }
+        if (mask == 7) {
+            const auto ab = midpoint(p[0],p[1]), bc = midpoint(p[1],p[2]), ca = midpoint(p[2],p[0]);
+            visit({p[0],ab,ca},level+1); visit({ab,p[1],bc},level+1);
+            visit({ca,bc,p[2]},level+1); visit({ab,bc,ca},level+1);
+        } else {
+            while (mask != 1 && mask != 3) { std::rotate(p.begin(),p.begin()+1,p.end()); mask = (mask >> 1) | ((mask & 1) << 2); }
+            const auto ab = midpoint(p[0],p[1]);
+            visit({p[0],ab,p[2]},level+1);
+            if (mask == 1) { visit({ab,p[1],p[2]},level+1); }
+            else { const auto bc = midpoint(p[1],p[2]); visit({ab,bc,p[2]},level+1); visit({ab,p[1],bc},level+1); }
+        }
+    };
+    visit(source,0);
+    return leaves;
+}
+
+bool writeTessFixture(const std::filesystem::path& path, bool baked, const std::vector<uint8_t>& pixels, float edgePixels = 1.0f, bool orthographic = false, uint32_t splitDepth = 0)
 {
     using Json = nlohmann::json;
     const TessTestVertex corners[] = {{-1, -1, 0, 0, 0, 1, 0, 0}, {1, -1, 0, 0, 0, 1, 1, 0},
@@ -94,31 +136,43 @@ bool writeTessFixture(const std::filesystem::path& path, bool baked, const std::
         const float3 eye(0, -1.8f, 3), forward = normalize(-eye);
         const float pixelScale = 157.0f / (orthographic ? 3.2f : 2.0f * std::tan(3.14159265358979323846f / 6.0f));
         for (uint32_t patch = 0; patch < 2; ++patch) {
-            std::array<uint32_t, 3> rates;
-            for (uint32_t edge = 0; edge < 3; ++edge) {
-                const auto& a = corners[original[patch * 3 + edge]];
-                const auto& b = corners[original[patch * 3 + (edge + 1) % 3]];
-                const float3 pa(a.x, a.y, a.z), pb(b.x, b.y, b.z);
-                const float distance = orthographic ? 1.0f : std::max(0.02f, std::min(dot(pa - eye, forward), dot(pb - eye, forward)));
-                rates[edge] = uint32_t(std::clamp(std::ceil(length(pb - pa) * pixelScale / (distance * edgePixels)), 1.0f, 8.0f));
-            }
-            const auto pattern = render::makeTessellationPattern(rates);
-            std::vector<TessTestVertex> domain;
-            for (const auto& q : pattern.vertices) {
-                TessTestVertex v{};
-                for (uint32_t i = 0; i < 3; ++i) {
-                    float w = q[i] / 65535.f;
-                    const auto& source = corners[original[patch * 3 + i]];
-                    v.x += source.x * w; v.y += source.y * w; v.u += source.u * w; v.v += source.v * w;
+            TessReferencePatch root{corners[original[patch*3]], corners[original[patch*3+1]], corners[original[patch*3+2]]};
+            for (const auto& leaf : tessReferenceSplit(root, splitDepth, edgePixels, orthographic)) {
+                std::array<uint32_t, 3> rates;
+                for (uint32_t edge = 0; edge < 3; ++edge) {
+                    const auto& a = leaf[edge];
+                    const auto& b = leaf[(edge+1)%3];
+                    const float3 pa(a.x, a.y, a.z), pb(b.x, b.y, b.z);
+                    const float distance = orthographic ? 1.0f : std::max(0.02f, std::min(dot(pa - eye, forward), dot(pb - eye, forward)));
+                    rates[edge] = uint32_t(std::clamp(std::ceil(length(pb - pa) * pixelScale / (distance * edgePixels)), 1.0f, 8.0f));
                 }
-                v.z = tessTestHeight(v.u, v.v, pixels); domain.push_back(v);
-            }
-            for (const auto& tri : pattern.triangles) {
-                const auto& a = domain[tri[0]]; const auto& b = domain[tri[1]]; const auto& c = domain[tri[2]];
-                float3 normal = normalize(cross(float3(b.x-a.x,b.y-a.y,b.z-a.z), float3(c.x-a.x,c.y-a.y,c.z-a.z)));
-                for (auto i : tri) {
-                    auto v = domain[i]; v.nx = normal.x; v.ny = normal.y; v.nz = normal.z;
-                    indices.push_back(uint32_t(vertices.size())); vertices.push_back(v);
+                const auto pattern = render::makeTessellationPattern(rates);
+                std::vector<TessTestVertex> domain;
+                for (const auto& q : pattern.vertices) {
+                    TessTestVertex v{};
+                    std::array<float, 3> bary{q[0]/65535.f,q[1]/65535.f,q[2]/65535.f};
+                    // LUT boundary coordinates are rational step/rate, not their
+                    // 16-bit storage approximation.
+                    for (uint32_t z = 0; z < 3; ++z) {
+                        if (q[z] != 0) { continue; }
+                        const uint32_t a = (z+1)%3, b = (z+2)%3;
+                        const float t = std::round(bary[b]*rates[a])/rates[a];
+                        bary = {}; bary[a] = 1.f-t; bary[b] = t; break;
+                    }
+                    for (uint32_t i = 0; i < 3; ++i) {
+                        float w = bary[i];
+                        const auto& source = leaf[i];
+                        v.x += source.x * w; v.y += source.y * w; v.u += source.u * w; v.v += source.v * w;
+                    }
+                    v.z = tessTestHeight(v.u, v.v, pixels); domain.push_back(v);
+                }
+                for (const auto& tri : pattern.triangles) {
+                    const auto& a = domain[tri[0]]; const auto& b = domain[tri[1]]; const auto& c = domain[tri[2]];
+                    float3 normal = normalize(cross(float3(b.x-a.x,b.y-a.y,b.z-a.z), float3(c.x-a.x,c.y-a.y,c.z-a.z)));
+                    for (auto i : tri) {
+                        auto v = domain[i]; v.nx = normal.x; v.ny = normal.y; v.nz = normal.z;
+                        indices.push_back(uint32_t(vertices.size())); vertices.push_back(v);
+                    }
                 }
             }
         }
@@ -144,9 +198,10 @@ bool writeTessFixture(const std::filesystem::path& path, bool baked, const std::
     return bool(binary);
 }
 
-class TessellationRenderTest final : public RhiTest {
+class TessellationRenderTest : public RhiTest {
+    bool recursive_;
 public:
-    TessellationRenderTest() { type = RhiTestType::Rendering; name = "tessellation_displacement_render"; }
+    explicit TessellationRenderTest(bool recursive = false) : recursive_(recursive) { type = RhiTestType::Rendering; name = recursive ? "tessellation_recursive_render" : "tessellation_displacement_render"; }
     RhiTestResult run(RhiTestContext& context) override
     {
         std::filesystem::create_directories(context.outputDirectory);
@@ -167,7 +222,7 @@ public:
         preview.setEnvironment({.enabled = false});
         render::RenderGraph graph;
         graph.addNode("VisibilityBufferPass", "VBuffer", {{"autoLod", false}, {"lodLevel", 0}, {"visualization", "coverage"},
-            {"tessellationEdgePixels", 1}, {"tessellationMaxFactor", 8}, {"temporalJitter", false}, {"hybridRaster", false},
+            {"tessellationMaxSplitDepth", 0}, {"tessellationEdgePixels", 1}, {"tessellationMaxFactor", 8}, {"temporalJitter", false}, {"hybridRaster", false},
             {"camera", {{"eye", {0, -1.8, 3.0}}, {"center", {0, 0, 0}}, {"fovDegrees", 60}, {"znear", .02}, {"zfar", 20}, {"orthoHeight", 3.2}}}});
         graph.addNode("VisibilityBufferDeferredPass", "Deferred", {{"lightingMode", "realtime"}, {"debugView", "baseColor"}, {"materialBinning", true}, {"accumulate", false}});
         graph.addEdge("VBuffer.visibility", "Deferred.visibility"); graph.addEdge("VBuffer.depth", "Deferred.depth");
@@ -178,59 +233,62 @@ public:
         const uint32_t vbuffer = graph.findNode("VBuffer")->id, deferred = graph.findNode("Deferred")->id;
         size_t cases = 0;
         std::string failures;
-        for (float edgePixels : {1.0f, 24.0f}) {
-            for (bool mirrored : {false, true}) {
-                for (bool ortho : {false, true}) {
-                    const auto referencePath = std::filesystem::absolute(context.outputDirectory /
-                        (std::string("Baked") + (ortho ? "Ortho" : "Perspective") + std::to_string(int(edgePixels)) + ".gltf"));
-                    if (!writeTessFixture(referencePath, true, pixels, edgePixels, ortho)) { return RhiTestResult::fail("Could not write adaptive reference"); }
-                    graph.setNodeRuntimeProperty(vbuffer, "tessellationEdgePixels", edgePixels);
-                    for (bool reversed : {false, true}) {
-                        for (const char* debug : {"baseColor", "shadingNormal"}) {
-                            graph.setNodeRuntimeProperty(vbuffer, "camera.projection", ortho ? "orthographic" : "perspective");
-                            graph.setNodeRuntimeProperty(vbuffer, "camera.reversedZ", reversed);
-                            graph.setNodeRuntimeProperty(deferred, "debugView", debug);
-                            const auto renderScene = [&](const std::filesystem::path& path, bool tess, bool streaming) {
-                                if (!document.load(path)) { log = document.lastLoadResult().error; return false; }
-                                if (mirrored) {
-                                    auto transform = float4x4::Identity(); transform.SetupByScale(float3(-1, 1, 1));
-                                    if (!document.setNodeLocalMatrix(0, transform)) { log = "Failed to mirror fixture"; return false; }
-                                }
-                                graph.setNodeRuntimeProperty(vbuffer, "path", path.string());
-                                graph.setNodeRuntimeProperty(deferred, "path", path.string());
-                                graph.setNodeRuntimeProperty(vbuffer, "tessellation", tess);
-                                graph.setNodeRuntimeProperty(vbuffer, "clusterPrebin", !mirrored);
-                                graph.setNodeRuntimeProperty(vbuffer, "enableMeshletStreaming", streaming);
-                                graph.setNodeRuntimeProperty(vbuffer, "streamAssetPath", stream.string());
-                                graph.setNodeRuntimeProperty(vbuffer, "maxActiveGroups", 32);
-                                graph.markDirty();
-                                for (uint32_t i = 0; i < (streaming ? 8u : 2u); ++i) {
-                                    if (!preview.render(graph, 193, 157)) { log = preview.lastLog(); return false; }
-                                }
-                                return true;
-                            };
-                            if (!renderScene(referencePath, false, false)) { return RhiTestResult::fail(log); }
-                            const auto reference = preview.pixels();
-                            for (bool streaming : {false, true}) {
-                                if (!renderScene(source, true, streaming)) { return RhiTestResult::fail(log); }
-                                size_t covered = 0, outliers = 0; double error = 0;
-                                for (size_t i = 0; i < reference.size(); ++i) {
-                                    covered += (reference[i] & 0xffffffu) != 0;
-                                    int maximum = 0;
-                                    for (uint32_t shift : {0u, 8u, 16u}) {
-                                        const int d = std::abs(int((reference[i] >> shift) & 255) - int((preview.pixels()[i] >> shift) & 255));
-                                        error += d; maximum = std::max(maximum, d);
+        for (uint32_t splitDepth : recursive_ ? std::vector<uint32_t>{1,2,3} : std::vector<uint32_t>{0}) {
+            graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxSplitDepth", splitDepth);
+            for (float edgePixels : recursive_ ? std::vector<float>{1.0f,4.0f} : std::vector<float>{1.0f,24.0f}) {
+                for (bool mirrored : {false, true}) {
+                    for (bool ortho : {false, true}) {
+                        const auto referencePath = std::filesystem::absolute(context.outputDirectory /
+                            (std::string("Baked") + std::to_string(splitDepth) + "_" + (ortho ? "Ortho" : "Perspective") + std::to_string(int(edgePixels)) + ".gltf"));
+                        if (!writeTessFixture(referencePath, true, pixels, edgePixels, ortho, splitDepth)) { return RhiTestResult::fail("Could not write adaptive reference"); }
+                        graph.setNodeRuntimeProperty(vbuffer, "tessellationEdgePixels", edgePixels);
+                        for (bool reversed : {false, true}) {
+                            for (const char* debug : {"baseColor", "shadingNormal"}) {
+                                graph.setNodeRuntimeProperty(vbuffer, "camera.projection", ortho ? "orthographic" : "perspective");
+                                graph.setNodeRuntimeProperty(vbuffer, "camera.reversedZ", reversed);
+                                graph.setNodeRuntimeProperty(deferred, "debugView", debug);
+                                const auto renderScene = [&](const std::filesystem::path& path, bool tess, bool streaming) {
+                                    if (!document.load(path)) { log = document.lastLoadResult().error; return false; }
+                                    if (mirrored) {
+                                        auto transform = float4x4::Identity(); transform.SetupByScale(float3(-1, 1, 1));
+                                        if (!document.setNodeLocalMatrix(0, transform)) { log = "Failed to mirror fixture"; return false; }
                                     }
-                                    outliers += maximum > 4;
+                                    graph.setNodeRuntimeProperty(vbuffer, "path", path.string());
+                                    graph.setNodeRuntimeProperty(deferred, "path", path.string());
+                                    graph.setNodeRuntimeProperty(vbuffer, "tessellation", tess);
+                                    graph.setNodeRuntimeProperty(vbuffer, "clusterPrebin", !mirrored);
+                                    graph.setNodeRuntimeProperty(vbuffer, "enableMeshletStreaming", streaming);
+                                    graph.setNodeRuntimeProperty(vbuffer, "streamAssetPath", stream.string());
+                                    graph.setNodeRuntimeProperty(vbuffer, "maxActiveGroups", 32);
+                                    graph.markDirty();
+                                    for (uint32_t i = 0; i < (streaming ? 8u : 2u); ++i) {
+                                        if (!preview.render(graph, 193, 157)) { log = preview.lastLog(); return false; }
+                                    }
+                                    return true;
+                                };
+                                if (!renderScene(referencePath, false, false)) { return RhiTestResult::fail(log); }
+                                const auto reference = preview.pixels();
+                                for (bool streaming : {false, true}) {
+                                    if (!renderScene(source, true, streaming)) { return RhiTestResult::fail(log); }
+                                    size_t covered = 0, outliers = 0; double error = 0;
+                                    for (size_t i = 0; i < reference.size(); ++i) {
+                                        covered += (reference[i] & 0xffffffu) != 0;
+                                        int maximum = 0;
+                                        for (uint32_t shift : {0u, 8u, 16u}) {
+                                            const int d = std::abs(int((reference[i] >> shift) & 255) - int((preview.pixels()[i] >> shift) & 255));
+                                            error += d; maximum = std::max(maximum, d);
+                                        }
+                                        outliers += maximum > 4;
+                                    }
+                                    const auto name = std::to_string(splitDepth) + "_" + std::to_string(int(edgePixels)) + std::string(streaming ? "Stream" : "Resident") + (mirrored ? "MirroredUnbinned" : "") + (ortho ? "Ortho" : "Perspective") + (reversed ? "Reverse" : "Standard") + debug;
+                                    saveRgba8Png(context.outputDirectory / (name + ".png"), reinterpret_cast<const uint8_t*>(preview.pixels().data()), 193, 157, log);
+                                    if (covered < 3000 || outliers > reference.size() / 100 || error / (reference.size() * 3) > 1.0) {
+                                        saveRgba8Png(context.outputDirectory / (name + "Reference.png"), reinterpret_cast<const uint8_t*>(reference.data()), 193, 157, log);
+                                        failures += name + " differs from explicitly displaced geometry: covered=" + std::to_string(covered) +
+                                            " outliers=" + std::to_string(outliers) + " mean=" + std::to_string(error / (reference.size() * 3)) + "\n";
+                                    }
+                                    ++cases;
                                 }
-                                const auto name = std::to_string(int(edgePixels)) + std::string(streaming ? "Stream" : "Resident") + (mirrored ? "MirroredUnbinned" : "") + (ortho ? "Ortho" : "Perspective") + (reversed ? "Reverse" : "Standard") + debug;
-                                saveRgba8Png(context.outputDirectory / (name + ".png"), reinterpret_cast<const uint8_t*>(preview.pixels().data()), 193, 157, log);
-                                if (covered < 3000 || outliers > reference.size() / 100 || error / (reference.size() * 3) > 1.0) {
-                                    saveRgba8Png(context.outputDirectory / (name + "Reference.png"), reinterpret_cast<const uint8_t*>(reference.data()), 193, 157, log);
-                                    failures += name + " differs from explicitly displaced geometry: covered=" + std::to_string(covered) +
-                                        " outliers=" + std::to_string(outliers) + " mean=" + std::to_string(error / (reference.size() * 3)) + "\n";
-                                }
-                                ++cases;
                             }
                         }
                     }
@@ -262,6 +320,11 @@ public:
     }
 };
 
+class TessellationRecursiveRenderTest final : public TessellationRenderTest {
+public:
+    TessellationRecursiveRenderTest() : TessellationRenderTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(TessellationRecursiveRenderTest);
 METALLIC_REGISTER_RHI_TEST(TessellationPatternTest);
 METALLIC_REGISTER_RHI_TEST(TessellationRenderTest);
 } // namespace

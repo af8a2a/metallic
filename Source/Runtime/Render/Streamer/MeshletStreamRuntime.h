@@ -217,6 +217,8 @@ struct MeshletStreamGpuDrawIndirect {
     uint32_t groupCountY = 1;
     uint32_t groupCountZ = 1;
 };
+// Entry 0: ordinary 64-triangle chunks. Entry 1: recursive tessellation tasks.
+inline constexpr uint32_t kMeshletStreamDrawIndirectCommandCount = 2;
 
 struct MeshletStreamGpuTraversalHeader {
     uint32_t readCounter = 0;
@@ -538,7 +540,7 @@ public:
     uint32_t frameIndex() const { return frameIndex_; }
     uint32_t visibleClusterCapacity() const;
     uint32_t drawTaskCount() const;
-    void cmdDrawMeshTasks(CommandBuffer& commandBuffer) const;
+    void cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation = false) const;
     const scene::Bounds& bounds() const { return drawBounds_; }
     const scene::MeshletStreamAsset& asset() const { return asset_; }
     const MeshletStreamResidencyManager& residency() const { return residency_; }

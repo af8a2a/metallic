@@ -233,6 +233,7 @@ add_executable(MetallicRhiTests
     rhi/StreamMeshletLodTests.cpp
     rhi/WaveWorkDistributionTests.cpp
     rhi/TessellationTests.cpp
+    rhi/TessellationSplitTests.cpp
     rhi/StreamMeshletLodSceneTests.cpp
     rhi/MiniZorahStreamAssetTests.cpp
     rhi/MiniZorahRoamingTests.cpp

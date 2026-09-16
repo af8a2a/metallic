@@ -18,7 +18,7 @@ public:
     Result resolve(CommandBuffer& commands, Texture& visibilityTexture, TextureView& visibility,
         Texture& depthTexture, TextureView& depth, bool softwareRasterized = false);
     Result beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
-        uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact = false);
+        uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact = false, bool tessellation = false);
     // beginClusters and the producer heap/bindings must be ready first.
     Result prepareStreamClusterCandidates(CommandBuffer& commands, ComputePipeline& pipeline,
         MeshletStreamUserPush push);

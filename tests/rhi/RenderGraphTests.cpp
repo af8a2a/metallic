@@ -4203,7 +4203,7 @@ public:
         std::unique_ptr<render::Buffer> drawIndirectBuffer;
         testResult = createBuffer(
             render::BufferDesc{
-                .size = sizeof(render::MeshletStreamGpuDrawIndirect),
+                .size = render::kMeshletStreamDrawIndirectCommandCount * sizeof(render::MeshletStreamGpuDrawIndirect),
                 .structureStride = sizeof(render::MeshletStreamGpuDrawIndirect),
                 .usage = render::BufferUsageBits::Storage |
                     render::BufferUsageBits::Indirect |
@@ -4269,7 +4269,7 @@ public:
         std::unique_ptr<render::Buffer> drawIndirectReadbackBuffer;
         testResult = createBuffer(
             render::BufferDesc{
-                .size = sizeof(render::MeshletStreamGpuDrawIndirect),
+                .size = render::kMeshletStreamDrawIndirectCommandCount * sizeof(render::MeshletStreamGpuDrawIndirect),
                 .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback,
             },

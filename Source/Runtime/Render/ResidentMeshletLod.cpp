@@ -27,7 +27,7 @@ Result ResidentMeshletLod::initialize(Device& device, uint32_t capacity, std::st
         .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
         .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, selections_);
     if (result) {
-        result = device.createBuffer({.size = 24, .structureStride = 4,
+        result = device.createBuffer({.size = 36, .structureStride = 4,
             .usage = BufferUsageBits::Storage | BufferUsageBits::Indirect | BufferUsageBits::TransferSource,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, arguments_);
     }

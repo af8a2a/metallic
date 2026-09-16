@@ -1,6 +1,5 @@
 // Task/mesh patch path for the same active cut used by ordinary stream raster.
-struct TessStreamPayload { uint record; uint first; uint count; uint material; uint tessellated; };
-groupshared TessStreamPayload g_TessStream;
+#include "VisibilityTessellationSplit.slang"
 groupshared float3 g_StreamTessSource[3];
 groupshared float3 g_StreamTessNormal[3];
 groupshared float2 g_StreamTessUv[3];
@@ -12,45 +11,69 @@ groupshared uint4 g_StreamTessPattern;
 void streamTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     uniform GPUDrivenStreamAssetPush push)
 {
+    uint draw = hybridFlatGroup(group);
+    uint candidate = draw / kTessTasksPerCluster;
+    uint first = (draw % kTessTasksPerCluster) * kTessRootsPerTask;
+    bool prebinned = push.hybridClusterBuffer != 0xffffffffu;
+    uint record = candidate;
+    bool valid = true;
+    if (prebinned) {
+        DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+        valid = hybridBinRecord(bins, 0u, candidate, record);
+    }
     if (lane == 0u) {
-        uint draw = hybridFlatGroup(group);
-        bool prebinned = push.hybridClusterBuffer != 0xffffffffu;
-        uint record = prebinned ? draw : draw / 2u;
-        uint chunk = prebinned ? 0u : draw % 2u;
-        bool valid = true;
-        if (prebinned) {
-            DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
-            valid = hybridBinRecord(bins, 0u, draw, record);
-        }
-        StreamRasterCluster c; bool retry;
-        if (valid) { valid = loadStreamRasterCluster(record, !prebinned, !prebinned && chunk == 0u, push, c, retry); }
-        g_TessStream = (TessStreamPayload)0;
-        if (valid) {
-            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rh = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
-            GPUDrivenStreamAssetRasterBindings bindings = rh[0];
-            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.bufferShaderIndexBase + bindings.gpuSceneInstanceBuffer, 0));
-            DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + bindings.tessellationBuffer, 0));
-            DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
-            uint material = instances[c.group.gpuSceneInstanceIndex].identity.y;
-            // Do not invent UVs for position-only assets. Such clusters retain
-            // their original geometry until recooked with authored attributes.
-            bool attributes = (pages[c.pageWord + 14u] & 6u) == 6u && pages[c.pageWord + 21u] == 2u && pages[c.pageWord + 22u] == 1u;
-            g_TessStream.record = record;
-            g_TessStream.first = chunk * 64u;
-            g_TessStream.count = prebinned ? c.triangleCount : min(c.triangleCount - min(c.triangleCount, chunk * 64u), 64u);
-            g_TessStream.material = material;
-            g_TessStream.tessellated = attributes && tessMaterial(data, material).enabled != 0u ? 1u : 0u;
-        }
+        bool retry;
+        // Only the first task updates the early/late retry state for this cluster.
+        g_StreamMeshValid = valid && loadStreamRasterCluster(record, !prebinned,
+            !prebinned && first == 0u, push, g_StreamMeshCluster, retry) ? 1u : 0u;
     }
     GroupMemoryBarrierWithGroupSync();
-    DispatchMesh(g_TessStream.count == 0u ? 0u : (g_TessStream.tessellated != 0u ? g_TessStream.count : 1u), 1, 1, g_TessStream);
+    valid = g_StreamMeshValid != 0u;
+    StreamRasterCluster c = g_StreamMeshCluster;
+    uint count = 0u;
+    if (valid) {
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rh = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
+        GPUDrivenStreamAssetRasterBindings bindings = rh[0];
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.bufferShaderIndexBase + bindings.gpuSceneInstanceBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + bindings.tessellationBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
+        uint material = instances[c.group.gpuSceneInstanceIndex].identity.y;
+        bool attributes = (pages[c.pageWord + 14u] & 6u) == 6u && pages[c.pageWord + 21u] == 2u && pages[c.pageWord + 22u] == 1u;
+        bool enabled = attributes && tessMaterial(data, material).enabled != 0u;
+        if (lane == 0u) {
+            g_TessPatches.record = record; g_TessPatches.first = first;
+            g_TessPatches.count = c.triangleCount; g_TessPatches.material = material;
+            g_TessPatches.enabled = enabled ? 1u : 0u;
+        }
+        if (!enabled) { count = first == 0u && lane == 0u ? 1u : 0u; }
+        else if (lane < kTessRootsPerTask && first + lane < c.triangleCount) {
+            uint address = c.triangleBaseByte + (first + lane) * 3u;
+            uint3 tri = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));
+            if (all(tri < c.vertexCount)) {
+                float3 source[3];
+                for (uint i = 0u; i < 3u; ++i) {
+                    uint p = c.pageWord + c.positionOffsetBytes / 4u + (c.vertexOffset + tri[i]) * c.positionStrideWords;
+                    float3 local = asfloat(uint3(pages[p], pages[p + 1u], pages[p + 2u]));
+                    source[i] = c.group.world0.xyz * local.x + c.group.world1.xyz * local.y + c.group.world2.xyz * local.z + c.group.world3.xyz;
+                }
+                TessView view;
+                view.eye = c.params.renderEye.xyz;
+                view.forward = normalize(c.params.renderCenter.xyz - c.params.renderEye.xyz);
+                view.orthographic = c.params.renderUpProjection.w > 0.5;
+                view.pixelScale = c.params.renderViewport.z / (view.orthographic ? c.params.renderClipOrtho.z : 2.0 * tan(c.params.renderViewport.w * 0.5));
+                view.nearPlane = c.params.renderClipOrtho.x;
+                count = tessBuildLeaves(lane, source, view, asfloat(data[2]), data[3], data[4]);
+            }
+        }
+    }
+    tessDispatchLeaves(lane, count);
 }
 
 [shader("mesh")]
 [numthreads(64, 1, 1)]
 [outputtopology("triangle")]
 void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
-    in payload TessStreamPayload payload, out vertices TessVertex vertices[128],
+    in payload TessPatchPayload payload, out vertices TessVertex vertices[128],
     out indices uint3 triangles[128], out primitives TessPrimitive primitives[128], uniform GPUDrivenStreamAssetPush push)
 {
     if (lane == 0u) {
@@ -60,7 +83,7 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     GroupMemoryBarrierWithGroupSync();
     if (g_StreamMeshValid == 0u) { SetMeshOutputCounts(0, 0); return; }
     StreamRasterCluster c = g_StreamMeshCluster;
-    if (payload.tessellated == 0u) {
+    if (payload.enabled == 0u) {
         SetMeshOutputCounts(c.vertexCount, payload.count);
         for (uint v = lane; v < c.vertexCount; v += 64u) {
             vertices[v].position = streamClusterClip(c, v, push);
@@ -77,7 +100,11 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + rh[0].tessellationBuffer, 0));
     DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
     TessMaterial material = tessMaterial(data, payload.material);
-    uint originalTriangle = payload.first + group.x;
+    uint source = tessPayloadRoot(payload, group.x);
+    uint originalTriangle = payload.first + source;
+    uint leaf = group.x - (source == 0u ? 0u : payload.ends[source - 1u]);
+    uint patchBase = (source * kTessLeavesPerRoot + leaf) * 3u;
+    uint3 patch = uint3(payload.patches[patchBase], payload.patches[patchBase + 1u], payload.patches[patchBase + 2u]);
     // Decode in authored order; only the output index winding is reflected.
     uint address = c.triangleBaseByte + originalTriangle * 3u;
     uint3 original = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));
@@ -99,21 +126,21 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     }
     GroupMemoryBarrierWithGroupSync();
     if (lane == 0u) {
-        float3 forward = normalize(c.params.renderCenter.xyz - c.params.renderEye.xyz);
-        bool ortho = c.params.renderUpProjection.w > 0.5;
-        float scale = c.params.renderViewport.z / (ortho ? c.params.renderClipOrtho.z : 2.0 * tan(c.params.renderViewport.w * 0.5));
-        for (uint e = 0; e < 3u; ++e) {
-            g_StreamTessRates[e] = tessEdgeRate(g_StreamTessSource[e], g_StreamTessSource[(e + 1u) % 3u], c.params.renderEye.xyz,
-                forward, scale, c.params.renderClipOrtho.x, ortho, asfloat(data[2]), data[3]);
-        }
+        TessView view;
+        view.eye = c.params.renderEye.xyz;
+        view.forward = normalize(c.params.renderCenter.xyz - c.params.renderEye.xyz);
+        view.orthographic = c.params.renderUpProjection.w > 0.5;
+        view.pixelScale = c.params.renderViewport.z / (view.orthographic ? c.params.renderClipOrtho.z : 2.0 * tan(c.params.renderViewport.w * 0.5));
+        view.nearPlane = c.params.renderClipOrtho.x;
+        g_StreamTessRates = tessPatchRates(patch, g_StreamTessSource, view, asfloat(data[2]), data[3]);
         g_StreamTessPattern = tessPattern(data, g_StreamTessRates);
     }
     GroupMemoryBarrierWithGroupSync();
     SetMeshOutputCounts(g_StreamTessPattern.y, g_StreamTessPattern.w);
     if (lane < g_StreamTessPattern.y) {
-        float3 bary = tessBary(data, g_StreamTessPattern, lane);
+        float3 bary = tessPatchDomain(tessBary(data, g_StreamTessPattern, lane), g_StreamTessRates, patch, g_StreamTessSource);
         float3 p, n; float2 uv;
-        tessDomain(bary, g_StreamTessRates, g_StreamTessSource, g_StreamTessNormal, g_StreamTessUv, p, n, uv);
+        tessSourceDomain(bary, g_StreamTessSource, g_StreamTessNormal, g_StreamTessUv, p, n, uv);
         p += n * tessHeight(material, uv, push.imageShaderIndexBase);
         float4 clip = projectPosition(p, c.params); clip.y = -clip.y;
         vertices[lane].position = clip; vertices[lane].uv = uv;

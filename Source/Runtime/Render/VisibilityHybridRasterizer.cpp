@@ -172,13 +172,13 @@ Result VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& vis
 }
 
 Result VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
-    uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact)
+    uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact, bool tessellation)
 {
     if (inputCount > push_.clusterCapacity) { return makeError(Error::InvalidArgument); }
     begin(commands, maxPixels, reversedZ);
     push_.producerPixelBuffer = producerPixelBuffer;
     push_.inputClusterCount = inputCount;
-    push_.streamMode = stream ? 1u : 0u;
+    push_.streamMode = (stream ? 1u : 0u) | (tessellation ? 2u : 0u);
     compactCandidates_ = compact;
     const BufferBarrierDesc barriers[] = {
         {.buffer = clusterBuffer_.get(), .before = clusterInitialized_ ? ResourceState::ShaderRead : ResourceState::Undefined,

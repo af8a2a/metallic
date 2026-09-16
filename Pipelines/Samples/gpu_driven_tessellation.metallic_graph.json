@@ -17,6 +17,7 @@
                 "tessellation": true,
                 "tessellationEdgePixels": 1.0,
                 "tessellationMaxFactor": 8,
+                "tessellationMaxSplitDepth": 2,
                 "enableMeshletStreaming": false,
                 "streamAssetPath": "Asset/MeshletCache/Tessellation/DisplacedPlane.meshstream.bin",
                 "autoLod": false

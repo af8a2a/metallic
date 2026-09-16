@@ -1,0 +1,1746 @@
+{
+  "description": "Recursive GPU split-then-dice validation. Original MiniZorah route uses tessellation disabled. No timing samples removed.",
+  "date": "2026-09-16",
+  "manifest": {
+    "demandTraversal": "Default",
+    "gitHead": "d625143f7bfae7a44ce986d8cd33389602fb50c9",
+    "rasterQueues": "Default",
+    "replaySha256": "FEB79872154850AF32DB25A54BA3D22B48B9A04A10F7F2E8DADAF19F98F2F2D2",
+    "protocol": "minizorah-cfg-roam-v1",
+    "start": "2026-09-16T20:02:22.9411200+08:00",
+    "executableSha256": "BEE43A42CC7B75B7BBB97A8EC8C802FF5F19D32B2E78E2207293429822945F45",
+    "sourceSha256": "BBDFBA6995B2D5DE59A0B341E384F027C10C583CE67562DDAF221E89B19D28F1",
+    "shaderTreeSha256": "40514442CDA459FD0A51A7B2E7C5168DA79F78716544B4612A0A6052E2490790",
+    "qualityWithoutValidation": true,
+    "demandWorkers": 0,
+    "realtime": true
+  },
+  "process": {
+    "exitCode": -1,
+    "arguments": [
+      "--gtest_filter=RhiRendering.minizorah_fixed_baseline",
+      "--rhi-no-validation",
+      "--rhi-async-compute",
+      "--output-dir",
+      "\"E:\\metallic\\.cache\\tessellation\\recursive-roam\\m1\"",
+      "--rhi-realtime"
+    ],
+    "forcedCleanupAfterCapture": true
+  },
+  "render": {
+    "recursiveImageComparisons": 192,
+    "singlePatchImageComparisons": 64,
+    "splitDepths": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "gpuTopologyRoots": 512,
+    "allSplitMasks": true,
+    "maxLeavesPerSource": 64,
+    "demoCapture": ".cache/tessellation/recursive-demo-capture/RecursiveTessellation.png"
+  },
+  "validationLimitation": {
+    "layer": "C:/VulkanSDK/1.4.341.1/Bin/VkLayer_khronos_validation.dll",
+    "observed": "Intermittent access violation inside vkCmdBindResourceHeapEXT while tessellation is disabled. Confirmed by vectored exception trace and link map; temporary tracing code removed.",
+    "affectedTests": [
+      "meshlet_lod_stream_scene_runtime_cut",
+      "render_graph_gpu_driven_mixed_producer_render"
+    ],
+    "nonValidationRegressionTestsPassed": 5,
+    "traces": [
+      ".cache/tessellation/recursive-map.log",
+      ".cache/tessellation/recursive-repeat.log"
+    ],
+    "resolvedHarnessIssue": "Standalone stream test fixtures and readback buffers now allocate both indirect commands; both commands are checked against the CPU cut."
+  },
+  "rawDirectory": ".cache/tessellation/recursive-roam/m1",
+  "run": {
+    "frameCount": 3000,
+    "phases": {
+      "warmup": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 9.249046293333333,
+          "p50": 8.313600000000001,
+          "p95": 18.9838464,
+          "p99": 23.49102592,
+          "max": 32.166912
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 46.563935,
+          "p50": 8.35875,
+          "p95": 20.98365,
+          "p99": 25.52143699999994,
+          "max": 11013.6386
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 46.557393000000005,
+          "p50": 8.3519,
+          "p95": 20.973,
+          "p99": 25.51573799999994,
+          "max": 11013.6306
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 4.59526624,
+          "p50": 4.1506240000000005,
+          "p95": 7.540310400000002,
+          "p99": 9.631123519999985,
+          "max": 13.089888
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 1.8090229333333334,
+          "p50": 1.52488,
+          "p95": 3.070864000000003,
+          "p99": 5.76996192,
+          "max": 6.075968
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.24078197333333334,
+          "p50": 0.237488,
+          "p95": 0.27473600000000004,
+          "p99": 0.30873407999999947,
+          "max": 0.419488
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 2.263577386666667,
+          "p50": 2.111968,
+          "p95": 3.856177600000004,
+          "p99": 6.693049919999992,
+          "max": 11.07216
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.20635114666666668,
+          "p50": 0.151136,
+          "p95": 0.4605600000000001,
+          "p99": 2.24332992,
+          "max": 3.552224
+        }
+      },
+      "start_hold": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 8.631129173333333,
+          "p50": 8.17704,
+          "p95": 8.9079648,
+          "p99": 22.76805728,
+          "max": 26.02288
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 8.640346666666666,
+          "p50": 8.2683,
+          "p95": 9.644900000000003,
+          "p99": 22.437983,
+          "max": 25.6704
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 8.634305666666666,
+          "p50": 8.26235,
+          "p95": 9.639385000000003,
+          "p99": 22.361694999999997,
+          "max": 25.6633
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 4.360114986666667,
+          "p50": 4.0409120000000005,
+          "p95": 4.818467200000001,
+          "p99": 8.820257599999993,
+          "max": 13.906624
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 1.57490144,
+          "p50": 1.518144,
+          "p95": 1.7015440000000002,
+          "p99": 1.8970694399999866,
+          "max": 7.19072
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.24293397333333333,
+          "p50": 0.23752,
+          "p95": 0.27234080000000005,
+          "p99": 0.4116236799999995,
+          "max": 0.519296
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 2.2851917866666667,
+          "p50": 2.1147359999999997,
+          "p95": 2.4868544000000004,
+          "p99": 4.30924543999998,
+          "max": 7.539424
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.20969749333333332,
+          "p50": 0.151872,
+          "p95": 0.4741664,
+          "p99": 0.9827222399999896,
+          "max": 2.257056
+        }
+      },
+      "forward_1": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 9.177102293333334,
+          "p50": 8.920656000000001,
+          "p95": 9.6248432,
+          "p99": 20.654877119999988,
+          "max": 24.297792
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 9.188727666666667,
+          "p50": 8.96015,
+          "p95": 10.301885,
+          "p99": 20.73551599999998,
+          "max": 24.0938
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 9.182447333333334,
+          "p50": 8.953299999999999,
+          "p95": 10.295565,
+          "p99": 20.730009999999982,
+          "max": 24.089
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 4.966792533333333,
+          "p50": 4.791088,
+          "p95": 5.4359744,
+          "p99": 8.971623679999993,
+          "max": 10.376224
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 2.2555970133333334,
+          "p50": 2.197584,
+          "p95": 2.584368,
+          "p99": 3.345600319999995,
+          "max": 5.67008
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.23675082666666666,
+          "p50": 0.243584,
+          "p95": 0.28445119999999996,
+          "p99": 0.3697270399999998,
+          "max": 1.46944
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 2.2847588266666667,
+          "p50": 2.1612,
+          "p95": 2.5391184,
+          "p99": 4.382499839999997,
+          "max": 6.619136
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.16228330666666665,
+          "p50": 0.157904,
+          "p95": 0.18311840000000004,
+          "p99": 0.3246755199999997,
+          "max": 0.394752
+        }
+      },
+      "forward_2": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 9.377459733333334,
+          "p50": 8.490943999999999,
+          "p95": 19.284700800000014,
+          "p99": 23.16110304,
+          "max": 25.538016
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 9.387711333333334,
+          "p50": 8.5882,
+          "p95": 20.120250000000002,
+          "p99": 22.51919399999999,
+          "max": 25.8794
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 9.381283333333334,
+          "p50": 8.582049999999999,
+          "p95": 20.113905000000003,
+          "p99": 22.51399399999999,
+          "max": 25.8741
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 4.7799264,
+          "p50": 4.419136,
+          "p95": 7.7514896000000055,
+          "p99": 10.841253120000001,
+          "max": 12.21584
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 1.9438903466666666,
+          "p50": 1.817136,
+          "p95": 2.246904,
+          "p99": 5.131423999999991,
+          "max": 6.713888
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.00012394666666666666,
+          "p50": 0.000128,
+          "p95": 0.000128,
+          "p99": 0.0002243199999999997,
+          "max": 0.00032
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 2.34965408,
+          "p50": 2.176064,
+          "p95": 4.09628,
+          "p99": 6.461595839999997,
+          "max": 10.006144
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.16026165333333334,
+          "p50": 0.152976,
+          "p95": 0.2004688000000001,
+          "p99": 0.42135615999999954,
+          "max": 0.532096
+        }
+      },
+      "forward_3": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 8.276962026666666,
+          "p50": 8.130208,
+          "p95": 8.757796799999998,
+          "p99": 18.37827008,
+          "max": 21.350272
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 8.220736333333333,
+          "p50": 8.0973,
+          "p95": 9.284234999999999,
+          "p99": 10.060644999999923,
+          "max": 21.407
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 8.214993333333334,
+          "p50": 8.09035,
+          "p95": 9.279135,
+          "p99": 10.054028999999922,
+          "max": 21.4008
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 4.156973866666666,
+          "p50": 3.990336,
+          "p95": 4.7421392,
+          "p99": 6.515791359999986,
+          "max": 10.51408
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 1.6229917866666668,
+          "p50": 1.5409760000000001,
+          "p95": 2.0513616,
+          "p99": 2.3440915199999997,
+          "max": 5.338944
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.00012426666666666666,
+          "p50": 0.000128,
+          "p95": 0.000128,
+          "p99": 0.00019231999999999973,
+          "max": 0.00032
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 2.0860676266666665,
+          "p50": 2.001008,
+          "p95": 2.3484032000000004,
+          "p99": 2.436352639999994,
+          "max": 7.555968
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.16384416,
+          "p50": 0.148976,
+          "p95": 0.3053888,
+          "p99": 0.48141663999999995,
+          "max": 1.011808
+        }
+      },
+      "far_hold": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 8.42421856,
+          "p50": 7.907424000000001,
+          "p95": 8.95539680000001,
+          "p99": 21.339242239999983,
+          "max": 27.802272
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 8.523642666666667,
+          "p50": 7.965999999999999,
+          "p95": 12.490860000000021,
+          "p99": 21.56300699999999,
+          "max": 27.7692
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 8.516862,
+          "p50": 7.95995,
+          "p95": 12.436055000000021,
+          "p99": 21.55719699999999,
+          "max": 27.7631
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 4.078671466666667,
+          "p50": 3.847248,
+          "p95": 4.6910752,
+          "p99": 9.295763519999998,
+          "max": 10.538912
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 1.4957255466666666,
+          "p50": 1.37096,
+          "p95": 1.7082832000000001,
+          "p99": 3.7433254399999902,
+          "max": 6.341376
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.00012309333333333333,
+          "p50": 0.000128,
+          "p95": 0.000128,
+          "p99": 0.00016,
+          "max": 0.000288
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 2.1183076266666667,
+          "p50": 1.9376959999999999,
+          "p95": 2.3595440000000005,
+          "p99": 4.1300681599999765,
+          "max": 7.191648
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.17638304,
+          "p50": 0.145936,
+          "p95": 0.17020000000000002,
+          "p99": 0.4304124799999997,
+          "max": 4.572608
+        }
+      },
+      "return_1": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 8.12233824,
+          "p50": 8.145328,
+          "p95": 8.740246399999998,
+          "p99": 9.076168639999999,
+          "max": 9.408512
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 8.125460333333333,
+          "p50": 8.08975,
+          "p95": 9.732755,
+          "p99": 10.350862,
+          "max": 12.262
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 8.117894666666666,
+          "p50": 8.0844,
+          "p95": 9.72694,
+          "p99": 10.345265999999997,
+          "max": 12.2544
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 4.100214506666667,
+          "p50": 4.003360000000001,
+          "p95": 4.7186784,
+          "p99": 4.86859328,
+          "max": 5.348832
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 1.6073618133333334,
+          "p50": 1.5314079999999999,
+          "p95": 2.0237152000000003,
+          "p99": 2.39926784,
+          "max": 2.623328
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.00012266666666666668,
+          "p50": 0.000128,
+          "p95": 0.000128,
+          "p99": 0.0001603199999999997,
+          "max": 0.000256
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 2.0622360533333333,
+          "p50": 2.0031679999999996,
+          "p95": 2.3157888,
+          "p99": 2.4505580799999995,
+          "max": 2.51216
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.15963168,
+          "p50": 0.149728,
+          "p95": 0.17476320000000034,
+          "p99": 0.43800095999999994,
+          "max": 0.490432
+        }
+      },
+      "return_2": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 8.45997952,
+          "p50": 8.518704,
+          "p95": 9.0425808,
+          "p99": 9.326614079999999,
+          "max": 10.159776
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 8.468865333333333,
+          "p50": 8.4866,
+          "p95": 9.926440000000001,
+          "p99": 10.900022999999994,
+          "max": 12.4783
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 8.462387,
+          "p50": 8.48085,
+          "p95": 9.921120000000002,
+          "p99": 10.893913999999993,
+          "max": 12.47
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 4.459716906666666,
+          "p50": 4.384848,
+          "p95": 4.9710912,
+          "p99": 5.113114239999999,
+          "max": 6.40992
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 1.85156128,
+          "p50": 1.812608,
+          "p95": 2.15256,
+          "p99": 2.4107119999999997,
+          "max": 2.645472
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.00012127999999999999,
+          "p50": 0.000128,
+          "p95": 0.000128,
+          "p99": 0.00016,
+          "max": 0.000256
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 2.16599296,
+          "p50": 2.1321440000000003,
+          "p95": 2.5141136000000004,
+          "p99": 2.691371199999999,
+          "max": 4.231808
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.16640650666666668,
+          "p50": 0.153744,
+          "p95": 0.28512160000000003,
+          "p99": 0.48091263999999995,
+          "max": 0.858784
+        }
+      },
+      "return_3": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 10.928954666666666,
+          "p50": 9.070575999999999,
+          "p95": 22.102838400000007,
+          "p99": 25.04491808,
+          "max": 28.541184
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 10.934894666666667,
+          "p50": 9.15965,
+          "p95": 22.550500000000003,
+          "p99": 25.052908,
+          "max": 27.6055
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 10.928602333333334,
+          "p50": 9.15175,
+          "p95": 22.544115000000005,
+          "p99": 25.046516,
+          "max": 27.5983
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 5.677583573333333,
+          "p50": 4.922464,
+          "p95": 10.1225632,
+          "p99": 12.650844799999994,
+          "max": 13.463488
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 2.648528106666667,
+          "p50": 2.221776,
+          "p95": 5.538419200000002,
+          "p99": 7.38973248,
+          "max": 7.970944
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.22182208,
+          "p50": 0.240224,
+          "p95": 0.284808,
+          "p99": 0.35749055999999985,
+          "max": 0.412672
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 2.57426272,
+          "p50": 2.184432,
+          "p95": 4.539024,
+          "p99": 6.847215359999997,
+          "max": 7.429056
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.15888117333333335,
+          "p50": 0.158624,
+          "p95": 0.1791744,
+          "p99": 0.30523103999999995,
+          "max": 0.316768
+        }
+      },
+      "return_hold": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 8.226477013333334,
+          "p50": 8.176528000000001,
+          "p95": 8.76188,
+          "p99": 9.393643199999998,
+          "max": 9.839584
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 8.290356666666666,
+          "p50": 8.26005,
+          "p95": 9.632050000000001,
+          "p99": 13.730915999999997,
+          "max": 20.0347
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 8.274311,
+          "p50": 8.2525,
+          "p95": 9.569005,
+          "p99": 13.717544999999996,
+          "max": 20.0259
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 4.23045408,
+          "p50": 4.137392,
+          "p95": 4.6865103999999995,
+          "p99": 4.958025919999999,
+          "max": 5.778528
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 1.5947259733333334,
+          "p50": 1.569152,
+          "p95": 1.7454496,
+          "p99": 2.205415359999998,
+          "max": 3.273568
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.24682997333333334,
+          "p50": 0.237376,
+          "p95": 0.27302400000000004,
+          "p99": 0.3711315199999998,
+          "max": 1.948576
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 2.1947691733333334,
+          "p50": 2.11368,
+          "p95": 2.3995328,
+          "p99": 2.4665951999999995,
+          "max": 2.75696
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.17304042666666666,
+          "p50": 0.152448,
+          "p95": 0.37306560000000005,
+          "p99": 0.47485439999999957,
+          "max": 0.58336
+        }
+      }
+    },
+    "observedProcess3D": {
+      "dwm": {
+        "samples": 52,
+        "mean": 1.7559646088784977,
+        "p50": 1.42799630938601,
+        "p95": 4.679215985105069,
+        "p99": 6.980265973024183,
+        "max": 7.45222081562422
+      },
+      "cloudmusic": {
+        "samples": 52,
+        "mean": 0.34305713240299146,
+        "p50": 0.297661137836733,
+        "p95": 0.6389580500729053,
+        "p99": 0.8774696331460026,
+        "max": 0.91484254671834
+      },
+      "ChatGPT": {
+        "samples": 41,
+        "mean": 1.1467755332743355,
+        "p50": 0.949442289583376,
+        "p95": 2.17656773766336,
+        "p99": 3.402772988896318,
+        "max": 3.40696030925167
+      },
+      "QQ": {
+        "samples": 32,
+        "mean": 0.329383091922288,
+        "p50": 0.2955327147571135,
+        "p95": 0.6276812322593787,
+        "p99": 0.878128580168961,
+        "max": 0.965959229087003
+      },
+      "csrss": {
+        "samples": 5,
+        "mean": 0.1799299144501602,
+        "p50": 0.186794585044074,
+        "p95": 0.2344718391124134,
+        "p99": 0.2366052246962003,
+        "max": 0.237138571092147
+      },
+      "msedge": {
+        "samples": 8,
+        "mean": 0.6196658376863059,
+        "p50": 0.5843228776430189,
+        "p95": 1.2935707802053813,
+        "p99": 1.5102626236546202,
+        "max": 1.56443558451693
+      },
+      "Unity": {
+        "samples": 18,
+        "mean": 17.692882866568606,
+        "p50": 13.42919801861563,
+        "p95": 49.38315723041933,
+        "p99": 51.57538307833802,
+        "max": 52.1234395403177
+      },
+      "explorer": {
+        "samples": 1,
+        "mean": 0.112193829481351,
+        "p50": 0.112193829481351,
+        "p95": 0.112193829481351,
+        "p99": 0.112193829481351,
+        "max": 0.112193829481351
+      },
+      "Feishu": {
+        "samples": 5,
+        "mean": 0.2511867992292306,
+        "p50": 0.278525232074472,
+        "p95": 0.3531213887821086,
+        "p99": 0.36312253600471295,
+        "max": 0.365622822810364
+      }
+    }
+  },
+  "status": "passed",
+  "finalStream": {
+    "clasEnabled": true,
+    "clusterRtxEnabled": true,
+    "demandBufferBytes": 1755468,
+    "demandTaskCapacity": 1048576,
+    "demandTaskCount": 145245,
+    "demandWorkers": 4096,
+    "distributedDemandActive": true,
+    "distributedDemandMinGroups": 65536,
+    "distributedPageDemand": true,
+    "frame": 3001,
+    "generation": 1,
+    "instanceCount": 19144,
+    "latency": {
+      "abandonedDemand": 0,
+      "abandonedPrefetch": 5,
+      "demandFrames": {
+        "count": 6477,
+        "max": 44.0,
+        "mean": 26.752200092635476,
+        "p50": 26.0,
+        "p95": 41.0,
+        "p99": 44.0
+      },
+      "enabled": true,
+      "milliseconds": {
+        "admission": {
+          "count": 26176,
+          "max": 460.643,
+          "mean": 69.30360521088019,
+          "p50": 1.0,
+          "p95": 396.0,
+          "p99": 445.0
+        },
+        "decode": {
+          "count": 26176,
+          "max": 5.825,
+          "mean": 0.1188903575794621,
+          "p50": 1.0,
+          "p95": 1.0,
+          "p99": 1.0
+        },
+        "demandToDrawable": {
+          "count": 6477,
+          "max": 11532.519,
+          "mean": 10770.14942905666,
+          "p50": 11532.519,
+          "p95": 11532.519,
+          "p99": 11532.519
+        },
+        "feedback": {
+          "count": 26181,
+          "max": 10968.364,
+          "mean": 2580.4006788892707,
+          "p50": 18.0,
+          "p95": 10968.364,
+          "p99": 10968.364
+        },
+        "ioQueue": {
+          "count": 26176,
+          "max": 55.038,
+          "mean": 7.69242225702934,
+          "p50": 1.0,
+          "p95": 45.0,
+          "p99": 51.0
+        },
+        "prefetchToDrawable": {
+          "count": 19699,
+          "max": 114.924,
+          "mean": 44.2314888065384,
+          "p50": 43.0,
+          "p95": 47.0,
+          "p99": 108.0
+        },
+        "readyToUpload": {
+          "count": 26176,
+          "max": 75.43,
+          "mean": 11.645974174816626,
+          "p50": 9.0,
+          "p95": 49.0,
+          "p99": 68.0
+        },
+        "uploadToDrawable": {
+          "count": 26176,
+          "max": 49.315,
+          "mean": 17.22487901130807,
+          "p50": 17.0,
+          "p95": 20.0,
+          "p99": 43.0
+        }
+      },
+      "oldestPendingDemandMilliseconds": 0.0,
+      "pendingDemand": 0,
+      "pendingPrefetch": 0
+    },
+    "lodStateBytes": 162274640,
+    "lodTopologyBytes": 174751348,
+    "maxUploadBytesPerFrame": 8388608,
+    "orderedUploadPages": 0,
+    "pageBufferBytes": 1073741824,
+    "pageCount": 9290,
+    "pages": [],
+    "pagesTruncated": true,
+    "pass": "GPUDriven",
+    "prefetchActive": false,
+    "prefetchPages": true,
+    "primitiveCount": 3163,
+    "recentDemandGroupTests": 80813,
+    "requestBufferBytes": 6214332,
+    "requestReadbackBytes": 786500,
+    "requestSourceFrame": 3000,
+    "scenePreparationFraction": 1.0,
+    "sceneReady": true,
+    "screenSpacePagePriority": true,
+    "stats": {
+      "activePageLoadCount": 0,
+      "frameAdmissionDeferredCount": 0,
+      "frameAllocationDeferredCount": 0,
+      "frameAllocationFailureCount": 0,
+      "frameCachedUnusedPageCount": 0,
+      "frameEvictedPageCount": 0,
+      "frameEvictionCandidateTests": 9290,
+      "frameEvictionScanCount": 1,
+      "frameGpuInvalidRequestCount": 0,
+      "frameGpuRequestCount": 0,
+      "frameGpuRequestOverflowCount": 0,
+      "frameResidentDemandCount": 9290,
+      "frameUploadBytes": 0,
+      "freeResidentBytes": 923129600,
+      "pendingPageCount": 0,
+      "pendingPageLoadCount": 0,
+      "pendingPatchCount": 0,
+      "queuedUploadCount": 0,
+      "residentPageCount": 9290,
+      "totalCancelledQueuedLoadCount": 0,
+      "totalCancelledUploads": 0,
+      "totalCompletedPageLoadCount": 29339,
+      "totalCompletedUnloadCount": 20049,
+      "totalCompletedUploadCount": 29339,
+      "totalCompletionDrivenUploads": 29339,
+      "totalEvictedPageCount": 20049,
+      "totalGpuInvalidRequestCount": 0,
+      "totalPageLoadFailureCount": 0,
+      "totalPrefetchAdmitted": 19799,
+      "totalPrefetchDeferred": 105,
+      "totalPrefetchUsed": 13532,
+      "totalUploadBytes": 761559920,
+      "usedResidentBytes": 150612224
+    },
+    "terminalPageCount": 3163,
+    "terminalReady": true,
+    "terminalResidentPageCount": 3163,
+    "viewDrivenPageDemand": true
+  },
+  "finalCut": {
+    "activeGroups": 19394,
+    "candidateCapacity": 2097152,
+    "capacityFallback": false,
+    "demand": {
+      "distributed": true,
+      "groupCountHistogram": [
+        37,
+        16444,
+        125,
+        204,
+        86,
+        68,
+        176,
+        4
+      ],
+      "groupTestsForPolicy": 80813,
+      "maxGroupsPerTask": 320,
+      "maxNodesPerTask": 7,
+      "nonemptyTasks": 17107,
+      "seedRootTests": 105483,
+      "tasks": 17144,
+      "testedGroups": 80813,
+      "visitedNodes": 67178,
+      "waveSlots": 96704
+    },
+    "earlyCandidates": 147410,
+    "earlyHardware": 26806,
+    "earlySoftware": 19172,
+    "fallbackInstances": 0,
+    "fineGroups": 9467,
+    "lateCandidates": 42382,
+    "lateHardware": 200,
+    "lateSoftware": 361,
+    "maxFiniteRefinementErrorPixels": 4177.38037109375,
+    "maxVisibleRefinementErrorPixels": 1.4999279975891113,
+    "nearPlaneUnboundedRefinements": 456,
+    "overTargetRefinements": 1051,
+    "selectedClusters": 162989,
+    "traversalFlatTileBaseline": 289427,
+    "traversalTestedGroups": 39784,
+    "traversalVisitedNodes": 128095,
+    "verifiedInstances": 13782,
+    "visibleOverTargetRefinements": 0,
+    "visibleUnboundedRefinements": 0
+  },
+  "previousRawDirectory": ".cache/tessellation/roam/m1",
+  "previous": {
+    "frameCount": 3000,
+    "phases": {
+      "warmup": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 20.748992106666666,
+          "p50": 20.748368,
+          "p95": 25.4049136,
+          "p99": 35.99880511999999,
+          "max": 48.623104
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 60.60458933333333,
+          "p50": 20.60885,
+          "p95": 31.938090000000013,
+          "p99": 43.568725999999955,
+          "max": 11795.8419
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 60.598029333333336,
+          "p50": 20.6034,
+          "p95": 31.931735000000014,
+          "p99": 43.56253299999995,
+          "max": 11795.8333
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 8.83782688,
+          "p50": 8.579536000000001,
+          "p95": 12.300848,
+          "p99": 13.811552639999993,
+          "max": 17.086912
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 2.6804845866666667,
+          "p50": 1.5468000000000002,
+          "p95": 6.886516800000005,
+          "p99": 10.795329599999993,
+          "max": 13.479584
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.31810304,
+          "p50": 0.237792,
+          "p95": 0.2865456,
+          "p99": 2.374352639999998,
+          "max": 4.54816
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 4.513323306666667,
+          "p50": 4.260896,
+          "p95": 7.5105632,
+          "p99": 8.974402559999998,
+          "max": 10.896864
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.8557025066666667,
+          "p50": 0.16192,
+          "p95": 3.9861120000000008,
+          "p99": 5.3880009599999985,
+          "max": 6.836256
+        }
+      },
+      "start_hold": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 20.10791989333333,
+          "p50": 20.083168,
+          "p95": 23.5711872,
+          "p99": 27.223616319999998,
+          "max": 35.247552
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 20.168592333333333,
+          "p50": 20.0801,
+          "p95": 24.159515,
+          "p99": 27.704425999999994,
+          "max": 38.3004
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 20.160799666666666,
+          "p50": 20.0738,
+          "p95": 24.151805,
+          "p99": 27.698409999999996,
+          "max": 38.292
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 8.428546453333333,
+          "p50": 8.337520000000001,
+          "p95": 10.707880000000001,
+          "p99": 12.2839616,
+          "max": 12.872064
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 2.0519941333333334,
+          "p50": 1.52576,
+          "p95": 3.6934816,
+          "p99": 6.074543679999999,
+          "max": 7.013888
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.2768129066666667,
+          "p50": 0.237376,
+          "p95": 0.271216,
+          "p99": 2.0619705599999985,
+          "max": 4.832224
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 4.59909856,
+          "p50": 4.2540960000000005,
+          "p95": 7.3123456000000004,
+          "p99": 8.53817888,
+          "max": 9.712352
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 1.0771938133333334,
+          "p50": 0.404928,
+          "p95": 2.9622768000000033,
+          "p99": 4.917323839999998,
+          "max": 6.6712
+        }
+      },
+      "forward_1": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 20.49546624,
+          "p50": 20.655296,
+          "p95": 23.714552,
+          "p99": 26.161892159999976,
+          "max": 38.00288
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 20.606912333333334,
+          "p50": 20.3534,
+          "p95": 24.743270000000003,
+          "p99": 32.793596999999984,
+          "max": 66.7881
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 20.599493666666667,
+          "p50": 20.3249,
+          "p95": 24.737705000000002,
+          "p99": 32.786292999999986,
+          "max": 66.7727
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 9.321981546666667,
+          "p50": 9.119136,
+          "p95": 11.4529808,
+          "p99": 14.195942719999996,
+          "max": 15.27712
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 4.266810666666666,
+          "p50": 4.286224,
+          "p95": 6.4471024,
+          "p99": 7.4545212799999945,
+          "max": 8.68992
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.26947232,
+          "p50": 0.23838399999999998,
+          "p95": 0.28330720000000004,
+          "p99": 2.037058559999997,
+          "max": 3.072192
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 4.377587626666666,
+          "p50": 4.299264,
+          "p95": 6.510902400000001,
+          "p99": 7.558963839999989,
+          "max": 11.106208
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.21908458666666666,
+          "p50": 0.16055999999999998,
+          "p95": 0.17952000000000004,
+          "p99": 2.28676448,
+          "max": 4.509536
+        }
+      },
+      "forward_2": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 19.50813952,
+          "p50": 19.389584,
+          "p95": 23.1986784,
+          "p99": 25.223713919999987,
+          "max": 30.63008
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 19.54391,
+          "p50": 19.6248,
+          "p95": 23.958235000000002,
+          "p99": 26.687723999999985,
+          "max": 34.9044
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 19.535739,
+          "p50": 19.58295,
+          "p95": 23.95128,
+          "p99": 26.680515999999983,
+          "max": 34.8915
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 8.599237333333333,
+          "p50": 8.632352000000001,
+          "p95": 11.014248000000007,
+          "p99": 12.783998719999998,
+          "max": 15.168288
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 2.78450688,
+          "p50": 1.873792,
+          "p95": 6.0675023999999995,
+          "p99": 6.264324479999999,
+          "max": 7.29056
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.00012416,
+          "p50": 0.000128,
+          "p95": 0.000128,
+          "p99": 0.00025599999999999993,
+          "max": 0.000384
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 4.882474773333334,
+          "p50": 4.261024,
+          "p95": 8.452,
+          "p99": 10.6451232,
+          "max": 11.038688
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.19184234666666666,
+          "p50": 0.15328,
+          "p95": 0.22504480000000016,
+          "p99": 2.2791404799999997,
+          "max": 2.398464
+        }
+      },
+      "forward_3": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 18.496682026666665,
+          "p50": 18.23576,
+          "p95": 21.642756800000008,
+          "p99": 22.6120304,
+          "max": 23.678752
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 18.494898,
+          "p50": 18.33815,
+          "p95": 21.9715,
+          "p99": 23.254266,
+          "max": 24.3325
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 18.48763466666667,
+          "p50": 18.331249999999997,
+          "p95": 21.96495,
+          "p99": 23.248361,
+          "max": 24.3249
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 8.093543253333333,
+          "p50": 8.24952,
+          "p95": 10.349699199999998,
+          "p99": 10.5276848,
+          "max": 12.516576
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 2.2910781866666667,
+          "p50": 1.622336,
+          "p95": 4.2938416,
+          "p99": 6.020105599999999,
+          "max": 7.031456
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.00012586666666666667,
+          "p50": 0.000128,
+          "p95": 0.000128,
+          "p99": 0.00032031999999999975,
+          "max": 0.000384
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 4.18317088,
+          "p50": 4.101024000000001,
+          "p95": 6.3415023999999995,
+          "p99": 7.085184639999999,
+          "max": 7.320096
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.64108928,
+          "p50": 0.152528,
+          "p95": 2.2826304,
+          "p99": 3.6135945599999992,
+          "max": 5.165728
+        }
+      },
+      "far_hold": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 18.74662432,
+          "p50": 18.168288,
+          "p95": 22.680670399999997,
+          "p99": 25.318608319999978,
+          "max": 81.798624
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 18.780117666666666,
+          "p50": 18.17875,
+          "p95": 22.884,
+          "p99": 27.248985999999977,
+          "max": 81.8378
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 18.772447333333332,
+          "p50": 18.17135,
+          "p95": 22.875515000000004,
+          "p99": 27.242496999999975,
+          "max": 81.8303
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 7.529214613333333,
+          "p50": 7.9430879999999995,
+          "p95": 10.399791999999998,
+          "p99": 11.58079328,
+          "max": 18.566432
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 2.066744426666667,
+          "p50": 1.642816,
+          "p95": 4.1759504000000005,
+          "p99": 5.802424319999998,
+          "max": 6.210048
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.00012277333333333333,
+          "p50": 0.000128,
+          "p95": 0.000128,
+          "p99": 0.00016,
+          "max": 0.000288
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 4.240721066666667,
+          "p50": 4.077744,
+          "p95": 6.952160000000003,
+          "p99": 8.695425599999993,
+          "max": 16.811168
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.46277162666666666,
+          "p50": 0.14896,
+          "p95": 2.2768576,
+          "p99": 4.09792192,
+          "max": 4.537344
+        }
+      },
+      "return_1": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 18.6592704,
+          "p50": 18.312736,
+          "p95": 21.844952000000003,
+          "p99": 23.54950496,
+          "max": 46.233792
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 18.677820666666666,
+          "p50": 18.431649999999998,
+          "p95": 21.908795,
+          "p99": 23.915049999999997,
+          "max": 44.7815
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 18.668902,
+          "p50": 18.3941,
+          "p95": 21.901195,
+          "p99": 23.909238999999996,
+          "max": 44.7732
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 8.221375466666666,
+          "p50": 8.293808,
+          "p95": 10.3679104,
+          "p99": 11.110001279999997,
+          "max": 13.43424
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 2.3035978666666668,
+          "p50": 1.63096,
+          "p95": 4.204052800000003,
+          "p99": 6.22031008,
+          "max": 8.947328
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.00012490666666666665,
+          "p50": 0.000128,
+          "p95": 0.000128,
+          "p99": 0.00032031999999999975,
+          "max": 0.000384
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 4.34662752,
+          "p50": 4.110944,
+          "p95": 6.433665600000001,
+          "p99": 7.23502112,
+          "max": 9.405984
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.60101888,
+          "p50": 0.153552,
+          "p95": 2.2876752,
+          "p99": 2.3338531199999997,
+          "max": 4.565952
+        }
+      },
+      "return_2": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 19.489289493333334,
+          "p50": 19.367472,
+          "p95": 23.513,
+          "p99": 25.195830399999995,
+          "max": 27.170976
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 19.474382666666667,
+          "p50": 19.59825,
+          "p95": 23.376705,
+          "p99": 24.794151999999997,
+          "max": 27.7482
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 19.467249,
+          "p50": 19.59005,
+          "p95": 23.35998,
+          "p99": 24.787047999999995,
+          "max": 27.7418
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 8.548440746666667,
+          "p50": 8.642064,
+          "p95": 11.5519008,
+          "p99": 12.875562239999999,
+          "max": 13.37792
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 2.832990826666667,
+          "p50": 1.884208,
+          "p95": 5.8562704000000005,
+          "p99": 6.230318399999999,
+          "max": 6.888672
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.00012928,
+          "p50": 0.000128,
+          "p95": 0.00016,
+          "p99": 0.000352,
+          "max": 0.000416
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 4.73346208,
+          "p50": 4.187648,
+          "p95": 8.519867199999998,
+          "p99": 10.6619008,
+          "max": 11.283552
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.27046506666666664,
+          "p50": 0.153984,
+          "p95": 1.7184736000000014,
+          "p99": 2.3022655999999997,
+          "max": 3.44208
+        }
+      },
+      "return_3": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 21.206823466666666,
+          "p50": 21.050304,
+          "p95": 26.265288,
+          "p99": 34.59142335999999,
+          "max": 35.628704
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 21.232222666666665,
+          "p50": 20.8002,
+          "p95": 26.155765,
+          "p99": 34.64968,
+          "max": 35.5101
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 21.224418333333332,
+          "p50": 20.7929,
+          "p95": 26.149145,
+          "p99": 34.642099,
+          "max": 35.5038
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 9.373718186666666,
+          "p50": 9.324976,
+          "p95": 11.6652128,
+          "p99": 13.787647359999998,
+          "max": 15.213024
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 4.337576853333333,
+          "p50": 4.292256,
+          "p95": 6.7410256,
+          "p99": 8.163019199999997,
+          "max": 9.293184
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.26723722666666666,
+          "p50": 0.240176,
+          "p95": 0.28518080000000007,
+          "p99": 1.9761836799999963,
+          "max": 5.474688
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 4.409963093333333,
+          "p50": 4.28768,
+          "p95": 7.199238400000001,
+          "p99": 8.888437119999999,
+          "max": 11.027424
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.17225834666666667,
+          "p50": 0.161088,
+          "p95": 0.17975679999999997,
+          "p99": 0.32058751999999546,
+          "max": 2.288544
+        }
+      },
+      "return_hold": {
+        "gpuMs": {
+          "samples": 300,
+          "mean": 20.222903573333333,
+          "p50": 20.199632,
+          "p95": 25.1360048,
+          "p99": 27.012151359999994,
+          "max": 28.097088
+        },
+        "hostFrameMs": {
+          "samples": 300,
+          "mean": 20.292378333333332,
+          "p50": 20.151899999999998,
+          "p95": 25.26137,
+          "p99": 27.692024999999997,
+          "max": 45.4502
+        },
+        "cpuExecuteMs": {
+          "samples": 300,
+          "mean": 20.284915333333334,
+          "p50": 20.1455,
+          "p95": 25.255725,
+          "p99": 27.68414,
+          "max": 45.4421
+        },
+        "vbufferGpuMs": {
+          "samples": 300,
+          "mean": 8.672071893333333,
+          "p50": 8.476175999999999,
+          "p95": 11.495444800000001,
+          "p99": 13.046363199999995,
+          "max": 19.620864
+        },
+        "Stream traversalGpuMs": {
+          "samples": 300,
+          "mean": 2.236233706666667,
+          "p50": 1.6108799999999999,
+          "p95": 4.543145600000002,
+          "p99": 6.15790144,
+          "max": 6.741088
+        },
+        "Detail demandGpuMs": {
+          "samples": 300,
+          "mean": 0.30486122666666665,
+          "p50": 0.23742400000000002,
+          "p95": 0.2804512,
+          "p99": 2.35911232,
+          "max": 4.734368
+        },
+        "Stream earlyGpuMs": {
+          "samples": 300,
+          "mean": 4.929558186666666,
+          "p50": 4.295552,
+          "p95": 7.4656016,
+          "p99": 10.51403936,
+          "max": 13.037056
+        },
+        "Stream lateGpuMs": {
+          "samples": 300,
+          "mean": 0.82649376,
+          "p50": 0.16168,
+          "p95": 2.3097136000000003,
+          "p99": 4.443640640000001,
+          "max": 15.133472
+        }
+      }
+    },
+    "observedProcess3D": {
+      "csrss": {
+        "samples": 25,
+        "mean": 0.7192188869066005,
+        "p50": 0.313984353693126,
+        "p95": 3.037291323887182,
+        "p99": 4.366703672863127,
+        "max": 4.70265985678644
+      },
+      "Feishu": {
+        "samples": 95,
+        "mean": 0.19552378965288347,
+        "p50": 0.191216967795831,
+        "p95": 0.2237680452878374,
+        "p99": 0.23991298273756634,
+        "max": 0.320849649663143
+      },
+      "dwm": {
+        "samples": 76,
+        "mean": 0.8230761257030352,
+        "p50": 0.851233911205553,
+        "p95": 1.55530283831778,
+        "p99": 1.8074242976198978,
+        "max": 1.8513706106345
+      },
+      "Unity": {
+        "samples": 95,
+        "mean": 74.4435085259294,
+        "p50": 57.8972327798989,
+        "p95": 98.52929238628107,
+        "p99": 100.62433154508749,
+        "max": 100.724479613983
+      },
+      "ChatGPT": {
+        "samples": 46,
+        "mean": 0.7644695208922995,
+        "p50": 0.8068869143779951,
+        "p95": 1.034095525211375,
+        "p99": 1.0745323624846799,
+        "max": 1.08253879566714
+      },
+      "msedge": {
+        "samples": 36,
+        "mean": 0.3175506233054183,
+        "p50": 0.33222295940644997,
+        "p95": 0.4732161344321888,
+        "p99": 0.4812077959912574,
+        "max": 0.483275142349039
+      },
+      "MetallicRhiTests": {
+        "samples": 54,
+        "mean": 41.54850691964968,
+        "p50": 42.690347138053696,
+        "p95": 44.51001701253106,
+        "p99": 44.683549108816976,
+        "max": 44.7256976422711
+      }
+    }
+  },
+  "timingCaveat": "Runs have different concurrent GPU workloads and clocks; the comparison does not establish a causal performance gain or neutrality. This route validates the feature-disabled path, not recursive tessellation cost.",
+  "testLogs": [
+    ".cache/tessellation/recursive-final.log",
+    ".cache/tessellation/recursive-harness-final.log",
+    ".cache/tessellation/recursive-regression-noval.log"
+  ],
+  "passedWithValidation": [
+    "RhiCommand.render_graph_gpu_driven_streamasset_traversal_demand",
+    "RhiRendering.hybrid_raster_scene_equivalence",
+    "RhiRendering.meshlet_lod_stream_gpu_matches_reference",
+    "RhiRendering.meshlet_lod_stream_per_instance_budget",
+    "RhiRendering.pipeline_cache_persistence_and_shader_invalidation",
+    "RhiRendering.render_graph_gpu_driven_streamasset_pass_smoke",
+    "RhiRendering.render_graph_sample_load",
+    "RhiRendering.stream_wave_work_distribution",
+    "RhiRendering.tessellation_displacement_render",
+    "RhiRendering.tessellation_recursive_render",
+    "RhiRendering.tessellation_recursive_topology",
+    "RhiValidation.meshlet_lod_stream_bvh_reference",
+    "RhiValidation.meshlet_lod_stream_reference_frontier",
+    "RhiValidation.meshlet_lod_stream_tile_hierarchy",
+    "RhiValidation.tessellation_pattern_coverage"
+  ]
+}

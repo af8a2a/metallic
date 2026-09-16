@@ -176,7 +176,8 @@ void hybridClusterArgumentsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIn
         uint count = g_BinPrefix[127];
         bins[bin] = count;
         uint groups = bin == kHybridSoftwareBin ? count :
-            push.streamMode != 0u ? count : (count + 31u) / 32u;
+            (push.streamMode & 2u) != 0u ? count * 8u :
+            (push.streamMode & 1u) != 0u ? count : (count + 31u) / 32u;
         args[bin * 3u] = min(groups, kHybridDispatchWidth);
         args[bin * 3u + 1u] = max(1u, (groups + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
         args[bin * 3u + 2u] = 1u;

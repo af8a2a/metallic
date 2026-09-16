@@ -1,10 +1,5 @@
 // Included after VisibilityBuffer.slang's ordinary cluster accessors.
-struct TessResidentPayload
-{
-    uint records[32];
-    uint ends[32];
-};
-groupshared TessResidentPayload g_TessResident;
+#include "VisibilityTessellationSplit.slang"
 groupshared float3 g_TessSourcePosition[3];
 groupshared float3 g_TessSourceNormal[3];
 groupshared float2 g_TessSourceUv[3];
@@ -20,55 +15,67 @@ void visibilityTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIn
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
     GPUDrivenPreviewParams params = ph[0];
     DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + params.tessellationBuffer, 0));
-    uint candidate = hybridFlatGroup(group) * 32u + lane, record = 0xffffffffu;
-    bool visible;
-    if (push.environmentSHBuffer != 0xffffffffu) {
-        DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.environmentSHBuffer, 0));
-        visible = hybridBinRecord(bins, push.mipLevel, candidate, record);
-    } else {
-        record = residentLodRecordIndex(candidate, params, push);
-        visible = residentClusterVisible(record, push);
-        if (visible) { visible = visibleClusterDrawBucket(residentRasterCluster(record, push).record) == push.mipLevel; }
-    }
-    uint count = 0;
-    if (visible) {
-        ResidentRasterCluster c = residentRasterCluster(record, push);
-        count = tessMaterial(data, c.instance.identity.y).enabled != 0u ? c.meshlet.ranges.w : 1u;
-    }
-    g_TessResident.records[lane] = record;
-    bool singleWave = false;
-#if GPU_DRIVEN_AMPLIFICATION_WAVE_OPS
-    singleWave = WaveGetLaneCount() >= 32u;
-    g_TessResident.ends[lane] = singleWave ? WavePrefixSum(count) + count : count;
-#else
-    g_TessResident.ends[lane] = count;
-#endif
-    GroupMemoryBarrierWithGroupSync();
-    // Wave32/64 uses a register prefix; retain a tiny shared scan only for
-    // devices with smaller subgroups or no task-shader subgroup operations.
-    if (!singleWave && lane == 0u) {
-        uint sum = 0;
-        for (uint i = 0; i < 32u; ++i) { sum += g_TessResident.ends[i]; g_TessResident.ends[i] = sum; }
+    uint draw = hybridFlatGroup(group);
+    uint candidate = draw / kTessTasksPerCluster;
+    uint first = (draw % kTessTasksPerCluster) * kTessRootsPerTask;
+    uint record = 0xffffffffu;
+    if (lane == 0u) {
+        bool visible;
+        if (push.environmentSHBuffer != 0xffffffffu) {
+            DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.environmentSHBuffer, 0));
+            visible = hybridBinRecord(bins, push.mipLevel, candidate, record);
+        } else {
+            record = residentLodRecordIndex(candidate, params, push);
+            visible = residentClusterVisible(record, push);
+            if (visible) { visible = visibleClusterDrawBucket(residentRasterCluster(record, push).record) == push.mipLevel; }
+        }
+        g_PrebinVisible = visible ? 1u : 0u;
+        if (visible) { g_PrebinCluster = residentRasterCluster(record, push); }
+        g_TessPatches.record = record; g_TessPatches.first = first;
     }
     GroupMemoryBarrierWithGroupSync();
-    DispatchMesh(g_TessResident.ends[31], 1, 1, g_TessResident);
+    uint count = 0u;
+    if (g_PrebinVisible != 0u) {
+        ResidentRasterCluster c = g_PrebinCluster;
+        bool enabled = tessMaterial(data, c.instance.identity.y).enabled != 0u;
+        if (lane == 0u) {
+            g_TessPatches.enabled = enabled ? 1u : 0u;
+        }
+        if (!enabled) { count = first == 0u && lane == 0u ? 1u : 0u; }
+        else if (lane < kTessRootsPerTask && first + lane < c.meshlet.ranges.w) {
+            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vb = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(uint2(push.bufferShaderIndexBase + push.positionBuffer, 0));
+            DescriptorHandle<StructuredBuffer<uint>> vi = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.meshletVertexBuffer, 0));
+            uint3 tri = residentClusterTriangle(c, first + lane, push);
+            float3 source[3];
+            for (uint i = 0u; i < 3u; ++i) {
+                source[i] = transformPoint(instanceTransform(c.instance), vb[c.geometry.payload.x + vi[c.meshlet.ranges.x + tri[i]]].position.xyz);
+            }
+            TessView view;
+            view.eye = params.renderEye.xyz;
+            view.forward = normalize(params.renderCenter.xyz - params.renderEye.xyz);
+            view.orthographic = params.renderUpProjection.w > 0.5;
+            view.pixelScale = float(params.height) / (view.orthographic ? params.renderClipOrtho.z : 2.0 * tan(params.renderViewport.w * 0.5));
+            view.nearPlane = params.renderClipOrtho.x;
+            count = tessBuildLeaves(lane, source, view, asfloat(data[2]), data[3], data[4]);
+        }
+    }
+    tessDispatchLeaves(lane, count);
 }
 
 [shader("mesh")]
 [numthreads(64, 1, 1)]
 [outputtopology("triangle")]
 void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
-    in payload TessResidentPayload payload, out vertices TessVertex vertices[128],
+    in payload TessPatchPayload payload, out vertices TessVertex vertices[128],
     out indices uint3 triangles[128], out primitives TessPrimitive primitives[128],
     uniform GPUDrivenPreviewPush push)
 {
-    uint source = 0;
-    for (uint stride = 16; stride > 0; stride >>= 1) {
-        uint probe = source + stride - 1;
-        if (payload.ends[probe] <= group.x) { source += stride; }
-    }
-    uint record = payload.records[source];
-    uint originalTriangle = group.x - (source == 0u ? 0u : payload.ends[source - 1u]);
+    uint source = tessPayloadRoot(payload, group.x);
+    uint record = payload.record;
+    uint originalTriangle = payload.first + source;
+    uint leaf = group.x - (source == 0u ? 0u : payload.ends[source - 1u]);
+    uint patchBase = (source * kTessLeavesPerRoot + leaf) * 3u;
+    uint3 patch = uint3(payload.patches[patchBase], payload.patches[patchBase + 1u], payload.patches[patchBase + 2u]);
     ResidentRasterCluster c = residentRasterCluster(record, push);
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> ph =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
@@ -110,21 +117,21 @@ void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     }
     GroupMemoryBarrierWithGroupSync();
     if (lane == 0u) {
-        float3 forward = normalize(params.renderCenter.xyz - params.renderEye.xyz);
-        bool ortho = params.renderUpProjection.w > 0.5;
-        float scale = float(params.height) / (ortho ? params.renderClipOrtho.z : 2.0 * tan(params.renderViewport.w * 0.5));
-        for (uint e = 0; e < 3u; ++e) {
-            g_TessRates[e] = tessEdgeRate(g_TessSourcePosition[e], g_TessSourcePosition[(e + 1u) % 3u],
-                params.renderEye.xyz, forward, scale, params.renderClipOrtho.x, ortho, asfloat(data[2]), data[3]);
-        }
+        TessView view;
+        view.eye = params.renderEye.xyz;
+        view.forward = normalize(params.renderCenter.xyz - params.renderEye.xyz);
+        view.orthographic = params.renderUpProjection.w > 0.5;
+        view.pixelScale = float(params.height) / (view.orthographic ? params.renderClipOrtho.z : 2.0 * tan(params.renderViewport.w * 0.5));
+        view.nearPlane = params.renderClipOrtho.x;
+        g_TessRates = tessPatchRates(patch, g_TessSourcePosition, view, asfloat(data[2]), data[3]);
         g_TessPattern = tessPattern(data, g_TessRates);
     }
     GroupMemoryBarrierWithGroupSync();
     SetMeshOutputCounts(g_TessPattern.y, g_TessPattern.w);
     if (lane < g_TessPattern.y) {
-        float3 bary = tessBary(data, g_TessPattern, lane);
+        float3 bary = tessPatchDomain(tessBary(data, g_TessPattern, lane), g_TessRates, patch, g_TessSourcePosition);
         float3 p, n; float2 uv;
-        tessDomain(bary, g_TessRates, g_TessSourcePosition, g_TessSourceNormal, g_TessSourceUv, p, n, uv);
+        tessSourceDomain(bary, g_TessSourcePosition, g_TessSourceNormal, g_TessSourceUv, p, n, uv);
         p += n * tessHeight(material, uv, push.imageShaderIndexBase);
         float4 clip = projectPosition(p, camera); clip.y = -clip.y;
         if (push.projectWithCullingCamera == 0u) { clip.xy -= 2.0 * float2(params.renderEye.w, params.renderCenter.w) / float2(params.width, params.height) * clip.w; }

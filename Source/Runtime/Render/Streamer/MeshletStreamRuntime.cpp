@@ -1124,7 +1124,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = sizeof(MeshletStreamGpuDrawIndirect),
+            .size = kMeshletStreamDrawIndirectCommandCount * sizeof(MeshletStreamGpuDrawIndirect),
             .structureStride = sizeof(MeshletStreamGpuDrawIndirect),
             .usage = BufferUsageBits::Storage | BufferUsageBits::Indirect,
             .memoryLocation = MemoryLocation::Device,
@@ -2849,10 +2849,10 @@ Result MeshletStreamRuntime::syncGPUSceneInstanceMapping(std::span<const uint32_
     return {};
 }
 
-void MeshletStreamRuntime::cmdDrawMeshTasks(CommandBuffer& commandBuffer) const
+void MeshletStreamRuntime::cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation) const
 {
     if (ready() && drawTaskCount() > 0) {
-        commandBuffer.drawMeshTasksIndirect(*drawIndirectBuffer_);
+        commandBuffer.drawMeshTasksIndirect(*drawIndirectBuffer_, tessellation ? sizeof(MeshletStreamGpuDrawIndirect) : 0u);
     }
 }
 

@@ -1,6 +1,6 @@
 # GPUDriven material displacement tessellation
 
-This implements bounded GPU tessellation in the existing visibility pipeline. It does not add a path-tracing pass or change GPUDrivenSample's streamed MiniZorah default. The feature is opt-in (`VBuffer.tessellation`, default false).
+This implements recursive GPU tessellation in the existing visibility pipeline. It does not add a path-tracing pass or change GPUDrivenSample's streamed MiniZorah default. The feature is opt-in (`VBuffer.tessellation`, default false).
 
 ## Try it
 
@@ -38,7 +38,8 @@ The material inspector exposes magnitude and center under Surface details. They 
 |---|---:|---|
 | `tessellation` | false | Enable the task/mesh displacement path |
 | `tessellationEdgePixels` | 8 | Target edge length in render pixels, clamped to [1,256] |
-| `tessellationMaxFactor` | 4 | Maximum per-source-edge factor, clamped to [1,8] |
+| `tessellationMaxFactor` | 4 | Maximum per-leaf-edge dicing factor, clamped to [1,8] |
+| `tessellationMaxSplitDepth` | 2 | Recursive split depth, clamped to [0,3]; 0 retains single-patch dicing |
 
 Rate uses the unjittered render view, endpoint depth and world edge length. Foreshortening does not suppress detail. Both sides of a shared edge compute the same rate, and boundary positions use a canonical endpoint order. Different normals, UVs, materials, transforms or independently simplified LOD boundaries can still create displacement seams; this is not a general seam-repair system.
 
@@ -46,18 +47,28 @@ Rate uses the unjittered render view, endpoint depth and world edge length. Fore
 
 1. Existing Streamer frontier and residency determine the safe geometry cut. No additional detail requests or changes to CLAS publication are introduced.
 2. Instance and meshlet frustum/HZB tests inflate world-space spheres by the maximum authored displacement. Normal-cone rejection is disabled when that bound is nonzero. The existing conservative two-pass HZB path remains active.
-3. Task shaders expand displaced clusters to source-triangle patches. Resident tasks use a wave prefix sum, with a small shared-memory fallback where task wave operations are unavailable. Stream tasks operate on published active-cut clusters. Unmodified clusters retain a single mesh workgroup.
-4. Mesh shaders evaluate an original 512-entry topology table, covering all independent edge rates 1..8. Each source patch emits at most **61 vertices / 96 triangles**; output storage is statically bounded. Clamping reduces quality rather than dropping patches on overflow.
+3. Resident and stream task shaders process batches of 16 source triangles. Each lane recursively splits its root in source-triangle domain until all edges fit the leaf dicing limit or the depth budget is reached. A wave prefix sum compacts leaf dispatch counts; a 16-element shared-memory scan supports devices without task wave arithmetic. Stream tasks use the published active cut. Unmodified clusters retain a single mesh workgroup.
+4. Each leaf gets a mesh workgroup evaluating the original 512-entry topology table, covering independent edge rates 1..8. A leaf emits at most **61 vertices / 96 triangles**. Depth 3 permits up to **64 leaves / 6,144 microtriangles** per source triangle, while individual mesh outputs remain bounded. Leaves at the depth limit are diced with capped rates; none are dropped.
 5. Rasterization keeps the original visibility ID. A second RGBA32F attachment stores original-triangle barycentrics, UV/world-area LOD scale, and a 24-bit octahedral microtriangle normal. The depth winner also writes the corresponding domain. Deferred material binning continues to use the original instance/material.
 6. Deferred shading reconstructs the displaced point from depth and interpolates original material attributes using domain barycentrics. Its motion/depth guides therefore describe the displaced visible surface. Static displacement works with camera motion and DLSS-SR. The normal is geometric; normal mapping is applied afterward using a stable tangent frame.
 
 The extra attachment costs 16 bytes per render pixel while active (about 31.6 MiB at 1920x1080). When disabled, the graph port uses an R8 placeholder, has no raster writes or shader reads, and keeps the ordinary shader entries and hybrid rasterization. Active tessellation uses hardware rasterization for every cluster in that VBuffer; software microtriangle rasterization is not implemented here.
 
+## Recursive subdivision
+
+`VisibilityTessellationSplit.slang` implements a task-local depth-first work stack. Every child re-evaluates its unjittered edge metric. An edge is bisected only when its rate exceeds `tessellationMaxFactor`: one marked edge yields two children, two yield three, and three yield four. Unmarked outer edges remain intact. This red/green subdivision permits neighboring patches to finish at different depths without inserting an unmatched boundary vertex. It is an original implementation of the split-then-dice design, not a copy of Unreal's tessellation table or queue code.
+
+Patch vertices are packed integer barycentric coordinates on a 1/4096 grid. Midpoints remain exact at all supported recursion depths. Leaf vertices map directly back to the original source domain; positions, UVs and authored normals are evaluated there, then displacement is applied once. In particular, normals are not repeatedly normalized at intermediate split vertices. Canonical edge evaluation and rational `step/rate` dicing preserve shared-edge samples across opposite winding. Discontinuous source normals/UVs or independently simplified meshlet boundaries still have the authoring limitations described above.
+
+The DFS stack needs only `1 + 3 * depth` pending entries per root. The task payload reserves `4^depth` leaves per root, so there is no append race, queue-overflow discard or partial parent replacement. Payload and stack sizes are shader specializations of the graph depth: **276 / 852 / 3,156 / 12,372 bytes** of payload at depths 0 / 1 / 2 / 3. Changing the depth rebuilds matching resident and stream task/mesh permutations and republishes their immutable settings together. The default does not reserve maximum-depth storage.
+
+Both prebinned and unbinned draws have GPU-generated tessellation dispatch arguments. Existing ordinary dispatch records retain their layout and behavior; extra records describe eight 16-triangle tasks per cluster and flatten large dispatches into two dimensions. Recursion requires no new frame barrier, CPU readback or global scratch allocation. The per-source depth budget bounds expansion, **not total scene GPU time**; a scene-wide priority/work budget is still separate work.
+
 ## Relationship to Nanite and remaining scope
 
-The design takes the concepts of symmetric edge factors, bounded dicing patterns and source-domain reconstruction from the local Unreal 5.7.4 `NaniteTessellation.ush` / `NaniteDice.ush` reference. The topology generator and implementation are original; Unreal source was not copied into this repository. See Epic's [Nanite documentation](https://dev.epicgames.com/documentation/unreal-engine/working-with-naniteenabled-content).
+The design takes the concepts of symmetric edge factors, recursive large-patch splitting, bounded leaf dicing and source-domain reconstruction from the local Unreal 5.7.4 `NaniteTessellation.ush`, `NaniteSplit.usf`, `NaniteDice.ush` and `NaniteRasterizer.usf` reference. The topology generator and implementation are original; Unreal source was not copied into this repository. See Epic's [Nanite documentation](https://dev.epicgames.com/documentation/unreal-engine/working-with-naniteenabled-content).
 
-This is not the complete Nanite tessellator: no recursive large-patch splitting, global microtriangle work queue/budget, software dicing raster path, displacement-aware LOD error baking, displacement mips or animated displacement history. Large source triangles can hit the factor cap before reaching the requested pixel size. Supply sufficient base geometry and raise the cap deliberately.
+This is not the complete Nanite tessellator: there is no persistent global patch queue, patch-level HZB culling, scene-wide microtriangle budget, software dicing raster path, displacement-aware LOD error baking, displacement mips or animated displacement history. Unlike Nanite's multi-dispatch global split queue, this implementation keeps bounded recursive work inside each task. Very large source triangles can still reach the depth/leaf-rate budget before the requested pixel size (up to 64 segments per source edge at depth 3 and factor 8).
 
 BLAS/CLAS/TLAS still represent the **base mesh**. Ray-traced shadows, reflections and reference path tracing do not intersect the displaced surface. The displacement demo omits the ray-shadow pass and disables Deferred's fallback ray-shadow queries (`debugDisableShadows=true`) for this reason. Resident alpha-masked rasterization retains its coverage test; streamed masked displacement is rejected explicitly at binding creation. Stream pages without the required attributes retain ordinary geometry in the low-level shader fallback. Height decoding/UV0/texture-budget failures are reported at binding creation.
 
@@ -67,7 +78,18 @@ BLAS/CLAS/TLAS still represent the **base mesh**. Ray-traced shadows, reflection
 
 `RhiRendering.tessellation_displacement_render` compares GPU displacement against explicitly baked geometry, base color and flat microtriangle normals. It covers resident and streamed pages, perspective/orthographic views, both depth conventions, mirrored instances, unbinned drawing, and capped/adaptive independent edge factors (64 image comparisons); it also changes and restores material magnitude without rebuilding the graph. This oracle caught a repeat-seam sampling defect: using nonnegative integer texel coordinates avoids negative-remainder behavior at UV=0/1.
 
-Material scene tests cover scalar validation and document round trips. Final validation on RTX 5060 / 610.47:
+`RhiRendering.tessellation_recursive_render` adds **192 comparisons** using an independent CPU recursive baker, at depths 1, 2 and 3, with both saturated and adaptive rates. It also exercises live material disable/restore on the streamed recursive path. `RhiRendering.tessellation_recursive_topology` reads actual GPU leaves from **512 roots**: all eight split masks, depth budgets 0..3, near-plane crossing, exact positive domain coverage, paired interior edges/rates, identical rational samples on shared source edges, and poison-guarded unused output slots. It reaches the full 64-leaf budget. Runtime render tests exercise the depth-specialized task payload and mesh interfaces with Vulkan validation.
+
+Recursive extension results on RTX 5060 / 610.47 (2026-09-16):
+
+- Release builds completed for Metallic, MetallicGPUDrivenSample and MetallicRhiTests. The 256 image comparisons, GPU recursive topology probe and original LUT coverage test passed with Vulkan validation.
+- Updating indirect arguments exposed two old standalone test allocations that still held a single command. Both GPU and readback allocations now hold both records; the CPU/GPU frontier oracle additionally verifies the tessellation dispatch. Frontier, stream traversal-demand and standalone stream-pass smoke tests passed with validation after this correction.
+- **Validation limitation:** `meshlet_lod_stream_scene_runtime_cut` and `render_graph_gpu_driven_mixed_producer_render` intermittently fault inside the local Vulkan 1.4.341 validation layer during `vkCmdBindResourceHeapEXT`, with tessellation disabled. An exception trace and link map identify `DescriptorHeap::bind` as the caller; the temporary tracing code is not retained. These two cases and three other stream regressions pass without the layer. The full validation-enabled suite is **not** reported as passing. Traces and failed runs remain under `.cache/tessellation/recursive-map.log`, `recursive-repeat.log` and `recursive-final.log`.
+- The example ran recursive displacement through deferred lighting, DLSS-SR and exposure. Its 1198x438 FinalBlit capture is `.cache/tessellation/recursive-demo-capture/RecursiveTessellation.png`.
+- The unchanged 3000-frame MiniZorah route passed with tessellation disabled. Its final cut remains 19,394 active groups / 162,989 selected clusters; early HW/SW 26,806/19,172 and late 200/361. No fallback instances, invalid requests, load failures or visible over-target refinements; maximum visible error remains 1.499928 px.
+- Return-hold VBuffer GPU P50/P95 are 4.137/4.687 ms, versus 8.476/11.495 ms in the earlier run. Background GPU work differed substantially; this is **not a measured speedup from recursive tessellation**. All phases and process utilization samples are summarized in [GPUDrivenRecursiveTessellationResults.json](GPUDrivenRecursiveTessellationResults.json). The replay script again reclaimed only its own process after the completed report/terminal pass result stalled at teardown (`forcedCleanupAfterCapture=true`, process exit -1).
+
+Material scene tests cover scalar validation and document round trips. The **initial bounded implementation** was validated as follows:
 
 - Release builds: Metallic, MetallicGPUDrivenSample, MetallicRhiTests and MetallicSceneTests.
 - 13 focused RHI tests passed with Vulkan validation: topology, displaced render oracle, wave distribution, stream cut/budget, hybrid raster equivalence, mixed producer, graph sample loading and PSO cache invalidation. After extending the oracle to adaptive factors, both tessellation tests passed again (64 comparisons plus live edit/restore).

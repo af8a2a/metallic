@@ -19,13 +19,14 @@ inline float tessellationDisplacementBound(std::span<const scene::RenderMaterial
 }
 
 inline std::vector<uint32_t> buildTessellationData(std::span<const scene::RenderMaterial> materials,
-    std::span<const uint32_t> textureDescriptors, float edgePixels, uint32_t maxFactor)
+    std::span<const uint32_t> textureDescriptors, float edgePixels, uint32_t maxFactor, uint32_t maxSplitDepth = 2)
 {
     std::vector<uint32_t> data(16 + materials.size() * 16);
     data[0] = static_cast<uint32_t>(data.size());
     data[1] = static_cast<uint32_t>(materials.size());
     data[2] = std::bit_cast<uint32_t>(std::clamp(edgePixels, 1.0f, 256.0f));
     data[3] = std::clamp(maxFactor, 1u, kTessellationMaxFactor);
+    data[4] = std::min(maxSplitDepth, 3u);
     for (size_t i = 0; i < materials.size(); ++i) {
         const auto& material = materials[i];
         const auto& texture = material.displacementTexture;

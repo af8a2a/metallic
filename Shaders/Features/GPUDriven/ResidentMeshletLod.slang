@@ -109,8 +109,8 @@ void residentLodArgumentsMain(uint lane : SV_GroupIndex, uniform LodPush push)
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.arguments, 0));
     uint count = g_LodPrefix[127];
     output[0] = uint4(count, push.capacity, push.count, 0);
-    for (uint i = 0u; i < 2u; ++i) {
-        uint groups = i == 0u ? count : (count + 31u) / 32u;
+    for (uint i = 0u; i < 3u; ++i) {
+        uint groups = i == 0u ? count : (i == 1u ? (count + 31u) / 32u : count * 8u);
         arguments[i * 3u] = min(groups, 65535u);
         arguments[i * 3u + 1u] = max(1u, (groups + 65534u) / 65535u);
         arguments[i * 3u + 2u] = 1u;

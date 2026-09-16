@@ -123,29 +123,3 @@ float3 tessNormal(float3 n, float3 fallback)
 {
     return dot(n, n) > 1e-20 ? normalize(n) : fallback;
 }
-
-// Canonical evaluation of boundary vertices gives shared edges identical
-// floating point positions in either winding, including odd edge rates.
-void tessDomain(inout float3 bary, uint3 rates, float3 p[3], float3 n[3], float2 uv[3],
-    out float3 position, out float3 normal, out float2 texcoord)
-{
-    uint zero = bary.z < 1e-7 ? 2u : (bary.x < 1e-7 ? 0u : (bary.y < 1e-7 ? 1u : 3u));
-    if (zero < 3u) {
-        uint a = (zero + 1u) % 3u, b = (zero + 2u) % 3u;
-        uint rate = rates[a];
-        uint step = uint(round(bary[b] * rate));
-        bool swap = p[a].x > p[b].x || (p[a].x == p[b].x &&
-            (p[a].y > p[b].y || (p[a].y == p[b].y && p[a].z > p[b].z)));
-        if (swap) { uint t = a; a = b; b = t; step = rate - step; }
-        float t = float(step) / float(rate);
-        bary = float3(0); bary[a] = 1.0 - t; bary[b] = t;
-        position = lerp(p[a], p[b], t);
-        normal = lerp(n[a], n[b], t);
-        texcoord = lerp(uv[a], uv[b], t);
-    } else {
-        position = p[0] * bary.x + p[1] * bary.y + p[2] * bary.z;
-        normal = n[0] * bary.x + n[1] * bary.y + n[2] * bary.z;
-        texcoord = uv[0] * bary.x + uv[1] * bary.y + uv[2] * bary.z;
-    }
-    normal = tessNormal(normal, tessNormal(cross(p[1] - p[0], p[2] - p[0]), float3(0, 1, 0)));
-}

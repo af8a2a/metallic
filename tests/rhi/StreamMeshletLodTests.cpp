@@ -528,7 +528,8 @@ private:
         const uint64_t allocatedStateBytes = large ? (65535ull * 64 + 67) * sizeof(uint32_t) : logicalStateBytes;
         const uint64_t sizes[] = {strides[Instance], sizeof(primitive), groups.size() * sizeof(groups[0]), strides[Params],
             topology.size() * 4, allocatedStateBytes, kGroupCount * sizeof(StreamPageTableEntry),
-            kRequestWords * 4, kGroupCount * sizeof(MeshletStreamGpuActiveGroup), strides[Header], strides[Arguments], 64,
+            kRequestWords * 4, kGroupCount * sizeof(MeshletStreamGpuActiveGroup), strides[Header],
+            kMeshletStreamDrawIndirectCommandCount * strides[Arguments], 64,
             (kMeshletStreamDemandStatsWords + (kGroupCount + tiles.size() + 31) / 32) * 4, demandRoots.size() * sizeof(MeshletStreamGpuTraversalWorkItem)};
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Stream LOD frontier regression",
@@ -827,6 +828,8 @@ private:
             std::memcpy(requests.data(), mapped + offsets[2], sizes[Requests]);
             MeshletStreamGpuDrawIndirect arguments;
             std::memcpy(&arguments, mapped + offsets[3], sizeof(arguments));
+            MeshletStreamGpuDrawIndirect tessellationArguments;
+            std::memcpy(&tessellationArguments, mapped + offsets[3] + sizeof(arguments), sizeof(tessellationArguments));
             std::vector<uint32_t> state(logicalStateBytes / sizeof(uint32_t));
             std::memcpy(state.data(), mapped + offsets[4], logicalStateBytes);
             std::array<uint32_t, kMeshletStreamDemandStatsWords> demandStats{};
@@ -920,6 +923,12 @@ private:
                 return RhiTestResult::fail("CPU/GPU stream cut, requests, capacity fallback or indirect arguments mismatch in case " +
                     caseLabel + ": expected " + std::to_string(expected.selectedClusters.size()) +
                     " clusters, actual " + std::to_string(actual.size()));
+            }
+            const uint32_t tessellationTasks = header.activeGroupCount * 16;
+            if (tessellationArguments.groupCountX != std::min(tessellationTasks, 65535u) ||
+                tessellationArguments.groupCountY != std::max(1u, (tessellationTasks + 65534u) / 65535u) ||
+                tessellationArguments.groupCountZ != 1) {
+                return RhiTestResult::fail("Recursive tessellation indirect arguments mismatch: " + caseLabel);
             }
             const uint32_t stats = 4 + kGroupCount * 2;
             if (useBvh && !cooperative && (state[stats] > kGroupCount || state[stats + 1] != expectedState.visitedBvhNodes ||

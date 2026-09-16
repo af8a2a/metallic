@@ -2942,6 +2942,12 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
                 draw.groupCountY = 1u;
                 draw.groupCountZ = 1u;
                 drawIndirect[0] = draw;
+                // Separate tessellation arguments: eight 16-triangle tasks per
+                // cluster instead of two ordinary 64-triangle mesh workgroups.
+                uint tessGroups = (draw.groupCountX / kMeshletTriangleChunkCount) * 8u;
+                draw.groupCountX = min(tessGroups, 65535u);
+                draw.groupCountY = max(1u, (tessGroups + 65534u) / 65535u);
+                drawIndirect[1] = draw;
 
                 GPUDrivenStreamAssetTraversalHeader traversal;
                 traversal.readCounter = 0u;
@@ -2973,6 +2979,12 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
             draw.groupCountY = 1u;
             draw.groupCountZ = 1u;
             drawIndirect[0] = draw;
+            // Separate tessellation arguments: eight 16-triangle tasks per
+            // cluster instead of two ordinary 64-triangle mesh workgroups.
+            uint tessGroups = (draw.groupCountX / kMeshletTriangleChunkCount) * 8u;
+            draw.groupCountX = min(tessGroups, 65535u);
+            draw.groupCountY = max(1u, (tessGroups + 65534u) / 65535u);
+            drawIndirect[1] = draw;
         }
         return;
     }
