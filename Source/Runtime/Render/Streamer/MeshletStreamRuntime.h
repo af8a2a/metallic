@@ -57,6 +57,7 @@ inline constexpr const char* kMeshletStreamUpdateEntryPoint = "gpuDrivenStreamAs
 inline constexpr const char* kMeshletStreamTraversalEntryPoint = "gpuDrivenStreamAssetTraversalMain";
 inline constexpr const char* kMeshletStreamActiveBuildEntryPoint = "gpuDrivenStreamAssetBuildActiveMain";
 inline constexpr const char* kMeshletStreamCooperativeBuildEntryPoint = "streamCooperativeLodMain";
+inline constexpr const char* kMeshletStreamDemandEntryPoint = "streamDistributedDemandMain";
 inline constexpr const char* kMeshletStreamBlasInputEntryPoint = "gpuDrivenStreamAssetBuildBlasInputMain";
 inline constexpr const char* kMeshletStreamTlasInputEntryPoint = "gpuDrivenStreamAssetBuildTlasInputMain";
 
@@ -85,6 +86,11 @@ inline constexpr uint32_t kMeshletStreamActiveBuildPrefixPhase = 6;
 inline constexpr uint32_t kMeshletStreamActiveBuildEmitPhase = 7;
 inline constexpr uint32_t kMeshletStreamActiveBuildInitializeLodStatePhase = 8;
 inline constexpr uint32_t kMeshletStreamActiveBuildPrefetchPhase = 9;
+inline constexpr uint32_t kMeshletStreamActiveBuildClearPhase = 10;
+inline constexpr uint32_t kMeshletStreamActiveBuildMaskPhase = 11;
+inline constexpr uint32_t kMeshletStreamActiveBuildDemandResetPhase = 12;
+inline constexpr uint32_t kMeshletStreamActiveBuildDemandPhase = 13;
+inline constexpr uint32_t kMeshletStreamDemandStatsWords = 32;
 inline constexpr uint32_t kMeshletStreamBlasInputResetPhase = 0;
 inline constexpr uint32_t kMeshletStreamBlasInputCountPhase = 1;
 inline constexpr uint32_t kMeshletStreamBlasInputSetupPhase = 2;
@@ -305,6 +311,13 @@ struct MeshletStreamGpuParams {
     float renderViewport[4] = {};
     float renderClipOrtho[4] = {};
     float prefetchParams[4] = {}; // Frustum expansion, LOD error scale, enabled, reserved.
+    uint32_t demandBuffer = UINT32_MAX;
+    uint32_t demandTaskOffset = 0; // Tile root indices in LOD topology, grouped by instance.
+    uint32_t demandTaskCount = 0;
+    uint32_t splitFrontier = 0;
+    uint32_t demandInstanceOffsetsOffset = 0; // Group/tile bit bases and task start/count per instance.
+    uint32_t demandStatsBuffer = UINT32_MAX;
+    uint32_t demandPadding[2] = {};
 };
 
 struct MeshletStreamGpuRasterBindings {
@@ -406,7 +419,7 @@ static_assert(sizeof(MeshletStreamGpuBlasHeader) == 32);
 static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGpuParams) == 384);
+static_assert(sizeof(MeshletStreamGpuParams) == 416);
 static_assert(sizeof(MeshletStreamGpuRasterBindings) == 80);
 static_assert(sizeof(MeshletStreamUserPush) == 124);
 
@@ -439,6 +452,8 @@ struct MeshletStreamRuntimeDesc {
     uint64_t maxFallbackBlasBytes = 512ull * 1024ull * 1024ull;
     bool screenSpacePagePriority = true;
     bool viewDrivenPageDemand = true;
+    bool distributedPageDemand = true; // Ordered safe cut consumes the independent demand bitmap.
+    uint32_t distributedDemandMinGroups = 65536; // Zero forces distribution; otherwise use completed request feedback.
     bool measurePageLatency = true;
     bool lowLatencyRequests = true;
     bool completionDrivenUploads = true;
@@ -605,6 +620,7 @@ private:
     std::unique_ptr<Buffer> groupBuffer_;
     std::unique_ptr<Buffer> lodTopologyBuffer_;
     std::unique_ptr<Buffer> lodStateBuffer_;
+    std::unique_ptr<Buffer> demandBuffer_;
     std::unique_ptr<Buffer> nodeBuffer_;
     std::unique_ptr<Buffer> drawIndirectBuffer_;
     std::unique_ptr<Buffer> traversalHeaderBuffer_;
@@ -653,6 +669,11 @@ private:
     BindlessHandle groupHandle_;
     BindlessHandle lodTopologyHandle_;
     BindlessHandle lodStateHandle_;
+    BindlessHandle demandHandle_;
+    uint32_t demandTaskOffset_ = 0;
+    uint32_t demandTaskCount_ = 0;
+    uint32_t demandInstanceOffsetsOffset_ = 0;
+    ResourceState demandBufferState_ = ResourceState::Undefined;
     uint32_t lodInstanceOffsetsOffset_ = 0;
     ResourceState lodStateBufferState_ = ResourceState::Undefined;
     BindlessHandle nodeHandle_;
@@ -696,6 +717,10 @@ private:
     uint32_t maxGpuPageRequests_ = 0;
     bool screenSpacePagePriority_ = false;
     bool viewDrivenPageDemand_ = false;
+    bool distributedPageDemand_ = false;
+    bool currentFrameDistributedDemand_ = true;
+    uint32_t distributedDemandMinGroups_ = 65536;
+    uint32_t recentDemandGroupTests_ = UINT32_MAX;
     bool prefetchPages_ = false;
     bool currentFramePrefetch_ = false;
     uint32_t recentGpuRequestCount_ = 0;

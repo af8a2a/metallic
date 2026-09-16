@@ -256,6 +256,8 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
             512ull * 1024ull * 1024ull),
         .screenSpacePagePriority = boolProperty(properties, "screenSpacePagePriority", true),
         .viewDrivenPageDemand = boolProperty(properties, "viewDrivenPageDemand", true),
+        .distributedPageDemand = boolProperty(properties, "distributedPageDemand", true),
+        .distributedDemandMinGroups = uintProperty(properties, "distributedDemandMinGroups", 65536u),
         .measurePageLatency = boolProperty(properties, "measurePageLatency", true),
         .lowLatencyRequests = boolProperty(properties, "lowLatencyRequests", true),
         .completionDrivenUploads = boolProperty(properties, "completionDrivenUploads", true),

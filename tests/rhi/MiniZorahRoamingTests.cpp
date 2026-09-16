@@ -51,8 +51,8 @@ public:
     std::map<std::string, std::unique_ptr<Buffer>> copies;
     Device* device = nullptr;
     std::unique_ptr<TimestampQueryPool> timestamps;
-    static constexpr std::array<std::string_view, 22> stages = {"BeforeStreamUpdates", "AfterStreamUpdates",
-        "AfterStreamFrontier", "AfterStreamPrefix", "AfterStreamEmit", "AfterStreamPrefetch", "AfterTraversal", "AfterEarlyCull",
+    static constexpr std::array<std::string_view, 26> stages = {"BeforeStreamUpdates", "AfterStreamUpdates",
+        "AfterStreamPriorityClear", "AfterStreamStateClear", "AfterStreamDemand", "AfterStreamFrontier", "AfterStreamMask", "AfterStreamPrefix", "AfterStreamEmit", "AfterStreamPrefetch", "AfterTraversal", "AfterEarlyCull",
         "AfterStreamEarlyCandidates", "AfterStreamEarlyClusterCull", "AfterStreamEarlyClassify", "AfterStreamEarlyBins", "AfterStreamEarlyRaster", "AfterStreamEarlyResolve",
         "AfterLateCull", "AfterStreamLateCandidates", "AfterStreamLateClusterCull", "AfterStreamLateClassify", "AfterStreamLateBins", "AfterStreamLateRaster", "AfterStreamLateResolve", "AfterPass"};
     void compiled(Json) override {}
@@ -83,6 +83,8 @@ public:
                 size = resource.size != 0 ? resource.size : resource.buffer->desc().size; key = "groups";
             } else if (checkpoint == "AfterTraversal" && resource.id == "streaming.GPUDriven.lodState") {
                 size = resource.size != 0 ? resource.size : resource.buffer->desc().size; key = "lodState";
+            } else if (checkpoint == "AfterTraversal" && resource.id == "streaming.GPUDriven.demandStats") {
+                size = resource.size; key = "demandStats";
             } else if (checkpoint == "AfterEarlyCull" && resource.id.ends_with(".instanceVisibility")) {
                 size = resource.size != 0 ? resource.size : resource.buffer->desc().size; key = "instances";
             } else if (checkpoint == "AfterLateCull" && resource.id.ends_with(".instanceVisibility")) {
@@ -149,7 +151,7 @@ public:
             checkRoam(values[i].available, "Incomplete checkpoint timestamp");
             if (i != 0) { result[std::string(stages[i])] = timestamps->durationMilliseconds(values[i-1].value, values[i].value); }
         }
-        result["afterTraversalToEnd"] = timestamps->durationMilliseconds(values[6].value, values.back().value);
+        result["afterTraversalToEnd"] = timestamps->durationMilliseconds(values[std::find(stages.begin(), stages.end(), "AfterTraversal") - stages.begin()].value, values.back().value);
         return result;
     }
 };
@@ -205,7 +207,7 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
     const auto lateInstanceStates = observer.read<uint32_t>("lateInstances");
     std::vector<std::map<uint32_t, uint32_t>> selected(asset.instanceCount());
     const auto lodState = observer.read<uint32_t>("lodState");
-    uint64_t visitedNodes = 0, testedGroups = 0, flatTileTests = 0;
+    uint64_t visitedNodes = 0, testedGroups = 0, flatTileTests = 0, demandSeedRootTests = 0;
     uint64_t base = uint64_t(asset.instanceCount()) * 4;
     std::vector<uint32_t> flatTiles(asset.primitiveCount());
     for (uint32_t p = 0; p < asset.primitiveCount(); ++p) {
@@ -224,8 +226,21 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
         checkRoam(sparse + 3 < lodState.size(), "Traversal stats outside state");
         visitedNodes += lodState[sparse + 1];
         testedGroups += lodState[sparse + 2];
+        demandSeedRootTests += lodState[sparse + 3];
         if (lodState[sparse + 1] != 0) { flatTileTests += flatTiles[instance.primitiveIndex]; }
         base += 4ull + count * 3ull;
+    }
+    Json demandStats;
+    if (observer.copies.contains("demandStats")) {
+        const auto values = observer.read<uint32_t>("demandStats");
+        uint64_t histogramCount = 0;
+        for (size_t bin = 8; bin < 16; ++bin) { histogramCount += values[bin]; }
+        checkRoam(values[1] <= observer.latest.at("demandTaskCount").get<uint32_t>() && values[1] == values[16] && histogramCount == values[1] &&
+            values[4] <= 8 && values[3] <= values[7], "Incomplete or unbounded distributed demand tasks");
+        demandStats = {{"distributed", values[17] != 0}, {"groupTestsForPolicy", values[18]},
+            {"tasks", values[1]}, {"seedRootTests", demandSeedRootTests}, {"visitedNodes", values[2]}, {"testedGroups", values[3]},
+            {"maxNodesPerTask", values[4]}, {"maxGroupsPerTask", values[5]}, {"nonemptyTasks", values[6]},
+            {"waveSlots", values[7]}, {"groupCountHistogram", std::vector<uint32_t>(values.begin() + 8, values.begin() + 16)}};
     }
     uint64_t clusters = 0, fineGroups = 0;
     uint64_t earlyCandidates = 0, lateCandidateLimit = 0, recoveredCandidates = 0;
@@ -340,7 +355,7 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
         {"candidateCapacity", early[5]}, {"earlyHardware", early[0]},
         {"earlySoftware", early[4]}, {"lateHardware", late[0]}, {"lateSoftware", late[4]},
         {"capacityFallback", header.overflowCount != 0}, {"fallbackInstances", header.padding2},
-        {"traversalVisitedNodes", visitedNodes}, {"traversalTestedGroups", testedGroups},
+        {"traversalVisitedNodes", visitedNodes}, {"traversalTestedGroups", testedGroups}, {"demand", demandStats},
         {"traversalFlatTileBaseline", flatTileTests}, {"overTargetRefinements", overTarget},
         {"nearPlaneUnboundedRefinements", unbounded}, {"maxFiniteRefinementErrorPixels", maxFiniteError},
         {"visibleOverTargetRefinements", visibleOverTarget}, {"visibleUnboundedRefinements", visibleUnbounded},
@@ -449,11 +464,13 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         props["maxResidentBytes"] = budget;
         props["screenSpacePagePriority"] = setting("METALLIC_MINIZORAH_PAGE_PRIORITY", 1) != 0;
         props["viewDrivenPageDemand"] = setting("METALLIC_MINIZORAH_VIEW_DEMAND", 1) != 0;
+        props["distributedPageDemand"] = setting("METALLIC_MINIZORAH_DISTRIBUTED_DEMAND", 1) != 0;
         props["prefetchPages"] = setting("METALLIC_MINIZORAH_PREFETCH", 1) != 0;
         props["lowLatencyRequests"] = setting("METALLIC_MINIZORAH_LOW_LATENCY", 1) != 0;
         props["completionDrivenUploads"] = setting("METALLIC_MINIZORAH_COMPLETION_UPLOADS", 1) != 0;
         report["screenSpacePagePriority"] = props["screenSpacePagePriority"];
         report["viewDrivenPageDemand"] = props["viewDrivenPageDemand"];
+        report["distributedPageDemand"] = props["distributedPageDemand"];
         report["prefetchPages"] = props["prefetchPages"];
         report["lowLatencyRequests"] = props["lowLatencyRequests"];
         report["completionDrivenUploads"] = props["completionDrivenUploads"];
@@ -718,8 +735,13 @@ public:
             }
             report["rasterQueues"] = {{"asyncSoftwareRaster", props.value("asyncSoftwareRaster", true)},
                 {"asyncLateRaster", props.value("asyncLateRaster", false)}};
-            for (const char* key : {"screenSpacePagePriority", "viewDrivenPageDemand", "prefetchPages",
+            for (const char* key : {"screenSpacePagePriority", "viewDrivenPageDemand", "distributedPageDemand", "prefetchPages",
                      "lowLatencyRequests", "completionDrivenUploads", "measurePageLatency"}) { props[key] = true; }
+            props["distributedPageDemand"] = setting("METALLIC_MINIZORAH_DISTRIBUTED_DEMAND", 1) != 0;
+            if (const char* demand = std::getenv("METALLIC_MINIZORAH_DISTRIBUTED_DEMAND"); demand && std::string_view(demand) == "1") {
+                props["distributedDemandMinGroups"] = 0u;
+            }
+            props["maxTraversalWorkers"] = setting("METALLIC_MINIZORAH_DEMAND_WORKERS", props.value("maxTraversalWorkers", 1024u));
             if (!replay.is_null()) {
                 auto viewProperties = graph.viewProperties();
                 viewProperties["camera"] = replay.at("originalCamera");

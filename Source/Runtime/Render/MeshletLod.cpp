@@ -226,6 +226,32 @@ bool buildMeshletLodTiles(std::span<const MeshletLodGroupRecord> groups,
     return true;
 }
 
+std::vector<uint32_t> buildMeshletLodDemandRoots(std::span<const MeshletLodBvhNode> tiles,
+    uint32_t maxSubtreeNodes)
+{
+    std::vector<uint32_t> roots;
+    for (uint32_t node = 0; node < tiles.size();) {
+        if (tiles[node].escapeIndex - node <= std::max(maxSubtreeNodes, 1u)) {
+            roots.push_back(node);
+            node = tiles[node].escapeIndex;
+        } else {
+            ++node;
+        }
+    }
+    return roots;
+}
+
+std::vector<uint32_t> buildMeshletLodTileParents(std::span<const MeshletLodBvhNode> tiles)
+{
+    std::vector<uint32_t> parents(tiles.size(), UINT32_MAX), stack;
+    for (uint32_t node = 0; node < tiles.size(); ++node) {
+        while (!stack.empty() && tiles[stack.back()].escapeIndex <= node) { stack.pop_back(); }
+        if (!stack.empty()) { parents[node] = stack.back(); }
+        if (tiles[node].groupCount == 0) { stack.push_back(node); }
+    }
+    return parents;
+}
+
 bool buildMeshletLodMetadata(const scene::RenderPrimitive& primitive,
     std::vector<MeshletLodGroupRecord>& groups, std::string& reason)
 {

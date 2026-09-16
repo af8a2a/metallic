@@ -43,6 +43,11 @@ static const uint kActiveBuildPhasePrefix = 6u;
 static const uint kActiveBuildPhaseEmit = 7u;
 static const uint kActiveBuildPhaseInitializeLodState = 8u;
 static const uint kActiveBuildPhasePrefetch = 9u;
+static const uint kActiveBuildPhaseClear = 10u;
+static const uint kActiveBuildPhaseMask = 11u;
+static const uint kActiveBuildPhaseDemandReset = 12u;
+static const uint kActiveBuildPhaseDemand = 13u;
+static const uint kStreamDemandStatsWords = 32u;
 static const uint kBlasInputPhaseReset = 0u;
 static const uint kBlasInputPhaseCount = 1u;
 static const uint kBlasInputPhaseSetup = 2u;
@@ -438,6 +443,13 @@ struct GPUDrivenStreamAssetParams
     float4 renderViewport;
     float4 renderClipOrtho;
     float4 prefetchParams;
+    uint demandBuffer;
+    uint demandTaskOffset;
+    uint demandTaskCount;
+    uint splitFrontier;
+    uint demandInstanceOffsetsOffset;
+    uint demandStatsBuffer;
+    uint2 demandPadding;
 };
 
 struct GPUDrivenStreamAssetVertexOutput
@@ -2288,6 +2300,189 @@ void emitStreamLodFrontier(
     }
 }
 
+// Locate the source of a flattened child item. Every lane participates in the
+// shuffle, including empty sources and the final partially occupied batch.
+// This uses subgroup lane IDs, not an assumed mapping from workgroup lanes.
+uint streamWorkSource(uint prefix, uint item)
+{
+    uint source = 0u;
+    for (uint step = WaveGetLaneCount() >> 1u; step != 0u; step >>= 1u) {
+        uint candidate = source + step;
+        uint boundary = WaveReadLaneAt(prefix, min(candidate, WaveGetLaneCount() - 1u));
+        if (candidate < WaveGetLaneCount() && boundary <= item) { source = candidate; }
+    }
+    return source;
+}
+
+// Bounded subtrees form a global queue across visible instances. The preceding
+// clear/seed dispatch publishes all task payloads before workers claim them.
+// Safe-cut state is computed later, after a dispatch barrier, in the original
+// parent-first order. There is no producer polling inside this dispatch.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_GroupIndex,
+    uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+    GPUDrivenStreamAssetParams params = paramsHandle[0];
+    if (params.demandBuffer == 0xffffffffu) { return; }
+    DescriptorHandle<RWStructuredBuffer<uint>> demand =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + params.demandBuffer, 0));
+    if (push.activeBuildPhase == kActiveBuildPhaseDemandReset) {
+        RWStructuredBuffer<uint> words = demand;
+        uint size, stride;
+        words.GetDimensions(size, stride);
+        uint index = (workgroup.x + workgroup.y * 65535u) * 64u + lane;
+        if (index < size) { demand[index] = 0u; }
+        return;
+    }
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instances =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(push.bufferShaderIndexBase + push.instanceBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>> primitives =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(uint2(push.bufferShaderIndexBase + push.primitiveBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>> groups =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(uint2(push.bufferShaderIndexBase + push.groupBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint>> topology =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + params.lodTopologyBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTable =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.bufferShaderIndexBase + push.pageTableBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> requests =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.requestBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>> tasks =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>>(uint2(push.bufferShaderIndexBase + push.traversalWorkBuffer, 0));
+    uint taskCount = demand[16];
+    float3 delta = params.center.xyz - params.eye.xyz;
+    float3 forward = dot(delta, delta) > 1e-12 ? normalize(delta) : float3(0.0, 0.0, -1.0);
+    float4 eye = float4(params.eye.xyz, params.clipOrtho.x);
+    float4 direction = float4(forward, params.upProjection.w);
+    float4 projection = float4(params.viewport.z, tan(params.viewport.w * 0.5), params.clipOrtho.z, params.lodPixelError);
+    uint manual = params.enableGpuLodSelection != 0u ? 0xffffffffu : params.selectedLodLevel;
+    uint processed = 0u, visitedTotal = 0u, testedTotal = 0u, maxVisited = 0u, maxTested = 0u, nonempty = 0u, slots = 0u;
+    uint histogram[8];
+    [unroll] for (uint bin = 0u; bin < 8u; ++bin) { histogram[bin] = 0u; }
+    uint instanceIndex = 0u, tile = 0u, end = 0u, visited = 0u, tested = 0u;
+    bool haveTask = false, exhausted = false;
+    GPUDrivenStreamAssetInstance instance = {};
+    GPUDrivenStreamAssetPrimitive primitive = {};
+    for (;;) {
+        uint firstGroup = 0u, count = 0u, leaf = 0u;
+        // Fill productive sources before flattening their children. Refill
+        // empty lanes across task boundaries; cap the search so one lane cannot
+        // hold a ready wave while walking the remaining empty task tail.
+        for (uint refill = 0u; refill < 8u && WaveActiveAnyTrue(count == 0u && !exhausted); ++refill) {
+            bool needTask = count == 0u && !exhausted && tile == end;
+            uint claims = WaveActiveCountBits(needTask);
+            uint rank = WavePrefixCountBits(needTask);
+            uint firstTask = 0u;
+            if (WaveIsFirstLane() && claims != 0u) { InterlockedAdd(demand[0], claims, firstTask); }
+            firstTask = WaveReadLaneFirst(firstTask);
+            if (needTask) {
+                if (haveTask) {
+                    visitedTotal += visited; testedTotal += tested;
+                    maxVisited = max(maxVisited, visited); maxTested = max(maxTested, tested);
+                    nonempty += tested != 0u ? 1u : 0u;
+                    uint bin = tested == 0u ? 0u : tested <= 8u ? 1u : min(7u, uint(firstbithigh(tested - 1u)) - 1u);
+                    ++histogram[bin];
+                }
+                uint task = firstTask + rank;
+                haveTask = task < taskCount;
+                exhausted = !haveTask;
+                visited = 0u; tested = 0u;
+                if (haveTask) {
+                    ++processed;
+                    GPUDrivenStreamAssetTraversalWorkItem work = tasks[task];
+                    instanceIndex = work.instanceIndex;
+                    instance = instances[instanceIndex];
+                    primitive = primitives[instance.primitiveIndex];
+                    tile = work.nodeIndex;
+                    end = topology[primitive.lodTileOffset + 1u + tile * 10u + 7u];
+                }
+            }
+            if (count == 0u && !exhausted) {
+                while (tile < end) {
+                    uint offset = primitive.lodTileOffset + 1u + tile * 10u;
+                    ++visited;
+                    if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual)) {
+                        tile = topology[offset + 7u];
+                        continue;
+                    }
+                    ++tile;
+                    count = topology[offset + 9u];
+                    if (count != 0u) {
+                        leaf = tile - 1u;
+                        firstGroup = primitive.groupOffset + topology[offset + 8u] + count - 1u;
+                        break;
+                    }
+                }
+                tested += count;
+            }
+        }
+        if (!WaveActiveAnyTrue(count != 0u) && WaveActiveAllTrue(exhausted)) { break; }
+        uint prefix = WavePrefixSum(count);
+        uint total = WaveActiveSum(count);
+        for (uint batch = 0u; batch < total; batch += WaveGetLaneCount()) {
+            uint item = batch + WaveGetLaneIndex();
+            uint source = streamWorkSource(prefix, item);
+            uint groupIndex = WaveReadLaneAt(firstGroup, source) - (item - WaveReadLaneAt(prefix, source));
+            uint owner = WaveReadLaneAt(instanceIndex, source);
+            uint ownerLeaf = WaveReadLaneAt(leaf, source);
+            if (item < total) {
+                GPUDrivenStreamAssetGroup group = groups[groupIndex];
+                GPUDrivenStreamAssetInstance ownerInstance = instances[owner];
+                bool wanted = (group.flags & 1u) != 0u ||
+                    (meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
+                        group.maxQuadricError, group.lodLevel, group.flags, ownerInstance.world0, ownerInstance.world1,
+                        ownerInstance.world2, ownerInstance.world3, eye, direction, projection, manual) &&
+                        streamRefinementDemandVisible(group, ownerInstance, params));
+                if (wanted) {
+                    GPUDrivenStreamAssetPrimitive ownerPrimitive = primitives[ownerInstance.primitiveIndex];
+                    uint groupBits = topology[params.demandInstanceOffsetsOffset + owner * 4u];
+                    uint bit = groupBits + groupIndex - ownerPrimitive.groupOffset;
+                    InterlockedOr(demand[kStreamDemandStatsWords + (bit >> 5u)], 1u << (bit & 31u));
+                    // Publish the demand path once per leaf. Other lanes may
+                    // stop at an already marked ancestor: its winner will
+                    // finish propagating before the dispatch barrier.
+                    uint tileBits = topology[params.demandInstanceOffsetsOffset + owner * 4u + 1u];
+                    uint parentTable = ownerPrimitive.lodTileOffset + 1u + topology[ownerPrimitive.lodTileOffset] * 10u;
+                    for (uint node = ownerLeaf; node != 0xffffffffu; node = topology[parentTable + node]) {
+                        uint nodeBit = tileBits + node;
+                        uint mask = 1u << (nodeBit & 31u), previous;
+                        InterlockedOr(demand[kStreamDemandStatsWords + (nodeBit >> 5u)], mask, previous);
+                        if ((previous & mask) != 0u) { break; }
+                    }
+                    if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) {
+                        markStreamPageDemand(pageTable, params, group.pageIndex);
+                    } else {
+                        uint table = requests[kStreamRequestPriorityTableOffsetWord];
+                        if (table != 0u) {
+                            float benefit = streamGroupScreenBenefit(group, ownerInstance, params, eye, direction, projection);
+                            InterlockedMax(requests[table + group.pageIndex], asuint(benefit));
+                        }
+                        requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
+                    }
+                }
+            }
+            if (WaveIsFirstLane()) { slots += WaveGetLaneCount(); }
+        }
+    }
+    // Reduce once per worker wave, not per task. Histograms count all admitted
+    // tasks and make the remaining task tail observable.
+    uint p = WaveActiveSum(processed), v = WaveActiveSum(visitedTotal), t = WaveActiveSum(testedTotal);
+    uint mv = WaveActiveMax(maxVisited), mt = WaveActiveMax(maxTested), n = WaveActiveSum(nonempty);
+    if (WaveIsFirstLane()) {
+        InterlockedAdd(demand[1], p); InterlockedAdd(demand[2], v); InterlockedAdd(demand[3], t);
+        InterlockedMax(demand[4], mv); InterlockedMax(demand[5], mt); InterlockedAdd(demand[6], n);
+        InterlockedAdd(demand[7], slots);
+        InterlockedAdd(demand[18], t);
+    }
+    if (workgroup.x == 0u && workgroup.y == 0u && lane == 0u) { demand[17] = 1u; }
+    [unroll] for (uint bin = 0u; bin < 8u; ++bin) {
+        uint value = WaveActiveSum(histogram[bin]);
+        if (WaveIsFirstLane()) { InterlockedAdd(demand[8u + bin], value); }
+    }
+}
+
 groupshared uint g_CooperativeWaveCounts[64];
 groupshared uint g_CooperativeRoots;
 groupshared uint g_CooperativeMissingRoots;
@@ -2309,6 +2504,30 @@ uint streamCooperativePrefix(uint value, uint lane, out uint total)
     }
     GroupMemoryBarrierWithGroupSync();
     return prefix;
+}
+
+void streamCooperativeMasks(StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
+    StructuredBuffer<uint> topology, RWStructuredBuffer<uint> state,
+    GPUDrivenStreamAssetPrimitive primitive, uint header, uint base, uint sparse,
+    uint count, bool ready, uint lane)
+{
+    uint selected = 0u;
+    if (ready) {
+        for (uint index = lane; index < count; index += 64u) {
+            uint localGroup = state[sparse + 4u + index];
+            GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + localGroup];
+            uint mask = 0u;
+            for (uint cluster = 0u; cluster < group.clusterCount; ++cluster) {
+                uint refined = topology[group.clusterRefinedOffset + cluster];
+                if (refined == kInvalidClusterIndex || state[base + (refined - primitive.groupOffset) * 2u] == 0u) { mask |= 1u << cluster; }
+            }
+            state[base + localGroup * 2u + 1u] = mask;
+            selected += mask != 0u ? 1u : 0u;
+        }
+    }
+    uint totalSelected;
+    streamCooperativePrefix(selected, lane, totalSelected);
+    if (lane == 0u) { state[header] = totalSelected; }
 }
 
 [shader("compute")]
@@ -2415,6 +2634,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         return;
     }
     if (primitive.lodTileOffset == 0xffffffffu) {
+        if (push.activeBuildPhase == kActiveBuildPhaseClear || push.activeBuildPhase == kActiveBuildPhaseMask) { return; }
         if (lane == 0u) {
             if (push.activeBuildPhase == kActiveBuildPhaseFrontier) {
                 buildStreamLodFrontier(instanceIndex, instances, primitives, groups, topology, state, pageTable, requests, params, push);
@@ -2426,6 +2646,11 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
     }
     uint base = topology[params.lodInstanceOffsetsOffset + instanceIndex];
     uint sparse = base + primitive.groupCount * 2u;
+    if (push.activeBuildPhase == kActiveBuildPhaseMask) {
+        streamCooperativeMasks(groups, topology, state, primitive, header, base, sparse,
+            state[sparse], state[header + 3u] != 0u, lane);
+        return;
+    }
     if (push.activeBuildPhase == kActiveBuildPhaseEmit) {
         if (state[header + 3u] == 0u || activeHeader[0].padding1 != 0u) { return; }
         uint count = state[sparse];
@@ -2466,16 +2691,20 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         return;
     }
 
-    uint previousCount = state[sparse];
-    GroupMemoryBarrierWithGroupSync();
-    for (uint index = lane; index < previousCount; index += 64u) {
-        uint localGroup = state[sparse + 4u + index];
-        state[base + localGroup * 2u] = 0u;
-        state[base + localGroup * 2u + 1u] = 0u;
+    if (push.activeBuildPhase == kActiveBuildPhaseClear || params.splitFrontier == 0u) {
+        uint previousCount = state[sparse];
+        GroupMemoryBarrierWithGroupSync();
+        for (uint index = lane; index < previousCount; index += 64u) {
+            uint localGroup = state[sparse + 4u + index];
+            state[base + localGroup * 2u] = 0u;
+            state[base + localGroup * 2u + 1u] = 0u;
+        }
+        if (lane < 4u) { state[header + lane] = 0u; state[sparse + lane] = 0u; }
     }
-    if (lane < 4u) { state[header + lane] = 0u; state[sparse + lane] = 0u; }
-    if (lane == 0u) { g_CooperativeRoots = 0u; g_CooperativeMissingRoots = 0u; }
-    AllMemoryBarrierWithGroupSync();
+    if (push.activeBuildPhase != kActiveBuildPhaseClear) {
+        if (lane == 0u) { g_CooperativeRoots = 0u; g_CooperativeMissingRoots = 0u; }
+        AllMemoryBarrierWithGroupSync();
+    }
     if (params.enableGpuLodSelection != 0u && push.rasterBindingsBuffer != 0xffffffffu) {
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindings =
             DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
@@ -2483,6 +2712,45 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
                 max(instance.boundsCenterRadius.w, 0.000001), currentStreamCamera(params))) { instance.visible = 0u; }
     }
     if (instance.visible == 0u) { return; }
+    if (push.activeBuildPhase == kActiveBuildPhaseClear) {
+        if (params.demandBuffer != 0xffffffffu) {
+            DescriptorHandle<RWStructuredBuffer<uint>> demand = DescriptorHandle<RWStructuredBuffer<uint>>(
+                uint2(push.bufferShaderIndexBase + params.demandBuffer, 0));
+            DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>> tasks =
+                DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>>(uint2(push.bufferShaderIndexBase + push.traversalWorkBuffer, 0));
+            uint meta = params.demandInstanceOffsetsOffset + instanceIndex * 4u;
+            uint first = topology[meta + 2u], count = topology[meta + 3u];
+            float3 delta = params.center.xyz - params.eye.xyz;
+            float3 forward = dot(delta, delta) > 1e-12 ? normalize(delta) : float3(0.0, 0.0, -1.0);
+            float4 eye = float4(params.eye.xyz, params.clipOrtho.x);
+            float4 direction = float4(forward, params.upProjection.w);
+            float4 projection = float4(params.viewport.z, tan(params.viewport.w * 0.5), params.clipOrtho.z, params.lodPixelError);
+            uint manual = params.enableGpuLodSelection != 0u ? 0xffffffffu : params.selectedLodLevel;
+            for (uint batch = 0u; batch < count; batch += 64u) {
+                uint index = batch + lane, root = 0u;
+                bool wanted = false;
+                if (index < count) {
+                    root = topology[params.demandTaskOffset + first + index];
+                    wanted = streamLodBvhNeedsFine(topology, primitive.lodTileOffset + 1u + root * 10u,
+                        instance, eye, direction, projection, manual);
+                }
+                uint total;
+                uint rank = streamCooperativePrefix(wanted ? 1u : 0u, lane, total);
+                if (lane == 0u && total != 0u) { InterlockedAdd(demand[16], total, g_CooperativeRoots); }
+                GroupMemoryBarrierWithGroupSync();
+                if (wanted) {
+                    GPUDrivenStreamAssetTraversalWorkItem work;
+                    work.instanceIndex = instanceIndex; work.nodeIndex = root;
+                    work.readyFrame = 0u; work.padding0 = 0u;
+                    tasks[g_CooperativeRoots + rank] = work;
+                }
+            }
+            // The lane that cleared this word also publishes the statistic;
+            // the seed prefix synchronizes LDS, not device-memory stores.
+            if (lane == 3u) { state[sparse + 3u] = count; }
+        }
+        return;
+    }
     float3 delta = params.center.xyz - params.eye.xyz;
     float3 forward = dot(delta, delta) > 1e-12 ? normalize(delta) : float3(0.0, 0.0, -1.0);
     float4 eye = float4(params.eye.xyz, params.clipOrtho.x);
@@ -2495,10 +2763,16 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
     for (uint tile = 0u; tile < tiles;) {
         uint offset = primitive.lodTileOffset + 1u + tile * 10u;
         ++visited;
-        if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual)) {
-            tile = topology[offset + 7u];
-            continue;
+        bool visit;
+        if (params.demandBuffer != 0xffffffffu) {
+            DescriptorHandle<StructuredBuffer<uint>> demand = DescriptorHandle<StructuredBuffer<uint>>(
+                uint2(push.bufferShaderIndexBase + params.demandBuffer, 0));
+            uint bit = topology[params.demandInstanceOffsetsOffset + instanceIndex * 4u + 1u] + tile;
+            visit = (demand[kStreamDemandStatsWords + (bit >> 5u)] & (1u << (bit & 31u))) != 0u;
+        } else {
+            visit = streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual);
         }
+        if (!visit) { tile = topology[offset + 7u]; continue; }
         ++tile;
         uint tileCount = topology[offset + 9u];
         if (tileCount == 0u) { continue; }
@@ -2521,19 +2795,27 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
                 uint id = topology[group.parentOffset + parent];
                 parentsActive = parentsActive && state[base + (id - primitive.groupOffset) * 2u] != 0u;
             }
-            bool desired = meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
-                group.maxQuadricError, group.lodLevel, group.flags, instance.world0, instance.world1,
-                instance.world2, instance.world3, eye, direction, projection, manual);
-            bool demanded = terminal || (desired && streamRefinementDemandVisible(group, instance, params));
-            if (demanded) {
-                if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { markStreamPageDemand(pageTable, params, group.pageIndex); }
-                else {
-                    uint table = requests[kStreamRequestPriorityTableOffsetWord];
-                    if (table != 0u) {
-                        float benefit = streamGroupScreenBenefit(group, instance, params, eye, direction, projection);
-                        InterlockedMax(requests[table + group.pageIndex], asuint(benefit));
+            bool demanded;
+            if (params.demandBuffer != 0xffffffffu) {
+                DescriptorHandle<StructuredBuffer<uint>> demand = DescriptorHandle<StructuredBuffer<uint>>(
+                    uint2(push.bufferShaderIndexBase + params.demandBuffer, 0));
+                uint bit = topology[params.demandInstanceOffsetsOffset + instanceIndex * 4u] + localGroup;
+                demanded = (demand[kStreamDemandStatsWords + (bit >> 5u)] & (1u << (bit & 31u))) != 0u;
+            } else {
+                bool desired = meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
+                    group.maxQuadricError, group.lodLevel, group.flags, instance.world0, instance.world1,
+                    instance.world2, instance.world3, eye, direction, projection, manual);
+                demanded = terminal || (desired && streamRefinementDemandVisible(group, instance, params));
+                if (demanded) {
+                    if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { markStreamPageDemand(pageTable, params, group.pageIndex); }
+                    else {
+                        uint table = requests[kStreamRequestPriorityTableOffsetWord];
+                        if (table != 0u) {
+                            float benefit = streamGroupScreenBenefit(group, instance, params, eye, direction, projection);
+                            InterlockedMax(requests[table + group.pageIndex], asuint(benefit));
+                        }
+                        requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
                     }
-                    requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
                 }
             }
             bool drawable = groupPageDrawable(pageTable, params, group);
@@ -2551,27 +2833,19 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         tested += tileCount;
     }
     AllMemoryBarrierWithGroupSync();
-    uint selected = 0u;
-    if (g_CooperativeMissingRoots == 0u) {
-        for (uint index = lane; index < count; index += 64u) {
-            uint localGroup = state[sparse + 4u + index];
-            GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + localGroup];
-            uint mask = 0u;
-            for (uint cluster = 0u; cluster < group.clusterCount; ++cluster) {
-                uint refined = topology[group.clusterRefinedOffset + cluster];
-                if (refined == kInvalidClusterIndex || state[base + (refined - primitive.groupOffset) * 2u] == 0u) { mask |= 1u << cluster; }
-            }
-            state[base + localGroup * 2u + 1u] = mask;
-            selected += mask != 0u ? 1u : 0u;
-        }
+    if (params.splitFrontier == 0u) {
+        streamCooperativeMasks(groups, topology, state, primitive, header, base, sparse,
+            count, g_CooperativeMissingRoots == 0u, lane);
     }
-    uint totalSelected;
-    streamCooperativePrefix(selected, lane, totalSelected);
     if (lane == 0u) {
         state[sparse] = count; state[sparse + 1u] = visited; state[sparse + 2u] = tested;
-        state[header] = totalSelected;
         state[header + 2u] = g_CooperativeMissingRoots == 0u ? g_CooperativeRoots : 0u;
         state[header + 3u] = g_CooperativeMissingRoots == 0u ? 1u : 0u;
+        if (params.demandBuffer == 0xffffffffu && params.demandStatsBuffer != 0xffffffffu) {
+            DescriptorHandle<RWStructuredBuffer<uint>> stats = DescriptorHandle<RWStructuredBuffer<uint>>(
+                uint2(push.bufferShaderIndexBase + params.demandStatsBuffer, 0));
+            InterlockedAdd(stats[18], tested);
+        }
     }
 }
 
@@ -2654,6 +2928,11 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
         return;
     }
     if (push.activeBuildPhase == kActiveBuildPhaseReset) {
+        if (params.demandStatsBuffer != 0xffffffffu && threadIndex < kStreamDemandStatsWords) {
+            DescriptorHandle<RWStructuredBuffer<uint>> stats = DescriptorHandle<RWStructuredBuffer<uint>>(
+                uint2(push.bufferShaderIndexBase + params.demandStatsBuffer, 0));
+            stats[threadIndex] = 0u;
+        }
         if (threadIndex == 0u) {
             GPUDrivenStreamAssetActiveHeader header;
             header.activeGroupCount = 0u;

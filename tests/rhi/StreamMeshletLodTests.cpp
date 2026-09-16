@@ -449,7 +449,7 @@ public:
         // publication, with the same CPU oracle and residency changes.
         const auto tiled = runFixture(context, true, 4096);
         if (!tiled.passed) { return tiled; }
-        return RhiTestResult::pass("545 linear/BVH/cooperative/view-driven/prefetch GPU-reference cuts across shared-parent, 511- and 8191-group fixtures");
+        return RhiTestResult::pass("872 linear/BVH/cooperative/view-driven/prefetch/split/distributed/switching GPU-reference cuts across shared-parent, 511- and 8191-group fixtures");
     }
 private:
     RhiTestResult runFixture(RhiTestContext& context, bool large, uint32_t leafCount = 256)
@@ -508,17 +508,28 @@ private:
         const size_t tileWords = tiles.size() * sizeof(MeshletLodBvhNode) / sizeof(uint32_t);
         topology.resize(topology.size() + tileWords);
         std::memcpy(topology.data() + primitive.lodTileOffset + 1, tiles.data(), tileWords * sizeof(uint32_t));
+        const auto tileParents = buildMeshletLodTileParents(tiles);
+        topology.insert(topology.end(), tileParents.begin(), tileParents.end());
+        const uint32_t demandInstanceOffsets = static_cast<uint32_t>(topology.size());
+        topology.push_back(0);
+        topology.push_back(kGroupCount);
+        const auto demandRoots = buildMeshletLodDemandRoots(tiles);
+        topology.push_back(0);
+        topology.push_back(static_cast<uint32_t>(demandRoots.size()));
+        const uint32_t demandTaskOffset = static_cast<uint32_t>(topology.size());
+        for (uint32_t root : demandRoots) { topology.push_back(root); }
         enum BufferIndex { Instance, Primitive, Groups, Params, Topology, State, PageTable,
-            Requests, ActiveGroups, Header, Arguments, Dummy, BufferCount };
+            Requests, ActiveGroups, Header, Arguments, Dummy, Demand, DemandTasks, BufferCount };
         const uint32_t strides[] = {sizeof(MeshletStreamGpuInstance), sizeof(primitive), sizeof(MeshletStreamGpuGroup),
             sizeof(MeshletStreamGpuParams), 4, 4, sizeof(StreamPageTableEntry), 4,
-            sizeof(MeshletStreamGpuActiveGroup), sizeof(MeshletStreamGpuActiveHeader), sizeof(MeshletStreamGpuDrawIndirect), 4};
+            sizeof(MeshletStreamGpuActiveGroup), sizeof(MeshletStreamGpuActiveHeader), sizeof(MeshletStreamGpuDrawIndirect), 4, 4, sizeof(MeshletStreamGpuTraversalWorkItem)};
         const uint64_t logicalStateBytes = (4 + kGroupCount * 3 + 4) * sizeof(uint32_t);
         // Cross the maximum X dispatch dimension and leave a partial last row.
         const uint64_t allocatedStateBytes = large ? (65535ull * 64 + 67) * sizeof(uint32_t) : logicalStateBytes;
         const uint64_t sizes[] = {strides[Instance], sizeof(primitive), groups.size() * sizeof(groups[0]), strides[Params],
             topology.size() * 4, allocatedStateBytes, kGroupCount * sizeof(StreamPageTableEntry),
-            kRequestWords * 4, kGroupCount * sizeof(MeshletStreamGpuActiveGroup), strides[Header], strides[Arguments], 64};
+            kRequestWords * 4, kGroupCount * sizeof(MeshletStreamGpuActiveGroup), strides[Header], strides[Arguments], 64,
+            (kMeshletStreamDemandStatsWords + (kGroupCount + tiles.size() + 31) / 32) * 4, demandRoots.size() * sizeof(MeshletStreamGpuTraversalWorkItem)};
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Stream LOD frontier regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
@@ -577,6 +588,16 @@ private:
         std::unique_ptr<ComputePipeline> traversalPipeline;
         STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = traversalShader.get(), .computeEntryPoint = "main",
             .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, traversalPipeline));
+        ShaderCompileResult demandCompiled;
+        const auto demandCompile = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
+            .entryPointName = kMeshletStreamDemandEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, demandCompiled);
+        if (!demandCompile) { return RhiTestResult::fail(demandCompiled.diagnostics); }
+        std::unique_ptr<ShaderModule> demandShader;
+        STREAM_LOD_REQUIRE(device->createShaderModule({.code = demandCompiled.spirv.data(),
+            .byteSize = demandCompiled.spirv.size() * 4}, demandShader));
+        std::unique_ptr<ComputePipeline> demandPipeline;
+        STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = demandShader.get(), .computeEntryPoint = "main",
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, demandPipeline));
         uint32_t positivePriorities = 0;
         uint32_t viewDemandReductions = 0;
         uint32_t speculativeRequests = 0;
@@ -594,10 +615,10 @@ private:
         push.nodeBuffer = handles[Dummy].index;
         push.lodLevelBuffer = handles[Dummy].index;
         push.traversalHeaderBuffer = handles[Dummy].index;
-        push.traversalWorkBuffer = handles[Dummy].index;
+        push.traversalWorkBuffer = handles[DemandTasks].index;
         std::unique_ptr<Buffer> readback;
-        constexpr uint32_t outputs[] = {Header, ActiveGroups, Requests, Arguments, State};
-        const uint64_t outputSizes[] = {sizes[Header], sizes[ActiveGroups], sizes[Requests], sizes[Arguments], logicalStateBytes};
+        constexpr uint32_t outputs[] = {Header, ActiveGroups, Requests, Arguments, State, Demand};
+        const uint64_t outputSizes[] = {sizes[Header], sizes[ActiveGroups], sizes[Requests], sizes[Arguments], logicalStateBytes, sizes[Demand]};
         std::array<uint64_t, std::size(outputs)> offsets{};
         uint64_t outputBytes = 0;
         for (uint32_t index = 0; index < std::size(outputs); ++index) { offsets[index] = outputBytes; outputBytes += outputSizes[index]; }
@@ -613,12 +634,15 @@ private:
         STREAM_LOD_REQUIRE(pool->createCommandBuffer(commands));
         STREAM_LOD_REQUIRE(device->createFence(false, fence));
         const uint32_t caseCount = large ? 36u : 37u;
-        for (uint32_t frame = 0; frame < caseCount * 5; ++frame) {
+        for (uint32_t frame = 0; frame < caseCount * 8; ++frame) {
             const uint32_t test = frame % caseCount;
             const bool useBvh = frame >= caseCount;
             const bool cooperative = frame >= caseCount * 2;
             const bool viewDriven = frame >= caseCount * 3;
             const bool prefetch = frame >= caseCount * 4;
+            const bool switching = frame >= caseCount * 7;
+            const bool distributed = frame >= caseCount * 6 && (!switching || test % 2 == 0);
+            const bool split = switching ? distributed : frame >= caseCount * 5;
             const float viewAspect = viewDriven && test % 7 == 1 ? .25f : 1.f;
             primitive.lodBvhNodeCount = useBvh ? static_cast<uint32_t>(nodes.size()) : 0;
             uint32_t manual, capacity;
@@ -682,6 +706,12 @@ private:
             params.lodStateBuffer = handles[State].index;
             params.lodInstanceOffsetsOffset = instanceOffsetsOffset;
             params.sceneInstanceCount = 1;
+            params.demandBuffer = distributed ? handles[Demand].index : UINT32_MAX;
+            params.demandStatsBuffer = distributed || switching ? handles[Demand].index : UINT32_MAX;
+            params.demandTaskOffset = demandTaskOffset;
+            params.demandInstanceOffsetsOffset = demandInstanceOffsets;
+            params.demandTaskCount = static_cast<uint32_t>(demandRoots.size());
+            params.splitFrontier = split;
             params.scenePrimitiveCount = 1;
             params.sceneGroupCount = kGroupCount;
             params.scenePageCount = kGroupCount;
@@ -750,12 +780,15 @@ private:
                 commands->dispatch(std::min(initGroups, 65535u), (initGroups + 65534) / 65535, 1);
                 commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
             }
-            for (uint32_t phase : {0u, 5u, 6u, 7u, 2u, 9u, 9u}) {
+            for (uint32_t phase : {0u, 12u, 10u, 13u, 5u, 11u, 6u, 7u, 2u, 9u, 9u}) {
                 if (phase == 9u && !prefetch) { continue; }
-                commands->bindComputePipeline(cooperative && (phase == 5u || phase == 7u || phase == 9u) ? *cooperativePipeline : *pipeline);
+                if ((phase == 10u || phase == 11u) && !split) { continue; }
+                if ((phase == 12u || phase == 13u) && !distributed) { continue; }
+                commands->bindComputePipeline(phase == 12u || phase == 13u ? *demandPipeline :
+                    cooperative && (phase == 5u || phase == 7u || phase == 9u || phase == 10u || phase == 11u) ? *cooperativePipeline : *pipeline);
                 push.activeBuildPhase = phase;
                 commands->pushBindlessData(&push, sizeof(push));
-                commands->dispatch(1, 1, 1);
+                commands->dispatch(phase == 12u ? static_cast<uint32_t>((sizes[Demand] / 4 + 63) / 64) : phase == 13u ? 4u : 1u, 1, 1);
                 for (auto& barrier : barriers) { barrier.before = ResourceState::General; }
                 commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
             }
@@ -796,6 +829,21 @@ private:
             std::memcpy(&arguments, mapped + offsets[3], sizeof(arguments));
             std::vector<uint32_t> state(logicalStateBytes / sizeof(uint32_t));
             std::memcpy(state.data(), mapped + offsets[4], logicalStateBytes);
+            std::array<uint32_t, kMeshletStreamDemandStatsWords> demandStats{};
+            std::memcpy(demandStats.data(), mapped + offsets[5], sizeof(demandStats));
+            if ((distributed || switching) && (demandStats[17] != uint32_t(distributed) ||
+                    demandStats[18] != (distributed ? demandStats[3] : state[4 + kGroupCount * 2 + 2]))) {
+                return RhiTestResult::fail("Demand policy feedback did not match the current traversal");
+            }
+            if (distributed) {
+                uint32_t tasks = 0;
+                for (uint32_t bin = 8; bin < 16; ++bin) { tasks += demandStats[bin]; }
+                if (demandStats[1] > (instance.visible ? demandRoots.size() : 0u) || tasks != demandStats[1] ||
+                    demandStats[16] != demandStats[1] ||
+                    demandStats[4] > 8 || demandStats[3] > demandStats[7]) {
+                    return RhiTestResult::fail("Distributed task accounting, bound or wave occupancy mismatch");
+                }
+            }
             std::array<uint32_t, 3> tail{};
             if (large) { std::memcpy(tail.data(), mapped + tailOffset, sizeof(tail)); }
             readback->unmap();
@@ -941,6 +989,19 @@ public:
             }
         }
         if (expectedEnd != 0 || leafCount < 100) { return RhiTestResult::fail("Incomplete hierarchy fixture"); }
+        for (uint32_t limit : {1u, 2u, 8u, 32u}) {
+            const auto roots = buildMeshletLodDemandRoots(nodes, limit);
+            std::vector<uint8_t> covered(nodes.size());
+            for (uint32_t root : roots) {
+                if (nodes[root].escapeIndex - root > limit) { return RhiTestResult::fail("Unbounded demand task"); }
+                for (uint32_t i = root; i < nodes[root].escapeIndex; ++i) {
+                    if (nodes[i].groupCount != 0 && ++covered[i] != 1) { return RhiTestResult::fail("Overlapping demand tasks"); }
+                }
+            }
+            for (uint32_t i = 0; i < nodes.size(); ++i) {
+                if (nodes[i].groupCount != 0 && covered[i] != 1) { return RhiTestResult::fail("Missing demand task leaf"); }
+            }
+        }
         uint32_t bestVisited = UINT32_MAX;
         for (uint32_t test = 0; test < 32; ++test) {
             fixture.view.projection[3] = std::exp2(float(test) - 12.f);

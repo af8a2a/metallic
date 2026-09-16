@@ -83,6 +83,12 @@ bool buildMeshletLodBvh(std::span<const MeshletLodGroupRecord> groups,
 // bounds use the same conservative aggregation as the BVH. No cook change.
 bool buildMeshletLodTiles(std::span<const MeshletLodGroupRecord> groups,
     std::vector<MeshletLodBvhNode>& tiles, std::string& reason);
+// Disjoint, bounded subtrees of a forest produced by buildMeshletLodTiles.
+// Demand has no parent residency dependencies, so these roots can run in any
+// order across instances.
+std::vector<uint32_t> buildMeshletLodDemandRoots(std::span<const MeshletLodBvhNode> tiles,
+    uint32_t maxSubtreeNodes = 8);
+std::vector<uint32_t> buildMeshletLodTileParents(std::span<const MeshletLodBvhNode> tiles);
 float meshletLodPixelError(const MeshletLodGroupRecord& group,
     const GPUSceneGpuInstanceRecord& instance, const MeshletLodView& view);
 bool meshletLodNeedsFine(const MeshletLodGroupRecord& group,

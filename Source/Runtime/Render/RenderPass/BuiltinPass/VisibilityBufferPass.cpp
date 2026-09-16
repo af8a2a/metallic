@@ -297,6 +297,8 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .maxFallbackBlasBytes = previewStreamUint64Property(properties, "maxFallbackBlasBytes", 512ull * 1024ull * 1024ull),
         .screenSpacePagePriority = boolProperty(&properties, "screenSpacePagePriority", true),
         .viewDrivenPageDemand = boolProperty(&properties, "viewDrivenPageDemand", true),
+        .distributedPageDemand = boolProperty(&properties, "distributedPageDemand", true),
+        .distributedDemandMinGroups = previewStreamUintProperty(properties, "distributedDemandMinGroups", 65536u),
         .measurePageLatency = boolProperty(&properties, "measurePageLatency", true),
         .lowLatencyRequests = boolProperty(&properties, "lowLatencyRequests", true),
         .completionDrivenUploads = boolProperty(&properties, "completionDrivenUploads", true),
@@ -640,7 +642,7 @@ public:
         if (streamEnabled_) { points.insert(points.end(), {"AfterStreamEarlyCandidates", "AfterStreamEarlyClusterCull", "AfterStreamEarlyClassify", "AfterStreamEarlyBins", "AfterStreamEarlyRaster", "AfterStreamEarlyResolve",
             "AfterStreamLateCandidates", "AfterStreamLateClusterCull", "AfterStreamLateClassify", "AfterStreamLateBins", "AfterStreamLateRaster", "AfterStreamLateResolve"}); }
         if (streamEnabled_) { points.insert(points.begin(), {"BeforeStreamUpdates", "AfterStreamUpdates",
-            "AfterStreamFrontier", "AfterStreamPrefix", "AfterStreamEmit", "AfterStreamPrefetch", "AfterTraversal"}); }
+            "AfterStreamPriorityClear", "AfterStreamStateClear", "AfterStreamDemand", "AfterStreamFrontier", "AfterStreamMask", "AfterStreamPrefix", "AfterStreamEmit", "AfterStreamPrefetch", "AfterTraversal"}); }
         return points;
     }
 
@@ -1293,8 +1295,12 @@ public:
                 context.commandBuffer(),
                 streamFrame, [&](std::string_view checkpoint) {
                     if (checkpoint == "BeforeStreamUpdates") { phaseProfile.next("Page updates"); }
-                    else if (checkpoint == "AfterStreamUpdates") { phaseProfile.next("LOD frontier"); }
-                    else if (checkpoint == "AfterStreamFrontier") { phaseProfile.next("LOD prefix"); }
+                    else if (checkpoint == "AfterStreamUpdates") { phaseProfile.next("Priority clear"); }
+                    else if (checkpoint == "AfterStreamPriorityClear") { phaseProfile.next("LOD clear / demand seed"); }
+                    else if (checkpoint == "AfterStreamStateClear") { phaseProfile.next("Detail demand"); }
+                    else if (checkpoint == "AfterStreamDemand") { phaseProfile.next("LOD frontier"); }
+                    else if (checkpoint == "AfterStreamFrontier") { phaseProfile.next("LOD mask"); }
+                    else if (checkpoint == "AfterStreamMask") { phaseProfile.next("LOD prefix"); }
                     else if (checkpoint == "AfterStreamPrefix") { phaseProfile.next("LOD emit"); }
                     else if (checkpoint == "AfterStreamEmit") { phaseProfile.next("Prefetch"); }
                     else if (checkpoint == "AfterStreamPrefetch") { phaseProfile.next("Traversal finalize"); }

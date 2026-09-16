@@ -21,11 +21,11 @@ active(g) = desired(g) AND reachable(g) AND drawable(page(g))
 emit(cluster) = active(owner) AND (no refined OR NOT active(refined))
 ```
 
-手动模式以 `group.level >= lodLevel` 替代误差比较。组可以有多个父组；所有父组必须生效，才能原子替换它们对应的粗表示。存在缺失祖先时，即使更细页仍驻留，也不能绕过祖先参与输出。页需求使用同一可达性规则逐层推进；PendingUpload 不可绘制，也不会重复请求加载。
+手动模式以 `group.level >= lodLevel` 替代误差比较。组可以有多个父组；所有父组必须生效，才能原子替换它们对应的粗表示。存在缺失祖先时，即使更细页仍驻留，也不能绕过祖先参与输出。细节页需求独立于祖先驻留状态，按屏幕误差与视图需求提前请求；可绘制 cut 仍遵守完整祖先依赖。PendingUpload 不可绘制，也不会重复请求加载。
 
 每个 primitive 的所有终端页就绪前，不发布不完整 cut。初始化按全部实例（含隐藏实例）预留终端页和输出容量，预算不足返回明确错误，不跳过部分几何。页面预算还预留一个普通流式页（资产全为终端页时不需要）。
 
-GPU 依次执行 reset → BVH frontier/count → prefix → sparse emit → indirect finalize。每个实例按拓扑逆序评估组，实例之间并行；输出按 instance/group 顺序稳定排列。压缩后的 active group 和 cluster mask 继续转换为现有 `(instanceId, clusterId)` 可见记录，供 cluster 分箱、早晚 HZB、Mesh Shader 和异步软件光栅消费。
+GPU 依次执行 reset → sparse clear / demand seed → distributed demand → ordered frontier → mask → prefix → sparse emit → indirect finalize。需求阶段通过全局有界子树队列和 wave 内可变长度分配跨实例并行；安全 frontier 仍按父级优先拓扑评估组，输出按 instance/group 顺序稳定排列。压缩后的 active group 和 cluster mask 继续转换为现有 `(instanceId, clusterId)` 可见记录，供 cluster 分箱、早晚 HZB、Mesh Shader 和异步软件光栅消费。关闭 `distributedPageDemand` 或队列容量不足时使用 ordered demand。实现与测量见 [StreamWorkDistribution.md](StreamWorkDistribution.md)。
 
 精细输出超过容量时，prefix 在写出任何记录前，将整帧退回完整终端 cut；连终端容量也不足的非法 GPU 输入产生空输出和错误标记，禁止越界写入。正常运行时初始化已拒绝该预算。CLAS 动态 BLAS 使用选中 mask，备用 BLAS 使用同一终端集合，备用 BLAS 存储不足也明确失败。
 
@@ -45,7 +45,8 @@ frontier 同时记录所有 active group 的稀疏列表，包括已被细化替
 
 - `streaming.<pass>.activeHeader`：live count、capacity、overflow、terminalFallback、invalidCapacity。
 - `streaming.<pass>.activeGroups`：page、instance、LOD 和逐 cluster 选择 mask。
-- `streaming.<pass>.lodState`：所有实例的四 word header（fine count、output prefix、terminal count、ready）位于缓冲开头。随后每实例有 `2 * groupCount` 个 active/mask word、四个 sparse header word（all-active count、visited BVH nodes、tested groups、reserved），以及最多 `groupCount` 个降序 active group ID。
+- `streaming.<pass>.lodState`：所有实例的四 word header（fine count、output prefix、terminal count、ready）位于缓冲开头。随后每实例有 `2 * groupCount` 个 active/mask word、四个 sparse header word（all-active count、visited BVH nodes、tested groups、demand seed root tests），以及最多 `groupCount` 个降序 active group ID。
+- `streaming.<pass>.demandStats`：分布式需求启用时提供前 32 个统计 word，包含任务数、节点/组测试数、wave 分配槽位和任务大小直方图；不回读完整需求位图。布局见 [StreamWorkDistribution.md](StreamWorkDistribution.md)。
 - `streaming.<pass>.pageTable`：关联请求和可绘制状态。列表容量中的空闲条目不是有效几何。
 
 测试入口：
@@ -62,7 +63,7 @@ build/tests/MetallicRhiTests.exe --gtest_filter="*gpu_driven_mixed_producer_rend
 
 frontier 临时状态为每实例 32 字节，加该实例每组 12 字节；只扫描访问的 BVH 节点及叶子组，mask/emit 成本随 active 列表大小变化。由精细切换到粗糙 LOD 的首帧仍需清除前一帧的精细列表，后续帧不再清理所有组。BVH 在 primitive 实例之间共享，每节点 40 字节。
 
-有序 BVH 保持拓扑及输出顺序，但空间聚合可能比重新排序的空间 BVH 更松；近景或高误差要求下可能访问全部节点。每实例仍由单个线程遍历，GPU 请求优先级、跨实例任务调度和自动驻留预算尚未优化。测试中的 group 检查数减少不等同于整帧耗时收益。
+有序 BVH 保持拓扑及输出顺序，但空间聚合可能比重新排序的空间 BVH 更松；近景或高误差要求下可能访问全部节点。当前 safe frontier 使用每实例一个 64 线程组，需求阶段独立跨实例调度；父子可绘制状态尚未改为全局持久化队列。测试中的 group 检查数减少不等同于整帧耗时收益。
 
 当前可达性方案保留已激活的祖先页。很小的预算可以维持完整粗 cut，但可能无法达到指定像素误差；进一步释放完全被替代的祖先 payload、合并请求和优先级调度仍是后续优化。
 

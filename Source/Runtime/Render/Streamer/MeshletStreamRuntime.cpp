@@ -569,6 +569,13 @@ public:
             log += resultMessage("createComputePipeline(MeshletStreamRuntime cooperative LOD)", result);
             return result;
         }
+        result = createSlangShaderModule(device, kMeshletStreamShaderModuleName,
+            kMeshletStreamDemandEntryPoint, demandShader_, log);
+        if (!result) { return result; }
+        result = device.createComputePipeline({.computeShader = demandShader_.get(),
+            .computeEntryPoint = "main", .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush), .pipelineCache = pipelineCache}, demandPipeline_);
+        if (!result) { return result; }
         phase.next("streamInit.lodCacheStatus");
         spdlog::info("[MeshletStreamRuntime] LOD PSO cache enabled={} activeHit={} cooperativeHit={}",
             pipelineCache != nullptr, activeBuildPipeline_->pipelineCacheHit(), cooperativePipeline_->pipelineCacheHit());
@@ -577,7 +584,7 @@ public:
 
     bool ready() const
     {
-        return activeBuildShader_ != nullptr && activeBuildPipeline_ != nullptr && cooperativePipeline_ != nullptr;
+        return activeBuildShader_ != nullptr && activeBuildPipeline_ != nullptr && cooperativePipeline_ != nullptr && demandPipeline_ != nullptr;
     }
 
     Result dispatch(
@@ -617,8 +624,12 @@ public:
         commandBuffer.bindBindlessHeap(bindlessHeap);
         const bool cooperative = push.activeBuildPhase == kMeshletStreamActiveBuildFrontierPhase ||
             push.activeBuildPhase == kMeshletStreamActiveBuildEmitPhase ||
-            push.activeBuildPhase == kMeshletStreamActiveBuildPrefetchPhase;
-        commandBuffer.bindComputePipeline(cooperative ? *cooperativePipeline_ : *activeBuildPipeline_);
+            push.activeBuildPhase == kMeshletStreamActiveBuildPrefetchPhase ||
+            push.activeBuildPhase == kMeshletStreamActiveBuildClearPhase ||
+            push.activeBuildPhase == kMeshletStreamActiveBuildMaskPhase;
+        const bool demand = push.activeBuildPhase == kMeshletStreamActiveBuildDemandPhase ||
+            push.activeBuildPhase == kMeshletStreamActiveBuildDemandResetPhase;
+        commandBuffer.bindComputePipeline(demand ? *demandPipeline_ : cooperative ? *cooperativePipeline_ : *activeBuildPipeline_);
         commandBuffer.pushBindlessData(&push, sizeof(push));
         const uint32_t groups = cooperative ? threadCount : threadCount / 64u + (threadCount % 64u != 0u ? 1u : 0u);
         commandBuffer.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u, 1);
@@ -637,6 +648,8 @@ private:
     std::unique_ptr<ComputePipeline> activeBuildPipeline_;
     std::unique_ptr<ShaderModule> cooperativeShader_;
     std::unique_ptr<ComputePipeline> cooperativePipeline_;
+    std::unique_ptr<ShaderModule> demandShader_;
+    std::unique_ptr<ComputePipeline> demandPipeline_;
 };
 
 class MeshletStreamRuntime::BlasInputPass {
@@ -841,6 +854,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     maxGpuPageRequests_ = std::max(desc.maxGpuPageRequests, 1u);
     screenSpacePagePriority_ = desc.screenSpacePagePriority;
     viewDrivenPageDemand_ = desc.viewDrivenPageDemand;
+    distributedPageDemand_ = desc.distributedPageDemand;
+    distributedDemandMinGroups_ = desc.distributedDemandMinGroups;
     prefetchPages_ = desc.prefetchPages && desc.viewDrivenPageDemand && desc.screenSpacePagePriority &&
         asset_.pageCount() < kStreamPrefetchPageTag;
     maxGpuPageUnloadRequests_ = std::max(desc.maxGpuPageUnloadRequests, 1u);
@@ -1769,7 +1784,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = requestReadbackByteSize,
+            .size = requestReadbackByteSize + sizeof(uint32_t),
             .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback,
         },
@@ -1944,6 +1959,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (!result) {
         return result;
     }
+    result = allocateAndWriteBuffer(*bindlessHeap_, *demandBuffer_, demandHandle_, log, "meshlet stream demand");
+    if (!result) { return result; }
     result = allocateAndWriteBuffer(*bindlessHeap_, *nodeBuffer_, nodeHandle_, log, "meshlet stream hierarchy nodes");
     if (!result) {
         return result;
@@ -2138,6 +2155,16 @@ void MeshletStreamRuntime::reset()
     groupBuffer_.reset();
     lodTopologyBuffer_.reset();
     lodStateBuffer_.reset();
+    demandBuffer_.reset();
+    demandHandle_ = {};
+    demandBufferState_ = ResourceState::Undefined;
+    demandTaskOffset_ = 0;
+    demandTaskCount_ = 0;
+    demandInstanceOffsetsOffset_ = 0;
+    distributedPageDemand_ = false;
+    currentFrameDistributedDemand_ = true;
+    distributedDemandMinGroups_ = 65536;
+    recentDemandGroupTests_ = UINT32_MAX;
     lodInstanceOffsetsOffset_ = 0;
     lodStateBufferState_ = ResourceState::Undefined;
     nodeBuffer_.reset();
@@ -2462,6 +2489,7 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
         result = dispatchTraversal(commandBuffer, asset_.pageCount(), 2u);
         if (!result) { return result; }
     }
+    if (checkpoint) { checkpoint("AfterStreamPriorityClear"); }
     result = buildActiveTable(commandBuffer, checkpoint);
     if (!result) {
         return result;
@@ -2952,6 +2980,7 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
     std::vector<uint32_t> bvhOffsets(primitives.size()), bvhCounts(primitives.size()), tileOffsets(primitives.size());
     std::vector<MeshletLodGroupRecord> lodGroups;
     std::vector<MeshletLodBvhNode> bvh;
+    std::vector<std::vector<uint32_t>> demandRoots(primitives.size());
     for (size_t index = 0; index < primitives.size(); ++index) {
         const auto& primitive = primitives[index];
         lodGroups.resize(primitive.groupCount);
@@ -2980,8 +3009,9 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
             std::memcpy(topology.data() + bvhOffsets[index], bvh.data(), bvh.size() * sizeof(MeshletLodBvhNode));
         }
         if (!buildMeshletLodTiles(lodGroups, bvh, log)) { return makeError(Error::InvalidArgument); }
+        demandRoots[index] = buildMeshletLodDemandRoots(bvh);
         const uint64_t tileWords = bvh.size() * uint64_t(kNodeWords);
-        if (topology.size() + 1u + tileWords > UINT32_MAX) {
+        if (topology.size() + 1u + tileWords + bvh.size() > UINT32_MAX) {
             log = "MeshletStreamRuntime cooperative tiles exceed 32-bit addressing";
             return makeError(Error::InvalidArgument);
         }
@@ -2989,6 +3019,8 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
         topology.push_back(static_cast<uint32_t>(bvh.size()));
         topology.resize(topology.size() + static_cast<size_t>(tileWords));
         if (!bvh.empty()) { std::memcpy(topology.data() + tileOffsets[index] + 1, bvh.data(), tileWords * sizeof(uint32_t)); }
+        const auto tileParents = buildMeshletLodTileParents(bvh);
+        topology.insert(topology.end(), tileParents.begin(), tileParents.end());
     }
     result = createAndPopulateHostStorageBuffer<MeshletStreamGpuPrimitive>(
         device, primitives.size(), primitiveBuffer_, log, "MeshletStreamRuntime primitives",
@@ -3029,6 +3061,46 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
             return makeError(Error::InvalidArgument);
         }
     }
+    demandInstanceOffsetsOffset_ = static_cast<uint32_t>(topology.size());
+    uint64_t demandBits = 0, demandTasks = 0;
+    for (const auto& instance : instances) {
+        topology.push_back(static_cast<uint32_t>(demandBits));
+        if (instance.primitiveIndex < primitives.size()) { demandBits += primitives[instance.primitiveIndex].groupCount; }
+        topology.push_back(static_cast<uint32_t>(demandBits));
+        if (instance.primitiveIndex < primitives.size()) { demandBits += topology[tileOffsets[instance.primitiveIndex]]; }
+        topology.push_back(static_cast<uint32_t>(demandTasks));
+        const uint32_t count = instance.primitiveIndex < demandRoots.size()
+            ? static_cast<uint32_t>(demandRoots[instance.primitiveIndex].size()) : 0u;
+        topology.push_back(count);
+        demandTasks += count;
+        if (demandBits > UINT32_MAX || topology.size() > UINT32_MAX) {
+            log = "MeshletStreamRuntime demand topology exceeds 32-bit addressing";
+            return makeError(Error::InvalidArgument);
+        }
+    }
+    // Store immutable task templates; a separate GPU dispatch culls and
+    // publishes them each frame before workers start claiming queue ranges.
+    if (distributedPageDemand_ && (demandTasks > traversalWorkCapacity_ || topology.size() + demandTasks > UINT32_MAX)) {
+        spdlog::warn("[MeshletStreamRuntime] Demand task budget exceeded ({} > {}); using ordered demand", demandTasks, traversalWorkCapacity_);
+        distributedPageDemand_ = false;
+    }
+    demandTaskOffset_ = static_cast<uint32_t>(topology.size());
+    if (distributedPageDemand_) {
+        for (uint32_t instance = 0; instance < instances.size(); ++instance) {
+            if (instances[instance].primitiveIndex >= demandRoots.size()) { continue; }
+            for (uint32_t root : demandRoots[instances[instance].primitiveIndex]) {
+                topology.push_back(root);
+            }
+        }
+        demandTaskCount_ = static_cast<uint32_t>(demandTasks);
+    }
+    result = createNamedBuffer(device, BufferDesc{
+        .size = (kMeshletStreamDemandStatsWords + (distributedPageDemand_ ? (demandBits + 31u) / 32u : 0u)) * sizeof(uint32_t),
+        .structureStride = sizeof(uint32_t),
+        .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+        .memoryLocation = MemoryLocation::Device,
+    }, demandBuffer_, log, "MeshletStreamRuntime demand bits and statistics");
+    if (!result) { return result; }
     result = createAndPopulateHostStorageBuffer<uint32_t>(device, topology.size(),
         lodTopologyBuffer_, log, "MeshletStreamRuntime LOD topology",
         [&topology](uint32_t& word, size_t index) { word = topology[index]; });
@@ -3202,8 +3274,19 @@ Result MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& command
         .destination = requestReadbackBuffer_.get(),
         .sourceOffset = 0,
         .destinationOffset = 0,
-        .size = requestReadbackBuffer_->desc().size,
+        .size = requestReadbackBuffer_->desc().size - sizeof(uint32_t),
     });
+    if (distributedPageDemand_) {
+        // Piggyback one work counter on the existing completed request feedback;
+        // no additional CPU wait or GPU-to-CPU submission is introduced.
+        transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::TransferSource);
+        commandBuffer.copyBuffer(BufferCopyDesc{
+            .source = demandBuffer_.get(), .destination = requestReadbackBuffer_.get(),
+            .sourceOffset = 18u * sizeof(uint32_t),
+            .destinationOffset = requestReadbackBuffer_->desc().size - sizeof(uint32_t),
+            .size = sizeof(uint32_t),
+        });
+    }
     requestReadbackValid_ = true;
     return {};
 }
@@ -3259,6 +3342,16 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
         std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f));
     params.lodTopologyBuffer = lodTopologyHandle_.index;
     params.lodStateBuffer = lodStateHandle_.index;
+    const uint64_t threshold = uint64_t(distributedDemandMinGroups_) +
+        (currentFrameDistributedDemand_ ? 0u : distributedDemandMinGroups_ / 8u);
+    currentFrameDistributedDemand_ = distributedPageDemand_ &&
+        (distributedDemandMinGroups_ == 0 || recentDemandGroupTests_ == UINT32_MAX || recentDemandGroupTests_ >= threshold);
+    params.demandBuffer = currentFrameDistributedDemand_ ? demandHandle_.index : UINT32_MAX;
+    params.demandStatsBuffer = distributedPageDemand_ ? demandHandle_.index : UINT32_MAX;
+    params.demandTaskOffset = demandTaskOffset_;
+    params.demandTaskCount = demandTaskCount_;
+    params.demandInstanceOffsetsOffset = demandInstanceOffsetsOffset_;
+    params.splitFrontier = currentFrameDistributedDemand_ ? 1u : 0u;
     params.lodInstanceOffsetsOffset = lodInstanceOffsetsOffset_;
     params.enableGpuUnloadRequests = 1u;
     params.sceneGroupCount = asset_.groupCount();
@@ -3347,6 +3440,7 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, cons
     MeshletStreamUserPush push = userPush();
     const bool initializeState = lodStateBufferState_ == ResourceState::Undefined;
     transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true);
+    if (distributedPageDemand_) { transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); }
     const auto dispatchPhase = [&](uint32_t phase, uint32_t threadCount) {
         push.activeBuildPhase = phase;
         Result result = activeBuildPass_->dispatch(
@@ -3359,6 +3453,7 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, cons
             *traversalWorkBuffer_, traversalWorkBufferState_);
         if (result) {
             transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true);
+            if (distributedPageDemand_) { transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); }
         }
         return result;
     };
@@ -3369,19 +3464,36 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, cons
             static_cast<uint32_t>(lodStateBuffer_->desc().size / sizeof(uint32_t)));
         if (!result) { return result; }
     }
+    auto result = dispatchPhase(kMeshletStreamActiveBuildResetPhase, 1u);
+    if (!result) { return result; }
+    if (currentFrameDistributedDemand_) {
+        result = dispatchPhase(kMeshletStreamActiveBuildDemandResetPhase,
+            static_cast<uint32_t>(demandBuffer_->desc().size / sizeof(uint32_t)));
+        if (!result) { return result; }
+        result = dispatchPhase(kMeshletStreamActiveBuildClearPhase, asset_.instanceCount());
+        if (!result) { return result; }
+    }
+    if (checkpoint) { checkpoint("AfterStreamStateClear"); }
+    if (currentFrameDistributedDemand_) {
+        result = dispatchPhase(kMeshletStreamActiveBuildDemandPhase, traversalWorkerCount_);
+        if (!result) { return result; }
+    }
+    if (checkpoint) { checkpoint("AfterStreamDemand"); }
     // Prefix budgets complete per-instance cuts before any records are emitted.
     // Each stage sees the complete result of its predecessor.
-    for (uint32_t phase : {kMeshletStreamActiveBuildResetPhase,
-             kMeshletStreamActiveBuildFrontierPhase, kMeshletStreamActiveBuildPrefixPhase,
-             kMeshletStreamActiveBuildEmitPhase, kMeshletStreamActiveBuildFinalizePhase}) {
+    for (uint32_t phase : {kMeshletStreamActiveBuildFrontierPhase, kMeshletStreamActiveBuildMaskPhase,
+             kMeshletStreamActiveBuildPrefixPhase, kMeshletStreamActiveBuildEmitPhase, kMeshletStreamActiveBuildFinalizePhase}) {
         const bool perInstance = phase == kMeshletStreamActiveBuildFrontierPhase ||
-            phase == kMeshletStreamActiveBuildEmitPhase;
-        Result result = dispatchPhase(phase, perInstance ? asset_.instanceCount() : 1u);
-        if (!result) {
-            return result;
+            phase == kMeshletStreamActiveBuildMaskPhase || phase == kMeshletStreamActiveBuildEmitPhase;
+        // Keep the original combined frontier for ordered demand and capacity
+        // fallback; splitting its clear/mask without distributed work adds cost.
+        if (phase != kMeshletStreamActiveBuildMaskPhase || currentFrameDistributedDemand_) {
+            result = dispatchPhase(phase, perInstance ? asset_.instanceCount() : 1u);
+            if (!result) { return result; }
         }
         if (checkpoint) {
             if (phase == kMeshletStreamActiveBuildFrontierPhase) { checkpoint("AfterStreamFrontier"); }
+            if (phase == kMeshletStreamActiveBuildMaskPhase) { checkpoint("AfterStreamMask"); }
             if (phase == kMeshletStreamActiveBuildPrefixPhase) { checkpoint("AfterStreamPrefix"); }
             if (phase == kMeshletStreamActiveBuildEmitPhase) { checkpoint("AfterStreamEmit"); }
         }
@@ -3684,6 +3796,10 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profile
     }
 
     const auto* header = static_cast<const StreamRequestBufferHeader*>(mapped);
+    if (distributedPageDemand_) {
+        std::memcpy(&recentDemandGroupTests_, static_cast<const uint8_t*>(mapped) +
+            requestReadbackBuffer_->desc().size - sizeof(uint32_t), sizeof(uint32_t));
+    }
     recentGpuRequestCount_ = header->loadCounter;
     // This header is already consumed for residency even when debug capture is off.
     debugRequestSourceFrame_ = header->frameIndex;
@@ -3749,6 +3865,7 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
         sizeof(MeshletStreamGpuBlasHeader));
     add("activeGroups", activeGroupBuffer_.get(), activeGroupBufferState_, "MeshletStreamGpuActiveGroup");
     add("lodState", lodStateBuffer_.get(), lodStateBufferState_, "u32");
+    if (distributedPageDemand_) { add("demandStats", demandBuffer_.get(), demandBufferState_, "u32", 0, kMeshletStreamDemandStatsWords * sizeof(uint32_t)); }
     add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "VisibleClusterRecord");
 }
 
@@ -3833,6 +3950,11 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"maxUploadBytesPerFrame", maxUploadBytesPerFrame_},
         {"screenSpacePagePriority", screenSpacePagePriority_},
         {"viewDrivenPageDemand", viewDrivenPageDemand_},
+        {"distributedPageDemand", distributedPageDemand_}, {"demandTaskCount", demandTaskCount_},
+        {"distributedDemandActive", currentFrameDistributedDemand_},
+        {"distributedDemandMinGroups", distributedDemandMinGroups_}, {"recentDemandGroupTests", recentDemandGroupTests_},
+        {"demandTaskCapacity", traversalWorkCapacity_}, {"demandWorkers", traversalWorkerCount_},
+        {"demandBufferBytes", demandBuffer_ ? demandBuffer_->desc().size : 0},
         {"prefetchPages", prefetchPages_}, {"prefetchActive", currentFramePrefetch_},
         {"latency", std::move(latencyJson)},
         {"requestBufferBytes", requestBuffer_ ? requestBuffer_->desc().size : 0},

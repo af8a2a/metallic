@@ -66,6 +66,7 @@ public:
             {"pageLoadConcurrency", 0},
             {"maxGpuPageRequests", 256}, {"maxGpuPageUnloadRequests", 256},
             {"maxTraversalWorkers", 64}, {"maxTraversalWorkItems", 4096},
+            {"distributedDemandMinGroups", 32},
             {"visualization", "triangle"}, {"dlssJitter", false},
             {"camera", {{"eye", {-.0168404f, .110154f, .22f}},
                 {"center", {-.0168404f, .110154f, -.00153695f}},
@@ -235,6 +236,7 @@ public:
                 {"groups", asset.groupCount()}, {"terminalGroups", asset.terminalGroups().size()},
                 {"independentComputeQueue", independent}, {"cases", DebugValue::array()}};
             std::array<size_t, 2> finestCount{}, coarsestCount{};
+            bool sawDistributedDemand = false, sawOrderedDemand = false;
             std::array<std::array<uint64_t, 4>, 2> finestGroupTests{}, coarsestGroupTests{};
             for (uint32_t test = 0; test < 8; ++test) {
                 const bool ortho = test >= 4;
@@ -293,6 +295,9 @@ public:
                             ": expected " + std::to_string(fullTarget.selectedCount) + " clusters, got " + std::to_string(actualClusters));
                     }
                     const uint32_t activeCount = header.at("activeGroupCount");
+                    const bool distributed = call("eval", {{"expression", "streaming.instances[0].distributedDemandActive"}}).at("value");
+                    sawDistributedDemand |= distributed;
+                    sawOrderedDemand |= !distributed;
                     if (header.at("overflowCount") != 0 || activeCount == 0 || activeCount > actual.size()) {
                         return RhiTestResult::fail("Invalid stream active header in case " + std::to_string(test));
                     }
@@ -396,6 +401,24 @@ public:
                         }
                     }
                 }
+                if (test == 7) {
+                    // A bounded queue must fall back to complete ordered demand,
+                    // rather than silently truncating task payloads or the cut.
+                    auto limited = graph.findNode(node)->properties;
+                    limited["maxTraversalWorkItems"] = 1u;
+                    graph.setNodeProperties(node, std::move(limited));
+                    bool settled = false;
+                    for (uint32_t batch = 0; batch < 28 && !settled; ++batch) {
+                        for (uint32_t frame = 0; frame < 8; ++frame) { render(); }
+                        const auto job = capture();
+                        render();
+                        settled = matchesCut(read(job, "streaming.VBuffer.activeHeader").at(0),
+                            read(job, "streaming.VBuffer.activeGroups"), fullTarget.groups);
+                    }
+                    const bool distributed = call("eval", {{"expression", "streaming.instances[0].distributedPageDemand"}}).at("value");
+                    if (!settled || distributed) { return RhiTestResult::fail("Demand queue budget failed to preserve the complete cut"); }
+                    report["demandBudgetFallback"] = {{"capacity", 1}, {"sameCut", true}};
+                }
                 if (configuration == 0) {
                     graph.setNodeRuntimeProperty(node, "freezeCullingCamera", true);
                     render();
@@ -462,6 +485,8 @@ public:
                     }
                 }
             }
+            if (!sawDistributedDemand || !sawOrderedDemand) { return RhiTestResult::fail("Demand policy did not exercise both schedules"); }
+            report["adaptiveDemand"] = {{"distributed", sawDistributedDemand}, {"ordered", sawOrderedDemand}};
             std::ofstream reportFile(context.outputDirectory / "StreamMeshletLodSceneReport.json");
             reportFile << report.dump(2);
             if (!reportFile) { return RhiTestResult::fail("Could not write stream LOD report"); }

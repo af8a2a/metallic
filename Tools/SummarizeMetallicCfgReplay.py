@@ -11,12 +11,17 @@ def gpu_competition(directory):
     if not path.exists():
         return {"available": False}
     samples = {}
+    sample_count = 0
     with path.open(encoding="utf-8-sig") as stream:
         for row in csv.DictReader(stream):
+            sample_count += 1
             if row["process"] == "MetallicRhiTests" or not row["engine"].endswith("engtype_3d"):
                 continue
             samples.setdefault(row["process"], []).append(float(row["utilization"]))
-    return {"available": True, "other3dEngineProcesses": {
+    error_path = directory / "GpuProcesses.stderr.txt"
+    return {"available": sample_count != 0, "sampleCount": sample_count,
+        "monitorErrorBytes": error_path.stat().st_size if error_path.exists() else 0,
+        "other3dEngineProcesses": {
         process: distribution(values) for process, values in samples.items()},
         "note": "Per-engine activity samples, not whole-card ownership; absent/idle intervals are not emitted."}
 
@@ -54,10 +59,25 @@ def read_runs(root, cases):
             phases[phase]["nodesGpuMs"] = {
                 node: distribution([n["gpuMs"] for f in samples for n in f["nodes"] if n["name"] == node])
                 for node in dict.fromkeys(n["name"] for f in samples for n in f["nodes"])}
+            stream_sections = [[s for n in f["nodes"] if n["name"] == "GPUDriven"
+                for s in n.get("sections", []) if not s.get("cpuOnly") and s.get("gpuTimingAvailable")]
+                for f in samples]
+            phases[phase]["streamSectionsGpuMs"] = {
+                name: distribution([s["gpuMs"] for sections in stream_sections for s in sections if s["name"] == name])
+                for name in dict.fromkeys(s["name"] for sections in stream_sections for s in sections)}
+            # Old frontier included clears and mask construction. Compare its
+            # complete envelope with all equivalent stages in the split path.
+            frontier_stages = {"Priority clear", "LOD state clear", "LOD clear / demand seed",
+                "Detail demand", "LOD frontier", "LOD mask"}
+            phases[phase]["frontierEnvelopeMs"] = distribution([
+                sum(s["gpuMs"] for s in sections if s["name"] in frontier_stages) for sections in stream_sections])
         stable = [f for f in frames if f["phase"] != "warmup"]
         runs[case] = {"phases": phases, "steady": {key: distribution([f[key] for f in stable])
             for key in ("hostFrameMs", "gpuMs", "cpuRecordMs")},
             "streamEnd": frames[-1]["stream"], "finalQuality": report["quality"][-1],
+            "demandConfiguration": {key: report.get("finalStream", {}).get(key) for key in
+                ("distributedPageDemand", "distributedDemandActive", "distributedDemandMinGroups", "recentDemandGroupTests",
+                 "demandWorkers", "demandTaskCount", "demandTaskCapacity", "demandBufferBytes")},
             "streamingActivity": {
                 "uploadBytes": distribution([f["stream"]["uploadBytes"] for f in frames]),
                 "uploadFrames": sum(f["stream"]["uploadBytes"] != 0 for f in frames),

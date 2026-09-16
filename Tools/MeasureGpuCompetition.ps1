@@ -2,9 +2,10 @@
 # utilization alone cannot distinguish this benchmark from another renderer.
 $ErrorActionPreference = 'Stop'
 Write-Output 'timestamp,pid,process,engine,utilization'
-Get-Counter '\GPU Engine(*)\Utilization Percentage' -SampleInterval 1 -Continuous | ForEach-Object {
+Get-Counter '\GPU Engine(*)\Utilization Percentage' -SampleInterval 1 -Continuous -ErrorAction Continue | ForEach-Object {
     $sampleTime = $_.Timestamp.ToString('o')
     foreach ($sample in $_.CounterSamples) {
+        if ($sample.Status -ne 0) { continue }
         if ($sample.CookedValue -lt 0.1) { continue }
         $match = [regex]::Match($sample.InstanceName, '^pid_(\d+)_')
         if (-not $match.Success) { continue }
