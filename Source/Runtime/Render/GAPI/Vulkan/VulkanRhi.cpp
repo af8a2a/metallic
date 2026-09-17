@@ -8966,8 +8966,10 @@ Result Device::createGraphicsPipeline(
         return makeError(Error::Unsupported);
     }
     const bool hasColorFormat = desc.colorFormat != Format::Unknown;
-    const uint32_t colorCount = desc.secondColorFormat != Format::Unknown ? 2u : (hasColorFormat ? 1u : 0u);
-    if (colorCount == 2u && !hasColorFormat) { return makeError(Error::InvalidArgument); }
+    const uint32_t colorCount = desc.thirdColorFormat != Format::Unknown ? 3u :
+        (desc.secondColorFormat != Format::Unknown ? 2u : (hasColorFormat ? 1u : 0u));
+    if ((colorCount >= 2u && !hasColorFormat) ||
+        (colorCount == 3u && desc.secondColorFormat == Format::Unknown)) { return makeError(Error::InvalidArgument); }
     const bool hasDepthStencilFormat = desc.depthStencilFormat != Format::Unknown;
     if (!hasColorFormat && !hasDepthStencilFormat) {
         return makeError(Error::InvalidArgument);
@@ -9135,7 +9137,7 @@ Result Device::createGraphicsPipeline(
             VK_COLOR_COMPONENT_B_BIT |
             VK_COLOR_COMPONENT_A_BIT,
     };
-    const VkPipelineColorBlendAttachmentState colorBlendAttachments[] = {colorBlendAttachment, colorBlendAttachment};
+    const VkPipelineColorBlendAttachmentState colorBlendAttachments[] = {colorBlendAttachment, colorBlendAttachment, colorBlendAttachment};
     VkPipelineColorBlendStateCreateInfo colorBlendState{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .attachmentCount = colorCount,
@@ -9170,7 +9172,7 @@ Result Device::createGraphicsPipeline(
         }
     }
 
-    const VkFormat colorFormats[] = {toVkFormat(desc.colorFormat), toVkFormat(desc.secondColorFormat)};
+    const VkFormat colorFormats[] = {toVkFormat(desc.colorFormat), toVkFormat(desc.secondColorFormat), toVkFormat(desc.thirdColorFormat)};
     const VkFormat depthStencilFormat = toVkFormat(desc.depthStencilFormat);
     VkPipelineRenderingCreateInfo renderingInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,

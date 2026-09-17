@@ -105,6 +105,8 @@ struct TessVertex
     [vk::location(2)] nointerpolation uint material : TEXCOORD2;
 #endif
     [vk::location(3)] float3 world : TEXCOORD3;
+    [vk::location(5)] nointerpolation uint originalVisibilityId : TEXCOORD5;
+    [vk::location(6)] nointerpolation uint debugPatchSeed : TEXCOORD6;
 #if VISIBILITY_TESSELLATION_STREAM
     [vk::location(4)] nointerpolation uint doubleSided : TEXCOORD4;
 #endif
@@ -117,7 +119,31 @@ struct TessFragment
 {
     uint visibility : SV_Target0;
     float4 domain : SV_Target1;
+    float4 debugColor : SV_Target2;
 };
+
+uint tessDebugHash(uint value)
+{
+    value ^= value >> 16u; value *= 0x7feb352du;
+    value ^= value >> 15u; value *= 0x846ca68bu;
+    return value ^ (value >> 16u);
+}
+
+// Geometry identity and source-domain corners survive temporary draw-record
+// relocation. SV_PrimitiveID supplies the diced triangle within this patch.
+uint tessDebugPatchSeed(uint geometrySeed, uint sourceTriangle, uint3 patch)
+{
+    return geometrySeed ^ tessDebugHash(sourceTriangle + 1u) ^
+        tessDebugHash(patch.x) ^ tessDebugHash(patch.y + 0x9e3779b9u) ^
+        tessDebugHash(patch.z + 0x85ebca6bu);
+}
+
+float4 tessDebugColor(TessVertex input, uint primitiveId)
+{
+    uint triangle = input.originalVisibilityId != 0u ? primitiveId : (primitiveId & 127u);
+    uint color = tessDebugHash(input.debugPatchSeed ^ tessDebugHash(triangle + 1u));
+    return float4(0.3 + 0.5 * float3(color & 255u, (color >> 8u) & 255u, (color >> 16u) & 255u) / 255.0, 1.0);
+}
 
 float3 tessNormal(float3 n, float3 fallback)
 {

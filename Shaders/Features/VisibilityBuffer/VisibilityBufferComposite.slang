@@ -214,7 +214,8 @@ float4 visibilityBufferCompositeFragmentMain(
     if (!visibilityDebugIdentity(recordIndex, push, clusterSeed, lodLevel)) { return params.clearColor; }
     uint seed = clusterSeed;
     if (params.mode == 2u) { seed = lodLevel + 1u; }
-    if (params.mode == 3u) { seed = visibilityHash(clusterSeed) ^ visibilityHash(triangleIndex + 1u); }
+    // With tessellation disabled, generated triangles are the source triangles.
+    if (params.mode == 3u || params.mode == 7u) { seed = visibilityHash(clusterSeed) ^ visibilityHash(triangleIndex + 1u); }
     float3 color = visibilityHashColor(seed);
     if (push.shadedColors != 0u) {
         DescriptorHandle<Texture2D<float>> depthHandle = DescriptorHandle<Texture2D<float>>(

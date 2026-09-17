@@ -1033,6 +1033,8 @@ struct GraphicsPipelineDesc {
     Format colorFormat = Format::Unknown;
     // Optional second MRT; single-target callers leave this Unknown.
     Format secondColorFormat = Format::Unknown;
+    // Optional third MRT; requires the first two color targets.
+    Format thirdColorFormat = Format::Unknown;
     Format depthStencilFormat = Format::Unknown;
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
     RasterizationState rasterization;

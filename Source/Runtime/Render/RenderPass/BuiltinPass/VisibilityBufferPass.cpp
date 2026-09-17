@@ -58,6 +58,7 @@ constexpr uint32_t kVisibilityModeTriangle = 3;
 constexpr uint32_t kVisibilityModeDepth = 4;
 constexpr uint32_t kVisibilityModeCoverage = 5;
 constexpr uint32_t kVisibilityModeNone = 6;
+constexpr uint32_t kVisibilityModeTessellatedTriangle = 7;
 constexpr uint32_t kGPUDrivenInvalidBindlessIndex =
     std::numeric_limits<uint32_t>::max();
 constexpr const char* kGPUDrivenPipelineCachePath =
@@ -690,6 +691,7 @@ public:
                 "meshlet",
                 {{"Meshlet ID", "meshlet"},
                  {"Triangle ID", "triangle"},
+                 {"Tessellated Triangle ID", "tessellatedTriangle"},
                  {"Depth", "depth"},
                  {"Coverage", "coverage"},
                  {"LOD Level", "lod"},
@@ -1078,6 +1080,7 @@ public:
                 .taskRequireFullSubgroups = amplificationWave32_,
                 .colorFormat = Format::R32Uint,
                 .secondColorFormat = tessellationEnabled() ? Format::Rgba32Sfloat : Format::Unknown,
+                .thirdColorFormat = tessellationEnabled() ? Format::Rgba8Unorm : Format::Unknown,
                 .depthStencilFormat = Format::D32Sfloat,
                 .rasterization = RasterizationState{
                     .cullMode = doubleSided ? CullMode::None : CullMode::Back,
@@ -1097,6 +1100,18 @@ public:
             if (result) {
                 pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(false);
                 result = context.device->createGraphicsPipeline(pipelineDesc, standardZVisibilityPipelines_[bucketIndex]);
+            }
+            // Frozen HZB raster needs only visibility/depth. Use a matching
+            // single-target PSO so it cannot overwrite viewport domain/colors.
+            if (result && tessellationEnabled()) {
+                pipelineDesc.fragmentShader = masked ? frozenMaskedFragmentShader_.get() : frozenFragmentShader_.get();
+                pipelineDesc.secondColorFormat = Format::Unknown;
+                pipelineDesc.thirdColorFormat = Format::Unknown;
+                result = context.device->createGraphicsPipeline(pipelineDesc, frozenStandardZVisibilityPipelines_[bucketIndex]);
+                if (result) {
+                    pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(true);
+                    result = context.device->createGraphicsPipeline(pipelineDesc, frozenVisibilityPipelines_[bucketIndex]);
+                }
             }
             if (!result || visibilityPipelines_[bucketIndex] == nullptr) {
                 log += resultMessage(
@@ -2006,6 +2021,14 @@ private:
                 std::string("Slang ") + request.entryPoint,
                 shaderCompileBegin);
         }
+        if (tessellationEnabled()) {
+            Result result = createShader(device, kVisibilityBufferShaderModuleName, "visibilityTessellationCullingFragment",
+                false, frozenFragmentShader_, log);
+            if (!result) { return result; }
+            result = createShader(device, kVisibilityBufferShaderModuleName, "visibilityTessellationCullingFragment",
+                false, frozenMaskedFragmentShader_, log, &maskedMeshDefine, 1u);
+            if (!result) { return result; }
+        }
         if (streamEnabled_) {
             if (tessellationEnabled()) {
                 Result taskResult = createShader(device, kMeshletStreamShaderModuleName, "streamTessellationTask", true, streamTaskShader_, log, &amplificationDefine, 1u);
@@ -2157,6 +2180,7 @@ private:
             .fragmentShader = streamFragmentShader_.get(),
             .colorFormat = Format::R32Uint,
             .secondColorFormat = tessellationEnabled() ? Format::Rgba32Sfloat : Format::Unknown,
+            .thirdColorFormat = tessellationEnabled() ? Format::Rgba8Unorm : Format::Unknown,
             .depthStencilFormat = Format::D32Sfloat,
             .rasterization = RasterizationState{
                 .cullMode = CullMode::None,
@@ -2685,12 +2709,16 @@ private:
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
         };
         TextureHandle domain = context.outputTexture("domain");
+        TextureHandle debugColor = context.outputTexture("color");
         if (tessellationEnabled()) {
             transitionTexture(commandBuffer, *domain.texture(), ResourceState::ColorAttachment, ResourceState::ColorAttachment);
+            transitionTexture(commandBuffer, *debugColor.texture(), ResourceState::ColorAttachment, ResourceState::ColorAttachment);
         }
         const RenderingAttachmentDesc colors[] = {visibilityAttachment, {
             .view = domain.view(), .state = ResourceState::ColorAttachment,
-            .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}};
+            .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}, {
+            .view = debugColor.view(), .state = ResourceState::ColorAttachment,
+            .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f}}};
         const RenderingAttachmentDesc depthAttachment{
             .view = &depth,
             .state = ResourceState::DepthStencilAttachment,
@@ -2702,7 +2730,7 @@ private:
             commandBuffer.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
                 .colorAttachments = colors,
-                .colorAttachmentCount = tessellationEnabled() ? 2u : 1u,
+                .colorAttachmentCount = tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u,
                 .depthStencilAttachment = &depthAttachment,
             });
             commandBuffer.endRendering();
@@ -2766,7 +2794,7 @@ private:
             commands.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
                 .colorAttachments = colors,
-                .colorAttachmentCount = tessellationEnabled() ? 2u : 1u,
+                .colorAttachmentCount = tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u,
                 .depthStencilAttachment = &depthAttachment,
             });
             commands.setViewport(Viewport{
@@ -2782,7 +2810,10 @@ private:
             for (uint32_t bucketIndex = 0;
                  bucketIndex < kGPUDrivenPreviewDrawBucketCount;
                  ++bucketIndex) {
-                commands.bindGraphicsPipeline(*(reversedZ ? visibilityPipelines_[bucketIndex] : standardZVisibilityPipelines_[bucketIndex]));
+                const auto& pipelines = tessellationEnabled() && projectWithCullingCamera
+                    ? (reversedZ ? frozenVisibilityPipelines_ : frozenStandardZVisibilityPipelines_)
+                    : (reversedZ ? visibilityPipelines_ : standardZVisibilityPipelines_);
+                commands.bindGraphicsPipeline(*pipelines[bucketIndex]);
                 const GPUDrivenPreviewUserPush push =
                     makePush(passIndex, bucketIndex, projectWithCullingCamera);
                 commands.pushBindlessData(&push, sizeof(push));
@@ -2876,6 +2907,9 @@ private:
 
     void drawComposite(CommandBuffer& commandBuffer, TextureHandle color)
     {
+        // Tessellation raster writes individual generated-triangle colors into
+        // the existing diagnostic target, with exactly the visibility depth test.
+        if (tessellationEnabled() && previousParams_.mode == kVisibilityModeTessellatedTriangle) { return; }
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -3416,12 +3450,16 @@ private:
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
         };
         TextureHandle domain = context.outputTexture("domain");
+        TextureHandle debugColor = context.outputTexture("color");
         if (tessellationEnabled()) {
             transitionTexture(commandBuffer, *domain.texture(), ResourceState::ColorAttachment, ResourceState::ColorAttachment);
+            transitionTexture(commandBuffer, *debugColor.texture(), ResourceState::ColorAttachment, ResourceState::ColorAttachment);
         }
         const RenderingAttachmentDesc colors[] = {visibilityAttachment, {
             .view = domain.view(), .state = ResourceState::ColorAttachment,
-            .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}};
+            .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}, {
+            .view = debugColor.view(), .state = ResourceState::ColorAttachment,
+            .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f}}};
         const RenderingAttachmentDesc depthAttachment{
             .view = &depth,
             .state = ResourceState::DepthStencilAttachment,
@@ -3505,7 +3543,7 @@ private:
             commands.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
                 .colorAttachments = colors,
-                .colorAttachmentCount = tessellationEnabled() ? 2u : 1u,
+                .colorAttachmentCount = tessellationEnabled() ? 3u : 1u,
                 .depthStencilAttachment = &depthAttachment,
             });
             commands.setViewport(Viewport{
@@ -4385,6 +4423,9 @@ private:
         if (value == "triangle") {
             return kVisibilityModeTriangle;
         }
+        if (value == "tessellatedTriangle") {
+            return kVisibilityModeTessellatedTriangle;
+        }
         if (value == "depth") {
             return kVisibilityModeDepth;
         }
@@ -5174,6 +5215,8 @@ private:
     std::unique_ptr<ShaderModule> maskedMeshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<ShaderModule> maskedFragmentShader_;
+    std::unique_ptr<ShaderModule> frozenFragmentShader_;
+    std::unique_ptr<ShaderModule> frozenMaskedFragmentShader_;
     std::unique_ptr<ShaderModule> resetShader_;
     std::unique_ptr<ShaderModule> instanceCullShader_;
     std::unique_ptr<ShaderModule> hzbShader_;
@@ -5188,6 +5231,8 @@ private:
     std::unique_ptr<PipelineCache> pipelineCache_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> visibilityPipelines_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> standardZVisibilityPipelines_;
+    std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> frozenVisibilityPipelines_;
+    std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> frozenStandardZVisibilityPipelines_;
     std::unique_ptr<GraphicsPipeline> compositePipeline_;
     std::unique_ptr<ComputePipeline> resetPipeline_;
     std::unique_ptr<ComputePipeline> instanceCullPipeline_;

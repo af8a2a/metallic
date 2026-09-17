@@ -9,6 +9,7 @@
 #include <map>
 #include <numeric>
 #include <functional>
+#include <set>
 
 namespace metallic::tests {
 namespace {
@@ -366,6 +367,58 @@ public:
                         }
                         previous = preview.pixels();
                     }
+                    const auto paletteSize = [](const std::vector<uint32_t>& image) {
+                        return std::set<uint32_t>(image.begin(), image.end()).size();
+                    };
+                    graph.setNodeRuntimeProperty(vbuffer, "shadedDebugColors", false);
+                    graph.setNodeRuntimeProperty(vbuffer, "visualization", "triangle");
+                    if (!preview.render(graph, 193, 157, "VBuffer.color")) { return RhiTestResult::fail(preview.lastLog()); }
+                    const auto sourceColors = preview.pixels();
+                    const auto debugGeneration = preview.executionStats().graphGeneration;
+                    graph.setNodeRuntimeProperty(vbuffer, "visualization", "tessellatedTriangle");
+                    if (graph.dirty() || !preview.render(graph, 193, 157, "VBuffer.color")) {
+                        return RhiTestResult::fail("Generated triangle visualization failed or requested a rebuild");
+                    }
+                    const auto dicedColors = preview.pixels();
+                    if (preview.executionStats().graphGeneration != debugGeneration ||
+                        paletteSize(sourceColors) > 3 || paletteSize(dicedColors) < 64) {
+                        return RhiTestResult::fail("Generated triangle IDs were not distinguished from the two source triangles");
+                    }
+                    const auto capture = std::string("TessellatedTriangles") + (streaming ? "Stream" : "Resident") + (prebin ? "Binned" : "Unbinned") + ".png";
+                    saveRgba8Png(context.outputDirectory / capture, reinterpret_cast<const uint8_t*>(dicedColors.data()), 193, 157, log);
+                    if (!preview.render(graph, 193, 157, "VBuffer.color") || preview.pixels() != dicedColors) {
+                        return RhiTestResult::fail("Generated triangle colors changed on a stationary frame");
+                    }
+                    // The debug MRT must not change visibility IDs, barycentrics,
+                    // normals or the resulting deferred image.
+                    if (!preview.render(graph, 193, 157) || preview.pixels() != baseline) {
+                        return RhiTestResult::fail("Generated triangle debug altered deferred shading");
+                    }
+                    graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxSplitDepth", 0);
+                    graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxFactor", 1);
+                    if (!preview.render(graph, 193, 157, "VBuffer.color") || paletteSize(preview.pixels()) != 3) {
+                        return RhiTestResult::fail("Generated triangle colors did not follow the runtime split/dicing budget");
+                    }
+                    graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxFactor", 4);
+                    if (!preview.render(graph, 193, 157, "VBuffer.color") || paletteSize(preview.pixels()) <= 3) {
+                        return RhiTestResult::fail("Leaf dicing did not expose its individual triangle colors");
+                    }
+                    saveRgba8Png(context.outputDirectory / ("Coarse" + capture), reinterpret_cast<const uint8_t*>(preview.pixels().data()), 193, 157, log);
+                    graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxSplitDepth", 3);
+                    graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxFactor", 8);
+                    graph.setNodeRuntimeProperty(vbuffer, "freezeCullingCamera", true);
+                    if (!preview.render(graph, 193, 157, "VBuffer.color") || preview.pixels() != dicedColors) {
+                        return RhiTestResult::fail("Frozen culling raster contaminated generated triangle visualization");
+                    }
+                    graph.setNodeRuntimeProperty(vbuffer, "camera.center", nlohmann::json::array({0.15f, 0.0f, 0.0f}));
+                    if (!preview.render(graph, 193, 157, "VBuffer.color")) { return RhiTestResult::fail(preview.lastLog()); }
+                    const auto movedFrozen = preview.pixels();
+                    graph.setNodeRuntimeProperty(vbuffer, "freezeCullingCamera", false);
+                    if (!preview.render(graph, 193, 157, "VBuffer.color") || preview.pixels() != movedFrozen || movedFrozen == dicedColors) {
+                        return RhiTestResult::fail("Frozen culling left colors from the old camera in the moved viewport");
+                    }
+                    graph.setNodeRuntimeProperty(vbuffer, "camera.center", nlohmann::json::array({0.0f, 0.0f, 0.0f}));
+                    graph.setNodeRuntimeProperty(vbuffer, "visualization", "coverage");
                 }
             }
         }

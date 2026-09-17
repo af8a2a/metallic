@@ -3411,6 +3411,7 @@ struct StreamRasterCluster
     uint triangleCount;
     uint triangleBaseByte;
     uint recordIndex;
+    uint clusterIndex;
     uint instanceFlags;
 };
 
@@ -3658,6 +3659,7 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     output.triangleCount = clusterTriangleCount;
     output.triangleBaseByte = pageDeviceOffset + triangleOffsetBytes + triangleOffset;
     output.recordIndex = recordIndex;
+    output.clusterIndex = clusterIndex;
     output.instanceFlags = instanceFlags;
     return true;
 }

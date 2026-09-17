@@ -97,6 +97,8 @@ void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIn
             vertices[v].material = c.instance.identity.y;
 #endif
             vertices[v].world = float3(0);
+            vertices[v].originalVisibilityId = 0u;
+            vertices[v].debugPatchSeed = tessDebugHash(c.record.clusterIndex + 1u);
         }
         for (uint t = lane; t < c.meshlet.ranges.w; t += 64u) {
             triangles[t] = residentClusterTriangle(c, t, push);
@@ -142,18 +144,18 @@ void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIn
         vertices[lane].material = c.instance.identity.y;
 #endif
         vertices[lane].world = p;
+        vertices[lane].originalVisibilityId = packVisibilityId(record, originalTriangle);
+        vertices[lane].debugPatchSeed = tessDebugPatchSeed(tessDebugHash(c.record.clusterIndex + 1u), originalTriangle, patch);
     }
     bool reflected = dot(cross(transform.world0.xyz, transform.world1.xyz), transform.world2.xyz) < 0.0;
     for (uint t = lane; t < g_TessPattern.w; t += 64u) {
         uint3 tri = tessTriangle(data, g_TessPattern, t);
         triangles[t] = reflected ? tri.xzy : tri;
-        primitives[t].visibilityId = packVisibilityId(record, originalTriangle);
+        primitives[t].visibilityId = t;
     }
 }
 
-[shader("fragment")]
-TessFragment visibilityTessellationFragment(TessVertex input, uint visibilityId : SV_PrimitiveID, bool front : SV_IsFrontFace,
-    uniform GPUDrivenPreviewPush push)
+uint tessResidentVisibility(TessVertex input, uint visibilityId, GPUDrivenPreviewPush push)
 {
 #if VISIBILITY_BUFFER_ALPHA_MASKED
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> parameters = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
@@ -161,10 +163,27 @@ TessFragment visibilityTessellationFragment(TessVertex input, uint visibilityId 
     GPUDrivenPreviewMaterial material = materials[input.material];
     if (materialBaseColorAlpha(material, input.uv, parameters[0], push) < material.params.z) { discard; }
 #endif
+    return input.originalVisibilityId != 0u ? input.originalVisibilityId : visibilityId;
+}
+
+[shader("fragment")]
+TessFragment visibilityTessellationFragment(TessVertex input, uint visibilityId : SV_PrimitiveID, bool front : SV_IsFrontFace,
+    uniform GPUDrivenPreviewPush push)
+{
     TessFragment output;
-    output.visibility = visibilityId;
+    output.visibility = tessResidentVisibility(input, visibilityId, push);
+    output.debugColor = tessDebugColor(input, visibilityId);
     // Derivatives of the displaced plane avoid Slang's unsupported user
     // per-primitive fragment varyings (slang#7019). Preserve authored winding.
     output.domain = tessSurfaceDomain(input.bary, input.world, input.uv, front);
     return output;
+}
+
+// Frozen-camera raster only contributes to its HZB. Retain the exact same
+// masked coverage and source ID, without exporting viewport-only MRTs.
+[shader("fragment")]
+uint visibilityTessellationCullingFragment(TessVertex input, uint visibilityId : SV_PrimitiveID,
+    bool front : SV_IsFrontFace, uniform GPUDrivenPreviewPush push) : SV_Target0
+{
+    return tessResidentVisibility(input, visibilityId, push);
 }

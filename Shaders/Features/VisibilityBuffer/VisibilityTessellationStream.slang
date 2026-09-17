@@ -89,6 +89,8 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
             vertices[v].position = streamClusterClip(c, v, push);
             vertices[v].uv = float2(0); vertices[v].bary = float2(-1);
             vertices[v].world = float3(0); vertices[v].doubleSided = (c.instanceFlags & 2u) != 0u;
+            vertices[v].originalVisibilityId = 0u;
+            vertices[v].debugPatchSeed = tessDebugHash(c.group.pageIndex ^ 0x9e3779b9u) ^ tessDebugHash(c.clusterIndex + 1u);
         }
         for (uint t = lane; t < payload.count; t += 64u) {
             triangles[t] = streamClusterTriangle(c, payload.first + t, push);
@@ -146,12 +148,15 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         vertices[lane].position = clip; vertices[lane].uv = uv;
         vertices[lane].bary = bary.yz;
         vertices[lane].world = p; vertices[lane].doubleSided = (c.instanceFlags & 2u) != 0u;
+        vertices[lane].originalVisibilityId = packVisibilityId(c.recordIndex, originalTriangle);
+        vertices[lane].debugPatchSeed = tessDebugPatchSeed(
+            tessDebugHash(c.group.pageIndex ^ 0x9e3779b9u) ^ tessDebugHash(c.clusterIndex + 1u), originalTriangle, patch);
     }
     bool reflected = dot(cross(c.group.world0.xyz, c.group.world1.xyz), c.group.world2.xyz) < 0.0;
     for (uint t = lane; t < g_StreamTessPattern.w; t += 64u) {
         uint3 tri = tessTriangle(data, g_StreamTessPattern, t);
         triangles[t] = reflected ? tri.xzy : tri;
-        primitives[t].visibilityId = packVisibilityId(c.recordIndex, originalTriangle);
+        primitives[t].visibilityId = t;
     }
 }
 
@@ -160,7 +165,8 @@ TessFragment streamTessellationFragment(TessVertex input, uint visibilityId : SV
 {
     if (!front && input.doubleSided == 0u) { discard; }
     TessFragment output;
-    output.visibility = visibilityId;
+    output.visibility = input.originalVisibilityId != 0u ? input.originalVisibilityId : visibilityId;
+    output.debugColor = tessDebugColor(input, visibilityId);
     // Derivatives of the displaced plane avoid Slang's unsupported user
     // per-primitive fragment varyings (slang#7019). Preserve authored winding.
     output.domain = tessSurfaceDomain(input.bary, input.world, input.uv, front);

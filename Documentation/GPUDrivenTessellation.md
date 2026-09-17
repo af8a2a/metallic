@@ -48,6 +48,32 @@ material/pattern table. Temporal history is invalidated when edited. Only the
 `tessellation` feature toggle still requires a graph rebuild to change shader
 entries and the domain attachment format.
 
+### Visualize generated triangles
+
+Choose **VBuffer > Visualization > Tessellated Triangle ID**
+(`visualization="tessellatedTriangle"`). Each actual diced triangle has an unlit
+flat color, exposing both recursive patch boundaries and leaf dicing. The
+existing **Triangle ID** continues to show the original source triangles.
+Changing the visualization or the three tessellation quality controls is live.
+Without tessellation, the new mode shows the ordinary source triangles.
+
+Resident and streamed geometry both support this mode. Colors use geometry
+identity, original triangle, integer patch corners and the diced triangle index,
+not temporary draw slots or physical stream allocation addresses. A topology
+change can change colors. Tessellation raster writes colors to the existing
+`VBuffer.color` output as a third MRT (4 additional bytes written per covered
+pixel, no extra texture allocation); its depth winner matches visibility/domain.
+The generated primitive index is separate from the original visibility ID, so
+deferred material lookup, domain normals and motion reconstruction stay intact.
+Frozen-camera raster discards viewport domain/color writes. Other diagnostic
+modes still use the existing composite and its **Shaded ID Colors** option.
+
+The generated-triangle regression covers resident/streamed and binned/unbinned
+draws: source-vs-generated palette size, stationary colors, live quality changes,
+unchanged deferred shading, and viewport motion with a frozen culling camera.
+Coarse and dense captures are saved as `CoarseTessellatedTriangles*.png` and
+`TessellatedTriangles*.png` in the test output directory.
+
 Rate uses the unjittered render view, endpoint depth and world edge length. Foreshortening does not suppress detail. Both sides of a shared edge compute the same rate, and boundary positions use a canonical endpoint order. Different normals, UVs, materials, transforms or independently simplified LOD boundaries can still create displacement seams; this is not a general seam-repair system.
 
 ## Pipeline
@@ -94,6 +120,22 @@ comparisons plus 40 live quality edits), recursive topology, pattern coverage,
 stream CPU/GPU LOD equivalence, hybrid raster equivalence and standalone stream
 pass smoke. Build and test logs are `.cache/tessellation/runtime-settings-build.log`
 and `.cache/tessellation/runtime-settings-tests.log`.
+
+Generated-triangle visualization (2026-09-17): Release builds of Metallic,
+MetallicGPUDrivenSample and MetallicRhiTests passed. Eight focused RHI tests
+passed across the validation runs: the two displacement render oracles (256
+comparisons, 40 live quality edits and the visualization checks above), recursive
+topology, pattern coverage, stream LOD equivalence, hybrid raster equivalence,
+standalone stream smoke and pipeline cache invalidation. Final render-oracle
+results/captures are in `.cache/tessellation/triangle-debug-verified.log` and
+`.cache/tessellation/triangle-debug-verified/`; the other six tests are recorded
+in `.cache/tessellation/triangle-debug-clean.log`. That earlier run also records
+a compiler failure in an intermediate culling fragment; the final implementation
+shares a plain helper between entries instead of calling one shader entry from
+another, and both render tests pass on re-run. No Vulkan validity errors remain.
+Validation reports a non-invalid unused mesh-output warning for location 6
+(`debugPatchSeed`) on the frozen-only fragment interface. The frozen path does
+not need that color seed and cannot write the viewport MRTs.
 
 Recursive extension results on RTX 5060 / 610.47 (2026-09-16):
 
