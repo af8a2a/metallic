@@ -3,10 +3,9 @@
 // the task payload. No global append, inter-dispatch fence or CPU readback.
 static const uint kTessRootsPerTask = 16u;
 static const uint kTessTasksPerCluster = 8u;
-#ifndef VISIBILITY_TESSELLATION_SPLIT_DEPTH
-#define VISIBILITY_TESSELLATION_SPLIT_DEPTH 3
-#endif
-static const uint kTessMaxSplitDepth = VISIBILITY_TESSELLATION_SPLIT_DEPTH;
+// Fixed capacity shared by task and mesh stages; the draw's push constants
+// select the actual depth without changing the payload ABI or recompiling.
+static const uint kTessMaxSplitDepth = 3u;
 static const uint kTessLeavesPerRoot = 1u << (2u * kTessMaxSplitDepth);
 static const uint kTessDomainScale = 4096u;
 
@@ -14,8 +13,8 @@ struct TessPatchPayload
 {
     uint record, first, count, material, enabled;
     uint ends[16];
-    // Specialize the payload with the graph depth: 276 / 852 / 3,156 / 12,372
-    // bytes for depths 0..3. Scalar storage avoids uint3 array-stride padding.
+    // Reserve 12,372 bytes at every runtime depth. Scalar storage avoids
+    // uint3 array-stride padding.
     uint patches[kTessRootsPerTask * kTessLeavesPerRoot * 3u];
 };
 groupshared TessPatchPayload g_TessPatches;

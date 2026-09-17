@@ -718,7 +718,8 @@ public:
         auto edgePixels = runtimeFloatSetting("tessellationEdgePixels", "Tessellation Edge (render px)", 8.0f, 1.0f, 256.0f, true);
         auto factor = runtimeIntSetting("tessellationMaxFactor", "Tessellation Leaf Edge Factor", 4, 1, 8, true);
         auto splitDepth = runtimeIntSetting("tessellationMaxSplitDepth", "Tessellation Split Depth", 2, 0, 3, true);
-        for (auto* setting : {&tessellation, &edgePixels, &factor, &splitDepth}) { setting->rebuildGraph = true; settings.push_back(*setting); }
+        tessellation.rebuildGraph = true;
+        for (const auto* setting : {&tessellation, &edgePixels, &factor, &splitDepth}) { settings.push_back(*setting); }
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 2.0f, 8.0f},
@@ -1578,10 +1579,21 @@ public:
 
 private:
     bool tessellationEnabled() const { return boolProperty(&properties(), "tessellation", false); }
+    float tessellationEdgePixels() const
+    {
+        return std::clamp(finiteOr(properties().value("tessellationEdgePixels", 8.0f), 8.0f), 1.0f, 256.0f);
+    }
+    uint32_t tessellationMaxFactor() const
+    {
+        return uint32_t(std::clamp(properties().value("tessellationMaxFactor", 4), 1, 8));
+    }
+    uint32_t tessellationMaxSplitDepth() const
+    {
+        return uint32_t(std::clamp(properties().value("tessellationMaxSplitDepth", 2), 0, 3));
+    }
     std::string tessellationKey() const
     {
-        return nlohmann::json::array({tessellationEnabled(), properties().value("tessellationEdgePixels", 8.0f),
-            properties().value("tessellationMaxFactor", 4), properties().value("tessellationMaxSplitDepth", 2)}).dump();
+        return tessellationEnabled() ? "enabled" : "disabled";
     }
     bool hybridRasterEnabled() const
     {
@@ -1966,8 +1978,6 @@ private:
         };
         const SlangMacroDefine maskedMeshDefine{"VISIBILITY_BUFFER_ALPHA_MASKED", "1"};
         const SlangMacroDefine spdLdsDefine{kHzbSpdWaveOpsDefine, "0"};
-        const std::string splitDepthValue = std::to_string(std::clamp(properties().value("tessellationMaxSplitDepth", 2), 0, 3));
-        const SlangMacroDefine splitDepthDefine{"VISIBILITY_TESSELLATION_SPLIT_DEPTH", splitDepthValue.c_str()};
         for (const ShaderRequest& request : requests) {
             const bool isAmplification = request.shader == &amplificationShader_;
             std::array<SlangMacroDefine, 2> macroDefines;
@@ -1978,9 +1988,6 @@ private:
                 macroDefines[macroDefineCount++] = maskedMeshDefine;
             } else if (request.shader == &hzbSpdShader_) {
                 macroDefines[macroDefineCount++] = spdLdsDefine;
-            }
-            if (tessellationEnabled() && request.moduleName == kVisibilityBufferShaderModuleName) {
-                macroDefines[macroDefineCount++] = splitDepthDefine;
             }
             const auto shaderCompileBegin = GPUDrivenCompileClock::now();
             Result result = createShader(
@@ -2001,8 +2008,7 @@ private:
         }
         if (streamEnabled_) {
             if (tessellationEnabled()) {
-                const SlangMacroDefine taskDefines[] = {amplificationDefine, splitDepthDefine};
-                Result taskResult = createShader(device, kMeshletStreamShaderModuleName, "streamTessellationTask", true, streamTaskShader_, log, taskDefines, 2u);
+                Result taskResult = createShader(device, kMeshletStreamShaderModuleName, "streamTessellationTask", true, streamTaskShader_, log, &amplificationDefine, 1u);
                 if (!taskResult) { return taskResult; }
             } else { streamTaskShader_.reset(); }
             const std::array<ShaderRequest, 4> streamRequests{
@@ -2019,9 +2025,7 @@ private:
                     request.entryPoint,
                     request.meshShadingShader,
                     *request.shader,
-                    log,
-                    tessellationEnabled() ? &splitDepthDefine : nullptr,
-                    tessellationEnabled() ? 1u : 0u);
+                    log);
                 if (!streamResult) {
                     return streamResult;
                 }
@@ -2501,7 +2505,7 @@ private:
             .indirectBuffer1 = slot.indirectHandles[1].index,
             .hzbBuffer0 = hzbHandles_[0].index,
             .hzbBuffer1 = hzbHandles_[1].index,
-            // Reuse the raster-only unused color slot; keep the 120-byte push ABI.
+            // Reuse the raster-only unused color slot for the hybrid queue.
             .deferredColorBuffer = hybridRasterEnabled() && !clusterPrebinEnabled()
                 ? hybridQueueHandle_.index : kGPUDrivenInvalidBindlessIndex,
             .depthImage = freezeCullingCamera_
@@ -2522,6 +2526,9 @@ private:
                 streamEnabled_ && streamOwnerMaskHandle_.valid()
                 ? streamOwnerMaskHandle_.index
                 : kGPUDrivenInvalidBindlessIndex,
+            .tessellationEdgePixels = tessellationEdgePixels(),
+            .tessellationMaxFactor = tessellationMaxFactor(),
+            .tessellationMaxSplitDepth = tessellationMaxSplitDepth(),
         };
     }
 
@@ -3427,6 +3434,9 @@ private:
         push.hybridQueueBuffer = hybridRasterEnabled() && !prebin ? streamHybridQueueHandle_.index : UINT32_MAX;
         push.hybridClusterBuffer = prebin ? streamHybridClusterHandle_.index : UINT32_MAX;
         push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
+        push.tessellationEdgePixels = tessellationEdgePixels();
+        push.tessellationMaxFactor = tessellationMaxFactor();
+        push.tessellationMaxSplitDepth = tessellationMaxSplitDepth();
         if (prebin) {
             auto binProfile = context.profileScope("Candidates");
             const uint32_t count = streamRuntime_->visibleClusterCapacity();
@@ -4103,10 +4113,7 @@ private:
                 const uint32_t mapped = logicalTextureToMaterialTexture_[i];
                 if (mapped < handles.size()) { descriptors[i] = handles[mapped].index; }
             }
-            return buildTessellationData(materials, descriptors,
-                finiteOr(properties().value("tessellationEdgePixels", 8.0f), 8.0f),
-                uint32_t(std::clamp(properties().value("tessellationMaxFactor", 4), 1, 8)),
-                uint32_t(std::clamp(properties().value("tessellationMaxSplitDepth", 2), 0, 3)));
+            return buildTessellationData(materials, descriptors);
         };
         auto data = makeData(bundle.materialTextureHandles);
         for (size_t i = 0; i < materials.size(); ++i) {

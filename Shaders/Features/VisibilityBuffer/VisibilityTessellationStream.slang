@@ -62,7 +62,7 @@ void streamTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
                 view.orthographic = c.params.renderUpProjection.w > 0.5;
                 view.pixelScale = c.params.renderViewport.z / (view.orthographic ? c.params.renderClipOrtho.z : 2.0 * tan(c.params.renderViewport.w * 0.5));
                 view.nearPlane = c.params.renderClipOrtho.x;
-                count = tessBuildLeaves(lane, source, view, asfloat(data[2]), data[3], data[4]);
+                count = tessBuildLeaves(lane, source, view, push.tessellationEdgePixels, push.tessellationMaxFactor, push.tessellationMaxSplitDepth);
             }
         }
     }
@@ -132,7 +132,7 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         view.orthographic = c.params.renderUpProjection.w > 0.5;
         view.pixelScale = c.params.renderViewport.z / (view.orthographic ? c.params.renderClipOrtho.z : 2.0 * tan(c.params.renderViewport.w * 0.5));
         view.nearPlane = c.params.renderClipOrtho.x;
-        g_StreamTessRates = tessPatchRates(patch, g_StreamTessSource, view, asfloat(data[2]), data[3]);
+        g_StreamTessRates = tessPatchRates(patch, g_StreamTessSource, view, push.tessellationEdgePixels, push.tessellationMaxFactor);
         g_StreamTessPattern = tessPattern(data, g_StreamTessRates);
     }
     GroupMemoryBarrierWithGroupSync();

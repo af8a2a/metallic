@@ -117,6 +117,9 @@ struct GPUDrivenStreamAssetPush
     uint hybridQueueBuffer;
     uint hybridClusterBuffer;
     uint clasPublicationRevision;
+    float tessellationEdgePixels;
+    uint tessellationMaxFactor;
+    uint tessellationMaxSplitDepth;
 };
 
 struct GPUDrivenStreamAssetRasterBindings

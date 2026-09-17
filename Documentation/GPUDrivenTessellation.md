@@ -41,6 +41,13 @@ The material inspector exposes magnitude and center under Surface details. They 
 | `tessellationMaxFactor` | 4 | Maximum per-leaf-edge dicing factor, clamped to [1,8] |
 | `tessellationMaxSplitDepth` | 2 | Recursive split depth, clamped to [0,3]; 0 retains single-patch dicing |
 
+The three quality controls are live settings: resident and streamed draws send
+edge pixels, leaf factor and split depth through push constants every frame.
+Editing them does not rebuild the graph, compile shaders or republish the
+material/pattern table. Temporal history is invalidated when edited. Only the
+`tessellation` feature toggle still requires a graph rebuild to change shader
+entries and the domain attachment format.
+
 Rate uses the unjittered render view, endpoint depth and world edge length. Foreshortening does not suppress detail. Both sides of a shared edge compute the same rate, and boundary positions use a canonical endpoint order. Different normals, UVs, materials, transforms or independently simplified LOD boundaries can still create displacement seams; this is not a general seam-repair system.
 
 ## Pipeline
@@ -60,7 +67,7 @@ The extra attachment costs 16 bytes per render pixel while active (about 31.6 Mi
 
 Patch vertices are packed integer barycentric coordinates on a 1/4096 grid. Midpoints remain exact at all supported recursion depths. Leaf vertices map directly back to the original source domain; positions, UVs and authored normals are evaluated there, then displacement is applied once. In particular, normals are not repeatedly normalized at intermediate split vertices. Canonical edge evaluation and rational `step/rate` dicing preserve shared-edge samples across opposite winding. Discontinuous source normals/UVs or independently simplified meshlet boundaries still have the authoring limitations described above.
 
-The DFS stack needs only `1 + 3 * depth` pending entries per root. The task payload reserves `4^depth` leaves per root, so there is no append race, queue-overflow discard or partial parent replacement. Payload and stack sizes are shader specializations of the graph depth: **276 / 852 / 3,156 / 12,372 bytes** of payload at depths 0 / 1 / 2 / 3. Changing the depth rebuilds matching resident and stream task/mesh permutations and republishes their immutable settings together. The default does not reserve maximum-depth storage.
+The DFS stack reserves 10 pending entries per root and the task payload reserves 64 leaves per root, covering the maximum depth of 3. There is no append race, queue-overflow discard or partial parent replacement. The task/mesh payload ABI is fixed at **12,372 bytes** at every runtime depth; push constants limit actual splitting and emitted leaves. This trades the former smaller depth-specialized payload for immediate depth changes without shader permutations. Lower depths still reduce executed work, but no longer reduce reserved payload storage.
 
 Both prebinned and unbinned draws have GPU-generated tessellation dispatch arguments. Existing ordinary dispatch records retain their layout and behavior; extra records describe eight 16-triangle tasks per cluster and flatten large dispatches into two dimensions. Recursion requires no new frame barrier, CPU readback or global scratch allocation. The per-source depth budget bounds expansion, **not total scene GPU time**; a scene-wide priority/work budget is still separate work.
 
@@ -78,7 +85,15 @@ BLAS/CLAS/TLAS still represent the **base mesh**. Ray-traced shadows, reflection
 
 `RhiRendering.tessellation_displacement_render` compares GPU displacement against explicitly baked geometry, base color and flat microtriangle normals. It covers resident and streamed pages, perspective/orthographic views, both depth conventions, mirrored instances, unbinned drawing, and capped/adaptive independent edge factors (64 image comparisons); it also changes and restores material magnitude without rebuilding the graph. This oracle caught a repeat-seam sampling defect: using nonnegative integer texel coordinates avoids negative-remainder behavior at UV=0/1.
 
-`RhiRendering.tessellation_recursive_render` adds **192 comparisons** using an independent CPU recursive baker, at depths 1, 2 and 3, with both saturated and adaptive rates. It also exercises live material disable/restore on the streamed recursive path. `RhiRendering.tessellation_recursive_topology` reads actual GPU leaves from **512 roots**: all eight split masks, depth budgets 0..3, near-plane crossing, exact positive domain coverage, paired interior edges/rates, identical rational samples on shared source edges, and poison-guarded unused output slots. It reaches the full 64-leaf budget. Runtime render tests exercise the depth-specialized task payload and mesh interfaces with Vulkan validation.
+`RhiRendering.tessellation_recursive_render` adds **192 comparisons** using an independent CPU recursive baker, at depths 1, 2 and 3, with both saturated and adaptive rates. It also exercises live material disable/restore on the streamed recursive path. Its live-quality regression performs **40 edits** across resident/streamed and binned/unbinned rendering: depths 0/1/2/3, leaf factors 1/4/8 and edge targets 256/16/1. Every edit must affect the next frame without making the graph dirty or changing its compiled generation; restoring settings must reproduce the baseline image and surface coverage must remain intact. `RhiRendering.tessellation_recursive_topology` reads actual GPU leaves from **512 roots**: all eight split masks, depth budgets 0..3, near-plane crossing, exact positive domain coverage, paired interior edges/rates, identical rational samples on shared source edges, and poison-guarded unused output slots. It reaches the full 64-leaf budget. Runtime render tests exercise the fixed-capacity task payload and mesh interfaces with Vulkan validation.
+
+Runtime push-constant update (2026-09-17): Release builds of Metallic,
+MetallicGPUDrivenSample and MetallicRhiTests passed. Seven focused tests passed
+with Vulkan validation and no validation errors: both render oracles (256 image
+comparisons plus 40 live quality edits), recursive topology, pattern coverage,
+stream CPU/GPU LOD equivalence, hybrid raster equivalence and standalone stream
+pass smoke. Build and test logs are `.cache/tessellation/runtime-settings-build.log`
+and `.cache/tessellation/runtime-settings-tests.log`.
 
 Recursive extension results on RTX 5060 / 610.47 (2026-09-16):
 

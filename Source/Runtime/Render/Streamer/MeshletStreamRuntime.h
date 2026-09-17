@@ -405,6 +405,9 @@ struct MeshletStreamUserPush {
     uint32_t hybridQueueBuffer = UINT32_MAX;
     uint32_t hybridClusterBuffer = UINT32_MAX;
     uint32_t clasPublicationRevision = 0;
+    float tessellationEdgePixels = 8.0f;
+    uint32_t tessellationMaxFactor = 4;
+    uint32_t tessellationMaxSplitDepth = 2;
 };
 
 static_assert(sizeof(MeshletStreamGpuActiveHeader) == 32);
@@ -423,7 +426,7 @@ static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGpuParams) == 416);
 static_assert(sizeof(MeshletStreamGpuRasterBindings) == 80);
-static_assert(sizeof(MeshletStreamUserPush) == 124);
+static_assert(sizeof(MeshletStreamUserPush) == 136);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;

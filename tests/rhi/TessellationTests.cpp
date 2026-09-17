@@ -316,6 +316,59 @@ public:
             saveRgba8Png(context.outputDirectory / "RestoredMaterial.png", reinterpret_cast<const uint8_t*>(preview.pixels().data()), 193, 157, log);
             return RhiTestResult::fail("Live displacement restore changed the original image");
         }
+        if (recursive_) {
+            // Keep the same scene, graph, stream cut and pipelines while editing
+            // each quality control. Image changes prove the push reached both
+            // task splitting and mesh dicing; generation checks forbid rebuilds.
+            for (bool streaming : {false, true}) {
+                for (bool prebin : {false, true}) {
+                    graph.setNodeRuntimeProperty(vbuffer, "enableMeshletStreaming", streaming);
+                    graph.setNodeRuntimeProperty(vbuffer, "clusterPrebin", prebin);
+                    graph.setNodeRuntimeProperty(vbuffer, "tessellationEdgePixels", 1.0f);
+                    graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxFactor", 8);
+                    graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxSplitDepth", 3);
+                    graph.markDirty();
+                    for (uint32_t i = 0; i < 8; ++i) {
+                        if (!preview.render(graph, 193, 157)) { return RhiTestResult::fail(preview.lastLog()); }
+                    }
+                    const uint64_t generation = preview.executionStats().graphGeneration;
+                    const auto baseline = preview.pixels();
+                    auto previous = baseline;
+                    struct Edit { const char* key; nlohmann::json value; bool restoresBaseline; };
+                    const Edit edits[] = {
+                        {"tessellationMaxSplitDepth", 0, false},
+                        {"tessellationMaxSplitDepth", 1, false},
+                        {"tessellationMaxSplitDepth", 2, false},
+                        {"tessellationMaxSplitDepth", 3, true},
+                        {"tessellationMaxFactor", 1, false},
+                        {"tessellationMaxFactor", 4, false},
+                        {"tessellationMaxFactor", 8, true},
+                        {"tessellationEdgePixels", 256.0f, false},
+                        {"tessellationEdgePixels", 16.0f, false},
+                        {"tessellationEdgePixels", 1.0f, true},
+                    };
+                    for (const auto& edit : edits) {
+                        const std::string label = std::string(streaming ? "Stream " : "Resident ") +
+                            (prebin ? "binned " : "unbinned ") + edit.key + "=" + edit.value.dump();
+                        if (!graph.setNodeRuntimeProperty(vbuffer, edit.key, edit.value) || graph.dirty()) {
+                            return RhiTestResult::fail(label + " requested a graph rebuild");
+                        }
+                        if (!preview.render(graph, 193, 157)) { return RhiTestResult::fail(label + ": " + preview.lastLog()); }
+                        if (preview.executionStats().graphGeneration != generation) {
+                            return RhiTestResult::fail(label + " recompiled the graph");
+                        }
+                        if (preview.pixels() == previous) { return RhiTestResult::fail(label + " did not affect the next frame"); }
+                        if (edit.restoresBaseline && preview.pixels() != baseline) {
+                            return RhiTestResult::fail(label + " did not restore the original surface");
+                        }
+                        if (std::count_if(preview.pixels().begin(), preview.pixels().end(), [](uint32_t pixel) { return (pixel & 0xffffffu) != 0; }) < 3000) {
+                            return RhiTestResult::fail(label + " lost surface coverage");
+                        }
+                        previous = preview.pixels();
+                    }
+                }
+            }
+        }
         return RhiTestResult::pass(std::to_string(cases) + " resident/stream displaced renders match baked geometry, UV and normals across projection/depth conventions");
     }
 };

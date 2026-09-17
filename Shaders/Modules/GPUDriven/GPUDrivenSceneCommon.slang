@@ -40,6 +40,9 @@ public struct GPUDrivenPreviewPush
     public uint streamDeferredBindingsBuffer;
     public uint residentRecordCapacity;
     public uint streamOwnerMaskBuffer;
+    public float tessellationEdgePixels;
+    public uint tessellationMaxFactor;
+    public uint tessellationMaxSplitDepth;
 };
 
 public struct GPUDrivenPreviewVertex
