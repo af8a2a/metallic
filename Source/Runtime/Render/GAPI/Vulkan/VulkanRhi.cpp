@@ -480,6 +480,14 @@ VkBufferUsageFlags toVkBufferUsage(BufferUsageBits usage)
     return flags != 0 ? flags : VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 }
 
+VkAddressCommandFlagsKHR addressCommandFlags(const Buffer& buffer)
+{
+    // VMA buffers are fully bound and do not alias other live allocations.
+    return VK_ADDRESS_COMMAND_FULLY_BOUND_BIT_KHR |
+        (hasFlag(buffer.desc().usage, BufferUsageBits::Storage)
+            ? VK_ADDRESS_COMMAND_STORAGE_BUFFER_USAGE_BIT_KHR : 0);
+}
+
 VkImageUsageFlags toVkImageUsage(TextureUsageBits usage)
 {
     VkImageUsageFlags flags = 0;
@@ -1535,6 +1543,7 @@ void appendPNext(void**& tail, T& value)
 struct VulkanExtensionSet {
     std::vector<VkExtensionProperties> properties;
     bool swapchain = false;
+    bool deviceAddressCommands = false;
     bool descriptorHeap = false;
     bool shaderObject = false;
     bool accelerationStructure = false;
@@ -1568,6 +1577,7 @@ struct VulkanExtensionSet {
         VulkanExtensionSet result;
         result.properties = enumerateDeviceExtensions(physicalDevice);
         result.swapchain = result.has(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        result.deviceAddressCommands = result.has(VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME);
         result.descriptorHeap = result.has(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
         result.shaderObject = result.has(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
         result.accelerationStructure = result.has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
@@ -1767,8 +1777,10 @@ struct VulkanDeviceFeatureProbe {
                 appendPNext(featureTail, opacityMicromapExtFeatures);
             } else {
                 appendPNext(featureTail, opacityMicromapFeatures);
-                appendPNext(featureTail, deviceAddressCommandsFeatures);
             }
+        }
+        if (extensions.deviceAddressCommands) {
+            appendPNext(featureTail, deviceAddressCommandsFeatures);
         }
         if (extensions.rayTracingPositionFetch) {
             appendPNext(featureTail, rayTracingPositionFetchFeatures);
@@ -2116,13 +2128,8 @@ struct VulkanDeviceFeatureSelection {
 
     bool usesBufferDeviceAddress() const
     {
-        return bindlessDescriptorHeap ||
-            cooperativeVector ||
-            rayTracingAccelerationStructure ||
-            rayQuery ||
-            clusterAccelerationStructure ||
-            partitionedAccelerationStructure ||
-            streamline;
+        // Device-address commands are required by the Vulkan backend.
+        return true;
     }
 
     bool matches(const VulkanDeviceFeatureRequest& request) const
@@ -2319,8 +2326,7 @@ struct VulkanEnabledFeatureChain {
         rayQueryFeatures.rayQuery = selection.rayQuery ? VK_TRUE : VK_FALSE;
         opacityMicromapFeatures.micromap = selection.opacityMicromap ? VK_TRUE : VK_FALSE;
         opacityMicromapExtFeatures.micromap = selection.opacityMicromapExt ? VK_TRUE : VK_FALSE;
-        deviceAddressCommandsFeatures.deviceAddressCommands =
-            selection.opacityMicromap && !selection.opacityMicromapExt ? VK_TRUE : VK_FALSE;
+        deviceAddressCommandsFeatures.deviceAddressCommands = VK_TRUE;
         rayTracingPositionFetchFeatures.rayTracingPositionFetch =
             selection.rayTracingPositionFetch ? VK_TRUE : VK_FALSE;
         rayTracingPipelineFeatures.rayTracingPipeline =
@@ -2363,9 +2369,9 @@ struct VulkanEnabledFeatureChain {
                 appendPNext(featureTail, opacityMicromapExtFeatures);
             } else {
                 appendPNext(featureTail, opacityMicromapFeatures);
-                appendPNext(featureTail, deviceAddressCommandsFeatures);
             }
         }
+        appendPNext(featureTail, deviceAddressCommandsFeatures);
         if (selection.rayTracingPositionFetch) {
             appendPNext(featureTail, rayTracingPositionFetchFeatures);
         }
@@ -2401,6 +2407,7 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
 {
     std::vector<const char*> extensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME,
     };
     if (selection.bindlessDescriptorHeap) {
         extensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
@@ -2425,7 +2432,6 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
             extensions.push_back(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
         } else {
             extensions.push_back(VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME);
-            extensions.push_back(VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME);
         }
     }
     if (selection.rayTracingPositionFetch) {
@@ -5482,17 +5488,25 @@ void CommandBuffer::copyBuffer(const BufferCopyDesc& desc)
         return;
     }
 
-    VkBufferCopy copyRegion{
-        .srcOffset = desc.sourceOffset,
-        .dstOffset = desc.destinationOffset,
-        .size = desc.size,
+    if (desc.sourceOffset > desc.source->desc().size ||
+        desc.size > desc.source->desc().size - desc.sourceOffset ||
+        desc.destinationOffset > desc.destination->desc().size ||
+        desc.size > desc.destination->desc().size - desc.destinationOffset) {
+        return;
+    }
+    const VkDeviceMemoryCopyKHR copyRegion{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_COPY_KHR,
+        .srcRange = {desc.source->deviceAddress() + desc.sourceOffset, desc.size},
+        .srcFlags = addressCommandFlags(*desc.source),
+        .dstRange = {desc.destination->deviceAddress() + desc.destinationOffset, desc.size},
+        .dstFlags = addressCommandFlags(*desc.destination),
     };
-    vkCmdCopyBuffer(
-        impl_->commandBuffer,
-        desc.source->impl_->buffer,
-        desc.destination->impl_->buffer,
-        1,
-        &copyRegion);
+    const VkCopyDeviceMemoryInfoKHR copyInfo{
+        .sType = VK_STRUCTURE_TYPE_COPY_DEVICE_MEMORY_INFO_KHR,
+        .regionCount = 1,
+        .pRegions = &copyRegion,
+    };
+    vkCmdCopyMemoryKHR(impl_->commandBuffer, &copyInfo);
 }
 
 void CommandBuffer::copyTexture(const TextureCopyDesc& desc)
@@ -5552,7 +5566,7 @@ void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
         desc.width == 0 ||
         desc.height == 0 ||
         desc.depth == 0 ||
-        desc.layerCount == 0) {
+        desc.layerCount == 0 || desc.bufferOffset >= desc.buffer->desc().size) {
         return;
     }
 
@@ -5569,27 +5583,31 @@ void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
         return;
     }
 
-    VkBufferImageCopy copyRegion{
-        .bufferOffset = desc.bufferOffset,
-        .bufferRowLength = bufferRowLength,
-        .bufferImageHeight = bufferImageHeight,
+    const VkDeviceMemoryImageCopyKHR copyRegion{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_IMAGE_COPY_KHR,
+        .addressRange = {desc.buffer->deviceAddress() + desc.bufferOffset,
+            desc.buffer->desc().size - desc.bufferOffset},
+        .addressFlags = addressCommandFlags(*desc.buffer),
+        .addressRowLength = bufferRowLength,
+        .addressImageHeight = bufferImageHeight,
         .imageSubresource = {
             .aspectMask = aspectForFormat(desc.texture->impl_->desc.format),
             .mipLevel = desc.mipLevel,
             .baseArrayLayer = desc.baseLayer,
             .layerCount = desc.layerCount,
         },
+        .imageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
         .imageExtent = {desc.width, desc.height, desc.depth},
     };
 
-    vkCmdCopyImageToBuffer(
-        impl_->commandBuffer,
-        desc.texture->impl_->image,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        desc.buffer->impl_->buffer,
-        1,
-        &copyRegion);
+    const VkCopyDeviceMemoryImageInfoKHR copyInfo{
+        .sType = VK_STRUCTURE_TYPE_COPY_DEVICE_MEMORY_IMAGE_INFO_KHR,
+        .image = desc.texture->impl_->image,
+        .regionCount = 1,
+        .pRegions = &copyRegion,
+    };
+    vkCmdCopyImageToMemoryKHR(impl_->commandBuffer, &copyInfo);
 }
 
 void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
@@ -5602,7 +5620,7 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
         desc.width == 0 ||
         desc.height == 0 ||
         desc.depth == 0 ||
-        desc.layerCount == 0) {
+        desc.layerCount == 0 || desc.bufferOffset >= desc.buffer->desc().size) {
         return;
     }
 
@@ -5619,27 +5637,31 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
         return;
     }
 
-    VkBufferImageCopy copyRegion{
-        .bufferOffset = desc.bufferOffset,
-        .bufferRowLength = bufferRowLength,
-        .bufferImageHeight = bufferImageHeight,
+    const VkDeviceMemoryImageCopyKHR copyRegion{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_IMAGE_COPY_KHR,
+        .addressRange = {desc.buffer->deviceAddress() + desc.bufferOffset,
+            desc.buffer->desc().size - desc.bufferOffset},
+        .addressFlags = addressCommandFlags(*desc.buffer),
+        .addressRowLength = bufferRowLength,
+        .addressImageHeight = bufferImageHeight,
         .imageSubresource = {
             .aspectMask = aspectForFormat(desc.texture->impl_->desc.format),
             .mipLevel = desc.mipLevel,
             .baseArrayLayer = desc.baseLayer,
             .layerCount = desc.layerCount,
         },
+        .imageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
         .imageExtent = {desc.width, desc.height, desc.depth},
     };
 
-    vkCmdCopyBufferToImage(
-        impl_->commandBuffer,
-        desc.buffer->impl_->buffer,
-        desc.texture->impl_->image,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        1,
-        &copyRegion);
+    const VkCopyDeviceMemoryImageInfoKHR copyInfo{
+        .sType = VK_STRUCTURE_TYPE_COPY_DEVICE_MEMORY_IMAGE_INFO_KHR,
+        .image = desc.texture->impl_->image,
+        .regionCount = 1,
+        .pRegions = &copyRegion,
+    };
+    vkCmdCopyMemoryToImageKHR(impl_->commandBuffer, &copyInfo);
 }
 
 void CommandBuffer::hostWriteBarrier()
@@ -6240,6 +6262,9 @@ void CommandBuffer::drawMeshTasksIndirect(Buffer& buffer, uint64_t offset)
 {
     if (impl_ == nullptr ||
         buffer.impl_ == nullptr ||
+        buffer.impl_->device != impl_->device ||
+        !impl_->device->capabilities.meshShader ||
+        (impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0 ||
         !hasFlag(buffer.impl_->desc.usage, BufferUsageBits::Indirect) ||
         (offset & 3u) != 0 ||
         offset > buffer.impl_->desc.size ||
@@ -6247,8 +6272,14 @@ void CommandBuffer::drawMeshTasksIndirect(Buffer& buffer, uint64_t offset)
         return;
     }
 #ifdef VK_EXT_mesh_shader
-    if (vkCmdDrawMeshTasksIndirectEXT != nullptr) {
-        vkCmdDrawMeshTasksIndirectEXT(impl_->commandBuffer, buffer.impl_->buffer, offset, 1, 0);
+    const VkDrawIndirect2InfoKHR info{
+        .sType = VK_STRUCTURE_TYPE_DRAW_INDIRECT_2_INFO_KHR,
+        .addressRange = {buffer.deviceAddress() + offset, sizeof(VkDrawMeshTasksIndirectCommandEXT), 0},
+        .addressFlags = addressCommandFlags(buffer),
+        .drawCount = 1,
+    };
+    if (vkCmdDrawMeshTasksIndirect2EXT != nullptr) {
+        vkCmdDrawMeshTasksIndirect2EXT(impl_->commandBuffer, &info);
     }
 #endif
 }
@@ -6270,7 +6301,12 @@ Result CommandBuffer::dispatchIndirect(Buffer& buffer, uint64_t offset)
         sizeof(VkDispatchIndirectCommand) > buffer.desc().size - offset) {
         return makeError(Error::InvalidArgument);
     }
-    vkCmdDispatchIndirect(impl_->commandBuffer, buffer.impl_->buffer, offset);
+    const VkDispatchIndirect2InfoKHR info{
+        .sType = VK_STRUCTURE_TYPE_DISPATCH_INDIRECT_2_INFO_KHR,
+        .addressRange = {buffer.deviceAddress() + offset, sizeof(VkDispatchIndirectCommand)},
+        .addressFlags = addressCommandFlags(buffer),
+    };
+    vkCmdDispatchIndirect2KHR(impl_->commandBuffer, &info);
     return {};
 }
 
@@ -8622,7 +8658,9 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
         }
     }
     if (impl_->bufferDeviceAddressEnabled &&
-        (hasFlag(desc.usage, BufferUsageBits::Constant) || hasFlag(desc.usage, BufferUsageBits::Storage))) {
+        (usage & (VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT)) != 0) {
         usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     }
 
@@ -9860,12 +9898,23 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         if (!extensions.opacityMicromapExt) {
             extensions.opacityMicromap &= validationSupportsOpacityMicromap;
         }
+        if (!extensions.deviceAddressCommands) {
+            spdlog::warn("Skipping Vulkan device '{}': VK_KHR_device_address_commands is unavailable.",
+                properties.deviceName);
+            continue;
+        }
         if (!extensions.swapchain || !extensions.shaderObject) {
             continue;
         }
 
         VulkanDeviceFeatureProbe probe;
         probe.query(physicalDevice, extensions);
+        if (probe.vulkan12Features.bufferDeviceAddress != VK_TRUE ||
+            probe.deviceAddressCommandsFeatures.deviceAddressCommands != VK_TRUE) {
+            spdlog::warn("Skipping Vulkan device '{}': deviceAddressCommands and bufferDeviceAddress must be supported.",
+                properties.deviceName);
+            continue;
+        }
         if (!probe.supportsRequiredCoreFeatures() ||
             probe.shaderObjectFeatures.shaderObject != VK_TRUE) {
             continue;
@@ -9980,7 +10029,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     if (deviceImpl->physicalDevice == VK_NULL_HANDLE) {
         spdlog::error(
             "No suitable Vulkan device: required core features, graphics/compute queues, "
-            "VK_KHR_swapchain and VK_EXT_shader_object with shaderObject=true are required.");
+            "VK_KHR_swapchain, VK_EXT_shader_object with shaderObject=true, and "
+            "VK_KHR_device_address_commands with deviceAddressCommands=true and bufferDeviceAddress=true are required.");
         return makeError(Error::Unsupported);
     }
 

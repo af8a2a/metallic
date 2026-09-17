@@ -5,6 +5,13 @@ dependencies. The presets require CMake 3.27+, Ninja, and (on Windows) an x64
 Visual Studio Developer PowerShell/Command Prompt. Install Slang in
 `External/slang`, or pass `-DSLANG_ROOT=<path>` when configuring the application.
 
+The Vulkan backend requires `VK_KHR_device_address_commands` with
+`deviceAddressCommands` and `bufferDeviceAddress` enabled, independently of
+opacity micromap support. Unsupported devices fail initialization with
+`Unsupported`. Indirect dispatch, indirect mesh draws, and buffer transfers use
+device-address commands; buffers with these usages receive device addresses
+without an explicit `ShaderDeviceAddress` request from the caller.
+
 ## Daily development
 
 ```powershell

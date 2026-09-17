@@ -44,6 +44,18 @@ public:
         if (uploadBuffer->desc().size != 256 || uploadBuffer->desc().structureStride != 16) {
             return RhiTestResult::fail("created buffer descriptor does not match request");
         }
+        if (uploadBuffer->deviceAddress() == 0) {
+            return RhiTestResult::fail("transfer buffer requires an implicit device address");
+        }
+        // These usages must work without Storage or an explicit ShaderDeviceAddress request.
+        for (auto usage : {render::BufferUsageBits::Indirect, render::BufferUsageBits::TransferDestination}) {
+            std::unique_ptr<render::Buffer> addressBuffer;
+            result = context.device.createBuffer(
+                {.size = 16, .usage = usage, .memoryLocation = render::MemoryLocation::Device}, addressBuffer);
+            if (!result || addressBuffer == nullptr || addressBuffer->deviceAddress() == 0) {
+                return RhiTestResult::fail("command buffer usage requires an implicit device address");
+            }
+        }
 
         void* mapped = uploadBuffer->map();
         if (mapped == nullptr) {

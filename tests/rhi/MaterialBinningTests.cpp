@@ -88,7 +88,7 @@ public:
             .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
             .width = push[0], .height = push[1]}, bins, log);
         if (!result) { return result; }
-        // Invalid inputs must fail before recording vkCmdDispatchIndirect.
+        // Invalid inputs must fail before recording vkCmdDispatchIndirect2KHR.
         for (uint64_t offset : {uint64_t(1), bins.arguments->desc().size - 4, UINT64_MAX}) {
             if (!render::hasError(commands.dispatchIndirect(*bins.arguments, offset), render::Error::InvalidArgument)) {
                 return render::makeError(render::Error::Failure);
