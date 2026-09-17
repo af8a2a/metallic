@@ -89,6 +89,7 @@ uint64_t graphicsPipelineStateHash(const GraphicsPipelineDesc& desc)
     hash = hashValue(hash, hashBool(desc.depthStencil.depthWriteEnable));
     hash = hashValue(hash, static_cast<uint32_t>(desc.depthStencil.depthCompareOp));
     hash = hashValue(hash, hashBool(desc.usesBindlessHeap));
+    hash = hashValue(hash, hashBool(desc.indirectBindable));
     return hash;
 }
 
@@ -100,6 +101,7 @@ uint64_t computePipelineStateHash(const ComputePipelineDesc& desc)
     hash = hashValue(hash, desc.computeShader != nullptr ? desc.computeShader->contentHash() : 0ull);
     hash = hashString(hash, desc.computeEntryPoint);
     hash = hashValue(hash, hashBool(desc.usesBindlessHeap));
+    hash = hashValue(hash, hashBool(desc.indirectBindable));
     hash = hashValue(hash, desc.bindlessUserPushDataSize);
     hash = hashValue(hash, desc.bindingMappingCount);
     if (desc.bindingMappings != nullptr) {

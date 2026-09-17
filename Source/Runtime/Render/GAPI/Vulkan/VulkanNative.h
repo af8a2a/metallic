@@ -23,6 +23,19 @@ struct NativeBuffer {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceAddress address = 0;
     uint64_t size = 0;
+    VkDevice device = VK_NULL_HANDLE;
+};
+
+struct NativePipeline {
+    VkDevice device = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+};
+
+struct NativeGraphicsShaders {
+    VkDevice device = VK_NULL_HANDLE;
+    VkShaderEXT vertex = VK_NULL_HANDLE;
+    VkShaderEXT fragment = VK_NULL_HANDLE;
 };
 
 struct NativeTexture {
@@ -41,8 +54,14 @@ struct NativeTexture {
 NativeDevice nativeDevice(Device& device);
 NativeQueue nativeQueue(Queue& queue);
 NativeBuffer nativeBuffer(Buffer& buffer);
+NativePipeline nativePipeline(ComputePipeline& pipeline);
+NativePipeline nativePipeline(GraphicsPipeline& pipeline);
+NativeGraphicsShaders nativeShaders(GraphicsShaderObjectProgram& program);
 NativeTexture nativeTexture(Texture& texture);
 VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer);
+VkDevice nativeCommandBufferDevice(CommandBuffer& commandBuffer);
+// DGC leaves affected state undefined. Rebind pipeline/shaders, heap and push data afterwards.
+void notifyGeneratedCommandsExecution(CommandBuffer& commandBuffer);
 void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer);
 VkFormat nativeSwapchainFormat(Swapchain& swapchain);
 VkImageView nativeImageView(TextureView& view);

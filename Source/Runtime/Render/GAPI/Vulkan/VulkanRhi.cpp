@@ -1544,6 +1544,7 @@ struct VulkanExtensionSet {
     std::vector<VkExtensionProperties> properties;
     bool swapchain = false;
     bool deviceAddressCommands = false;
+    bool deviceGeneratedCommands = false;
     bool descriptorHeap = false;
     bool shaderObject = false;
     bool accelerationStructure = false;
@@ -1578,6 +1579,7 @@ struct VulkanExtensionSet {
         result.properties = enumerateDeviceExtensions(physicalDevice);
         result.swapchain = result.has(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         result.deviceAddressCommands = result.has(VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME);
+        result.deviceGeneratedCommands = result.has(VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME);
         result.descriptorHeap = result.has(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
         result.shaderObject = result.has(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
         result.accelerationStructure = result.has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
@@ -1630,6 +1632,7 @@ struct VulkanExtensionSet {
 };
 
 struct VulkanDeviceFeatureRequest {
+    bool deviceGeneratedCommands = false;
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
     bool meshShader = false;
@@ -1652,6 +1655,7 @@ struct VulkanDeviceFeatureRequest {
     static VulkanDeviceFeatureRequest from(const DeviceDesc& desc)
     {
         return VulkanDeviceFeatureRequest{
+            .deviceGeneratedCommands = desc.enableDeviceGeneratedCommands,
             .bindlessDescriptorHeap = desc.enableBindlessDescriptorHeap,
             .shaderObject = desc.enableShaderObject,
             .meshShader = desc.enableMeshShader,
@@ -1706,6 +1710,9 @@ struct VulkanDeviceFeatureProbe {
     };
     VkPhysicalDeviceOpacityMicromapFeaturesEXT opacityMicromapExtFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT,
+    };
+    VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT deviceGeneratedCommandsFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT,
     };
     VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR deviceAddressCommandsFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR,
@@ -1778,6 +1785,9 @@ struct VulkanDeviceFeatureProbe {
             } else {
                 appendPNext(featureTail, opacityMicromapFeatures);
             }
+        }
+        if (extensions.deviceGeneratedCommands) {
+            appendPNext(featureTail, deviceGeneratedCommandsFeatures);
         }
         if (extensions.deviceAddressCommands) {
             appendPNext(featureTail, deviceAddressCommandsFeatures);
@@ -1949,6 +1959,8 @@ struct VulkanDeviceFeatureProbe {
 };
 
 struct VulkanDeviceFeatureSelection {
+    bool deviceGeneratedCommands = false;
+    bool dynamicGeneratedPipelineLayout = false;
     bool privateData = false;
     bool shaderDemoteToHelperInvocation = false;
     bool shaderIntegerDotProduct = false;
@@ -2012,6 +2024,10 @@ struct VulkanDeviceFeatureSelection {
             probe.supportsSubgroupSizeControl();
 
         VulkanDeviceFeatureSelection result;
+        result.deviceGeneratedCommands = request.deviceGeneratedCommands && extensions.deviceGeneratedCommands &&
+            probe.deviceGeneratedCommandsFeatures.deviceGeneratedCommands == VK_TRUE;
+        result.dynamicGeneratedPipelineLayout = result.deviceGeneratedCommands &&
+            probe.deviceGeneratedCommandsFeatures.dynamicGeneratedPipelineLayout == VK_TRUE;
         result.privateData = request.streamline && probe.vulkan13Features.privateData == VK_TRUE;
         result.shaderDemoteToHelperInvocation =
             probe.vulkan13Features.shaderDemoteToHelperInvocation == VK_TRUE;
@@ -2213,6 +2229,9 @@ struct VulkanEnabledFeatureChain {
     VkPhysicalDeviceOpacityMicromapFeaturesEXT opacityMicromapExtFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT,
     };
+    VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT deviceGeneratedCommandsFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT,
+    };
     VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR deviceAddressCommandsFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR,
     };
@@ -2326,6 +2345,8 @@ struct VulkanEnabledFeatureChain {
         rayQueryFeatures.rayQuery = selection.rayQuery ? VK_TRUE : VK_FALSE;
         opacityMicromapFeatures.micromap = selection.opacityMicromap ? VK_TRUE : VK_FALSE;
         opacityMicromapExtFeatures.micromap = selection.opacityMicromapExt ? VK_TRUE : VK_FALSE;
+        deviceGeneratedCommandsFeatures.deviceGeneratedCommands = selection.deviceGeneratedCommands;
+        deviceGeneratedCommandsFeatures.dynamicGeneratedPipelineLayout = selection.dynamicGeneratedPipelineLayout;
         deviceAddressCommandsFeatures.deviceAddressCommands = VK_TRUE;
         rayTracingPositionFetchFeatures.rayTracingPositionFetch =
             selection.rayTracingPositionFetch ? VK_TRUE : VK_FALSE;
@@ -2372,6 +2393,9 @@ struct VulkanEnabledFeatureChain {
             }
         }
         appendPNext(featureTail, deviceAddressCommandsFeatures);
+        if (selection.deviceGeneratedCommands) {
+            appendPNext(featureTail, deviceGeneratedCommandsFeatures);
+        }
         if (selection.rayTracingPositionFetch) {
             appendPNext(featureTail, rayTracingPositionFetchFeatures);
         }
@@ -2409,6 +2433,9 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME,
     };
+    if (selection.deviceGeneratedCommands) {
+        extensions.push_back(VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME);
+    }
     if (selection.bindlessDescriptorHeap) {
         extensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
     }
@@ -5166,6 +5193,8 @@ Result BindlessHeap::writePartitionedAccelerationStructure(
     return {};
 }
 
+CommandBuffer::CommandBuffer() = default;
+
 CommandBuffer::CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl)
     : impl_(std::move(impl))
 {
@@ -7609,6 +7638,8 @@ Result Swapchain::present(Queue& queue, uint32_t imageIndex, SwapchainSemaphore&
     return resultFromVk(result);
 }
 
+Device::Device() = default;
+
 Device::Device(std::unique_ptr<detail::DeviceImpl> impl)
     : impl_(std::move(impl))
 {
@@ -8966,6 +8997,20 @@ Result Device::createGraphicsPipeline(
         return makeError(Error::InvalidArgument);
     }
     activateVolkDevice(impl_->device);
+    if (desc.indirectBindable) {
+        if (!impl_->capabilities.deviceGeneratedCommands) {
+            return makeError(Error::Unsupported);
+        }
+        VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT dgc{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT,
+        };
+        VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dgc};
+        vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+        const VkShaderStageFlags stages = (usesMeshShader ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT) | VK_SHADER_STAGE_FRAGMENT_BIT | (usesTaskShader ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
+        if ((dgc.supportedIndirectCommandsShaderStagesPipelineBinding & stages) != stages) {
+            return makeError(Error::Unsupported);
+        }
+    }
     if (usesMeshShader && !impl_->capabilities.meshShader) {
         return makeError(Error::Unsupported);
     }
@@ -9221,11 +9266,12 @@ Result Device::createGraphicsPipeline(
     VkPipelineCreateFlags2CreateInfo bindlessPipelineFlags{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
         .pNext = &renderingInfo,
-        .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT,
+        .flags = (desc.usesBindlessHeap ? VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT : 0) |
+            (desc.indirectBindable ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0),
     };
     VkGraphicsPipelineCreateInfo pipelineInfo{
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .pNext = desc.usesBindlessHeap ? static_cast<const void*>(&bindlessPipelineFlags) :
+        .pNext = (desc.usesBindlessHeap || desc.indirectBindable) ? static_cast<const void*>(&bindlessPipelineFlags) :
             static_cast<const void*>(&renderingInfo),
         .stageCount = static_cast<uint32_t>(stages.size()),
         .pStages = stages.data(),
@@ -9281,6 +9327,20 @@ Result Device::createComputePipeline(
         return makeError(Error::InvalidArgument);
     }
     activateVolkDevice(impl_->device);
+    if (desc.indirectBindable) {
+        if (!impl_->capabilities.deviceGeneratedCommands) {
+            return makeError(Error::Unsupported);
+        }
+        VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT dgc{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT,
+        };
+        VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dgc};
+        vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+        const VkShaderStageFlags stages = VK_SHADER_STAGE_COMPUTE_BIT;
+        if ((dgc.supportedIndirectCommandsShaderStagesPipelineBinding & stages) != stages) {
+            return makeError(Error::Unsupported);
+        }
+    }
     const uint32_t bindlessUserDataOffset = desc.bindingMappingCount == 0
         ? static_cast<uint32_t>(sizeof(BindlessHeapPushConstants))
         : 0u;
@@ -9470,11 +9530,12 @@ Result Device::createComputePipeline(
 
     VkPipelineCreateFlags2CreateInfo bindlessPipelineFlags{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
-        .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT,
+        .flags = (desc.usesBindlessHeap ? VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT : 0) |
+            (desc.indirectBindable ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0),
     };
     VkComputePipelineCreateInfo pipelineInfo{
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .pNext = desc.usesBindlessHeap ? static_cast<const void*>(&bindlessPipelineFlags) : nullptr,
+        .pNext = (desc.usesBindlessHeap || desc.indirectBindable) ? static_cast<const void*>(&bindlessPipelineFlags) : nullptr,
         .stage = stage,
         .layout = layout,
     };
@@ -9562,6 +9623,20 @@ Result Device::createGraphicsShaderObjectProgram(
         return makeError(Error::InvalidArgument);
     }
     activateVolkDevice(impl_->device);
+    if (desc.indirectBindable) {
+        if (!impl_->capabilities.deviceGeneratedCommands) {
+            return makeError(Error::Unsupported);
+        }
+        VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT dgc{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT,
+        };
+        VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dgc};
+        vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+        const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        if ((dgc.supportedIndirectCommandsShaderStagesShaderBinding & stages) != stages) {
+            return makeError(Error::Unsupported);
+        }
+    }
     if (!impl_->capabilities.shaderObject || !impl_->shaderObjectEnabled) {
         return makeError(Error::Unsupported);
     }
@@ -9635,7 +9710,8 @@ Result Device::createGraphicsShaderObjectProgram(
     const char* fragmentEntryPoint = desc.fragmentEntryPoint != nullptr ? desc.fragmentEntryPoint : "main";
     const VkShaderCreateFlagsEXT shaderFlags =
         VK_SHADER_CREATE_LINK_STAGE_BIT_EXT |
-        (desc.usesBindlessHeap ? VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT : 0);
+        (desc.usesBindlessHeap ? VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT : 0) |
+        (desc.indirectBindable ? VK_SHADER_CREATE_INDIRECT_BINDABLE_BIT_EXT : 0);
     std::array<VkShaderCreateInfoEXT, 2> shaderInfos{
         VkShaderCreateInfoEXT{
             .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
@@ -10282,6 +10358,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             deviceImpl->descriptorHeapWriter.bufferDescriptorSize());
         deviceImpl->bindlessDescriptorHeapEnabled = true;
     }
+    deviceImpl->capabilities.deviceGeneratedCommands = selectedFeatures.deviceGeneratedCommands;
+    deviceImpl->capabilities.dynamicGeneratedPipelineLayout = selectedFeatures.dynamicGeneratedPipelineLayout;
     deviceImpl->capabilities.shaderObject = selectedFeatures.shaderObject;
     deviceImpl->shaderObjectEnabled = selectedFeatures.shaderObject;
     deviceImpl->capabilities.meshShader = selectedFeatures.meshShader;
@@ -10501,7 +10579,9 @@ struct VulkanNativeAccess {
             hasFlag(usage, BufferUsageBits::AccelerationStructureStorage) ||
             (buffer.impl_->device != nullptr &&
                 buffer.impl_->device->bufferDeviceAddressEnabled &&
-                (hasFlag(usage, BufferUsageBits::Constant) || hasFlag(usage, BufferUsageBits::Storage)));
+                (hasFlag(usage, BufferUsageBits::Constant) || hasFlag(usage, BufferUsageBits::Storage) ||
+                 hasFlag(usage, BufferUsageBits::Indirect) || hasFlag(usage, BufferUsageBits::TransferSource) ||
+                 hasFlag(usage, BufferUsageBits::TransferDestination) || usage == BufferUsageBits::None));
         if (expectsAddress &&
             buffer.impl_->device != nullptr &&
             buffer.impl_->buffer != VK_NULL_HANDLE) {
@@ -10517,6 +10597,7 @@ struct VulkanNativeAccess {
             .buffer = buffer.impl_->buffer,
             .address = address,
             .size = buffer.impl_->desc.size,
+            .device = buffer.impl_->device->device,
         };
     }
 
@@ -10539,6 +10620,46 @@ struct VulkanNativeAccess {
             .flags = texture.impl_->flags,
             .usage = texture.impl_->usage,
         };
+    }
+
+    static vulkan::NativePipeline nativePipeline(ComputePipeline& pipeline)
+    {
+        return pipeline.impl_ ? vulkan::NativePipeline{pipeline.impl_->device->device,
+            pipeline.impl_->pipeline, pipeline.impl_->layout} : vulkan::NativePipeline{};
+    }
+
+    static vulkan::NativePipeline nativePipeline(GraphicsPipeline& pipeline)
+    {
+        return pipeline.impl_ ? vulkan::NativePipeline{pipeline.impl_->device->device,
+            pipeline.impl_->pipeline, pipeline.impl_->layout} : vulkan::NativePipeline{};
+    }
+
+    static vulkan::NativeGraphicsShaders nativeShaders(GraphicsShaderObjectProgram& program)
+    {
+        return program.impl_ ? vulkan::NativeGraphicsShaders{program.impl_->device->device,
+            program.impl_->vertexShader, program.impl_->fragmentShader} : vulkan::NativeGraphicsShaders{};
+    }
+
+    static VkDevice nativeCommandBufferDevice(CommandBuffer& commands)
+    {
+        return commands.impl_ ? commands.impl_->device->device : VK_NULL_HANDLE;
+    }
+
+    static void notifyGeneratedCommandsExecution(CommandBuffer& commands)
+    {
+        if (!commands.impl_) { return; }
+        auto& state = *commands.impl_;
+        state.currentComputePipeline = VK_NULL_HANDLE;
+        state.currentComputePipelineLayout = VK_NULL_HANDLE;
+        state.currentGraphicsPipelineLayout = VK_NULL_HANDLE;
+        state.currentComputePipelineUsesBindlessHeap = false;
+        state.currentGraphicsPipelineUsesBindlessHeap = false;
+        state.currentGraphicsShaderObjectUsesBindlessHeap = false;
+        state.currentGraphicsShaderObjectBound = false;
+        state.currentBindlessHeap = nullptr;
+        state.currentBindlessUserData.clear();
+        state.hasCurrentViewport = false;
+        state.hasCurrentScissor = false;
     }
 
     static VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)
@@ -10597,6 +10718,31 @@ VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)
 void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer)
 {
     detail::VulkanNativeAccess::notifyExternalDescriptorSetBinding(commandBuffer);
+}
+
+NativePipeline nativePipeline(ComputePipeline& pipeline)
+{
+    return detail::VulkanNativeAccess::nativePipeline(pipeline);
+}
+
+NativePipeline nativePipeline(GraphicsPipeline& pipeline)
+{
+    return detail::VulkanNativeAccess::nativePipeline(pipeline);
+}
+
+NativeGraphicsShaders nativeShaders(GraphicsShaderObjectProgram& program)
+{
+    return detail::VulkanNativeAccess::nativeShaders(program);
+}
+
+VkDevice nativeCommandBufferDevice(CommandBuffer& commands)
+{
+    return detail::VulkanNativeAccess::nativeCommandBufferDevice(commands);
+}
+
+void notifyGeneratedCommandsExecution(CommandBuffer& commands)
+{
+    detail::VulkanNativeAccess::notifyGeneratedCommandsExecution(commands);
 }
 
 VkFormat nativeSwapchainFormat(Swapchain& swapchain)

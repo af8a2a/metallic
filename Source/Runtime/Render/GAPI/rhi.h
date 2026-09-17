@@ -359,9 +359,13 @@ struct DeviceDesc {
     ValidationSink validationSink;
     // Optional separate compute queue; legacy callers keep their universal queue.
     bool enableAsyncCompute = false;
+    // Optional: unsupported devices keep ordinary command recording.
+    bool enableDeviceGeneratedCommands = true;
 };
 
 struct DeviceCapabilities {
+    bool deviceGeneratedCommands = false;
+    bool dynamicGeneratedPipelineLayout = false;
     bool independentCopyQueue = false;
     bool independentComputeQueue = false;
     bool bindlessDescriptorHeap = false;
@@ -1041,6 +1045,8 @@ struct GraphicsPipelineDesc {
     DepthStencilState depthStencil;
     bool usesBindlessHeap = false;
     class PipelineCache* pipelineCache = nullptr;
+    // Required for membership in a DGC indirect execution set.
+    bool indirectBindable = false;
 };
 
 struct ComputePipelineDesc {
@@ -1051,6 +1057,8 @@ struct ComputePipelineDesc {
     const ShaderBindingMappingDesc* bindingMappings = nullptr;
     uint32_t bindingMappingCount = 0;
     class PipelineCache* pipelineCache = nullptr;
+    // Required for membership in a DGC indirect execution set.
+    bool indirectBindable = false;
 };
 
 struct GraphicsShaderObjectProgramDesc {
@@ -1062,6 +1070,8 @@ struct GraphicsShaderObjectProgramDesc {
     const char* fragmentEntryPoint = "main";
     bool usesBindlessHeap = false;
     uint32_t bindlessUserPushDataSize = 0;
+    // Required for membership in a DGC indirect execution set.
+    bool indirectBindable = false;
 };
 
 struct TextureBufferCopyDesc {
@@ -1671,6 +1681,7 @@ private:
     friend class Device;
     friend class CommandBuffer;
     friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
 };
 
 class ComputePipeline {
@@ -1696,6 +1707,7 @@ private:
     friend class Device;
     friend class CommandBuffer;
     friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
 };
 
 class GraphicsShaderObjectProgram {
@@ -1716,6 +1728,7 @@ private:
     friend class Device;
     friend class CommandBuffer;
     friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
 };
 
 class BindlessHeap {
@@ -1804,7 +1817,7 @@ private:
 
 class CommandBuffer {
 public:
-    CommandBuffer() = default;
+    CommandBuffer();
     ~CommandBuffer();
     CommandBuffer(CommandBuffer&&) noexcept;
     CommandBuffer& operator=(CommandBuffer&&) noexcept;
@@ -1957,7 +1970,7 @@ private:
 
 class Device {
 public:
-    Device() = default;
+    Device();
     ~Device();
     Device(Device&&) noexcept;
     Device& operator=(Device&&) noexcept;

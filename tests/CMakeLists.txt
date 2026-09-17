@@ -205,6 +205,7 @@ set_tests_properties(MetallicSceneTests PROPERTIES
 )
 
 add_executable(MetallicRhiTests
+    rhi/GeneratedCommandsTests.cpp
     rhi/DebugControlTests.cpp
     rhi/Main.cpp
     rhi/RhiTest.h
