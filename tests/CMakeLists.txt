@@ -174,6 +174,7 @@ set_tests_properties(MetallicTaskTests PROPERTIES
 
 add_executable(MetallicSceneTests
     scene/GltfInstancingTests.cpp
+    scene/GeometryAttributesTests.cpp
     scene/Main.cpp
     scene/SceneGraphTests.cpp
 )

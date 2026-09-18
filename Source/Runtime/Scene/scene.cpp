@@ -7,6 +7,7 @@
  */
 
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Scene/GeometryAttributes.h"
 #include "Runtime/Scene/GltfGpuInstancing.h"
 #include "Runtime/Scene/UsdSceneImporter.h"
 
@@ -86,7 +87,7 @@ constexpr float kMeshletClusterFillWeight = 0.5f;
 constexpr float kMeshletLodErrorMergePrevious = 1.5f;
 constexpr float kMeshletLodErrorMergeAdditive = 0.0f;
 constexpr std::array<char, 8> kMeshletCacheMagic{'M', 'T', 'L', 'M', 'S', 'H', 'L', 'T'};
-constexpr uint32_t kMeshletCacheVersion = 1;
+constexpr uint32_t kMeshletCacheVersion = 2;
 constexpr uint32_t kMeshletCacheEndian = 0x01020304;
 constexpr const char* kMeshletCacheSuffix = ".meshlets.bin";
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
@@ -1011,67 +1012,6 @@ void readExtensionTextureInfo(
     textureInfo = makeRenderTextureInfo(object.Get(key));
 }
 
-float3 fallbackTangentForNormal(const float3& normal)
-{
-    const float3 axis = std::abs(normal.z) < 0.999f
-        ? float3(0.0f, 0.0f, 1.0f)
-        : float3(0.0f, 1.0f, 0.0f);
-    return normalizedOr(cross(axis, normal), float3(1.0f, 0.0f, 0.0f));
-}
-
-void generateTangents(RenderPrimitive& primitive)
-{
-    if (primitive.positions.empty() ||
-        primitive.normals.size() != primitive.positions.size() ||
-        primitive.texcoords0.size() != primitive.positions.size()) {
-        return;
-    }
-
-    std::vector<float3> accumulatedTangents(primitive.positions.size(), float3(0.0f, 0.0f, 0.0f));
-    std::vector<float3> accumulatedBitangents(primitive.positions.size(), float3(0.0f, 0.0f, 0.0f));
-    const size_t indexCount = primitive.indices.empty()
-        ? (primitive.positions.size() / 3) * 3
-        : (primitive.indices.size() / 3) * 3;
-    for (size_t index = 0; index + 2 < indexCount; index += 3) {
-        const uint32_t i0 = primitive.indices.empty() ? static_cast<uint32_t>(index + 0) : primitive.indices[index + 0];
-        const uint32_t i1 = primitive.indices.empty() ? static_cast<uint32_t>(index + 1) : primitive.indices[index + 1];
-        const uint32_t i2 = primitive.indices.empty() ? static_cast<uint32_t>(index + 2) : primitive.indices[index + 2];
-        if (i0 >= primitive.positions.size() || i1 >= primitive.positions.size() || i2 >= primitive.positions.size()) {
-            continue;
-        }
-
-        const float3 edge1 = primitive.positions[i1] - primitive.positions[i0];
-        const float3 edge2 = primitive.positions[i2] - primitive.positions[i0];
-        const float2 uv1 = primitive.texcoords0[i1] - primitive.texcoords0[i0];
-        const float2 uv2 = primitive.texcoords0[i2] - primitive.texcoords0[i0];
-        const float determinant = uv1.x * uv2.y - uv1.y * uv2.x;
-        if (std::abs(determinant) <= 0.0000001f) {
-            continue;
-        }
-
-        const float invDeterminant = 1.0f / determinant;
-        const float3 tangent = (edge1 * uv2.y - edge2 * uv1.y) * invDeterminant;
-        const float3 bitangent = (edge2 * uv1.x - edge1 * uv2.x) * invDeterminant;
-        accumulatedTangents[i0] = accumulatedTangents[i0] + tangent;
-        accumulatedTangents[i1] = accumulatedTangents[i1] + tangent;
-        accumulatedTangents[i2] = accumulatedTangents[i2] + tangent;
-        accumulatedBitangents[i0] = accumulatedBitangents[i0] + bitangent;
-        accumulatedBitangents[i1] = accumulatedBitangents[i1] + bitangent;
-        accumulatedBitangents[i2] = accumulatedBitangents[i2] + bitangent;
-    }
-
-    primitive.tangents.clear();
-    primitive.tangents.reserve(primitive.positions.size());
-    for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
-        const float3 normal = normalizedOr(primitive.normals[vertexIndex], float3(0.0f, 1.0f, 0.0f));
-        float3 tangent = accumulatedTangents[vertexIndex] - normal * dot(normal, accumulatedTangents[vertexIndex]);
-        tangent = normalizedOr(tangent, fallbackTangentForNormal(normal));
-        const float3 bitangent = accumulatedBitangents[vertexIndex];
-        const float handedness = dot(cross(normal, tangent), bitangent) < 0.0f ? -1.0f : 1.0f;
-        primitive.tangents.emplace_back(tangent.x, tangent.y, tangent.z, handedness);
-    }
-}
-
 void clearMeshletClusters(RenderPrimitive& primitive)
 {
     primitive.meshletClusters.clear();
@@ -1502,7 +1442,34 @@ bool buildMeshletLods(RenderPrimitive& primitive, const MeshletBuildOptions& opt
     }
 
     clodConfig config = makeMeshletLodConfig();
-    const std::array<float, 3> normalWeights{0.5f, 0.5f, 0.5f};
+    // Keep the source streams untouched: CLOD emits indices into these vertices.
+    // UVs contribute error in tile units; discontinuities and tangent handedness
+    // are protected even in permissive simplification. Do not use the sloppy
+    // fallback for attributed meshes, since it ignores all attribute seams.
+    const bool hasNormals = primitive.normals.size() == primitive.positions.size();
+    const bool hasUv = primitive.texcoords0.size() == primitive.positions.size();
+    const bool hasTangents = primitive.tangents.size() == primitive.positions.size();
+    const size_t attributeCount = (hasNormals ? 3 : 0) + (hasUv ? 2 : 0) + (hasTangents ? 4 : 0);
+    std::vector<float> attributes(primitive.positions.size() * attributeCount);
+    std::vector<float> weights;
+    uint32_t protectMask = 0;
+    if (hasNormals) { protectMask |= 7u; weights.insert(weights.end(), 3, 0.5f); }
+    if (hasUv) {
+        protectMask |= 3u << weights.size();
+        weights.insert(weights.end(), 2, 0.5f);
+    }
+    if (hasTangents) {
+        weights.insert(weights.end(), 3, 0.0f);
+        protectMask |= 1u << weights.size();
+        weights.push_back(0.0f);
+    }
+    for (size_t v = 0; v < primitive.positions.size(); ++v) {
+        size_t a = v * attributeCount;
+        if (hasNormals) { std::memcpy(attributes.data() + a, &primitive.normals[v].x, 3 * sizeof(float)); a += 3; }
+        if (hasUv) { attributes[a++] = primitive.texcoords0[v].x; attributes[a++] = primitive.texcoords0[v].y; }
+        if (hasTangents) { std::memcpy(attributes.data() + a, &primitive.tangents[v].x, 4 * sizeof(float)); }
+    }
+    if (attributeCount != 0) { config.simplify_fallback_sloppy = false; }
 
     clodMesh mesh{};
     mesh.indices = clusterIndices.data();
@@ -1510,11 +1477,12 @@ bool buildMeshletLods(RenderPrimitive& primitive, const MeshletBuildOptions& opt
     mesh.vertex_count = primitive.positions.size();
     mesh.vertex_positions = reinterpret_cast<const float*>(primitive.positions.data());
     mesh.vertex_positions_stride = sizeof(float3);
-    if (primitive.normals.size() == primitive.positions.size()) {
-        mesh.vertex_attributes = reinterpret_cast<const float*>(primitive.normals.data());
-        mesh.vertex_attributes_stride = sizeof(float3);
-        mesh.attribute_weights = normalWeights.data();
-        mesh.attribute_count = normalWeights.size();
+    if (attributeCount != 0) {
+        mesh.vertex_attributes = attributes.data();
+        mesh.vertex_attributes_stride = sizeof(float) * attributeCount;
+        mesh.attribute_weights = weights.data();
+        mesh.attribute_count = attributeCount;
+        mesh.attribute_protect_mask = protectMask;
     }
 
     primitive.meshletLodLevels.reserve(16);
@@ -1727,6 +1695,13 @@ uint64_t hashPrimitiveGeometry(
     hash = hashValue(hash, primitive.triangleCount);
     hash = hashFloat3Vector(hash, primitive.positions);
     hash = hashFloat3Vector(hash, primitive.normals);
+    hash = hashValue(hash, static_cast<uint64_t>(primitive.texcoords0.size()));
+    for (const auto& uv : primitive.texcoords0) { hash = hashValue(hash, uv.x); hash = hashValue(hash, uv.y); }
+    hash = hashValue(hash, static_cast<uint64_t>(primitive.tangents.size()));
+    for (const auto& tangent : primitive.tangents) {
+        hash = hashValue(hash, tangent.x); hash = hashValue(hash, tangent.y);
+        hash = hashValue(hash, tangent.z); hash = hashValue(hash, tangent.w);
+    }
     hash = hashIndexVector(hash, primitive.indices);
     return hash;
 }
@@ -3662,7 +3637,7 @@ bool Scene::loadUsdInternal(
                     primitive = prototypes[primitiveIndex];
                 }
                 if (primitive.tangents.empty()) {
-                    generateTangents(primitive);
+                    generateMissingTangents(primitive);
                 }
 
                 RenderNode renderNode;
@@ -4398,7 +4373,7 @@ bool Scene::loadInternal(
                         }
                     }
                     if (primitive.tangents.empty()) {
-                        generateTangents(primitive);
+                        generateMissingTangents(primitive);
                     }
                 }
 

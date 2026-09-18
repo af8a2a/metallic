@@ -159,16 +159,18 @@ int run(int argc, char** argv)
     MeshletStreamAssetOfflineBuildDesc desc;
     std::filesystem::path manifestPath;
     uint64_t memoryMiB = 0;
-    bool inspectOnly = false, validatePayloads = false;
+    bool inspectOnly = false, validatePayloads = false, validateAttributes = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view option(argv[i]);
         if (option == "--inspect") { inspectOnly = true; continue; }
         if (option == "--validate-payloads") { validatePayloads = true; continue; }
+        if (option == "--validate-attributes") { validateAttributes = true; validatePayloads = true; continue; }
         if (option == "--help") {
             std::puts("MetallicMeshletCook --source file.gltf --output file.meshstream.bin\n"
                 "  --report file.json --workers N --memory-mib N\n"
                 "  --max-geometries N --checkpoint-interval N --compression none|byte-rle\n"
                 "  --inspect (skip cooking) --validate-payloads (check every page)\n"
+                "  --validate-attributes (requires --source; exact LOD0 and all-LOD vertex attributes)\n"
                 "Exit 2 means a recoverable geometry-budget pause. Zero budgets preserve library defaults.");
             return 0;
         }
@@ -233,6 +235,21 @@ int run(int argc, char** argv)
         throw std::runtime_error("Cooked asset does not match source dependencies");
     }
     Json report = inspectAsset(asset, validatePayloads);
+    report["cookRevision"] = asset.cookRevision();
+    if (validateAttributes) {
+        if (desc.sourcePath.empty()) { throw std::runtime_error("--validate-attributes requires --source"); }
+        std::vector<MeshletStreamAttributeValidation> validation;
+        if (!validateMeshletStreamAttributes(asset, desc.sourcePath, validation, reason)) { throw std::runtime_error(reason); }
+        report["attributeValidation"] = {{"status", "exact-source-match"}, {"primitives", Json::array()}};
+        for (const auto& p : validation) {
+            report["attributeValidation"]["primitives"].push_back({{"sourcePrimitive", p.sourcePrimitive},
+                {"sourceVertices", p.sourceVertices}, {"preparedVertices", p.preparedVertices},
+                {"lod0Triangles", p.lod0Triangles}, {"verticesAllLods", p.verticesAllLods},
+                {"positionBytes", p.positionBytes}, {"normalBytes", p.normalBytes}, {"uvBytes", p.uvBytes},
+                {"tangentBytes", p.tangentBytes}, {"triangleBytes", p.triangleBytes}, {"clusterBytes", p.clusterBytes},
+                {"negativeTangentVertices", p.negativeTangentVertices}});
+        }
+    }
     const auto memory = sampleMemory();
     report["source"] = desc.sourcePath.string();
     report["elapsedSecondsThisInvocation"] = std::chrono::duration<double>(Clock::now() - started).count();

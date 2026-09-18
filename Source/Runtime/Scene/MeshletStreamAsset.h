@@ -219,6 +219,7 @@ public:
     bool valid() const;
     const std::filesystem::path& path() const { return path_; }
     bool isCurrentForSource(const std::filesystem::path& sourcePath) const;
+    uint32_t cookRevision() const;
 
     uint32_t primitiveCount() const;
     uint32_t instanceCount() const;
@@ -310,6 +311,28 @@ bool validateMeshletStreamDeviceHeader(const MeshletStreamPayloadHeader& header,
     const MeshletStreamPageInfo& page, std::string& reason);
 bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::string& reason);
 bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& desc, std::string& reason);
+
+struct MeshletStreamAttributeValidation {
+    uint32_t sourcePrimitive = 0;
+    uint64_t sourceVertices = 0;
+    uint64_t preparedVertices = 0;
+    uint64_t lod0Triangles = 0;
+    uint64_t verticesAllLods = 0;
+    uint64_t positionBytes = 0;
+    uint64_t normalBytes = 0;
+    uint64_t uvBytes = 0;
+    uint64_t tangentBytes = 0;
+    uint64_t triangleBytes = 0;
+    uint64_t clusterBytes = 0;
+    uint64_t negativeTangentVertices = 0;
+};
+
+// Offline validation: range-decode one source primitive at a time. All-LOD
+// vertex tuples must match source attributes exactly; LOD0 preserves the full
+// triangle multiset and winding. Does not load images or verify pixel shading.
+bool validateMeshletStreamAttributes(const MeshletStreamAsset& asset,
+    const std::filesystem::path& sourcePath, std::vector<MeshletStreamAttributeValidation>& results,
+    std::string& reason);
 std::filesystem::path meshletStreamAssetPathFor(const std::filesystem::path& sourcePath);
 
 } // namespace metallic::scene

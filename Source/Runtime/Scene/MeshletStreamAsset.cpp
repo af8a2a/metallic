@@ -1,4 +1,5 @@
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/GeometryAttributes.h"
 #include "Runtime/Scene/GltfGpuInstancing.h"
 #include "Runtime/Scene/MeshletStreamGpuCodec.h"
 
@@ -20,6 +21,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <map>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
@@ -40,7 +42,7 @@ constexpr std::array<char, 8> kMeshletStreamPartialMagic{'M', 'T', 'L', 'M', 'S'
 constexpr std::array<char, 8> kMeshoptDecodeCacheMagic{'M', 'T', 'L', 'M', 'O', 'P', 'T', 'C'};
 constexpr uint32_t kMeshletStreamVersion = 9;
 constexpr uint32_t kMeshletStreamLegacyVersion = 8;
-constexpr uint32_t kMeshletStreamPartialVersion = 8;
+constexpr uint32_t kMeshletStreamPartialVersion = 9;
 constexpr uint32_t kMeshoptDecodeCacheVersion = 1;
 constexpr uint32_t kMeshletStreamEndian = 0x01020304;
 constexpr uint32_t kPayloadMagic = 0x4d535047u; // "GSPM"
@@ -1133,6 +1135,7 @@ MeshletStreamFileHeader makeStreamFileHeader(
     MeshletStreamFileHeader header;
     std::memcpy(header.magic, kMeshletStreamMagic.data(), kMeshletStreamMagic.size());
     header.version = kMeshletStreamVersion;
+    header.reserved1 = kGeometryCookRevision;
     header.endian = kMeshletStreamEndian;
     header.sourceFileSize = sourceFileSizeFor(sourcePath);
     header.sourceWriteTime = sourceWriteTimeFor(sourcePath);
@@ -2685,87 +2688,6 @@ std::vector<uint32_t> readIndexAccessorForStreamBuilder(
     return indices;
 }
 
-float3 normalizedOrForStreamBuilder(const float3& value, const float3& fallback)
-{
-    const float lengthSquared = dot(value, value);
-    return lengthSquared > 0.00000001f
-        ? value * (1.0f / std::sqrt(lengthSquared))
-        : fallback;
-}
-
-float3 fallbackTangentForStreamBuilder(const float3& normal)
-{
-    const float3 axis = std::abs(normal.z) < 0.999f
-        ? float3(0.0f, 0.0f, 1.0f)
-        : float3(0.0f, 1.0f, 0.0f);
-    return normalizedOrForStreamBuilder(
-        cross(axis, normal),
-        float3(1.0f, 0.0f, 0.0f));
-}
-
-void generateTangentsForStreamBuilder(RenderPrimitive& primitive)
-{
-    if (!primitive.tangents.empty() ||
-        primitive.positions.empty() ||
-        primitive.normals.size() != primitive.positions.size() ||
-        primitive.texcoords0.size() != primitive.positions.size()) {
-        return;
-    }
-
-    std::vector<float3> accumulatedTangents(
-        primitive.positions.size(),
-        float3(0.0f, 0.0f, 0.0f));
-    std::vector<float3> accumulatedBitangents(
-        primitive.positions.size(),
-        float3(0.0f, 0.0f, 0.0f));
-    const size_t indexCount = (primitive.indices.size() / 3u) * 3u;
-    for (size_t index = 0; index + 2u < indexCount; index += 3u) {
-        const uint32_t i0 = primitive.indices[index + 0u];
-        const uint32_t i1 = primitive.indices[index + 1u];
-        const uint32_t i2 = primitive.indices[index + 2u];
-        if (i0 >= primitive.positions.size() ||
-            i1 >= primitive.positions.size() ||
-            i2 >= primitive.positions.size()) {
-            continue;
-        }
-        const float3 edge1 = primitive.positions[i1] - primitive.positions[i0];
-        const float3 edge2 = primitive.positions[i2] - primitive.positions[i0];
-        const float2 uv1 = primitive.texcoords0[i1] - primitive.texcoords0[i0];
-        const float2 uv2 = primitive.texcoords0[i2] - primitive.texcoords0[i0];
-        const float determinant = uv1.x * uv2.y - uv1.y * uv2.x;
-        if (std::abs(determinant) <= 0.0000001f) {
-            continue;
-        }
-        const float inverseDeterminant = 1.0f / determinant;
-        const float3 tangent = (edge1 * uv2.y - edge2 * uv1.y) * inverseDeterminant;
-        const float3 bitangent = (edge2 * uv1.x - edge1 * uv2.x) * inverseDeterminant;
-        accumulatedTangents[i0] = accumulatedTangents[i0] + tangent;
-        accumulatedTangents[i1] = accumulatedTangents[i1] + tangent;
-        accumulatedTangents[i2] = accumulatedTangents[i2] + tangent;
-        accumulatedBitangents[i0] = accumulatedBitangents[i0] + bitangent;
-        accumulatedBitangents[i1] = accumulatedBitangents[i1] + bitangent;
-        accumulatedBitangents[i2] = accumulatedBitangents[i2] + bitangent;
-    }
-
-    primitive.tangents.reserve(primitive.positions.size());
-    for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
-        const float3 normal = normalizedOrForStreamBuilder(
-            primitive.normals[vertexIndex],
-            float3(0.0f, 1.0f, 0.0f));
-        float3 tangent = accumulatedTangents[vertexIndex] -
-            normal * dot(normal, accumulatedTangents[vertexIndex]);
-        tangent = normalizedOrForStreamBuilder(
-            tangent,
-            fallbackTangentForStreamBuilder(normal));
-        const float handedness = dot(
-            cross(normal, tangent),
-            accumulatedBitangents[vertexIndex]) < 0.0f
-            ? -1.0f
-            : 1.0f;
-        primitive.tangents.emplace_back(tangent.x, tangent.y, tangent.z, handedness);
-    }
-}
-
 uint64_t triangleCountForStreamPrimitive(int32_t mode, uint64_t elementCount)
 {
     switch (mode) {
@@ -3212,6 +3134,7 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
                 primitive.material = primitiveJson.value("material", -1);
                 primitive.indices = primitiveJson.value("indices", -1);
                 primitive.mode = primitiveJson.value("mode", TINYGLTF_MODE_TRIANGLES);
+                primitive.targets = primitiveJson.value("targets", decltype(primitive.targets){});
                 const nlohmann::json attributes =
                     primitiveJson.value("attributes", nlohmann::json::object());
                 if (!attributes.is_object()) {
@@ -3219,9 +3142,11 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
                     return false;
                 }
                 for (const auto& [name, accessorIndex] : attributes.items()) {
-                    if (accessorIndex.is_number_integer()) {
-                        primitive.attributes[name] = accessorIndex.get<int>();
+                    if (!accessorIndex.is_number_integer()) {
+                        reason = "streamasset builder glTF attribute accessor is not an integer";
+                        return false;
                     }
+                    primitive.attributes[name] = accessorIndex.get<int>();
                 }
                 mesh.primitives.push_back(std::move(primitive));
             }
@@ -3395,6 +3320,14 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
     }
 
     const tinygltf::Primitive& gltfPrimitive = mesh.primitives[static_cast<size_t>(primitiveIndex)];
+    if (!gltfPrimitive.targets.empty()) { reason = "streamasset cook requires static attributes"; return false; }
+    for (const char* semantic : {"POSITION", "NORMAL", "TEXCOORD_0", "TANGENT"}) {
+        const auto attribute = gltfPrimitive.attributes.find(semantic);
+        if (attribute != gltfPrimitive.attributes.end() && !validGltfIndex(attribute->second, model.accessors.size())) {
+            reason = std::string("streamasset invalid attribute accessor: ") + semantic;
+            return false;
+        }
+    }
     outPrimitive.name = mesh.name.empty()
         ? "Primitive " + std::to_string(primitiveIndex)
         : mesh.name;
@@ -3434,7 +3367,8 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
             model.accessors[static_cast<size_t>(normalAccessorIter->second)],
             reason);
         if (outPrimitive.normals.size() != outPrimitive.positions.size()) {
-            outPrimitive.normals.clear();
+            reason = "streamasset NORMAL accessor count/read failure";
+            return false;
         } else {
             outPrimitive.hasAuthoredNormals = true;
         }
@@ -3448,7 +3382,8 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
             model.accessors[static_cast<size_t>(texcoordAccessorIter->second)],
             reason);
         if (outPrimitive.texcoords0.size() != outPrimitive.positions.size()) {
-            outPrimitive.texcoords0.clear();
+            reason = "streamasset TEXCOORD_0 accessor count/read failure";
+            return false;
         }
     }
 
@@ -3460,7 +3395,8 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
             model.accessors[static_cast<size_t>(tangentAccessorIter->second)],
             reason);
         if (outPrimitive.tangents.size() != outPrimitive.positions.size()) {
-            outPrimitive.tangents.clear();
+            reason = "streamasset TANGENT accessor count/read failure";
+            return false;
         } else {
             outPrimitive.hasAuthoredTangents = true;
         }
@@ -3484,7 +3420,8 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
     }
 
     outPrimitive.triangleCount = triangleCountForStreamPrimitive(outPrimitive.mode, outPrimitive.indexCount);
-    generateTangentsForStreamBuilder(outPrimitive);
+    if (!validateGeometryAttributes(outPrimitive, reason)) { return false; }
+    generateMissingTangents(outPrimitive);
     return true;
 }
 
@@ -3492,6 +3429,14 @@ uint64_t gltfPrimitiveKey(int32_t meshIndex, int32_t primitiveIndex)
 {
     return (static_cast<uint64_t>(static_cast<uint32_t>(meshIndex)) << 32u) |
         static_cast<uint32_t>(primitiveIndex);
+}
+
+std::string gltfGeometryKey(const tinygltf::Primitive& primitive)
+{
+    // Exact accessor identity, including every attribute. Material stays in the
+    // key because page and cluster headers still carry a material binding.
+    return nlohmann::json{{"mode", primitive.mode}, {"indices", primitive.indices},
+        {"attributes", primitive.attributes}, {"material", primitive.material}, {"targets", primitive.targets}}.dump();
 }
 
 MeshletStreamPartialFileHeader makePartialBuildHeader(
@@ -3973,11 +3918,26 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
     std::string& reason)
 {
     const tinygltf::Model& model = source.model;
+    std::map<std::string, uint32_t> reusedGeometries;
+    for (const auto& entry : state.partialGeometryEntries) {
+        if (!validGltfIndex(entry.meshIndex, model.meshes.size()) ||
+            !validGltfIndex(entry.primitiveIndex, model.meshes[entry.meshIndex].primitives.size())) {
+            reason = "Partial cache has an invalid source geometry";
+            return false;
+        }
+        reusedGeometries.emplace(gltfGeometryKey(model.meshes[entry.meshIndex].primitives[entry.primitiveIndex]), entry.streamPrimitiveIndex);
+    }
     uint32_t renderPrimitiveIndex = 0;
     for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
         const tinygltf::Mesh& mesh = model.meshes[meshIndex];
         for (size_t primitiveIndex = 0; primitiveIndex < mesh.primitives.size(); ++primitiveIndex) {
             const uint32_t sourceRenderPrimitiveIndex = renderPrimitiveIndex++;
+            const auto geometryKey = gltfGeometryKey(mesh.primitives[primitiveIndex]);
+            if (const auto found = reusedGeometries.find(geometryKey); found != reusedGeometries.end()) {
+                primitiveMap[gltfPrimitiveKey(static_cast<int32_t>(meshIndex), static_cast<int32_t>(primitiveIndex))] = found->second;
+                state.nextRenderPrimitiveIndex = std::max(state.nextRenderPrimitiveIndex, sourceRenderPrimitiveIndex + 1u);
+                continue;
+            }
             if (sourceRenderPrimitiveIndex < state.nextRenderPrimitiveIndex) {
                 continue;
             }
@@ -4059,6 +4019,7 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
                 return false;
             }
             if (streamPrimitiveIndex >= 0) {
+                reusedGeometries.emplace(geometryKey, static_cast<uint32_t>(streamPrimitiveIndex));
                 primitiveMap[gltfPrimitiveKey(static_cast<int32_t>(meshIndex), static_cast<int32_t>(primitiveIndex))] =
                     static_cast<uint32_t>(streamPrimitiveIndex);
                 state.partialGeometryEntries.push_back(MeshletStreamPartialGeometryEntry{
@@ -4605,7 +4566,13 @@ bool MeshletStreamAsset::isCurrentForSource(const std::filesystem::path& sourceP
         impl_->header.sourceFileSize == sourceFileSizeFor(sourcePath) &&
         impl_->header.sourceWriteTime == sourceWriteTimeFor(sourcePath) &&
         impl_->header.sourceDependencyFingerprint == sourceDependencyFingerprint &&
+        impl_->header.reserved1 == kGeometryCookRevision &&
         meshletStreamBuildParamsMatch(impl_->header);
+}
+
+uint32_t MeshletStreamAsset::cookRevision() const
+{
+    return valid() ? impl_->header.reserved1 : 0;
 }
 
 uint32_t MeshletStreamAsset::primitiveCount() const
@@ -5283,6 +5250,109 @@ bool transcodeMeshletStreamAsset(const std::filesystem::path& sourcePath,
     std::error_code error;
     std::filesystem::rename(temporary, destination, error);
     if (error) { reason = error.message(); return false; }
+    return true;
+}
+
+bool validateMeshletStreamAttributes(const MeshletStreamAsset& asset,
+    const std::filesystem::path& sourcePath, std::vector<MeshletStreamAttributeValidation>& results,
+    std::string& reason)
+{
+    results.clear();
+    if (!asset.valid()) { reason = "Invalid asset for attribute validation"; return false; }
+    StreamGltfSource source;
+    if (!loadGltfModelForStreamAssetBuilder(sourcePath, source, reason)) { return false; }
+    std::vector<std::pair<int32_t, int32_t>> sourcePrimitives;
+    for (size_t m = 0; m < source.model.meshes.size(); ++m) {
+        for (size_t p = 0; p < source.model.meshes[m].primitives.size(); ++p) {
+            sourcePrimitives.emplace_back(static_cast<int32_t>(m), static_cast<int32_t>(p));
+        }
+    }
+    using VertexKey = std::array<uint32_t, 12>; // P3 N3 UV2 T4, no padding or material-dependent transforms.
+    using Triangle = std::array<uint32_t, 3>;
+    const auto triangleKey = [](Triangle t) {
+        return std::min({t, Triangle{t[1], t[2], t[0]}, Triangle{t[2], t[0], t[1]}});
+    };
+    for (const auto& info : asset.primitives()) {
+        if (info.renderPrimitiveIndex >= sourcePrimitives.size()) { reason = "Invalid source primitive"; return false; }
+        const auto [mesh, primitiveIndex] = sourcePrimitives[info.renderPrimitiveIndex];
+        RenderPrimitive primitive;
+        if (!loadRenderPrimitiveForStreamAssetBuilder(source, mesh, primitiveIndex, primitive, reason)) { return false; }
+        MeshletStreamAttributeValidation result;
+        result.sourcePrimitive = info.renderPrimitiveIndex;
+        result.sourceVertices = source.model.accessors[source.model.meshes[mesh].primitives[primitiveIndex].attributes.at("POSITION")].count;
+        result.preparedVertices = primitive.positions.size();
+        const bool normal = !primitive.normals.empty(), uv = !primitive.texcoords0.empty(), tangent = !primitive.tangents.empty();
+        const uint32_t expectedFlags = (normal ? kMeshletStreamPayloadAttributeNormal : 0u) |
+            (uv ? kMeshletStreamPayloadAttributeTexcoord0 : 0u) | (tangent ? kMeshletStreamPayloadAttributeTangent : 0u);
+        std::map<VertexKey, uint32_t> vertices;
+        std::vector<uint32_t> remap(primitive.positions.size());
+        for (size_t v = 0; v < primitive.positions.size(); ++v) {
+            VertexKey key{};
+            std::memcpy(key.data(), &primitive.positions[v].x, 12);
+            if (normal) { std::memcpy(key.data() + 3, &primitive.normals[v].x, 12); }
+            if (uv) { std::memcpy(key.data() + 6, &primitive.texcoords0[v].x, 8); }
+            if (tangent) { std::memcpy(key.data() + 8, &primitive.tangents[v].x, 16); }
+            remap[v] = vertices.emplace(key, static_cast<uint32_t>(vertices.size())).first->second;
+        }
+        std::map<Triangle, uint32_t> triangles;
+        for (size_t i = 0; i < primitive.indices.size(); i += 3) {
+            ++triangles[triangleKey({remap[primitive.indices[i]], remap[primitive.indices[i + 1]], remap[primitive.indices[i + 2]]})];
+        }
+        const auto fail = [&](const char* message) {
+            reason = "Attribute validation primitive " + std::to_string(info.renderPrimitiveIndex) + ": " + message;
+            return false;
+        };
+        for (uint32_t p = info.pageOffset; p < info.pageOffset + info.pageCount; ++p) {
+            std::vector<uint8_t> scratch;
+            std::span<const uint8_t> bytes;
+            if (!decodeMeshletStreamPayloadForDevice(asset.pages()[p], asset.pagePayload(p), scratch, bytes, reason)) { return false; }
+            MeshletStreamPayloadHeader header;
+            std::memcpy(&header, bytes.data(), sizeof(header));
+            constexpr uint32_t mask = kMeshletStreamPayloadAttributeNormal | kMeshletStreamPayloadAttributeTexcoord0 | kMeshletStreamPayloadAttributeTangent;
+            if ((header.attributeFlags & mask) != expectedFlags) { return fail("missing or unexpected attribute stream"); }
+            const uint32_t positionStride = header.positionFormat == uint32_t(MeshletStreamPayloadFormat::Float32x3) ? 12 : 16;
+            result.verticesAllLods += header.vertexCount;
+            result.positionBytes += uint64_t(header.vertexCount) * positionStride;
+            result.normalBytes += uint64_t(header.vertexCount) * (normal ? 16 : 0);
+            result.uvBytes += uint64_t(header.vertexCount) * (uv ? 8 : 0);
+            result.tangentBytes += uint64_t(header.vertexCount) * (tangent ? 16 : 0);
+            result.triangleBytes += header.triangleIndexCount;
+            result.clusterBytes += uint64_t(header.clusterCount) * sizeof(MeshletStreamPayloadCluster);
+            std::vector<uint32_t> pageVertices(header.vertexCount);
+            for (uint32_t v = 0; v < header.vertexCount; ++v) {
+                VertexKey key{};
+                std::memcpy(key.data(), bytes.data() + header.positionOffsetBytes + v * positionStride, 12);
+                if (normal) { std::memcpy(key.data() + 3, bytes.data() + header.normalOffsetBytes + v * 16, 12); }
+                if (uv) { std::memcpy(key.data() + 6, bytes.data() + header.texcoord0OffsetBytes + v * 8, 8); }
+                if (tangent) {
+                    std::memcpy(key.data() + 8, bytes.data() + header.tangentOffsetBytes + v * 16, 16);
+                    float sign; std::memcpy(&sign, &key[11], 4);
+                    result.negativeTangentVertices += sign < 0.0f;
+                }
+                const auto found = vertices.find(key);
+                if (found == vertices.end()) { return fail("vertex tuple differs from source POSITION/NORMAL/UV/TANGENT"); }
+                pageVertices[v] = found->second;
+            }
+            if (header.lodLevel != 0) { continue; }
+            for (uint32_t c = 0; c < header.clusterCount; ++c) {
+                MeshletStreamPayloadCluster cluster;
+                std::memcpy(&cluster, bytes.data() + header.clusterOffsetBytes + c * sizeof(cluster), sizeof(cluster));
+                const auto* indices = bytes.data() + header.triangleOffsetBytes + cluster.triangleOffset;
+                for (uint32_t t = 0; t < cluster.triangleCount; ++t) {
+                    const Triangle key = triangleKey({pageVertices[cluster.vertexOffset + indices[t * 3]],
+                        pageVertices[cluster.vertexOffset + indices[t * 3 + 1]], pageVertices[cluster.vertexOffset + indices[t * 3 + 2]]});
+                    const auto found = triangles.find(key);
+                    if (found == triangles.end() || found->second == 0) { return fail("LOD0 triangle tuple or winding differs from source"); }
+                    --found->second;
+                    ++result.lod0Triangles;
+                }
+            }
+        }
+        if (std::any_of(triangles.begin(), triangles.end(), [](const auto& entry) { return entry.second != 0; })) {
+            return fail("LOD0 lost source triangles");
+        }
+        results.push_back(result);
+    }
     return true;
 }
 

@@ -20,6 +20,7 @@ add_library(meshoptimizer STATIC
     ../meshoptimizer/src/simplifier.cpp
     ../meshoptimizer/src/spatialorder.cpp
     ../meshoptimizer/src/stripifier.cpp
+    ../meshoptimizer/src/tangentspace.cpp
     ../meshoptimizer/src/vcacheoptimizer.cpp
     ../meshoptimizer/src/vertexcodec.cpp
     ../meshoptimizer/src/vertexfilter.cpp

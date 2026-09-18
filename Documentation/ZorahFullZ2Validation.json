@@ -1,0 +1,404 @@
+{
+  "sourceSha256": "4ae9247e8bbb5f5ef3cce6d7aa9cdf283bfba8cb765ddf2f3cf421d750313406",
+  "date": "2026-09-18",
+  "codeBase": "4460a58a6",
+  "cookRevision": 1,
+  "fullPlannedGeometryJobs": 5715,
+  "fullPlannedSourceTriangles": 1951260908,
+  "fullCookPerformed": false,
+  "probes": [
+    {
+      "name": "StoneUdim",
+      "sourceMeshes": [
+        12
+      ],
+      "sourceTriangles": 22430,
+      "cookRevision": 1,
+      "pages": 20,
+      "fileBytes": 1729750,
+      "terminalPageCount": 1,
+      "terminalPageBytesAligned256": 3584,
+      "peakProcessCommitBytes": 6139904,
+      "elapsedSecondsThisInvocation": 0.1344613,
+      "payloadValidation": "all-pages",
+      "attributes": {
+        "primitives": [
+          {
+            "clusterBytes": 36480,
+            "lod0Triangles": 22430,
+            "negativeTangentVertices": 18,
+            "normalBytes": 476160,
+            "positionBytes": 357120,
+            "preparedVertices": 12193,
+            "sourcePrimitive": 0,
+            "sourceVertices": 12193,
+            "tangentBytes": 476160,
+            "triangleBytes": 134244,
+            "uvBytes": 238080,
+            "verticesAllLods": 29760
+          }
+        ],
+        "status": "exact-source-match"
+      }
+    },
+    {
+      "name": "InstancingNoTangent",
+      "sourceMeshes": [
+        49
+      ],
+      "sourceTriangles": 2,
+      "cookRevision": 1,
+      "pages": 1,
+      "fileBytes": 3286,
+      "terminalPageCount": 1,
+      "terminalPageBytesAligned256": 512,
+      "peakProcessCommitBytes": 1277952,
+      "elapsedSecondsThisInvocation": 0.0085935,
+      "payloadValidation": "all-pages",
+      "attributes": {
+        "primitives": [
+          {
+            "clusterBytes": 96,
+            "lod0Triangles": 2,
+            "negativeTangentVertices": 4,
+            "normalBytes": 64,
+            "positionBytes": 48,
+            "preparedVertices": 4,
+            "sourcePrimitive": 0,
+            "sourceVertices": 4,
+            "tangentBytes": 64,
+            "triangleBytes": 6,
+            "uvBytes": 32,
+            "verticesAllLods": 4
+          }
+        ],
+        "status": "exact-source-match"
+      }
+    },
+    {
+      "name": "MaskedLeaves",
+      "sourceMeshes": [
+        1312
+      ],
+      "sourceTriangles": 369,
+      "cookRevision": 1,
+      "pages": 3,
+      "fileBytes": 49289,
+      "terminalPageCount": 1,
+      "terminalPageBytesAligned256": 7168,
+      "peakProcessCommitBytes": 1351680,
+      "elapsedSecondsThisInvocation": 0.0095895,
+      "payloadValidation": "all-pages",
+      "attributes": {
+        "primitives": [
+          {
+            "clusterBytes": 864,
+            "lod0Triangles": 369,
+            "negativeTangentVertices": 523,
+            "normalBytes": 13712,
+            "positionBytes": 10284,
+            "preparedVertices": 403,
+            "sourcePrimitive": 0,
+            "sourceVertices": 399,
+            "tangentBytes": 13712,
+            "triangleBytes": 1935,
+            "uvBytes": 6856,
+            "verticesAllLods": 857
+          }
+        ],
+        "status": "exact-source-match"
+      }
+    },
+    {
+      "name": "TextureTransformBc4",
+      "sourceMeshes": [
+        398
+      ],
+      "sourceTriangles": 936,
+      "cookRevision": 1,
+      "pages": 8,
+      "fileBytes": 89930,
+      "terminalPageCount": 2,
+      "terminalPageBytesAligned256": 8192,
+      "peakProcessCommitBytes": 1339392,
+      "elapsedSecondsThisInvocation": 0.0131974,
+      "payloadValidation": "all-pages",
+      "attributes": {
+        "primitives": [
+          {
+            "clusterBytes": 1056,
+            "lod0Triangles": 536,
+            "negativeTangentVertices": 681,
+            "normalBytes": 10896,
+            "positionBytes": 8172,
+            "preparedVertices": 323,
+            "sourcePrimitive": 0,
+            "sourceVertices": 323,
+            "tangentBytes": 10896,
+            "triangleBytes": 3012,
+            "uvBytes": 5448,
+            "verticesAllLods": 681
+          },
+          {
+            "clusterBytes": 864,
+            "lod0Triangles": 400,
+            "negativeTangentVertices": 836,
+            "normalBytes": 13376,
+            "positionBytes": 10032,
+            "preparedVertices": 363,
+            "sourcePrimitive": 1,
+            "sourceVertices": 363,
+            "tangentBytes": 13376,
+            "triangleBytes": 2250,
+            "uvBytes": 6688,
+            "verticesAllLods": 836
+          }
+        ],
+        "status": "exact-source-match"
+      }
+    },
+    {
+      "name": "Glass",
+      "sourceMeshes": [
+        334
+      ],
+      "sourceTriangles": 15872,
+      "cookRevision": 1,
+      "pages": 15,
+      "fileBytes": 1806558,
+      "terminalPageCount": 15,
+      "terminalPageBytesAligned256": 1803264,
+      "peakProcessCommitBytes": 8118272,
+      "elapsedSecondsThisInvocation": 0.083787,
+      "payloadValidation": "all-pages",
+      "attributes": {
+        "primitives": [
+          {
+            "clusterBytes": 35712,
+            "lod0Triangles": 15872,
+            "negativeTangentVertices": 32972,
+            "normalBytes": 527552,
+            "positionBytes": 395664,
+            "preparedVertices": 31744,
+            "sourcePrimitive": 0,
+            "sourceVertices": 31744,
+            "tangentBytes": 527552,
+            "triangleBytes": 47616,
+            "uvBytes": 263776,
+            "verticesAllLods": 32972
+          }
+        ],
+        "status": "exact-source-match"
+      }
+    },
+    {
+      "name": "Blend",
+      "sourceMeshes": [
+        294
+      ],
+      "sourceTriangles": 2,
+      "cookRevision": 1,
+      "pages": 1,
+      "fileBytes": 1276,
+      "terminalPageCount": 1,
+      "terminalPageBytesAligned256": 512,
+      "peakProcessCommitBytes": 1175552,
+      "elapsedSecondsThisInvocation": 0.0087841,
+      "payloadValidation": "all-pages",
+      "attributes": {
+        "primitives": [
+          {
+            "clusterBytes": 96,
+            "lod0Triangles": 2,
+            "negativeTangentVertices": 4,
+            "normalBytes": 64,
+            "positionBytes": 48,
+            "preparedVertices": 4,
+            "sourcePrimitive": 0,
+            "sourceVertices": 4,
+            "tangentBytes": 64,
+            "triangleBytes": 6,
+            "uvBytes": 32,
+            "verticesAllLods": 4
+          }
+        ],
+        "status": "exact-source-match"
+      }
+    },
+    {
+      "name": "Unlit",
+      "sourceMeshes": [
+        109
+      ],
+      "sourceTriangles": 19200,
+      "cookRevision": 1,
+      "pages": 17,
+      "fileBytes": 660938,
+      "terminalPageCount": 1,
+      "terminalPageBytesAligned256": 1536,
+      "peakProcessCommitBytes": 4657152,
+      "elapsedSecondsThisInvocation": 0.0530518,
+      "payloadValidation": "all-pages",
+      "attributes": {
+        "primitives": [
+          {
+            "clusterBytes": 29856,
+            "lod0Triangles": 19200,
+            "negativeTangentVertices": 0,
+            "normalBytes": 0,
+            "positionBytes": 304200,
+            "preparedVertices": 9762,
+            "sourcePrimitive": 0,
+            "sourceVertices": 9762,
+            "tangentBytes": 0,
+            "triangleBytes": 114924,
+            "uvBytes": 202800,
+            "verticesAllLods": 25350
+          }
+        ],
+        "status": "exact-source-match"
+      }
+    },
+    {
+      "name": "SharedGeometry",
+      "sourceMeshes": [
+        12,
+        844
+      ],
+      "sourceTriangles": 44860,
+      "cookRevision": 1,
+      "pages": 40,
+      "fileBytes": 3458854,
+      "terminalPageCount": 2,
+      "terminalPageBytesAligned256": 7168,
+      "peakProcessCommitBytes": 7266304,
+      "elapsedSecondsThisInvocation": 0.1110686,
+      "payloadValidation": "all-pages",
+      "attributes": {
+        "primitives": [
+          {
+            "clusterBytes": 36480,
+            "lod0Triangles": 22430,
+            "negativeTangentVertices": 18,
+            "normalBytes": 476160,
+            "positionBytes": 357120,
+            "preparedVertices": 12193,
+            "sourcePrimitive": 0,
+            "sourceVertices": 12193,
+            "tangentBytes": 476160,
+            "triangleBytes": 134244,
+            "uvBytes": 238080,
+            "verticesAllLods": 29760
+          },
+          {
+            "clusterBytes": 36480,
+            "lod0Triangles": 22430,
+            "negativeTangentVertices": 18,
+            "normalBytes": 476160,
+            "positionBytes": 357120,
+            "preparedVertices": 12193,
+            "sourcePrimitive": 1,
+            "sourceVertices": 12193,
+            "tangentBytes": 476160,
+            "triangleBytes": 134244,
+            "uvBytes": 238080,
+            "verticesAllLods": 29760
+          }
+        ],
+        "status": "exact-source-match"
+      }
+    },
+    {
+      "name": "MirroredInstances",
+      "sourceMeshes": [
+        49
+      ],
+      "sourceTriangles": 2,
+      "cookRevision": 1,
+      "pages": 1,
+      "fileBytes": 3286,
+      "terminalPageCount": 1,
+      "terminalPageBytesAligned256": 512,
+      "peakProcessCommitBytes": 1257472,
+      "elapsedSecondsThisInvocation": 0.0069384,
+      "payloadValidation": "all-pages",
+      "attributes": {
+        "primitives": [
+          {
+            "clusterBytes": 96,
+            "lod0Triangles": 2,
+            "negativeTangentVertices": 4,
+            "normalBytes": 64,
+            "positionBytes": 48,
+            "preparedVertices": 4,
+            "sourcePrimitive": 0,
+            "sourceVertices": 4,
+            "tangentBytes": 64,
+            "triangleBytes": 6,
+            "uvBytes": 32,
+            "verticesAllLods": 4
+          }
+        ],
+        "status": "exact-source-match"
+      }
+    },
+    {
+      "name": "LargestPrimitive",
+      "sourceMeshes": [
+        942
+      ],
+      "sourceTriangles": 17297796,
+      "cookRevision": 1,
+      "pages": 11610,
+      "fileBytes": 1387274360,
+      "terminalPageCount": 3,
+      "terminalPageBytesAligned256": 269056,
+      "peakProcessCommitBytes": 2985291776,
+      "elapsedSecondsThisInvocation": 35.1159947,
+      "payloadValidation": "all-pages",
+      "attributes": {
+        "status": "not-requested-large-stress"
+      }
+    }
+  ],
+  "status": "cook-and-data-fidelity-validated",
+  "pixelValidation": "pending-Z3-texture-resources-and-Z4-stream-material-consumers",
+  "cache": {
+    "residentVersion": 2,
+    "partialVersion": 9,
+    "streamContainerVersion": 9,
+    "cookRevision": 1,
+    "legacyStreamPayloadsReadable": true,
+    "legacyCookRevision": 0
+  },
+  "buildTargetsPassed": [
+    "MetallicSceneTests",
+    "MetallicMeshletCook",
+    "MetallicGPUDrivenSample",
+    "MetallicRhiTests"
+  ],
+  "tests": {
+    "scene": {
+      "tests": 37,
+      "failures": 0,
+      "errors": 0,
+      "time": "2.605s"
+    },
+    "rhi": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "time": "9.75s"
+    },
+    "rhiFilter": "stream_metadata_contract",
+    "independentResidentProbeCount": 9,
+    "syntheticCoarseUvAndTangentFrameValidation": true
+  },
+  "smallProbePages": 106,
+  "measurementNotes": [
+    "Cook memory is peak process commit, not GPU memory.",
+    "LargestPrimitive validates payloads only, not source-tuple attributes.",
+    "Single-run wall times are functional evidence, not cold-disk benchmarks.",
+    "Full planned job and triangle counts derive from exact accessor+material identity, not full cook."
+  ]
+}

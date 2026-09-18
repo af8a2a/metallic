@@ -214,6 +214,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path("Asset/ZorahFull/zorah_textured_public.v1.gltf"))
     parser.add_argument("--directory", type=Path, required=True)
+    parser.add_argument("--include-stress-primitive", action="store_true",
+                        help="Also isolate the largest single primitive; remains excluded from default cook loops")
     args = parser.parse_args()
     source = args.source.resolve(strict=True)
     data = source.read_bytes()
@@ -241,6 +243,22 @@ def main():
         info.update(name=name, path=destination.as_posix(), purpose=purpose,
                     cookRecommended=name != "LargestMesh", materials=len(probe["materials"]),
                     images=len(probe["images"]), textures=len(probe["textures"]))
+        probes.append(info)
+    if args.include_stress_primitive:
+        triangles, mesh_index, primitive_index = max(
+            (scene["accessors"][p.get("indices", p["attributes"]["POSITION"])]["count"] // 3, m, i)
+            for m, mesh in enumerate(scene["meshes"]) for i, p in enumerate(mesh["primitives"]))
+        stress_scene = copy.deepcopy(scene)
+        stress_scene["meshes"][mesh_index]["primitives"] = [scene["meshes"][mesh_index]["primitives"][primitive_index]]
+        probe, info = make_probe(stress_scene, source, [mesh_index])
+        for instance in info["expectedInstances"]:
+            instance["sourcePrimitive"] = primitive_index
+        destination = (args.directory / "LargestPrimitive.gltf").resolve()
+        write_json(destination, probe)
+        info.update(name="LargestPrimitive", path=destination.as_posix(),
+                    purpose="Isolated largest source primitive, explicit bounded cook only",
+                    sourcePrimitiveIndex=primitive_index, cookRecommended=False,
+                    materials=len(probe["materials"]), images=len(probe["images"]), textures=len(probe["textures"]))
         probes.append(info)
     cfg_path = source.with_suffix(".cfg")
     cfg = cfg_path.read_text(encoding="utf-8")

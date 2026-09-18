@@ -2244,6 +2244,23 @@ void testMeshletPersistence(const std::filesystem::path& directory)
     expectClusterMetadataEqual(cached.meshletLodClusters.back(), generated.meshletLodClusters.back(), "last LOD meshlet");
 }
 
+// Recovery fixtures need two actual cook jobs. Exact accessor/material aliases
+// are now reused; give each job its own accessor identity while sharing bytes.
+void makeCookJobsDistinct(const std::filesystem::path& path)
+{
+    std::ifstream input(path);
+    auto root = nlohmann::json::parse(input);
+    input.close();
+    for (size_t m = 1; m < root["meshes"].size(); ++m) {
+        for (auto& primitive : root["meshes"][m]["primitives"]) {
+            const auto accessor = root["accessors"][primitive["indices"].get<size_t>()];
+            primitive["indices"] = root["accessors"].size();
+            root["accessors"].push_back(accessor);
+        }
+    }
+    std::ofstream output(path); output << root.dump();
+}
+
 void testMeshletStreamAsset(const std::filesystem::path& directory)
 {
     const std::filesystem::path streamDirectory = directory / "meshlet_streamasset";
@@ -2902,6 +2919,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     const std::filesystem::path partialDirectory = directory / "meshlet_streamasset_partial";
     std::filesystem::create_directories(partialDirectory);
     const std::filesystem::path partialGltfPath = writeMeshletLodGridScene(partialDirectory, 2);
+    makeCookJobsDistinct(partialGltfPath);
     const std::filesystem::path partialStreamAssetPath =
         partialDirectory / "meshlet_lod_grid.partial.meshstream.bin";
     std::filesystem::path partialCachePath = partialStreamAssetPath;
@@ -2968,6 +2986,7 @@ void testMeshoptCompressedMeshletStreamAsset(const std::filesystem::path& direct
         compressedDirectory,
         sizeof(uint16_t) * 4u,
         2u);
+    makeCookJobsDistinct(gltfPath);
     const std::filesystem::path streamAssetPath =
         compressedDirectory / "meshopt_compressed.meshstream.bin";
     std::filesystem::path partialPath = streamAssetPath;
@@ -5009,6 +5028,7 @@ TEST(SceneImport, MeshletStreamCookWorkersProgressAndRecovery)
     const auto directory = prepareOutputDirectory() / "cook_workers_recovery";
     std::filesystem::create_directories(directory);
     const auto source = writeMeshletLodGridScene(directory, 2);
+    makeCookJobsDistinct(source);
     const auto referencePath = directory / "reference.meshstream.bin";
     const auto resumedPath = directory / "resumed.meshstream.bin";
     for (const auto& path : {referencePath, resumedPath}) {

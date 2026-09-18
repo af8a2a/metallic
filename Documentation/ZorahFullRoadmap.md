@@ -4,13 +4,13 @@
 
 本轮完成 glTF 元数据、外部依赖、全部 4418 张 KTX2 的头/level index/元数据审计和当前源码核对。未启动全量 cook，未加载 GPU 场景，也没有新的帧时测量。可复跑工具：[AuditZorahFull.py](E:/metallic/Tools/AuditZorahFull.py)；精确计数、源 glTF SHA-256 和纹理预算估算：[ZorahFullAssetAudit.json](E:/metallic/Documentation/ZorahFullAssetAudit.json)。
 
-2026-09-18 更新：**Z1 导入与探针已完成**，实测计数及验证见 [ZorahFullZ1ImportAndProbes.md](E:/metallic/Documentation/ZorahFullZ1ImportAndProbes.md)。以下资产数据保持 Z0 审计口径；实现状态更新了 metadata 与实例化两项。
+2026-09-18 更新：**Z1 导入与探针已完成**，实测计数及验证见 [ZorahFullZ1ImportAndProbes.md](E:/metallic/Documentation/ZorahFullZ1ImportAndProbes.md)。**Z2 属性 cook、数据保真与预算验证已完成**，见 [ZorahFullZ2Attributes.md](E:/metallic/Documentation/ZorahFullZ2Attributes.md)；真实 KTX2 材质的像素对照依赖 Z3/Z4。以下资产数据保持 Z0 审计口径，实现状态随阶段更新。
 
 ## 结论
 
 沿用当前几何流送、VBuffer、CLAS 和实时 OpenPBR 主线，先闭环 **完整实例/材质语义 + 低 mip 全场景首帧**，再实现 **受预算约束的纹理细节流送**。不需要先重写几何遍历，也不需要把完整虚拟纹理系统作为首帧的前置条件。
 
-目前不能仅替换 MiniZorah 的路径。Z1 已打通扩展实例化与 metadata 导入；剩余主要阻塞依次是属性保真的 cook/解码、KTX2/BC 格式、256 张纹理上限、stream 材质/覆盖消费者。
+目前不能仅替换 MiniZorah 的路径。Z1 已打通扩展实例化与 metadata 导入，Z2 已完成属性 cook 与探针数据校验；剩余主要阻塞依次是 KTX2/BC 格式、256 张纹理上限、stream 属性/材质/覆盖消费者。
 
 ## 1. 资产实况与口径
 
@@ -54,7 +54,7 @@ KTX2 的每个 mip 可独立 Zstd 解压，适合按需读入；容器提供 for
 | 新位置格式 | 新 cook 已写 Float32x3；旧 float4 可加载时转换 | 不把“16→12 B 位置”重复列为待办；完整属性采用何种编码另行决定 |
 | 场景 metadata | Z1 已保留外部 image/texture 描述和源材质 JSON；只读必要实例 TRS，无图像/几何载入 | KTX2 解码、纹理上传和未消费的材质扩展仍在 Z3/Z4 |
 | glTF 实例化 | Z1 已将外部 `.gltf` 的 TRS 实例统一展开；runtime metadata、resident 与 cook 共用规则，保留源 node/instance 映射 | 当前边界为静态、外部、非 sparse/非压缩的实例 accessor；不等同于已支持所有扩展存储形式 |
-| cook 属性 | 可读写 normal / UV0 / tangent，payload 有相应 offset/format | CLOD 简化属性目前仅传 normal，未把 UV seam/纹理误差纳入；需要生成缺失切线并核对跨 LOD 属性 |
+| cook 属性 | Z2 共用兼容 MikkTSpace 的切线生成与镜像拆分；normal/UV 参与简化并保护 seam/手性；9 探针全部 LOD 属性核对通过；同 accessor+material 复用及缓存失效/恢复已验证 | Glass 的保真约束使 1.72 MiB 终止页常驻；真实法线贴图、texture transform 和 alpha 的像素质量须由 Z3/Z4 验证 |
 | stream resolve | 共享解码器已有可选 normal/UV；实时 OpenPBR、阴影与后处理已接入 | 普通 stream surface 路径仅在 tessellation domain 有效时调用属性解码；非细分路径仍用零 UV/面法线；没有 authored tangent 解码 |
 | 纹理资源 | 普通 PNG/RGBA、mip 生成、材质资源缓存 | `ScenePathTraceResources` 使用 stb 解码并创建 RGBA8；缺 KTX2+Zstd 的 BC 直传，缺按预算预选 mip |
 | RHI | 通用纹理、上传、descriptor 与帧完成机制 | `Format` 尚无 BC4/5/7，需块尺寸/上传范围/Vulkan 映射；TextureView 需 swizzle 表达或统一 shader 元数据替代 |
@@ -72,7 +72,7 @@ KTX2 的每个 mip 可独立 Zstd 解压，适合按需读入；容器提供 for
 | --- | --- | --- |
 | Z0：资源审计 | **本轮已完成**元数据/文件头报告、预算估算、兼容性缺口 | 所有引用文件存在；4418 个 KTX2 头及各 BC mip 长度符合尺寸；不将此记为完整 decode/render 验证 |
 | Z1：导入与代表性探针 | **2026-09-18 已完成**；共用实例展开、metadata 描述、10 个探针及 cfg manifest | 未筛选时 16118 / 43068 实例；父级/镜像/非均匀变换与独立参考矩阵一致，9 个小探针 cook 实例表一致；未载入全量图像/几何。镜像着色及 alpha 的像素验收继续归 Z4 |
-| Z2：属性 cook 与保真 | normal/UV/tangent 完整契约；UV seam 与属性误差参与简化；局部缓存、断点恢复；确定可安全复用的几何键 | 小场景 LOD0 的位置/normal/UV/tangent 与源数据一致；粗级 UV/法线贴图无明显接缝、翻向；每类 payload 字节和最大单 primitive 工作内存明确 |
+| Z2：属性 cook 与保真 | **2026-09-18 cook/数据验收完成**；normal/UV/tangent 契约、seam/手性保护、缺失切线拆分、缓存恢复、同材质精确几何复用 | 9 探针 106 页全 LOD 属性及 LOD0 绕序一致，粗级合成 UV/TBN 检查通过；最大单 primitive 17.3M 三角形 cook 峰值提交 2.78 GiB；真实材质像素对照随 Z3/Z4 完成，未全量 cook |
 | Z3：KTX2 与受预算的纹理资源 | BC4/5/7、Zstd per-mip、swizzle、色彩空间、全 mip-tail 上传；消除 256 限制；统一 raster/deferred/shadow 的纹理句柄 | 4418 纹理逻辑引用均有效；小纹理尾 mip/非二次幂/BC5 normal/BC4 specular 正确；512 cap 约 1.36 GiB payload，实际分配与峰值 staging 单列 |
 | Z4：完整流式材质消费者 | 普通 stream 解码 normal/UV/tangent，正确纹理 footprint；OpenPBR specular/unlit；MASK、双面及 RT alpha；BLEND/玻璃显式路径 | 小场景 resident 与 stream 的 base color、MR、normal、alpha 覆盖对照通过；HW/SW/阴影对相同 alpha mip 与 cutoff 一致；材质 ID >255 正确 |
 | Z5：全场景 cook 与首帧 | 在 Z2 格式和小场景材质验收稳定后全量 cook；固定 cfg 相机、512 cap 全材质首帧，后续可调到预算内更细 mip | 全 root 几何和保底纹理就绪后显示；无漏实例/黑贴图/错误材质；完整场景中的 MASK、玻璃和 BLEND 无静默丢失；内存受限、重复切换及退出正常 |
@@ -130,4 +130,4 @@ cfg 还启用属性 7、多材质、法线/UV 简化权重 0.5、材质权重 32
 - 几何/RT：全属性页字节，LOD 误差、缺页、CLAS/BLAS fallback 屏幕占比；MASK coverage 不一致计数。
 - CPU/GPU：texture demand、decode、upload、material resolve、alpha raster/shadow、总图区间；并发 scope 不简单相加。报告首个完整粗级帧时间，以及视图几何和纹理各自的收敛时间。
 
-首次推进建议直接选择 **Z1 + Z2 小探针**，同时确定 Z3 的格式/句柄接口。全量 cook 之前，以石材、叶片、彩玻璃及共享几何换材质四类局部图像完成验证；这比先运行几小时全量 cook 再发现 UV 或材质 ABI 要改更可控。
+下一阶段推进 **Z3 的格式、纹理预算和句柄接口**，随后在 Z4 使用现有 Z1/Z2 探针完成石材、叶片、彩玻璃及共享几何换材质的局部图像对照。全量 cook 仍等待格式与小场景材质验证稳定。

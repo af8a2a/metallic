@@ -243,6 +243,7 @@ endif()
 
 add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/GltfGpuInstancing.cpp
+    Runtime/Scene/GeometryAttributes.cpp
     Runtime/Scene/MeshletStreamAsset.cpp
     Runtime/Scene/MeshletStreamGpuCodec.cpp
     Runtime/Scene/Scene.cpp
