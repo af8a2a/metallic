@@ -1,0 +1,178 @@
+{
+  "date": "2026-09-18",
+  "baseRevision": "612b0b305",
+  "source": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+  "sourceSha256": "4ae9247e8bbb5f5ef3cce6d7aa9cdf283bfba8cb765ddf2f3cf421d750313406",
+  "fullGeometryCookPerformed": false,
+  "device": "NVIDIA GeForce RTX 5070 Ti",
+  "textureResources": {
+    "allMipTailsUploaded": true,
+    "budgetBytes": 2147483648,
+    "descriptorCount": 4419,
+    "geometryPayloadRead": false,
+    "ktxImages": 4418,
+    "lastDescriptorSample": [
+      0.4470283091068268,
+      0.5444113612174988,
+      0,
+      1,
+      0.4470283091068268,
+      0.5444113612174988,
+      0,
+      1,
+      0.16824489831924438,
+      0.257474422454834,
+      0,
+      1
+    ],
+    "logicalTextures": 4418,
+    "mimeMismatches": 4069,
+    "peakInFlightBatches": 1,
+    "peakStagingBytes": 134217728,
+    "plannedAllocationBytes": 1469821440,
+    "plannedPayloadBytes": 1458267388,
+    "residentAllocationBytes": 1469821440,
+    "residentImagesIncludingFallback": 4419,
+    "residentPayloadBytes": 1458267388,
+    "selectedMaxDimension": 512,
+    "uploadBatches": 369
+  },
+  "synthetic": {
+    "budgetPressure": {
+      "budgetBytes": 1048576,
+      "descriptorCount": 301,
+      "ktxImages": 300,
+      "logicalTextures": 300,
+      "mimeMismatches": 300,
+      "peakInFlightBatches": 1,
+      "peakStagingBytes": 134217728,
+      "plannedAllocationBytes": 987136,
+      "plannedPayloadBytes": 552940,
+      "residentAllocationBytes": 987136,
+      "residentImagesIncludingFallback": 301,
+      "residentPayloadBytes": 552940,
+      "selectedMaxDimension": 512,
+      "uploadBatches": 9
+    },
+    "fullTail": {
+      "budgetBytes": 16777216,
+      "descriptorCount": 301,
+      "ktxImages": 300,
+      "logicalTextures": 300,
+      "mimeMismatches": 300,
+      "peakInFlightBatches": 2,
+      "peakStagingBytes": 134217728,
+      "plannedAllocationBytes": 461312,
+      "plannedPayloadBytes": 28756,
+      "residentAllocationBytes": 461312,
+      "residentImagesIncludingFallback": 301,
+      "residentPayloadBytes": 28756,
+      "selectedMaxDimension": 512,
+      "uploadBatches": 9
+    },
+    "gpuSampling": "passed",
+    "oneTexelTail": {
+      "budgetBytes": 16777216,
+      "descriptorCount": 301,
+      "ktxImages": 300,
+      "logicalTextures": 300,
+      "mimeMismatches": 300,
+      "peakInFlightBatches": 2,
+      "peakStagingBytes": 134217728,
+      "plannedAllocationBytes": 154112,
+      "plannedPayloadBytes": 4796,
+      "residentAllocationBytes": 154112,
+      "residentImagesIncludingFallback": 301,
+      "residentPayloadBytes": 4796,
+      "selectedMaxDimension": 1,
+      "uploadBatches": 4
+    }
+  },
+  "fullEarlierRun": {
+    "peakInFlightBatches": 3,
+    "peakStagingBytes": 201326592,
+    "log": "build-release/zorah-z3/full-tests.log"
+  },
+  "validation": {
+    "tests": 12,
+    "failures": 0,
+    "errors": 0,
+    "log": "build-release/zorah-z3/final-tests.log",
+    "gtestReport": "build-release/zorah-z3/final-tests.json",
+    "vulkanValidationErrorsInLog": 0,
+    "cases": [
+      {
+        "name": "RhiCommand.bc_texture_padded_upload",
+        "status": "RUN",
+        "result": "COMPLETED"
+      },
+      {
+        "name": "RhiCommand.streamer_texture_upload",
+        "status": "RUN",
+        "result": "COMPLETED"
+      },
+      {
+        "name": "RhiRendering.stream_metadata_contract",
+        "status": "RUN",
+        "result": "COMPLETED"
+      },
+      {
+        "name": "RhiRendering.render_graph_scene_material_visualization_preview",
+        "status": "RUN",
+        "result": "COMPLETED"
+      },
+      {
+        "name": "RhiRendering.render_graph_openpbr_pathtracing_shader_compile",
+        "status": "RUN",
+        "result": "COMPLETED"
+      },
+      {
+        "name": "RhiRendering.render_graph_gpu_driven_streamasset_shader_compile",
+        "status": "RUN",
+        "result": "COMPLETED"
+      },
+      {
+        "name": "RhiRendering.render_graph_rtxdi_shader_compile",
+        "status": "RUN",
+        "result": "COMPLETED"
+      },
+      {
+        "name": "RhiRendering.render_graph_pathtracing_guides_shader_compile",
+        "status": "RUN",
+        "result": "COMPLETED"
+      },
+      {
+        "name": "RhiRendering.render_graph_scene_path_trace_material_textures_preview",
+        "status": "RUN",
+        "result": "COMPLETED"
+      },
+      {
+        "name": "RhiRendering.render_graph_gpu_driven_alpha_mask_render",
+        "status": "RUN",
+        "result": "COMPLETED"
+      },
+      {
+        "name": "RhiRendering.ktx2_texture_resources",
+        "status": "RUN",
+        "result": "COMPLETED"
+      },
+      {
+        "name": "RhiRendering.zorah_texture_resources",
+        "status": "RUN",
+        "result": "COMPLETED"
+      }
+    ]
+  },
+  "buildTargets": [
+    "MetallicRhiTests",
+    "MetallicGPUDrivenSample"
+  ],
+  "limitations": [
+    "Static external 2D BC4/BC5/BC7 KTX2 only; no Basis/array/cube/embedded KTX2",
+    "Budget counts image suballocations for one resource generation; excludes VMA heap slack, descriptors, staging and retained generations",
+    "Full validates every logical reference and uploads every selected mip; exact GPU pixel oracles use synthetic BC fixtures, not every Full texel",
+    "Full material consumers and alpha/transparency rendering remain Z4; full cook remains Z5",
+    "View-driven mip streaming and total geometry/CLAS/texture budgeting remain Z6",
+    "GPU was not idle, so timing is not a performance comparison"
+  ]
+}

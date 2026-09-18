@@ -1,3 +1,4 @@
+#include "../../Interop/MaterialTextureDecode.hlsli"
 #ifndef SCENE_RAYQUERY_ENABLE_POSITION_FETCH
 #define SCENE_RAYQUERY_ENABLE_POSITION_FETCH 0
 #endif
@@ -77,7 +78,7 @@ struct MaterialVisualizeMaterial
 
 #define gMaterialTextures(index) getResourceArray<Texture2D<float4>>(7, index)
 
-static const uint kMaxMaterialTextures = 256u;
+
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
 static const uint kModeMaterial = 0u;
 static const uint kModeBaseColor = 1u;
@@ -218,8 +219,7 @@ float3 rayOriginFromPixel(float2 pixel, SceneMaterialVisualizationPush push)
 bool hasMaterialTexture(MaterialVisualizeTextureInfo textureInfo, SceneMaterialVisualizationPush push)
 {
     return textureInfo.textureIndex != kInvalidMaterialTextureIndex &&
-        textureInfo.textureIndex < push.materialTextureCount &&
-        textureInfo.textureIndex < kMaxMaterialTextures;
+        textureInfo.textureIndex < push.materialTextureCount;
 }
 
 bool hasNeuralMaterialTexture(
@@ -279,7 +279,7 @@ float4 loadMaterialTexture(
 
     float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
-    return gMaterialTextures(textureIndex).Load(int3(texel, 0));
+    return decodeMaterialTextureSample(gMaterialTextures(textureIndex).Load(int3(texel, 0)), textureInfo.transform0.w);
 }
 
 float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
@@ -510,7 +510,7 @@ float3 visualizeHit(HitInfo hit, SceneMaterialVisualizationPush push)
         push);
 
     if (push.mode == kModeBaseColor) {
-        return saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
+        return saturate(material.baseColor.rgb * materialTextureColor(baseColorSample.rgb, material.baseColorTexture.transform0.w));
     }
     if (push.mode == kModeNormal) {
         float3 normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);

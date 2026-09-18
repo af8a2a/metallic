@@ -122,6 +122,13 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
     const bool coop = ntc && neural->cooperativeVectorActive();
     auto& trace = traces_[streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0)];
     constexpr uint32_t kShadowBinding = 80; // Keep the shared scene alpha-mask resource slots.
+    const auto traceIndex = streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0);
+    const uint32_t textureCount = streamed ? 0 : geometry->materialTextureCount();
+    if (trace.valid() && traceTextureCounts_[traceIndex] != textureCount) {
+        if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ComputeProgram>(std::move(trace))); }
+        else { (void)device.waitIdle(); trace.clear(); }
+    }
+    traceTextureCounts_[traceIndex] = textureCount;
     if (!trace.valid()) {
         std::vector<const char*> capabilities{"spvRayQueryKHR"};
         if (coop) { capabilities.push_back("spvCooperativeVectorNV"); }
@@ -154,7 +161,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
         if (!streamed) {
             for (uint32_t i = 2; i <= 6; ++i) { layout.push_back({.binding = i}); }
             layout.push_back({.binding = 9, .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kScenePathTraceMaxMaterialTextures});
+                .descriptorCount = geometry->materialTextureCount()});
         }
         if (ntc) {
             layout.push_back({.binding = kNeuralTextureLatentsBinding, .kind = ComputeResourceBindingKind::SampledImage,
@@ -267,7 +274,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
         bindings.push_back({.binding = 5, .buffer = geometry->instanceBuffer()});
         bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
         bindings.push_back({.binding = 9, .textureViews = geometry->materialTextureViews().data(),
-            .textureViewCount = kScenePathTraceMaxMaterialTextures});
+            .textureViewCount = geometry->materialTextureCount()});
         geometryPush[0] = geometry->materialTextureCount();
         geometryPush[1] = neural->textureSetCount();
     }

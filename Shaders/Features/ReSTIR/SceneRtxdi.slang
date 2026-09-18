@@ -1,3 +1,4 @@
+#include "../../Interop/MaterialTextureDecode.hlsli"
 #ifndef SCENE_RAYQUERY_ENABLE_POSITION_FETCH
 #define SCENE_RAYQUERY_ENABLE_POSITION_FETCH 0
 #endif
@@ -113,7 +114,7 @@ struct RtxdiMaterial
 
 #define gEnvironmentPdf getResource<Texture2D<float>>(23)
 
-static const uint kMaxMaterialTextures = 256u;
+
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
 static const uint kPrimitiveHasAuthoredTangents = 1u;
 static const uint kVisualizationShaded = 0u;
@@ -544,8 +545,7 @@ float2 motionVectorToPrevious(float3 worldPosition, float2 currentSamplePixel, S
 bool hasMaterialTexture(RtxdiTextureInfo textureInfo, SceneRtxdiPush push)
 {
     return textureInfo.textureIndex != kInvalidMaterialTextureIndex &&
-        textureInfo.textureIndex < push.materialTextureCount &&
-        textureInfo.textureIndex < kMaxMaterialTextures;
+        textureInfo.textureIndex < push.materialTextureCount;
 }
 
 bool hasNeuralMaterialTexture(RtxdiTextureInfo textureInfo, SceneRtxdiPush push)
@@ -601,7 +601,7 @@ float4 loadMaterialTexture(
     }
     float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
-    return gMaterialTextures(textureIndex).Load(int3(texel, 0));
+    return decodeMaterialTextureSample(gMaterialTextures(textureIndex).Load(int3(texel, 0)), textureInfo.transform0.w);
 }
 
 float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
@@ -877,12 +877,12 @@ Surface makeSurface(HitInfo hit, Ray ray, SceneRtxdiPush push)
         material.textureParams.x);
     surface.normal = faceForwardShadingNormal(surface.normal, surface.geometryNormal, ray.direction);
     surface.viewDirection = -ray.direction;
-    surface.baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
+    surface.baseColor = saturate(material.baseColor.rgb * materialTextureColor(baseColorSample.rgb, material.baseColorTexture.transform0.w));
     surface.metalness = saturate(material.params.x * metallicRoughnessSample.b);
     surface.roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.03, 1.0);
     surface.diffuseAlbedo = surface.baseColor * (1.0 - surface.metalness);
     surface.specularF0 = lerp(float3(0.04, 0.04, 0.04), surface.baseColor, surface.metalness);
-    surface.emissive = max(material.emissive.rgb * srgbToLinear(emissiveSample.rgb), 0.0);
+    surface.emissive = max(material.emissive.rgb * materialTextureColor(emissiveSample.rgb, material.emissiveTexture.transform0.w), 0.0);
     return surface;
 }
 

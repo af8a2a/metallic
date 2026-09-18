@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/GAPI/StreamUploadCompletion.h"
 #include "Runtime/Render/RenderFrameContext.h"
@@ -361,7 +362,9 @@ struct StreamerImpl {
         }
 
         const TextureDesc& textureDesc = streamDesc.dstTexture->desc();
-        const uint32_t bytesPerTexel = formatTexelByteSize(textureDesc.format);
+        const uint32_t blockBytes = compressedBlockBytes(textureDesc.format);
+        const uint32_t blockExtent = blockBytes ? 4 : 1;
+        const uint32_t bytesPerTexel = blockBytes ? blockBytes : formatTexelByteSize(textureDesc.format);
         if (bytesPerTexel == 0 || streamDesc.dstMipLevel >= textureDesc.mipCount) {
             return {};
         }
@@ -399,7 +402,11 @@ struct StreamerImpl {
             return {};
         }
 
-        const uint64_t rowSize = static_cast<uint64_t>(width) * bytesPerTexel;
+        if (uint32_t(streamDesc.dstOffsetX) % blockExtent || uint32_t(streamDesc.dstOffsetY) % blockExtent ||
+            (width % blockExtent && uint32_t(streamDesc.dstOffsetX) + width != mipWidth) ||
+            (height % blockExtent && uint32_t(streamDesc.dstOffsetY) + height != mipHeight)) { return {}; }
+        const uint32_t rows = (height + blockExtent - 1) / blockExtent;
+        const uint64_t rowSize = ((uint64_t(width) + blockExtent - 1) / blockExtent) * bytesPerTexel;
         if (rowSize > std::numeric_limits<uint32_t>::max()) {
             return {};
         }
@@ -407,16 +414,16 @@ struct StreamerImpl {
             ? static_cast<uint32_t>(rowSize)
             : streamDesc.dataRowPitch;
         const uint32_t sourceSlicePitch = streamDesc.dataSlicePitch == 0
-            ? sourceRowPitch * height
+            ? sourceRowPitch * rows
             : streamDesc.dataSlicePitch;
-        if (sourceRowPitch < rowSize || sourceSlicePitch < static_cast<uint64_t>(sourceRowPitch) * height) {
+        if (sourceRowPitch < rowSize || sourceSlicePitch < static_cast<uint64_t>(sourceRowPitch) * rows) {
             return {};
         }
 
         const DeviceCapabilities& capabilities = device->capabilities();
-        const uint64_t rowPitch = alignUp(rowSize, capabilities.textureUploadRowPitchAlignment);
+        const uint64_t rowPitch = alignUp(rowSize, std::max<uint64_t>(capabilities.textureUploadRowPitchAlignment, bytesPerTexel));
         const uint64_t slicePitch = alignUp(
-            rowPitch * height,
+            rowPitch * rows,
             capabilities.textureUploadSlicePitchAlignment);
         const uint64_t copySliceCount =
             static_cast<uint64_t>(depth) * static_cast<uint64_t>(streamDesc.dstLayerCount);
@@ -436,7 +443,7 @@ struct StreamerImpl {
 
         const uint64_t localOffset = alignUp(
             dynamicBufferOffset,
-            capabilities.textureUploadBufferOffsetAlignment);
+            std::max<uint64_t>(capabilities.textureUploadBufferOffsetAlignment, bytesPerTexel));
         const uint64_t requiredSizePerFrame = localOffset + dataSize;
         Result result = ensureDynamicBuffer(requiredSizePerFrame);
         if (!result || dynamicBuffer == nullptr) {
@@ -453,7 +460,7 @@ struct StreamerImpl {
         uint8_t* const dstBase = static_cast<uint8_t*>(mapped) + bufferOffset;
         const uint8_t* const srcBase = static_cast<const uint8_t*>(streamDesc.data);
         for (uint64_t sliceIndex = 0; sliceIndex < copySliceCount; ++sliceIndex) {
-            for (uint32_t rowIndex = 0; rowIndex < height; ++rowIndex) {
+            for (uint32_t rowIndex = 0; rowIndex < rows; ++rowIndex) {
                 uint8_t* dst = dstBase + sliceIndex * slicePitch + rowIndex * rowPitch;
                 const uint8_t* src =
                     srcBase + sliceIndex * sourceSlicePitch + rowIndex * sourceRowPitch;

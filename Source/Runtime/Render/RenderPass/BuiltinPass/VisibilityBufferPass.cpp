@@ -53,7 +53,7 @@ const char* pipelineCacheLoadStatusName(PipelineCacheLoadStatus status)
     return "unknown";
 }
 
-constexpr uint32_t kGPUDrivenMaxMaterialTextures = 256;
+
 constexpr uint32_t kVisibilityModeTriangle = 3;
 constexpr uint32_t kVisibilityModeDepth = 4;
 constexpr uint32_t kVisibilityModeCoverage = 5;
@@ -223,7 +223,7 @@ bool resolvePreviewStreamSource(
 
 MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
     const RenderGraphProperties& properties,
-    const std::filesystem::path& sourcePath)
+    const std::filesystem::path& sourcePath, uint32_t textureCapacity)
 {
     const uint32_t maxGpuPageRequests = std::max(
         previewStreamUintProperty(
@@ -307,7 +307,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .enableGpuDecompression = boolProperty(&properties, "enableGpuDecompression", false),
         .gpuDecompressionMinBatchBytes = previewStreamUint64Property(properties, "gpuDecompressionMinBatchBytes", 1024 * 1024),
         .prefetchPages = boolProperty(&properties, "prefetchPages", true),
-        .rasterMaterialTextureCapacity = boolProperty(&properties, "tessellation", false) ? kGPUDrivenMaxMaterialTextures : 0u,
+        .rasterMaterialTextureCapacity = boolProperty(&properties, "tessellation", false) ? textureCapacity : 0u,
     };
 }
 
@@ -878,6 +878,8 @@ public:
         if (visibilityPipelines_[0] != nullptr &&
             (drawTaskCount_ > 0 || streamEnabled_) &&
             compiledTessellationKey_ == tessellationKey() &&
+            compiledTextureMaxDimension_ == properties().value("materialTextureMaxDimension", 512) &&
+            compiledTextureBudgetMiB_ == properties().value("materialTextureBudgetMiB", 2048) &&
             compiledScene_ == runtimeScene &&
             sceneResourceIdentity_ == runtimeResourceIdentity &&
             sceneLifetimeRevision_ == runtimeLifetimeRevision &&
@@ -945,7 +947,7 @@ public:
             Result streamResult = context.subsystem<StreamerSubsystem>()->acquireStream(
                 previewStreamRuntimeDesc(
                     properties(),
-                    requestedStreamSource.sourcePath),
+                    requestedStreamSource.sourcePath, uint32_t(runtimeScene->textures().size()) + 1),
                 context.debugReadback, streamRuntime_, log, pipelineCache_.get());
             if (!streamResult) {
                 log = "VisibilityBufferPass stream integration failed: " + log;
@@ -963,6 +965,8 @@ public:
             resetStreamIntegration();
         }
         compileStageBegin = GPUDrivenCompileClock::now();
+        textureResourceManager_ = context.sceneResourceManager ? context.sceneResourceManager : &fallbackTextureResourceManager_;
+        textureGraphicsQueue_ = context.graphicsQueue;
         Result result = prepareAlphaTestResources(
             *context.device,
             *runtimeScene,
@@ -1155,6 +1159,8 @@ public:
         }
 
         compiledTessellationKey_ = tessellationKey();
+        compiledTextureMaxDimension_ = properties().value("materialTextureMaxDimension", 512);
+        compiledTextureBudgetMiB_ = properties().value("materialTextureBudgetMiB", 2048);
         sceneResourceIdentity_ = runtimeResourceIdentity;
         sceneRevision_ = runtimeRevision;
         sceneVisibilityRevision_ = runtimeScene != nullptr ? runtimeScene->visibilityRevision() : 0;
@@ -3612,9 +3618,25 @@ private:
         std::string& log)
     {
         materialTextures_.clear();
+        materialViews_.clear();
+        sharedTextureResources_.reset();
         materialTextureHandles_.clear();
         logicalTextureToMaterialTexture_.clear();
 
+        if (loadedScene.hasStreamGeometry()) {
+            if (!textureResourceManager_ || !textureGraphicsQueue_) { return makeError(Error::InvalidArgument); }
+            auto settings = properties(); settings["path"] = loadedScene.filename().string();
+            std::shared_ptr<SceneResourceSnapshot> snapshot;
+            auto result = textureResourceManager_->acquire(device,*textureGraphicsQueue_,settings,&loadedScene,
+                SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures,snapshot,log);
+            if (!result) { return result; }
+            sharedTextureResources_ = snapshot->pathTraceResources;
+            materialViews_ = sharedTextureResources_->materialTextureViews();
+            const auto indices = sharedTextureResources_->logicalTextureIndices();
+            logicalTextureToMaterialTexture_.assign(indices.begin(),indices.end());
+            alphaTestTextureIndices_ = alphaTestTextureIndices(loadedScene);
+            return {};
+        }
         const uint8_t whitePixel[4] = {255u, 255u, 255u, 255u};
         GPUDrivenPreviewTextureResource fallbackTexture;
         Result result = createGPUDrivenTexture(
@@ -3653,7 +3675,7 @@ private:
         double materialTextureCreateMilliseconds = 0.0;
         size_t attemptedTextureCount = 0;
         for (size_t batchBegin = 0;
-             batchBegin < textureCount && materialTextures_.size() < kGPUDrivenMaxMaterialTextures;
+             batchBegin < textureCount;
              batchBegin += decodeWorkerLimit) {
             const size_t batchCount = std::min(decodeWorkerLimit, textureCount - batchBegin);
             attemptedTextureCount += batchCount;
@@ -3687,8 +3709,9 @@ private:
                 GPUDrivenCompileClock::now() - decodeBatchBegin).count();
 
             for (size_t localIndex = 0; localIndex < batchCount; ++localIndex) {
-                if (materialTextures_.size() >= kGPUDrivenMaxMaterialTextures) {
-                    break;
+                if (materialTextures_.size() + 32 >= device.capabilities().maxBindlessSampledImages) {
+                    log = "Alpha texture count exceeds device descriptor capacity";
+                    return makeError(Error::Unsupported);
                 }
                 MaterialDecodeTaskResult& decoded = decodedBatch[localIndex];
                 log += decoded.warning;
@@ -3725,12 +3748,17 @@ private:
             materialTextureCreateMilliseconds);
         logicalTextureToMaterialTexture_ = textureIndexMap;
         alphaTestTextureIndices_ = alphaTextureIndices;
+        for (auto& texture : materialTextures_) { materialViews_.push_back(texture.view.get()); }
 
         return {};
     }
 
     Result uploadAlphaTestTextures(CommandBuffer& commandBuffer)
     {
+        if (sharedTextureResources_) {
+            if (auto* frame = commandBuffer.frameContext()) { frame->retain(sharedTextureResources_); }
+            return sharedTextureResources_->uploadMaterialTextures(commandBuffer);
+        }
         for (GPUDrivenPreviewTextureResource& texture : materialTextures_) {
             Result result = uploadGPUDrivenTexture(commandBuffer, texture);
             if (!result) {
@@ -3856,7 +3884,7 @@ private:
         }
         Result result = device_->createBindlessHeap(
             BindlessHeapDesc{
-                .maxSampledImages = 3u + static_cast<uint32_t>(materialTextures_.size()),
+                .maxSampledImages = 3u + static_cast<uint32_t>(materialViews_.size()),
                 .maxBuffers = 8u + frameSlotCount_ * 11u +
                     static_cast<uint32_t>(kGPUSceneGlobalBufferKindCount) +
                     (streamEnabled_ ? 3u : 0u),
@@ -4041,10 +4069,10 @@ private:
             return result;
         }
 
-        bundle.materialTextureHandles.resize(materialTextures_.size());
-        for (size_t textureIndex = 0; textureIndex < materialTextures_.size(); ++textureIndex) {
-            GPUDrivenPreviewTextureResource& texture = materialTextures_[textureIndex];
-            if (texture.view == nullptr) {
+        bundle.materialTextureHandles.resize(materialViews_.size());
+        for (size_t textureIndex = 0; textureIndex < materialViews_.size(); ++textureIndex) {
+            auto* textureView = materialViews_[textureIndex];
+            if (textureView == nullptr) {
                 log = "VisibilityBufferPass material texture view is null";
                 return makeError(Error::InvalidArgument);
             }
@@ -4053,7 +4081,7 @@ private:
                 return result;
             }
             result =
-                writeImage(bundle.materialTextureHandles[textureIndex], *texture.view, "material");
+                writeImage(bundle.materialTextureHandles[textureIndex], *textureView, "material");
             if (!result) {
                 return result;
             }
@@ -4180,14 +4208,14 @@ private:
             bundle.tessellationHandle, log, "tessellation");
         if (!result || !streamEnabled_) { return result; }
         auto& heap = *streamRuntime_->bindlessHeap();
-        while (streamTessellationTextures_.size() < materialTextures_.size()) {
+        while (streamTessellationTextures_.size() < materialViews_.size()) {
             BindlessHandle handle;
             result = heap.allocateSampledImage(handle);
             if (!result) { return result; }
             streamTessellationTextures_.push_back(handle);
         }
-        for (size_t i = 0; i < materialTextures_.size(); ++i) {
-            result = heap.writeSampledImage(streamTessellationTextures_[i], *materialTextures_[i].view, ResourceState::ShaderRead);
+        for (size_t i = 0; i < materialViews_.size(); ++i) {
+            result = heap.writeSampledImage(streamTessellationTextures_[i], *materialViews_[i], ResourceState::ShaderRead);
             if (!result) { return result; }
         }
         data = makeData(streamTessellationTextures_);
@@ -5182,6 +5210,8 @@ private:
     std::vector<BindlessHandle> streamTessellationTextures_;
     std::unique_ptr<ShaderModule> streamTaskShader_;
     std::string compiledTessellationKey_;
+    int compiledTextureMaxDimension_ = 512;
+    int compiledTextureBudgetMiB_ = 2048;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer_;
     std::vector<GPUDrivenPreviewFrameSlotResources> frameSlotResources_;
     std::array<Buffer*, 2> hzbBuffers_{};
@@ -5191,6 +5221,11 @@ private:
     GPUDrivenPreviewCullingTargets cullingTargets_;
     std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
     std::vector<GPUDrivenPreviewTextureResource> materialTextures_;
+    std::vector<TextureView*> materialViews_;
+    std::shared_ptr<ScenePathTraceResources> sharedTextureResources_;
+    SceneResourceManager fallbackTextureResourceManager_;
+    SceneResourceManager* textureResourceManager_ = nullptr;
+    Queue* textureGraphicsQueue_ = nullptr;
     Device* device_ = nullptr;
     GPUSceneSubsystem* gpuSceneSubsystem_ = nullptr;
     const scene::Scene* gpuSceneSource_ = nullptr;

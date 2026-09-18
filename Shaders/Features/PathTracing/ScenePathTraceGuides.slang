@@ -107,7 +107,7 @@ DlssRrGuideData evaluateStandardDlssRrGuides(
     hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
     hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
 
-    float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
+    float3 baseColor = saturate(material.baseColor.rgb * materialTextureColor(baseColorSample.rgb, material.baseColorTexture.transform0.w));
     float metallic = saturate(material.params.x * metallicRoughnessSample.b);
     float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.02, 1.0);
     float ior = clamp(material.glassParams.y, 1.0, 3.0);

@@ -112,6 +112,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/DlssNrPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
     Runtime/Render/Streamer/ScenePathTraceResources.cpp
+    Runtime/Render/Streamer/Ktx2Texture.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/Profiling/NsightGraphicsCapture.cpp
     Runtime/Render/Profiling/TracyProfiler.cpp
@@ -153,7 +154,9 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     spdlog::spdlog
 )
 
+include("${CMAKE_SOURCE_DIR}/cmake/Zstd.cmake")
 target_link_libraries(MetallicRuntimeRender PRIVATE
+    libzstd_static
     metallic::nsight_graphics_capture
 )
 

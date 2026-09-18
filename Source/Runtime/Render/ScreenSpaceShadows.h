@@ -58,6 +58,7 @@ private:
     struct State;
     std::shared_ptr<State> state_;
     std::array<ComputeProgram, 5> traces_; // conventional, NTC, NTC cooperative, streamed TLAS, stream pending
+    std::array<uint32_t, 5> traceTextureCounts_{};
 };
 
 } // namespace metallic::render

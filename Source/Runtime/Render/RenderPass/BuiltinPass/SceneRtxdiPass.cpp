@@ -229,6 +229,7 @@ public:
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
         if (rayQueryProgram_.valid() &&
+            compiledTextureCount_ == sceneResources_.materialTextureCount() &&
             compiledPositionFetch_ == positionFetch &&
             compiledNtcActive_ == ntcActive &&
             compiledNtcCooperativeVector_ == ntcCooperativeVector) {
@@ -297,7 +298,7 @@ public:
             {
                 .binding = 7,
                 .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kScenePathTraceMaxMaterialTextures,
+                .descriptorCount = sceneResources_.materialTextureCount(),
             },
             {.binding = 8, .kind = ComputeResourceBindingKind::StorageImage},
             {.binding = 9, .kind = ComputeResourceBindingKind::StorageImage},
@@ -366,6 +367,7 @@ public:
             rayQueryProgram_.clear();
         } else {
             compiledNtcActive_ = ntcActive;
+            compiledTextureCount_ = sceneResources_.materialTextureCount();
             compiledPositionFetch_ = positionFetch;
             compiledNtcCooperativeVector_ = ntcCooperativeVector;
         }
@@ -1040,6 +1042,7 @@ private:
     ScenePathTraceResources sceneResources_;
     ComputeProgram rayQueryProgram_;
     bool compiledNtcActive_ = false;
+    uint32_t compiledTextureCount_ = 0;
     bool compiledPositionFetch_ = false;
     bool compiledNtcCooperativeVector_ = false;
     Device* device_ = nullptr;

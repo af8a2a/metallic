@@ -154,7 +154,7 @@ public:
             std::vector<render::ComputeProgramBindingDesc> layout = {
                 {0, render::ComputeResourceBindingKind::AccelerationStructure},
                 {2}, {3}, {4}, {5}, {6},
-                {9, render::ComputeResourceBindingKind::SampledImage, render::kScenePathTraceMaxMaterialTextures},
+                {9, render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()},
                 {63},
             };
             if (!positionFetch) {
@@ -210,7 +210,7 @@ public:
                     {.binding = 5, .buffer = resources.instanceBuffer()},
                     {.binding = 6, .buffer = resources.materialBuffer()},
                     {.binding = 9, .textureViews = resources.materialTextureViews().data(),
-                        .textureViewCount = render::kScenePathTraceMaxMaterialTextures},
+                        .textureViewCount = resources.materialTextureCount()},
                     {.binding = 63, .buffer = output.get()},
                 };
                 if (!positionFetch) {

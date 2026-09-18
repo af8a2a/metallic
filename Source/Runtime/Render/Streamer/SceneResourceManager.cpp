@@ -31,9 +31,11 @@ std::filesystem::path propertyPath(
     return {};
 }
 
-std::string resourceKey(const std::filesystem::path& scenePath)
+std::string resourceKey(const std::filesystem::path& scenePath, const RenderGraphProperties& properties)
 {
-    return normalizedScenePath(scenePath).generic_string();
+    return normalizedScenePath(scenePath).generic_string() + "#textures:" +
+        std::to_string(properties.value("materialTextureMaxDimension",512)) + ":" +
+        std::to_string(properties.value("materialTextureBudgetMiB",2048));
 }
 
 void stampSnapshot(
@@ -150,8 +152,9 @@ Result SceneResourceManager::acquire(
     }
 
     const std::filesystem::path scenePath = propertyPath(properties, "path");
-    const std::string key = resourceKey(scenePath) + (resolvedScene->hasStreamGeometry() ? "#stream-materials" : "");
+    const std::string key = resourceKey(scenePath, properties) + (resolvedScene->hasStreamGeometry() ? "#stream-materials" : "");
     auto found = impl_->snapshots.find(key);
+    outSnapshot.reset();
     if (found != impl_->snapshots.end()) {
         if (found->second != nullptr &&
             snapshotMatchesScene(*found->second, *resolvedScene)) {
@@ -231,8 +234,9 @@ Result SceneResourceManager::beginAcquireAsync(
     impl_->device = &device;
 
     const std::filesystem::path scenePath = propertyPath(properties, "path");
-    const std::string key = resourceKey(scenePath) + (runtimeScene.hasStreamGeometry() ? "#stream-materials" : "");
+    const std::string key = resourceKey(scenePath, properties) + (runtimeScene.hasStreamGeometry() ? "#stream-materials" : "");
     auto found = impl_->snapshots.find(key);
+    outSnapshot.reset();
     if (found != impl_->snapshots.end()) {
         if (found->second != nullptr &&
             snapshotMatchesScene(*found->second, runtimeScene)) {

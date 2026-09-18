@@ -320,7 +320,7 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         occlusionSample = float4(1.0, 1.0, 1.0, 1.0);
         transmissionSample = float4(1.0, 1.0, 1.0, 1.0);
     }
-    float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
+    float3 baseColor = saturate(material.baseColor.rgb * materialTextureColor(baseColorSample.rgb, material.baseColorTexture.transform0.w));
     float metallic = saturate(material.params.x * metallicRoughnessSample.b);
     float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.001, 1.0);
     float transmission = saturate(material.glassParams.x * transmissionSample.r);
@@ -328,7 +328,7 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         transmission = 0.0;
     }
     float ior = clamp(material.glassParams.y, 1.0, 3.0);
-    float3 emissive = max(material.emissive.rgb * srgbToLinear(emissiveSample.rgb), float3(0.0, 0.0, 0.0));
+    float3 emissive = max(material.emissive.rgb * materialTextureColor(emissiveSample.rgb, material.emissiveTexture.transform0.w), float3(0.0, 0.0, 0.0));
 
     OpenPBRMaterialEval result;
     result.inputs = openpbr_make_default_resolved_inputs();
@@ -436,7 +436,7 @@ float3 openPbrShadowTransmittance(
             baseColorSample = float4(1.0, 1.0, 1.0, 1.0);
         }
         float3 baseColor = saturate(
-            shadowMaterial.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
+            shadowMaterial.baseColor.rgb * materialTextureColor(baseColorSample.rgb, shadowMaterial.baseColorTexture.transform0.w));
         transmittance *= surfaceTransmission * powColor(baseColor, 0.5);
         if (luminanceMax(transmittance) <= 0.0001) {
             return float3(0.0, 0.0, 0.0);

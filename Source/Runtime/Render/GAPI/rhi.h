@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <array>
 
 #include <cstdint>
 #include <expected>
@@ -115,6 +116,10 @@ enum class Format : uint16_t {
     E5B9G9R9UfloatPack32,
     D32Sfloat,
     Bgra4Unorm,
+    Bc4Unorm,
+    Bc5Unorm,
+    Bc7Unorm,
+    Bc7Srgb,
 };
 
 enum class QueueType : uint8_t {
@@ -457,6 +462,9 @@ struct TextureViewDesc {
     uint32_t mipCount = 1;
     uint32_t baseLayer = 0;
     uint32_t layerCount = 1;
+    // Values mirror the portable component selection, independent of Vulkan.
+    enum class Component : uint8_t { Identity, Zero, One, R, G, B, A };
+    std::array<Component, 4> swizzle{};
 };
 
 enum class DisplayOutputMode : uint8_t {
@@ -1599,6 +1607,7 @@ public:
     Texture& operator=(const Texture&) = delete;
 
     const TextureDesc& desc() const;
+    uint64_t allocationSize() const;
 
 private:
     explicit Texture(std::unique_ptr<detail::TextureImpl> impl);
@@ -2043,6 +2052,7 @@ public:
         uint32_t instanceCount);
     Result createBufferView(Buffer& buffer, const BufferViewDesc& desc, std::unique_ptr<BufferView>& outBufferView);
     Result createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& outTexture);
+    Result textureAllocationSize(const TextureDesc& desc, uint64_t& byteSize);
     Result createTextureView(Texture& texture, const TextureViewDesc& desc, std::unique_ptr<TextureView>& outTextureView);
     Result createStreamer(const StreamerDesc& desc, std::unique_ptr<Streamer>& outStreamer);
     Result createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule);

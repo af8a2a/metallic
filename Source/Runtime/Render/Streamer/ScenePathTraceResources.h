@@ -13,7 +13,12 @@
 
 namespace metallic::render {
 
-inline constexpr uint32_t kScenePathTraceMaxMaterialTextures = 256;
+struct SceneTextureStats {
+    uint32_t logicalTextureCount = 0, ktxImageCount = 0, mimeMismatchCount = 0;
+    uint32_t residentImageCount = 0, selectedMaxDimension = 0;
+    uint64_t budgetBytes = 0, plannedPayloadBytes = 0, plannedAllocationBytes = 0;
+    uint64_t residentPayloadBytes = 0, residentAllocationBytes = 0, peakStagingBytes = 0;
+};
 
 struct SceneUploadStats {
     uint64_t submittedBatches = 0;
@@ -57,6 +62,8 @@ public:
     bool textureUploadsReady() const;
     bool gpuWorkComplete();
     SceneUploadStats uploadStats() const;
+    SceneTextureStats textureStats() const;
+    std::span<const uint32_t> logicalTextureIndices() const;
 
     void clear();
     bool valid() const;
@@ -72,7 +79,7 @@ public:
     Buffer* primitiveBuffer() const;
     Buffer* instanceBuffer() const;
     Buffer* materialBuffer() const;
-    const std::array<TextureView*, kScenePathTraceMaxMaterialTextures>& materialTextureViews() const;
+    const std::vector<TextureView*>& materialTextureViews() const;
     uint32_t materialTextureCount() const;
     const NeuralTextureResources& neuralTextures() const;
 

@@ -1,4 +1,5 @@
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -253,6 +254,10 @@ VkFormat toVkFormat(Format format)
         return VK_FORMAT_B8G8R8A8_SRGB;
     case Format::Rgba8Unorm:
         return VK_FORMAT_R8G8B8A8_UNORM;
+    case Format::Bc4Unorm: return VK_FORMAT_BC4_UNORM_BLOCK;
+    case Format::Bc5Unorm: return VK_FORMAT_BC5_UNORM_BLOCK;
+    case Format::Bc7Unorm: return VK_FORMAT_BC7_UNORM_BLOCK;
+    case Format::Bc7Srgb: return VK_FORMAT_BC7_SRGB_BLOCK;
     case Format::Rgba8Snorm:
         return VK_FORMAT_R8G8B8A8_SNORM;
     case Format::Rgba8Srgb:
@@ -359,6 +364,10 @@ Format fromVkFormat(VkFormat format)
         return Format::Bgra8Srgb;
     case VK_FORMAT_R8G8B8A8_UNORM:
         return Format::Rgba8Unorm;
+    case VK_FORMAT_BC4_UNORM_BLOCK: return Format::Bc4Unorm;
+    case VK_FORMAT_BC5_UNORM_BLOCK: return Format::Bc5Unorm;
+    case VK_FORMAT_BC7_UNORM_BLOCK: return Format::Bc7Unorm;
+    case VK_FORMAT_BC7_SRGB_BLOCK: return Format::Bc7Srgb;
     case VK_FORMAT_R8G8B8A8_SNORM:
         return Format::Rgba8Snorm;
     case VK_FORMAT_R8G8B8A8_SRGB:
@@ -881,12 +890,14 @@ bool fillBufferImageLayout(
         return true;
     }
 
-    const uint32_t bytesPerTexel = formatTexelByteSize(format);
+    const uint32_t blockBytes = compressedBlockBytes(format);
+    const uint32_t blockExtent = blockBytes ? 4 : 1;
+    const uint32_t bytesPerTexel = blockBytes ? blockBytes : formatTexelByteSize(format);
     if (bytesPerTexel == 0) {
         return false;
     }
 
-    const uint64_t tightRowPitch = static_cast<uint64_t>(width) * bytesPerTexel;
+    const uint64_t tightRowPitch = ((uint64_t(width) + blockExtent - 1) / blockExtent) * bytesPerTexel;
     const uint64_t rowPitch = bufferRowPitch == 0
         ? tightRowPitch
         : static_cast<uint64_t>(bufferRowPitch);
@@ -895,14 +906,14 @@ bool fillBufferImageLayout(
     }
     outBufferRowLength = bufferRowPitch == 0
         ? 0
-        : static_cast<uint32_t>(rowPitch / bytesPerTexel);
+        : static_cast<uint32_t>(rowPitch / bytesPerTexel) * blockExtent;
 
     if (bufferSlicePitch != 0) {
-        const uint64_t tightSlicePitch = rowPitch * height;
+        const uint64_t tightSlicePitch = rowPitch * ((uint64_t(height) + blockExtent - 1) / blockExtent);
         if (bufferSlicePitch < tightSlicePitch || bufferSlicePitch % rowPitch != 0) {
             return false;
         }
-        outBufferImageHeight = static_cast<uint32_t>(bufferSlicePitch / rowPitch);
+        outBufferImageHeight = static_cast<uint32_t>(bufferSlicePitch / rowPitch) * blockExtent;
     }
     return true;
 }
@@ -2018,6 +2029,7 @@ struct VulkanDeviceFeatureSelection {
     bool uniformBufferStandardLayout = false;
     bool shaderBufferInt64Atomics = false;
     bool shaderInt64 = false;
+    bool textureCompressionBC = false;
     bool nrcRayTracingPipeline = false;
     bool shaderFloat16 = false;
     bool shaderInt16 = false;
@@ -2155,6 +2167,7 @@ struct VulkanDeviceFeatureSelection {
         result.uniformBufferStandardLayout = probe.vulkan12Features.uniformBufferStandardLayout == VK_TRUE;
         result.shaderBufferInt64Atomics = probe.vulkan12Features.shaderBufferInt64Atomics == VK_TRUE;
         result.shaderInt64 = probe.features.features.shaderInt64 == VK_TRUE;
+        result.textureCompressionBC = probe.features.features.textureCompressionBC == VK_TRUE;
         // NRC's native barriers include the ray-tracing shader stage even when
         // the application's path tracer uses compute ray queries.
         result.nrcRayTracingPipeline = result.rayQuery && extensions.rayTracingPipeline &&
@@ -2343,6 +2356,7 @@ struct VulkanEnabledFeatureChain {
         vulkan12Features.shaderFloat16 = selection.shaderFloat16 ? VK_TRUE : VK_FALSE;
         features.features.shaderInt16 = selection.shaderInt16 ? VK_TRUE : VK_FALSE;
         features.features.shaderInt64 = selection.shaderInt64 ? VK_TRUE : VK_FALSE;
+        features.features.textureCompressionBC = selection.textureCompressionBC ? VK_TRUE : VK_FALSE;
         features.features.shaderImageGatherExtended = selection.shaderImageGatherExtended ? VK_TRUE : VK_FALSE;
         features.features.geometryShader = selection.geometryShader ? VK_TRUE : VK_FALSE;
         vulkan13Features.subgroupSizeControl =
@@ -3160,6 +3174,7 @@ struct TextureImpl {
     VkImageCreateFlags flags = 0;
     VkImageUsageFlags usage = 0;
     bool ownsImage = false;
+    uint64_t allocationSize = 0;
 };
 
 struct TextureViewImpl {
@@ -4702,6 +4717,11 @@ const TextureDesc& Texture::desc() const
     return impl_ != nullptr ? impl_->desc : emptyDesc;
 }
 
+uint64_t Texture::allocationSize() const
+{
+    return impl_ ? impl_->allocationSize : 0;
+}
+
 TextureView::TextureView(std::unique_ptr<detail::TextureViewImpl> impl)
     : impl_(std::move(impl))
 {
@@ -5070,6 +5090,10 @@ Result BindlessHeap::writeImages(const BindlessImageWrite* writes, uint32_t writ
             .image = view->impl_->texture->impl_->image,
             .viewType = toVkImageViewType(textureDesc.type),
             .format = view->impl_->format,
+            .components = {static_cast<VkComponentSwizzle>(viewDesc.swizzle[0]),
+                static_cast<VkComponentSwizzle>(viewDesc.swizzle[1]),
+                static_cast<VkComponentSwizzle>(viewDesc.swizzle[2]),
+                static_cast<VkComponentSwizzle>(viewDesc.swizzle[3])},
             .subresourceRange = {
                 .aspectMask = aspectForFormat(textureDesc.format),
                 .baseMipLevel = viewDesc.baseMip,
@@ -8906,6 +8930,34 @@ Result Device::createBufferView(
     return {};
 }
 
+Result Device::textureAllocationSize(const TextureDesc& desc, uint64_t& byteSize)
+{
+    byteSize = 0;
+    if (!impl_ || desc.format == Format::Unknown || !desc.width || !desc.height || !desc.mipCount) {
+        return makeError(Error::InvalidArgument);
+    }
+    activateVolkDevice(impl_->device);
+    const auto families = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
+    const VkImageCreateInfo info{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = toVkImageType(desc.type), .format = toVkFormat(desc.format),
+        .extent = {desc.width, desc.height, desc.depth}, .mipLevels = desc.mipCount,
+        .arrayLayers = desc.layerCount, .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = toVkImageUsage(desc.usage),
+        .sharingMode = families.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = families.size() > 1 ? uint32_t(families.size()) : 0,
+        .pQueueFamilyIndices = families.size() > 1 ? families.data() : nullptr,
+    };
+    VkImage image = VK_NULL_HANDLE;
+    const auto result = vkCreateImage(impl_->device, &info, nullptr, &image);
+    if (result != VK_SUCCESS) { return resultFromVk(result); }
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(impl_->device, image, &requirements);
+    vkDestroyImage(impl_->device, image, nullptr);
+    byteSize = requirements.size;
+    return {};
+}
+
 Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& outTexture)
 {
     outTexture.reset();
@@ -8957,6 +9009,7 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     textureImpl->flags = imageInfo.flags;
     textureImpl->usage = imageInfo.usage;
     textureImpl->ownsImage = true;
+    textureImpl->allocationSize = allocatedInfo.size;
     outTexture.reset(new Texture(std::move(textureImpl)));
     return {};
 }
@@ -8979,6 +9032,10 @@ Result Device::createTextureView(
         .image = texture.impl_->image,
         .viewType = toVkImageViewType(textureDesc.type),
         .format = toVkFormat(format),
+        .components = {static_cast<VkComponentSwizzle>(desc.swizzle[0]),
+            static_cast<VkComponentSwizzle>(desc.swizzle[1]),
+            static_cast<VkComponentSwizzle>(desc.swizzle[2]),
+            static_cast<VkComponentSwizzle>(desc.swizzle[3])},
         .subresourceRange = {
             .aspectMask = aspectForFormat(format),
             .baseMipLevel = desc.baseMip,

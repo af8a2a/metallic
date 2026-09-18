@@ -1,3 +1,4 @@
+#include "../../Interop/MaterialTextureDecode.hlsli"
 import Core;
 using Metallic;
 import Material;
@@ -155,7 +156,7 @@ struct PathTraceInstance
 
 #define gEnvironmentImportancePdf getResource<Texture2D<float>>(13)
 
-static const uint kMaxMaterialTextures = 256u;
+
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
 static const uint kPrimitiveHasAuthoredTangents = 1u;
 static const uint kEnvironmentModeProcedural = 0u;
@@ -818,8 +819,7 @@ float3 sampleCosineHemisphere(float3 normal, inout uint seed)
 bool hasMaterialTexture(PathTraceTextureInfo textureInfo, ScenePathTracePush push)
 {
     return textureInfo.textureIndex != kInvalidMaterialTextureIndex &&
-        textureInfo.textureIndex < push.materialTextureCount &&
-        textureInfo.textureIndex < kMaxMaterialTextures;
+        textureInfo.textureIndex < push.materialTextureCount;
 }
 
 bool hasNeuralMaterialTexture(PathTraceTextureInfo textureInfo, ScenePathTracePush push)
@@ -913,7 +913,7 @@ float4 loadMaterialTextureMip0(
 
     float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
-    return gMaterialTextures(textureIndex).Load(int3(texel, 0));
+    return decodeMaterialTextureSample(gMaterialTextures(textureIndex).Load(int3(texel, 0)), textureInfo.transform0.w);
 }
 
 float4 loadMaterialTexture(
@@ -992,10 +992,10 @@ float4 loadMaterialTexture(
 
     float mipLevel = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection, width, height, mipCount);
     STF_SamplerState samplerState = makeMaterialStfSampler(push, seed);
-    return samplerState.Texture2DLoadLevel(
+    return decodeMaterialTextureSample(samplerState.Texture2DLoadLevel(
         gMaterialTextures(textureIndex),
         transformMaterialUv(textureInfo, uv),
-        mipLevel);
+        mipLevel), textureInfo.transform0.w);
 }
 
 float4 loadMaterialTextureForMaterial(
@@ -1529,7 +1529,7 @@ float3 pathTrace(
         hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
         float occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));
 
-        float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
+        float3 baseColor = saturate(material.baseColor.rgb * materialTextureColor(baseColorSample.rgb, material.baseColorTexture.transform0.w));
         float metallic = saturate(material.params.x * metallicRoughnessSample.b);
         float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.02, 1.0);
         float transmission = saturate(material.glassParams.x * transmissionSample.r);
@@ -1539,13 +1539,13 @@ float3 pathTrace(
         float3 attenuationColor = max(saturate(material.attenuationColor.rgb), float3(0.001, 0.001, 0.001));
         float diffuseTransmission = saturate(material.diffuseTransmission.a * diffuseTransmissionSample.a);
         float3 diffuseTransmissionColor = max(
-            saturate(material.diffuseTransmission.rgb * srgbToLinear(diffuseTransmissionColorSample.rgb)),
+            saturate(material.diffuseTransmission.rgb * materialTextureColor(diffuseTransmissionColorSample.rgb, material.diffuseTransmissionColorTexture.transform0.w)),
             float3(0.001, 0.001, 0.001));
         float dielectricF0 = (ior - 1.0) / (ior + 1.0);
         dielectricF0 *= dielectricF0;
         float3 f0 = lerp(float3(dielectricF0, dielectricF0, dielectricF0), baseColor, metallic);
 
-        float3 emissive = max(material.emissive.rgb * srgbToLinear(emissiveSample.rgb), float3(0.0, 0.0, 0.0));
+        float3 emissive = max(material.emissive.rgb * materialTextureColor(emissiveSample.rgb, material.emissiveTexture.transform0.w), float3(0.0, 0.0, 0.0));
         radiance += throughput * emissive;
 
 #if METALLIC_HAS_RTXCR

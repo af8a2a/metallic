@@ -109,6 +109,7 @@ public:
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
         if (rayQueryProgram_.valid() &&
+            compiledTextureCount_ == sceneResources_.materialTextureCount() &&
             compiledPositionFetch_ == positionFetch &&
             compiledNtcActive_ == ntcActive &&
             compiledNtcCooperativeVector_ == ntcCooperativeVector) {
@@ -202,7 +203,7 @@ public:
             ComputeProgramBindingDesc{
                 .binding = 7,
                 .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kScenePathTraceMaxMaterialTextures,
+                .descriptorCount = sceneResources_.materialTextureCount(),
             },
         };
         if (!positionFetch) {
@@ -254,6 +255,7 @@ public:
             return result;
         }
         compiledNtcActive_ = ntcActive;
+        compiledTextureCount_ = sceneResources_.materialTextureCount();
         compiledPositionFetch_ = positionFetch;
         compiledNtcCooperativeVector_ = ntcCooperativeVector;
         return {};
@@ -576,6 +578,7 @@ private:
     Queue* graphicsQueue_ = nullptr;
     ComputeProgram rayQueryProgram_;
     bool compiledNtcActive_ = false;
+    uint32_t compiledTextureCount_ = 0;
     bool compiledPositionFetch_ = false;
     bool compiledNtcCooperativeVector_ = false;
 };

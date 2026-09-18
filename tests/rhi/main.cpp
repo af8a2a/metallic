@@ -47,6 +47,7 @@ namespace render = metallic::render;
 struct Options {
     bool enableValidation = true;
     bool enableStreamline = false;
+    bool enableBindless = false;
     bool enableRealtime = false;
     bool enableNsightCapture = false;
     bool exportNsightCapture = false;
@@ -63,6 +64,7 @@ void printRhiUsage()
         "  --rhi-no-validation      Disable Vulkan validation for RHI tests\n"
         "  --rhi-validation         Enable Vulkan validation for RHI tests\n"
         "  --rhi-streamline         Enable Streamline, bindless heap and ray queries\n"
+        "  --rhi-bindless           Enable bindless heap without Streamline\n"
         "  --rhi-realtime           Enable the realtime raster + DLSS test device\n"
         "  --rhi-nsight-capture     Inject Nsight Graphics before creating test devices\n"
         "  --rhi-nsight-export      Also export a Sponza realtime frame for replay testing\n"
@@ -87,6 +89,10 @@ bool parseArguments(int argc, char** argv, Options& options, std::vector<std::st
         }
         if (argument == "--rhi-validation") {
             options.enableValidation = true;
+            continue;
+        }
+        if (argument == "--rhi-bindless") {
+            options.enableBindless = true;
             continue;
         }
         if (argument == "--rhi-streamline") {
@@ -196,7 +202,7 @@ public:
             render::DeviceDesc{
                 .applicationName = "Metallic RHI Tests",
                 .enableValidation = options_.enableValidation,
-                .enableBindlessDescriptorHeap = options_.enableStreamline,
+                .enableBindlessDescriptorHeap = options_.enableStreamline || options_.enableBindless,
                 .enableMeshShader = options_.enableRealtime,
                 .enableTaskShader = options_.enableRealtime,
                 .enableTaskShaderSubgroupBallot = options_.enableRealtime,

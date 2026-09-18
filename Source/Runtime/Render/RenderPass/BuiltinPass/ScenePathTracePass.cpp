@@ -937,6 +937,7 @@ public:
             properties().value("sceneBinding", "world") != "asset" && properties().value("viewBinding", "global") != "local";
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
             "|streamMaterials=" + (streamMaterials_ ? "1" : "0") +
+            "|textureCount=" + std::to_string(sceneResources_.materialTextureCount()) +
             "|view=" + (globalView ? "1" : "0") +
             "|cache=" + std::to_string(cacheMode_) +
             "|ntc=" + (ntcActive ? "1" : "0") +
@@ -1044,7 +1045,7 @@ public:
             ComputeProgramBindingDesc{
                 .binding = 9,
                 .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kScenePathTraceMaxMaterialTextures,
+                .descriptorCount = sceneResources_.materialTextureCount(),
             },
             ComputeProgramBindingDesc{
                 .binding = 10,

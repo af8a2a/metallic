@@ -281,6 +281,7 @@ add_executable(MetallicRhiTests
     rhi/RadianceCacheTests.cpp
     rhi/RenderingTests.cpp
     rhi/ResourceTests.cpp
+    rhi/Ktx2TextureTests.cpp
     rhi/RayTracingAccelerationStructureTests.cpp
         rhi/ClasCompactionTests.cpp
     rhi/RayTracingPositionFetchTests.cpp
@@ -298,6 +299,7 @@ target_include_directories(MetallicRhiTests PRIVATE
 )
 
 target_link_libraries(MetallicRhiTests PRIVATE
+    libzstd_static
     imgui
     metallic::sdl3
     MetallicRuntimeRender
