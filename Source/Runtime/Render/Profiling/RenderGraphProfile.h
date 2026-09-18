@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/Streamer/MeshletStreamThroughput.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -79,6 +80,7 @@ struct SceneStreamingProfile {
     uint64_t gpuDecompressedPages = 0;
     uint64_t totalGpuDecompressedPages = 0;
     uint64_t loadFailures = 0;
+    MeshletStreamThroughput throughput;
     StreamCpuWorkCounters cpuWork;
 };
 

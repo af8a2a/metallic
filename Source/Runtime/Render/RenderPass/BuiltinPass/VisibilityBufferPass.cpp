@@ -305,6 +305,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .lowLatencyRequests = boolProperty(&properties, "lowLatencyRequests", true),
         .completionDrivenUploads = boolProperty(&properties, "completionDrivenUploads", true),
         .enableGpuDecompression = boolProperty(&properties, "enableGpuDecompression", false),
+        .gpuDecompressionMinBatchBytes = previewStreamUint64Property(properties, "gpuDecompressionMinBatchBytes", 1024 * 1024),
         .prefetchPages = boolProperty(&properties, "prefetchPages", true),
         .rasterMaterialTextureCapacity = boolProperty(&properties, "tessellation", false) ? kGPUDrivenMaxMaterialTextures : 0u,
     };
@@ -1240,7 +1241,11 @@ public:
                 result = streamRuntime_->cmdBeginFrame(
                     context.commandBuffer(),
                     *context.streamer(),
-                    streamFrame, [&] { context.subsystem<StreamerSubsystem>()->flush(context.commandBuffer()); });
+                    streamFrame, [&] {
+                        auto uploadProfile = context.profileScope("Upload preflight");
+                        context.subsystem<StreamerSubsystem>()->flush(context.commandBuffer(),
+                            [&](const char* name) { uploadProfile.next(name); });
+                    });
                 context.publishCpuProfile(streamRuntime_->beginFrameCpuProfile().sections);
             }
             if (!result) {

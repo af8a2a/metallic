@@ -1149,6 +1149,10 @@ struct StreamDecompressionTile {
     bool compressed = false;
 };
 
+// Called at recording boundaries, under the Streamer lock. Profiling callbacks
+// must not reenter the Streamer. Existing callers may omit the callback.
+using StreamUploadPhaseCallback = std::function<void(const char*)>;
+
 struct BufferOffset {
     class Buffer* buffer = nullptr;
     uint64_t offset = 0;
@@ -1826,7 +1830,7 @@ public:
     // Covers copies currently queued for the next flush. Returns null without
     // beginFrame(frame), or when no copies are pending. See StreamUploadCompletion.h.
     std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion();
-    void copyStreamedData(CommandBuffer& commandBuffer);
+    void copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase = {});
     void endFrame();
 
 private:

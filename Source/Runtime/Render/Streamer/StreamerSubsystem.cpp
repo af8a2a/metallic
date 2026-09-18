@@ -64,9 +64,9 @@ void StreamerSubsystem::collectReleasedStreams()
     std::erase_if(streams_, [](const auto& session) { return session.use_count() == 1; });
 }
 
-void StreamerSubsystem::flush(CommandBuffer& commands)
+void StreamerSubsystem::flush(CommandBuffer& commands, const StreamUploadPhaseCallback& phase)
 {
-    if (streamer() && streamer()->stats().pendingCopies.copyCount() != 0) { uploads_.flush(commands); }
+    if (streamer() && streamer()->stats().pendingCopies.copyCount() != 0) { uploads_.flush(commands, phase); }
 }
 
 } // namespace metallic::render

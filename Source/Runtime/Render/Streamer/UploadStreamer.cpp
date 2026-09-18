@@ -615,7 +615,7 @@ struct StreamerImpl {
         return pendingCompletion;
     }
 
-    void copyStreamedData(CommandBuffer& commandBuffer)
+    void copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase)
     {
         std::lock_guard lock(mutex);
         const auto installation = pendingCompletion;
@@ -651,6 +651,7 @@ struct StreamerImpl {
             "Upload Copies",
             profiling::NsightCategory::ResourceUpload,
             bufferRequests.size() + textureRequests.size());
+        if (phase) { phase("Upload copies"); }
         if (!decompressionCopyBarriers.empty()) {
             commandBuffer.barrier({.buffers = decompressionCopyBarriers.data(), .bufferCount = uint32_t(decompressionCopyBarriers.size())});
         }
@@ -668,6 +669,7 @@ struct StreamerImpl {
             commandBuffer.copyBufferToTexture(request.copy);
         }
         if (!decompressions.empty()) {
+            if (phase) { phase("Decompression input barrier"); }
             std::vector<BufferBarrierDesc> barriers;
             for (const auto& region : decompressions) {
                 barriers.push_back({.buffer = region.source, .before = ResourceState::TransferDestination,
@@ -676,9 +678,11 @@ struct StreamerImpl {
                     .after = ResourceState::DecompressionDestination, .offset = region.destinationOffset, .size = region.decodedBytes});
             }
             commandBuffer.barrier({.buffers = barriers.data(), .bufferCount = uint32_t(barriers.size())});
+            if (phase) { phase("GPU decompression"); }
             if (!commandBuffer.decompressBuffers(decompressions)) {
                 if (installation) { installation->submission_->cancel(); }
             } else {
+                if (phase) { phase("Decompression publish barrier"); }
                 barriers.clear();
                 for (const auto& region : decompressions) {
                     // General covers both shader consumers and AS build input
@@ -875,10 +879,10 @@ std::shared_ptr<StreamUploadCompletion> Streamer::pendingCopyCompletion()
     return impl_ != nullptr ? impl_->pendingCopyCompletion() : nullptr;
 }
 
-void Streamer::copyStreamedData(CommandBuffer& commandBuffer)
+void Streamer::copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase)
 {
     if (impl_ != nullptr) {
-        impl_->copyStreamedData(commandBuffer);
+        impl_->copyStreamedData(commandBuffer, phase);
     }
 }
 

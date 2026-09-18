@@ -12,7 +12,9 @@
 namespace metallic::render {
 
 struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStreamPageLoader::Impl> {
-    task::TaskOutcome loadPage(uint32_t pageIndex) noexcept
+    struct LoadRequest { uint32_t pageIndex; bool allowGpuDecompression; };
+
+    task::TaskOutcome loadPage(uint32_t pageIndex, bool allowGpuDecompression) noexcept
     {
         MeshletStreamPageLoadResult result;
         result.pageIndex = pageIndex;
@@ -25,7 +27,7 @@ struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStrea
                 const std::span<const uint8_t> storedPayload = asset->pagePayload(pageIndex);
                 std::vector<uint8_t> decodeStorage;
                 std::span<const uint8_t> devicePayload;
-                if (gpuDecompression && page.compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GpuTiles)) {
+                if (gpuDecompression && allowGpuDecompression && page.compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GpuTiles)) {
                     if (scene::inspectMeshletStreamGpuPage(page, storedPayload, result.gpuPage, result.failureReason)) {
                         result.payload.assign(storedPayload.begin(), storedPayload.end());
                         result.gpuEncoded = true;
@@ -110,13 +112,15 @@ struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStrea
     {
         for (;;) {
             uint32_t pageIndex = UINT32_MAX;
+            bool allowGpuDecompression = false;
             {
                 std::lock_guard lock(mutex);
                 if (stopping || asset == nullptr ||
                     activeLoads >= pageLoadConcurrency || pendingPages.empty()) {
                     return;
                 }
-                pageIndex = pendingPages.front();
+                pageIndex = pendingPages.front().pageIndex;
+                allowGpuDecompression = pendingPages.front().allowGpuDecompression;
                 pendingPages.pop_front();
                 ++activeLoads;
             }
@@ -129,8 +133,8 @@ struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStrea
                     .category = "Streaming",
                     .userTag = pageIndex,
                 },
-                [self, pageIndex]() -> task::TaskOutcome {
-                    return self->loadPage(pageIndex);
+                [self, pageIndex, allowGpuDecompression]() -> task::TaskOutcome {
+                    return self->loadPage(pageIndex, allowGpuDecompression);
                 });
 
             const std::shared_ptr<task::TaskSystem> system = task::detail::tryAcquireTaskSystem();
@@ -148,7 +152,7 @@ struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStrea
     const scene::MeshletStreamAsset* asset = nullptr;
     mutable std::mutex mutex;
     std::condition_variable condition;
-    std::deque<uint32_t> pendingPages;
+    std::deque<LoadRequest> pendingPages;
     std::deque<MeshletStreamPageLoadResult> completedLoads;
     uint32_t pageLoadConcurrency = 0;
     uint32_t activeLoads = 0;
@@ -225,7 +229,7 @@ void MeshletStreamPageLoader::reset()
     }
 }
 
-bool MeshletStreamPageLoader::enqueue(uint32_t pageIndex)
+bool MeshletStreamPageLoader::enqueue(uint32_t pageIndex, bool allowGpuDecompression)
 {
     if (impl_ == nullptr) {
         return false;
@@ -236,7 +240,7 @@ bool MeshletStreamPageLoader::enqueue(uint32_t pageIndex)
         if (impl_->pageLoadConcurrency == 0 || impl_->stopping || impl_->asset == nullptr) {
             return false;
         }
-        impl_->pendingPages.push_back(pageIndex);
+        impl_->pendingPages.push_back({pageIndex, allowGpuDecompression});
         schedule = impl_->activeLoads < impl_->pageLoadConcurrency;
     }
     if (schedule) {

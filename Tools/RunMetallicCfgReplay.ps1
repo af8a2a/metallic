@@ -10,6 +10,7 @@ param(
     [ValidateRange(0, 4194240)][int]$DemandWorkers = 0,
     [string]$StreamAsset = "",
     [ValidateSet('Default', 'On', 'Off')][string]$GpuDecompression = 'Default',
+    [ValidateRange(-1, 1073741824)][long]$GpuDecompressionMinBatchBytes = -1,
     [int]$TimeoutSeconds = 900
 )
 $ErrorActionPreference = "Stop"
@@ -23,6 +24,7 @@ if ($route.protocol -ne "minizorah-cfg-roam-v1") { throw "Unexpected replay prot
 New-Item -ItemType Directory -Path $outputPath | Out-Null
 $keys = @("METALLIC_TEST_MINIZORAH", "METALLIC_MINIZORAH_BENCH_CLAS", "METALLIC_MINIZORAH_BENCH_QUALITY", "METALLIC_MINIZORAH_REPLAY", "METALLIC_MINIZORAH_BENCH_REALTIME", "METALLIC_MINIZORAH_RASTER_QUEUES", "METALLIC_MINIZORAH_DISTRIBUTED_DEMAND", "METALLIC_MINIZORAH_DEMAND_WORKERS", "METALLIC_MINIZORAH_STREAM_ASSET", "METALLIC_MINIZORAH_GPU_DECOMPRESSION")
 $previous = @{}
+$keys += 'METALLIC_MINIZORAH_GPU_MIN_BATCH_BYTES'
 foreach ($key in $keys) { $previous[$key] = [Environment]::GetEnvironmentVariable($key, "Process") }
 function Get-ShaderTreeDigest {
     $records = foreach ($relative in (& rg --files (Join-Path $repo 'Shaders') -g '*.slang' | Sort-Object)) {
@@ -47,6 +49,7 @@ $manifest = @{
     demandWorkers = $DemandWorkers
     streamAsset = $StreamAsset
     gpuDecompression = $GpuDecompression
+    gpuDecompressionMinBatchBytes = $GpuDecompressionMinBatchBytes
     qualityWithoutValidation = [bool]$QualityWithoutValidation
     start = (Get-Date).ToString('o')
 }
@@ -66,6 +69,7 @@ try {
         $env:METALLIC_MINIZORAH_DEMAND_WORKERS = if ($DemandWorkers -eq 0) { $null } else { [string]$DemandWorkers }
         $env:METALLIC_MINIZORAH_STREAM_ASSET = if ($StreamAsset) { [IO.Path]::GetFullPath($StreamAsset) } else { $null }
         $env:METALLIC_MINIZORAH_GPU_DECOMPRESSION = if ($GpuDecompression -eq 'Default') { $null } elseif ($GpuDecompression -eq 'On') { '1' } else { '0' }
+        $env:METALLIC_MINIZORAH_GPU_MIN_BATCH_BYTES = if ($GpuDecompressionMinBatchBytes -lt 0) { $null } else { [string]$GpuDecompressionMinBatchBytes }
         $validation = if ($case -eq 'quality' -and -not $QualityWithoutValidation) { '--rhi-validation' } else { '--rhi-no-validation' }
         Write-Output "Starting Metallic $case on the reference camera replay"
         $monitor = Start-Process nvidia-smi.exe -ArgumentList @('--query-gpu=timestamp,name,driver_version,utilization.gpu,memory.used,clocks.gr,temperature.gpu,power.draw', '--format=csv', '-l', '1') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $casePath 'Gpu.csv') -RedirectStandardError (Join-Path $casePath 'Gpu.stderr.txt')
@@ -122,6 +126,9 @@ try {
             if ($report.status -ne 'passed') { throw "$case failed: $($report.error)" }
             if ($GpuDecompression -ne 'Default' -and $report.finalStream.gpuDecompressionEnabled -ne ($GpuDecompression -eq 'On')) {
                 throw 'Actual GPU decompression capability did not match the requested benchmark mode'
+            }
+            if ($GpuDecompressionMinBatchBytes -ge 0 -and $report.finalStream.gpuDecompressionMinBatchBytes -ne $GpuDecompressionMinBatchBytes) {
+                throw 'Actual GPU decompression batch policy did not match the requested threshold'
             }
             if ($DemandTraversal -ne 'Default' -and $report.finalStream.distributedPageDemand -ne ($DemandTraversal -eq 'Distributed')) {
                 throw 'Actual demand traversal did not match the requested policy'

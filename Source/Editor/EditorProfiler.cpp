@@ -428,6 +428,15 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
     else { ImGui::TextDisabled("CLAS: disabled for this rendering path"); }
     ImGui::Text("Pending pages %u | I/O queued %u, active %u | Upload pipeline %u", last.pendingPages, last.ioQueued, last.ioActive, last.uploadQueued);
     ImGui::Text("Requests %u | Completed uploads %u | Evictions %u | Upload %.3f MiB/frame", last.requests, last.uploads, last.evictions, last.uploadBytes / mib);
+    const auto& speed = last.throughput;
+    ImGui::Text("Load %.1f MiB/s (%.0f pages/s) | Prepared %.1f MiB/s", speed.loadedStoredMiBPerSecond,
+        speed.loadedPagesPerSecond, speed.preparedMiBPerSecond);
+    ImGui::Text("Copy payload %.1f MiB/s | Geometry ready %.1f MiB/s (%.0f pages/s)", speed.transferMiBPerSecond,
+        speed.geometryReadyMiBPerSecond, speed.geometryReadyPagesPerSecond);
+    ImGui::TextDisabled("Rolling %.2f s; load counts mapped file payload, not physical disk I/O. Ready = completed upload receipt.", speed.windowSeconds);
+    ImGui::Text("GPU installation pages %llu | Small-batch CPU pages %llu",
+        static_cast<unsigned long long>(last.totalGpuDecompressedPages),
+        static_cast<unsigned long long>(speed.totals.smallBatchCpuPages));
     if (last.feedbackFrame == UINT64_MAX) { ImGui::TextDisabled("Feedback: pending"); }
     else { ImGui::TextDisabled("Stream frame %llu | Feedback frame %llu (age %llu)",
         static_cast<unsigned long long>(last.frameIndex), static_cast<unsigned long long>(last.feedbackFrame),
@@ -455,6 +464,8 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
     std::vector<PlotSeries> memory{{"Geometry", IM_COL32(64, 218, 100, 255), {}}, {"CLAS", IM_COL32(75, 151, 250, 255), {}}};
     std::vector<PlotSeries> pages{{"Requests", IM_COL32(255, 211, 92, 255), {}}, {"Uploads", IM_COL32(92, 217, 161, 255), {}}, {"Evictions", IM_COL32(246, 123, 123, 255), {}}};
     std::vector<PlotSeries> uploads{{"Upload MiB/frame", IM_COL32(104, 178, 248, 255), {}}};
+    std::vector<PlotSeries> throughput{{"Loaded payload", IM_COL32(255, 211, 92, 255), {}},
+        {"Copy payload", IM_COL32(104, 178, 248, 255), {}}, {"Geometry ready", IM_COL32(92, 217, 161, 255), {}}};
     std::vector<PlotSeries> pending{{"Pending pages", IM_COL32(255, 211, 92, 255), {}}, {"I/O queued", IM_COL32(246, 123, 123, 255), {}}, {"I/O active", IM_COL32(104, 178, 248, 255), {}}};
     std::vector<PlotSeries> clasTraffic{{"Built pages", IM_COL32(75, 151, 250, 255), {}},
         {"Pending pages", IM_COL32(255, 211, 92, 255), {}}, {"Retiring pages", IM_COL32(246, 123, 123, 255), {}}};
@@ -466,6 +477,9 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
         memory[0].values.push_back(sample.geometryUsedBytes / mib); memory[1].values.push_back(sample.clasUsedBytes / mib);
         pages[0].values.push_back(sample.requests); pages[1].values.push_back(sample.uploads); pages[2].values.push_back(sample.evictions);
         uploads[0].values.push_back(sample.uploadBytes / mib);
+        throughput[0].values.push_back(sample.throughput.loadedStoredMiBPerSecond);
+        throughput[1].values.push_back(sample.throughput.transferMiBPerSecond);
+        throughput[2].values.push_back(sample.throughput.geometryReadyMiBPerSecond);
         pending[0].values.push_back(sample.pendingPages); pending[1].values.push_back(sample.ioQueued); pending[2].values.push_back(sample.ioActive);
     }
     if (!last.clasEnabled) { memory.pop_back(); }
@@ -476,6 +490,9 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
     }
     if (ImGui::CollapsingHeader("Page Traffic")) {
         drawHistoryPlot("Page traffic (pages/frame)", frames, pages, "pages", 170);
+    }
+    if (ImGui::CollapsingHeader("Loading Speed", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawHistoryPlot("Streaming throughput (MiB/s)", frames, throughput, "MiB/s", 170);
     }
     if (ImGui::CollapsingHeader("Upload Traffic")) {
         drawHistoryPlot("Upload traffic (MiB/frame)", frames, uploads, "MiB", 150);

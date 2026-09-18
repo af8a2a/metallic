@@ -262,6 +262,7 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
         .lowLatencyRequests = boolProperty(properties, "lowLatencyRequests", true),
         .completionDrivenUploads = boolProperty(properties, "completionDrivenUploads", true),
         .enableGpuDecompression = boolProperty(properties, "enableGpuDecompression", false),
+        .gpuDecompressionMinBatchBytes = uint64Property(properties, "gpuDecompressionMinBatchBytes", 1024 * 1024),
         .prefetchPages = boolProperty(properties, "prefetchPages", true),
     };
 }
@@ -981,7 +982,11 @@ public:
         }
         {
             auto profile = context.profileScope("Stream Begin");
-            result = streamRuntime_->cmdBeginFrame(context.commandBuffer(), *context.streamer(), frame);
+            result = streamRuntime_->cmdBeginFrame(context.commandBuffer(), *context.streamer(), frame, [&] {
+                auto uploadProfile = context.profileScope("Upload preflight");
+                context.subsystem<StreamerSubsystem>()->flush(context.commandBuffer(),
+                    [&](const char* name) { uploadProfile.next(name); });
+            });
             context.publishCpuProfile(streamRuntime_->beginFrameCpuProfile().sections);
         }
         if (!result) {

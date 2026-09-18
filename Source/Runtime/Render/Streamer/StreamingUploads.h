@@ -36,7 +36,7 @@ public:
 
     void beginFrame();
     Result beginFrame(RenderFrameContext& frame);
-    void flush(CommandBuffer& commandBuffer);
+    void flush(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase = {});
     void endFrame();
 
     Streamer* streamer() const { return streamer_.get(); }

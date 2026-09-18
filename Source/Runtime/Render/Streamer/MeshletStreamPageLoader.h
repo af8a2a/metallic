@@ -38,7 +38,9 @@ public:
         bool gpuDecompression = false);
     void reset();
 
-    bool enqueue(uint32_t pageIndex);
+    // A per-request choice: small cohorts decode on the worker without waiting
+    // for more requests or adding CPU decode work to the render thread.
+    bool enqueue(uint32_t pageIndex, bool allowGpuDecompression = true);
     bool tryPop(MeshletStreamPageLoadResult& outResult);
 
     bool ready() const;

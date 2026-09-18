@@ -2,6 +2,8 @@
 
 2026-09-18，基于 `5b5a3c3`，对应 [接入设计](GpuStreamingDecompressionResearch.md) 的阶段 1。EXT direct 解压已通过新驱动下的集成测试和完整实时回放。默认仍使用 CPU 路径：GPU 解压降低 CPU 加载处理和 staging 字节，但当前同队列实现增加了 GPU 帧时间，尚未达到默认启用门槛。
 
+后续已完成 [同队列小批次策略与速度指标](GpuStreamingSmallBatch.md)：开启 GPU 解压时默认采用 1 MiB 请求批次阈值，将零散页分流至后台 CPU；新增分项 GPU 计时、MiB/s、pages/s 和完成速率。两组低干扰配对中，相对本报告的全 GPU 策略，P95 降低 0.70–0.90 ms。以下数据保留为引入自适应策略前的历史对照。
+
 ## 已实现
 
 - v10 流文件读取及独立离线转码工具 `MetallicMeshletTranscode`。保留 v8/v9 读取，转码支持 v9/v10 输入；不重新生成 LOD，不改变 page/group/cluster 编号。禁止覆盖已有输出，失败清理自己的临时文件，目录校验通过后再发布输出文件。离线转换以最多 8 个后台批次并行编码，按原页序写出。

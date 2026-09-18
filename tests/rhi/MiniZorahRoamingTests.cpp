@@ -732,6 +732,9 @@ public:
                 checkRoam(std::string_view(mode) == "0" || std::string_view(mode) == "1", "Invalid GPU decompression setting");
                 props["enableGpuDecompression"] = std::string_view(mode) == "1";
             }
+            if (const char* bytes = std::getenv("METALLIC_MINIZORAH_GPU_MIN_BATCH_BYTES")) {
+                props["gpuDecompressionMinBatchBytes"] = std::stoull(bytes);
+            }
             if (const char* queues = std::getenv("METALLIC_MINIZORAH_RASTER_QUEUES")) {
                 const std::string policy(queues);
                 checkRoam(policy == "Off" || policy == "Early" || policy == "All", "Invalid raster queue policy");
@@ -1029,6 +1032,20 @@ public:
                         {"uploadQueued", s.uploadQueued}, {"requests", s.requests}, {"evictions", s.evictions},
                         {"allocationFailures", s.allocationFailures}, {"uploadBytes", s.uploadBytes},
                         {"storedUploadBytes", s.storedUploadBytes}, {"totalStoredUploadBytes", s.totalStoredUploadBytes},
+                        {"throughput", {{"windowSeconds", s.throughput.windowSeconds},
+                            {"loadedPagesPerSecond", s.throughput.loadedPagesPerSecond},
+                            {"loadedStoredMiBPerSecond", s.throughput.loadedStoredMiBPerSecond},
+                            {"preparedMiBPerSecond", s.throughput.preparedMiBPerSecond},
+                            {"transferMiBPerSecond", s.throughput.transferMiBPerSecond},
+                            {"geometryReadyMiBPerSecond", s.throughput.geometryReadyMiBPerSecond},
+                            {"geometryReadyPagesPerSecond", s.throughput.geometryReadyPagesPerSecond},
+                            {"loadedPages", s.throughput.totals.loadedPages},
+                            {"loadedStoredBytes", s.throughput.totals.loadedStoredBytes},
+                            {"preparedDeviceBytes", s.throughput.totals.preparedDeviceBytes},
+                            {"transferPayloadBytes", s.throughput.totals.transferPayloadBytes},
+                            {"geometryReadyPages", s.throughput.totals.geometryReadyPages},
+                            {"geometryReadyBytes", s.throughput.totals.geometryReadyBytes},
+                            {"smallBatchCpuPages", s.throughput.totals.smallBatchCpuPages}}},
                         {"gpuDecompressedPages", s.gpuDecompressedPages}, {"totalGpuDecompressedPages", s.totalGpuDecompressedPages},
                         {"cpuWork", {{"demandVisited", work.demandVisited},
                             {"demandNewerThanFeedback", work.demandNewerThanFeedback},

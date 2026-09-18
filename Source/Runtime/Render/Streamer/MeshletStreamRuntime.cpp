@@ -932,6 +932,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 .immediateGpuRequests = desc.lowLatencyRequests,
                 .completionDrivenUploads = desc.completionDrivenUploads,
                 .gpuDecompression = gpuDecompression,
+                .gpuDecompressionMinBatchBytes = desc.gpuDecompressionMinBatchBytes,
             },
             reason)) {
         log = "MeshletStreamRuntime residency initialization failed: " + reason;
@@ -3914,6 +3915,7 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.gpuDecompressedPages = stats.frameGpuDecompressedPages;
     result.totalGpuDecompressedPages = stats.totalGpuDecompressedPages;
     result.loadFailures = stats.totalPageLoadFailureCount;
+    result.throughput = residency_.throughputSnapshot();
     result.cpuWork = stats.cpuWork;
     result.clasEnabled = clasPool_ && clasPool_->ready();
     if (result.clasEnabled) {
@@ -3942,6 +3944,16 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
     using debug::DebugValue;
     const auto stats = residency_.stats();
     const auto latency = residency_.latencySnapshot();
+    const auto speed = residency_.throughputSnapshot();
+    const DebugValue throughputJson{
+        {"windowSeconds", speed.windowSeconds}, {"loadedPagesPerSecond", speed.loadedPagesPerSecond},
+        {"loadedStoredMiBPerSecond", speed.loadedStoredMiBPerSecond}, {"preparedMiBPerSecond", speed.preparedMiBPerSecond},
+        {"transferMiBPerSecond", speed.transferMiBPerSecond}, {"geometryReadyPagesPerSecond", speed.geometryReadyPagesPerSecond},
+        {"geometryReadyMiBPerSecond", speed.geometryReadyMiBPerSecond},
+        {"loadedPages", speed.totals.loadedPages}, {"loadedStoredBytes", speed.totals.loadedStoredBytes},
+        {"preparedDeviceBytes", speed.totals.preparedDeviceBytes}, {"transferPayloadBytes", speed.totals.transferPayloadBytes},
+        {"geometryReadyPages", speed.totals.geometryReadyPages}, {"geometryReadyBytes", speed.totals.geometryReadyBytes},
+        {"smallBatchCpuPages", speed.totals.smallBatchCpuPages}};
     const auto distribution = [](const MeshletStreamLatencySummary& sample) -> DebugValue {
         return {{"count", sample.count}, {"p50", sample.p50}, {"p95", sample.p95},
             {"p99", sample.p99}, {"max", sample.maximum}, {"mean", sample.mean}};
@@ -3970,6 +3982,8 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"pageBufferBytes", maxResidentBytes_}, {"clusterRtxEnabled", clusterRtxEnabled_}, {"clasEnabled", clasPool_ != nullptr},
         {"maxUploadBytesPerFrame", maxUploadBytesPerFrame_},
         {"gpuDecompressionEnabled", pageBuffer_ && hasFlag(pageBuffer_->desc().usage, BufferUsageBits::MemoryDecompression)},
+        {"gpuDecompressionMinBatchBytes", residency_.gpuDecompressionMinBatchBytes()},
+        {"throughput", throughputJson},
         {"screenSpacePagePriority", screenSpacePagePriority_},
         {"viewDrivenPageDemand", viewDrivenPageDemand_},
         {"distributedPageDemand", distributedPageDemand_}, {"demandTaskCount", demandTaskCount_},

@@ -24,7 +24,7 @@ public:
     size_t streamCount() const { return streams_.size(); }
     StreamSceneReadiness sceneReadiness() const;
     void collectReleasedStreams();
-    void flush(CommandBuffer& commands);
+    void flush(CommandBuffer& commands, const StreamUploadPhaseCallback& phase = {});
     Streamer* streamer() const { return uploads_.streamer(); }
     const RenderGraphStreamingStats& stats() const { return uploads_.stats(); }
     SceneResourceManager& manager() { return resources_; }

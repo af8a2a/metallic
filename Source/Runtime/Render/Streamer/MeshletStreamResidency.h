@@ -4,6 +4,7 @@
 #include "Runtime/Render/Profiling/RenderGraphProfile.h"
 #include "Runtime/Render/Streamer/MeshletStreamLatency.h"
 #include "Runtime/Render/Streamer/MeshletStreamPageLoader.h"
+#include "Runtime/Render/Streamer/MeshletStreamThroughput.h"
 #include "Runtime/Render/Streamer/StreamingTaskQueue.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
@@ -208,6 +209,7 @@ struct MeshletStreamResidencyDesc {
     bool immediateGpuRequests = false;
     bool completionDrivenUploads = true;
     bool gpuDecompression = false;
+    uint64_t gpuDecompressionMinBatchBytes = 1024 * 1024; // Zero forces GPU for every eligible page.
 };
 
 struct MeshletStreamResidencyStats {
@@ -397,6 +399,8 @@ public:
     // Detailed mode scans page ages and allocator free blocks.
     MeshletStreamResidencyStats stats(bool detailed = true) const;
     MeshletStreamLatencySnapshot latencySnapshot() const { return latency_ ? latency_->snapshot() : MeshletStreamLatencySnapshot{}; }
+    MeshletStreamThroughput throughputSnapshot() const { return throughput_.snapshot(meshletStreamTimeMicroseconds(), traffic_); }
+    uint64_t gpuDecompressionMinBatchBytes() const { return gpuDecompressionMinBatchBytes_; }
     uint32_t availablePrefetchRequests() const
     {
         const uint32_t limit = pageLoader_.ready() ? std::max(maxPageLoadsInFlight_ / 4u, 1u) : 32u;
@@ -508,6 +512,9 @@ private:
     bool immediateGpuRequests_ = false;
     bool completionDrivenUploads_ = true;
     bool gpuDecompression_ = false;
+    uint64_t gpuDecompressionMinBatchBytes_ = 0;
+    MeshletStreamTraffic traffic_;
+    MeshletStreamThroughputTracker throughput_;
 };
 
 } // namespace metallic::render
