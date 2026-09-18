@@ -207,6 +207,7 @@ struct MeshletStreamResidencyDesc {
     bool measurePageLatency = false;
     bool immediateGpuRequests = false;
     bool completionDrivenUploads = true;
+    bool gpuDecompression = false;
 };
 
 struct MeshletStreamResidencyStats {
@@ -277,6 +278,10 @@ struct MeshletStreamResidencyStats {
     uint32_t frameCachedUnusedPageCount = 0;
     uint32_t frameResidentDemandCount = 0;
     uint64_t frameUploadBytes = 0;
+    uint64_t frameStoredUploadBytes = 0;
+    uint64_t totalStoredUploadBytes = 0;
+    uint32_t frameGpuDecompressedPages = 0;
+    uint64_t totalGpuDecompressedPages = 0;
     uint64_t totalUploadBytes = 0;
     uint32_t frameAdmissionDeferredCount = 0;
     uint32_t frameCancelledQueuedLoadCount = 0;
@@ -350,9 +355,10 @@ public:
     uint32_t consumeGpuRequests(const StreamGpuRequestBatch& requests, CpuProfileRecorder* profiler = nullptr);
     // Called once after an upload is admitted, before the decoded payload is released.
     using UploadObserver = std::function<void(uint32_t, std::span<const uint8_t>)>;
+    using GpuUploadObserver = std::function<void(uint32_t, const scene::MeshletStreamGpuPage&)>;
     uint32_t processUploads(Streamer& streamer, Buffer& destination, uint32_t maxUploads,
         const UploadObserver& observer = {}, CpuProfileRecorder* profiler = nullptr,
-        uint64_t maxUploadBytesPerFrame = 0);
+        uint64_t maxUploadBytesPerFrame = 0, const GpuUploadObserver& gpuObserver = {});
 
     // Uses confirmed unused feedback; geometry and its CLAS share one victim list.
     uint32_t reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc, CpuProfileRecorder* profiler = nullptr);
@@ -501,6 +507,7 @@ private:
     uint32_t maxPageLoadsInFlight_ = 0;
     bool immediateGpuRequests_ = false;
     bool completionDrivenUploads_ = true;
+    bool gpuDecompression_ = false;
 };
 
 } // namespace metallic::render

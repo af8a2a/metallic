@@ -1,0 +1,1450 @@
+{
+  "observedAt": "2026-09-18T13:31:25.426031+08:00",
+  "deviceAddressCommandsRecheck": {
+    "gpu": "NVIDIA GeForce RTX 5060",
+    "driver": "610.47",
+    "apiVersion": "1.4.341",
+    "icd": "C:\\Windows\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_c8bc842500fab35b\\nvoglv64.dll",
+    "loaderImplicitLayersDisabled": true,
+    "loader": {
+      "advertised": false,
+      "feature": false,
+      "extensions": 280
+    },
+    "directIcd": {
+      "advertised": false,
+      "feature": false,
+      "extensions": 280
+    },
+    "officialSupportReference": "https://developer.nvidia.com/vulkan-driver",
+    "officialFirstBetaRelease": "Windows 595.92 (2026-03-13)",
+    "scope": "Observed installed driver capability, not a claim that RTX 5060 hardware cannot support the extension"
+  },
+  "benchmarks": {
+    "bytewise": {
+      "runs": [
+        {
+          "asset": "E:/metallic/.cache/fast-streaming/MiniZorah.gdeflate.meshstream.bin",
+          "compressedPayloadBytes": 3072976,
+          "decodedBytes": 4346336,
+          "device": "NVIDIA GeForce RTX 5060",
+          "driver": "610.47",
+          "pageIds": [
+            0,
+            10684,
+            21369,
+            32054,
+            42738,
+            53423,
+            64108,
+            74792,
+            85477,
+            96162,
+            106847,
+            117531,
+            128216,
+            138901,
+            149585,
+            160270,
+            170955,
+            181640,
+            192324,
+            203009,
+            213694,
+            224378,
+            235063,
+            245748,
+            256433,
+            267117,
+            277802,
+            288487,
+            299171,
+            309856,
+            320541,
+            331225,
+            341910,
+            352595,
+            363280,
+            373964,
+            384649,
+            395334,
+            406018,
+            416703,
+            427388,
+            438073,
+            448757,
+            459442,
+            470127,
+            480811,
+            491496,
+            502181,
+            512866,
+            523550,
+            534235,
+            544920,
+            555604,
+            566289,
+            576974,
+            587658,
+            598343,
+            609028,
+            619713,
+            630397,
+            641082,
+            651767,
+            662451,
+            673136,
+            683821,
+            694506,
+            705190,
+            715875,
+            726560,
+            737244,
+            747929,
+            758614,
+            769299,
+            779983,
+            790668,
+            801353,
+            812037,
+            822722,
+            833407,
+            844091,
+            854776,
+            865461,
+            876146,
+            886830,
+            897515,
+            908200,
+            918884,
+            929569,
+            940254,
+            950939,
+            961623,
+            972308,
+            982993,
+            993677,
+            1004362,
+            1015047,
+            1025732,
+            1036416,
+            1047101,
+            1057786,
+            1068470,
+            1079155,
+            1089840,
+            1100524,
+            1111209,
+            1121894,
+            1132579,
+            1143263,
+            1153948,
+            1164633,
+            1175317,
+            1186002,
+            1196687,
+            1207372,
+            1218056,
+            1228741,
+            1239426,
+            1250110,
+            1260795,
+            1271480,
+            1282165,
+            1292849,
+            1303534,
+            1314219,
+            1324903,
+            1335588,
+            1346273,
+            1356958
+          ],
+          "repeats": 32,
+          "scope": "warm-memory, single CPU thread, same queue; excludes disk I/O, command recording, CLAS and rendering",
+          "storedEnvelopeSpanBytes": 3165824,
+          "validation": false,
+          "validationErrors": 0,
+          "warmup": 4,
+          "reportPath": ".cache/fast-streaming/fixed-pages-perf-1.json",
+          "sha256": "1babbffccc584b4f80ff630a8f4d20f8e0411f94e8820e09f8ceb52de615d2c1",
+          "cases": [
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 6.5318,
+                "p95": 9.6991
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.334112,
+                "p95": 0.335072
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.001472,
+                "p95": 0.0016
+              },
+              "gpuInstallMs": {
+                "p50": 0.335552,
+                "p95": 0.336544
+              },
+              "name": "raw_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 7.0344,
+                "p95": 10.2801
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 24.4243,
+                "p95": 51.4597
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.33216,
+                "p95": 0.334368
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.001472,
+                "p95": 0.001568
+              },
+              "gpuInstallMs": {
+                "p50": 0.3336,
+                "p95": 0.335808
+              },
+              "name": "gdeflate_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 25.0123,
+                "p95": 52.0391
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 4.4531,
+                "p95": 11.8302
+              },
+              "decompressionRegions": 126,
+              "gpuCopyMs": {
+                "p50": 0.262176,
+                "p95": 0.262976
+              },
+              "gpuCopyPayloadBytes": 3072976,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 1.270528,
+                "p95": 1.273664
+              },
+              "gpuInstallMs": {
+                "p50": 1.532576,
+                "p95": 1.535904
+              },
+              "name": "gdeflate_ext_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 6.2441,
+                "p95": 16.5221
+              }
+            }
+          ]
+        },
+        {
+          "asset": "E:/metallic/.cache/fast-streaming/MiniZorah.gdeflate.meshstream.bin",
+          "compressedPayloadBytes": 3072976,
+          "decodedBytes": 4346336,
+          "device": "NVIDIA GeForce RTX 5060",
+          "driver": "610.47",
+          "pageIds": [
+            0,
+            10684,
+            21369,
+            32054,
+            42738,
+            53423,
+            64108,
+            74792,
+            85477,
+            96162,
+            106847,
+            117531,
+            128216,
+            138901,
+            149585,
+            160270,
+            170955,
+            181640,
+            192324,
+            203009,
+            213694,
+            224378,
+            235063,
+            245748,
+            256433,
+            267117,
+            277802,
+            288487,
+            299171,
+            309856,
+            320541,
+            331225,
+            341910,
+            352595,
+            363280,
+            373964,
+            384649,
+            395334,
+            406018,
+            416703,
+            427388,
+            438073,
+            448757,
+            459442,
+            470127,
+            480811,
+            491496,
+            502181,
+            512866,
+            523550,
+            534235,
+            544920,
+            555604,
+            566289,
+            576974,
+            587658,
+            598343,
+            609028,
+            619713,
+            630397,
+            641082,
+            651767,
+            662451,
+            673136,
+            683821,
+            694506,
+            705190,
+            715875,
+            726560,
+            737244,
+            747929,
+            758614,
+            769299,
+            779983,
+            790668,
+            801353,
+            812037,
+            822722,
+            833407,
+            844091,
+            854776,
+            865461,
+            876146,
+            886830,
+            897515,
+            908200,
+            918884,
+            929569,
+            940254,
+            950939,
+            961623,
+            972308,
+            982993,
+            993677,
+            1004362,
+            1015047,
+            1025732,
+            1036416,
+            1047101,
+            1057786,
+            1068470,
+            1079155,
+            1089840,
+            1100524,
+            1111209,
+            1121894,
+            1132579,
+            1143263,
+            1153948,
+            1164633,
+            1175317,
+            1186002,
+            1196687,
+            1207372,
+            1218056,
+            1228741,
+            1239426,
+            1250110,
+            1260795,
+            1271480,
+            1282165,
+            1292849,
+            1303534,
+            1314219,
+            1324903,
+            1335588,
+            1346273,
+            1356958
+          ],
+          "repeats": 32,
+          "scope": "warm-memory, single CPU thread, same queue; excludes disk I/O, command recording, CLAS and rendering",
+          "storedEnvelopeSpanBytes": 3165824,
+          "validation": false,
+          "validationErrors": 0,
+          "warmup": 4,
+          "reportPath": ".cache/fast-streaming/fixed-pages-perf-2.json",
+          "sha256": "a69fc08613d234325743303b71218cfe7ddcaf2c869feefab7b8024cb2ba09bb",
+          "cases": [
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 6.514,
+                "p95": 6.9902
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.333632,
+                "p95": 0.33616
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.001472,
+                "p95": 0.001504
+              },
+              "gpuInstallMs": {
+                "p50": 0.335104,
+                "p95": 0.3376
+              },
+              "name": "raw_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 7.0584,
+                "p95": 7.5154
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 24.2915,
+                "p95": 41.08
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.33424,
+                "p95": 0.334976
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.001472,
+                "p95": 0.001568
+              },
+              "gpuInstallMs": {
+                "p50": 0.33568,
+                "p95": 0.336448
+              },
+              "name": "gdeflate_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 24.9064,
+                "p95": 41.6092
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 4.386,
+                "p95": 5.0482
+              },
+              "decompressionRegions": 126,
+              "gpuCopyMs": {
+                "p50": 0.262112,
+                "p95": 0.26256
+              },
+              "gpuCopyPayloadBytes": 3072976,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 1.271776,
+                "p95": 1.274048
+              },
+              "gpuInstallMs": {
+                "p50": 1.53376,
+                "p95": 1.53616
+              },
+              "name": "gdeflate_ext_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 6.0838,
+                "p95": 6.7685
+              }
+            }
+          ]
+        },
+        {
+          "asset": "E:/metallic/.cache/fast-streaming/MiniZorah.gdeflate.meshstream.bin",
+          "compressedPayloadBytes": 3072976,
+          "decodedBytes": 4346336,
+          "device": "NVIDIA GeForce RTX 5060",
+          "driver": "610.47",
+          "pageIds": [
+            0,
+            10684,
+            21369,
+            32054,
+            42738,
+            53423,
+            64108,
+            74792,
+            85477,
+            96162,
+            106847,
+            117531,
+            128216,
+            138901,
+            149585,
+            160270,
+            170955,
+            181640,
+            192324,
+            203009,
+            213694,
+            224378,
+            235063,
+            245748,
+            256433,
+            267117,
+            277802,
+            288487,
+            299171,
+            309856,
+            320541,
+            331225,
+            341910,
+            352595,
+            363280,
+            373964,
+            384649,
+            395334,
+            406018,
+            416703,
+            427388,
+            438073,
+            448757,
+            459442,
+            470127,
+            480811,
+            491496,
+            502181,
+            512866,
+            523550,
+            534235,
+            544920,
+            555604,
+            566289,
+            576974,
+            587658,
+            598343,
+            609028,
+            619713,
+            630397,
+            641082,
+            651767,
+            662451,
+            673136,
+            683821,
+            694506,
+            705190,
+            715875,
+            726560,
+            737244,
+            747929,
+            758614,
+            769299,
+            779983,
+            790668,
+            801353,
+            812037,
+            822722,
+            833407,
+            844091,
+            854776,
+            865461,
+            876146,
+            886830,
+            897515,
+            908200,
+            918884,
+            929569,
+            940254,
+            950939,
+            961623,
+            972308,
+            982993,
+            993677,
+            1004362,
+            1015047,
+            1025732,
+            1036416,
+            1047101,
+            1057786,
+            1068470,
+            1079155,
+            1089840,
+            1100524,
+            1111209,
+            1121894,
+            1132579,
+            1143263,
+            1153948,
+            1164633,
+            1175317,
+            1186002,
+            1196687,
+            1207372,
+            1218056,
+            1228741,
+            1239426,
+            1250110,
+            1260795,
+            1271480,
+            1282165,
+            1292849,
+            1303534,
+            1314219,
+            1324903,
+            1335588,
+            1346273,
+            1356958
+          ],
+          "repeats": 32,
+          "scope": "warm-memory, single CPU thread, same queue; excludes disk I/O, command recording, CLAS and rendering",
+          "storedEnvelopeSpanBytes": 3165824,
+          "validation": false,
+          "validationErrors": 0,
+          "warmup": 4,
+          "reportPath": ".cache/fast-streaming/fixed-pages-perf-3.json",
+          "sha256": "76efbe90d17e126c42b178b5e4f7a5026995e3278f21bd85e1b2616d2caebcae",
+          "cases": [
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 6.4987,
+                "p95": 6.7468
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.33424,
+                "p95": 0.334752
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.001472,
+                "p95": 0.001504
+              },
+              "gpuInstallMs": {
+                "p50": 0.335712,
+                "p95": 0.336224
+              },
+              "name": "raw_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 6.9882,
+                "p95": 7.2338
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 23.9825,
+                "p95": 25.0655
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.334208,
+                "p95": 0.33472
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.00144,
+                "p95": 0.001568
+              },
+              "gpuInstallMs": {
+                "p50": 0.335648,
+                "p95": 0.33616
+              },
+              "name": "gdeflate_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 24.5342,
+                "p95": 25.6114
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 4.4331,
+                "p95": 4.6442
+              },
+              "decompressionRegions": 126,
+              "gpuCopyMs": {
+                "p50": 0.261696,
+                "p95": 0.262912
+              },
+              "gpuCopyPayloadBytes": 3072976,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 1.271648,
+                "p95": 1.411488
+              },
+              "gpuInstallMs": {
+                "p50": 1.532928,
+                "p95": 1.672288
+              },
+              "name": "gdeflate_ext_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 6.1208,
+                "p95": 6.442
+              }
+            }
+          ]
+        }
+      ],
+      "medianOfRunP50Ms": {
+        "raw_cpu_upload": {
+          "cpuPrepareMs": 6.514,
+          "gpuCopyMs": 0.334112,
+          "gpuDecodeAndBarrierMs": 0.001472,
+          "gpuInstallMs": 0.335552,
+          "prepareSubmitWaitMs": 7.0344
+        },
+        "gdeflate_cpu_upload": {
+          "cpuPrepareMs": 24.2915,
+          "gpuCopyMs": 0.334208,
+          "gpuDecodeAndBarrierMs": 0.001472,
+          "gpuInstallMs": 0.335648,
+          "prepareSubmitWaitMs": 24.9064
+        },
+        "gdeflate_ext_upload": {
+          "cpuPrepareMs": 4.4331,
+          "gpuCopyMs": 0.262112,
+          "gpuDecodeAndBarrierMs": 1.271648,
+          "gpuInstallMs": 1.532928,
+          "prepareSubmitWaitMs": 6.1208
+        }
+      }
+    },
+    "slicing8": {
+      "runs": [
+        {
+          "asset": "E:/metallic/.cache/fast-streaming/MiniZorah.gdeflate.meshstream.bin",
+          "compressedPayloadBytes": 3072976,
+          "decodedBytes": 4346336,
+          "device": "NVIDIA GeForce RTX 5060",
+          "driver": "610.47",
+          "pageIds": [
+            0,
+            10684,
+            21369,
+            32054,
+            42738,
+            53423,
+            64108,
+            74792,
+            85477,
+            96162,
+            106847,
+            117531,
+            128216,
+            138901,
+            149585,
+            160270,
+            170955,
+            181640,
+            192324,
+            203009,
+            213694,
+            224378,
+            235063,
+            245748,
+            256433,
+            267117,
+            277802,
+            288487,
+            299171,
+            309856,
+            320541,
+            331225,
+            341910,
+            352595,
+            363280,
+            373964,
+            384649,
+            395334,
+            406018,
+            416703,
+            427388,
+            438073,
+            448757,
+            459442,
+            470127,
+            480811,
+            491496,
+            502181,
+            512866,
+            523550,
+            534235,
+            544920,
+            555604,
+            566289,
+            576974,
+            587658,
+            598343,
+            609028,
+            619713,
+            630397,
+            641082,
+            651767,
+            662451,
+            673136,
+            683821,
+            694506,
+            705190,
+            715875,
+            726560,
+            737244,
+            747929,
+            758614,
+            769299,
+            779983,
+            790668,
+            801353,
+            812037,
+            822722,
+            833407,
+            844091,
+            854776,
+            865461,
+            876146,
+            886830,
+            897515,
+            908200,
+            918884,
+            929569,
+            940254,
+            950939,
+            961623,
+            972308,
+            982993,
+            993677,
+            1004362,
+            1015047,
+            1025732,
+            1036416,
+            1047101,
+            1057786,
+            1068470,
+            1079155,
+            1089840,
+            1100524,
+            1111209,
+            1121894,
+            1132579,
+            1143263,
+            1153948,
+            1164633,
+            1175317,
+            1186002,
+            1196687,
+            1207372,
+            1218056,
+            1228741,
+            1239426,
+            1250110,
+            1260795,
+            1271480,
+            1282165,
+            1292849,
+            1303534,
+            1314219,
+            1324903,
+            1335588,
+            1346273,
+            1356958
+          ],
+          "repeats": 32,
+          "scope": "warm-memory, single CPU thread, same queue; excludes disk I/O, command recording, CLAS and rendering",
+          "storedEnvelopeSpanBytes": 3165824,
+          "validation": false,
+          "validationErrors": 0,
+          "warmup": 4,
+          "reportPath": ".cache/fast-streaming/fixed-pages-slicing8-perf-1.json",
+          "sha256": "8aac909db95349640490ce267cc74fa71d4bbb3f3645ac69b3f6824862486153",
+          "cases": [
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 2.2409,
+                "p95": 2.3312
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.334432,
+                "p95": 0.335296
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.001472,
+                "p95": 0.001568
+              },
+              "gpuInstallMs": {
+                "p50": 0.335872,
+                "p95": 0.336768
+              },
+              "name": "raw_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 2.6771,
+                "p95": 2.8476
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 22.2828,
+                "p95": 23.2863
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.334368,
+                "p95": 0.335072
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.001472,
+                "p95": 0.001504
+              },
+              "gpuInstallMs": {
+                "p50": 0.33584,
+                "p95": 0.336544
+              },
+              "name": "gdeflate_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 22.8557,
+                "p95": 23.8328
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 1.4037,
+                "p95": 1.6562
+              },
+              "decompressionRegions": 126,
+              "gpuCopyMs": {
+                "p50": 0.261856,
+                "p95": 0.262432
+              },
+              "gpuCopyPayloadBytes": 3072976,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 1.27008,
+                "p95": 1.410304
+              },
+              "gpuInstallMs": {
+                "p50": 1.532,
+                "p95": 1.672736
+              },
+              "name": "gdeflate_ext_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 3.0677,
+                "p95": 3.3392
+              }
+            }
+          ]
+        },
+        {
+          "asset": "E:/metallic/.cache/fast-streaming/MiniZorah.gdeflate.meshstream.bin",
+          "compressedPayloadBytes": 3072976,
+          "decodedBytes": 4346336,
+          "device": "NVIDIA GeForce RTX 5060",
+          "driver": "610.47",
+          "pageIds": [
+            0,
+            10684,
+            21369,
+            32054,
+            42738,
+            53423,
+            64108,
+            74792,
+            85477,
+            96162,
+            106847,
+            117531,
+            128216,
+            138901,
+            149585,
+            160270,
+            170955,
+            181640,
+            192324,
+            203009,
+            213694,
+            224378,
+            235063,
+            245748,
+            256433,
+            267117,
+            277802,
+            288487,
+            299171,
+            309856,
+            320541,
+            331225,
+            341910,
+            352595,
+            363280,
+            373964,
+            384649,
+            395334,
+            406018,
+            416703,
+            427388,
+            438073,
+            448757,
+            459442,
+            470127,
+            480811,
+            491496,
+            502181,
+            512866,
+            523550,
+            534235,
+            544920,
+            555604,
+            566289,
+            576974,
+            587658,
+            598343,
+            609028,
+            619713,
+            630397,
+            641082,
+            651767,
+            662451,
+            673136,
+            683821,
+            694506,
+            705190,
+            715875,
+            726560,
+            737244,
+            747929,
+            758614,
+            769299,
+            779983,
+            790668,
+            801353,
+            812037,
+            822722,
+            833407,
+            844091,
+            854776,
+            865461,
+            876146,
+            886830,
+            897515,
+            908200,
+            918884,
+            929569,
+            940254,
+            950939,
+            961623,
+            972308,
+            982993,
+            993677,
+            1004362,
+            1015047,
+            1025732,
+            1036416,
+            1047101,
+            1057786,
+            1068470,
+            1079155,
+            1089840,
+            1100524,
+            1111209,
+            1121894,
+            1132579,
+            1143263,
+            1153948,
+            1164633,
+            1175317,
+            1186002,
+            1196687,
+            1207372,
+            1218056,
+            1228741,
+            1239426,
+            1250110,
+            1260795,
+            1271480,
+            1282165,
+            1292849,
+            1303534,
+            1314219,
+            1324903,
+            1335588,
+            1346273,
+            1356958
+          ],
+          "repeats": 32,
+          "scope": "warm-memory, single CPU thread, same queue; excludes disk I/O, command recording, CLAS and rendering",
+          "storedEnvelopeSpanBytes": 3165824,
+          "validation": false,
+          "validationErrors": 0,
+          "warmup": 4,
+          "reportPath": ".cache/fast-streaming/fixed-pages-slicing8-perf-2.json",
+          "sha256": "defa7a6b751f9824072abb0df4a951de0645e15e4e4740c586aa6151985dbab2",
+          "cases": [
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 2.3179,
+                "p95": 3.8092
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.33152,
+                "p95": 0.33248
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.001472,
+                "p95": 0.001536
+              },
+              "gpuInstallMs": {
+                "p50": 0.333024,
+                "p95": 0.334016
+              },
+              "name": "raw_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 2.8098,
+                "p95": 4.3965
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 20.7761,
+                "p95": 21.4625
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.333568,
+                "p95": 0.335072
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.001472,
+                "p95": 0.001568
+              },
+              "gpuInstallMs": {
+                "p50": 0.335168,
+                "p95": 0.336512
+              },
+              "name": "gdeflate_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 21.3243,
+                "p95": 22.0079
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 1.3844,
+                "p95": 1.5196
+              },
+              "decompressionRegions": 126,
+              "gpuCopyMs": {
+                "p50": 0.262112,
+                "p95": 0.262688
+              },
+              "gpuCopyPayloadBytes": 3072976,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 1.270496,
+                "p95": 1.410112
+              },
+              "gpuInstallMs": {
+                "p50": 1.53264,
+                "p95": 1.671456
+              },
+              "name": "gdeflate_ext_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 3.0516,
+                "p95": 3.3258
+              }
+            }
+          ]
+        },
+        {
+          "asset": "E:/metallic/.cache/fast-streaming/MiniZorah.gdeflate.meshstream.bin",
+          "compressedPayloadBytes": 3072976,
+          "decodedBytes": 4346336,
+          "device": "NVIDIA GeForce RTX 5060",
+          "driver": "610.47",
+          "pageIds": [
+            0,
+            10684,
+            21369,
+            32054,
+            42738,
+            53423,
+            64108,
+            74792,
+            85477,
+            96162,
+            106847,
+            117531,
+            128216,
+            138901,
+            149585,
+            160270,
+            170955,
+            181640,
+            192324,
+            203009,
+            213694,
+            224378,
+            235063,
+            245748,
+            256433,
+            267117,
+            277802,
+            288487,
+            299171,
+            309856,
+            320541,
+            331225,
+            341910,
+            352595,
+            363280,
+            373964,
+            384649,
+            395334,
+            406018,
+            416703,
+            427388,
+            438073,
+            448757,
+            459442,
+            470127,
+            480811,
+            491496,
+            502181,
+            512866,
+            523550,
+            534235,
+            544920,
+            555604,
+            566289,
+            576974,
+            587658,
+            598343,
+            609028,
+            619713,
+            630397,
+            641082,
+            651767,
+            662451,
+            673136,
+            683821,
+            694506,
+            705190,
+            715875,
+            726560,
+            737244,
+            747929,
+            758614,
+            769299,
+            779983,
+            790668,
+            801353,
+            812037,
+            822722,
+            833407,
+            844091,
+            854776,
+            865461,
+            876146,
+            886830,
+            897515,
+            908200,
+            918884,
+            929569,
+            940254,
+            950939,
+            961623,
+            972308,
+            982993,
+            993677,
+            1004362,
+            1015047,
+            1025732,
+            1036416,
+            1047101,
+            1057786,
+            1068470,
+            1079155,
+            1089840,
+            1100524,
+            1111209,
+            1121894,
+            1132579,
+            1143263,
+            1153948,
+            1164633,
+            1175317,
+            1186002,
+            1196687,
+            1207372,
+            1218056,
+            1228741,
+            1239426,
+            1250110,
+            1260795,
+            1271480,
+            1282165,
+            1292849,
+            1303534,
+            1314219,
+            1324903,
+            1335588,
+            1346273,
+            1356958
+          ],
+          "repeats": 32,
+          "scope": "warm-memory, single CPU thread, same queue; excludes disk I/O, command recording, CLAS and rendering",
+          "storedEnvelopeSpanBytes": 3165824,
+          "validation": false,
+          "validationErrors": 0,
+          "warmup": 4,
+          "reportPath": ".cache/fast-streaming/fixed-pages-slicing8-perf-3.json",
+          "sha256": "d56cfb1b108d3af3b3769d36ceb9b9a6aea602b947795cef8530b8ce58b97822",
+          "cases": [
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 2.2557,
+                "p95": 2.4783
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.334112,
+                "p95": 0.334688
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.00144,
+                "p95": 0.001472
+              },
+              "gpuInstallMs": {
+                "p50": 0.335552,
+                "p95": 0.336128
+              },
+              "name": "raw_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 2.7156,
+                "p95": 2.9402
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 20.6804,
+                "p95": 21.2907
+              },
+              "decompressionRegions": 0,
+              "gpuCopyMs": {
+                "p50": 0.333952,
+                "p95": 0.334816
+              },
+              "gpuCopyPayloadBytes": 4346336,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 0.001472,
+                "p95": 0.001504
+              },
+              "gpuInstallMs": {
+                "p50": 0.335392,
+                "p95": 0.336256
+              },
+              "name": "gdeflate_cpu_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 21.2099,
+                "p95": 21.8391
+              }
+            },
+            {
+              "byteOracle": true,
+              "cpuPrepareMs": {
+                "p50": 1.3836,
+                "p95": 1.6101
+              },
+              "decompressionRegions": 126,
+              "gpuCopyMs": {
+                "p50": 0.262112,
+                "p95": 0.37984
+              },
+              "gpuCopyPayloadBytes": 3072976,
+              "gpuDecodeAndBarrierMs": {
+                "p50": 1.270208,
+                "p95": 1.272544
+              },
+              "gpuInstallMs": {
+                "p50": 1.532448,
+                "p95": 1.651648
+              },
+              "name": "gdeflate_ext_upload",
+              "prepareSubmitWaitMs": {
+                "p50": 3.0466,
+                "p95": 3.3352
+              }
+            }
+          ]
+        }
+      ],
+      "medianOfRunP50Ms": {
+        "raw_cpu_upload": {
+          "cpuPrepareMs": 2.2557,
+          "gpuCopyMs": 0.334112,
+          "gpuDecodeAndBarrierMs": 0.001472,
+          "gpuInstallMs": 0.335552,
+          "prepareSubmitWaitMs": 2.7156
+        },
+        "gdeflate_cpu_upload": {
+          "cpuPrepareMs": 20.7761,
+          "gpuCopyMs": 0.333952,
+          "gpuDecodeAndBarrierMs": 0.001472,
+          "gpuInstallMs": 0.335392,
+          "prepareSubmitWaitMs": 21.3243
+        },
+        "gdeflate_ext_upload": {
+          "cpuPrepareMs": 1.3844,
+          "gpuCopyMs": 0.262112,
+          "gpuDecodeAndBarrierMs": 1.270208,
+          "gpuInstallMs": 1.532448,
+          "prepareSubmitWaitMs": 3.0516
+        }
+      }
+    }
+  },
+  "probeEvidence": {
+    "address-loader.log": "f121d931506e4cf6a2d7adb5e5ea3b6f2e80584c6b9cde7ec7aefb10c8900394",
+    "address-direct-icd.log": "12e155c21701b6c5563a9e07e710b4eb05991b8db0e0ce9b5fecece646d3bb5f",
+    "vulkaninfo-no-implicit.txt": "af93b2536b77d7f37cc25e0c3e8db7c28191b370c8a2b63df2a7d1e1bfc2d142",
+    "DeviceAddressProbe.cpp": "61d1d630ef43a836e1ec0464e22fdad9a76ba05e471887061083aec7b0134fe5"
+  },
+  "validation": {
+    "build": "passed MetallicGpuPageTests, MetallicRhiTests, MetallicMeshletTranscode, MetallicGPUDrivenSample",
+    "independentTestsPassed": 5,
+    "synchronizationValidationErrors": 0,
+    "log": ".cache/fast-streaming/gpu-page-tests-recheck-final.log",
+    "logSha256": "cb727d097147ca95fbe638ac98fcc559d1793bdd7e3bd6349c6c0bc7106ba6b0",
+    "rhiTestsSkipped": 2,
+    "rhiLogSha256": "3ef986c71f189ad71edc428dc21110718230222780382bfa26482563d2a8064d",
+    "testSourceSha256": "6f045bf91c2a2acedf7b9092ffb04fbd286702bc084b319b054ba264623079c7",
+    "codecSourceSha256": "10299cc45e8e8155cbc69a5645768cdf273798b30f9996544a8190f5f5d04330",
+    "endToEndPerformanceValidated": false
+  },
+  "historicalDriver": "610.47",
+  "latestRuntimeEvidence": "GpuStreamingDecompressionRuntimeEvidence.json",
+  "historyNote": "Preserved pre-upgrade observations. Driver 616.92 removes the device-creation blocker; use latestRuntimeEvidence for current integration and performance results."
+}

@@ -727,6 +727,11 @@ public:
             props["maxClasBuildClusters"] = 8192;
             props["coldPageRetentionFrames"] = 120;
             props["debugStreamingPages"] = false;
+            if (const char* path = std::getenv("METALLIC_MINIZORAH_STREAM_ASSET")) { props["streamAssetPath"] = path; }
+            if (const char* mode = std::getenv("METALLIC_MINIZORAH_GPU_DECOMPRESSION")) {
+                checkRoam(std::string_view(mode) == "0" || std::string_view(mode) == "1", "Invalid GPU decompression setting");
+                props["enableGpuDecompression"] = std::string_view(mode) == "1";
+            }
             if (const char* queues = std::getenv("METALLIC_MINIZORAH_RASTER_QUEUES")) {
                 const std::string policy(queues);
                 checkRoam(policy == "Off" || policy == "Early" || policy == "All", "Invalid raster queue policy");
@@ -1023,6 +1028,8 @@ public:
                         {"pendingPages", s.pendingPages}, {"ioQueued", s.ioQueued}, {"ioActive", s.ioActive},
                         {"uploadQueued", s.uploadQueued}, {"requests", s.requests}, {"evictions", s.evictions},
                         {"allocationFailures", s.allocationFailures}, {"uploadBytes", s.uploadBytes},
+                        {"storedUploadBytes", s.storedUploadBytes}, {"totalStoredUploadBytes", s.totalStoredUploadBytes},
+                        {"gpuDecompressedPages", s.gpuDecompressedPages}, {"totalGpuDecompressedPages", s.totalGpuDecompressedPages},
                         {"cpuWork", {{"demandVisited", work.demandVisited},
                             {"demandNewerThanFeedback", work.demandNewerThanFeedback},
                             {"demandUnused", work.demandUnused}, {"demandRefreshed", work.demandRefreshed},

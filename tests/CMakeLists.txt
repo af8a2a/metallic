@@ -204,6 +204,20 @@ set_tests_properties(MetallicSceneTests PROPERTIES
     LABELS "scene"
 )
 
+add_executable(MetallicGpuPageTests
+    scene/GpuPageCodecTests.cpp
+    rhi/GpuMemoryDecompressionTests.cpp
+    ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Streamer/MeshletStreamClas.cpp
+    ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Streamer/MeshletStreamPageLoader.cpp
+)
+target_link_libraries(MetallicGpuPageTests PRIVATE MetallicRuntimeScene volk GTest::gtest_main)
+target_include_directories(MetallicGpuPageTests PRIVATE ${CMAKE_SOURCE_DIR}/External/volk)
+target_compile_definitions(MetallicGpuPageTests PRIVATE PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}" NOMINMAX)
+metallic_copy_spdlog_runtime(MetallicGpuPageTests)
+metallic_copy_openusd_runtime(MetallicGpuPageTests)
+add_test(NAME MetallicGpuPageTests COMMAND MetallicGpuPageTests)
+set_tests_properties(MetallicGpuPageTests PROPERTIES LABELS "scene;rhi")
+
 add_executable(MetallicRhiTests
     rhi/GeneratedCommandsTests.cpp
     rhi/DebugControlTests.cpp
@@ -270,6 +284,7 @@ add_executable(MetallicRhiTests
     rhi/RayTracingPositionFetchTests.cpp
     rhi/OpacityMicromapTests.cpp
     rhi/StreamerTests.cpp
+    rhi/GpuDecompressionTests.cpp
     rhi/TestOutput.cpp
     rhi/ValidationTests.cpp
     rhi/stb/Stb.cpp

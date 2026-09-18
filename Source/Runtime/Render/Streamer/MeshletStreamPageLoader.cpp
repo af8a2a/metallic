@@ -25,7 +25,12 @@ struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStrea
                 const std::span<const uint8_t> storedPayload = asset->pagePayload(pageIndex);
                 std::vector<uint8_t> decodeStorage;
                 std::span<const uint8_t> devicePayload;
-                if (!scene::decodeMeshletStreamPayloadForDevice(
+                if (gpuDecompression && page.compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GpuTiles)) {
+                    if (scene::inspectMeshletStreamGpuPage(page, storedPayload, result.gpuPage, result.failureReason)) {
+                        result.payload.assign(storedPayload.begin(), storedPayload.end());
+                        result.gpuEncoded = true;
+                    }
+                } else if (!scene::decodeMeshletStreamPayloadForDevice(
                         page,
                         storedPayload,
                         decodeStorage,
@@ -148,6 +153,7 @@ struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStrea
     uint32_t pageLoadConcurrency = 0;
     uint32_t activeLoads = 0;
     bool stopping = false;
+    bool gpuDecompression = false;
 };
 
 MeshletStreamPageLoader::MeshletStreamPageLoader()
@@ -163,7 +169,7 @@ MeshletStreamPageLoader::~MeshletStreamPageLoader()
 bool MeshletStreamPageLoader::initialize(
     const scene::MeshletStreamAsset& asset,
     uint32_t concurrency,
-    std::string& reason)
+    std::string& reason, bool gpuDecompression)
 {
     reset();
     reason.clear();
@@ -186,6 +192,7 @@ bool MeshletStreamPageLoader::initialize(
     }
 
     impl_->asset = &asset;
+    impl_->gpuDecompression = gpuDecompression;
     impl_->stopping = false;
     impl_->pageLoadConcurrency = concurrency;
     return true;

@@ -8,6 +8,8 @@ param(
     [ValidateSet('Default', 'Off', 'Early', 'All')][string]$RasterQueues = 'Default',
     [ValidateSet('Default', 'Ordered', 'Distributed')][string]$DemandTraversal = 'Default',
     [ValidateRange(0, 4194240)][int]$DemandWorkers = 0,
+    [string]$StreamAsset = "",
+    [ValidateSet('Default', 'On', 'Off')][string]$GpuDecompression = 'Default',
     [int]$TimeoutSeconds = 900
 )
 $ErrorActionPreference = "Stop"
@@ -19,7 +21,7 @@ if (Test-Path -LiteralPath $outputPath) { throw "Choose a new output directory" 
 $route = Get-Content -LiteralPath $replayPath -Raw | ConvertFrom-Json
 if ($route.protocol -ne "minizorah-cfg-roam-v1") { throw "Unexpected replay protocol" }
 New-Item -ItemType Directory -Path $outputPath | Out-Null
-$keys = @("METALLIC_TEST_MINIZORAH", "METALLIC_MINIZORAH_BENCH_CLAS", "METALLIC_MINIZORAH_BENCH_QUALITY", "METALLIC_MINIZORAH_REPLAY", "METALLIC_MINIZORAH_BENCH_REALTIME", "METALLIC_MINIZORAH_RASTER_QUEUES", "METALLIC_MINIZORAH_DISTRIBUTED_DEMAND", "METALLIC_MINIZORAH_DEMAND_WORKERS")
+$keys = @("METALLIC_TEST_MINIZORAH", "METALLIC_MINIZORAH_BENCH_CLAS", "METALLIC_MINIZORAH_BENCH_QUALITY", "METALLIC_MINIZORAH_REPLAY", "METALLIC_MINIZORAH_BENCH_REALTIME", "METALLIC_MINIZORAH_RASTER_QUEUES", "METALLIC_MINIZORAH_DISTRIBUTED_DEMAND", "METALLIC_MINIZORAH_DEMAND_WORKERS", "METALLIC_MINIZORAH_STREAM_ASSET", "METALLIC_MINIZORAH_GPU_DECOMPRESSION")
 $previous = @{}
 foreach ($key in $keys) { $previous[$key] = [Environment]::GetEnvironmentVariable($key, "Process") }
 function Get-ShaderTreeDigest {
@@ -43,6 +45,8 @@ $manifest = @{
     rasterQueues = $RasterQueues
     demandTraversal = $DemandTraversal
     demandWorkers = $DemandWorkers
+    streamAsset = $StreamAsset
+    gpuDecompression = $GpuDecompression
     qualityWithoutValidation = [bool]$QualityWithoutValidation
     start = (Get-Date).ToString('o')
 }
@@ -60,6 +64,8 @@ try {
         $env:METALLIC_MINIZORAH_RASTER_QUEUES = if ($RasterQueues -eq 'Default') { $null } else { $RasterQueues }
         $env:METALLIC_MINIZORAH_DISTRIBUTED_DEMAND = if ($DemandTraversal -eq 'Default') { $null } elseif ($DemandTraversal -eq 'Ordered') { '0' } else { '1' }
         $env:METALLIC_MINIZORAH_DEMAND_WORKERS = if ($DemandWorkers -eq 0) { $null } else { [string]$DemandWorkers }
+        $env:METALLIC_MINIZORAH_STREAM_ASSET = if ($StreamAsset) { [IO.Path]::GetFullPath($StreamAsset) } else { $null }
+        $env:METALLIC_MINIZORAH_GPU_DECOMPRESSION = if ($GpuDecompression -eq 'Default') { $null } elseif ($GpuDecompression -eq 'On') { '1' } else { '0' }
         $validation = if ($case -eq 'quality' -and -not $QualityWithoutValidation) { '--rhi-validation' } else { '--rhi-no-validation' }
         Write-Output "Starting Metallic $case on the reference camera replay"
         $monitor = Start-Process nvidia-smi.exe -ArgumentList @('--query-gpu=timestamp,name,driver_version,utilization.gpu,memory.used,clocks.gr,temperature.gpu,power.draw', '--format=csv', '-l', '1') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $casePath 'Gpu.csv') -RedirectStandardError (Join-Path $casePath 'Gpu.stderr.txt')
@@ -79,14 +85,21 @@ try {
                     Stop-Process -Id $process.Id -Force
                     throw "Metallic replay timed out before normal exit"
                 }
-                # Streamline may stall at process teardown. Only reclaim our own
-                # process after the complete report and terminal test result are flushed.
+                # Streamline may stall at process teardown. Reclaim our own
+                # process only after a terminal failure, or a complete report
+                # and terminal success. Failures may not produce a report.
                 $reportPath = Join-Path $casePath 'Baseline.json'
-                if ($null -eq $captureCompleted -and (Test-Path -LiteralPath $reportPath)) {
+                if ($null -eq $captureCompleted) {
                     try {
-                        $candidateReport = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
                         $testFinished = Select-String -LiteralPath (Join-Path $casePath 'stdout.log') -SimpleMatch 'Global test environment tear-down' -Quiet
-                        if ($candidateReport.status -in @('passed', 'failed') -and $testFinished) { $captureCompleted = Get-Date }
+                        if ($testFinished) {
+                            $testFailed = Select-String -LiteralPath (Join-Path $casePath 'stdout.log') -Pattern '^\[\s+FAILED\s+\]' -Quiet
+                            if ($testFailed) { $captureCompleted = Get-Date }
+                            elseif (Test-Path -LiteralPath $reportPath) {
+                                $candidateReport = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+                                if ($candidateReport.status -in @('passed', 'failed')) { $captureCompleted = Get-Date }
+                            }
+                        }
                     } catch { } # The report may still be being written.
                 }
                 if ($null -ne $captureCompleted -and ((Get-Date) - $captureCompleted).TotalSeconds -ge 8) {
@@ -102,8 +115,14 @@ try {
             @{ exitCode = $exitCode; forcedCleanupAfterCapture = $forcedCleanup; arguments = $arguments } |
                 ConvertTo-Json | Set-Content -LiteralPath (Join-Path $casePath 'Process.json') -Encoding UTF8
             if (-not $forcedCleanup -and $null -ne $exitCode -and $exitCode -ne 0) { throw "$case exited with code $exitCode" }
+            if (Select-String -LiteralPath (Join-Path $casePath 'stdout.log') -Pattern '^\[\s+FAILED\s+\]' -Quiet) {
+                throw "$case test failed; inspect stdout.log (a failed test may not produce Baseline.json)"
+            }
             $report = Get-Content -LiteralPath (Join-Path $casePath 'Baseline.json') -Raw | ConvertFrom-Json
             if ($report.status -ne 'passed') { throw "$case failed: $($report.error)" }
+            if ($GpuDecompression -ne 'Default' -and $report.finalStream.gpuDecompressionEnabled -ne ($GpuDecompression -eq 'On')) {
+                throw 'Actual GPU decompression capability did not match the requested benchmark mode'
+            }
             if ($DemandTraversal -ne 'Default' -and $report.finalStream.distributedPageDemand -ne ($DemandTraversal -eq 'Distributed')) {
                 throw 'Actual demand traversal did not match the requested policy'
             }

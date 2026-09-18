@@ -887,7 +887,10 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return makeError(Error::Failure);
     }
 
+    const bool gpuDecompression = desc.enableGpuDecompression && desc.completionDrivenUploads &&
+        device.capabilities().memoryDecompression;
     BufferUsageBits pageBufferUsage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination;
+    if (gpuDecompression) { pageBufferUsage = pageBufferUsage | BufferUsageBits::MemoryDecompression; }
     if (desc.enableClusterRtx || enableClas) {
         if (!device.capabilities().clusterAccelerationStructure) {
             log = "MeshletStreamRuntime cluster RTX requires cluster acceleration structure support";
@@ -928,6 +931,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 .measurePageLatency = desc.measurePageLatency,
                 .immediateGpuRequests = desc.lowLatencyRequests,
                 .completionDrivenUploads = desc.completionDrivenUploads,
+                .gpuDecompression = gpuDecompression,
             },
             reason)) {
         log = "MeshletStreamRuntime residency initialization failed: " + reason;
@@ -2405,6 +2409,7 @@ Result MeshletStreamRuntime::cmdBeginFrame(
     }
     profile.next("Discard obsolete CLAS plans");
     MeshletStreamResidencyManager::UploadObserver prepareClas;
+    MeshletStreamResidencyManager::GpuUploadObserver prepareGpuClas;
     std::string planError;
     if (clasPool_) {
         // Also drop plans for cancelled uploads whose geometry allocation was evicted.
@@ -2420,9 +2425,21 @@ Result MeshletStreamRuntime::cmdBeginFrame(
             pendingClasPlans_.insert_or_assign(page, std::move(plan));
         };
     }
+    if (clasPool_) {
+        prepareGpuClas = [&](uint32_t page, const scene::MeshletStreamGpuPage& payload) {
+            MeshletStreamClasPagePlan plan;
+            std::string reason;
+            if (!buildMeshletStreamClasGpuPagePlan(payload, page,
+                    page * asset_.maxPageClusters(), plan, reason)) {
+                planError = std::move(reason);
+                return;
+            }
+            pendingClasPlans_.insert_or_assign(page, std::move(plan));
+        };
+    }
     profile.next("Prepare page uploads");
     currentFrameUploadCount_ = residency_.processUploads(streamer, *pageBuffer_, maxPageUploadsPerFrame_,
-        prepareClas, profiler, maxUploadBytesPerFrame_);
+        prepareClas, profiler, maxUploadBytesPerFrame_, prepareGpuClas);
     if (!planError.empty()) {
         spdlog::error("[MeshletStreamRuntime] CLAS upload plan failed: {}", planError);
         return makeError(Error::Failure);
@@ -3892,6 +3909,10 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.allocationFailures = stats.frameAllocationFailureCount;
     result.uploadBytes = stats.frameUploadBytes;
     result.totalUploadBytes = stats.totalUploadBytes;
+    result.storedUploadBytes = stats.frameStoredUploadBytes;
+    result.totalStoredUploadBytes = stats.totalStoredUploadBytes;
+    result.gpuDecompressedPages = stats.frameGpuDecompressedPages;
+    result.totalGpuDecompressedPages = stats.totalGpuDecompressedPages;
     result.loadFailures = stats.totalPageLoadFailureCount;
     result.cpuWork = stats.cpuWork;
     result.clasEnabled = clasPool_ && clasPool_->ready();
@@ -3948,6 +3969,7 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"terminalReady", !lockedFallbackPages_.empty() && terminalResidentPages == lockedFallbackPages_.size()},
         {"pageBufferBytes", maxResidentBytes_}, {"clusterRtxEnabled", clusterRtxEnabled_}, {"clasEnabled", clasPool_ != nullptr},
         {"maxUploadBytesPerFrame", maxUploadBytesPerFrame_},
+        {"gpuDecompressionEnabled", pageBuffer_ && hasFlag(pageBuffer_->desc().usage, BufferUsageBits::MemoryDecompression)},
         {"screenSpacePagePriority", screenSpacePagePriority_},
         {"viewDrivenPageDemand", viewDrivenPageDemand_},
         {"distributedPageDemand", distributedPageDemand_}, {"demandTaskCount", demandTaskCount_},
@@ -3973,6 +3995,8 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
             {"frameAllocationDeferredCount", stats.frameAllocationDeferredCount}, {"frameAdmissionDeferredCount", stats.frameAdmissionDeferredCount},
             {"frameCachedUnusedPageCount", stats.frameCachedUnusedPageCount}, {"frameResidentDemandCount", stats.frameResidentDemandCount},
             {"frameUploadBytes", stats.frameUploadBytes}, {"totalUploadBytes", stats.totalUploadBytes},
+            {"frameStoredUploadBytes", stats.frameStoredUploadBytes}, {"totalStoredUploadBytes", stats.totalStoredUploadBytes},
+            {"frameGpuDecompressedPages", stats.frameGpuDecompressedPages}, {"totalGpuDecompressedPages", stats.totalGpuDecompressedPages},
             {"totalEvictedPageCount", stats.totalEvictedPageCount}, {"totalCompletedUnloadCount", stats.totalCompletedUnloadCount},
             {"totalCancelledQueuedLoadCount", stats.totalCancelledQueuedLoadCount},
             {"totalPrefetchAdmitted", stats.totalPrefetchAdmitted}, {"totalPrefetchUsed", stats.totalPrefetchUsed},

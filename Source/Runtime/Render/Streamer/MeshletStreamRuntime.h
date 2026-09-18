@@ -462,6 +462,7 @@ struct MeshletStreamRuntimeDesc {
     bool measurePageLatency = true;
     bool lowLatencyRequests = true;
     bool completionDrivenUploads = true;
+    bool enableGpuDecompression = false; // Opt-in GPU-ready assets; unsupported devices decode on CPU.
     bool prefetchPages = true;
     uint32_t rasterMaterialTextureCapacity = 0;
 

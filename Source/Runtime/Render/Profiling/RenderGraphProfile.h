@@ -73,6 +73,11 @@ struct SceneStreamingProfile {
     uint32_t allocationFailures = 0;
     uint64_t uploadBytes = 0;
     uint64_t totalUploadBytes = 0;
+    // Host-staged envelope bytes (includes CPU-only sideband), not PCIe traffic.
+    uint64_t storedUploadBytes = 0;
+    uint64_t totalStoredUploadBytes = 0;
+    uint64_t gpuDecompressedPages = 0;
+    uint64_t totalGpuDecompressedPages = 0;
     uint64_t loadFailures = 0;
     StreamCpuWorkCounters cpuWork;
 };

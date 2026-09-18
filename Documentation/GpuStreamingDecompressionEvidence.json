@@ -1,0 +1,93 @@
+{
+  "inspectedAt": "2026-09-18T11:52:08.2190876+08:00",
+  "repositoryHead": "5b5a3c3ccb81b58d2912cf9074a27b9d7920ec48",
+  "repositoryBranch": "modernization_/fast-streaming",
+  "scope": "Capability query and asset-directory inspection only; no GPU decompression or throughput benchmark executed.",
+  "device": {
+    "name": "NVIDIA GeForce RTX 5060",
+    "apiVersion": "1.4.341",
+    "driverVersion": "610.47.0.0",
+    "driverInfo": "610.47",
+    "extMemoryDecompressionRevision": 1,
+    "memoryDecompression": true,
+    "decompressionMethods": [
+      "GDEFLATE_1_0"
+    ],
+    "maxDecompressionIndirectCount": 2147483647,
+    "khrCopyMemoryIndirectRevision": 1,
+    "indirectMemoryCopy": true,
+    "indirectMemoryToImageCopy": true,
+    "indirectCopySupportedQueueCapabilities": [
+      "GRAPHICS",
+      "COMPUTE"
+    ],
+    "textureFormatSupport": "Not queried; must query COPY_IMAGE_INDIRECT_DST and TRANSFER_DST per format/tiling before use.",
+    "rawProbe": "E:/metallic/.cache/fast-streaming/vulkaninfo.txt",
+    "rawProbeSha256": "629b8585ed77a067630f70a3c059757fd9ef8ae7313db329510a5816b91beb0e",
+    "command": "C:/Windows/system32/vulkaninfo.exe --text -o E:/metallic/.cache/fast-streaming/vulkaninfo.txt"
+  },
+  "assetDirectory": {
+    "observedAt": "2026-09-18T11:50:18.487114+08:00",
+    "asset": "Asset\\MeshletCache\\MiniZorahCook\\MiniZorah.meshstream.bin",
+    "fileBytes": 60916791801,
+    "formatVersion": 9,
+    "pageCount": 1356959,
+    "clusterCount": 33020491,
+    "declaredMaxPagePayloadBytes": 74688,
+    "pageDirectoryOffset": 60764812352,
+    "pageDirectoryBytes": 141123736,
+    "pageDirectorySha256": "b509b2ca013e0776de7d25e5a617f797f92f4cfc3536a76c3a9cc82bd732541d",
+    "compressionModeCounts": {
+      "0": 1356959
+    },
+    "payloadFlagsCounts": {
+      "0": 1356959
+    },
+    "attributeFlagsCounts": {
+      "9": 1356959
+    },
+    "storedBytes": {
+      "total": 60494871392,
+      "min": 288,
+      "max": 74688,
+      "mean": 44581.20797459614,
+      "p50": 45536,
+      "p95": 59568,
+      "p99": 63632
+    },
+    "uncompressedDiskBytes": {
+      "total": 60494871392,
+      "min": 288,
+      "max": 74688,
+      "mean": 44581.20797459614,
+      "p50": 45536,
+      "p95": 59568,
+      "p99": 63632
+    },
+    "compactDeviceBytes": {
+      "total": 48681578880,
+      "min": 272,
+      "max": 59840,
+      "mean": 35875.49725525974,
+      "p50": 36608,
+      "p95": 47952,
+      "p99": 51312
+    },
+    "devicePagesOver64KiB": 0,
+    "proposedMax64KiBTileCount": 1356959,
+    "limitations": [
+      "Directory-only scan; payload bytes were not read or validated.",
+      "Device sizes follow meshletStreamDevicePayloadSize at the inspected revision.",
+      "Proposed tile count is a format estimate, not a GDeflate measurement."
+    ]
+  },
+  "limitations": [
+    "Feature availability does not establish decompression throughput or overlap benefit.",
+    "The asset scan covers the local MiniZorahCook cache, not every asset or a future attribute-rich cook.",
+    "No compression ratio is measured.",
+    "No production source, shader, pipeline, or asset was modified."
+  ],
+  "historicalDriver": "610.47",
+  "latestRuntimeEvidence": "GpuStreamingDecompressionRuntimeEvidence.json",
+  "historyNote": "Preserved pre-upgrade observations. Driver 616.92 removes the device-creation blocker; use latestRuntimeEvidence for current integration and performance results."
+}

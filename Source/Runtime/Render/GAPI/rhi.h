@@ -139,6 +139,8 @@ enum class ResourceState : uint8_t {
     TransferSource,
     TransferDestination,
     General,
+    DecompressionSource,
+    DecompressionDestination,
 };
 
 enum class PipelineStageBits : uint64_t {
@@ -166,6 +168,7 @@ enum class BufferUsageBits : uint32_t {
     AccelerationStructureBuildInput = 1u << 7,
     AccelerationStructureStorage = 1u << 8,
     Indirect = 1u << 9,
+    MemoryDecompression = 1u << 10,
 };
 
 enum class TextureUsageBits : uint32_t {
@@ -364,6 +367,7 @@ struct DeviceDesc {
 };
 
 struct DeviceCapabilities {
+    bool memoryDecompression = false;
     bool deviceGeneratedCommands = false;
     bool dynamicGeneratedPipelineLayout = false;
     bool independentCopyQueue = false;
@@ -1128,6 +1132,23 @@ struct BufferCopyDesc {
     uint64_t size = 0;
 };
 
+struct BufferDecompressionDesc {
+    class Buffer* source = nullptr;
+    class Buffer* destination = nullptr;
+    uint64_t sourceOffset = 0;
+    uint64_t destinationOffset = 0;
+    uint64_t compressedBytes = 0;
+    uint64_t decodedBytes = 0;
+};
+
+struct StreamDecompressionTile {
+    uint32_t sourceOffset = 0;
+    uint32_t destinationOffset = 0;
+    uint32_t storedBytes = 0;
+    uint32_t decodedBytes = 0;
+    bool compressed = false;
+};
+
 struct BufferOffset {
     class Buffer* buffer = nullptr;
     uint64_t offset = 0;
@@ -1797,6 +1818,8 @@ public:
     StreamerStats stats() const;
     Buffer* constantBuffer() const;
     BufferOffset streamBufferData(const StreamBufferDataDesc& desc);
+    bool streamDecompressedBufferData(std::span<const uint8_t> stored,
+        std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset);
     BufferOffset streamTextureData(const StreamTextureDataDesc& desc);
     uint64_t streamConstantData(const void* data, uint64_t byteSize);
     Result beginFrame(RenderFrameContext& frame);
@@ -1856,6 +1879,8 @@ public:
     void barrier(const BarrierDesc& desc);
     void hostWriteBarrier();
     void copyBuffer(const BufferCopyDesc& desc);
+    Result decompressBuffers(std::span<const BufferDecompressionDesc> regions);
+    Result validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const;
     void copyTexture(const TextureCopyDesc& desc);
     void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
     void copyBufferToTexture(const BufferTextureCopyDesc& desc);
@@ -1900,6 +1925,7 @@ private:
     explicit CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl);
 
     std::unique_ptr<detail::CommandBufferImpl> impl_;
+    Result processDecompressionBuffers(std::span<const BufferDecompressionDesc> regions, bool record) const;
     RenderFrameContext* frameContext_ = nullptr;
     std::shared_ptr<detail::CommandSubmissionState> submission_;
     std::shared_ptr<const void> frameRecording_;

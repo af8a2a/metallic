@@ -13,6 +13,41 @@ bool byteRangeWithin(uint64_t byteSize, uint64_t offset, uint64_t rangeSize)
 
 } // namespace
 
+bool buildMeshletStreamClasGpuPagePlan(const scene::MeshletStreamGpuPage& page,
+    uint32_t pageIndex, uint32_t firstClusterId, MeshletStreamClasPagePlan& outPlan, std::string& reason)
+{
+    outPlan = {};
+    const auto& header = page.header;
+    if (page.clusters.empty() || page.clusters.size() != header.clusterCount ||
+        header.positionFormat != uint32_t(scene::MeshletStreamPayloadFormat::Float32x3) ||
+        firstClusterId > UINT32_MAX - (header.clusterCount - 1)) {
+        reason = "GPU CLAS sideband has invalid cluster IDs or format";
+        return false;
+    }
+    outPlan.pageIndex = pageIndex;
+    outPlan.firstClusterId = firstClusterId;
+    outPlan.primitiveIndex = header.primitiveIndex;
+    outPlan.lodLevel = header.lodLevel;
+    outPlan.payloadByteSize = header.payloadByteSize;
+    outPlan.clusters.reserve(header.clusterCount);
+    for (uint32_t index = 0; index < header.clusterCount; ++index) {
+        const auto& cluster = page.clusters[index];
+        outPlan.clusters.push_back({
+            .clusterId = firstClusterId + index,
+            .pageIndex = pageIndex,
+            .clusterIndex = index,
+            .primitiveIndex = header.primitiveIndex,
+            .materialIndex = cluster.materialIndex,
+            .vertexOffsetBytes = header.positionOffsetBytes + cluster.vertexOffset * 12,
+            .vertexCount = cluster.vertexCount,
+            .vertexStrideBytes = 12,
+            .triangleOffsetBytes = header.triangleOffsetBytes + cluster.triangleOffset,
+            .triangleCount = cluster.triangleCount,
+        });
+    }
+    return true;
+}
+
 bool buildMeshletStreamPageClusterOffsets(
     const scene::MeshletStreamAsset& asset,
     std::vector<uint32_t>& outOffsets,

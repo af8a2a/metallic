@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/MeshletStreamGpuCodec.h"
 
 #include <cstdint>
 #include <memory>
@@ -14,6 +14,8 @@ inline constexpr uint32_t kMeshletStreamMaxPageLoadConcurrency = 32;
 struct MeshletStreamPageLoadResult {
     uint32_t pageIndex = UINT32_MAX;
     std::vector<uint8_t> payload;
+    bool gpuEncoded = false;
+    scene::MeshletStreamGpuPage gpuPage;
     std::string failureReason;
     uint64_t startedMicroseconds = 0;
     uint64_t completedMicroseconds = 0;
@@ -32,7 +34,8 @@ public:
     MeshletStreamPageLoader(MeshletStreamPageLoader&&) noexcept = delete;
     MeshletStreamPageLoader& operator=(MeshletStreamPageLoader&&) noexcept = delete;
 
-    bool initialize(const scene::MeshletStreamAsset& asset, uint32_t concurrency, std::string& reason);
+    bool initialize(const scene::MeshletStreamAsset& asset, uint32_t concurrency, std::string& reason,
+        bool gpuDecompression = false);
     void reset();
 
     bool enqueue(uint32_t pageIndex);

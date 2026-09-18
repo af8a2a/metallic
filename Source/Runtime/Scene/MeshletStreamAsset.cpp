@@ -1,4 +1,5 @@
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/MeshletStreamGpuCodec.h"
 
 #include "json.hpp"
 #include "meshoptimizer.h"
@@ -12,6 +13,9 @@
 #include <cstddef>
 #include <cstring>
 #include <fstream>
+#include <future>
+#include <deque>
+#include <thread>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -322,7 +326,8 @@ bool byteRangeWithin(uint64_t byteSize, uint64_t offset, uint64_t rangeSize)
 bool meshletStreamCompressionSupported(uint32_t compressionMode)
 {
     return compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::None) ||
-        compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::ByteRle);
+        compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::ByteRle) ||
+        compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::GpuTiles);
 }
 
 bool encodeByteRle(std::span<const uint8_t> source, std::vector<uint8_t>& outBytes)
@@ -4287,7 +4292,7 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
 
     std::memcpy(&impl->header, impl->data, sizeof(impl->header));
     if (std::memcmp(impl->header.magic, kMeshletStreamMagic.data(), kMeshletStreamMagic.size()) != 0 ||
-        (impl->header.version != kMeshletStreamVersion && impl->header.version != kMeshletStreamLegacyVersion) ||
+        (impl->header.version != 10 && impl->header.version != kMeshletStreamVersion && impl->header.version != kMeshletStreamLegacyVersion) ||
         impl->header.endian != kMeshletStreamEndian) {
         reason = "streamasset header magic or version is unsupported";
         return false;
@@ -4489,6 +4494,8 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
             page.payloadSize == 0 ||
             page.payloadSize > std::numeric_limits<uint32_t>::max() ||
             !meshletStreamCompressionSupported(page.compressionMode) ||
+            (page.compressionMode == uint32_t(MeshletStreamPayloadCompression::GpuTiles) &&
+                (impl->header.version < 10 || !(page.payloadFlags & kMeshletStreamPayloadCompactPositions))) ||
             (page.compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::None) &&
                 page.payloadSize != page.uncompressedSize) ||
             (page.compressionMode != static_cast<uint32_t>(MeshletStreamPayloadCompression::None) &&
@@ -4544,7 +4551,7 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
     }
     if (!validateStreamTopology(impl->primitives, impl->ownedGroups, impl->refinedGroups,
             impl->terminalGroups, impl->terminalOffsets,
-            impl->header.version == kMeshletStreamVersion, reason)) {
+            impl->header.version >= kMeshletStreamVersion, reason)) {
         return false;
     }
 
@@ -4798,6 +4805,19 @@ bool compactDevicePositions(
 }
 } // namespace
 
+bool validateMeshletStreamDeviceHeader(const MeshletStreamPayloadHeader& header,
+    const MeshletStreamPageInfo& page, std::string& reason)
+{
+    // Header validation only reads sizeof(header); section ranges are checked
+    // against the decoded size without requiring the decoded bytes on the CPU.
+    auto decodedPage = page;
+    decodedPage.payloadOffset = 0;
+    decodedPage.payloadSize = page.uncompressedSize;
+    decodedPage.compressionMode = uint32_t(MeshletStreamPayloadCompression::None);
+    return validatePayloadHeader(reinterpret_cast<const uint8_t*>(&header),
+        decodedPage.payloadSize, decodedPage, 0, reason);
+}
+
 bool decodeMeshletStreamPayloadForDevice(
     const MeshletStreamPageInfo& page,
     std::span<const uint8_t> storedPayload,
@@ -4813,6 +4833,13 @@ bool decodeMeshletStreamPayloadForDevice(
         page.uncompressedSize > std::numeric_limits<uint32_t>::max()) {
         reason = "streamasset stored payload does not match page metadata";
         return false;
+    }
+
+    if (page.compressionMode == uint32_t(MeshletStreamPayloadCompression::GpuTiles)) {
+        if (!decodeMeshletStreamGpuPage(page, storedPayload, scratchPayload, reason) ||
+            !validateDevicePayloadClusters(scratchPayload, page, reason)) { return false; }
+        outDevicePayload = scratchPayload;
+        return true;
     }
 
     MeshletStreamPageInfo localPage = page;
@@ -5114,6 +5141,145 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
     std::error_code removeError;
     std::filesystem::remove(partialPath, removeError);
     removeMeshoptDecodeCacheForStreamBuilder(outputPath);
+    return true;
+}
+
+
+bool transcodeMeshletStreamAsset(const std::filesystem::path& sourcePath,
+    const std::filesystem::path& destination, bool compress, std::string& reason,
+    const std::function<void(uint32_t, uint32_t)>& progress)
+{
+    // Refuse an existing output, including aliases of the mapped input. A failed
+    // conversion leaves its original source and all published caches untouched.
+    const auto temporary = std::filesystem::path(destination.string() + ".transcoding");
+    if (std::filesystem::exists(destination) || std::filesystem::exists(temporary)) {
+        reason = "transcode output or temporary file already exists"; return false;
+    }
+    MeshletStreamAsset asset;
+    if (!asset.open(sourcePath, reason)) { return false; }
+    std::ifstream input(sourcePath, std::ios::binary);
+    MeshletStreamFileHeader header;
+    input.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!input || header.version < 9) {
+        reason = "transcode requires a v9 or newer topology directory"; return false;
+    }
+    const auto original = header;
+    std::ofstream output;
+    if (!openStreamAssetBuildFile(temporary, output, reason)) { return false; }
+    struct Cleanup {
+        std::ofstream& output;
+        std::filesystem::path temporary;
+        ~Cleanup() { output.close(); std::error_code error; std::filesystem::remove(temporary, error); }
+    } cleanup{output, temporary};
+    header.version = 10;
+    header.maxPagePayloadBytes = 0;
+    output.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    const auto alignOutput = [&] {
+        const uint64_t offset = uint64_t(output.tellp());
+        const char padding[16]{};
+        output.write(padding, (16 - offset % 16) % 16);
+        return uint64_t(output.tellp());
+    };
+    std::vector<MeshletStreamPageInfo> pages(asset.pages().begin(), asset.pages().end());
+    std::vector<uint64_t> offsets;
+    offsets.reserve(pages.size());
+    struct EncodedPage { std::vector<uint8_t> stored; uint32_t decodedSize = 0; };
+    struct EncodedBatch { std::vector<EncodedPage> pages; std::string reason; };
+    constexpr uint32_t kBatchPages = 128;
+    const uint32_t concurrency = std::clamp(std::thread::hardware_concurrency(), 1u, 8u);
+    std::deque<std::future<EncodedBatch>> batches;
+    uint32_t nextPage = 0;
+    const auto schedule = [&] {
+        if (nextPage >= pages.size()) { return; }
+        const uint32_t begin = nextPage;
+        const uint32_t end = std::min<uint32_t>(begin + kBatchPages, uint32_t(pages.size()));
+        nextPage = end;
+        batches.push_back(std::async(std::launch::async, [&, begin, end] {
+            EncodedBatch result;
+            result.pages.reserve(end - begin);
+            std::vector<uint8_t> decoded;
+            for (uint32_t index = begin; index < end; ++index) {
+                std::span<const uint8_t> payload;
+                EncodedPage output;
+                if (!decodeMeshletStreamPayloadForDevice(asset.pages()[index], asset.pagePayload(index), decoded, payload, result.reason) ||
+                    !encodeMeshletStreamGpuPage(payload, compress, output.stored, result.reason)) { return result; }
+                output.decodedSize = uint32_t(payload.size());
+                result.pages.push_back(std::move(output));
+            }
+            return result;
+        }));
+    };
+    for (uint32_t i = 0; i < concurrency; ++i) { schedule(); }
+    uint32_t written = 0;
+    while (!batches.empty()) {
+        auto batch = batches.front().get();
+        batches.pop_front();
+        if (!batch.reason.empty()) { reason = batch.reason; return false; }
+        schedule();
+        for (const auto& encoded : batch.pages) {
+            auto& page = pages[written++];
+            page.payloadOffset = alignOutput();
+            page.payloadSize = encoded.stored.size();
+            page.uncompressedSize = encoded.decodedSize;
+            page.payloadFlags |= kMeshletStreamPayloadCompactPositions;
+            page.compressionMode = uint32_t(MeshletStreamPayloadCompression::GpuTiles);
+            header.maxPagePayloadBytes = std::max(header.maxPagePayloadBytes, encoded.decodedSize);
+            offsets.push_back(page.payloadOffset);
+            output.write(reinterpret_cast<const char*>(encoded.stored.data()), encoded.stored.size());
+            if (!output) { reason = "transcode payload write failed"; return false; }
+        }
+        if (progress) { progress(written, uint32_t(pages.size())); }
+    }
+    const auto copyTable = [&](uint64_t sourceOffset, uint64_t size, uint64_t& destinationOffset) {
+        destinationOffset = alignOutput();
+        input.seekg(sourceOffset);
+        std::array<char, 65536> bytes;
+        while (size) {
+            const auto count = std::min<uint64_t>(size, bytes.size());
+            input.read(bytes.data(), count);
+            output.write(bytes.data(), count);
+            if (!input || !output) { return false; }
+            size -= count;
+        }
+        return true;
+    };
+    if (!copyTable(original.primitiveOffset, uint64_t(header.primitiveCount) * sizeof(MeshletStreamPrimitiveInfo), header.primitiveOffset) ||
+        !copyTable(original.instanceOffset, uint64_t(header.instanceCount) * sizeof(MeshletStreamInstanceInfo), header.instanceOffset) ||
+        !copyTable(original.lodLevelOffset, uint64_t(header.lodLevelCount) * sizeof(MeshletStreamLodLevelInfo), header.lodLevelOffset) ||
+        !copyTable(original.groupInfoOffset, uint64_t(header.groupCount) * sizeof(MeshletStreamGroupInfo), header.groupInfoOffset) ||
+        !copyTable(original.reservedClusterRefOffset, uint64_t(header.reservedClusterRefCount) * sizeof(uint32_t), header.reservedClusterRefOffset) ||
+        !copyTable(original.nodeInfoOffset, uint64_t(header.nodeCount) * sizeof(MeshletStreamNodeInfo), header.nodeInfoOffset) ||
+        !copyTable(original.sourceDependencyPathOffset, header.sourceDependencyPathByteCount, header.sourceDependencyPathOffset)) {
+        reason = "transcode directory copy failed"; return false;
+    }
+    std::vector<MeshletStreamGeometryInfo> geometries(asset.geometries().begin(), asset.geometries().end());
+    for (auto& geometry : geometries) {
+        uint64_t begin = UINT64_MAX, end = 0;
+        for (uint32_t i = 0; i < geometry.pageCount; ++i) {
+            const auto& page = pages[geometry.pageOffset + i];
+            begin = std::min(begin, page.payloadOffset);
+            end = std::max(end, page.payloadOffset + page.payloadSize);
+        }
+        geometry.payloadFileOffset = begin == UINT64_MAX ? 0 : begin;
+        geometry.payloadFileSize = end > begin ? end - begin : 0;
+    }
+    header.geometryOffset = alignOutput();
+    output.write(reinterpret_cast<const char*>(geometries.data()), geometries.size() * sizeof(geometries[0]));
+    header.pageInfoOffset = alignOutput();
+    output.write(reinterpret_cast<const char*>(pages.data()), pages.size() * sizeof(pages[0]));
+    header.pageOffsetTableOffset = alignOutput();
+    output.write(reinterpret_cast<const char*>(offsets.data()), offsets.size() * sizeof(offsets[0]));
+    header.fileSize = uint64_t(output.tellp());
+    output.seekp(0);
+    output.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    output.close();
+    if (!output) { reason = "transcode directory write failed"; return false; }
+    MeshletStreamAsset verified;
+    if (!verified.open(temporary, reason)) { return false; }
+    verified.close();
+    std::error_code error;
+    std::filesystem::rename(temporary, destination, error);
+    if (error) { reason = error.message(); return false; }
     return true;
 }
 

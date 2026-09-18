@@ -27,6 +27,7 @@ inline constexpr uint32_t kMeshletStreamPayloadAttributeTangent = 1u << 4u;
 enum class MeshletStreamPayloadCompression : uint32_t {
     None = 0,
     ByteRle = 1,
+    GpuTiles = 2,
 };
 
 enum class MeshletStreamPayloadFormat : uint32_t {
@@ -305,6 +306,8 @@ bool decodeMeshletStreamPayloadForDevice(
     std::vector<uint8_t>& scratchPayload,
     std::span<const uint8_t>& outDevicePayload,
     std::string& reason);
+bool validateMeshletStreamDeviceHeader(const MeshletStreamPayloadHeader& header,
+    const MeshletStreamPageInfo& page, std::string& reason);
 bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::string& reason);
 bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& desc, std::string& reason);
 std::filesystem::path meshletStreamAssetPathFor(const std::filesystem::path& sourcePath);

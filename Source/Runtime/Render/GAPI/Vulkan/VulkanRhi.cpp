@@ -444,9 +444,9 @@ VkImageAspectFlags aspectForFormat(Format format)
     return VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
-VkBufferUsageFlags toVkBufferUsage(BufferUsageBits usage)
+VkBufferUsageFlags2 toVkBufferUsage(BufferUsageBits usage)
 {
-    VkBufferUsageFlags flags = 0;
+    VkBufferUsageFlags2 flags = 0;
     if (hasFlag(usage, BufferUsageBits::Vertex)) {
         flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     }
@@ -476,6 +476,9 @@ VkBufferUsageFlags toVkBufferUsage(BufferUsageBits usage)
     }
     if (hasFlag(usage, BufferUsageBits::Indirect)) {
         flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    }
+    if (hasFlag(usage, BufferUsageBits::MemoryDecompression)) {
+        flags |= VK_BUFFER_USAGE_2_MEMORY_DECOMPRESSION_BIT_EXT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT;
     }
     return flags != 0 ? flags : VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 }
@@ -1074,6 +1077,12 @@ StateInfo stateInfo(ResourceState state, VkQueueFlags queueFlags = VK_QUEUE_GRAP
             VK_ACCESS_2_TRANSFER_WRITE_BIT,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         };
+    case ResourceState::DecompressionSource:
+        return {VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT,
+            VK_ACCESS_2_MEMORY_DECOMPRESSION_READ_BIT_EXT, VK_IMAGE_LAYOUT_UNDEFINED};
+    case ResourceState::DecompressionDestination:
+        return {VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT,
+            VK_ACCESS_2_MEMORY_DECOMPRESSION_WRITE_BIT_EXT, VK_IMAGE_LAYOUT_UNDEFINED};
     case ResourceState::General:
         return {
             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -1541,6 +1550,7 @@ void appendPNext(void**& tail, T& value)
 }
 
 struct VulkanExtensionSet {
+    bool memoryDecompression = false;
     std::vector<VkExtensionProperties> properties;
     bool swapchain = false;
     bool deviceAddressCommands = false;
@@ -1577,6 +1587,7 @@ struct VulkanExtensionSet {
     {
         VulkanExtensionSet result;
         result.properties = enumerateDeviceExtensions(physicalDevice);
+        result.memoryDecompression = result.has(VK_EXT_MEMORY_DECOMPRESSION_EXTENSION_NAME);
         result.swapchain = result.has(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         result.deviceAddressCommands = result.has(VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME);
         result.deviceGeneratedCommands = result.has(VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME);
@@ -1711,6 +1722,9 @@ struct VulkanDeviceFeatureProbe {
     VkPhysicalDeviceOpacityMicromapFeaturesEXT opacityMicromapExtFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT,
     };
+    VkPhysicalDeviceMemoryDecompressionFeaturesEXT memoryDecompressionFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_FEATURES_EXT,
+    };
     VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT deviceGeneratedCommandsFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT,
     };
@@ -1748,6 +1762,9 @@ struct VulkanDeviceFeatureProbe {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_VECTOR_FEATURES_NV,
     };
 #endif
+    VkPhysicalDeviceMemoryDecompressionPropertiesEXT decompressionProperties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_PROPERTIES_EXT,
+    };
     VkPhysicalDeviceSubgroupProperties subgroupProperties{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES,
     };
@@ -1786,6 +1803,7 @@ struct VulkanDeviceFeatureProbe {
                 appendPNext(featureTail, opacityMicromapFeatures);
             }
         }
+        if (extensions.memoryDecompression) { appendPNext(featureTail, memoryDecompressionFeatures); }
         if (extensions.deviceGeneratedCommands) {
             appendPNext(featureTail, deviceGeneratedCommandsFeatures);
         }
@@ -1827,6 +1845,7 @@ struct VulkanDeviceFeatureProbe {
 
         properties.pNext = &subgroupProperties;
         subgroupProperties.pNext = &subgroupSizeControlProperties;
+        if (extensions.memoryDecompression) { subgroupSizeControlProperties.pNext = &decompressionProperties; }
         vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
     }
 
@@ -1959,6 +1978,7 @@ struct VulkanDeviceFeatureProbe {
 };
 
 struct VulkanDeviceFeatureSelection {
+    bool memoryDecompression = false;
     bool deviceGeneratedCommands = false;
     bool dynamicGeneratedPipelineLayout = false;
     bool privateData = false;
@@ -2024,6 +2044,10 @@ struct VulkanDeviceFeatureSelection {
             probe.supportsSubgroupSizeControl();
 
         VulkanDeviceFeatureSelection result;
+        result.memoryDecompression = extensions.memoryDecompression &&
+            probe.memoryDecompressionFeatures.memoryDecompression == VK_TRUE &&
+            probe.vulkan12Features.bufferDeviceAddress == VK_TRUE &&
+            (probe.decompressionProperties.decompressionMethods & VK_MEMORY_DECOMPRESSION_METHOD_GDEFLATE_1_0_BIT_EXT);
         result.deviceGeneratedCommands = request.deviceGeneratedCommands && extensions.deviceGeneratedCommands &&
             probe.deviceGeneratedCommandsFeatures.deviceGeneratedCommands == VK_TRUE;
         result.dynamicGeneratedPipelineLayout = result.deviceGeneratedCommands &&
@@ -2229,6 +2253,9 @@ struct VulkanEnabledFeatureChain {
     VkPhysicalDeviceOpacityMicromapFeaturesEXT opacityMicromapExtFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT,
     };
+    VkPhysicalDeviceMemoryDecompressionFeaturesEXT memoryDecompressionFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_FEATURES_EXT,
+    };
     VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT deviceGeneratedCommandsFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT,
     };
@@ -2393,6 +2420,10 @@ struct VulkanEnabledFeatureChain {
             }
         }
         appendPNext(featureTail, deviceAddressCommandsFeatures);
+        if (selection.memoryDecompression) {
+            memoryDecompressionFeatures.memoryDecompression = VK_TRUE;
+            appendPNext(featureTail, memoryDecompressionFeatures);
+        }
         if (selection.deviceGeneratedCommands) {
             appendPNext(featureTail, deviceGeneratedCommandsFeatures);
         }
@@ -2433,6 +2464,7 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME,
     };
+    if (selection.memoryDecompression) { extensions.push_back(VK_EXT_MEMORY_DECOMPRESSION_EXTENSION_NAME); }
     if (selection.deviceGeneratedCommands) {
         extensions.push_back(VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME);
     }
@@ -5536,6 +5568,66 @@ void CommandBuffer::copyBuffer(const BufferCopyDesc& desc)
         .pRegions = &copyRegion,
     };
     vkCmdCopyMemoryKHR(impl_->commandBuffer, &copyInfo);
+}
+
+Result CommandBuffer::decompressBuffers(std::span<const BufferDecompressionDesc> regions)
+{
+    return processDecompressionBuffers(regions, true);
+}
+
+Result CommandBuffer::validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const
+{
+    return processDecompressionBuffers(regions, false);
+}
+
+Result CommandBuffer::processDecompressionBuffers(std::span<const BufferDecompressionDesc> regions, bool record) const
+{
+    if (!impl_ || !recording_ || !impl_->device->capabilities.memoryDecompression ||
+        !(impl_->queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
+        return makeError(Error::Unsupported);
+    }
+    if (regions.empty()) { return {}; }
+    if (regions.size() > UINT32_MAX) { return makeError(Error::InvalidArgument); }
+    std::vector<VkDecompressMemoryRegionEXT> native;
+    struct Range { uint64_t begin, end; bool destination; };
+    std::vector<Range> ranges;
+    native.reserve(regions.size());
+    ranges.reserve(regions.size() * 2);
+    for (const auto& region : regions) {
+        const auto validBuffer = [&](Buffer* buffer, uint64_t offset, uint64_t size) {
+            return buffer && buffer->impl_ && buffer->impl_->device == impl_->device &&
+                hasFlag(buffer->desc().usage, BufferUsageBits::MemoryDecompression) &&
+                buffer->deviceAddress() && size && offset % 4 == 0 &&
+                offset <= buffer->desc().size && size <= buffer->desc().size - offset;
+        };
+        if (region.decodedBytes > 65536 ||
+            !validBuffer(region.source, region.sourceOffset, region.compressedBytes) ||
+            !validBuffer(region.destination, region.destinationOffset, region.decodedBytes)) {
+            return makeError(Error::InvalidArgument);
+        }
+        const uint64_t source = region.source->deviceAddress() + region.sourceOffset;
+        const uint64_t destination = region.destination->deviceAddress() + region.destinationOffset;
+        native.push_back({source, destination, region.compressedBytes, region.decodedBytes});
+        ranges.push_back({source, source + region.compressedBytes, false});
+        ranges.push_back({destination, destination + region.decodedBytes, true});
+    }
+    std::sort(ranges.begin(), ranges.end(), [](const Range& a, const Range& b) { return a.begin < b.begin; });
+    uint64_t sourceEnd = 0, destinationEnd = 0;
+    for (const auto& range : ranges) {
+        if (range.begin < destinationEnd || (range.destination && range.begin < sourceEnd)) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (range.destination) { destinationEnd = std::max(destinationEnd, range.end); }
+        else { sourceEnd = std::max(sourceEnd, range.end); }
+    }
+    const VkDecompressMemoryInfoEXT info{
+        .sType = VK_STRUCTURE_TYPE_DECOMPRESS_MEMORY_INFO_EXT,
+        .decompressionMethod = VK_MEMORY_DECOMPRESSION_METHOD_GDEFLATE_1_0_BIT_EXT,
+        .regionCount = uint32_t(native.size()),
+        .pRegions = native.data(),
+    };
+    if (record) { vkCmdDecompressMemoryEXT(impl_->commandBuffer, &info); }
+    return {};
 }
 
 void CommandBuffer::copyTexture(const TextureCopyDesc& desc)
@@ -8679,7 +8771,10 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
         return makeError(Error::Unsupported);
     }
 
-    VkBufferUsageFlags usage = toVkBufferUsage(desc.usage);
+    if (hasFlag(desc.usage, BufferUsageBits::MemoryDecompression) && !impl_->capabilities.memoryDecompression) {
+        return makeError(Error::Unsupported);
+    }
+    VkBufferUsageFlags2 usage = toVkBufferUsage(desc.usage);
     if (impl_->opacityMicromapExt) {
         if (hasFlag(desc.usage, BufferUsageBits::AccelerationStructureBuildInput)) {
             usage |= VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT;
@@ -8696,10 +8791,15 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
     }
 
     const std::vector<uint32_t> queueFamilies = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
+    const VkBufferUsageFlags2CreateInfo usage2{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO,
+        .usage = usage,
+    };
     VkBufferCreateInfo bufferInfo{
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = &usage2,
         .size = desc.size,
-        .usage = usage,
+        .usage = 0,
         .sharingMode = queueFamilies.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = queueFamilies.size() > 1
             ? static_cast<uint32_t>(queueFamilies.size())
@@ -10358,6 +10458,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             deviceImpl->descriptorHeapWriter.bufferDescriptorSize());
         deviceImpl->bindlessDescriptorHeapEnabled = true;
     }
+    deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && vkCmdDecompressMemoryEXT != nullptr;
     deviceImpl->capabilities.deviceGeneratedCommands = selectedFeatures.deviceGeneratedCommands;
     deviceImpl->capabilities.dynamicGeneratedPipelineLayout = selectedFeatures.dynamicGeneratedPipelineLayout;
     deviceImpl->capabilities.shaderObject = selectedFeatures.shaderObject;
@@ -10429,6 +10530,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     allocatorInfo.device = deviceImpl->device;
     allocatorInfo.instance = deviceImpl->instance;
     allocatorInfo.vulkanApiVersion = kVulkanApiVersion;
+    // Vulkan 1.4 exposes usage2; tell VMA to inspect it instead of legacy usage.
+    allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_KHR_MAINTENANCE5_BIT;
     if (deviceImpl->bufferDeviceAddressEnabled) {
         allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     }

@@ -1,4 +1,5 @@
 set(METALLIC_SLANG_ROOT "${CMAKE_SOURCE_DIR}/External/slang")
+include(${CMAKE_SOURCE_DIR}/cmake/SetupGDeflate.cmake)
 if(DEFINED SLANG_ROOT)
     set(METALLIC_SLANG_ROOT "${SLANG_ROOT}")
 endif()
@@ -242,6 +243,7 @@ endif()
 
 add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/MeshletStreamAsset.cpp
+    Runtime/Scene/MeshletStreamGpuCodec.cpp
     Runtime/Scene/Scene.cpp
     Runtime/Scene/SceneDocument.cpp
     Runtime/Scene/SceneGraph.cpp
@@ -283,6 +285,7 @@ target_compile_definitions(MetallicRuntimeScene PRIVATE
 )
 
 target_link_libraries(MetallicRuntimeScene PUBLIC
+    MetallicGDeflate
     EnTT::EnTT
     MetallicRuntimeTask
     MathLib
@@ -308,6 +311,10 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
 # CPU-only offline cooker. Avoids editor/Vulkan/RTAS startup and can be built
 # independently while processing assets larger than resident scene memory.
 add_executable(MetallicMeshletCook Tools/MeshletCookMain.cpp)
+add_executable(MetallicMeshletTranscode Tools/MeshletTranscodeMain.cpp)
+target_link_libraries(MetallicMeshletTranscode PRIVATE MetallicRuntimeScene)
+metallic_copy_openusd_runtime(MetallicMeshletTranscode)
+metallic_copy_spdlog_runtime(MetallicMeshletTranscode)
 target_link_libraries(MetallicMeshletCook PRIVATE MetallicRuntimeScene)
 if(WIN32)
     target_compile_definitions(MetallicMeshletCook PRIVATE NOMINMAX)

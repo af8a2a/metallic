@@ -1,0 +1,53 @@
+{
+  "observedAt": "2026-09-18T13:34:16.451675+08:00",
+  "assets": [
+    {
+      "path": "E:\\metallic\\Asset\\MeshletCache\\MiniZorahCook\\MiniZorah.meshstream.bin",
+      "fileBytes": 60916791801,
+      "version": 9,
+      "pages": 1356959,
+      "clusters": 33020491,
+      "storedPayloadBytes": 60494871392,
+      "decodedPayloadBytes": 60494871392,
+      "maxPageBytes": 74688,
+      "pageDirectorySha256": "b509b2ca013e0776de7d25e5a617f797f92f4cfc3536a76c3a9cc82bd732541d"
+    },
+    {
+      "path": "E:\\metallic\\.cache\\fast-streaming\\MiniZorah.gdeflate.meshstream.bin",
+      "fileBytes": 35709843144,
+      "version": 10,
+      "pages": 1356959,
+      "clusters": 33020491,
+      "storedPayloadBytes": 35279798868,
+      "decodedPayloadBytes": 48681578880,
+      "maxPageBytes": 59840,
+      "pageDirectorySha256": "49085807a6c7afdc0c920a9ed65ea4d5761d68cfb0c83cd60a9ed1ba3501c7b8"
+    }
+  ],
+  "allPageLogicalMetadataPreserved": true,
+  "allDeviceSizesPreserved": true,
+  "fileReduction": 0.4137931087924792,
+  "payloadReductionVsCompact": 0.27529468682672276,
+  "implementation": "Phase 1, opt-in EXT direct decompression; CPU Raw/GDeflate fallback; no indirect-copy or async I/O implementation",
+  "validation": {
+    "realtimeReplayStatus": "blocked at engine device creation",
+    "testsExecutableSha256": "77f43df0a6d2b2f8b99c89ae5b6b4b391ef4f98f7a71040034238c6b57ea75ff",
+    "rhiIntegrationReason": "Installed ICD 610.47 returns no VK_KHR_device_address_commands and deviceAddressCommands=false through both loader and direct ICD queries",
+    "synchronizationValidation": true,
+    "sceneImportStatus": "passed",
+    "independentLogSha256": "cb727d097147ca95fbe638ac98fcc559d1793bdd7e3bd6349c6c0bc7106ba6b0",
+    "independentTests": 5,
+    "performanceImprovementMeasured": false,
+    "rhiIntegrationStatus": "skipped",
+    "sceneImportRegressionTests": 3,
+    "independentStatus": "passed",
+    "independentLog": ".cache/fast-streaming/gpu-page-tests-recheck-final.log",
+    "rhiIntegrationLog": ".cache/fast-streaming/rhi-recheck-final.log",
+    "isolatedUploadBenchmarkMeasured": true,
+    "performanceImprovementScope": "Full-engine replay remains blocked; isolated CPU/GPU upload results are in followup evidence"
+  },
+  "followupEvidence": "GpuStreamingDecompressionFollowupEvidence.json",
+  "historicalDriver": "610.47",
+  "latestRuntimeEvidence": "GpuStreamingDecompressionRuntimeEvidence.json",
+  "historyNote": "Preserved pre-upgrade observations. Driver 616.92 removes the device-creation blocker; use latestRuntimeEvidence for current integration and performance results."
+}

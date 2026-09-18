@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/MeshletStreamGpuCodec.h"
 
 #include <cstdint>
 #include <memory>
@@ -34,6 +35,10 @@ struct MeshletStreamClasPagePlan {
     uint32_t payloadByteSize = 0;
     std::vector<MeshletStreamClasClusterInput> clusters;
 };
+
+// The sideband must have passed inspectMeshletStreamGpuPage in the page loader.
+bool buildMeshletStreamClasGpuPagePlan(const scene::MeshletStreamGpuPage& page,
+    uint32_t pageIndex, uint32_t firstClusterId, MeshletStreamClasPagePlan& outPlan, std::string& reason);
 
 inline constexpr uint32_t kInvalidMeshletStreamClasAddressOffset = UINT32_MAX;
 

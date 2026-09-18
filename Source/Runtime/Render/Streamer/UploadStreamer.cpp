@@ -127,6 +127,8 @@ struct StreamerImpl {
         GpuCompletionPoint completion;
         uint64_t dynamicOffset = 0;
         uint64_t constantOffset = 0;
+        std::shared_ptr<Buffer> compressed;
+        uint64_t compressedOffset = 0;
     };
 
     explicit StreamerImpl(Device& streamerDevice)
@@ -194,7 +196,8 @@ struct StreamerImpl {
             if (!slot.completion.isComplete()) {
                 return makeError(Error::InvalidArgument);
             }
-            slot = UploadSlot{.completion = frame.completion()};
+            slot.completion = frame.completion();
+            slot.dynamicOffset = slot.constantOffset = slot.compressedOffset = 0;
             dynamicBufferOffset = 0;
             constantBufferOffset = 0;
         } else if (activeFrame == nullptr) {
@@ -261,6 +264,11 @@ struct StreamerImpl {
     BufferOffset streamBufferData(const StreamBufferDataDesc& streamDesc)
     {
         std::lock_guard lock(mutex);
+        return stageBufferData(streamDesc);
+    }
+
+    BufferOffset stageBufferData(const StreamBufferDataDesc& streamDesc)
+    {
         if (completionTracked && (activeFrame == nullptr || !activeFrame->recording())) {
             return {};
         }
@@ -539,6 +547,62 @@ struct StreamerImpl {
         return bufferOffset;
     }
 
+    bool streamDecompressedBufferData(std::span<const uint8_t> stored,
+        std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset)
+    {
+        std::lock_guard lock(mutex);
+        if (!activeFrame || !activeFrame->recording() || !device->capabilities().memoryDecompression ||
+            !hasFlag(destination.desc().usage, BufferUsageBits::MemoryDecompression) ||
+            !hasFlag(destination.desc().usage, BufferUsageBits::TransferDestination) || tiles.empty() || stored.empty()) { return false; }
+        uint64_t decodedEnd = 0;
+        for (const auto& tile : tiles) {
+            if (!tile.storedBytes || !tile.decodedBytes || tile.decodedBytes > 65536 ||
+                tile.sourceOffset % 4 || tile.destinationOffset % 4 || tile.destinationOffset != decodedEnd ||
+                tile.sourceOffset > stored.size() || tile.storedBytes > stored.size() - tile.sourceOffset ||
+                (!tile.compressed && (tile.storedBytes != tile.decodedBytes || tile.storedBytes % 4))) { return false; }
+            decodedEnd += tile.decodedBytes;
+        }
+        if (destinationOffset % 4 || destinationOffset > destination.desc().size ||
+            decodedEnd > destination.desc().size - destinationOffset) { return false; }
+        auto& slot = uploadSlots[frameIndex];
+        const uint64_t offset = alignUp(slot.compressedOffset, 16);
+        // Bound the retained compressed input per frame slot. Admission retries
+        // next frame when the slot is full, retaining the safe resident cut.
+        constexpr uint64_t kMaxCompressedBytes = 64ull * 1024 * 1024;
+        if (stored.size() > kMaxCompressedBytes || offset > kMaxCompressedBytes - stored.size()) { return false; }
+        const uint64_t required = offset + stored.size();
+        if (!slot.compressed || slot.compressed->desc().size < required) {
+            const uint64_t capacity = std::min(kMaxCompressedBytes, std::max(alignUp(required, kDynamicBufferChunkSize),
+                slot.compressed ? slot.compressed->desc().size * 2 : 4ull * 1024 * 1024));
+            std::unique_ptr<Buffer> buffer;
+            if (!device->createBuffer({.size = capacity,
+                    .usage = BufferUsageBits::TransferDestination | BufferUsageBits::MemoryDecompression,
+                    .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, buffer)) { return false; }
+            slot.compressed = std::move(buffer);
+        }
+        const StreamDataChunk chunk{stored.data(), stored.size()};
+        const auto staged = stageBufferData({.dataChunks = &chunk, .dataChunkCount = 1, .placementAlignment = 16});
+        if (!staged.valid()) { return false; }
+        activeFrame->retain(slot.compressed);
+        slot.compressedOffset = required;
+        for (const auto& tile : tiles) {
+            if (tile.compressed) {
+                bufferRequests.push_back({slot.compressed.get(), offset + tile.sourceOffset,
+                    staged.buffer, staged.offset + tile.sourceOffset, tile.storedBytes});
+                decompressionCopyBarriers.push_back({.buffer = slot.compressed.get(), .before = ResourceState::General,
+                    .after = ResourceState::TransferDestination, .offset = offset + tile.sourceOffset, .size = tile.storedBytes});
+                decompressions.push_back({slot.compressed.get(), &destination, offset + tile.sourceOffset,
+                    destinationOffset + tile.destinationOffset, tile.storedBytes, tile.decodedBytes});
+            } else {
+                bufferRequests.push_back({&destination, destinationOffset + tile.destinationOffset,
+                    staged.buffer, staged.offset + tile.sourceOffset, tile.decodedBytes});
+                decompressionCopyBarriers.push_back({.buffer = &destination, .before = ResourceState::General,
+                    .after = ResourceState::TransferDestination, .offset = destinationOffset + tile.destinationOffset, .size = tile.decodedBytes});
+            }
+        }
+        return true;
+    }
+
     std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion()
     {
         std::lock_guard lock(mutex);
@@ -554,6 +618,18 @@ struct StreamerImpl {
     void copyStreamedData(CommandBuffer& commandBuffer)
     {
         std::lock_guard lock(mutex);
+        const auto installation = pendingCompletion;
+        // Preflight before recording ANY writes. Cancelling after partial GPU
+        // writes would allow residency to recycle their allocation too early.
+        if (!decompressions.empty() && !commandBuffer.validateDecompressionBuffers(decompressions)) {
+            if (installation) { installation->submission_->cancel(); }
+            pendingCompletion.reset();
+            bufferRequests.clear();
+            decompressions.clear();
+            decompressionCopyBarriers.clear();
+            textureRequests.clear();
+            return;
+        }
         if (pendingCompletion) {
             // Attach to the recording containing the copies, not an earlier pass
             // segment. A failed attachment must not leave untracked GPU writes.
@@ -563,6 +639,8 @@ struct StreamerImpl {
                 pendingCompletion->submission_->cancel();
                 pendingCompletion.reset();
                 bufferRequests.clear();
+                decompressions.clear();
+                decompressionCopyBarriers.clear();
                 textureRequests.clear();
                 return;
             }
@@ -573,6 +651,9 @@ struct StreamerImpl {
             "Upload Copies",
             profiling::NsightCategory::ResourceUpload,
             bufferRequests.size() + textureRequests.size());
+        if (!decompressionCopyBarriers.empty()) {
+            commandBuffer.barrier({.buffers = decompressionCopyBarriers.data(), .bufferCount = uint32_t(decompressionCopyBarriers.size())});
+        }
         for (const BufferCopyRequest& request : bufferRequests) {
             commandBuffer.copyBuffer(BufferCopyDesc{
                 .source = request.source,
@@ -586,6 +667,30 @@ struct StreamerImpl {
         for (const TextureCopyRequest& request : textureRequests) {
             commandBuffer.copyBufferToTexture(request.copy);
         }
+        if (!decompressions.empty()) {
+            std::vector<BufferBarrierDesc> barriers;
+            for (const auto& region : decompressions) {
+                barriers.push_back({.buffer = region.source, .before = ResourceState::TransferDestination,
+                    .after = ResourceState::DecompressionSource, .offset = region.sourceOffset, .size = region.compressedBytes});
+                barriers.push_back({.buffer = region.destination, .before = ResourceState::General,
+                    .after = ResourceState::DecompressionDestination, .offset = region.destinationOffset, .size = region.decodedBytes});
+            }
+            commandBuffer.barrier({.buffers = barriers.data(), .bufferCount = uint32_t(barriers.size())});
+            if (!commandBuffer.decompressBuffers(decompressions)) {
+                if (installation) { installation->submission_->cancel(); }
+            } else {
+                barriers.clear();
+                for (const auto& region : decompressions) {
+                    // General covers both shader consumers and AS build input
+                    // reads. The runtime retains its ordinary copy transitions.
+                    barriers.push_back({.buffer = region.destination, .before = ResourceState::DecompressionDestination,
+                        .after = ResourceState::General, .offset = region.destinationOffset, .size = region.decodedBytes});
+                }
+                commandBuffer.barrier({.buffers = barriers.data(), .bufferCount = uint32_t(barriers.size())});
+            }
+        }
+        decompressions.clear();
+        decompressionCopyBarriers.clear();
 
         bufferRequests.clear();
         textureRequests.clear();
@@ -604,7 +709,10 @@ struct StreamerImpl {
             slot.constantOffset = constantBufferOffset;
         }
         bufferRequests.clear();
+        decompressions.clear();
         textureRequests.clear();
+
+        decompressionCopyBarriers.clear();
 
         for (size_t index = 0; index < garbage.size();) {
             BufferGarbage& entry = garbage[index];
@@ -687,6 +795,8 @@ struct StreamerImpl {
     bool completionTracked = false;
     std::shared_ptr<StreamUploadCompletion> pendingCompletion;
     std::vector<BufferCopyRequest> bufferRequests;
+    std::vector<BufferDecompressionDesc> decompressions;
+    std::vector<BufferBarrierDesc> decompressionCopyBarriers;
     std::vector<TextureCopyRequest> textureRequests;
     std::vector<BufferGarbage> garbage;
     uint64_t dynamicBufferOffset = 0;
@@ -740,6 +850,12 @@ Buffer* Streamer::constantBuffer() const
 BufferOffset Streamer::streamBufferData(const StreamBufferDataDesc& desc)
 {
     return impl_ != nullptr ? impl_->streamBufferData(desc) : BufferOffset{};
+}
+
+bool Streamer::streamDecompressedBufferData(std::span<const uint8_t> stored,
+    std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset)
+{
+    return impl_ && impl_->streamDecompressedBufferData(stored, tiles, destination, destinationOffset);
 }
 
 BufferOffset Streamer::streamTextureData(const StreamTextureDataDesc& desc)

@@ -304,6 +304,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .measurePageLatency = boolProperty(&properties, "measurePageLatency", true),
         .lowLatencyRequests = boolProperty(&properties, "lowLatencyRequests", true),
         .completionDrivenUploads = boolProperty(&properties, "completionDrivenUploads", true),
+        .enableGpuDecompression = boolProperty(&properties, "enableGpuDecompression", false),
         .prefetchPages = boolProperty(&properties, "prefetchPages", true),
         .rasterMaterialTextureCapacity = boolProperty(&properties, "tessellation", false) ? kGPUDrivenMaxMaterialTextures : 0u,
     };
