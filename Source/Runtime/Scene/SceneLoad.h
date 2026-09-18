@@ -5,8 +5,21 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace metallic::scene {
+
+struct GltfInstanceSource {
+    uint32_t nodeIndex = 0;
+    uint32_t sourceNodeIndex = 0;
+    uint32_t instanceIndex = 0;
+};
+
+struct GltfInstanceExpansion {
+    uint32_t sourceNodeCount = 0;
+    uint64_t rangeReadBytes = 0;
+    std::vector<GltfInstanceSource> instances;
+};
 
 enum class SceneLoadPhase : uint8_t {
     Idle,

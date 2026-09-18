@@ -38,6 +38,10 @@ struct LoadResult {
     bool meshletCacheLoaded = false;
     bool meshletCacheSaved = false;
     std::filesystem::path meshletCachePath;
+    GltfInstanceExpansion gpuInstancing;
+    // Original metadata-only glTF material descriptions, indexed by source material.
+    // Preserves extensions not consumed by RenderMaterial yet; not a shading contract.
+    std::vector<std::string> gltfMaterialDescriptions;
 };
 
 struct SceneStats {

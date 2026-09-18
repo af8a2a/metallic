@@ -7,6 +7,7 @@
  */
 
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Scene/GltfGpuInstancing.h"
 #include "Runtime/Scene/UsdSceneImporter.h"
 
 #include "meshoptimizer.h"
@@ -2649,18 +2650,27 @@ bool loadModel(
     const std::string filenameString = filename.string();
     if (streamMetadata) {
         // Preserve the authored scene metadata through the normal glTF parser,
-        // but never open external geometry buffers or manufacture a CPU mesh.
-        // This initial stream-only contract is static, scalar-material glTF.
+        // Only instance accessor ranges may be read. External image descriptors
+        // are preserved by TINYGLTF_NO_EXTERNAL_IMAGE in TinyGltfImpl.cpp.
         try {
             if (lowerExtension(filename) != ".gltf") {
                 throw std::runtime_error("Stream metadata requires an external .gltf scene");
             }
             std::ifstream input(filename);
             auto metadata = nlohmann::json::parse(input);
-            for (const char* field : {"images", "textures", "skins", "animations"}) {
+            for (const char* field : {"skins", "animations"}) {
                 if (metadata.contains(field) && !metadata[field].empty()) {
                     throw std::runtime_error(std::string("Stream metadata does not yet support ") + field);
                 }
+            }
+            for (const auto& image : metadata.value("images", nlohmann::json::array())) {
+                const std::string uri = image.value("uri", "");
+                if (uri.empty() || uri.starts_with("data:") || image.contains("bufferView")) {
+                    throw std::runtime_error("Stream metadata requires external image URIs");
+                }
+            }
+            if (!detail::expandGltfGpuInstances(metadata, filename.parent_path(), loadResult.gpuInstancing, error)) {
+                throw std::runtime_error(error);
             }
             for (const auto& mesh : metadata.value("meshes", nlohmann::json::array())) {
                 for (const auto& primitive : mesh.at("primitives")) {
@@ -2706,6 +2716,16 @@ bool loadModel(
             const std::string json = metadata.dump();
             const bool ok = loader.LoadASCIIFromString(&model, &error, &warning,
                 json.data(), static_cast<unsigned int>(json.size()), filename.parent_path().string());
+            if (ok) {
+                for (const auto& material : metadata.value("materials", nlohmann::json::array())) {
+                    loadResult.gltfMaterialDescriptions.push_back(material.dump());
+                }
+                // TinyGLTF skips the external image branch before copying mimeType.
+                // Keep the authored hint; the image decoder must still verify magic bytes.
+                for (size_t i = 0; i < model.images.size(); ++i) {
+                    model.images[i].mimeType = metadata.at("images").at(i).value("mimeType", "");
+                }
+            }
             loadResult.error = std::move(error);
             loadResult.warning = std::move(warning);
             return ok;
@@ -2714,9 +2734,28 @@ bool loadModel(
             return false;
         }
     }
-    const bool ok = lowerExtension(filename) == ".glb"
-        ? loader.LoadBinaryFromFile(&model, &error, &warning, filenameString)
-        : loader.LoadASCIIFromFile(&model, &error, &warning, filenameString);
+    bool ok = false;
+    if (lowerExtension(filename) == ".glb") {
+        ok = loader.LoadBinaryFromFile(&model, &error, &warning, filenameString);
+    } else {
+        try {
+            std::ifstream input(filename, std::ios::binary);
+            if (!input) { throw std::runtime_error("Cannot open glTF file: " + filenameString); }
+            std::string json{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+            // Preserve the existing single-parser path for ordinary glTF assets.
+            if (json.find("EXT_mesh_gpu_instancing") != std::string::npos) {
+                auto root = nlohmann::json::parse(json);
+                if (!detail::expandGltfGpuInstances(root, filename.parent_path(), loadResult.gpuInstancing, error)) {
+                    throw std::runtime_error(error);
+                }
+                json = root.dump();
+            }
+            ok = loader.LoadASCIIFromString(&model, &error, &warning, json.data(),
+                static_cast<unsigned int>(json.size()), filename.parent_path().string());
+        } catch (const std::exception& exception) {
+            error = exception.what();
+        }
+    }
 
     loadResult.warning = std::move(warning);
     loadResult.error = std::move(error);

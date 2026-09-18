@@ -1,4 +1,5 @@
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/GltfGpuInstancing.h"
 #include "Runtime/Scene/MeshletStreamGpuCodec.h"
 
 #include "json.hpp"
@@ -3033,6 +3034,8 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
         source = {};
         source.directory = sourcePath.parent_path();
         source.rangeReadExternalBuffers = true;
+        GltfInstanceExpansion expansion;
+        if (!detail::expandGltfGpuInstances(root, source.directory, expansion, reason)) { return false; }
         tinygltf::Model& model = source.model;
         model.defaultScene = root.value("scene", -1);
 

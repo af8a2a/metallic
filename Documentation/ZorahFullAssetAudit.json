@@ -1,0 +1,364 @@
+{
+  "source": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf",
+  "gltfSha256": "4ae9247e8bbb5f5ef3cce6d7aa9cdf283bfba8cb765ddf2f3cf421d750313406",
+  "scope": "Metadata, file sizes, KTX2 headers/level indices only; no geometry decode, image decode or render.",
+  "counts": {
+    "meshes": 2812,
+    "nodes": 13079,
+    "materials": 1514,
+    "images": 4418,
+    "textures": 4418,
+    "buffers": 4069,
+    "skins": 0,
+    "animations": 0
+  },
+  "geometry": {
+    "primitiveCount": 7277,
+    "primitiveAttributes": {
+      "POSITION": 7277,
+      "NORMAL": 7276,
+      "TEXCOORD_0": 7237,
+      "TANGENT": 1713
+    },
+    "primitiveModes": {
+      "4": 7277
+    },
+    "meshPrimitiveTriangles": 3310614344,
+    "primitiveVertices": 2221560210,
+    "exactAccessorGeometrySignatures": 5408,
+    "exactAccessorGeometryTriangles": 1630979739,
+    "exactAccessorGeometryMaterialSignatures": 5715,
+    "exactAccessorGeometryMaterialTriangles": 1951260908,
+    "selectedSceneNodes": 13079,
+    "nodesWithChildren": 3736,
+    "gpuInstancingNodes": 1092,
+    "meshInstances": 16118,
+    "primitiveInstances": 43068,
+    "instancedTriangles": 18930392835,
+    "cfgSkippedMeshInstances": 52,
+    "cfgSkippedTriangles": 18359952,
+    "largestMeshes": [
+      {
+        "mesh": 2322,
+        "name": "SM_ThroneRoom_Stairs_A1_1_a0fcab481298d5dc",
+        "triangles": 32054623,
+        "vertices": 20817554
+      },
+      {
+        "mesh": 1245,
+        "name": "SM_StoneFloor_Round_A1_01_92c1f659f9929c37",
+        "triangles": 29657518,
+        "vertices": 15502473
+      },
+      {
+        "mesh": 668,
+        "name": "SM_ThroneRoom_WallArchGrate_A1_1_777d47f339fee640",
+        "triangles": 28031551,
+        "vertices": 16578186
+      },
+      {
+        "mesh": 483,
+        "name": "SM_Courtyard_Ceiling_A1_Bended_1_a359624b873f2e6d",
+        "triangles": 22738614,
+        "vertices": 12941039
+      },
+      {
+        "mesh": 929,
+        "name": "SM_Courtyard_Interior_Floor_Sewer_A1_e581790bfd0cb650",
+        "triangles": 19841338,
+        "vertices": 11100714
+      },
+      {
+        "mesh": 43,
+        "name": "SM_StoneFloor_6m_A1_01_54003d7a6fd7be82",
+        "triangles": 19461216,
+        "vertices": 10214857
+      },
+      {
+        "mesh": 135,
+        "name": "SM_StoneFloor_6m_A1_01_54003d7a6fd7be82",
+        "triangles": 19461216,
+        "vertices": 10214857
+      },
+      {
+        "mesh": 257,
+        "name": "SM_StoneFloor_6m_A1_01_54003d7a6fd7be82",
+        "triangles": 19461216,
+        "vertices": 10214857
+      }
+    ]
+  },
+  "extensionsRequired": [
+    "EXT_meshopt_compression",
+    "EXT_mesh_gpu_instancing"
+  ],
+  "extensionsUsed": [
+    "KHR_materials_specular",
+    "KHR_texture_transform",
+    "KHR_materials_unlit",
+    "EXT_meshopt_compression",
+    "EXT_mesh_gpu_instancing",
+    "KHR_materials_transmission",
+    "KHR_materials_ior"
+  ],
+  "materials": {
+    "alphaModes": {
+      "OPAQUE": 1403,
+      "MASK": 110,
+      "BLEND": 1
+    },
+    "doubleSided": 157,
+    "extensions": {
+      "KHR_materials_specular": 1388,
+      "KHR_materials_transmission": 1,
+      "KHR_materials_ior": 1,
+      "KHR_materials_unlit": 1
+    },
+    "textureSlots": {
+      "baseColorTexture": 1512,
+      "metallicRoughnessTexture": 1375,
+      "normalTexture": 1419,
+      "emissiveTexture": 73,
+      "specularTexture": 61
+    },
+    "texcoordSets": {
+      "0": 4440
+    },
+    "textureTransformCount": 501,
+    "textureTransformExamples": [
+      {
+        "material": 402,
+        "slot": "baseColorTexture",
+        "offset": [
+          -0.00496894401,
+          -0.00196078443
+        ],
+        "scale": [
+          2.54409933,
+          1.00392163
+        ]
+      },
+      {
+        "material": 402,
+        "slot": "metallicRoughnessTexture",
+        "offset": [
+          -0.00496894401,
+          -0.00196078443
+        ],
+        "scale": [
+          2.54409933,
+          1.00392163
+        ]
+      },
+      {
+        "material": 402,
+        "slot": "emissiveTexture",
+        "offset": [
+          -0.00496894401,
+          -0.00196078443
+        ],
+        "scale": [
+          2.54409933,
+          1.00392163
+        ]
+      },
+      {
+        "material": 473,
+        "slot": "baseColorTexture",
+        "offset": [
+          0.0433066301,
+          -0.152595371
+        ],
+        "scale": [
+          0.475560188,
+          1.28080046
+        ]
+      },
+      {
+        "material": 473,
+        "slot": "normalTexture",
+        "offset": [
+          0.0433066301,
+          -0.152595371
+        ],
+        "scale": [
+          0.475560188,
+          1.28080046
+        ]
+      },
+      {
+        "material": 473,
+        "slot": "specularTexture",
+        "offset": [
+          0.0433066301,
+          -0.152595371
+        ],
+        "scale": [
+          0.475560188,
+          1.28080046
+        ]
+      },
+      {
+        "material": 474,
+        "slot": "baseColorTexture",
+        "offset": [
+          0.762016654,
+          -0.0079434989
+        ],
+        "scale": [
+          0.962745309,
+          1.00402153
+        ]
+      },
+      {
+        "material": 474,
+        "slot": "normalTexture",
+        "offset": [
+          0.762016654,
+          -0.0079434989
+        ],
+        "scale": [
+          0.962745309,
+          1.00402153
+        ]
+      }
+    ]
+  },
+  "storage": {
+    "referencedBufferFiles": 2035,
+    "referencedBufferBytes": 32611160368,
+    "referencedTextureFiles": 4418,
+    "allTextureFiles": 4418,
+    "referencedTextureDiskBytes": 50742414350,
+    "textureGpuFullMipBytes": 91293480184,
+    "textureGpuBytesWithMaxDimension": {
+      "128": 91338488,
+      "256": 364808440,
+      "512": 1458267384,
+      "1024": 5804840184,
+      "2048": 23118755064,
+      "4096": 90998633720
+    },
+    "textureFormats": {
+      "146": 1583,
+      "141": 2774,
+      "139": 61
+    },
+    "supercompression": {
+      "2": 4418
+    },
+    "dimensions": {
+      "4096x4096": 3962,
+      "128x1024": 2,
+      "2048x2048": 82,
+      "512x4096": 10,
+      "4096x8192": 3,
+      "1024x1024": 16,
+      "16x16": 6,
+      "8192x2048": 3,
+      "4096x2048": 157,
+      "512x256": 48,
+      "64x8192": 93,
+      "512x1024": 2,
+      "256x4096": 9,
+      "64x64": 1,
+      "1024x4096": 3,
+      "2048x4096": 12,
+      "4096x4200": 6,
+      "512x512": 2,
+      "256x256": 1
+    },
+    "ktxSwizzles": {
+      "<absent>": 2982,
+      "1rg1": 1375,
+      "111r": 61
+    },
+    "udimNamedReferencedTextures": 3420,
+    "mimeTypes": {
+      "image/png": 4069,
+      "<absent>": 349
+    },
+    "missingFiles": []
+  },
+  "textureExamples": {
+    "textures\\M_Courtyard_ArchPortal_Mirror_B5_1_1a8113d7bb1d9458_BaseColor.1001.ktx2": {
+      "width": 4096,
+      "height": 4096,
+      "vkFormat": 146,
+      "levels": 13,
+      "supercompression": 2,
+      "diskBytes": 6056455,
+      "gpuMipBytes": [
+        16777216,
+        4194304,
+        1048576,
+        262144,
+        65536,
+        16384,
+        4096,
+        1024,
+        256,
+        64,
+        16,
+        16,
+        16
+      ],
+      "metadata": {
+        "KTXwriter": "Unidentified app / libktx v4.0-"
+      }
+    },
+    "textures\\M_Courtyard_ArchPortal_Mirror_B5_1_1a8113d7bb1d9458_BaseColor.1002.ktx2": {
+      "width": 4096,
+      "height": 4096,
+      "vkFormat": 146,
+      "levels": 13,
+      "supercompression": 2,
+      "diskBytes": 8476324,
+      "gpuMipBytes": [
+        16777216,
+        4194304,
+        1048576,
+        262144,
+        65536,
+        16384,
+        4096,
+        1024,
+        256,
+        64,
+        16,
+        16,
+        16
+      ],
+      "metadata": {
+        "KTXwriter": "Unidentified app / libktx v4.0-"
+      }
+    },
+    "textures\\M_Courtyard_ArchPortal_Mirror_B5_1_1a8113d7bb1d9458_MetallicRoughness.1001.ktx2": {
+      "width": 4096,
+      "height": 4096,
+      "vkFormat": 141,
+      "levels": 13,
+      "supercompression": 2,
+      "diskBytes": 1557591,
+      "gpuMipBytes": [
+        16777216,
+        4194304,
+        1048576,
+        262144,
+        65536,
+        16384,
+        4096,
+        1024,
+        256,
+        64,
+        16,
+        16,
+        16
+      ],
+      "metadata": {
+        "KTXswizzle": "1rg1",
+        "KTXwriter": "texproc 0.3 / libktx v4.0-"
+      }
+    }
+  }
+}

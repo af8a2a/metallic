@@ -638,6 +638,10 @@ public:
                 "Metadata source fell back to resident import");
             metadata["images"] = {{{"uri", "unsupported.png"}}};
             { std::ofstream file(path); file << metadata.dump(); }
+            require(source.loadStreamMetadata(path) && source.images().size() == 1 &&
+                source.images()[0].encodedData.empty(), "External image metadata should not read image payloads");
+            metadata["images"][0]["uri"] = "data:image/png;base64,AA==";
+            { std::ofstream file(path); file << metadata.dump(); }
             require(!source.loadStreamMetadata(path) && !source.valid() && !source.hasStreamGeometry(), "Unsupported metadata load retained stale scene");
             metadata.erase("images");
             metadata.erase("extensionsRequired");

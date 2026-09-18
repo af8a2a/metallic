@@ -1,0 +1,226 @@
+{
+  "date": "2026-09-18",
+  "sourceSha256": "4ae9247e8bbb5f5ef3cce6d7aa9cdf283bfba8cb765ddf2f3cf421d750313406",
+  "sourceCfgSha256": "cff2b8063aa8a0a06a0efa2ed18e69c602fb00e81e5e509c9a6de63f295e68bf",
+  "cfgSkipMeshesApplied": false,
+  "fullMetadata": {
+    "expandedInstances": 7654,
+    "images": 4418,
+    "instanceRangeReadBytes": 306160,
+    "materials": 1514,
+    "meshInstances": 16118,
+    "primitiveInstances": 43068,
+    "source": "E:/metallic/Asset/ZorahFull/zorah_textured_public.v1.gltf",
+    "trianglesWithInstancing": 18930392835,
+    "warnings": "Used extension ignored: KHR_materials_specular\nUsed extension ignored: KHR_materials_unlit"
+  },
+  "sceneRegression": {
+    "tests": 30,
+    "failures": 0,
+    "disabled": 0,
+    "errors": 0,
+    "time": "1.672s"
+  },
+  "rhiRegression": {
+    "tests": 1,
+    "failures": 0,
+    "disabled": 0,
+    "errors": 0,
+    "time": "7.01s"
+  },
+  "probes": [
+    {
+      "name": "StoneUdim",
+      "sourceTriangles": 22430,
+      "primitiveInstances": 11,
+      "materials": 1,
+      "images": 3,
+      "cookRecommended": true,
+      "sourceMeshes": [
+        12
+      ],
+      "cook": {
+        "status": "complete",
+        "primitives": 1,
+        "instances": 11,
+        "pages": 20,
+        "fileBytes": 1729542,
+        "payloadValidation": "all-pages",
+        "peakProcessCommitBytes": 5877760
+      }
+    },
+    {
+      "name": "InstancingNoTangent",
+      "sourceTriangles": 2,
+      "primitiveInstances": 25,
+      "materials": 1,
+      "images": 3,
+      "cookRecommended": true,
+      "sourceMeshes": [
+        49
+      ],
+      "cook": {
+        "status": "complete",
+        "primitives": 1,
+        "instances": 25,
+        "pages": 1,
+        "fileBytes": 3286,
+        "payloadValidation": "all-pages",
+        "peakProcessCommitBytes": 1253376
+      }
+    },
+    {
+      "name": "MaskedLeaves",
+      "sourceTriangles": 369,
+      "primitiveInstances": 2,
+      "materials": 1,
+      "images": 3,
+      "cookRecommended": true,
+      "sourceMeshes": [
+        1312
+      ],
+      "cook": {
+        "status": "complete",
+        "primitives": 1,
+        "instances": 2,
+        "pages": 3,
+        "fileBytes": 48665,
+        "payloadValidation": "all-pages",
+        "peakProcessCommitBytes": 1355776
+      }
+    },
+    {
+      "name": "TextureTransformBc4",
+      "sourceTriangles": 936,
+      "primitiveInstances": 2,
+      "materials": 2,
+      "images": 5,
+      "cookRecommended": true,
+      "sourceMeshes": [
+        398
+      ],
+      "cook": {
+        "status": "complete",
+        "primitives": 2,
+        "instances": 2,
+        "pages": 8,
+        "fileBytes": 89834,
+        "payloadValidation": "all-pages",
+        "peakProcessCommitBytes": 1339392
+      }
+    },
+    {
+      "name": "Glass",
+      "sourceTriangles": 15872,
+      "primitiveInstances": 1,
+      "materials": 1,
+      "images": 3,
+      "cookRecommended": true,
+      "sourceMeshes": [
+        334
+      ],
+      "cook": {
+        "status": "complete",
+        "primitives": 1,
+        "instances": 1,
+        "pages": 30,
+        "fileBytes": 3253598,
+        "payloadValidation": "all-pages",
+        "peakProcessCommitBytes": 8065024
+      }
+    },
+    {
+      "name": "Blend",
+      "sourceTriangles": 2,
+      "primitiveInstances": 1,
+      "materials": 1,
+      "images": 2,
+      "cookRecommended": true,
+      "sourceMeshes": [
+        294
+      ],
+      "cook": {
+        "status": "complete",
+        "primitives": 1,
+        "instances": 1,
+        "pages": 1,
+        "fileBytes": 1276,
+        "payloadValidation": "all-pages",
+        "peakProcessCommitBytes": 1159168
+      }
+    },
+    {
+      "name": "Unlit",
+      "sourceTriangles": 19200,
+      "primitiveInstances": 1,
+      "materials": 1,
+      "images": 1,
+      "cookRecommended": true,
+      "sourceMeshes": [
+        109
+      ],
+      "cook": {
+        "status": "complete",
+        "primitives": 1,
+        "instances": 1,
+        "pages": 17,
+        "fileBytes": 662826,
+        "payloadValidation": "all-pages",
+        "peakProcessCommitBytes": 4227072
+      }
+    },
+    {
+      "name": "SharedGeometry",
+      "sourceTriangles": 44860,
+      "primitiveInstances": 19,
+      "materials": 2,
+      "images": 6,
+      "cookRecommended": true,
+      "sourceMeshes": [
+        12,
+        844
+      ],
+      "cook": {
+        "status": "complete",
+        "primitives": 2,
+        "instances": 19,
+        "pages": 40,
+        "fileBytes": 3458438,
+        "payloadValidation": "all-pages",
+        "peakProcessCommitBytes": 6598656
+      }
+    },
+    {
+      "name": "MirroredInstances",
+      "sourceTriangles": 2,
+      "primitiveInstances": 25,
+      "materials": 1,
+      "images": 3,
+      "cookRecommended": true,
+      "sourceMeshes": [
+        49
+      ],
+      "cook": {
+        "status": "complete",
+        "primitives": 1,
+        "instances": 25,
+        "pages": 1,
+        "fileBytes": 3286,
+        "payloadValidation": "all-pages",
+        "peakProcessCommitBytes": 1249280
+      }
+    },
+    {
+      "name": "LargestMesh",
+      "sourceTriangles": 32054623,
+      "primitiveInstances": 12,
+      "materials": 12,
+      "images": 35,
+      "cookRecommended": false,
+      "sourceMeshes": [
+        2322
+      ]
+    }
+  ],
+  "scope": "Metadata import and instance/cook correspondence, not full-attribute shading validation"
+}
