@@ -4547,7 +4547,16 @@ bool MeshletStreamAsset::valid() const
 
 bool MeshletStreamAsset::isCurrentForSource(const std::filesystem::path& sourcePath) const
 {
+    std::string reason;
+    return valid() && impl_->header.reserved1 == kGeometryCookRevision &&
+        validateSourceDependencies(sourcePath, reason);
+}
+
+bool MeshletStreamAsset::validateSourceDependencies(const std::filesystem::path& sourcePath, std::string& reason) const
+{
+    reason.clear();
     if (!valid()) {
+        reason = "streamasset is not open";
         return false;
     }
     std::vector<std::string_view> externalBufferUris;
@@ -4561,13 +4570,74 @@ bool MeshletStreamAsset::isCurrentForSource(const std::filesystem::path& sourceP
     }
     const uint64_t sourceDependencyFingerprint =
         sourceDependencyFingerprintFor(sourcePath, externalBufferUris);
-    return
-        sourceDependencyFingerprint != 0 &&
-        impl_->header.sourceFileSize == sourceFileSizeFor(sourcePath) &&
-        impl_->header.sourceWriteTime == sourceWriteTimeFor(sourcePath) &&
-        impl_->header.sourceDependencyFingerprint == sourceDependencyFingerprint &&
-        impl_->header.reserved1 == kGeometryCookRevision &&
-        meshletStreamBuildParamsMatch(impl_->header);
+    if (sourceDependencyFingerprint == 0 ||
+        impl_->header.sourceFileSize != sourceFileSizeFor(sourcePath) ||
+        impl_->header.sourceWriteTime != sourceWriteTimeFor(sourcePath) ||
+        impl_->header.sourceDependencyFingerprint != sourceDependencyFingerprint) {
+        reason = "source file or external buffer dependencies changed or are unavailable";
+        return false;
+    }
+    if (!meshletStreamBuildParamsMatch(impl_->header)) {
+        reason = "meshlet build parameters changed";
+        return false;
+    }
+    return true;
+}
+
+bool MeshletStreamAsset::isRuntimeCompatibleForSource(const std::filesystem::path& sourcePath, std::string& reason) const
+{
+    if (!validateSourceDependencies(sourcePath, reason)) {
+        return false;
+    }
+    if (impl_->header.reserved1 == kGeometryCookRevision) {
+        return true;
+    }
+    reason = "geometry cook revision " + std::to_string(impl_->header.reserved1) +
+        " requires re-cooking for revision " + std::to_string(kGeometryCookRevision);
+    // Revision 1 changed attribute preparation/simplification, not position-only
+    // pages. Keep this exception specific to that migration, not future revisions.
+    if (kGeometryCookRevision != 1 || impl_->header.reserved1 != 0) {
+        return false;
+    }
+    constexpr uint32_t compatibleFlags = kMeshletStreamPayloadAttributePosition | kMeshletStreamPayloadAttributeMaterial;
+    for (const auto& page : pages()) {
+        if ((page.attributeFlags & ~compatibleFlags) != 0) {
+            reason += "; legacy pages contain vertex attributes";
+            return false;
+        }
+    }
+    // Also check the source: old importers could omit attributes or expanded
+    // instances. Page flags alone cannot establish compatibility in that case.
+    if (sourcePath.extension() != ".gltf") {
+        reason += "; legacy compatibility requires a position-only static glTF";
+        return false;
+    }
+    try {
+        std::ifstream file(sourcePath);
+        const auto root = nlohmann::json::parse(file);
+        for (const auto& mesh : root.at("meshes")) {
+            for (const auto& primitive : mesh.at("primitives")) {
+                const auto& attributes = primitive.at("attributes");
+                if (!attributes.is_object() || attributes.size() != 1 || !attributes.contains("POSITION") ||
+                    (primitive.contains("targets") && !primitive.at("targets").empty())) {
+                    reason += "; source has vertex attributes or morph targets";
+                    return false;
+                }
+            }
+        }
+        for (const auto& node : root.at("nodes")) {
+            if (node.contains("skin") || (node.contains("extensions") &&
+                node.at("extensions").contains("EXT_mesh_gpu_instancing"))) {
+                reason += "; source uses skinning or GPU instancing";
+                return false;
+            }
+        }
+    } catch (const std::exception& error) {
+        reason += "; cannot verify legacy source: " + std::string(error.what());
+        return false;
+    }
+    reason.clear();
+    return true;
 }
 
 uint32_t MeshletStreamAsset::cookRevision() const

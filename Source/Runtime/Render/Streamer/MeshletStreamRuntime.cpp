@@ -829,10 +829,13 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     phase.next("streamInit.openAsset");
     std::string reason;
     scene::MeshletStreamAsset openedAsset;
-    if (!openedAsset.open(desc.streamAssetPath, reason) || !openedAsset.isCurrentForSource(desc.sourcePath)) {
-        log = "MeshletStreamRuntime failed to open current streamasset: " + reason;
+    if (!openedAsset.open(desc.streamAssetPath, reason) ||
+        !openedAsset.isRuntimeCompatibleForSource(desc.sourcePath, reason)) {
+        log = "MeshletStreamRuntime cannot use streamasset '" + desc.streamAssetPath.string() +
+            "' for source '" + desc.sourcePath.string() + "': " + reason +
+            "; run MetallicMeshletCook --source <source> --output <streamasset> to rebuild";
         if (desc.autoBuildStreamAsset) {
-            log += "; runtime auto-build is no longer supported, run Metallic --build-meshstream first";
+            log += "; runtime auto-build is no longer supported";
         }
         return makeError(Error::Failure);
     }

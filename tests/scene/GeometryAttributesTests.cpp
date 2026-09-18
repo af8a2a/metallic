@@ -162,6 +162,7 @@ TEST(GeometryAttributes, CookAttributesReuseAndResume)
     MeshletStreamAsset asset;
     ASSERT_TRUE(asset.open(output, reason)) << reason;
     EXPECT_TRUE(asset.isCurrentForSource(source));
+    EXPECT_TRUE(asset.isRuntimeCompatibleForSource(source, reason)) << reason;
     ASSERT_EQ(asset.instances().size(), 4u);
     EXPECT_EQ(asset.primitiveCount(), 3u); // Same material/accessors share; different material or UV identity does not.
     EXPECT_EQ(asset.instances()[0].primitiveIndex, asset.instances()[1].primitiveIndex);
@@ -178,6 +179,90 @@ TEST(GeometryAttributes, CookAttributesReuseAndResume)
     std::fstream binary(fixture.directory / "mesh.bin", std::ios::in | std::ios::out | std::ios::binary);
     binary.seekp(96); const float changed = 0.125f; binary.write(reinterpret_cast<const char*>(&changed), 4); binary.close();
     EXPECT_FALSE(validateMeshletStreamAttributes(asset, source, validation, reason));
+}
+
+void setCookRevision(const std::filesystem::path& path, uint32_t revision)
+{
+    // Container v9 retains the cook revision in its final reserved header word.
+    std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+    ASSERT_TRUE(file.is_open());
+    file.seekp(212);
+    file.write(reinterpret_cast<const char*>(&revision), sizeof(revision));
+    ASSERT_TRUE(file.good());
+}
+
+void usePositionOnly(AttributeFixture& fixture)
+{
+    for (auto& mesh : fixture.root["meshes"]) {
+        mesh["primitives"][0]["attributes"] = {{"POSITION", 0}};
+    }
+}
+
+TEST(GeometryAttributes, LegacyPositionOnlyCookIsRuntimeCompatibleButNotCurrent)
+{
+    AttributeFixture fixture;
+    usePositionOnly(fixture);
+    const auto source = fixture.save();
+    const auto output = fixture.directory / "legacy.meshstream.bin";
+    std::string reason;
+    ASSERT_TRUE(buildMeshletStreamAssetOffline({.sourcePath = source, .outputPath = output}, reason)) << reason;
+    setCookRevision(output, 0);
+    MeshletStreamAsset asset;
+    ASSERT_TRUE(asset.open(output, reason)) << reason;
+    EXPECT_FALSE(asset.isCurrentForSource(source));
+    EXPECT_TRUE(asset.isRuntimeCompatibleForSource(source, reason)) << reason;
+    EXPECT_TRUE(reason.empty());
+    asset.close();
+
+    setCookRevision(output, kGeometryCookRevision + 1);
+    ASSERT_TRUE(asset.open(output, reason)) << reason;
+    EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
+    EXPECT_NE(reason.find("cook revision"), std::string::npos) << reason;
+    asset.close();
+
+    setCookRevision(output, 0);
+    ASSERT_TRUE(asset.open(output, reason)) << reason;
+    const auto binary = fixture.directory / "mesh.bin";
+    const auto oldWriteTime = std::filesystem::last_write_time(binary);
+    std::filesystem::last_write_time(binary, oldWriteTime + std::chrono::seconds(2));
+    EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
+    EXPECT_NE(reason.find("dependencies"), std::string::npos) << reason;
+    std::filesystem::last_write_time(binary, oldWriteTime);
+    EXPECT_TRUE(asset.isRuntimeCompatibleForSource(source, reason)) << reason;
+    std::filesystem::last_write_time(source, std::filesystem::last_write_time(source) + std::chrono::seconds(2));
+    EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
+    EXPECT_NE(reason.find("dependencies"), std::string::npos) << reason;
+}
+
+TEST(GeometryAttributes, LegacyAttributedCookStillRequiresRecooking)
+{
+    AttributeFixture fixture;
+    const auto source = fixture.save();
+    const auto output = fixture.directory / "legacy.meshstream.bin";
+    std::string reason;
+    ASSERT_TRUE(buildMeshletStreamAssetOffline({.sourcePath = source, .outputPath = output}, reason)) << reason;
+    setCookRevision(output, 0);
+    MeshletStreamAsset asset;
+    ASSERT_TRUE(asset.open(output, reason)) << reason;
+    EXPECT_FALSE(asset.isCurrentForSource(source));
+    EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
+    EXPECT_NE(reason.find("legacy pages contain vertex attributes"), std::string::npos) << reason;
+}
+
+TEST(GeometryAttributes, LegacyGpuInstancingRequiresRecookingEvenWithoutAttributes)
+{
+    AttributeFixture fixture;
+    usePositionOnly(fixture);
+    fixture.root["nodes"][0]["extensions"]["EXT_mesh_gpu_instancing"]["attributes"] = {{"TRANSLATION", 0}};
+    const auto source = fixture.save();
+    const auto output = fixture.directory / "legacy.meshstream.bin";
+    std::string reason;
+    ASSERT_TRUE(buildMeshletStreamAssetOffline({.sourcePath = source, .outputPath = output}, reason)) << reason;
+    setCookRevision(output, 0);
+    MeshletStreamAsset asset;
+    ASSERT_TRUE(asset.open(output, reason)) << reason;
+    EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
+    EXPECT_NE(reason.find("GPU instancing"), std::string::npos) << reason;
 }
 
 TEST(GeometryAttributes, RejectsBrokenAttributesInsteadOfDroppingThem)

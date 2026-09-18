@@ -205,7 +205,7 @@ bool resolvePreviewStreamSource(
             return false;
         }
         for (const scene::SceneSourceDesc& source : sources) {
-            if (candidateAsset.isCurrentForSource(source.path)) {
+            if (candidateAsset.isRuntimeCompatibleForSource(source.path, reason)) {
                 matches.push_back(&source);
             }
         }

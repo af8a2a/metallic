@@ -142,8 +142,12 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
         scene::Bounds worldBounds;
         {
             scene::MeshletStreamAsset asset;
-            require(asset.open(cache, log) && asset.isCurrentForSource(source), "Invalid cooked cache: " + log);
+            require(asset.open(cache, log), "Invalid cooked cache: " + log);
+            const bool compatible = asset.isRuntimeCompatibleForSource(source, log);
+            require(compatible, "Incompatible cooked cache: " + log);
             report["source"] = source.generic_string(); report["cache"] = cache.generic_string();
+            report["cookRevision"] = asset.cookRevision();
+            report["currentCookRevision"] = asset.isCurrentForSource(source);
             report["primitives"] = asset.primitiveCount(); report["instances"] = asset.instanceCount();
             report["pages"] = asset.pageCount(); report["terminalPages"] = asset.terminalGroups().size();
             if (miniZorah) { require(asset.primitiveCount() == 3163 && asset.instanceCount() == 19144, "Incomplete MiniZorah cache"); }

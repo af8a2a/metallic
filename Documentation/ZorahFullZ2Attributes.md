@@ -23,6 +23,7 @@
 - resident meshlet 缓存版本 `1 → 2`，几何指纹加入 UV 和完整 tangent；修改外部 buffer 中的 UV 会使旧缓存失效。
 - partial checkpoint 版本 `8 → 9`，避免续写旧简化规则的结果；meshopt 解码缓存仍可复用原格式。
 - stream 容器/页布局不变，文件头原保留字段记录 `cookRevision=1`，`isCurrentForSource` 检查该值。旧 stream 文件仍可打开和解码，但需重新 cook 才具有新属性规则；单纯 transcode 不会升级 cook revision。旧 Z1 StoneUdim 的 20 页已验证可读，报告 revision 为 0。
+- 运行时通过 `isRuntimeCompatibleForSource` 单独判断兼容性：允许复用 revision 0 的纯位置静态 glTF 缓存（例如既有 MiniZorah），前提是源文件/外部 buffer 指纹、构建参数匹配，所有页和源 primitive 均无额外顶点属性，且源不含 morph、skin 或 GPU instancing。带属性的旧 ZorahFull 缓存仍需重新 cook。离线 cook 的严格版本检查保持不变；运行时失败日志包含资源路径、失效原因和重建命令。
 
 ## 验证结果与代价
 

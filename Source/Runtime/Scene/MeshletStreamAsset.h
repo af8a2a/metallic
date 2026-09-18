@@ -219,6 +219,9 @@ public:
     bool valid() const;
     const std::filesystem::path& path() const { return path_; }
     bool isCurrentForSource(const std::filesystem::path& sourcePath) const;
+    // Runtime may reuse revision 0 position-only assets. Offline cooking still
+    // requires isCurrentForSource so attributed assets get the latest rules.
+    bool isRuntimeCompatibleForSource(const std::filesystem::path& sourcePath, std::string& reason) const;
     uint32_t cookRevision() const;
 
     uint32_t primitiveCount() const;
@@ -253,6 +256,8 @@ public:
 
 private:
     struct Impl;
+
+    bool validateSourceDependencies(const std::filesystem::path& sourcePath, std::string& reason) const;
 
     std::filesystem::path path_;
     Impl* impl_ = nullptr;
