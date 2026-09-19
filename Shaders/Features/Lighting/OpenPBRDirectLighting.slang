@@ -73,7 +73,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
     PathTraceMaterial material = gMaterials[hit.materialIndex];
     float3 authoredNormal = hit.normal;
     float4 normalSample = loadMaterialTextureForMaterial(material.normalTexture, hit.texcoord,
-        float4(0.5, 0.5, 1.0, 1.0), push, cone, hit, ray.direction, true, seed);
+        float4(0.5, 0.5, 1.0, 1.0), push, cone, hit, ray.direction, materialNeedsDeterministicTextureMip0(material), seed);
     hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent,
         hit.bitangent, normalSample, material.textureParams.x);
     // TBN and geometric normal remain authored; face-forward only the evaluated normal.
@@ -87,6 +87,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
     if (push.debugView != kOpenPBRDebugViewFinal) {
         return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, surface, ray.direction);
     }
+    if (material.emissive.w != 0.0) { return surface.inputs.base_color; }
     float3 viewDirection = -ray.direction;
     OpenPBR_PreparedBsdf prepared = openpbr_prepare(surface.inputs, float3(1.0),
         OpenPBR_BaseRgbWavelengths_nm, OpenPBR_VacuumIor, viewDirection);

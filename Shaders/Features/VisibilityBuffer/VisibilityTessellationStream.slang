@@ -88,6 +88,8 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         for (uint v = lane; v < c.vertexCount; v += 64u) {
             vertices[v].position = streamClusterClip(c, v, push);
             vertices[v].uv = float2(0); vertices[v].bary = float2(-1);
+            vertices[v].streamInstance = c.group.gpuSceneInstanceIndex;
+            vertices[v].uv = streamClusterUv(c, v, push);
             vertices[v].world = float3(0); vertices[v].doubleSided = (c.instanceFlags & 2u) != 0u;
             vertices[v].originalVisibilityId = 0u;
             vertices[v].debugPatchSeed = tessDebugHash(c.group.pageIndex ^ 0x9e3779b9u) ^ tessDebugHash(c.clusterIndex + 1u);
@@ -145,6 +147,7 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         tessSourceDomain(bary, g_StreamTessSource, g_StreamTessNormal, g_StreamTessUv, p, n, uv);
         p += n * tessHeight(material, uv, push.imageShaderIndexBase);
         float4 clip = projectPosition(p, c.params); clip.y = -clip.y;
+        vertices[lane].streamInstance = c.group.gpuSceneInstanceIndex;
         vertices[lane].position = clip; vertices[lane].uv = uv;
         vertices[lane].bary = bary.yz;
         vertices[lane].world = p; vertices[lane].doubleSided = (c.instanceFlags & 2u) != 0u;
@@ -161,9 +164,10 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
 }
 
 [shader("fragment")]
-TessFragment streamTessellationFragment(TessVertex input, uint visibilityId : SV_PrimitiveID, bool front : SV_IsFrontFace)
+TessFragment streamTessellationFragment(TessVertex input, uint visibilityId : SV_PrimitiveID, bool front : SV_IsFrontFace, uniform GPUDrivenStreamAssetPush push)
 {
     if (!front && input.doubleSided == 0u) { discard; }
+    if (!streamAlphaAccepts(input.streamInstance, input.uv, push)) { discard; }
     TessFragment output;
     output.visibility = input.originalVisibilityId != 0u ? input.originalVisibilityId : visibilityId;
     output.debugColor = tessDebugColor(input, visibilityId);

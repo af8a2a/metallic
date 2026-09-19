@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/RenderFrameContext.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -9739,6 +9740,47 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphMultiQueueSubmitTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphImageSamplePassPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphMaterialShaderObjectPassSmokeTest);
+class StreamSceneOpenRoutingTest final : public RhiTest {
+public:
+    StreamSceneOpenRoutingTest() { name = "stream_scene_open_routing"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        const auto directory = std::filesystem::absolute(context.outputDirectory / "stream-open-routing");
+        std::filesystem::create_directories(directory);
+        const auto first = directory / "first.gltf";
+        const auto second = directory / "second.gltf";
+        std::ofstream(first) << "{}";
+        std::ofstream(second) << "{}";
+        RenderGraph graph;
+        const auto id = graph.addNode("VisibilityBufferPass", "VBuffer", {
+            {"path", "first.gltf"}, {"streamAssetPath", "custom.meshstream.bin"},
+            {"sceneBinding", "asset"}, {"enableMeshletStreaming", true}, {"streamAssetOnly", true}})->id;
+        const auto same = editor::streamSceneLoadOptions(graph, first, directory);
+        const auto switched = editor::streamSceneLoadOptions(graph, second, directory);
+        if (same.streamAssetPath != directory / "custom.meshstream.bin" ||
+            switched.streamAssetPath != scene::meshletStreamAssetPathFor(second) ||
+            !graph.findNode(id)->runtimeProperties.empty()) {
+            return RhiTestResult::fail("Stream open planning reused another scene's cache or mutated the live graph");
+        }
+        if (!editor::applyStreamSceneOpen(graph, second, switched.streamAssetPath)) {
+            return RhiTestResult::fail("Stream scene switch was not committed");
+        }
+        const auto& properties = graph.findNode(id)->runtimeProperties;
+        if (properties.at("path") != second.generic_string() || properties.at("sceneBinding") != "world" ||
+            properties.at("streamAssetPath") != switched.streamAssetPath.generic_string() ||
+            editor::streamSceneLoadOptions(graph, second, directory).streamAssetPath != switched.streamAssetPath) {
+            return RhiTestResult::fail("Source, world binding and cache did not switch together");
+        }
+        RenderGraph resident;
+        resident.addNode("VisibilityBufferPass", "Resident", {});
+        if (!editor::streamSceneLoadOptions(resident, second, directory).streamAssetPath.empty()) {
+            return RhiTestResult::fail("Resident graph unexpectedly selected metadata-only loading");
+        }
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamSceneOpenRoutingTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphVisibilityBufferPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenMixedProducerRenderTest);

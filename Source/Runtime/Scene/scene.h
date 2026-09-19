@@ -230,6 +230,9 @@ struct RenderMaterial {
     float displacementMagnitude = 0.0f;
     float displacementCenter = 0.5f;
     float occlusionTextureStrength = 1.0f;
+    float specularFactor = 1.0f;
+    float3 specularColorFactor{1.0f, 1.0f, 1.0f};
+    bool unlit = false;
     float transmissionFactor = 0.0f;
     float ior = 1.5f;
     float thicknessFactor = 0.0f;
@@ -257,6 +260,8 @@ struct RenderMaterial {
     RenderTextureInfo thicknessTexture;
     RenderTextureInfo diffuseTransmissionTexture;
     RenderTextureInfo diffuseTransmissionColorTexture;
+    RenderTextureInfo specularTexture;
+    RenderTextureInfo specularColorTexture;
 };
 
 bool buildMeshletsForPrimitive(RenderPrimitive& primitive);
@@ -340,7 +345,8 @@ public:
         const std::filesystem::path& filename,
         const SceneLoadProgressCallback& progressCallback);
     // Static glTF metadata only: the matching StreamAsset owns geometry bytes.
-    bool loadStreamMetadata(const std::filesystem::path& filename);
+    bool loadStreamMetadata(const std::filesystem::path& filename,
+        const SceneLoadProgressCallback& progressCallback = {});
     bool hasStreamGeometry() const { return streamGeometry_; }
     bool compose(
         std::vector<SceneSourceDesc> sources,

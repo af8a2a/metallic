@@ -827,16 +827,10 @@ public:
             log = "StreamAsset scenes require realtime visibility-buffer deferred lighting";
             return makeError(Error::Unsupported);
         }
-        if (streamMaterials_) {
-            for (const auto& material : context.runtimeScene->materials()) {
-                if (material.transmissionFactor > 0 || material.diffuseTransmissionFactor > 0 ||
-                    (material.alphaMode == "BLEND" && material.baseColorFactor.w < 1) ||
-                    (material.alphaMode == "MASK" && material.baseColorFactor.w < material.alphaCutoff)) {
-                    log = "Position-only StreamAsset deferred lighting requires opaque scalar materials";
-                    return makeError(Error::Unsupported);
-                }
-            }
-        }
+        streamRayQueries_ = streamMaterials_ && std::any_of(context.runtimeScene->materials().begin(),
+            context.runtimeScene->materials().end(), [](const auto& material) {
+                return material.transmissionFactor > 0.0f || material.alphaMode == "BLEND";
+            });
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
             log = "ScenePathTracePass requires a device and graphics queue";
             return makeError(Error::InvalidArgument);
@@ -1064,7 +1058,7 @@ public:
                 .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
             });
         }
-        if (!realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
+        if (streamRayQueries_ || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
             baseBindings.push_back({.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = 53, .kind = ComputeResourceBindingKind::SampledImage});
         }
@@ -1163,9 +1157,12 @@ public:
         }
 
         if (streamMaterials_) {
-            std::erase_if(baseBindings, [](const auto& binding) {
-                return binding.binding == 0 || (binding.binding >= 2 && binding.binding <= 5);
+            std::erase_if(baseBindings, [this](const auto& binding) {
+                return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
             });
+        }
+        if (streamRayQueries_) {
+            for (uint32_t i = 90; i <= 93; ++i) { baseBindings.push_back({.binding = i}); }
         }
         auto compilePermutation =
             [&](PathTracePermutation permutation,
@@ -1174,6 +1171,7 @@ public:
                 ComputeProgram& outProgram) -> Result {
             std::vector<SlangMacroDefine> defines{
                 {.name = "METALLIC_STREAM_MATERIALS", .value = streamMaterials_ ? "1" : "0"},
+                {.name = "METALLIC_STREAM_RAY_QUERIES", .value = streamRayQueries_ ? "1" : "0"},
                 {.name = "METALLIC_GLOBAL_VIEW", .value = globalView ? "1" : "0"},
                 SlangMacroDefine{
                     .name = "METALLIC_HAS_RTXCR",
@@ -1626,7 +1624,7 @@ public:
             nrcSceneRevision_ = 0;
 #endif
         }
-        if (!realtime_ || (visibilityDeferred_ && context.properties().value("lightingMode", "reference") != "realtime")) {
+        if (streamRayQueries_ || !realtime_ || (visibilityDeferred_ && context.properties().value("lightingMode", "reference") != "realtime")) {
             const auto& bounds = sceneResources_.bounds();
             const float3 center = bounds.valid ? bounds.center() : float3(0.0f);
             ReGIRBuildParameters sampling;
@@ -1934,8 +1932,8 @@ public:
             bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
         }
         if (streamMaterials_) {
-            std::erase_if(bindings, [](const auto& binding) {
-                return binding.binding == 0 || (binding.binding >= 2 && binding.binding <= 5);
+            std::erase_if(bindings, [this](const auto& binding) {
+                return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
             });
         }
         if (realtime_) {
@@ -1943,7 +1941,7 @@ public:
                 .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,
             });
         }
-        if (!realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
+        if (streamRayQueries_ || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
             bindings.push_back({.binding = 52, .buffer = lights_.reGIRBuffer()});
             bindings.push_back({.binding = 53, .textureViews = punctualPdfViews, .textureViewCount = 1});
         }
@@ -2017,6 +2015,19 @@ public:
                 const auto& view = views[i]->buffer ? *views[i] : deferredViews->geometries;
                 bindings.push_back({.binding = 62 + i, .buffer = view.buffer,
                     .offset = view.offset, .size = view.size});
+            }
+            if (streamRayQueries_) {
+                if (deferredStream == nullptr || deferredStream->accelerationStructure == nullptr) {
+                    spdlog::error("Stream BLEND/transmission requires enableClas=true and a ready stream TLAS");
+                    return makeError(Error::InvalidArgument);
+                }
+                for (auto& binding : bindings) {
+                    if (binding.binding == 0) { binding.accelerationStructure = deferredStream->accelerationStructure; }
+                }
+                bindings.push_back({.binding = 90, .buffer = deferredStream->pageBuffer});
+                bindings.push_back({.binding = 91, .buffer = deferredStream->pageTableBuffer});
+                bindings.push_back({.binding = 92, .buffer = deferredStream->instanceBuffer});
+                bindings.push_back({.binding = 93, .buffer = deferredStream->activeHeaderBuffer});
             }
             Buffer* fallback = deferredViews->geometries.buffer;
             const std::array streamBuffers{
@@ -3207,6 +3218,7 @@ private:
     SceneResourceManager fallbackSceneResourceManager_;
     ScenePathTraceResources sceneResources_;
     bool streamMaterials_ = false;
+    bool streamRayQueries_ = false;
     SceneResourceManager* sceneResourceManager_ = nullptr;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;

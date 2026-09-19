@@ -42,7 +42,7 @@ public uint classifyDeferredMaterial(PathTraceMaterial material)
 {
     // Conservative classification needs no texture sampling. Even a currently
     // black transmission texel stays in the ray-continuation permutation.
-    if (material.glassParams.x > 0.0) { return kMaterialClassTransmission; }
+    if (material.glassParams.x > 0.0 || material.textureParams.w > 1.5) { return kMaterialClassTransmission; }
     if (material.params.x <= 0.0) { return kMaterialClassDielectric; }
     bool hasMetalnessTexture = material.metallicRoughnessTexture.textureIndex != 0xffffffffu ||
         material.metallicRoughnessTexture.ntcTextureSetIndex != 0xffffffffu;

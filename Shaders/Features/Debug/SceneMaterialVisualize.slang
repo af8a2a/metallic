@@ -66,6 +66,9 @@ struct MaterialVisualizeMaterial
     MaterialVisualizeTextureInfo thicknessTexture;
     MaterialVisualizeTextureInfo diffuseTransmissionTexture;
     MaterialVisualizeTextureInfo diffuseTransmissionColorTexture;
+    float4 specular;
+    MaterialVisualizeTextureInfo specularTexture;
+    MaterialVisualizeTextureInfo specularColorTexture;
 };
 
 #define gIndices getResource<StructuredBuffer<uint>>(3)

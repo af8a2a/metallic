@@ -239,6 +239,11 @@ uint64_t materialFingerprint(const scene::RenderMaterial& material)
     hashValue(hash, material.displacementCenter);
     hashTextureInfo(hash, material.displacementTexture);
     hashValue(hash, material.occlusionTextureStrength);
+    hashValue(hash, material.specularFactor);
+    hashValue(hash, material.specularColorFactor);
+    hashValue(hash, material.unlit);
+    hashTextureInfo(hash, material.specularTexture);
+    hashTextureInfo(hash, material.specularColorTexture);
     hashValue(hash, material.transmissionFactor);
     hashValue(hash, material.ior);
     hashValue(hash, material.thicknessFactor);

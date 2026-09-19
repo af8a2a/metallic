@@ -1,4 +1,5 @@
 #include "Runtime/Scene/SceneLoader.h"
+#include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include "Runtime/Task/TaskSystem.h"
 
@@ -618,7 +619,27 @@ SceneLoadHandle SceneLoader::request(
                     return true;
                 };
 
-            const bool loaded = candidate->loadDeferredMeshlets(path, callback);
+            if (!options.streamAssetPath.empty()) {
+                MeshletStreamAsset asset;
+                std::string reason;
+                if (!asset.open(options.streamAssetPath, reason) ||
+                    !asset.isRuntimeCompatibleForSource(path, reason)) {
+                    std::lock_guard lock(state->mutex);
+                    if (isTerminal(state->progress.status) || state->cancelRequested.load(std::memory_order_acquire)) {
+                        return {};
+                    }
+                    state->progress.status = SceneLoadStatus::Failed;
+                    state->progress.phase = SceneLoadPhase::Failed;
+                    state->progress.error = "Cannot load streamed scene '" + path.string() +
+                        "': cooked geometry cache '" + options.streamAssetPath.string() + "' is unavailable or incompatible: " +
+                        reason + ". Prepare it with: MetallicMeshletCook --source \"" + path.string() +
+                        "\" --output \"" + options.streamAssetPath.string() + "\"";
+                    return std::unexpected(state->progress.error);
+                }
+            }
+            const bool loaded = options.streamAssetPath.empty()
+                ? candidate->loadDeferredMeshlets(path, callback)
+                : candidate->loadStreamMetadata(path, callback);
             const bool cancelled = state->cancelRequested.load(std::memory_order_acquire) || context.stopRequested();
             if (cancelled) {
                 std::lock_guard lock(state->mutex);
@@ -637,6 +658,20 @@ SceneLoadHandle SceneLoader::request(
                 return std::unexpected(state->progress.error.empty()
                     ? std::string("Scene load failed")
                     : state->progress.error);
+            }
+
+            if (candidate->hasStreamGeometry()) {
+                std::lock_guard lock(state->mutex);
+                if (!isTerminal(state->progress.status) && !state->cancelRequested.load(std::memory_order_acquire)) {
+                    state->result = std::make_unique<SceneDocument>(std::move(*candidate));
+                    state->progress.status = SceneLoadStatus::Succeeded;
+                    state->progress.phase = SceneLoadPhase::Completed;
+                    state->progress.fraction = 1.0f;
+                    state->progress.completedUnits = state->progress.totalUnits = 1;
+                    state->progress.currentItem.clear();
+                    state->progress.elapsed = SceneLoadClock::now() - state->begin;
+                }
+                return {};
             }
 
             {

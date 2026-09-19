@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 
 #include "Runtime/Render/GAPI/Rhi.h"
@@ -7104,7 +7105,8 @@ void EditorApplication::applyLoadedSceneToRenderGraph(const std::filesystem::pat
     StartupLogScope scope("Synchronize loaded scene path into RenderGraph");
 
     const std::string graphScenePath = displayPathForProperty(path);
-    bool changed = false;
+    bool changed = scene_.hasStreamGeometry() &&
+        editor::applyStreamSceneOpen(renderGraph_, path, pendingSceneStreamAssetPath_);
 
     std::vector<uint32_t> sceneNodeIds;
     for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
@@ -7244,7 +7246,9 @@ void EditorApplication::loadScene()
     cancelSceneLoad();
     ++sceneLoadGeneration_;
     pendingSceneLoadPath_ = path;
-    pendingSceneLoad_ = sceneLoader_.request(path);
+    const auto options = editor::streamSceneLoadOptions(renderGraph_, path, PROJECT_SOURCE_DIR);
+    pendingSceneStreamAssetPath_ = options.streamAssetPath;
+    pendingSceneLoad_ = sceneLoader_.request(path, options);
     if (!pendingSceneLoad_.valid()) {
         sceneStatus_ = "Failed to schedule scene load.";
         return;
@@ -7326,7 +7330,7 @@ void EditorApplication::pollSceneLoad()
     }
     pendingSceneLoad_ = {};
 
-    if (device_ != nullptr &&
+    if (!readySceneLoad_->hasStreamGeometry() && device_ != nullptr &&
         graphExecutor_ != nullptr &&
         device_->capabilities().rayTracingAccelerationStructure &&
         device_->capabilities().rayQuery) {
@@ -7376,6 +7380,7 @@ void EditorApplication::cancelSceneLoad()
     pendingSceneResourceProgress_ = {};
     readySceneLoad_.reset();
     pendingSceneLoadPath_.clear();
+    pendingSceneStreamAssetPath_.clear();
     if (pendingSceneAction_ == PendingSceneAction::CommitLoadedScene) {
         pendingSceneAction_ = PendingSceneAction::None;
     }
@@ -7444,6 +7449,7 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     viewportPreviewValid_ = false;
     viewportPreviewNeedsRender_ = true;
     applyLoadedSceneToRenderGraph(sourcePath);
+    pendingSceneStreamAssetPath_.clear();
     applyLoadedSceneCamera();
     sceneAccelerationStructureStatus_ = "RTAS will be prepared by the active render pass.";
 
@@ -7477,6 +7483,10 @@ void EditorApplication::buildSceneAccelerationStructure()
     }
     if (!scene_.valid()) {
         sceneAccelerationStructureStatus_ = "RTAS build failed: load a 3D scene first.";
+        return;
+    }
+    if (scene_.hasStreamGeometry()) {
+        sceneAccelerationStructureStatus_ = "Streamed RTAS is managed by the GPUDriven render pass.";
         return;
     }
 

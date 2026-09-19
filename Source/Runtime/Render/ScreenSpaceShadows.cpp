@@ -123,7 +123,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
     auto& trace = traces_[streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0)];
     constexpr uint32_t kShadowBinding = 80; // Keep the shared scene alpha-mask resource slots.
     const auto traceIndex = streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0);
-    const uint32_t textureCount = streamed ? 0 : geometry->materialTextureCount();
+    const uint32_t textureCount = streamed && !streamTlas ? 0 : geometry->materialTextureCount();
     if (trace.valid() && traceTextureCounts_[traceIndex] != textureCount) {
         if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ComputeProgram>(std::move(trace))); }
         else { (void)device.waitIdle(); trace.clear(); }
@@ -157,6 +157,11 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
         }
         if (!streamed || streamTlas) {
             layout.push_back({.binding = 0, .kind = ComputeResourceBindingKind::AccelerationStructure});
+        }
+        if (streamTlas) {
+            layout.push_back({.binding = 6});
+            layout.push_back({.binding = 9, .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = textureCount});
+            for (uint32_t i = 90; i <= 93; ++i) { layout.push_back({.binding = i}); }
         }
         if (!streamed) {
             for (uint32_t i = 2; i <= 6; ++i) { layout.push_back({.binding = i}); }
@@ -261,7 +266,17 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
     uint32_t geometryPush[2]{};
     if (streamed) {
         if (streamTlas) {
+            result = geometry->uploadMaterialTextures(commands);
+            if (!result) { return result; }
+            if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
             bindings.push_back({.binding = 0, .accelerationStructure = streamGeometry->accelerationStructure});
+            bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
+            bindings.push_back({.binding = 9, .textureViews = geometry->materialTextureViews().data(), .textureViewCount = textureCount});
+            bindings.push_back({.binding = 90, .buffer = streamGeometry->pageBuffer});
+            bindings.push_back({.binding = 91, .buffer = streamGeometry->pageTableBuffer});
+            bindings.push_back({.binding = 92, .buffer = streamGeometry->instanceBuffer});
+            bindings.push_back({.binding = 93, .buffer = streamGeometry->activeHeaderBuffer});
+            geometryPush[0] = textureCount;
         }
     } else {
         result = geometry->uploadMaterialTextures(commands);

@@ -3319,6 +3319,9 @@ private:
                 .gpuSceneInstanceBuffer = streamGPUSceneInstanceHandle_.index,
                 .tessellationBuffer = tessellationEnabled() ? streamTessellationHandle_.index : UINT32_MAX,
                 .displacementBound = previousParams_.displacementBound,
+                .materialBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Materials].index,
+                .materialTextureRemapBuffer = materialTextureRemapHandle_.index,
+                .materialTextureCount = materialTextureCount_,
             });
         if (!result || streamOwnerMaskBuffer_ == nullptr) {
             return result ? makeError(Error::InvalidArgument) : result;

@@ -36,6 +36,9 @@ public struct PathTraceMaterial
     public PathTraceTextureInfo thicknessTexture;
     public PathTraceTextureInfo diffuseTransmissionTexture;
     public PathTraceTextureInfo diffuseTransmissionColorTexture;
+    public float4 specular;
+    public PathTraceTextureInfo specularTexture;
+    public PathTraceTextureInfo specularColorTexture;
 };
 
 } // namespace Metallic.Material

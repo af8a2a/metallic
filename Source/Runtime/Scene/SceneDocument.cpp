@@ -216,6 +216,7 @@ constexpr std::array kMaterialScalarFields{
     std::pair{"displacementMagnitude", &RenderMaterial::displacementMagnitude},
     std::pair{"displacementCenter", &RenderMaterial::displacementCenter},
     std::pair{"occlusionTextureStrength", &RenderMaterial::occlusionTextureStrength},
+    std::pair{"specularFactor", &RenderMaterial::specularFactor},
     std::pair{"transmissionFactor", &RenderMaterial::transmissionFactor},
     std::pair{"ior", &RenderMaterial::ior},
     std::pair{"thicknessFactor", &RenderMaterial::thicknessFactor},
@@ -225,6 +226,7 @@ constexpr std::array kMaterialScalarFields{
 
 constexpr std::array kMaterialColorFields{
     std::pair{"emissiveFactor", &RenderMaterial::emissiveFactor},
+    std::pair{"specularColorFactor", &RenderMaterial::specularColorFactor},
     std::pair{"attenuationColor", &RenderMaterial::attenuationColor},
     std::pair{"diffuseTransmissionColor", &RenderMaterial::diffuseTransmissionColor},
 };
@@ -236,6 +238,7 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
             properties.baseColorFactor.z, properties.baseColorFactor.w}},
         {"alphaMode", properties.alphaMode},
         {"doubleSided", properties.doubleSided},
+        {"unlit", properties.unlit},
     };
     for (const auto& [name, member] : kMaterialScalarFields) { value[name] = properties.*member; }
     for (const auto& [name, member] : kMaterialColorFields) {
@@ -274,6 +277,10 @@ bool parseMaterialProperties(const nlohmann::json& value, RenderMaterial& proper
     if (value.contains("doubleSided")) {
         if (!value["doubleSided"].is_boolean()) { reason = "doubleSided must be a boolean"; return false; }
         properties.doubleSided = value["doubleSided"].get<bool>();
+    }
+    if (value.contains("unlit")) {
+        if (!value["unlit"].is_boolean()) { reason = "unlit must be a boolean"; return false; }
+        properties.unlit = value["unlit"].get<bool>();
     }
     if (!validMaterialProperties(properties)) { reason = "material factors are outside their supported range"; return false; }
     return true;
@@ -607,16 +614,22 @@ bool SceneDocument::loadDeferredMeshlets(
     return loadInternal(path, progressCallback, true);
 }
 
+bool SceneDocument::loadStreamMetadata(const std::filesystem::path& path,
+    const SceneLoadProgressCallback& progressCallback)
+{
+    return loadInternal(path, progressCallback, false, true);
+}
+
 bool SceneDocument::loadInternal(
     const std::filesystem::path& path,
     const SceneLoadProgressCallback& progressCallback,
-    bool deferMeshletBuild)
+    bool deferMeshletBuild, bool streamMetadata)
 {
     SceneDocument candidate;
     if (!candidate.loadInternalInPlace(
             path,
             progressCallback,
-            deferMeshletBuild)) {
+            deferMeshletBuild, streamMetadata)) {
         if (!valid()) {
             *this = std::move(candidate);
         } else {
@@ -634,7 +647,7 @@ bool SceneDocument::loadInternal(
 bool SceneDocument::loadInternalInPlace(
     const std::filesystem::path& path,
     const SceneLoadProgressCallback& progressCallback,
-    bool deferMeshletBuild)
+    bool deferMeshletBuild, bool streamMetadata)
 {
     clear();
     documentWarning_.clear();
@@ -694,6 +707,10 @@ bool SceneDocument::loadInternalInPlace(
         : SceneLoadProgressCallback{};
     bool loaded = false;
     if (compositionDocument) {
+        if (streamMetadata) {
+            documentWarning_ = "Streamed scene loading requires a single external glTF source.";
+            return false;
+        }
         std::string error;
         loaded = Scene::compose(
             std::move(compositionSources),
@@ -707,7 +724,9 @@ bool SceneDocument::loadInternalInPlace(
                 : std::move(error);
         }
     } else {
-        loaded = deferMeshletBuild
+        loaded = streamMetadata
+            ? Scene::loadStreamMetadata(sourcePath, sceneProgress)
+            : deferMeshletBuild
             ? Scene::loadDeferredMeshlets(sourcePath, sceneProgress)
             : Scene::load(sourcePath, sceneProgress);
     }
@@ -1646,7 +1665,7 @@ bool SceneDocument::revert(std::string& message)
     }
 
     SceneDocument reverted;
-    if (!reverted.load(path)) {
+    if (!(hasStreamGeometry() ? reverted.loadStreamMetadata(path) : reverted.load(path))) {
         message = reverted.documentWarning().empty()
             ? reverted.lastLoadResult().error
             : reverted.documentWarning();

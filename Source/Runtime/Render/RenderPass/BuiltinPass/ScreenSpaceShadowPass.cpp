@@ -52,14 +52,16 @@ public:
             return makeError(Error::Unsupported);
         }
         // Prepare the same shared geometry snapshot as Deferred, outside execute().
-        if (context.runtimeScene == nullptr || !context.runtimeScene->hasStreamGeometry()) {
+        {
             if (context.graphicsQueue == nullptr) { return makeError(Error::InvalidArgument); }
             auto* manager = context.sceneResourceManager != nullptr
                 ? context.sceneResourceManager : &fallbackSceneResourceManager_;
             std::shared_ptr<SceneResourceSnapshot> snapshot;
             const auto result = manager->acquire(*device_, *context.graphicsQueue, properties(), context.runtimeScene,
-                SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
-                SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure,
+                context.runtimeScene != nullptr && context.runtimeScene->hasStreamGeometry()
+                    ? SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures
+                    : SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
+                        SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure,
                 snapshot, log);
             if (!result) { return result; }
             if (snapshot == nullptr || snapshot->pathTraceResources == nullptr) { return makeError(Error::Failure); }

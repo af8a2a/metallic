@@ -26,7 +26,7 @@ public:
             reflection.addBufferOutput("records").buffer(260 * 16, 16).storageReadWrite();
             reflection.addBufferOutput("instances").buffer(260 * 160, 160).storageReadWrite();
             reflection.addBufferOutput("materials").buffer(257 * 560, 560).storageReadWrite();
-            reflection.addBufferOutput("shadingMaterials").buffer(257 * 608, 608).storageReadWrite();
+            reflection.addBufferOutput("shadingMaterials").buffer(257 * 720, 720).storageReadWrite();
         } else {
             reflection.addTextureInput("visibility").sampledRead();
             for (const char* name : {"records", "instances", "materials", "shadingMaterials"}) {

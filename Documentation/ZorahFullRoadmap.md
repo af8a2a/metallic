@@ -14,6 +14,10 @@
 
 目前不能仅替换 MiniZorah 的路径。Z1 已打通扩展实例化与 metadata 导入，Z2 已完成属性 cook 与探针数据校验，Z3 已解除纹理格式与 256 寻址限制；剩余主要阻塞是 stream 属性/材质/覆盖消费者。
 
+2026-09-18 编辑器入口修复：在 GPUDrivenSample 的流式 VBuffer 图中使用 File/Open，现在先异步校验所选场景的 meshstream，再导入 metadata，不进入普通常驻 glTF 几何/图像解码和静态 RTAS 准备。重载同一场景保留图中显式缓存路径；切换场景使用 `<source.gltf>.meshstream.bin`，校验成功后一起提交源路径、缓存路径和 world 绑定。缓存缺失或过期会显示具体路径和 `MetallicMeshletCook --source ... --output ...` 命令，保留当前场景。ZorahFull 的无 URI buffer 是 meshopt 解压目标，原先 File/Open 的 “uri is missing” 是入口未接入流式加载的误导性错误；普通常驻入口也会提前明确报告不支持 meshopt，而非报缺文件。Full 全量缓存尚未生成，完整材质和首帧仍按 Z4/Z5 推进。
+
+入口修复验收：Release 构建通过；17 项 Scene 测试通过（另有 1 项可选 SuperSponza 测试跳过），覆盖真实 Full metadata/缺失 cook、小型 meshopt 场景的异步流式导入、无几何/贴图 CPU payload、缓存失效、文档保存/重载及普通场景回归。2 项 RHI 测试通过，覆盖源/缓存切换和流式/常驻混合渲染。原始日志和 GoogleTest JSON 位于 `build-release/zorah-full-open/`；未执行 Full 全量 cook 或完整材质渲染。
+
 ## 1. 资产实况与口径
 
 以下采用本机实际文件，不照抄 README 的近似数值。README 的 2813 meshes / 13080 nodes / 4462 纹理文件，与当前解压内容有小幅差异；本轮引用的所有外部 buffer/image 均存在。

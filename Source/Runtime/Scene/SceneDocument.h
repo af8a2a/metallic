@@ -19,6 +19,8 @@ public:
     bool loadDeferredMeshlets(
         const std::filesystem::path& path,
         const SceneLoadProgressCallback& progressCallback);
+    bool loadStreamMetadata(const std::filesystem::path& path,
+        const SceneLoadProgressCallback& progressCallback = {});
     void clear();
     bool save(std::string& message);
     bool revert(std::string& message);
@@ -49,11 +51,11 @@ private:
     bool loadInternal(
         const std::filesystem::path& path,
         const SceneLoadProgressCallback& progressCallback,
-        bool deferMeshletBuild);
+        bool deferMeshletBuild, bool streamMetadata = false);
     bool loadInternalInPlace(
         const std::filesystem::path& path,
         const SceneLoadProgressCallback& progressCallback,
-        bool deferMeshletBuild);
+        bool deferMeshletBuild, bool streamMetadata);
     bool applySidecar(const std::filesystem::path& path);
     void importVirtualLights();
 

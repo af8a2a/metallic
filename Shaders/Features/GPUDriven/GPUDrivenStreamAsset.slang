@@ -3,6 +3,7 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 #include "WaveWorkDistribution.slang"
+#include "../../Interop/AlphaCoverage.hlsli"
 #define VISIBILITY_TESSELLATION_STREAM 1
 #include "../VisibilityBuffer/VisibilityTessellation.slang"
 
@@ -144,6 +145,10 @@ struct GPUDrivenStreamAssetRasterBindings
     uint tessellationBuffer;
     float displacementBound;
     uint padding2;
+    uint materialBuffer;
+    uint materialTextureRemapBuffer;
+    uint materialTextureCount;
+    uint materialPadding;
 };
 
 struct GPUDrivenStreamAssetActiveHeader
@@ -462,6 +467,8 @@ struct GPUDrivenStreamAssetVertexOutput
 {
     float4 position : SV_Position;
     nointerpolation uint doubleSided : TEXCOORD1;
+    float2 texcoord : TEXCOORD2;
+    nointerpolation uint instanceIndex : TEXCOORD3;
 };
 
 // IDs vary per triangle, so they must not use a shared vertex's flat attribute.
@@ -3693,6 +3700,39 @@ uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStrea
     return reflected ? indices.xzy : indices;
 }
 
+float2 streamClusterUv(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
+    uint bytes = pages[c.pageWord + 12u], offset = pages[c.pageWord + 17u];
+    if ((pages[c.pageWord + 14u] & 4u) == 0u || pages[c.pageWord + 22u] != 1u ||
+        (offset & 3u) != 0u || offset > bytes || c.vertexOffset + vertex >= (bytes - offset) / 8u) { return float2(0); }
+    uint uv = c.pageWord + offset / 4u + (c.vertexOffset + vertex) * 2u;
+    return asfloat(uint2(pages[uv], pages[uv + 1u]));
+}
+
+// Alpha is evaluated before depth/visibility writes. Masked and blended
+// clusters bypass the software queue, which has no material coverage stage.
+bool streamAlphaAccepts(uint instanceIndex, float2 uv, GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rh = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
+    GPUDrivenStreamAssetRasterBindings bindings = rh[0];
+    if (bindings.gpuSceneInstanceBuffer == 0xffffffffu || bindings.materialBuffer == 0xffffffffu) { return true; }
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.bufferShaderIndexBase + bindings.gpuSceneInstanceBuffer, 0));
+    GPUDrivenPreviewInstance instance = instances[instanceIndex];
+    if ((instance.identity.w & 12u) == 0u) { return true; }
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materials = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(uint2(push.bufferShaderIndexBase + bindings.materialBuffer, 0));
+    GPUDrivenPreviewMaterial material = materials[instance.identity.y];
+    float alpha = material.baseColor.a;
+    GPUDrivenPreviewTextureInfo info = material.baseColorTexture;
+    if (info.textureIndex < bindings.materialTextureCount && bindings.materialTextureRemapBuffer != 0xffffffffu) {
+        DescriptorHandle<StructuredBuffer<uint>> remap = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + bindings.materialTextureRemapBuffer, 0));
+        DescriptorHandle<Texture2D<float4>> texture = DescriptorHandle<Texture2D<float4>>(uint2(push.imageShaderIndexBase + remap[info.textureIndex], 0));
+        float2 transformed = float2(dot(info.transform0.xy, uv) + info.transform0.z, dot(info.transform1.xy, uv) + info.transform1.z);
+        alpha *= sampleAlphaCoverage(texture, transformed);
+    }
+    return (instance.identity.w & 4u) != 0u ? alpha >= material.params.z : alpha > 0.0;
+}
+
 groupshared StreamRasterCluster g_StreamMeshCluster;
 groupshared uint g_StreamMeshValid;
 
@@ -3731,11 +3771,13 @@ void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_Gro
     if (start >= c.triangleCount) { SetMeshOutputCounts(0, 0); return; }
     uint count = prebinned ? c.triangleCount : min(c.triangleCount - start, kMeshletTriangleChunkSize);
     SetMeshOutputCounts(c.vertexCount, count);
-    bool queueTriangles = !prebinned && push.hybridQueueBuffer != 0xffffffffu;
+    bool queueTriangles = !prebinned && push.hybridQueueBuffer != 0xffffffffu && (c.instanceFlags & 12u) == 0u;
     for (uint vertex = lane; vertex < c.vertexCount; vertex += 64u) {
         float4 clip = streamClusterClip(c, vertex, push);
         vertices[vertex].position = clip;
         vertices[vertex].doubleSided = (c.instanceFlags & 2u) != 0u;
+        vertices[vertex].texcoord = (c.instanceFlags & 12u) != 0u ? streamClusterUv(c, vertex, push) : float2(0);
+        vertices[vertex].instanceIndex = c.group.gpuSceneInstanceIndex;
         if (queueTriangles) { g_StreamMeshClip[vertex] = clip; }
     }
     if (queueTriangles) { GroupMemoryBarrierWithGroupSync(); }
@@ -3943,7 +3985,13 @@ void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, u
     uint candidate = bins[item];
     uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> raster = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
-    if (raster[0].tessellationBuffer != 0xffffffffu) {
+    bool needsCoverage = false;
+    if (raster[0].gpuSceneInstanceBuffer != 0xffffffffu) {
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.bufferShaderIndexBase + raster[0].gpuSceneInstanceBuffer, 0));
+        needsCoverage = (instances[groups[record / bins[13]].gpuSceneInstanceIndex].identity.w & 12u) != 0u;
+    }
+    if (raster[0].tessellationBuffer != 0xffffffffu || needsCoverage) {
         if (lane == 0u) { hybridClassifyCluster(bins, 0u, record, candidate); }
         return;
     }
@@ -4467,6 +4515,7 @@ uint gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, ui
     uniform GPUDrivenStreamAssetPush push) : SV_Target0
 {
     if (!frontFace && input.doubleSided == 0u) { discard; }
+    if (!streamAlphaAccepts(input.instanceIndex, input.texcoord, push)) { discard; }
     return visibilityId;
 }
 

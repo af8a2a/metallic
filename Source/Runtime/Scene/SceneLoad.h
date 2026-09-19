@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -63,6 +64,9 @@ struct SceneLoadOptions {
     // an image exceeding it runs alone. 1 GiB accommodates eight 4K RGBA decodes.
     uint64_t maxDecodedBytesInFlight = 1024ull * 1024ull * 1024ull;
     uint32_t mipConcurrency = 0;
+    // Non-empty selects metadata-only import after validating this cooked asset.
+    // Geometry and texture payloads remain owned by the runtime streamers.
+    std::filesystem::path streamAssetPath;
 };
 
 using SceneLoadProgressCallback = std::function<bool(const SceneLoadProgress&)>;

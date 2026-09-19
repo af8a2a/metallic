@@ -39,10 +39,15 @@ float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
     ray.TMax = max(maxDistance, ray.TMin);
     // SIGMA needs the closest blocker's distance, not the first traversal hit.
 #if METALLIC_STREAM_SHADOWS
-    // Stream cooks currently expose opaque, position-only geometry.
-    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_FORCE_OPAQUE, 0xff, ray);
-    while (query.Proceed()) {}
+    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
+    query.TraceRayInline(gScene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, ray);
+    Ray surfaceRay; surfaceRay.origin = origin; surfaceRay.direction = direction;
+    while (query.Proceed()) {
+        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            streamRayAlphaAccepts(query.CandidateInstanceID(), uint(query.CandidateClusterID()),
+                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), surfaceRay,
+                query.CandidateTriangleRayT(), push)) { query.CommitNonOpaqueTriangleHit(); }
+    }
 #else
     RayQuery<RAY_FLAG_NONE> query;
     query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, ray);

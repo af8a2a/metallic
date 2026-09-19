@@ -1100,9 +1100,17 @@ float3 faceForwardShadingNormal(float3 normal, float3 geometryNormal, float3 ray
     return safeNormalize(normal, facingGeometryNormal);
 }
 
+#if METALLIC_STREAM_RAY_QUERIES || (METALLIC_STREAM_SHADOWS && METALLIC_STREAM_TLAS)
+#include "StreamSceneRayQuery.slang"
+#endif
+
 bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTracePush push)
 {
-#if METALLIC_STREAM_MATERIALS
+#if METALLIC_STREAM_RAY_QUERIES
+    Ray ray; ray.origin = origin; ray.direction = direction;
+    HitInfo hit;
+    return traceStreamClosest(ray, 0.001, max(maxDistance, 0.001), push, hit);
+#elif METALLIC_STREAM_MATERIALS
     return false; // Streamed opaque shading consumes the main-light shadow pass.
 #else
     RayDesc ray;
@@ -1129,7 +1137,9 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTr
 
 bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
 {
-#if METALLIC_STREAM_MATERIALS
+#if METALLIC_STREAM_RAY_QUERIES
+    return traceStreamClosest(ray, max(push.clipOrtho.x, 0.0001), max(push.clipOrtho.y, 0.001), push, hit);
+#elif METALLIC_STREAM_MATERIALS
     hit = (HitInfo)0;
     return false; // Streamed opaque shading consumes the main-light shadow pass.
 #else
@@ -1213,6 +1223,8 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.texcoord = uv0 * weights.x + uv1 * weights.y + uv2 * weights.z;
 
     float3x4 worldToObject = query.CommittedWorldToObject3x4();
+    float3x4 objectToWorld = query.CommittedObjectToWorld3x4();
+    float handedness = determinant((float3x3)objectToWorld) < 0.0 ? -1.0 : 1.0;
     hit.t = query.CommittedRayT();
     hit.position = ray.origin + ray.direction * hit.t;
     hit.geometryNormal = safeNormalize(transformObjectNormalToWorld(localGeometryNormal, worldToObject), localGeometryNormal);
@@ -1228,8 +1240,8 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
         float3 localTangentDirection = dot(localTangent.xyz, localTangent.xyz) > 0.000001
             ? safeNormalize(localTangent.xyz, float3(1.0, 0.0, 0.0))
             : float3(1.0, 0.0, 0.0);
-        tangentSign = localTangent.w >= 0.0 ? 1.0 : -1.0;
-        float3 worldTangent = safeNormalize(mul(localTangentDirection, worldToObject).xyz, fallbackTangent);
+        tangentSign = (localTangent.w >= 0.0 ? 1.0 : -1.0) * handedness;
+        float3 worldTangent = safeNormalize(mul(objectToWorld, float4(localTangentDirection, 0.0)), fallbackTangent);
         worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
         hit.tangent = float4(worldTangent, tangentSign);
         hit.bitangent = safeNormalize(cross(hit.normal, worldTangent) * tangentSign, cross(hit.normal, fallbackTangent));
@@ -1237,9 +1249,9 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
         float3 localTriangleTangent;
         float3 localTriangleBitangent;
         computeTriangleTangentSpace(p0, p1, p2, uv0, uv1, uv2, localNormal, localTriangleTangent, localTriangleBitangent);
-        float3 worldTangent = safeNormalize(mul(localTriangleTangent, worldToObject).xyz, fallbackTangent);
+        float3 worldTangent = safeNormalize(mul(objectToWorld, float4(localTriangleTangent, 0.0)), fallbackTangent);
         worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
-        float3 worldBitangent = safeNormalize(mul(localTriangleBitangent, worldToObject).xyz, cross(hit.normal, worldTangent));
+        float3 worldBitangent = safeNormalize(mul(objectToWorld, float4(localTriangleBitangent, 0.0)), cross(hit.normal, worldTangent));
         worldBitangent = safeNormalize(worldBitangent - hit.normal * dot(hit.normal, worldBitangent), cross(hit.normal, worldTangent));
         tangentSign = dot(cross(hit.normal, worldTangent), worldBitangent) < 0.0 ? -1.0 : 1.0;
         hit.tangent = float4(worldTangent, tangentSign);

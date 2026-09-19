@@ -5946,6 +5946,92 @@ TEST(SceneLoading, AsyncProgressAndCancellation)
     testAsyncSceneLoad(prepareOutputDirectory());
 }
 
+TEST(SceneLoading, StreamedOpenValidatesCookAndSkipsResidentPayloads)
+{
+    using namespace metallic;
+    const auto initialized = task::initializeTaskSystem({.workerCount = 2});
+    ASSERT_TRUE(initialized.has_value());
+    struct ShutdownGuard { ~ShutdownGuard() { task::shutdownTaskSystem(); } } shutdownGuard;
+    const auto directory = prepareOutputDirectory() / "streamed_open";
+    std::filesystem::create_directories(directory);
+    const auto source = writeMeshoptCompressedScene(directory);
+    // A missing external texture must remain a descriptor, not enter STB decode.
+    {
+        std::ifstream input(source);
+        auto json = nlohmann::json::parse(input);
+        input.close();
+        json["images"] = {{{"uri", "not-resident.ktx2"}, {"mimeType", "image/png"}}};
+        json["textures"] = {{{"source", 0}}};
+        std::ofstream output(source); output << json.dump();
+    }
+    const auto cache = directory / "cooked.meshstream.bin";
+    scene::SceneLoader loader;
+    auto missing = loader.request(source, {.streamAssetPath = directory / "missing.meshstream.bin"});
+    waitForSceneLoad(missing);
+    EXPECT_EQ(missing.progress().status, scene::SceneLoadStatus::Failed);
+    EXPECT_NE(missing.progress().error.find("MetallicMeshletCook --source"), std::string::npos);
+    EXPECT_EQ(missing.progress().error.find("'uri' is missing"), std::string::npos);
+    EXPECT_EQ(missing.takeResult(), nullptr);
+
+    std::string reason;
+    ASSERT_TRUE(scene::buildMeshletStreamAssetOffline({.sourcePath = source, .outputPath = cache}, reason)) << reason;
+    auto handle = loader.request(source, {.streamAssetPath = cache});
+    waitForSceneLoad(handle);
+    ASSERT_EQ(handle.progress().status, scene::SceneLoadStatus::Succeeded) << handle.progress().error;
+    auto loaded = handle.takeResult();
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_TRUE(loaded->hasStreamGeometry());
+    EXPECT_FALSE(loaded->hasDeferredMeshlets());
+    EXPECT_EQ(loaded->sourcePath(), std::filesystem::weakly_canonical(source));
+    ASSERT_EQ(loaded->renderPrimitives().size(), 1u);
+    EXPECT_TRUE(loaded->renderPrimitives()[0].positions.empty());
+    EXPECT_TRUE(loaded->renderPrimitives()[0].indices.empty());
+    ASSERT_EQ(loaded->images().size(), 1u);
+    EXPECT_FALSE(loaded->images()[0].decodeAttempted);
+    EXPECT_TRUE(loaded->images()[0].encodedData.empty());
+    EXPECT_TRUE(loaded->images()[0].decodedMips.empty());
+    ASSERT_TRUE(loaded->save(reason)) << reason;
+    ASSERT_TRUE(loaded->revert(reason)) << reason;
+    EXPECT_TRUE(loaded->hasStreamGeometry());
+
+    const auto binary = directory / "meshopt_compressed.bin";
+    std::filesystem::last_write_time(binary, std::filesystem::last_write_time(binary) + std::chrono::seconds(2));
+    auto stale = loader.request(source, {.streamAssetPath = cache});
+    waitForSceneLoad(stale);
+    EXPECT_EQ(stale.progress().status, scene::SceneLoadStatus::Failed);
+    EXPECT_NE(stale.progress().error.find("dependencies"), std::string::npos);
+    EXPECT_EQ(stale.takeResult(), nullptr);
+    EXPECT_TRUE(loaded->valid());
+    EXPECT_EQ(loaded->renderNodes().size(), 1u);
+
+    auto resident = loader.request(source);
+    waitForSceneLoad(resident);
+    EXPECT_EQ(resident.progress().status, scene::SceneLoadStatus::Failed);
+    EXPECT_NE(resident.progress().error.find("EXT_meshopt_compression in resident import"), std::string::npos);
+}
+
+TEST(SceneLoading, ZorahFullOpenReportsMissingCook)
+{
+    if (!std::getenv("METALLIC_TEST_ZORAH_FULL")) { GTEST_SKIP(); }
+    using namespace metallic;
+    const auto initialized = task::initializeTaskSystem({.workerCount = 2});
+    ASSERT_TRUE(initialized.has_value());
+    struct ShutdownGuard { ~ShutdownGuard() { task::shutdownTaskSystem(); } } shutdownGuard;
+    const auto source = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/ZorahFull/zorah_textured_public.v1.gltf";
+    scene::SceneLoader loader;
+    auto handle = loader.request(source, {.streamAssetPath = prepareOutputDirectory() / "missing-full.meshstream.bin"});
+    waitForSceneLoad(handle);
+    EXPECT_EQ(handle.progress().status, scene::SceneLoadStatus::Failed);
+    EXPECT_NE(handle.progress().error.find("cooked geometry cache"), std::string::npos);
+    EXPECT_NE(handle.progress().error.find(source.string()), std::string::npos);
+    EXPECT_EQ(handle.progress().error.find("'uri' is missing"), std::string::npos);
+    std::printf("[ZorahFullOpen] %s\n", handle.progress().error.c_str());
+    EXPECT_EQ(handle.takeResult(), nullptr);
+    scene::Scene resident;
+    EXPECT_FALSE(resident.load(source));
+    EXPECT_NE(resident.lastLoadResult().error.find("EXT_meshopt_compression in resident import"), std::string::npos);
+}
+
 TEST(SceneLoading, ImageStageLimitsAndMipContents)
 {
     using namespace metallic;

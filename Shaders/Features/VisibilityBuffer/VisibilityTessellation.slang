@@ -109,6 +109,7 @@ struct TessVertex
     [vk::location(6)] nointerpolation uint debugPatchSeed : TEXCOORD6;
 #if VISIBILITY_TESSELLATION_STREAM
     [vk::location(4)] nointerpolation uint doubleSided : TEXCOORD4;
+    [vk::location(7)] nointerpolation uint streamInstance : TEXCOORD7;
 #endif
 };
 struct TessPrimitive

@@ -2711,6 +2711,7 @@ Result MeshletStreamRuntime::cmdPrepareDeferred(CommandBuffer& commandBuffer)
 MeshletStreamDeferredGpuResourcesView MeshletStreamRuntime::deferredGpuResources() const
 {
     return MeshletStreamDeferredGpuResourcesView{
+        .instanceBuffer = instanceBuffer_.get(),
         .pageBuffer = pageBuffer_.get(),
         .activeGroupBuffer = activeGroupBuffer_.get(),
         .pageTableBuffer = pageTableBuffer_.get(),

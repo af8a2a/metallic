@@ -261,6 +261,8 @@ const std::unordered_set<std::string>& supportedRequiredExtensions()
         kExtensionMaterialsIor,
         kExtensionMaterialsTransmission,
         kExtensionMaterialsVolume,
+        "KHR_materials_specular",
+        "KHR_materials_unlit",
         "KHR_mesh_quantization",
         kExtensionTextureTransform,
         kExtensionTextureSwizzle,
@@ -2718,8 +2720,15 @@ bool loadModel(
             if (!input) { throw std::runtime_error("Cannot open glTF file: " + filenameString); }
             std::string json{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
             // Preserve the existing single-parser path for ordinary glTF assets.
-            if (json.find("EXT_mesh_gpu_instancing") != std::string::npos) {
+            if (json.find("EXT_mesh_gpu_instancing") != std::string::npos ||
+                json.find("EXT_meshopt_compression") != std::string::npos) {
                 auto root = nlohmann::json::parse(json);
+                const auto required = root.value("extensionsRequired", nlohmann::json::array());
+                if (std::find(required.begin(), required.end(), "EXT_meshopt_compression") != required.end()) {
+                    throw std::runtime_error("Required extension unsupported: EXT_meshopt_compression in resident import. "
+                        "Open this scene through GPUDriven streaming with a cooked .meshstream.bin; "
+                        "use MetallicMeshletCook to prepare the geometry cache.");
+                }
                 if (!detail::expandGltfGpuInstances(root, filename.parent_path(), loadResult.gpuInstancing, error)) {
                     throw std::runtime_error(error);
                 }
@@ -3120,6 +3129,8 @@ bool Scene::compose(
             rebaseTexture(material.thicknessTexture);
             rebaseTexture(material.diffuseTransmissionTexture);
             rebaseTexture(material.diffuseTransmissionColorTexture);
+            rebaseTexture(material.specularTexture);
+            rebaseTexture(material.specularColorTexture);
             rebaseTexture(material.displacementTexture);
             composed.materials_.push_back(std::move(material));
         }
@@ -3830,9 +3841,10 @@ bool Scene::loadUsdInternal(
     return true;
 }
 
-bool Scene::loadStreamMetadata(const std::filesystem::path& filename)
+bool Scene::loadStreamMetadata(const std::filesystem::path& filename,
+    const SceneLoadProgressCallback& progressCallback)
 {
-    return loadInternal(filename, {}, false, true);
+    return loadInternal(filename, progressCallback, false, true);
 }
 
 bool Scene::loadInternal(
@@ -4011,6 +4023,16 @@ bool Scene::loadInternal(
         material.normalTexture = makeRenderTextureInfo(gltfMaterial.normalTexture);
         material.occlusionTexture = makeRenderTextureInfo(gltfMaterial.occlusionTexture);
         material.emissiveTexture = makeRenderTextureInfo(gltfMaterial.emissiveTexture);
+
+        material.unlit = gltfMaterial.extensions.contains("KHR_materials_unlit");
+        const auto specularExtension = gltfMaterial.extensions.find("KHR_materials_specular");
+        if (specularExtension != gltfMaterial.extensions.end()) {
+            const auto& specular = specularExtension->second;
+            material.specularFactor = std::clamp(readFloatValue(specular, "specularFactor", 1.0f), 0.0f, 1.0f);
+            readVec3Value(specular, "specularColorFactor", material.specularColorFactor);
+            readExtensionTextureInfo(specular, "specularTexture", material.specularTexture);
+            readExtensionTextureInfo(specular, "specularColorTexture", material.specularColorTexture);
+        }
 
         const auto transmissionExtension = gltfMaterial.extensions.find(kExtensionMaterialsTransmission);
         if (transmissionExtension != gltfMaterial.extensions.end()) {
@@ -4744,6 +4766,8 @@ bool materialPropertiesEqual(const RenderMaterial& lhs, const RenderMaterial& rh
         sameColor(lhs.emissiveFactor, rhs.emissiveFactor) && lhs.alphaCutoff == rhs.alphaCutoff &&
         lhs.alphaMode == rhs.alphaMode && lhs.doubleSided == rhs.doubleSided &&
         lhs.normalTextureScale == rhs.normalTextureScale && lhs.occlusionTextureStrength == rhs.occlusionTextureStrength &&
+        lhs.specularFactor == rhs.specularFactor && sameColor(lhs.specularColorFactor, rhs.specularColorFactor) &&
+        lhs.unlit == rhs.unlit &&
         lhs.displacementMagnitude == rhs.displacementMagnitude && lhs.displacementCenter == rhs.displacementCenter &&
         lhs.transmissionFactor == rhs.transmissionFactor && lhs.ior == rhs.ior &&
         lhs.thicknessFactor == rhs.thicknessFactor && lhs.attenuationDistance == rhs.attenuationDistance &&
@@ -4764,6 +4788,7 @@ bool validMaterialProperties(const RenderMaterial& properties)
         unit(properties.alphaCutoff) &&
         (properties.alphaMode == "OPAQUE" || properties.alphaMode == "MASK" || properties.alphaMode == "BLEND") &&
         std::isfinite(properties.normalTextureScale) && unit(properties.occlusionTextureStrength) &&
+        unit(properties.specularFactor) && color(properties.specularColorFactor) &&
         std::isfinite(properties.displacementMagnitude) && unit(properties.displacementCenter) &&
         unit(properties.transmissionFactor) && std::isfinite(properties.ior) && properties.ior >= 1.0f &&
         positive(properties.thicknessFactor) && positive(properties.attenuationDistance) &&
@@ -4788,6 +4813,9 @@ bool Scene::setMaterialProperties(int32_t materialIndex, const RenderMaterial& p
     current.displacementMagnitude = properties.displacementMagnitude;
     current.displacementCenter = properties.displacementCenter;
     current.occlusionTextureStrength = properties.occlusionTextureStrength;
+    current.specularFactor = properties.specularFactor;
+    current.specularColorFactor = properties.specularColorFactor;
+    current.unlit = properties.unlit;
     current.transmissionFactor = properties.transmissionFactor;
     current.ior = properties.ior;
     current.thicknessFactor = properties.thicknessFactor;

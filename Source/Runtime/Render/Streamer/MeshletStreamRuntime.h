@@ -345,6 +345,10 @@ struct MeshletStreamGpuRasterBindings {
     uint32_t tessellationBuffer = UINT32_MAX;
     float displacementBound = 0.0f;
     uint32_t padding2 = 0;
+    uint32_t materialBuffer = UINT32_MAX;
+    uint32_t materialTextureRemapBuffer = UINT32_MAX;
+    uint32_t materialTextureCount = 0;
+    uint32_t materialPadding = 0;
 };
 
 // Non-owning resources required by a unified deferred consumer. The stream
@@ -352,6 +356,7 @@ struct MeshletStreamGpuRasterBindings {
 // bindless heap so one deferred dispatch can decode both resident and streamed
 // visibility IDs.
 struct MeshletStreamDeferredGpuResourcesView {
+    Buffer* instanceBuffer = nullptr;
     Buffer* pageBuffer = nullptr;
     Buffer* activeGroupBuffer = nullptr;
     Buffer* pageTableBuffer = nullptr;
@@ -425,7 +430,7 @@ static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGpuParams) == 416);
-static_assert(sizeof(MeshletStreamGpuRasterBindings) == 80);
+static_assert(sizeof(MeshletStreamGpuRasterBindings) == 96);
 static_assert(sizeof(MeshletStreamUserPush) == 136);
 
 struct MeshletStreamRuntimeDesc {

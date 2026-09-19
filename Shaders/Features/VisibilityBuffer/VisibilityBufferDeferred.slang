@@ -97,6 +97,16 @@ float3 rasterWorldNormal(GPUDrivenPreviewInstance instance, float3 normal)
         (determinant < 0.0 ? -1.0 : 1.0), normal);
 }
 
+float3 rasterWorldVector(GPUDrivenPreviewInstance instance, float3 v)
+{
+    return instance.world0.xyz * v.x + instance.world1.xyz * v.y + instance.world2.xyz * v.z;
+}
+
+float rasterHandedness(GPUDrivenPreviewInstance instance)
+{
+    return dot(instance.world0.xyz, cross(instance.world1.xyz, instance.world2.xyz)) < 0.0 ? -1.0 : 1.0;
+}
+
 bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex, Ray ray, ScenePathTracePush push, out HitInfo hit)
 {
     hit = (HitInfo)0;
@@ -128,11 +138,8 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
         hit.geometryNormal = domainNormal(domain.w);
     }
     float3 bary = float3(1.0 - yz.x - yz.y, yz);
-    float3 normals[3]; float2 uv[3];
-    for (uint vertex = 0; vertex < 3u; ++vertex) { normals[vertex] = float3(0); uv[vertex] = float2(0); }
-    if (domain.x >= 0.0) {
-        decodeStreamAttributes(record, triangleIndex, gStreamGroups, gStreamPages, gStreamPageTable, normals, uv);
-    }
+    float3 normals[3]; float2 uv[3]; float4 tangents[3];
+    uint attributes = decodeStreamAttributes(record, triangleIndex, gStreamGroups, gStreamPages, gStreamPageTable, normals, uv, tangents);
     hit.normal = domain.x >= 0.0 ? hit.geometryNormal : rasterWorldNormal(instance,
         safeNormalize(normals[0] * bary.x + normals[1] * bary.y + normals[2] * bary.z, localNormal));
     hit.texcoord = uv[0] * bary.x + uv[1] * bary.y + uv[2] * bary.z;
@@ -142,11 +149,16 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     float3 uvTangent, uvBitangent;
     computeTriangleTangentSpace(world[0], world[1], world[2], uv[0], uv[1], uv[2], hit.normal, uvTangent, uvBitangent);
     hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
-    // The position-only cook has scalar materials. Keep the authored geometric
-    // normal stable; face-forward happens after material normal evaluation.
+    // Keep the authored geometric normal stable until normal map evaluation.
     float3 axis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
     float3 tangent = safeNormalize(uvTangent - hit.normal * dot(hit.normal, uvTangent), safeNormalize(cross(axis, hit.normal), float3(1, 0, 0)));
     float tangentSign = dot(cross(hit.normal, tangent), uvBitangent) < 0.0 ? -1.0 : 1.0;
+    if ((attributes & 16u) != 0u && domain.x < 0.0) {
+        float4 authored = tangents[0] * bary.x + tangents[1] * bary.y + tangents[2] * bary.z;
+        float3 worldTangent = rasterWorldVector(instance, authored.xyz);
+        tangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), tangent);
+        tangentSign = (authored.w < 0.0 ? -1.0 : 1.0) * rasterHandedness(instance);
+    }
     hit.tangent = float4(tangent, tangentSign * push.bitangentFlip);
     hit.bitangent = cross(hit.normal, tangent) * tangentSign * push.bitangentFlip;
     gRasterMaterials.GetDimensions(count, stride);
@@ -226,14 +238,14 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
     float3 axis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
     float3 fallback = safeNormalize(cross(axis, hit.normal), float3(1, 0, 0));
     bool authoredTangent = (v0.flags & 2u) != 0u;
-    float3 tangent = rasterWorldNormal(instance, authoredTangent ? localTangent.xyz : triangleTangent);
+    float3 tangent = rasterWorldVector(instance, authoredTangent ? localTangent.xyz : triangleTangent);
     tangent = safeNormalize(tangent - hit.normal * dot(hit.normal, tangent), fallback);
-    float sign = localTangent.w < 0.0 ? -1.0 : 1.0;
+    float sign = (localTangent.w < 0.0 ? -1.0 : 1.0) * rasterHandedness(instance);
     float3 bitangent;
     if (authoredTangent) {
         bitangent = safeNormalize(cross(hit.normal, tangent) * sign, cross(hit.normal, fallback));
     } else {
-        bitangent = rasterWorldNormal(instance, triangleBitangent);
+        bitangent = rasterWorldVector(instance, triangleBitangent);
         bitangent = safeNormalize(bitangent - hit.normal * dot(hit.normal, bitangent), cross(hit.normal, tangent));
         sign = dot(cross(hit.normal, tangent), bitangent) < 0.0 ? -1.0 : 1.0;
     }
@@ -280,8 +292,8 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
     if (!hasSurface) {
         radiance = environmentRadiance(ray.direction, push, true);
     }
-#if !METALLIC_REALTIME_DEFERRED && (MATERIAL_CLASS < 0 || MATERIAL_CLASS == 4)
-    else if (gMaterials[hit.materialIndex].glassParams.x > 0.0 &&
+#if (!METALLIC_REALTIME_DEFERRED || METALLIC_STREAM_RAY_QUERIES) && (MATERIAL_CLASS < 0 || MATERIAL_CLASS == 4)
+    else if ((gMaterials[hit.materialIndex].glassParams.x > 0.0 || gMaterials[hit.materialIndex].textureParams.w > 1.5) &&
         !openPbrDebugFlag(push, kOpenPBRDebugDisableTransmission) &&
         push.debugView == kOpenPBRDebugViewFinal) {
         // Ray continuation is isolated to transmissive materials. Reusing the

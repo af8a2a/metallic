@@ -233,6 +233,7 @@ add_executable(MetallicRhiTests
     rhi/OpenPbrLookDevTests.cpp
     rhi/SliderDebugTests.cpp
     rhi/VisibilityBufferDeferredTests.cpp
+    rhi/StreamMaterialTests.cpp
     rhi/MaterialBinningTests.cpp
     rhi/DeferredTransmissionTests.cpp
     rhi/ClusterLightGridTests.cpp

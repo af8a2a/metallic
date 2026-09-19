@@ -313,12 +313,17 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         rayDirection,
         deterministicGlassTextures,
         seed);
+    float4 specularSample = loadMaterialTextureForMaterial(material.specularTexture, hit.texcoord,
+        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed);
+    float4 specularColorSample = loadMaterialTextureForMaterial(material.specularColorTexture, hit.texcoord,
+        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed);
     if (openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures)) {
         baseColorSample = float4(1.0, 1.0, 1.0, 1.0);
         metallicRoughnessSample = float4(1.0, 1.0, 1.0, 1.0);
         emissiveSample = float4(1.0, 1.0, 1.0, 1.0);
         occlusionSample = float4(1.0, 1.0, 1.0, 1.0);
         transmissionSample = float4(1.0, 1.0, 1.0, 1.0);
+        specularSample = specularColorSample = float4(1.0);
     }
     float3 baseColor = saturate(material.baseColor.rgb * materialTextureColor(baseColorSample.rgb, material.baseColorTexture.transform0.w));
     float metallic = saturate(material.params.x * metallicRoughnessSample.b);
@@ -340,8 +345,9 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
     result.inputs.base_diffuse_roughness = 0.0;
     result.inputs.base_metalness = metallic;
 
-    result.inputs.specular_weight = 1.0;
-    result.inputs.specular_color = float3(1.0, 1.0, 1.0);
+    result.inputs.specular_weight = lerp(saturate(material.specular.w * specularSample.a), 1.0, metallic);
+    result.inputs.specular_color = lerp(saturate(material.specular.rgb *
+        materialTextureColor(specularColorSample.rgb, material.specularColorTexture.transform0.w)), float3(1.0), metallic);
     result.inputs.specular_roughness = roughness;
     result.inputs.specular_roughness_anisotropy = 0.0;
     result.inputs.specular_ior = ior;
@@ -355,6 +361,13 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
 
     result.inputs.subsurface_weight = 0.0;
 
+    if (material.emissive.w != 0.0) {
+        // KHR_materials_unlit: base color is the final radiance, independent of lights.
+        result.inputs.base_weight = 0.0;
+        result.inputs.specular_weight = 0.0;
+        result.inputs.transmission_weight = 0.0;
+        emissive = baseColor;
+    }
     float emissionLuminance = luminanceMax(emissive);
     result.inputs.emission_luminance = emissionLuminance;
     result.inputs.emission_color = emissionLuminance > 0.0 ? emissive / emissionLuminance : float3(1.0, 1.0, 1.0);
@@ -402,6 +415,15 @@ float3 openPbrShadowTransmittance(
             transmittance *= openPbrVolumeTransmittance(interiorStack, shadowHit.t);
         }
         PathTraceMaterial shadowMaterial = gMaterials[shadowHit.materialIndex];
+        if (shadowMaterial.textureParams.w > 1.5) {
+            float alpha = saturate(shadowMaterial.baseColor.a * loadMaterialTextureMip0(
+                shadowMaterial.baseColorTexture, shadowHit.texcoord, float4(1), push).a);
+            transmittance *= 1.0 - alpha;
+            remainingDistance -= shadowHit.t;
+            ray.origin = offsetRay(shadowHit.position, openPbrRayOffsetNormal(ray.direction, shadowHit.geometryNormal));
+            if (remainingDistance <= 0.001 || luminanceMax(transmittance) <= 0.0001) { return transmittance; }
+            continue;
+        }
         float4 transmissionSample = loadMaterialTextureMip0(
             shadowMaterial.transmissionTexture,
             shadowHit.texcoord,
@@ -534,6 +556,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
     OpenPBRInteriorStack interiorStack = makeOpenPBRInteriorStack();
     specularHitDistance = 0.0;
     bool captureSpecularHitDistance = false;
+    uint alphaLayers = 0u;
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
@@ -569,6 +592,17 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         }
 
         PathTraceMaterial material = gMaterials[hit.materialIndex];
+        if (material.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {
+            float alpha = saturate(material.baseColor.a * loadMaterialTextureMip0(
+                material.baseColorTexture, hit.texcoord, float4(1), push).a);
+            if (rand(seed) >= alpha) {
+                if (++alphaLayers >= 16u) { break; }
+                ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));
+                hasPrimaryHit = false;
+                --depth;
+                continue;
+            }
+        }
         float3 shadingNormal = hit.normal;
         float4 normalSample = loadMaterialTextureForMaterial(
             material.normalTexture,
@@ -629,6 +663,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             viewDirection);
 
         radiance += throughput * max(prepared.emission, float3(0.0, 0.0, 0.0));
+        if (material.emissive.w != 0.0) { break; }
 
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
             uint punctualLightIndex;

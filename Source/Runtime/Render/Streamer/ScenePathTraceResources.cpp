@@ -110,7 +110,12 @@ struct ScenePathTraceGpuMaterial {
     TextureInfo thicknessTexture;
     TextureInfo diffuseTransmissionTexture;
     TextureInfo diffuseTransmissionColorTexture;
+    float specular[4] = {1.0f, 1.0f, 1.0f, 1.0f}; // RGB color, scalar weight
+    TextureInfo specularTexture;
+    TextureInfo specularColorTexture;
 };
+static_assert(sizeof(ScenePathTraceGpuMaterial) == 720);
+static_assert(offsetof(ScenePathTraceGpuMaterial, specular) == 608);
 
 struct ScenePathTraceGpuScene {
     std::vector<SceneShadingVertex> vertices;
@@ -778,7 +783,7 @@ void stampTextureFormats(std::vector<ScenePathTraceGpuMaterial>& materials,
     for (auto& material : materials) {
         for (auto* info : {&material.baseColorTexture,&material.metallicRoughnessTexture,&material.normalTexture,
              &material.occlusionTexture,&material.emissiveTexture,&material.transmissionTexture,
-             &material.thicknessTexture,&material.diffuseTransmissionTexture,&material.diffuseTransmissionColorTexture}) {
+             &material.thicknessTexture,&material.diffuseTransmissionTexture,&material.diffuseTransmissionColorTexture,&material.specularTexture,&material.specularColorTexture}) {
             const auto index = info->textureIndex;
             if (index >= textures.size()) { continue; }
             // KTX2 vkFormat declares the transfer function: sRGB views decode in
@@ -875,7 +880,11 @@ ScenePathTraceGpuMaterial makeMaterial(
     gpuMaterial.emissive[0] = material.emissiveFactor.x;
     gpuMaterial.emissive[1] = material.emissiveFactor.y;
     gpuMaterial.emissive[2] = material.emissiveFactor.z;
-    gpuMaterial.emissive[3] = 0.0f;
+    gpuMaterial.emissive[3] = material.unlit ? 1.0f : 0.0f;
+    gpuMaterial.specular[0] = material.specularColorFactor.x;
+    gpuMaterial.specular[1] = material.specularColorFactor.y;
+    gpuMaterial.specular[2] = material.specularColorFactor.z;
+    gpuMaterial.specular[3] = material.specularFactor;
     gpuMaterial.params[0] = material.metallicFactor;
     gpuMaterial.params[1] = material.roughnessFactor;
     gpuMaterial.params[2] = material.alphaCutoff;
@@ -886,7 +895,7 @@ ScenePathTraceGpuMaterial makeMaterial(
     gpuMaterial.textureParams[3] = alphaModeCode(material.alphaMode);
     if (material.alphaMode == "BLEND") {
         std::string message =
-            "alphaMode BLEND: ray queries skip zero alpha; partial alpha is rendered as opaque";
+            "alphaMode BLEND requires the OpenPBR continuation path; legacy shading modes do not composite partial alpha";
         if (!material.name.empty()) {
             message += " for material '";
             message += material.name;
@@ -949,6 +958,8 @@ ScenePathTraceGpuMaterial makeMaterial(
     gpuMaterial.diffuseTransmissionColorTexture = makeTextureInfo(
         material.diffuseTransmissionColorTexture,
         "diffuseTransmissionColorTexture");
+    gpuMaterial.specularTexture = makeTextureInfo(material.specularTexture, "specularTexture");
+    gpuMaterial.specularColorTexture = makeTextureInfo(material.specularColorTexture, "specularColorTexture");
     return gpuMaterial;
 }
 
@@ -1228,13 +1239,15 @@ std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
         mark(material.thicknessTexture);
         mark(material.diffuseTransmissionTexture);
         mark(material.diffuseTransmissionColorTexture);
+        mark(material.specularTexture);
+        mark(material.specularColorTexture);
     }
     return referenced;
 }
 
-std::vector<std::array<int32_t, 19>> materialResourceLayout(const scene::Scene& loadedScene)
+std::vector<std::array<int32_t, 21>> materialResourceLayout(const scene::Scene& loadedScene)
 {
-    std::vector<std::array<int32_t, 19>> layout;
+    std::vector<std::array<int32_t, 21>> layout;
     layout.reserve(loadedScene.materials().size());
     for (const scene::RenderMaterial& material : loadedScene.materials()) {
         // Opacity is baked into OMM. Changes to alpha, cutoff, and UV sampling
@@ -1249,6 +1262,8 @@ std::vector<std::array<int32_t, 19>> materialResourceLayout(const scene::Scene& 
             material.thicknessTexture.textureIndex,
             material.diffuseTransmissionTexture.textureIndex,
             material.diffuseTransmissionColorTexture.textureIndex,
+            material.specularTexture.textureIndex,
+            material.specularColorTexture.textureIndex,
             material.alphaMode == "MASK" ? 1 : material.alphaMode == "BLEND" ? 2 : 0,
             std::bit_cast<int32_t>(material.alphaMode == "OPAQUE" ? 1.0f : material.baseColorFactor.w),
             std::bit_cast<int32_t>(material.alphaMode == "MASK" ? material.alphaCutoff : 0.0f),
@@ -2029,7 +2044,7 @@ struct ScenePathTraceResources::Impl {
     uint64_t sourceGeometryTransformRevision = 0;
     uint64_t sourceVisibilityRevision = 0;
     uint64_t sourceMaterialRevision = 0;
-    std::vector<std::array<int32_t, 19>> sourceMaterialResourceLayout;
+    std::vector<std::array<int32_t, 21>> sourceMaterialResourceLayout;
     std::unique_ptr<Buffer> shadingVertexBuffer;
     std::unique_ptr<Buffer> fallbackPositionBuffer;
     std::unique_ptr<Buffer> indexBuffer;

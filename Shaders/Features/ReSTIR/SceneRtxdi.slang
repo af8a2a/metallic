@@ -72,6 +72,9 @@ struct RtxdiMaterial
     RtxdiTextureInfo thicknessTexture;
     RtxdiTextureInfo diffuseTransmissionTexture;
     RtxdiTextureInfo diffuseTransmissionColorTexture;
+    float4 specular;
+    RtxdiTextureInfo specularTexture;
+    RtxdiTextureInfo specularColorTexture;
 };
 
 #define gIndices getResource<StructuredBuffer<uint>>(3)

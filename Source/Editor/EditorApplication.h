@@ -283,6 +283,7 @@ private:
     bool preserveSampleEnvironmentForNextSceneLoad_ = false;
     render::EnvironmentSettings environmentEditBaseline_;
     std::filesystem::path pendingSceneLoadPath_;
+    std::filesystem::path pendingSceneStreamAssetPath_;
     uint64_t sceneLoadGeneration_ = 0;
     scene::ScenePicker scenePicker_;
     VkSampler viewportSampler_ = VK_NULL_HANDLE;
