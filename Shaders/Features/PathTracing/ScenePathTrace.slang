@@ -1,4 +1,5 @@
 #include "../../Interop/MaterialTextureDecode.hlsli"
+#include "../../Interop/AlphaCoverage.hlsli"
 import Core;
 using Metallic;
 import Material;
@@ -916,6 +917,15 @@ float4 loadMaterialTextureMip0(
     return decodeMaterialTextureSample(gMaterialTextures(textureIndex).Load(int3(texel, 0)), textureInfo.transform0.w);
 }
 
+float loadMaterialAlphaCoverage(PathTraceTextureInfo textureInfo, float2 uv, ScenePathTracePush push)
+{
+    if (hasNeuralMaterialTexture(textureInfo, push)) {
+        return loadMaterialTextureMip0(textureInfo, uv, float4(1.0), push).a;
+    }
+    if (!hasMaterialTexture(textureInfo, push)) { return 1.0; }
+    return sampleAlphaCoverage(gMaterialTextures(textureInfo.textureIndex), transformMaterialUv(textureInfo, uv));
+}
+
 float4 loadMaterialTexture(
     PathTraceTextureInfo textureInfo,
     float2 uv,
@@ -1045,11 +1055,7 @@ bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, Sc
     }
 
     float2 uv = triangleTexcoord(instanceIndex, triangleIndex, bary);
-    float alpha = material.baseColor.a * loadMaterialTextureMip0(
-        material.baseColorTexture,
-        uv,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push).a;
+    float alpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
     // OMM leaves partial BLEND coverage unknown. Preserve the current opaque
     // transport for those hits, while zero-alpha holes remain transparent.
     return blend ? saturate(alpha) > 0.0 : saturate(alpha) >= saturate(material.params.z);

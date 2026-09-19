@@ -416,8 +416,8 @@ float3 openPbrShadowTransmittance(
         }
         PathTraceMaterial shadowMaterial = gMaterials[shadowHit.materialIndex];
         if (shadowMaterial.textureParams.w > 1.5) {
-            float alpha = saturate(shadowMaterial.baseColor.a * loadMaterialTextureMip0(
-                shadowMaterial.baseColorTexture, shadowHit.texcoord, float4(1), push).a);
+            float alpha = saturate(shadowMaterial.baseColor.a * loadMaterialAlphaCoverage(
+                shadowMaterial.baseColorTexture, shadowHit.texcoord, push));
             transmittance *= 1.0 - alpha;
             remainingDistance -= shadowHit.t;
             ray.origin = offsetRay(shadowHit.position, openPbrRayOffsetNormal(ray.direction, shadowHit.geometryNormal));
@@ -593,8 +593,8 @@ float3 pathTraceOpenPBRWithPrimaryHit(
 
         PathTraceMaterial material = gMaterials[hit.materialIndex];
         if (material.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {
-            float alpha = saturate(material.baseColor.a * loadMaterialTextureMip0(
-                material.baseColorTexture, hit.texcoord, float4(1), push).a);
+            float alpha = saturate(material.baseColor.a * loadMaterialAlphaCoverage(
+                material.baseColorTexture, hit.texcoord, push));
             if (rand(seed) >= alpha) {
                 if (++alphaLayers >= 16u) { break; }
                 ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));

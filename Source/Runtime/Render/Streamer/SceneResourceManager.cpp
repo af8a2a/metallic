@@ -150,6 +150,10 @@ Result SceneResourceManager::acquire(
         log = "SceneResourceManager cannot build resident geometry or RTAS from StreamAsset metadata";
         return makeError(Error::InvalidArgument);
     }
+    if (!device.capabilities().rayTracingAccelerationStructure && requiresResidentGeometry(features)) {
+        log = "Resident scene GPU geometry requires ray tracing acceleration structures";
+        return makeError(Error::Unsupported);
+    }
 
     const std::filesystem::path scenePath = propertyPath(properties, "path");
     const std::string key = resourceKey(scenePath, properties) + (resolvedScene->hasStreamGeometry() ? "#stream-materials" : "");
@@ -191,7 +195,7 @@ Result SceneResourceManager::acquire(
         graphicsQueue,
         properties,
         *resolvedScene,
-        log);
+        log, !device.capabilities().rayTracingAccelerationStructure);
     bool complete = false;
     scene::SceneLoadProgress progress;
     while (result && !complete) {
@@ -223,6 +227,10 @@ Result SceneResourceManager::beginAcquireAsync(
     if (runtimeScene.hasStreamGeometry() && requiresResidentGeometry(features)) {
         log = "SceneResourceManager cannot build resident geometry or RTAS from StreamAsset metadata";
         return makeError(Error::InvalidArgument);
+    }
+    if (!device.capabilities().rayTracingAccelerationStructure && requiresResidentGeometry(features)) {
+        log = "Resident scene GPU geometry requires ray tracing acceleration structures";
+        return makeError(Error::Unsupported);
     }
     if (impl_ == nullptr) {
         impl_ = std::make_shared<Impl>();
@@ -274,7 +282,7 @@ Result SceneResourceManager::beginAcquireAsync(
         graphicsQueue,
         properties,
         runtimeScene,
-        log);
+        log, !device.capabilities().rayTracingAccelerationStructure);
     if (!result) {
         impl_->snapshots.erase(key);
         outSnapshot.reset();

@@ -50,7 +50,8 @@ public:
         Queue& graphicsQueue,
         const RenderGraphProperties& properties,
         const scene::Scene& runtimeScene,
-        std::string& log);
+        std::string& log,
+        bool materialsOnly = false);
     Result pumpPrepareAsync(
         double budgetMilliseconds,
         bool& complete,

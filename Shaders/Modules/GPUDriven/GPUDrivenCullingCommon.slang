@@ -49,10 +49,13 @@ public float3 transformNormal(SceneTransform transform, float3 localNormal)
     float3 cofactor1 = cross(transform.world2.xyz, transform.world0.xyz);
     float3 cofactor2 = cross(transform.world0.xyz, transform.world1.xyz);
     float3 normal = cofactor0 * localNormal.x + cofactor1 * localNormal.y + cofactor2 * localNormal.z;
+    // Raster winding is corrected for reflected instances; cones must retain
+    // the authored front direction as well (inverse transpose, not cofactor sign).
+    if (dot(transform.world0.xyz, cofactor0) < 0.0) { normal = -normal; }
     // Cofactors scale quadratically with the object. Sponza's 0.008 scale
     // produces a squared length of 4.096e-9: the camera-vector epsilon would
     // replace its valid cone axis with +Z. Rescale before normalizing so the
-    // decision depends on direction, including the cofactor's winding sign.
+    // decision depends on the transformed direction.
     float maxComponent = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));
     return maxComponent > 0.0 && isfinite(maxComponent)
         ? normalize(normal / maxComponent) : float3(0.0);

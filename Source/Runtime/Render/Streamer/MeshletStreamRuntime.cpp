@@ -1873,10 +1873,14 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         }
     }
 
+    if (uint64_t(desc.rasterMaterialTextureCapacity) + 4u > device.capabilities().maxBindlessSampledImages) {
+        log = "Stream raster material textures exceed the device descriptor capacity";
+        return makeError(Error::Unsupported);
+    }
     result = device.createBindlessHeap(
         BindlessHeapDesc{
             .maxSamplers = 0,
-            .maxSampledImages = 4u + std::min(desc.rasterMaterialTextureCapacity, 4096u),
+            .maxSampledImages = 4u + desc.rasterMaterialTextureCapacity,
             .maxBuffers = 64u +
                 static_cast<uint32_t>(residentPageFrames_.size()),
         },

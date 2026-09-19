@@ -2018,7 +2018,7 @@ public:
             }
             if (streamRayQueries_) {
                 if (deferredStream == nullptr || deferredStream->accelerationStructure == nullptr) {
-                    spdlog::error("Stream BLEND/transmission requires enableClas=true and a ready stream TLAS");
+                    spdlog::error("Stream BLEND/transmission requires enableClusterRtx=true and a ready stream TLAS");
                     return makeError(Error::InvalidArgument);
                 }
                 for (auto& binding : bindings) {

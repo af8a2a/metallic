@@ -13,15 +13,8 @@
 #include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
-#define STB_IMAGE_STATIC
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
-
-
-#include <atomic>
 #include <chrono>
 #include <filesystem>
-#include <thread>
 #include <type_traits>
 #include <unordered_map>
 
@@ -307,232 +300,8 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .enableGpuDecompression = boolProperty(&properties, "enableGpuDecompression", false),
         .gpuDecompressionMinBatchBytes = previewStreamUint64Property(properties, "gpuDecompressionMinBatchBytes", 1024 * 1024),
         .prefetchPages = boolProperty(&properties, "prefetchPages", true),
-        .rasterMaterialTextureCapacity = boolProperty(&properties, "tessellation", false) ? textureCapacity : 0u,
+        .rasterMaterialTextureCapacity = textureCapacity,
     };
-}
-
-struct GPUDrivenPreviewTextureResource {
-    std::unique_ptr<Buffer> uploadBuffer;
-    std::unique_ptr<Texture> texture;
-    std::unique_ptr<TextureView> view;
-    uint32_t width = 1;
-    uint32_t height = 1;
-    uint32_t depth = 1;
-    Format format = Format::Rgba8Unorm;
-    ResourceState state = ResourceState::Undefined;
-    bool uploaded = false;
-};
-
-struct GPUDrivenPreviewDecodedImage {
-    std::vector<uint8_t> pixels;
-    uint32_t width = 0;
-    uint32_t height = 0;
-};
-
-std::string gpuDrivenResultMessage(std::string_view label, const Result& result)
-{
-    return std::string(label) + " returned " + resultToString(result);
-}
-
-Result createGPUDrivenTexture(
-    Device& device,
-    const void* pixels,
-    uint64_t byteSize,
-    uint32_t width,
-    uint32_t height,
-    Format format,
-    std::string_view label,
-    GPUDrivenPreviewTextureResource& outTexture,
-    std::string& log,
-    uint32_t depth = 1)
-{
-    if (pixels == nullptr || byteSize == 0 || width == 0 || height == 0 || depth == 0) {
-        return makeError(Error::InvalidArgument);
-    }
-
-    GPUDrivenPreviewTextureResource texture;
-    texture.width = width;
-    texture.height = height;
-    texture.depth = depth;
-    texture.format = format;
-    Result result = device.createBuffer(
-        BufferDesc{
-            .size = byteSize,
-            .usage = BufferUsageBits::TransferSource,
-            .memoryLocation = MemoryLocation::HostUpload,
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
-        },
-        texture.uploadBuffer);
-    if (!result || texture.uploadBuffer == nullptr) {
-        log += gpuDrivenResultMessage(std::string("createBuffer(") + std::string(label) + " upload)", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
-    }
-    void* mapped = texture.uploadBuffer->map();
-    if (mapped == nullptr) {
-        log += std::string(label) + " upload buffer map failed\n";
-        return makeError(Error::Failure);
-    }
-    std::memcpy(mapped, pixels, static_cast<size_t>(byteSize));
-    texture.uploadBuffer->flush(0, byteSize);
-    texture.uploadBuffer->unmap();
-
-    result = device.createTexture(
-        TextureDesc{
-            .type = depth > 1 ? TextureType::Texture3D : TextureType::Texture2D,
-            .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-            .format = format,
-            .width = width,
-            .height = height,
-            .depth = depth,
-            .mipCount = 1,
-            .layerCount = 1,
-            .memoryLocation = MemoryLocation::Device,
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
-        },
-        texture.texture);
-    if (!result || texture.texture == nullptr) {
-        log += gpuDrivenResultMessage(std::string("createTexture(") + std::string(label) + ")", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
-    }
-    result = device.createTextureView(
-        *texture.texture,
-        TextureViewDesc{
-            .format = format,
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
-        },
-        texture.view);
-    if (!result || texture.view == nullptr) {
-        log += gpuDrivenResultMessage(std::string("createTextureView(") + std::string(label) + ")", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
-    }
-    outTexture = std::move(texture);
-    return {};
-}
-
-Result uploadGPUDrivenTexture(CommandBuffer& commandBuffer, GPUDrivenPreviewTextureResource& texture)
-{
-    if (texture.uploaded) {
-        return {};
-    }
-    if (texture.uploadBuffer == nullptr || texture.texture == nullptr) {
-        return makeError(Error::InvalidArgument);
-    }
-    TextureBarrierDesc toTransfer{
-        .texture = texture.texture.get(),
-        .before = texture.state,
-        .after = ResourceState::TransferDestination,
-        .baseMip = 0,
-        .mipCount = 1,
-        .baseLayer = 0,
-        .layerCount = 1,
-    };
-    commandBuffer.barrier(BarrierDesc{
-        .textures = &toTransfer,
-        .textureCount = 1,
-    });
-    texture.state = ResourceState::TransferDestination;
-    commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
-        .buffer = texture.uploadBuffer.get(),
-        .texture = texture.texture.get(),
-        .width = texture.width,
-        .height = texture.height,
-        .depth = texture.depth,
-        .mipLevel = 0,
-        .baseLayer = 0,
-    });
-    TextureBarrierDesc toShaderRead{
-        .texture = texture.texture.get(),
-        .before = texture.state,
-        .after = ResourceState::ShaderRead,
-        .baseMip = 0,
-        .mipCount = 1,
-        .baseLayer = 0,
-        .layerCount = 1,
-    };
-    commandBuffer.barrier(BarrierDesc{
-        .textures = &toShaderRead,
-        .textureCount = 1,
-    });
-    texture.state = ResourceState::ShaderRead;
-    texture.uploaded = true;
-    return {};
-}
-
-bool decodeGPUDrivenMaterialTexture(
-    const scene::Scene& loadedScene,
-    uint32_t textureIndex,
-    GPUDrivenPreviewDecodedImage& outImage,
-    std::string& log)
-{
-    outImage = GPUDrivenPreviewDecodedImage{};
-    if (textureIndex >= loadedScene.textures().size()) {
-        return false;
-    }
-    const scene::RenderTexture& texture = loadedScene.textures()[textureIndex];
-    if (texture.imageIndex < 0 || static_cast<size_t>(texture.imageIndex) >= loadedScene.images().size()) {
-        return false;
-    }
-    const scene::RenderImage& image = loadedScene.images()[static_cast<size_t>(texture.imageIndex)];
-    if (!image.decodedMips.empty()) {
-        const scene::RenderImage::Mip& mip = image.decodedMips.front();
-        const uint64_t byteSize = static_cast<uint64_t>(mip.width) * mip.height * 4ull;
-        if (mip.width == 0 || mip.height == 0 || mip.pixels.size() < byteSize) {
-            return false;
-        }
-        outImage.width = mip.width;
-        outImage.height = mip.height;
-        outImage.pixels.assign(mip.pixels.begin(), mip.pixels.begin() + static_cast<size_t>(byteSize));
-        return true;
-    }
-
-    int width = 0;
-    int height = 0;
-    int channels = 0;
-    stbi_uc* pixels = nullptr;
-    if (!image.encodedData.empty() && image.encodedData.size() <= static_cast<size_t>(std::numeric_limits<int>::max())) {
-        pixels = stbi_load_from_memory(
-            image.encodedData.data(),
-            static_cast<int>(image.encodedData.size()),
-            &width,
-            &height,
-            &channels,
-            4);
-    } else if (!image.uri.empty() && image.uri.rfind("data:", 0) != 0) {
-        std::filesystem::path imagePath = image.uri;
-        if (imagePath.is_relative()) {
-            imagePath = loadedScene.filename().parent_path() / imagePath;
-        }
-        pixels = stbi_load(imagePath.string().c_str(), &width, &height, &channels, 4);
-    }
-    if (pixels == nullptr || width <= 0 || height <= 0) {
-        log += "Warning: VisibilityBufferPass failed to decode material texture ";
-        log += texture.name.empty() ? image.name : texture.name;
-        if (const char* reason = stbi_failure_reason()) {
-            log += ": ";
-            log += reason;
-        }
-        log += '\n';
-        if (pixels != nullptr) {
-            stbi_image_free(pixels);
-        }
-        return false;
-    }
-    const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
-    if (byteSize > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
-        stbi_image_free(pixels);
-        return false;
-    }
-    outImage.width = static_cast<uint32_t>(width);
-    outImage.height = static_cast<uint32_t>(height);
-    outImage.pixels.assign(pixels, pixels + static_cast<size_t>(byteSize));
-    stbi_image_free(pixels);
-    return true;
 }
 
 struct GPUDrivenPreviewMeshletRange {
@@ -584,6 +353,7 @@ struct GPUDrivenPreviewBindingBundle {
     BindlessHandle hybridClusterHandle;
     BindlessHandle hybridPixelHandle;
     std::unique_ptr<Buffer> materialTextureRemapBuffer;
+    std::unique_ptr<Buffer> streamMaterialTextureRemapBuffer;
     std::unique_ptr<Buffer> tessellationBuffer;
     std::unique_ptr<Buffer> streamTessellationBuffer;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer;
@@ -611,6 +381,7 @@ struct GPUDrivenPreviewRetiredViewResources {
     std::shared_ptr<VisibilityHybridRasterizer> hybridRasterizer;
     GPUDrivenPreviewCullingTargets cullingTargets;
     std::unique_ptr<Buffer> materialTextureRemapBuffer;
+    std::unique_ptr<Buffer> streamMaterialTextureRemapBuffer;
     std::unique_ptr<Buffer> tessellationBuffer;
     std::unique_ptr<Buffer> streamTessellationBuffer;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer;
@@ -1678,7 +1449,7 @@ private:
         streamInstanceCullPipeline_.reset();
         streamHybridQueueHandle_ = {};
         streamTessellationHandle_ = {};
-        streamTessellationTextures_.clear();
+        streamMaterialTextureHandles_.clear();
         streamHybridClusterHandle_ = {};
         streamHybridPixelHandle_ = {};
         streamCandidateArgumentsHandle_ = {};
@@ -1694,6 +1465,8 @@ private:
         streamDepthImageHandle_ = {};
         streamInstanceVisibilityHandle_ = {};
         streamGPUSceneInstanceHandle_ = {};
+        streamMaterialHandle_ = {};
+        streamMaterialTextureRemapHandle_ = {};
         streamVisibleInstanceIdsHandle_ = {};
         streamVisibleInstanceCounterHandle_ = {};
         streamHzbHandles_ = {};
@@ -1747,6 +1520,8 @@ private:
         Result result = allocateBuffer(streamHybridQueueHandle_, "hybrid queue");
         if (result && tessellationEnabled()) { result = allocateBuffer(streamTessellationHandle_, "tessellation"); }
         if (result) { result = allocateBuffer(streamGPUSceneInstanceHandle_, "GPUScene instances"); }
+        if (result) { result = allocateBuffer(streamMaterialHandle_, "GPUScene materials"); }
+        if (result) { result = allocateBuffer(streamMaterialTextureRemapHandle_, "material texture remap"); }
         if (result) { result = allocateBuffer(streamHybridClusterHandle_, "hybrid clusters"); }
         if (result) { result = allocateBuffer(streamHybridPixelHandle_, "hybrid pixels"); }
         if (result) { result = allocateBuffer(streamCandidateArgumentsHandle_, "cluster candidate arguments"); }
@@ -2503,6 +2278,7 @@ private:
         retired->hybridRasterizer = hybridRasterizer_;
         retired->bindlessHeap = std::move(bindlessHeap_);
         retired->tessellationBuffer = std::move(tessellationBuffer_);
+        retired->streamMaterialTextureRemapBuffer = std::move(streamMaterialTextureRemapBuffer_);
         retired->streamTessellationBuffer = std::move(streamTessellationBuffer_);
         retired->materialTextureRemapBuffer =
             std::move(materialTextureRemapBuffer_);
@@ -3243,6 +3019,11 @@ private:
         Result instanceBinding = heap.writeBufferView(streamGPUSceneInstanceHandle_,
             *subsystem.globalBufferViews().instances.view);
         if (!instanceBinding) { return instanceBinding; }
+        instanceBinding = heap.writeBufferView(streamMaterialHandle_, *subsystem.globalBufferViews().materials.view);
+        if (instanceBinding && streamMaterialTextureRemapBuffer_) {
+            instanceBinding = heap.writeStorageBuffer(streamMaterialTextureRemapHandle_, *streamMaterialTextureRemapBuffer_);
+        }
+        if (!instanceBinding) { return instanceBinding; }
         if (hybridRasterizer_) {
             Result hybridResult = heap.writeStorageBuffer(streamHybridQueueHandle_, hybridRasterizer_->queueBuffer());
             if (hybridResult) { hybridResult = heap.writeStorageBuffer(streamHybridClusterHandle_, hybridRasterizer_->clusterBuffer()); }
@@ -3319,8 +3100,8 @@ private:
                 .gpuSceneInstanceBuffer = streamGPUSceneInstanceHandle_.index,
                 .tessellationBuffer = tessellationEnabled() ? streamTessellationHandle_.index : UINT32_MAX,
                 .displacementBound = previousParams_.displacementBound,
-                .materialBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Materials].index,
-                .materialTextureRemapBuffer = materialTextureRemapHandle_.index,
+                .materialBuffer = streamMaterialHandle_.index,
+                .materialTextureRemapBuffer = streamMaterialTextureRemapHandle_.index,
                 .materialTextureCount = materialTextureCount_,
             });
         if (!result || streamOwnerMaskBuffer_ == nullptr) {
@@ -3605,7 +3386,7 @@ private:
                 indices.push_back(uint32_t(material.displacementTexture.textureIndex));
             }
             const int32_t textureIndex = material.baseColorTexture.textureIndex;
-            if (material.alphaMode == "MASK" && textureIndex >= 0 &&
+            if ((material.alphaMode == "MASK" || material.alphaMode == "BLEND") && textureIndex >= 0 &&
                 static_cast<size_t>(textureIndex) < loadedScene.textures().size()) {
                 indices.push_back(static_cast<uint32_t>(textureIndex));
             }
@@ -3620,139 +3401,23 @@ private:
         const scene::Scene& loadedScene,
         std::string& log)
     {
-        materialTextures_.clear();
         materialViews_.clear();
         sharedTextureResources_.reset();
         materialTextureHandles_.clear();
         logicalTextureToMaterialTexture_.clear();
 
-        if (loadedScene.hasStreamGeometry()) {
-            if (!textureResourceManager_ || !textureGraphicsQueue_) { return makeError(Error::InvalidArgument); }
-            auto settings = properties(); settings["path"] = loadedScene.filename().string();
-            std::shared_ptr<SceneResourceSnapshot> snapshot;
-            auto result = textureResourceManager_->acquire(device,*textureGraphicsQueue_,settings,&loadedScene,
-                SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures,snapshot,log);
-            if (!result) { return result; }
-            sharedTextureResources_ = snapshot->pathTraceResources;
-            materialViews_ = sharedTextureResources_->materialTextureViews();
-            const auto indices = sharedTextureResources_->logicalTextureIndices();
-            logicalTextureToMaterialTexture_.assign(indices.begin(),indices.end());
-            alphaTestTextureIndices_ = alphaTestTextureIndices(loadedScene);
-            return {};
-        }
-        const uint8_t whitePixel[4] = {255u, 255u, 255u, 255u};
-        GPUDrivenPreviewTextureResource fallbackTexture;
-        Result result = createGPUDrivenTexture(
-            device,
-            whitePixel,
-            sizeof(whitePixel),
-            1,
-            1,
-            Format::Rgba8Unorm,
-            "VisibilityBufferPass material fallback",
-            fallbackTexture,
-            log);
-        if (!result) {
-            return result;
-        }
-        materialTextures_.push_back(std::move(fallbackTexture));
-
-        std::vector<uint32_t> textureIndexMap(
-            loadedScene.textures().size(),
-            std::numeric_limits<uint32_t>::max());
-
-        struct MaterialDecodeTaskResult {
-            GPUDrivenPreviewDecodedImage image;
-            std::string warning;
-            bool decoded = false;
-        };
-        // Retain MASK coverage and explicitly authored displacement images.
-        const std::vector<uint32_t> alphaTextureIndices = alphaTestTextureIndices(loadedScene);
-        const size_t textureCount = alphaTextureIndices.size();
-        const size_t hardwareThreads =
-            std::max<size_t>(std::thread::hardware_concurrency(), 1u);
-        const size_t decodeWorkerLimit = std::min<size_t>(
-            8u,
-            std::max<size_t>(hardwareThreads / 2u, 1u));
-        double materialDecodeWallMilliseconds = 0.0;
-        double materialTextureCreateMilliseconds = 0.0;
-        size_t attemptedTextureCount = 0;
-        for (size_t batchBegin = 0;
-             batchBegin < textureCount;
-             batchBegin += decodeWorkerLimit) {
-            const size_t batchCount = std::min(decodeWorkerLimit, textureCount - batchBegin);
-            attemptedTextureCount += batchCount;
-            std::vector<MaterialDecodeTaskResult> decodedBatch(batchCount);
-            std::atomic_size_t nextDecode{0};
-            const auto decodeBatchBegin = GPUDrivenCompileClock::now();
-            const auto processDecodeTasks = [&]() {
-                for (;;) {
-                    const size_t localIndex = nextDecode.fetch_add(1, std::memory_order_relaxed);
-                    if (localIndex >= batchCount) {
-                        return;
-                    }
-                    MaterialDecodeTaskResult& decoded = decodedBatch[localIndex];
-                    decoded.decoded = decodeGPUDrivenMaterialTexture(
-                        loadedScene,
-                        alphaTextureIndices[batchBegin + localIndex],
-                        decoded.image,
-                        decoded.warning);
-                }
-            };
-            std::vector<std::thread> workers;
-            workers.reserve(batchCount > 0 ? batchCount - 1u : 0u);
-            for (size_t workerIndex = 1; workerIndex < batchCount; ++workerIndex) {
-                workers.emplace_back(processDecodeTasks);
-            }
-            processDecodeTasks();
-            for (std::thread& worker : workers) {
-                worker.join();
-            }
-            materialDecodeWallMilliseconds += std::chrono::duration<double, std::milli>(
-                GPUDrivenCompileClock::now() - decodeBatchBegin).count();
-
-            for (size_t localIndex = 0; localIndex < batchCount; ++localIndex) {
-                if (materialTextures_.size() + 32 >= device.capabilities().maxBindlessSampledImages) {
-                    log = "Alpha texture count exceeds device descriptor capacity";
-                    return makeError(Error::Unsupported);
-                }
-                MaterialDecodeTaskResult& decoded = decodedBatch[localIndex];
-                log += decoded.warning;
-                if (!decoded.decoded) {
-                    continue;
-                }
-                GPUDrivenPreviewTextureResource texture;
-                const auto textureCreateBegin = GPUDrivenCompileClock::now();
-                result = createGPUDrivenTexture(
-                    device,
-                    decoded.image.pixels.data(),
-                    static_cast<uint64_t>(decoded.image.pixels.size()),
-                    decoded.image.width,
-                    decoded.image.height,
-                    Format::Rgba8Unorm,
-                    "VisibilityBufferPass material texture",
-                    texture,
-                    log);
-                if (!result) {
-                    return result;
-                }
-                materialTextureCreateMilliseconds += std::chrono::duration<double, std::milli>(
-                    GPUDrivenCompileClock::now() - textureCreateBegin).count();
-                const size_t textureIndex = alphaTextureIndices[batchBegin + localIndex];
-                textureIndexMap[textureIndex] = static_cast<uint32_t>(materialTextures_.size());
-                materialTextures_.push_back(std::move(texture));
-            }
-        }
-        spdlog::info(
-            "[VisibilityBufferPass] Processed {} alpha-test texture decodes with {} workers in {:.2f} ms and created textures in {:.2f} ms",
-            attemptedTextureCount,
-            decodeWorkerLimit,
-            materialDecodeWallMilliseconds,
-            materialTextureCreateMilliseconds);
-        logicalTextureToMaterialTexture_ = textureIndexMap;
-        alphaTestTextureIndices_ = alphaTextureIndices;
-        for (auto& texture : materialTextures_) { materialViews_.push_back(texture.view.get()); }
-
+        if (!textureResourceManager_ || !textureGraphicsQueue_) { return makeError(Error::InvalidArgument); }
+        auto settings = properties();
+        settings["path"] = loadedScene.filename().string();
+        std::shared_ptr<SceneResourceSnapshot> snapshot;
+        auto result = textureResourceManager_->acquire(device, *textureGraphicsQueue_, settings, &loadedScene,
+            SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures, snapshot, log);
+        if (!result) { return result; }
+        sharedTextureResources_ = snapshot->pathTraceResources;
+        materialViews_ = sharedTextureResources_->materialTextureViews();
+        const auto indices = sharedTextureResources_->logicalTextureIndices();
+        logicalTextureToMaterialTexture_.assign(indices.begin(), indices.end());
+        alphaTestTextureIndices_ = alphaTestTextureIndices(loadedScene);
         return {};
     }
 
@@ -3761,12 +3426,6 @@ private:
         if (sharedTextureResources_) {
             if (auto* frame = commandBuffer.frameContext()) { frame->retain(sharedTextureResources_); }
             return sharedTextureResources_->uploadMaterialTextures(commandBuffer);
-        }
-        for (GPUDrivenPreviewTextureResource& texture : materialTextures_) {
-            Result result = uploadGPUDrivenTexture(commandBuffer, texture);
-            if (!result) {
-                return result;
-            }
         }
         return {};
     }
@@ -4170,6 +3829,30 @@ private:
             }
         }
 
+        if (streamEnabled_) {
+            auto& streamHeap = *streamRuntime_->bindlessHeap();
+            while (streamMaterialTextureHandles_.size() < materialViews_.size()) {
+                BindlessHandle handle;
+                result = streamHeap.allocateSampledImage(handle);
+                if (!result) { return result; }
+                streamMaterialTextureHandles_.push_back(handle);
+            }
+            for (size_t i = 0; i < materialViews_.size(); ++i) {
+                result = streamHeap.writeSampledImage(streamMaterialTextureHandles_[i], *materialViews_[i], ResourceState::ShaderRead);
+                if (!result) { return result; }
+            }
+            std::unordered_map<uint32_t, uint32_t> streamDescriptors;
+            streamDescriptors.reserve(bundle.materialTextureHandles.size());
+            for (size_t i = 0; i < bundle.materialTextureHandles.size(); ++i) {
+                streamDescriptors.emplace(bundle.materialTextureHandles[i].index, streamMaterialTextureHandles_[i].index);
+            }
+            for (auto& descriptor : materialTextureRemap) {
+                descriptor = streamDescriptors.at(descriptor);
+            }
+            result = uploadStorageBuffer(*device_, materialTextureRemap.data(), materialTextureRemap.size() * sizeof(uint32_t),
+                bundle.streamMaterialTextureRemapBuffer, log, "Stream material texture descriptor remap");
+            if (!result) { return result; }
+        }
         if (tessellationEnabled()) {
             result = createTessellationBuffers(bundle, log);
             if (!result) { return result; }
@@ -4211,17 +3894,17 @@ private:
             bundle.tessellationHandle, log, "tessellation");
         if (!result || !streamEnabled_) { return result; }
         auto& heap = *streamRuntime_->bindlessHeap();
-        while (streamTessellationTextures_.size() < materialViews_.size()) {
+        while (streamMaterialTextureHandles_.size() < materialViews_.size()) {
             BindlessHandle handle;
             result = heap.allocateSampledImage(handle);
             if (!result) { return result; }
-            streamTessellationTextures_.push_back(handle);
+            streamMaterialTextureHandles_.push_back(handle);
         }
         for (size_t i = 0; i < materialViews_.size(); ++i) {
-            result = heap.writeSampledImage(streamTessellationTextures_[i], *materialViews_[i], ResourceState::ShaderRead);
+            result = heap.writeSampledImage(streamMaterialTextureHandles_[i], *materialViews_[i], ResourceState::ShaderRead);
             if (!result) { return result; }
         }
-        data = makeData(streamTessellationTextures_);
+        data = makeData(streamMaterialTextureHandles_);
         return uploadStorageBuffer(*device_, data.data(), data.size() * sizeof(uint32_t),
             bundle.streamTessellationBuffer, log, "Stream tessellation patterns and materials");
     }
@@ -4235,6 +3918,7 @@ private:
         hybridPixelHandle_ = bundle.hybridPixelHandle;
         bindlessHeap_ = std::move(bundle.heap);
         materialTextureRemapBuffer_ = std::move(bundle.materialTextureRemapBuffer);
+        streamMaterialTextureRemapBuffer_ = std::move(bundle.streamMaterialTextureRemapBuffer);
         tessellationBuffer_ = std::move(bundle.tessellationBuffer);
         streamTessellationBuffer_ = std::move(bundle.streamTessellationBuffer);
         tessellationHandle_ = bundle.tessellationHandle;
@@ -4331,6 +4015,7 @@ private:
         retired->residentLods = residentLods_;
         retired->bindlessHeap = std::move(bindlessHeap_);
         retired->tessellationBuffer = std::move(tessellationBuffer_);
+        retired->streamMaterialTextureRemapBuffer = std::move(streamMaterialTextureRemapBuffer_);
         retired->streamTessellationBuffer = std::move(streamTessellationBuffer_);
         retired->materialTextureRemapBuffer = std::move(materialTextureRemapBuffer_);
         retired->streamOwnerMaskBuffer = std::move(streamOwnerMaskBuffer_);
@@ -5206,11 +4891,12 @@ private:
     std::unique_ptr<ComputePipeline> streamClusterRasterPipeline_;
     BindlessHandle streamHybridQueueHandle_;
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
+    std::unique_ptr<Buffer> streamMaterialTextureRemapBuffer_;
     std::unique_ptr<Buffer> tessellationBuffer_;
     std::unique_ptr<Buffer> streamTessellationBuffer_;
     BindlessHandle tessellationHandle_;
     BindlessHandle streamTessellationHandle_;
-    std::vector<BindlessHandle> streamTessellationTextures_;
+    std::vector<BindlessHandle> streamMaterialTextureHandles_;
     std::unique_ptr<ShaderModule> streamTaskShader_;
     std::string compiledTessellationKey_;
     int compiledTextureMaxDimension_ = 512;
@@ -5223,7 +4909,6 @@ private:
     BindlessHandle hzbSpdCounterHandle_;
     GPUDrivenPreviewCullingTargets cullingTargets_;
     std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
-    std::vector<GPUDrivenPreviewTextureResource> materialTextures_;
     std::vector<TextureView*> materialViews_;
     std::shared_ptr<ScenePathTraceResources> sharedTextureResources_;
     SceneResourceManager fallbackTextureResourceManager_;
@@ -5248,6 +4933,8 @@ private:
     BindlessHandle streamDebugGroupsHandle_;
     MeshletStreamDeferredGpuResourcesView streamDebugResources_;
     BindlessHandle streamGPUSceneInstanceHandle_;
+    BindlessHandle streamMaterialHandle_;
+    BindlessHandle streamMaterialTextureRemapHandle_;
     BindlessHandle streamVisibilityImageHandle_;
     BindlessHandle streamDepthImageHandle_;
     BindlessHandle streamInstanceVisibilityHandle_;

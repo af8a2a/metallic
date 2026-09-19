@@ -101,7 +101,7 @@ void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIn
             vertices[v].debugPatchSeed = tessDebugHash(c.record.clusterIndex + 1u);
         }
         for (uint t = lane; t < c.meshlet.ranges.w; t += 64u) {
-            triangles[t] = residentClusterTriangle(c, t, push);
+            triangles[t] = residentRasterWinding(residentClusterTriangle(c, t, push), instanceTransform(c.instance));
             primitives[t].visibilityId = packVisibilityId(record, t);
         }
         return;

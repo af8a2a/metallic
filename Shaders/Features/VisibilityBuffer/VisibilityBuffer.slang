@@ -249,6 +249,14 @@ void visibilityBufferAmplificationMain(
 
 groupshared float4 g_HybridClipPositions[kMaxMeshletVertices];
 
+uint3 residentRasterWinding(uint3 indices, SceneTransform transform)
+{
+    // Preserve authored front faces under negative instance scale. Visibility
+    // still identifies the original triangle; material decoding keeps its order.
+    return dot(cross(transform.world0.xyz, transform.world1.xyz), transform.world2.xyz) < 0.0
+        ? indices.xzy : indices;
+}
+
 [shader("mesh")]
 [numthreads(128, 1, 1)]
 [outputtopology("triangle")]
@@ -355,6 +363,7 @@ void visibilityBufferMeshMain(
                 groupThreadIndex,
                 2u));
         uint visibilityId = packVisibilityId(meshletDrawIndex, groupThreadIndex);
+        indices = residentRasterWinding(indices, transform);
 #if !VISIBILITY_BUFFER_ALPHA_MASKED
         // Alpha-tested buckets keep their existing bilinear material coverage.
         if (hybridEnqueueTriangle(g_HybridClipPositions[indices.x],
@@ -528,6 +537,7 @@ void visibilityClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupI
     GroupMemoryBarrierWithGroupSync();
     if (lane < g_PrebinCluster.meshlet.ranges.w) {
         uint3 tri = residentClusterTriangle(g_PrebinCluster, lane, push);
+        tri = residentRasterWinding(tri, instanceTransform(g_PrebinCluster.instance));
         hybridRasterTriangle(g_HybridClipPositions[tri.x], g_HybridClipPositions[tri.y], g_HybridClipPositions[tri.z],
             packVisibilityId(record, lane), (visibleClusterDrawBucket(g_PrebinCluster.record) & 1u) != 0u,
             bins[6], bins[7], bins[9], bins[10], bins[11], push.bufferShaderIndexBase);

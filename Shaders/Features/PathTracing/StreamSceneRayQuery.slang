@@ -90,7 +90,7 @@ bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, fl
     if (material.textureParams.w < 0.5) { return true; }
     HitInfo hit;
     if (!streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, push, hit)) { return false; }
-    float alpha = material.baseColor.a * loadMaterialTextureMip0(material.baseColorTexture, hit.texcoord, float4(1), push).a;
+    float alpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, hit.texcoord, push);
     return material.textureParams.w < 1.5 ? alpha >= material.params.z : alpha > 0.0;
 }
 

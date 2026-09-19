@@ -12,7 +12,7 @@
 
 2026-09-18 Z3 更新：**受预算的 KTX2/BC 纹理资源与寻址已完成**，4418 张纹理的 512 mip 尾链已上传并验证；实际 image allocation 1.369 GiB，峰值 staging 192 MiB。见 [ZorahFullZ3Textures.md](E:/metallic/Documentation/ZorahFullZ3Textures.md)。
 
-目前不能仅替换 MiniZorah 的路径。Z1 已打通扩展实例化与 metadata 导入，Z2 已完成属性 cook 与探针数据校验，Z3 已解除纹理格式与 256 寻址限制；剩余主要阻塞是 stream 属性/材质/覆盖消费者。
+2026-09-19 Z4 更新：流式属性、OpenPBR specular/unlit、MASK 光栅与 CLAS alpha、BLEND/玻璃续追已接入。实现、探针验收及透明阴影边界见 [ZorahFullZ4StreamingShading.md](E:/metallic/Documentation/ZorahFullZ4StreamingShading.md)。完整场景仍不能仅替换路径：下一步是 Z5 全量属性 cook 与首帧验收。
 
 2026-09-18 编辑器入口修复：在 GPUDrivenSample 的流式 VBuffer 图中使用 File/Open，现在先异步校验所选场景的 meshstream，再导入 metadata，不进入普通常驻 glTF 几何/图像解码和静态 RTAS 准备。重载同一场景保留图中显式缓存路径；切换场景使用 `<source.gltf>.meshstream.bin`，校验成功后一起提交源路径、缓存路径和 world 绑定。缓存缺失或过期会显示具体路径和 `MetallicMeshletCook --source ... --output ...` 命令，保留当前场景。ZorahFull 的无 URI buffer 是 meshopt 解压目标，原先 File/Open 的 “uri is missing” 是入口未接入流式加载的误导性错误；普通常驻入口也会提前明确报告不支持 meshopt，而非报缺文件。Full 全量缓存尚未生成，完整材质和首帧仍按 Z4/Z5 推进。
 
@@ -61,12 +61,12 @@ KTX2 的每个 mip 可独立 Zstd 解压，适合按需读入；容器提供 for
 | 场景 metadata | Z1 保留外部 image/texture 描述和源材质 JSON；Z3 从 metadata 独立准备纹理，无全量几何载入 | 未消费的材质扩展仍在 Z4 |
 | glTF 实例化 | Z1 已将外部 `.gltf` 的 TRS 实例统一展开；runtime metadata、resident 与 cook 共用规则，保留源 node/instance 映射 | 当前边界为静态、外部、非 sparse/非压缩的实例 accessor；不等同于已支持所有扩展存储形式 |
 | cook 属性 | Z2 共用兼容 MikkTSpace 的切线生成与镜像拆分；normal/UV 参与简化并保护 seam/手性；9 探针全部 LOD 属性核对通过；同 accessor+material 复用及缓存失效/恢复已验证 | Glass 的保真约束使 1.72 MiB 终止页常驻；真实法线贴图、texture transform 和 alpha 的像素质量须由 Z3/Z4 验证 |
-| stream resolve | 共享解码器已有可选 normal/UV；实时 OpenPBR、阴影与后处理已接入 | 普通 stream surface 路径仅在 tessellation domain 有效时调用属性解码；非细分路径仍用零 UV/面法线；没有 authored tangent 解码 |
+| stream resolve | Z4 普通 surface 与 CLAS ray hit 均解码 normal/UV/tangent；保留镜像手性、稳定 TBN 与纹理 footprint | Full 全场景质量及持续漫游验证属于 Z5/Z6 |
 | 纹理资源 | Z3 支持 KTX2+Zstd 的 BC 尾链直传，512 cap / 2 GiB 默认分配预算，保留 PNG 路径 | 视图驱动 mip 提升/回收、跨场景和几何/CLAS 总预算属于 Z6 |
 | RHI | Z3 已实现 BC4/5/7、压缩块行距/边缘上传、view 与 bindless swizzle | 更广 KTX2 类型及 Basis transcoding 不在本资产 Z3 范围 |
-| 纹理寻址 | Z3 按实际数量分配，共享资源和 shader 消除 256 限制，Full 全部逻辑引用有效 | stream shadow/alpha 消费接入仍属 Z4；旧 resident alpha preview 保留独立资源路径 |
-| PBR 语义 | glTF MR、normal、transmission/IOR、texture transform 有普通路径基础；Z3 已补 BC5 Z 与单次 sRGB 解码 | `KHR_materials_specular` / unlit、stream UV/TBN 与材质像素闭环仍在 Z4 |
-| alpha/RT | resident MASK 与双面已有逻辑 | stream PS 未采样 alpha，流式阴影需补 UV/material 与非 opaque hit 策略；BLEND/玻璃不能当作完整不透明 VBuffer 问题处理 |
+| 纹理寻址 | Z4 alpha raster、deferred 与 stream shadow 共享纹理 owner；流式独立 heap 使用自己的 descriptor 映射；移除其固定 4096 cap | 通用 sampler 与纹理动态升降 mip 仍待后续 |
+| PBR 语义 | Z4 接入 specular 因子/颜色/纹理及 unlit；BC5 Z、BC4 alpha swizzle、单次 sRGB 解码及 stream UV/TBN 可用于着色 | glTF 与 OpenPBR 中间金属度的 specular 插值是参数化映射，不宣称跨渲染器逐像素相同 |
+| alpha/RT | Z4 MASK 写深度前测试并路由 HW；CLAS 命中可重建 UV/material；BLEND/玻璃使用有界 OpenPBR 续追 | 独立 SIGMA 通道仍为二值透明阴影；alpha query 的全量 non-opaque 回调可后续优化 |
 
 关键源码：[metadata](E:/metallic/Source/Runtime/Scene/scene.cpp:2640)、[cook 扩展](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp:3296)、[实例生成](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp:4087)、[CLOD 属性](E:/metallic/Source/Runtime/Scene/scene.cpp:1504)、[stream 解码](E:/metallic/Shaders/Features/VisibilityBuffer/VisibilityStreamDecode.slang:74)、[surface 重建](E:/metallic/Shaders/Features/VisibilityBuffer/VisibilityBufferDeferred.slang:100)、[纹理上传](E:/metallic/Source/Runtime/Render/Streamer/ScenePathTraceResources.cpp:521)、[容量上限](E:/metallic/Source/Runtime/Render/Streamer/ScenePathTraceResources.h:16)、[RHI format](E:/metallic/Source/Runtime/Render/GAPI/rhi.h:68)。
 
@@ -80,7 +80,7 @@ KTX2 的每个 mip 可独立 Zstd 解压，适合按需读入；容器提供 for
 | Z1：导入与代表性探针 | **2026-09-18 已完成**；共用实例展开、metadata 描述、10 个探针及 cfg manifest | 未筛选时 16118 / 43068 实例；父级/镜像/非均匀变换与独立参考矩阵一致，9 个小探针 cook 实例表一致；未载入全量图像/几何。镜像着色及 alpha 的像素验收继续归 Z4 |
 | Z2：属性 cook 与保真 | **2026-09-18 cook/数据验收完成**；normal/UV/tangent 契约、seam/手性保护、缺失切线拆分、缓存恢复、同材质精确几何复用 | 9 探针 106 页全 LOD 属性及 LOD0 绕序一致，粗级合成 UV/TBN 检查通过；最大单 primitive 17.3M 三角形 cook 峰值提交 2.78 GiB；真实材质像素对照随 Z3/Z4 完成，未全量 cook |
 | Z3：KTX2 与受预算的纹理资源 | **2026-09-18 资源验收完成**；BC4/5/7、Zstd、swizzle、色彩、mip-tail；实际数量描述符与 stream raster/deferred 共享 owner | 4418 引用均有效；合成图案 GPU 采样、小块/NPOT 回读、低预算降 mip 通过；512 cap payload 1.358 GiB、image allocation 1.369 GiB、峰值 staging 192 MiB。完整材质/stream shadow 像素验收属 Z4 |
-| Z4：完整流式材质消费者 | 普通 stream 解码 normal/UV/tangent，正确纹理 footprint；OpenPBR specular/unlit；MASK、双面及 RT alpha；BLEND/玻璃显式路径 | 小场景 resident 与 stream 的 base color、MR、normal、alpha 覆盖对照通过；HW/SW/阴影对相同 alpha mip 与 cutoff 一致；材质 ID >255 正确 |
+| Z4：完整流式材质消费者 | **2026-09-19 主链路及探针验收完成**；stream normal/UV/tangent、OpenPBR specular/unlit、MASK/双面及 CLAS alpha、BLEND/玻璃续追 | 8 个真实探针分批对照、HW/混合覆盖、MASK 阴影及 ID >255 通过，详情见 Z4 报告；透明 SIGMA 阴影仍为明确边界 |
 | Z5：全场景 cook 与首帧 | 在 Z2 格式和小场景材质验收稳定后全量 cook；固定 cfg 相机、512 cap 全材质首帧，后续可调到预算内更细 mip | 全 root 几何和保底纹理就绪后显示；无漏实例/黑贴图/错误材质；完整场景中的 MASK、玻璃和 BLEND 无静默丢失；内存受限、重复切换及退出正常 |
 | Z6：持续漫游与细节流送 | 保底 mip 常驻，按可见纹理 footprint 提升/降低 mip；几何、CLAS、纹理共享总预算协调及上传节流；profiling 图表 | 固定路线往返、急转、近景、低预算测试；无 DeviceLost/悬空 descriptor；质量收敛、请求尾延迟、重载量和 P95/P99 可解释 |
 
@@ -136,4 +136,4 @@ cfg 还启用属性 7、多材质、法线/UV 简化权重 0.5、材质权重 32
 - 几何/RT：全属性页字节，LOD 误差、缺页、CLAS/BLAS fallback 屏幕占比；MASK coverage 不一致计数。
 - CPU/GPU：texture demand、decode、upload、material resolve、alpha raster/shadow、总图区间；并发 scope 不简单相加。报告首个完整粗级帧时间，以及视图几何和纹理各自的收敛时间。
 
-下一阶段推进 **Z4 完整流式材质消费者**，使用现有 Z1/Z2 探针完成石材、叶片、彩玻璃及共享几何换材质的局部图像对照。Z3 已提供纹理资源，Z5 全量 cook 仍等待小场景材质验证稳定。
+下一阶段推进 **Z5 全量 cook 与首帧**，沿用 Z2 属性格式、Z3 的 512 cap / 2 GiB 纹理预算和 Z4 实时着色链路。先验证完整根级工作集的几何/CLAS/纹理总驻留，再建立 Full cfg 相机的首帧证据；小探针不替代完整场景或持续漫游验收。

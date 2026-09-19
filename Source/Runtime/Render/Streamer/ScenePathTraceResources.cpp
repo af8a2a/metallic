@@ -1157,12 +1157,13 @@ bool buildGpuScene(
     const std::vector<uint32_t>& textureIndexMap,
     const std::vector<uint32_t>& neuralTextureSetIndexMap,
     ScenePathTraceGpuScene& outScene,
-    std::string& log)
+    std::string& log,
+    bool materialsOnly = false)
 {
     outScene = ScenePathTraceGpuScene{};
     outScene.materials = buildGpuMaterials(
         loadedScene, textureIndexMap, neuralTextureSetIndexMap, log);
-    if (loadedScene.hasStreamGeometry()) {
+    if (materialsOnly || loadedScene.hasStreamGeometry()) {
         // Geometry stays in the Streamer page pool. Deferred only needs the
         // same OpenPBR material table and textures as resident shading.
         return !outScene.materials.empty();
@@ -2112,13 +2113,13 @@ Result ScenePathTraceResources::prepare(
     impl_->graphicsQueue = &graphicsQueue;
     const std::filesystem::path path = scenePathFromProperties(properties);
     const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, path);
-    if (impl_->valid() && impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
+    if (impl_->valid() && !impl_->materialOnly && impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
         boundScene != nullptr && impl_->sourceTopologyMatches(*boundScene) &&
         (impl_->sourceGeometryTransformRevision != boundScene->geometryTransformRevision() ||
          impl_->sourceMaterialRevision != boundScene->materialRevision())) {
         return syncRuntimeScene(boundScene, log);
     }
-    if (impl_->valid() && impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
+    if (impl_->valid() && !impl_->materialOnly && impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
         (boundScene == nullptr ||
          (impl_->sourceTopologyMatches(*boundScene) &&
           impl_->sourceGeometryTransformRevision == boundScene->geometryTransformRevision() &&
@@ -2314,7 +2315,8 @@ Result ScenePathTraceResources::beginPrepareAsync(
     Queue& graphicsQueue,
     const RenderGraphProperties& properties,
     const scene::Scene& runtimeScene,
-    std::string& log)
+    std::string& log,
+    bool materialsOnly)
 {
     const std::filesystem::path path = scenePathFromProperties(properties);
     const scene::Scene* boundScene = runtimeSceneForPath(&runtimeScene, path);
@@ -2322,8 +2324,8 @@ Result ScenePathTraceResources::beginPrepareAsync(
         log = "Asynchronous scene preparation requires a matching valid runtime scene";
         return makeError(Error::InvalidArgument);
     }
-    if (impl_->valid() && impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
-        impl_->sourceTopologyMatches(*boundScene)) {
+    if (impl_->valid() && impl_->materialOnly == (materialsOnly || boundScene->hasStreamGeometry()) &&
+        impl_->scenePath == path && impl_->textureSettingsMatch(properties) && impl_->sourceTopologyMatches(*boundScene)) {
         return syncRuntimeScene(boundScene, log);
     }
 
@@ -2333,7 +2335,7 @@ Result ScenePathTraceResources::beginPrepareAsync(
     impl_->asyncScene = boundScene;
     impl_->textureBudgetBytes = uint64_t(std::clamp(properties.value("materialTextureBudgetMiB",2048),1,65536)) * 1024 * 1024;
     impl_->textureMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768));
-    impl_->materialOnly = boundScene->hasStreamGeometry();
+    impl_->materialOnly = materialsOnly || boundScene->hasStreamGeometry();
     impl_->asyncScenePath = path;
     impl_->asyncSourceResourceIdentity = boundScene->resourceIdentity();
     impl_->asyncSourceStructuralRevision =
@@ -2443,7 +2445,7 @@ Result ScenePathTraceResources::pumpPrepareAsync(
                     impl_->textureIndexMap,
                     impl_->neuralTextures.logicalTextureSetIndices(),
                     impl_->asyncGpuScene,
-                    log)) {
+                    log, impl_->materialOnly)) {
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
                 return makeError(Error::Failure);
             }
