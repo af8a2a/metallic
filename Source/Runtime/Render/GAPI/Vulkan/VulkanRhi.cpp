@@ -3352,6 +3352,7 @@ struct DeviceImpl {
     bool debugUtilsEnabled = false;
     bool bindlessDescriptorHeapEnabled = false;
     bool shaderObjectEnabled = false;
+    bool pipelineExecutableStatistics = false;
     bool logPipelineKeys = false;
     bool bufferDeviceAddressEnabled = false;
     bool rayTracingAccelerationStructureEnabled = false;
@@ -10008,6 +10009,13 @@ Result Device::createComputePipeline(
     }
 #endif
 
+    if (impl_->pipelineExecutableStatistics) {
+        if (pipelineInfo.pNext != nullptr) {
+            bindlessPipelineFlags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+        } else {
+            pipelineInfo.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+        }
+    }
     VkPipeline pipeline = VK_NULL_HANDLE;
     result = vkCreateComputePipelines(
         impl_->device,
@@ -10023,6 +10031,40 @@ Result Device::createComputePipeline(
         return resultFromVk(result);
     }
 
+    if (impl_->pipelineExecutableStatistics && vkGetPipelineExecutablePropertiesKHR && vkGetPipelineExecutableStatisticsKHR) {
+        VkPipelineInfoKHR info{.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = pipeline};
+        uint32_t count = 0;
+        VkResult query = vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, &count, nullptr);
+        std::vector<VkPipelineExecutablePropertiesKHR> executables(count, {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR});
+        if (query == VK_SUCCESS && count) {
+            query = vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, &count, executables.data());
+        }
+        if (query != VK_SUCCESS) { spdlog::warn("[PipelineStatistics] properties unavailable: {}", int(query)); }
+        for (uint32_t i = 0; query == VK_SUCCESS && i < count; ++i) {
+            VkPipelineExecutableInfoKHR executable{.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, .pipeline = pipeline, .executableIndex = i};
+            uint32_t statCount = 0;
+            VkResult statQuery = vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, &statCount, nullptr);
+            std::vector<VkPipelineExecutableStatisticKHR> stats(statCount, {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR});
+            if (statQuery == VK_SUCCESS && statCount) {
+                statQuery = vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, &statCount, stats.data());
+            }
+            if (statQuery != VK_SUCCESS) { spdlog::warn("[PipelineStatistics] statistics unavailable: {}", int(statQuery)); continue; }
+            for (uint32_t j = 0; j < statCount; ++j) {
+                const auto& stat = stats[j];
+                std::string value;
+                switch (stat.format) {
+                case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR: value = stat.value.b32 ? "true" : "false"; break;
+                case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR: value = std::to_string(stat.value.i64); break;
+                case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR: value = std::to_string(stat.value.u64); break;
+                case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR: value = std::to_string(stat.value.f64); break;
+                default: value = "unavailable"; break;
+                }
+                spdlog::info("[PipelineStatistics] entry={} spirv={:016x} executable={} subgroup={} {}={} ({})",
+                    stage.pName, desc.computeShader->impl_->contentHash, executables[i].name, executables[i].subgroupSize,
+                    stat.name, value, stat.description);
+            }
+        }
+    }
     auto pipelineImpl = std::make_unique<detail::ComputePipelineImpl>();
     pipelineImpl->device = impl_.get();
     pipelineImpl->layout = layout;
@@ -10686,6 +10728,24 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         return makeError(Error::Unsupported);
     }
 #endif
+    // Opt-in compiler resource diagnostics; normal devices/pipelines are unchanged.
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR executableFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR,
+    };
+    const char* executableStats = std::getenv("METALLIC_VK_PIPELINE_STATISTICS");
+    if (executableStats != nullptr && std::strcmp(executableStats, "1") == 0) {
+        if (selectedDeviceExtensions.has(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
+            VkPhysicalDeviceFeatures2 probe{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &executableFeatures};
+            vkGetPhysicalDeviceFeatures2(deviceImpl->physicalDevice, &probe);
+            if (executableFeatures.pipelineExecutableInfo) {
+                deviceExtensions.push_back(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+                executableFeatures.pNext = const_cast<void*>(deviceCreateNext);
+                deviceCreateNext = &executableFeatures;
+                deviceImpl->pipelineExecutableStatistics = true;
+            }
+        }
+        spdlog::info("[PipelineStatistics] enabled={}", deviceImpl->pipelineExecutableStatistics);
+    }
     VkDeviceCreateInfo deviceInfo{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = deviceCreateNext,

@@ -49,3 +49,37 @@ void referenceStreamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_Grou
     if (lane == 0u) { hybridClassifyCluster(bins, g_StreamBinHardware != 0u ? 0u : kHybridSoftwareBin, record, candidate); }
 }
 
+
+groupshared uint g_ReferenceLoadValid;
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void verifyStreamSoftwareLoadMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<RWStructuredBuffer<uint>> bins =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+    uint candidate = hybridFlatGroup(group);
+    if (candidate >= bins[12] || WaveGetLaneCount() < 32u) { return; }
+    uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
+    if (lane < WaveGetLaneCount()) {
+        bool valid = loadStreamSoftwareWave(record, push);
+        if (lane == 0u) { g_StreamSoftwareValid = valid ? 1u : 0u; }
+    }
+    if (lane == 0u) {
+        bool retry;
+        g_ReferenceLoadValid = loadStreamRasterCluster(record, false, false, push, g_StreamRasterCluster, retry) ? 1u : 0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (g_StreamSoftwareValid != g_ReferenceLoadValid) { InterlockedOr(bins[14], 0x40000000u); return; }
+    if (g_ReferenceLoadValid == 0u) { return; }
+    bool same = g_StreamSoftware.vertexCount == g_StreamRasterCluster.vertexCount &&
+        g_StreamSoftware.triangleCount == g_StreamRasterCluster.triangleCount &&
+        g_StreamSoftware.recordIndex == g_StreamRasterCluster.recordIndex &&
+        g_StreamSoftware.instanceFlags == g_StreamRasterCluster.instanceFlags;
+    if (lane < g_StreamRasterCluster.vertexCount) {
+        same = same && all(asuint(streamSoftwareClip(lane, push)) == asuint(streamClusterClip(g_StreamRasterCluster, lane, push)));
+    }
+    if (lane < g_StreamRasterCluster.triangleCount) {
+        same = same && all(streamSoftwareTriangle(lane, push) == streamClusterTriangle(g_StreamRasterCluster, lane, push));
+    }
+    if (!same) { InterlockedOr(bins[14], 0x20000000u); }
+}

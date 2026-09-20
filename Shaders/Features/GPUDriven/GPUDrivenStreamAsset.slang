@@ -4191,6 +4191,8 @@ void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, 
     }
 }
 
+#include "StreamRasterCooperative.slang"
+
 float edgeFunction(float2 a, float2 b, float2 point)
 {
     float2 edge = b - a;
@@ -4680,3 +4682,12 @@ void streamClusterRasterLegacyMain(uint3 group : SV_GroupID, uint lane : SV_Grou
 [numthreads(128,1,1)]
 void streamClusterRasterPlaneMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 { rasterStreamCluster(group,lane,push,true,true); }
+
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void streamClusterRasterCooperativeMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{
+    // The cooperative decoder uses lanes 0..20. Keep the reference on narrow subgroups.
+    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, push, false, false); return; }
+    rasterStreamClusterCooperative(group, lane, push);
+}

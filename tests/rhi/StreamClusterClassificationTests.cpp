@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdlib>
+#include <spdlog/spdlog.h>
 
 namespace metallic::tests {
 namespace {
@@ -64,22 +66,45 @@ public:
             inputs[index]->flush(); inputs[index]->unmap();
             return {};
         };
-        std::array<std::unique_ptr<ShaderModule>, 4> shaders;
-        std::array<std::unique_ptr<ComputePipeline>, 4> pipelines;
-        const char* entries[] = {"streamClusterPrepareMain", "streamClusterCullMain", "streamClusterBinMain", "referenceStreamClusterBinMain"};
+        std::array<std::unique_ptr<ShaderModule>, 5> shaders;
+        std::array<std::unique_ptr<ComputePipeline>, 5> pipelines;
+        const char* entries[] = {"streamClusterPrepareMain", "streamClusterCullMain", "streamClusterBinMain", "referenceStreamClusterBinMain", "verifyStreamSoftwareLoadMain"};
         for (size_t i = 0; i < pipelines.size(); ++i) {
             ShaderCompileResult compiled;
             const char* additional[] = {PROJECT_SOURCE_DIR "/Shaders"};
             const auto result = compileSlangShaderToSpirv({
-                .moduleName = i == 3 ? "StreamClusterClassificationProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
+                .moduleName = i >= 3 ? "StreamClusterClassificationProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = entries[i],
-                .searchPath = i == 3 ? PROJECT_SOURCE_DIR "/tests/rhi/shaders" : PROJECT_SOURCE_DIR "/Shaders",
+                .searchPath = i >= 3 ? PROJECT_SOURCE_DIR "/tests/rhi/shaders" : PROJECT_SOURCE_DIR "/Shaders",
                 .additionalSearchPaths = additional, .additionalSearchPathCount = 1}, compiled);
             log = compiled.diagnostics;
             CLASSIFY_REQUIRE(result);
             CLASSIFY_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}, shaders[i]));
             CLASSIFY_REQUIRE(device->createComputePipeline({.computeShader = shaders[i].get(), .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, pipelines[i]));
+        }
+        // Opt-in resource report for the actual production SW entrypoints,
+        // alongside the validation-enabled classification regression below.
+        const char* pipelineStats = std::getenv("METALLIC_VK_PIPELINE_STATISTICS");
+        if (pipelineStats != nullptr && std::strcmp(pipelineStats, "1") == 0) {
+            struct RestoreShaderMode {
+                SlangShaderDebugMode previous = slangShaderDebugMode();
+                ~RestoreShaderMode() { setSlangShaderDebugMode(previous); }
+            } restoreShaderMode;
+            for (const auto mode : {SlangShaderDebugMode::Disabled, SlangShaderDebugMode::CaptureSymbols}) {
+                setSlangShaderDebugMode(mode);
+                for (const char* entry : {"streamClusterRasterLegacyMain", "streamClusterRasterMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain"}) {
+                    spdlog::info("[SW Pipeline Probe] entry={} debugMode={}", entry, int(mode));
+                    ShaderCompileResult compiled;
+                    CLASSIFY_REQUIRE(compileSlangShaderToSpirv({.moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
+                        .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled));
+                    std::unique_ptr<ShaderModule> shader;
+                    std::unique_ptr<ComputePipeline> pipeline;
+                    CLASSIFY_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}, shader));
+                    CLASSIFY_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .usesBindlessHeap = true,
+                        .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, pipeline));
+                }
+            }
         }
         const uint64_t binBytes = rasterizers[0].clusterBuffer().desc().size;
         const uint64_t recordBytes = inputs[Records]->desc().size;
@@ -95,12 +120,16 @@ public:
         CLASSIFY_REQUIRE(device->createFence(false, fence));
         bool sawFastSoftware = false, sawFastHardware = false;
         bool submitted = false, sawRetry = false, sawLate = false, sawSoftware = false, sawHardware = false, saw2D = false;
-        struct Case { uint32_t groups; float maxPixels; bool ortho; bool reversed; uint32_t culling; bool dense = false; bool jitter = false; bool tessellation = false; };
+        struct Case { uint32_t groups; float maxPixels; bool ortho; bool reversed; uint32_t culling; bool dense = false; bool jitter = false; bool tessellation = false; uint32_t payloadFault = 0; };
         const Case cases[] = {{2305, 8, true, true, 0, true}, {0, 8, true, true, 28},
             {1, 1, false, true, 0}, {127, 8, false, false, 12}, {129, 32, true, false, 28},
             {2305, 8, false, true, 28}, {129, 1, true, true, 28, false, true}, {1, 32, false, false, 0},
             {129, 2, false, true, 0}, {129, 4, true, false, 0},
-            {2305, 0, true, true, 0, true}, {129, 0, false, true, 28}, {0, 0, true, false, 28}, {129, 8, true, true, 0, false, false, true}};
+            {2305, 0, true, true, 0, true}, {129, 0, false, true, 28}, {0, 0, true, false, 28}, {129, 8, true, true, 0, false, false, true},
+            {129, 8, false, true, 0, false, false, false, 1}, {129, 8, false, true, 0, false, false, false, 2},
+            {129, 8, false, true, 0, false, false, false, 3}, {129, 8, false, true, 0, false, false, false, 4},
+            {129, 8, false, true, 0, false, false, false, 5}, {129, 8, false, true, 0, false, false, false, 6},
+            {129, 8, false, true, 0, false, false, false, 7}, {129, 8, false, true, 0, false, true, false, 8}};
         size_t caseIndex = 0;
         for (const auto test : cases) {
             std::vector<uint8_t> page(pageBytes);
@@ -137,6 +166,23 @@ public:
                     std::memcpy(page.data() + pageHeader.triangleOffsetBytes + c * 384 + v * 3, triangle, 3);
                 }
             }
+            switch (test.payloadFault) {
+            case 1: pageHeader.payloadByteSize = sizeof(pageHeader) - 4; break;
+            case 2: pageHeader.payloadByteSize = pageBytes + 4; break;
+            case 3: pageHeader.positionOffsetBytes += 1; break;
+            case 4: pageHeader.clusterOffsetBytes = pageBytes; break;
+            case 5: pageHeader.positionFormat = 0xffffffffu; break;
+            case 6: pageHeader.triangleOffsetBytes = pageBytes; break;
+            case 8:
+                // Valid packed float3 page with the same authored vertex values.
+                for (uint32_t v = 0; v < pageHeader.vertexCount; ++v) {
+                    std::memmove(page.data() + pageHeader.positionOffsetBytes + v * 12,
+                        page.data() + pageHeader.positionOffsetBytes + v * 16, 12);
+                }
+                pageHeader.positionFormat = 4;
+                break;
+            }
+            std::memcpy(page.data(), &pageHeader, sizeof(pageHeader));
             std::vector<MeshletStreamGpuActiveGroup> groups(groupCapacity);
             for (uint32_t i = 0; i < groupCapacity; ++i) {
                 auto& g = groups[i];
@@ -179,6 +225,7 @@ public:
             CLASSIFY_REQUIRE(upload(Hzb0, hzb.data(), hzb.size() * 4));
             std::fill(hzb.begin(), hzb.end(), test.reversed ? 1.f : 0.f);
             CLASSIFY_REQUIRE(upload(Hzb1, hzb.data(), hzb.size() * 4));
+            if (test.payloadFault == 7) { params.pageBufferBytes = sizeof(pageHeader) - 4; }
             CLASSIFY_REQUIRE(upload(Header, &header, sizeof(header)));
             CLASSIFY_REQUIRE(upload(Groups, groups.data(), groups.size() * sizeof(groups[0])));
             CLASSIFY_REQUIRE(upload(Params, &params, sizeof(params)));
@@ -205,7 +252,14 @@ public:
                         .traversalPhase = phase, .rasterBindingsBuffer = handles[Bindings].index,
                         .hybridQueueBuffer = handles[13 + schedule * 2].index, .hybridClusterBuffer = handles[12 + schedule * 2].index};
                     CLASSIFY_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, *pipelines[0], push));
-                    if (schedule == 1) { CLASSIFY_REQUIRE(rasterizer.cullStreamClusters(*commands, *pipelines[1], push)); }
+                    if (schedule == 1) {
+                        commands->bindComputePipeline(*pipelines[4]);
+                        commands->pushBindlessData(&push, sizeof(push));
+                        CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
+                        BufferBarrierDesc verifyBarrier{.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General, .after = ResourceState::General};
+                        commands->barrier({.buffers = &verifyBarrier, .bufferCount = 1});
+                        CLASSIFY_REQUIRE(rasterizer.cullStreamClusters(*commands, *pipelines[1], push));
+                    }
                     if (schedule == 0 || test.maxPixels != 0) {
                         commands->bindComputePipeline(*pipelines[schedule == 1 ? 2 : 3]);
                         commands->pushBindlessData(&push, sizeof(push));
@@ -272,7 +326,7 @@ public:
             ++caseIndex;
         }
         if (!sawFastSoftware || !sawFastHardware || !sawRetry || !sawLate || !sawSoftware || !sawHardware || !saw2D) { return RhiTestResult::fail("Missing paths fastSW/HW,retry,late,SW,HW,2D=" + std::to_string(sawFastSoftware)+std::to_string(sawFastHardware)+std::to_string(sawRetry)+std::to_string(sawLate)+std::to_string(sawSoftware)+std::to_string(sawHardware)+std::to_string(saw2D)); }
-        return RhiTestResult::pass("14 early/late GPU comparisons with metadata fast SW/HW including cull-only full HW: stable bins/IDs, HZB retry, clip boundaries, malformed payload, 1/8/32px, jitter, 2D survivors and empty reuse");
+        return RhiTestResult::pass("22 early/late GPU comparisons with cooperative raster decode, malformed headers/float3, metadata fast SW/HW and cull-only full HW: stable bins/IDs, HZB retry, clip boundaries, malformed payload, 1/8/32px, jitter, 2D survivors and empty reuse");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamClusterClassificationTest);

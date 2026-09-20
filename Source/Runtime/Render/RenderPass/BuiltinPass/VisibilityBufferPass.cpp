@@ -1985,7 +1985,7 @@ private:
             result = createShader(device, kMeshletStreamShaderModuleName,
                 "streamClusterBinMain", false, streamClusterBinShader_, log);
             if (result) { result = createStreamCompute(*streamClusterBinShader_, streamClusterBinPipeline_, "cluster bin"); }
-            const char* rasterEntries[] = {"streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain"};
+            const char* rasterEntries[] = {"streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain"};
             for (size_t i=0; result && i<streamClusterRasterShaders_.size(); ++i) {
                 result = createShader(device, kMeshletStreamShaderModuleName, rasterEntries[i], false, streamClusterRasterShaders_[i], log);
                 if (result) { result = createStreamCompute(*streamClusterRasterShaders_[i], streamClusterRasterPipelines_[i], rasterEntries[i]); }
@@ -3374,8 +3374,9 @@ private:
             if (async) { commands.barrier({.buffers = acquires, .bufferCount = 3}); }
             commands.beginDebugLabel({.name = "Hybrid raster: stream software clusters"});
             commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
-            // Keep the measured reference as default until the prepared path shows a repeatable gain.
-            const size_t rasterMode = !boolProperty(&properties(), "softwareRasterPreparedVertices", false) ? 1u :
+            // Cooperative loading is the measured default; prepared raster arithmetic remains opt-in.
+            const size_t rasterMode = !boolProperty(&properties(), "softwareRasterPreparedVertices", false) ?
+                (boolProperty(&properties(), "softwareRasterCooperativeLoad", true) ? 3u : 1u) :
                 boolProperty(&properties(), "softwareRasterIncrementalDepth", false) ? 2u : 0u;
             commands.bindComputePipeline(*streamClusterRasterPipelines_[rasterMode]);
 
@@ -4953,13 +4954,13 @@ private:
     std::unique_ptr<ShaderModule> clusterRasterShader_;
     std::unique_ptr<ShaderModule> streamClusterBinShader_;
     std::unique_ptr<ShaderModule> streamClusterCullShader_;
-    std::array<std::unique_ptr<ShaderModule>, 3> streamClusterRasterShaders_;
+    std::array<std::unique_ptr<ShaderModule>, 4> streamClusterRasterShaders_;
     std::unique_ptr<ComputePipeline> clusterBinPipeline_;
     std::unique_ptr<ComputePipeline> clusterCountPipeline_;
     std::unique_ptr<ComputePipeline> clusterRasterPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterBinPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterCullPipeline_;
-    std::array<std::unique_ptr<ComputePipeline>, 3> streamClusterRasterPipelines_;
+    std::array<std::unique_ptr<ComputePipeline>, 4> streamClusterRasterPipelines_;
     BindlessHandle streamHybridQueueHandle_;
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
     std::unique_ptr<Buffer> streamMaterialTextureRemapBuffer_;

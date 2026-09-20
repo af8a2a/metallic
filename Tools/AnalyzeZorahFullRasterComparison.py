@@ -123,11 +123,11 @@ def analyze(directory):
         legacy = next(c["after"] for c in capture["cases"] if c["variant"] == "swLegacy")
         for r,c in zip(results,capture["cases"]):
             r["vsLegacySoftware"] = image_difference(directory,legacy,c["after"])
-            if r["variant"] == "swPrepared":
+            if r["variant"] in ("swPrepared", "swCooperative"):
                 for resource in ("VBuffer.visibility", "VBuffer.depth"):
-                    assert c["after"][resource]["hash"] == legacy[resource]["hash"], "Prepared SW changed reference image"
+                    assert c["after"][resource]["hash"] == legacy[resource]["hash"], "Exact SW changed reference image"
                 for phase in ("AfterStreamEarlyBins", "AfterStreamLateBins"):
-                    assert c["after"][phase] == legacy[phase], "Prepared SW changed bins"
+                    assert c["after"][phase] == legacy[phase], "Exact SW changed bins"
     summary = {"protocol": capture["protocol"], "outputExtent": capture["outputExtent"], "renderExtent": capture["renderExtent"],
                "cutHash": base["cutHash"], "pageMappingsHash": base["pageMappingsHash"], "activeGroups": base["activeGroups"],
                "residentState": residency, "sameCutAndResidency": True, "sameModeImagesStable": True, "cases": results,
@@ -138,7 +138,7 @@ def analyze(directory):
              f"Cut `{base['cutHash']}`, page mappings `{base['pageMappingsHash']}`, {base['activeGroups']} active groups. Residency identical in measured samples.", "",
              "| Mode | Samples | Raster mean ms | Raster p50 | Raster p95 | Classify mean | SW mean | HW mean | Graph mean |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for mode, stats in sorted(summary["pooled"].items(), key=lambda x: {"exact8": 8,"fast8": 9}.get(x[0],int(x[0]) if x[0].isdigit() else 10)):
-        label = {"0":"Full HW","exact8":"8 px exact","fast8":"8 px metadata","swLegacy":"8 px legacy SW","swPrepared":"8 px prepared SW","swPlane":"8 px depth plane"}.get(mode,mode + " px")
+        label = {"0":"Full HW","exact8":"8 px exact","fast8":"8 px metadata","swLegacy":"8 px legacy SW","swPrepared":"8 px prepared SW","swPlane":"8 px depth plane","swCooperative":"8 px cooperative load"}.get(mode,mode + " px")
         t = stats["rasterTotal"]
         lines.append(f"| {label} | {t['count']} | {t['mean']:.3f} | {t['p50']:.3f} | {t['p95']:.3f} | {stats['classification']['mean']:.3f} | {stats['software']['mean']:.3f} | {stats['hardware']['mean']:.3f} | {stats['graphGpu']['mean']:.3f} |")
     lines += ["", "| Case | Early HW / SW | Coverage different vs HW | Visibility different % | Max depth abs | Depth >8 ULP |", "|---|---:|---:|---:|---:|---:|"]

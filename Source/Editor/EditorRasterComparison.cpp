@@ -146,6 +146,9 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         const uint32_t samples = config.value("sampleFrames",64u);
         const uint32_t settle = config.value("settleFrames",8u);
         const uint32_t rounds = config.value("rounds",3u);
+        const double profileHoldSeconds = config.value("profileHoldSeconds", 0.0);
+        checkRaster(std::isfinite(profileHoldSeconds) && profileHoldSeconds >= 0 && profileHoldSeconds <= 300,
+            "Invalid SW profiler hold duration");
         const uint32_t width = config.value("width",1797u), height = config.value("height",660u);
         checkRaster(samples >= 8 && samples <= 512 && settle >= 2 && settle <= 120 && rounds >= 1 && rounds <= 3,
             "Invalid raster comparison sample count");
@@ -212,7 +215,9 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}});
         }
         // Reverse and rotate order to expose warm-cache/clock/order effects.
-        const bool swComparison = config.value("swComparison", false);
+        const bool swLoadComparison = config.value("swLoadComparison", false);
+        const bool swComparison = swLoadComparison || config.value("swComparison", false);
+        constexpr uint32_t loadOrders[3][3] = {{0,10,13},{13,10,0},{10,0,13}};
         constexpr uint32_t swOrders[3][4] = {{0,10,11,12},{12,11,10,0},{11,0,12,10}};
         const bool metadataComparison = config.value("metadataComparison", false);
         constexpr uint32_t metadataOrders[3][3] = {{0,8,9},{9,8,0},{8,0,9}};
@@ -230,11 +235,12 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             return snap;
         };
         for (uint32_t round=0; round<rounds; ++round) {
-            const auto sequence = swComparison ? std::span<const uint32_t>(swOrders[round]) : metadataComparison ? std::span<const uint32_t>(metadataOrders[round]) : std::span<const uint32_t>(orders[round]);
+            const auto sequence = swLoadComparison ? std::span<const uint32_t>(loadOrders[round]) : swComparison ? std::span<const uint32_t>(swOrders[round]) : metadataComparison ? std::span<const uint32_t>(metadataOrders[round]) : std::span<const uint32_t>(orders[round]);
             for (uint32_t mode : sequence) {
-                const std::string variant = !mode ? "0" : swComparison ? (mode == 10 ? "swLegacy" : mode == 11 ? "swPrepared" : "swPlane") : metadataComparison ? (mode == 8 ? "exact8" : "fast8") : std::to_string(mode);
+                const std::string variant = !mode ? "0" : swComparison ? (mode == 10 ? "swLegacy" : mode == 13 ? "swCooperative" : mode == 11 ? "swPrepared" : "swPlane") : metadataComparison ? (mode == 8 ? "exact8" : "fast8") : std::to_string(mode);
                 const std::string name = "round"+std::to_string(round+1)+"-"+variant;
-                set("VBuffer","softwareRasterPreparedVertices", swComparison && mode != 10);
+                set("VBuffer","softwareRasterPreparedVertices", swComparison && (mode == 11 || mode == 12));
+                set("VBuffer","softwareRasterCooperativeLoad", !swComparison || (swLoadComparison && mode == 13));
                 set("VBuffer","softwareRasterIncrementalDepth", swComparison && mode == 12);
                 set("VBuffer","metadataFastClassification", !metadataComparison || mode != 8);
                 set("VBuffer","benchmarkForceHardwareRaster",mode==0);
@@ -244,6 +250,18 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                 // Readback/copy cache effects are outside measurement, followed
                 // by the same unmeasured recovery frames in every variant.
                 for (uint32_t i=0; i<settle; ++i) { draw(); }
+                if (swComparison && mode == 10 && round == 0 && profileHoldSeconds > 0) {
+                    std::ofstream(output / "ProfileReady.json") << Json({{"case", name}, {"snapshot", before},
+                        {"holdSeconds", profileHoldSeconds}, {"camera", report["camera"]}}).dump(2) << '\n';
+                    spdlog::info("[Raster Comparison] SW profiler hold begin: {} seconds", profileHoldSeconds);
+                    const auto holdStart = Clock::now();
+                    while (std::chrono::duration<double>(Clock::now() - holdStart).count() < profileHoldSeconds) {
+                        draw();
+                        checkRaster(viewportCameraProperties() == report["camera"], "Profiler camera changed");
+                    }
+                    spdlog::info("[Raster Comparison] SW profiler hold end");
+                    drain();
+                }
                 profiler_.beginCapture();
                 std::vector<double> wall;
                 for (uint32_t i=0; i<samples; ++i) {
@@ -302,6 +320,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         set("VBuffer","softwareRasterMaxPixels",8.0f);
         set("VBuffer","metadataFastClassification",true);
         set("VBuffer","softwareRasterPreparedVertices",false);
+        set("VBuffer","softwareRasterCooperativeLoad",true);
         set("VBuffer","softwareRasterIncrementalDepth",false);
         report["status"]="capture_complete"; passed=true;
     } catch (const std::exception& e) {

@@ -1,0 +1,1068 @@
+{
+  "traces": [
+    {
+      "directory": "build-release/full-sw-nsight-profile3",
+      "sourceTable": "build-release/full-sw-nsight-profile3/trace/BASE_UNLOCKED/GPUTRACE_REGIMES.xls",
+      "metricNames": {
+        "activeLanes": "Top_Level_Triage.sm__average_thread_inst_executed_pred_on_per_inst_executed_realtime.ratio",
+        "computeWarpOccupancyPercent": "tpc__warps_active_shader_cs_queue_sync_realtime.avg.pct_of_peak_sustained_elapsed",
+        "computeRegisterFilePercent": "tpc__sm_rf_registers_allocated_shader_cs_queue_sync_realtime.avg.pct_of_peak_sustained_elapsed",
+        "smThroughputPercent": "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed",
+        "l2ThroughputPercent": "GPUTrace.lts__throughput.avg.pct_of_peak_sustained_elapsed",
+        "dramSectorsPercent": "dram__sectors.avg.pct_of_peak_sustained_elapsed",
+        "l2AtomicInputActivePercent": "lts__d_atomic_input_cycles_active.avg.pct_of_peak_sustained_elapsed",
+        "globalAtomOrRedWriteSectors": "l1tex__m_l1tex2xbar_write_sectors_mem_global_op_atom_or_red_realtime.sum",
+        "globalAtomOrRedWritePercent": "l1tex__m_l1tex2xbar_write_sectors_mem_global_op_atom_or_red_realtime.avg.pct_of_peak_sustained_elapsed",
+        "atomicL2HitPercent": "Top_Level_Triage.lts__average_t_sector_hit_rate_srcunit_tex_op_atom_realtime.pct"
+      },
+      "scope": "Exported stable-bins range includes adjacent raster work; not isolated SW. Warp-state fractions include selected/not-selected, not time fractions.",
+      "snapshot": {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "case": "round1-swLegacy",
+        "holdSeconds": 210.0,
+        "snapshot": {
+          "AfterStreamEarlyBins": {
+            "candidates": 4537634,
+            "capacity": 33554400,
+            "hardwareClusters": 36995,
+            "softwareClusters": 1043348
+          },
+          "AfterStreamEarlyClusterCull": {
+            "candidateOverflow": 0,
+            "exactClusters": 114799,
+            "fastHardware": 8705,
+            "fastSoftware": 956839
+          },
+          "AfterStreamLateBins": {
+            "candidates": 3120911,
+            "capacity": 33554400,
+            "hardwareClusters": 0,
+            "softwareClusters": 0
+          },
+          "AfterStreamLateClusterCull": {
+            "candidateOverflow": 0,
+            "exactClusters": 0,
+            "fastHardware": 0,
+            "fastSoftware": 0
+          },
+          "VBuffer.depth": {
+            "file": "round1-swLegacy-before-VBuffer.depth.bin",
+            "hash": "2637961675446427876",
+            "pixels": 527120
+          },
+          "VBuffer.visibility": {
+            "file": "round1-swLegacy-before-VBuffer.visibility.bin",
+            "hash": "18072739554683212641",
+            "pixels": 527120
+          },
+          "activeGroups": 221095,
+          "cutHash": "7619267120868061868",
+          "hashAlgorithm": "FNV1a64; page mappings exclude mutable lastRequestFrame",
+          "pageMappingsHash": "10653295828724463040"
+        }
+      },
+      "ranges": [
+        {
+          "tsvLine": 34,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "early",
+          "metrics": {
+            "activeLanes": 14.8277,
+            "computeWarpOccupancyPercent": 30.5909,
+            "computeRegisterFilePercent": 67.8087,
+            "smThroughputPercent": 22.178,
+            "l2ThroughputPercent": 6.04513,
+            "dramSectorsPercent": 13.6026,
+            "l2AtomicInputActivePercent": 0.056278,
+            "globalAtomOrRedWriteSectors": 17386500.0,
+            "globalAtomOrRedWritePercent": 0.0161134,
+            "atomicL2HitPercent": 79.4679
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.00279523,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 8.08566,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.0997074,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 1.30592,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 3.36362,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.736933,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.124385,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0164705,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0365229,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0542802,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.858649,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.20292,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.00648277
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.018767054290265584,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 54.2867743236259,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.6694312056400462,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 8.767890849319599,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 22.58320036341307,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 4.947736543786481,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.8351155532441639,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.11058223033089198,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.2452131835798631,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.364434933900421,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 5.764932545544464,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 1.3623961736889958,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.043525039635845704
+          }
+        },
+        {
+          "tsvLine": 40,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "late",
+          "metrics": {
+            "activeLanes": 28.6558,
+            "computeWarpOccupancyPercent": 37.4173,
+            "computeRegisterFilePercent": 19.2755,
+            "smThroughputPercent": 15.9229,
+            "l2ThroughputPercent": 19.8154,
+            "dramSectorsPercent": 31.2997,
+            "l2AtomicInputActivePercent": 6.28669e-05,
+            "globalAtomOrRedWriteSectors": 0.0,
+            "globalAtomOrRedWritePercent": 0.0,
+            "atomicL2HitPercent": 0.0
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0201385,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 1.09698,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.361524,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 2.58855,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 11.0486,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.988882,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.142845,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.00580053,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0182199,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.682204,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.228651,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.358222
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.11481067102923156,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 6.253941947297288,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 2.061067757438335,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 14.757462695469743,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 62.98866250880493,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 5.637669438574302,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.8143670235206487,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.03306913333292889,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.10387262929639725,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 3.8892816753395683,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 1.303551641954705,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 2.0422428779419217
+          }
+        },
+        {
+          "tsvLine": 57,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "early",
+          "metrics": {
+            "activeLanes": 15.0724,
+            "computeWarpOccupancyPercent": 30.7415,
+            "computeRegisterFilePercent": 68.4871,
+            "smThroughputPercent": 22.762,
+            "l2ThroughputPercent": 6.34155,
+            "dramSectorsPercent": 13.9207,
+            "l2AtomicInputActivePercent": 0.0567944,
+            "globalAtomOrRedWriteSectors": 17420300.0,
+            "globalAtomOrRedWritePercent": 0.0163286,
+            "atomicL2HitPercent": 79.3993
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.00300809,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 8.10808,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.104874,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 1.33798,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 3.34868,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.737497,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.126427,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0166155,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 7.70473e-05,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0383103,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0534461,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.876332,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.202981,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.00688678
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0201059476648327,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 54.19406737906003,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.7009734267929698,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 8.943002322601004,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 22.382436970393822,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 4.929399082132224,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.8450327767526251,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.11105730660486478,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0005149809286014264,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.2560644418298788,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.3572314955634356,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 5.857366411582821,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 1.3567165087997388,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.046030949293145
+          }
+        },
+        {
+          "tsvLine": 63,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "late",
+          "metrics": {
+            "activeLanes": 28.637,
+            "computeWarpOccupancyPercent": 37.9923,
+            "computeRegisterFilePercent": 19.6105,
+            "smThroughputPercent": 16.2768,
+            "l2ThroughputPercent": 19.8572,
+            "dramSectorsPercent": 31.3254,
+            "l2AtomicInputActivePercent": 6.28135e-05,
+            "globalAtomOrRedWriteSectors": 0.0,
+            "globalAtomOrRedWritePercent": 0.0,
+            "atomicL2HitPercent": 0.0
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0371112,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 0.943179,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.442575,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 2.43919,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 11.2481,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.984837,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.237763,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0456032,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0171626,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.835291,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.224618,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.41753
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.20763880185486902,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 5.277128130986697,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 2.4762266574758742,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 13.647375700499525,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 62.933615920362385,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 5.51020647950871,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 1.3302944783628454,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.2551519166383185,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.09602550444917911,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 4.673490009489195,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 1.2567476232252521,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 2.3360987771471544
+          }
+        },
+        {
+          "tsvLine": 80,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "early",
+          "metrics": {
+            "activeLanes": 15.2709,
+            "computeWarpOccupancyPercent": 29.7972,
+            "computeRegisterFilePercent": 66.381,
+            "smThroughputPercent": 22.2894,
+            "l2ThroughputPercent": 6.37809,
+            "dramSectorsPercent": 13.7918,
+            "l2AtomicInputActivePercent": 0.054913,
+            "globalAtomOrRedWriteSectors": 17396200.0,
+            "globalAtomOrRedWritePercent": 0.0157732,
+            "atomicL2HitPercent": 79.3989
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.00279691,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 7.88325,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.100394,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 1.27896,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 3.21949,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.726434,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.125745,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0154956,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 6.10647e-05,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0360305,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0509262,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.849899,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.196975,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.00622243
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.01929877743101545,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 54.394702433418495,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.6927221331431347,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 8.824869010147456,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 22.214594302776966,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 5.0124201652260085,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.8676449253150932,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.1069201853331151,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0004213485790360538,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.2486117180131653,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.35139257223413656,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 5.864333010301582,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 1.3591344320962306,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.04293498598455919
+          }
+        },
+        {
+          "tsvLine": 86,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "late",
+          "metrics": {
+            "activeLanes": 28.6627,
+            "computeWarpOccupancyPercent": 36.753,
+            "computeRegisterFilePercent": 18.9229,
+            "smThroughputPercent": 15.9584,
+            "l2ThroughputPercent": 19.4691,
+            "dramSectorsPercent": 29.816,
+            "l2AtomicInputActivePercent": 6.28942e-05,
+            "globalAtomOrRedWriteSectors": 0.0,
+            "globalAtomOrRedWritePercent": 0.0,
+            "atomicL2HitPercent": 0.0
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0386238,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 1.21868,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.295587,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 2.32282,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 11.0095,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 1.02494,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.120139,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.012992,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.00470817,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.58467,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.261811,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.243739
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.22536659352178542,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 7.110894324047076,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 1.7247250472331566,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 13.55345747348199,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 64.23949770292143,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 5.980437874166155,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.7010008642110248,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0758072168723698,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.02747177218765281,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 3.411499806709394,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 1.5276449550932887,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 1.4221963695546906
+          }
+        }
+      ]
+    },
+    {
+      "directory": "build-release/full-sw-nsight-profile4",
+      "sourceTable": "build-release/full-sw-nsight-profile4/trace/BASE_UNLOCKED/GPUTRACE_REGIMES.xls",
+      "metricNames": {
+        "activeLanes": "Top_Level_Triage.sm__average_thread_inst_executed_pred_on_per_inst_executed_realtime.ratio",
+        "computeWarpOccupancyPercent": "tpc__warps_active_shader_cs_queue_sync_realtime.avg.pct_of_peak_sustained_elapsed",
+        "computeRegisterFilePercent": "tpc__sm_rf_registers_allocated_shader_cs_queue_sync_realtime.avg.pct_of_peak_sustained_elapsed",
+        "smThroughputPercent": "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed",
+        "l2ThroughputPercent": "GPUTrace.lts__throughput.avg.pct_of_peak_sustained_elapsed",
+        "dramSectorsPercent": "dram__sectors.avg.pct_of_peak_sustained_elapsed",
+        "l2AtomicInputActivePercent": "lts__d_atomic_input_cycles_active.avg.pct_of_peak_sustained_elapsed",
+        "globalAtomOrRedWriteSectors": "l1tex__m_l1tex2xbar_write_sectors_mem_global_op_atom_or_red_realtime.sum",
+        "globalAtomOrRedWritePercent": "l1tex__m_l1tex2xbar_write_sectors_mem_global_op_atom_or_red_realtime.avg.pct_of_peak_sustained_elapsed",
+        "atomicL2HitPercent": "Top_Level_Triage.lts__average_t_sector_hit_rate_srcunit_tex_op_atom_realtime.pct"
+      },
+      "scope": "Exported stable-bins range includes adjacent raster work; not isolated SW. Warp-state fractions include selected/not-selected, not time fractions.",
+      "snapshot": {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "case": "round1-swLegacy",
+        "holdSeconds": 210.0,
+        "snapshot": {
+          "AfterStreamEarlyBins": {
+            "candidates": 4537634,
+            "capacity": 33554400,
+            "hardwareClusters": 36995,
+            "softwareClusters": 1043348
+          },
+          "AfterStreamEarlyClusterCull": {
+            "candidateOverflow": 0,
+            "exactClusters": 114799,
+            "fastHardware": 8705,
+            "fastSoftware": 956839
+          },
+          "AfterStreamLateBins": {
+            "candidates": 3120911,
+            "capacity": 33554400,
+            "hardwareClusters": 0,
+            "softwareClusters": 0
+          },
+          "AfterStreamLateClusterCull": {
+            "candidateOverflow": 0,
+            "exactClusters": 0,
+            "fastHardware": 0,
+            "fastSoftware": 0
+          },
+          "VBuffer.depth": {
+            "file": "round1-swLegacy-before-VBuffer.depth.bin",
+            "hash": "2637961675446427876",
+            "pixels": 527120
+          },
+          "VBuffer.visibility": {
+            "file": "round1-swLegacy-before-VBuffer.visibility.bin",
+            "hash": "18072739554683212641",
+            "pixels": 527120
+          },
+          "activeGroups": 221095,
+          "cutHash": "7619267120868061868",
+          "hashAlgorithm": "FNV1a64; page mappings exclude mutable lastRequestFrame",
+          "pageMappingsHash": "10653295828724463040"
+        }
+      },
+      "ranges": [
+        {
+          "tsvLine": 34,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "early",
+          "metrics": {
+            "activeLanes": 15.1155,
+            "computeWarpOccupancyPercent": 31.5549,
+            "computeRegisterFilePercent": 70.2909,
+            "smThroughputPercent": 23.5105,
+            "l2ThroughputPercent": 6.34338,
+            "dramSectorsPercent": 13.5912,
+            "l2AtomicInputActivePercent": 0.0584967,
+            "globalAtomOrRedWriteSectors": 17430000.0,
+            "globalAtomOrRedWritePercent": 0.0168397,
+            "atomicL2HitPercent": 79.5976
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.00255613,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 8.36973,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.10679,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 1.36384,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 3.4018,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.7618,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.128904,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0169355,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 1.95887e-05,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0380681,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0562582,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.893164,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.208206,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.00660917
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0166472364474576,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 54.509306768974696,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.6954882499027816,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 8.88224267016958,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 22.154807833311008,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 4.961353579697903,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.8395094799650542,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.11029535776972148,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.00012757477929460265,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.24792505146665492,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.3663912076100821,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 5.816884232944732,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 1.3559774001241551,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.0430433568368758
+          }
+        },
+        {
+          "tsvLine": 40,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "late",
+          "metrics": {
+            "activeLanes": 28.6527,
+            "computeWarpOccupancyPercent": 37.6676,
+            "computeRegisterFilePercent": 19.4246,
+            "smThroughputPercent": 16.1224,
+            "l2ThroughputPercent": 19.6704,
+            "dramSectorsPercent": 30.6639,
+            "l2AtomicInputActivePercent": 6.28656e-05,
+            "globalAtomOrRedWriteSectors": 0.0,
+            "globalAtomOrRedWritePercent": 0.0,
+            "atomicL2HitPercent": 0.0
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0219721,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 0.974104,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.428801,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 2.5388,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 11.0454,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 1.18965,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.210457,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.015224,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0260774,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.668711,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.200332,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.330598
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.1244869264818017,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 5.518963277685289,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 2.4294500098908633,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 14.384032884976772,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 62.57972145412102,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 6.74017832110155,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 1.1923823888740965,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.08625433931025932,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.1477462498639882,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 3.788703724021468,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 1.1350173609237304,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 1.8730630627491534
+          }
+        },
+        {
+          "tsvLine": 57,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "early",
+          "metrics": {
+            "activeLanes": 15.4199,
+            "computeWarpOccupancyPercent": 30.2024,
+            "computeRegisterFilePercent": 67.2365,
+            "smThroughputPercent": 22.6538,
+            "l2ThroughputPercent": 6.5881,
+            "dramSectorsPercent": 14.2631,
+            "l2AtomicInputActivePercent": 0.055432,
+            "globalAtomOrRedWriteSectors": 17387000.0,
+            "globalAtomOrRedWritePercent": 0.0158749,
+            "atomicL2HitPercent": 79.228
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.00292966,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 8.01467,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.0994789,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 1.28304,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 3.26777,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.740088,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.123062,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0165376,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 6.14202e-05,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0345558,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0518497,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.846847,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.197729,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.00811113
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.019947666758155184,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 54.570826081041346,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.6773386490814098,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 8.736049356370167,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 22.2498129483615,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 5.039161129861332,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.8379128522054071,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.11260232715730395,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.00041820200358377526,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.23528586353415032,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.3530377371812151,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 5.766069015224784,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 1.3463105617796145,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.055227609440028955
+          }
+        },
+        {
+          "tsvLine": 63,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "late",
+          "metrics": {
+            "activeLanes": 28.6595,
+            "computeWarpOccupancyPercent": 38.3377,
+            "computeRegisterFilePercent": 19.8521,
+            "smThroughputPercent": 15.4736,
+            "l2ThroughputPercent": 19.3789,
+            "dramSectorsPercent": 33.6944,
+            "l2AtomicInputActivePercent": 8.1808e-05,
+            "globalAtomOrRedWriteSectors": 0.0,
+            "globalAtomOrRedWritePercent": 0.0,
+            "atomicL2HitPercent": 0.0
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0353252,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 1.33497,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.383983,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 2.13907,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 11.5336,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 1.20882,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.126693,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0211747,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0258187,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0070077,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.432725,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.157615,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.259065
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.19996301002442154,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 7.556775884985846,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 2.1735870279066347,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 12.108491271187122,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 65.2874823756884,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 6.842686970709896,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.717162638258921,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.11986221587886603,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.14615019778847768,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.03966802128078931,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 2.4494976252878344,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.8922007469171923,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 1.4664720140856033
+          }
+        },
+        {
+          "tsvLine": 80,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "early",
+          "metrics": {
+            "activeLanes": 15.4873,
+            "computeWarpOccupancyPercent": 29.7454,
+            "computeRegisterFilePercent": 66.2725,
+            "smThroughputPercent": 22.5184,
+            "l2ThroughputPercent": 6.67626,
+            "dramSectorsPercent": 14.2592,
+            "l2AtomicInputActivePercent": 0.0548678,
+            "globalAtomOrRedWriteSectors": 17377800.0,
+            "globalAtomOrRedWritePercent": 0.0157163,
+            "atomicL2HitPercent": 79.3577
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.00235858,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 7.90764,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.0992421,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 1.27337,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 3.20834,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.716113,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.124183,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0158709,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 1.8458e-05,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0353264,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0507935,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.830222,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.193737,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.00733963
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.01630592901365865,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 54.66908754656094,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.6861054692935636,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 8.80338204687673,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 22.180703767386138,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 4.95081266853706,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.8585331778880396,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.10972270127910654,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.00012760849228523577,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.2442273616786842,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.35115841114368423,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 5.739699733559054,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 1.3393914004694292,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.05074217782162125
+          }
+        },
+        {
+          "tsvLine": 86,
+          "marker": "RenderGraphPass: VBuffer (VisibilityBufferPass)/Hybrid raster: stable cluster bins",
+          "phase": "late",
+          "metrics": {
+            "activeLanes": 28.6516,
+            "computeWarpOccupancyPercent": 38.2723,
+            "computeRegisterFilePercent": 19.7288,
+            "smThroughputPercent": 16.6486,
+            "l2ThroughputPercent": 20.226,
+            "dramSectorsPercent": 31.2895,
+            "l2AtomicInputActivePercent": 6.44486e-05,
+            "globalAtomOrRedWriteSectors": 0.0,
+            "globalAtomOrRedWritePercent": 0.0,
+            "atomicL2HitPercent": 0.0
+          },
+          "warpStateSamplesRaw": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0110448,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 1.01211,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.378271,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 3.10926,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 11.418,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 1.05586,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.21756,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.00811,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0203677,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.70201,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.239952,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.32744
+          },
+          "warpStateSamplePercent": {
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.059701668414821184,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 5.47086915284339,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 2.044709710718422,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 16.806823983726904,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 61.71896729324463,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 5.707355824684295,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 1.1760009217304521,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.043837872197251174,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.11009576196694855,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 3.7946516228350555,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 1.2970388544358589,
+            "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 1.7699473332019637
+          }
+        }
+      ]
+    }
+  ],
+  "compiler": {
+    "source": "build-release/sw-pipeline-statistics-final.log",
+    "pipelines": [
+      {
+        "entry": "streamClusterRasterLegacyMain",
+        "debugMode": 0,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30208",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476800",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "9408",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "9a700aea567c285b",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterMain",
+        "debugMode": 0,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30720",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476752",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "6848",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "2d471c6443620300",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterPlaneMain",
+        "debugMode": 0,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30592",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476784",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "9408",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "70919667110ac27a",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterLegacyMain",
+        "debugMode": 1,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30208",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476800",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "9408",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "208ec06bb92bd06d",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterMain",
+        "debugMode": 1,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30720",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476752",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "6848",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "104a912c8004da0a",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterPlaneMain",
+        "debugMode": 1,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30592",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476784",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "9408",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "cdf62e6deec61c84",
+        "executable": "CS",
+        "subgroupSize": 32
+      }
+    ],
+    "localMemoryCaution": "Driver reports ~64 GiB per thread, including tiny kernels. Raw values retained; do not infer spill bytes or silently mask high bits."
+  }
+}

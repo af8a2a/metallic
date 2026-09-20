@@ -1984,7 +1984,7 @@ int EditorApplication::run(
         environmentFlagEnabled("METALLIC_NSIGHT_SHADER_DEBUG");
     const render::SlangShaderDebugMode shaderDebugMode = nsightShaderDebugRequested_
         ? render::SlangShaderDebugMode::ShaderDebug
-        : nsightGraphicsCaptureRequested_
+        : (nsightGraphicsCaptureRequested_ || environmentFlagEnabled("METALLIC_SHADER_CAPTURE_SYMBOLS"))
         ? render::SlangShaderDebugMode::CaptureSymbols
         : render::SlangShaderDebugMode::Disabled;
     render::setSlangShaderDebugMode(shaderDebugMode);

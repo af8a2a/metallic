@@ -1,0 +1,899 @@
+{
+  "source": "build-release/full-sw-cooperative-formal/run1",
+  "conditions": {
+    "outputExtent": [
+      1797,
+      660
+    ],
+    "renderExtent": [
+      1198,
+      440
+    ],
+    "cutHash": "16081482197411645748",
+    "pageMappingsHash": "11467514091117935817",
+    "activeGroups": 222953,
+    "residentState": [
+      {
+        "clasBytes": 1829085824,
+        "geometryBytes": 3758094592,
+        "residentPages": 61366,
+        "textureBytes": 178270720,
+        "textureDowngrades": 3,
+        "textureUpgrades": 400
+      }
+    ],
+    "sameCutAndResidency": true,
+    "sameModeImagesStable": true
+  },
+  "pooled": {
+    "0": {
+      "rasterTotal": {
+        "count": 192,
+        "mean": 19.326117833333335,
+        "p50": 19.315967999999998,
+        "p95": 20.0156736,
+        "p99": 20.3484832,
+        "max": 20.682496
+      },
+      "classification": {
+        "count": 192,
+        "mean": 0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0
+      },
+      "software": {
+        "count": 192,
+        "mean": 0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0
+      },
+      "hardware": {
+        "count": 192,
+        "mean": 17.325964,
+        "p50": 17.278768,
+        "p95": 18.0234496,
+        "p99": 18.31482112,
+        "max": 18.542624
+      },
+      "cull": {
+        "count": 192,
+        "mean": 1.3182668333333334,
+        "p50": 1.2428,
+        "p95": 1.6017199999999998,
+        "p99": 1.7471705600000003,
+        "max": 1.856224
+      },
+      "candidates": {
+        "count": 192,
+        "mean": 0.45047183333333335,
+        "p50": 0.43712,
+        "p95": 0.6057424,
+        "p99": 0.69383424,
+        "max": 0.718496
+      },
+      "bins": {
+        "count": 192,
+        "mean": 0.227291,
+        "p50": 0.215616,
+        "p95": 0.29265119999999883,
+        "p99": 0.43122112000000007,
+        "max": 0.48096000000000005
+      },
+      "merge": {
+        "count": 192,
+        "mean": 0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0
+      },
+      "graphGpu": {
+        "count": 192,
+        "mean": 21.7906195,
+        "p50": 21.729712,
+        "p95": 22.54608,
+        "p99": 23.05648672,
+        "max": 23.324704
+      },
+      "editorLoop": {
+        "count": 192,
+        "mean": 28.832533333333334,
+        "p50": 28.59015,
+        "p95": 31.113435,
+        "p99": 32.402133000000006,
+        "max": 33.2694
+      }
+    },
+    "swLegacy": {
+      "rasterTotal": {
+        "count": 192,
+        "mean": 17.515661,
+        "p50": 17.49408,
+        "p95": 18.0877312,
+        "p99": 18.3156432,
+        "max": 18.369216
+      },
+      "classification": {
+        "count": 192,
+        "mean": 0.5842686666666667,
+        "p50": 0.571104,
+        "p95": 0.7482479999999999,
+        "p99": 0.76022048,
+        "max": 0.769984
+      },
+      "software": {
+        "count": 192,
+        "mean": 14.092374333333334,
+        "p50": 14.078704,
+        "p95": 14.5279232,
+        "p99": 14.931681600000001,
+        "max": 14.990143999999999
+      },
+      "hardware": {
+        "count": 192,
+        "mean": 0.6701064999999999,
+        "p50": 0.6104,
+        "p95": 0.8843072,
+        "p99": 0.9118457600000001,
+        "max": 0.9596159999999999
+      },
+      "cull": {
+        "count": 192,
+        "mean": 1.3817225,
+        "p50": 1.308704,
+        "p95": 1.5712127999999999,
+        "p99": 1.7486627199999998,
+        "max": 1.8031039999999998
+      },
+      "candidates": {
+        "count": 192,
+        "mean": 0.479708,
+        "p50": 0.462048,
+        "p95": 0.6389279999999998,
+        "p99": 0.73027008,
+        "max": 0.763552
+      },
+      "bins": {
+        "count": 192,
+        "mean": 0.26959283333333334,
+        "p50": 0.232064,
+        "p95": 0.48669599999999996,
+        "p99": 0.51915936,
+        "max": 0.6662399999999999
+      },
+      "merge": {
+        "count": 192,
+        "mean": 0.03231266666666666,
+        "p50": 0.027104000000000003,
+        "p95": 0.035566400000000005,
+        "p99": 0.26759232,
+        "max": 0.287904
+      },
+      "graphGpu": {
+        "count": 192,
+        "mean": 19.984268333333333,
+        "p50": 19.983359999999998,
+        "p95": 20.606711999999998,
+        "p99": 20.793867199999998,
+        "max": 20.932064
+      },
+      "editorLoop": {
+        "count": 192,
+        "mean": 27.130377083333332,
+        "p50": 26.96935,
+        "p95": 29.07204,
+        "p99": 30.38599,
+        "max": 35.3753
+      }
+    },
+    "swCooperative": {
+      "rasterTotal": {
+        "count": 192,
+        "mean": 11.9199465,
+        "p50": 11.895776000000001,
+        "p95": 12.4889904,
+        "p99": 12.99180224,
+        "max": 13.118015999999999
+      },
+      "classification": {
+        "count": 192,
+        "mean": 0.5830543333333333,
+        "p50": 0.5711520000000001,
+        "p95": 0.7458544,
+        "p99": 0.76092032,
+        "max": 0.808416
+      },
+      "software": {
+        "count": 192,
+        "mean": 8.507386666666667,
+        "p50": 8.499535999999999,
+        "p95": 8.9727456,
+        "p99": 9.318351360000001,
+        "max": 9.893312
+      },
+      "hardware": {
+        "count": 192,
+        "mean": 0.6782548333333334,
+        "p50": 0.6100319999999999,
+        "p95": 0.8907456,
+        "p99": 1.05361536,
+        "max": 1.110752
+      },
+      "cull": {
+        "count": 192,
+        "mean": 1.3775645,
+        "p50": 1.308608,
+        "p95": 1.5823456,
+        "p99": 1.7251792000000001,
+        "max": 1.763168
+      },
+      "candidates": {
+        "count": 192,
+        "mean": 0.47710616666666666,
+        "p50": 0.461456,
+        "p95": 0.6353503999999999,
+        "p99": 0.7201900800000001,
+        "max": 0.826848
+      },
+      "bins": {
+        "count": 192,
+        "mean": 0.2606065,
+        "p50": 0.232912,
+        "p95": 0.46783199999999986,
+        "p99": 0.5090627200000002,
+        "max": 0.62112
+      },
+      "merge": {
+        "count": 192,
+        "mean": 0.03051,
+        "p50": 0.027104,
+        "p95": 0.035552,
+        "p99": 0.0510720000000005,
+        "max": 0.21244800000000003
+      },
+      "graphGpu": {
+        "count": 192,
+        "mean": 14.407539833333333,
+        "p50": 14.359568,
+        "p95": 15.087983999999997,
+        "p99": 15.89309888,
+        "max": 15.968896
+      },
+      "editorLoop": {
+        "count": 192,
+        "mean": 21.381148958333334,
+        "p50": 21.13615,
+        "p95": 23.86424,
+        "p99": 26.041387,
+        "max": 28.5075
+      }
+    }
+  },
+  "deltas": {
+    "software": {
+      "milliseconds": -5.584987666666667,
+      "percent": -39.6312752880559
+    },
+    "rasterTotal": {
+      "milliseconds": -5.5957145000000015,
+      "percent": -31.946921671982587
+    },
+    "graphGpu": {
+      "milliseconds": -5.5767285,
+      "percent": -27.90559257402552
+    },
+    "editorLoop": {
+      "milliseconds": -5.749228124999998,
+      "percent": -21.191110272226364
+    }
+  },
+  "cases": [
+    {
+      "name": "round1-0",
+      "earlyBins": {
+        "candidates": 4537597,
+        "capacity": 33554400,
+        "hardwareClusters": 1078789,
+        "softwareClusters": 0
+      },
+      "lateBins": {
+        "candidates": 3115227,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsLegacySoftware": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 70,
+        "visibilityDifferentPercent": 0.013279708605251175,
+        "coveredDepthMaxAbs": 0.0012488202191889286,
+        "coveredDepthMeanAbs": 5.188838644896483e-09,
+        "coveredDepthMaxUlp": 8340777,
+        "coveredDepthOver8UlpPixels": 3139
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round1-swLegacy",
+      "earlyBins": {
+        "candidates": 4537597,
+        "capacity": 33554400,
+        "hardwareClusters": 37394,
+        "softwareClusters": 1041392
+      },
+      "lateBins": {
+        "candidates": 3115230,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsLegacySoftware": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round1-swCooperative",
+      "earlyBins": {
+        "candidates": 4537597,
+        "capacity": 33554400,
+        "hardwareClusters": 37394,
+        "softwareClusters": 1041392
+      },
+      "lateBins": {
+        "candidates": 3115230,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsLegacySoftware": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round2-swCooperative",
+      "earlyBins": {
+        "candidates": 4537597,
+        "capacity": 33554400,
+        "hardwareClusters": 37394,
+        "softwareClusters": 1041392
+      },
+      "lateBins": {
+        "candidates": 3115230,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsLegacySoftware": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round2-swLegacy",
+      "earlyBins": {
+        "candidates": 4537597,
+        "capacity": 33554400,
+        "hardwareClusters": 37394,
+        "softwareClusters": 1041392
+      },
+      "lateBins": {
+        "candidates": 3115230,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsLegacySoftware": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round2-0",
+      "earlyBins": {
+        "candidates": 4537597,
+        "capacity": 33554400,
+        "hardwareClusters": 1078789,
+        "softwareClusters": 0
+      },
+      "lateBins": {
+        "candidates": 3115227,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsLegacySoftware": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 70,
+        "visibilityDifferentPercent": 0.013279708605251175,
+        "coveredDepthMaxAbs": 0.0012488202191889286,
+        "coveredDepthMeanAbs": 5.188838644896483e-09,
+        "coveredDepthMaxUlp": 8340777,
+        "coveredDepthOver8UlpPixels": 3139
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round3-swLegacy",
+      "earlyBins": {
+        "candidates": 4537597,
+        "capacity": 33554400,
+        "hardwareClusters": 37394,
+        "softwareClusters": 1041392
+      },
+      "lateBins": {
+        "candidates": 3115230,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsLegacySoftware": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round3-0",
+      "earlyBins": {
+        "candidates": 4537597,
+        "capacity": 33554400,
+        "hardwareClusters": 1078789,
+        "softwareClusters": 0
+      },
+      "lateBins": {
+        "candidates": 3115227,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsLegacySoftware": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 70,
+        "visibilityDifferentPercent": 0.013279708605251175,
+        "coveredDepthMaxAbs": 0.0012488202191889286,
+        "coveredDepthMeanAbs": 5.188838644896483e-09,
+        "coveredDepthMaxUlp": 8340777,
+        "coveredDepthOver8UlpPixels": 3139
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round3-swCooperative",
+      "earlyBins": {
+        "candidates": 4537597,
+        "capacity": 33554400,
+        "hardwareClusters": 37394,
+        "softwareClusters": 1041392
+      },
+      "lateBins": {
+        "candidates": 3115230,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsLegacySoftware": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404448,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    }
+  ],
+  "compiler": {
+    "source": "build-release/sw-cooperative-gpu-test.log",
+    "pipelines": [
+      {
+        "entry": "streamClusterRasterLegacyMain",
+        "debugMode": 0,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30208",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476800",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "9408",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "9a700aea567c285b",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterMain",
+        "debugMode": 0,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30720",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476752",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "6848",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "2d471c6443620300",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterPlaneMain",
+        "debugMode": 0,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30592",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476784",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "9408",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "70919667110ac27a",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterCooperativeMain",
+        "debugMode": 0,
+        "rawStats": {
+          "Register Count": {
+            "value": "44",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "24064",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476736",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "4984",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "d003a0e346224794",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterLegacyMain",
+        "debugMode": 1,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30208",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476800",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "9408",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "51286b076de441e9",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterMain",
+        "debugMode": 1,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30720",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476752",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "6848",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "2789b2f8f15c38ca",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterPlaneMain",
+        "debugMode": 1,
+        "rawStats": {
+          "Register Count": {
+            "value": "96",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "30592",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476784",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "9408",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "7f9986cd75670f1c",
+        "executable": "CS",
+        "subgroupSize": 32
+      },
+      {
+        "entry": "streamClusterRasterCooperativeMain",
+        "debugMode": 1,
+        "rawStats": {
+          "Register Count": {
+            "value": "44",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          "Binary Size": {
+            "value": "24064",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          "Stack Size": {
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          },
+          "Local Memory Size": {
+            "value": "68719476736",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          "Shared Memory Size": {
+            "value": "4984",
+            "description": "Size in bytes used for shared memory"
+          }
+        },
+        "spirvHash": "d5488bc28aee6e1c",
+        "executable": "CS",
+        "subgroupSize": 32
+      }
+    ],
+    "localMemoryCaution": "Driver reports ~64 GiB per thread, including tiny kernels. Raw values retained; do not infer spill bytes or silently mask high bits."
+  },
+  "descriptorBytes": {
+    "legacy": 592,
+    "cooperative": 176
+  },
+  "validation": "build-release/full-sw-cooperative-validation2/run1/Summary.json",
+  "gpuRegressionLog": "build-release/sw-cooperative-boundary-test.log",
+  "default": "softwareRasterCooperativeLoad=true; preparedVertices=false; incrementalDepth=false",
+  "liveValidation": {
+    "source": "build-release/full-sw-cooperative-roam/run1/Capture.json",
+    "durationSeconds": 30,
+    "frames": 73,
+    "missingGpuFrames": 0,
+    "status": "capture_complete",
+    "performanceComparable": false
+  },
+  "liveRelease": {
+    "source": "build-release/full-sw-cooperative-roam-release/run1/Summary.json",
+    "durationSeconds": 30,
+    "frames": 399,
+    "missingGpuFrames": 0,
+    "status": "capture_complete",
+    "frameMs": {
+      "count": 399,
+      "mean": 75.31697468671679,
+      "p50": 75.6378,
+      "p95": 84.1397,
+      "p99": 89.0089,
+      "max": 104.2605
+    },
+    "sampledRouteMeets30Fps": false,
+    "comparisonCaution": "No matching legacy live-roam run; not an A/B performance comparison. Full sample config uses asyncSoftwareRaster=false."
+  }
+}
