@@ -8,6 +8,12 @@
 
 ## 结论
 
+2026-09-20 上传进展：U0＋U1 后已接入有界并行 header/纹理预取；默认 4 worker，Full 预热纹理阶段中位数约 1.10 秒，见 [实现与基准](ZorahFullBoundedTextureUpload.md)。这不代表完整编辑器首帧或 DLSS 加载问题已解决。
+
+最新执行优先级：先推进 [材质上传专项 U0–U4](ZorahFullTextureUploadPlan.md)，重点为逐 mip 文件/解码器重复创建、120-region 小批次、同步等待与有界并行；不改变 512 cap 或材质质量来换取加载时间。
+
+2026-09-20 交互加载补充：用户 Mini→Full 日志显示数据/纹理和图编译成功，但 DLSS-SR 的 `eWarnOutOfVRAM` 被映射成致命 `OutOfMemory`。此前原生分辨率、DLSS 关闭的 Z5 离屏数据首帧验证仍有效；交互式 DLSS 首帧尚未通过。下一步按 **F0 错误分级 → F1 总预算/切换峰值 → F2 CLAS 按需分配 → F3 材质加载长尾 → F4 根页优化 → F5 漫游** 推进，证据和验收条件见 [交互加载计划](ZorahFullInteractiveLoadPlan.md)。
+
 沿用当前几何流送、VBuffer、CLAS 和实时 OpenPBR 主线，先闭环 **完整实例/材质语义 + 低 mip 全场景首帧**，再实现 **受预算约束的纹理细节流送**。不需要先重写几何遍历，也不需要把完整虚拟纹理系统作为首帧的前置条件。
 
 2026-09-18 Z3 更新：**受预算的 KTX2/BC 纹理资源与寻址已完成**，4418 张纹理的 512 mip 尾链已上传并验证；实际 image allocation 1.369 GiB，峰值 staging 192 MiB。见 [ZorahFullZ3Textures.md](E:/metallic/Documentation/ZorahFullZ3Textures.md)。

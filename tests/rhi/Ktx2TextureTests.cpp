@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <bit>
+#include <thread>
 
 namespace metallic::tests {
 namespace {
@@ -204,7 +205,7 @@ Json statsJson(const ScenePathTraceResources& resources)
 {
     const auto s = resources.textureStats();
     const auto upload = resources.uploadStats();
-    return {{"logicalTextures", s.logicalTextureCount},
+    Json report{{"logicalTextures", s.logicalTextureCount},
             {"ktxImages", s.ktxImageCount},
             {"mimeMismatches", s.mimeMismatchCount},
             {"residentImagesIncludingFallback", s.residentImageCount},
@@ -218,6 +219,31 @@ Json statsJson(const ScenePathTraceResources& resources)
             {"peakStagingBytes", s.peakStagingBytes},
             {"uploadBatches", upload.submittedBatches},
             {"peakInFlightBatches", upload.peakInFlightBatches}};
+    report["uploadProfile"] = {
+        {"wallMs", upload.textureWallMs}, {"headerMs", upload.textureHeaderMs}, {"planMs", upload.texturePlanMs},
+        {"buildMs", upload.textureBuildMs}, {"openMs", upload.ktx.openMs}, {"readMs", upload.ktx.readMs},
+        {"decodeMs", upload.ktx.decodeMs}, {"imageCreateMs", upload.imageCreateMs}, {"stagingMs", upload.stagingMs},
+        {"memcpyMs", upload.stagingCopyMs}, {"flushMs", upload.stagingFlushMs},
+        {"commandSetupMs", upload.commandSetupMs}, {"recordMs", upload.recordMs},
+        {"copySubmitMs", upload.copySubmitMs}, {"acquireSubmitMs", upload.acquireSubmitMs},
+        {"backpressureMs", upload.backpressureMs}, {"finalWaitMs", upload.finalWaitMs},
+        {"fileOpens", upload.ktx.fileOpens}, {"decodedMips", upload.ktx.decodedMips},
+        {"decoderCreations", upload.ktx.decoderCreations}, {"storedBytes", upload.ktx.storedBytes},
+        {"decodedBytes", upload.ktx.decodedBytes},
+        {"workers", upload.prefetch.workers}, {"prefetchPeakJobs", upload.prefetch.peakJobs},
+        {"prefetchByteLimit", upload.prefetch.byteLimit}, {"prefetchPeakBytes", upload.prefetch.peakBytes},
+        {"decodeWaitMs", upload.decodeWaitMs},
+        {"copyCompletionObservedMs", upload.copyCompletionObservedMs},
+        {"acquireCompletionObservedMs", upload.acquireCompletionObservedMs},
+        {"copyCompletionSamples", upload.copyCompletionSamples}, {"acquireCompletionSamples", upload.acquireCompletionSamples},
+        {"completionTimingMeaning", "Host-observed latency, includes scheduling and polling; not GPU execution time"}};
+    report["slowestTextures"] = Json::array();
+    for (const auto& t : upload.slowestTextures) {
+        report["slowestTextures"].push_back({{"path", t.path}, {"totalMs", t.totalMs},
+            {"openMs", t.openMs}, {"readMs", t.readMs}, {"decodeMs", t.decodeMs},
+            {"imageMs", t.imageCreateMs}, {"stagingMs", t.stagingMs}, {"copyMs", t.copyMs}, {"flushMs", t.flushMs}});
+    }
+    return report;
 }
 
 class KtxTextureResourcesTest final : public RhiTest {
@@ -282,6 +308,141 @@ class KtxTextureResourcesTest final : public RhiTest {
         std::vector<uint8_t> decoded;
         require(decodeKtx2Mip(info, 2, decoded, log), log);
         require(decoded == constantBlock(139), "Zstd CPU decode differs");
+        Ktx2MipReader reader;
+        require(reader.open(info, log), log);
+        for (uint32_t mip = 0; mip < info.levels.size(); ++mip) {
+            require(reader.decode(mip, decoded, log), log);
+            const auto block = constantBlock(139);
+            require(decoded.size() == info.levels[mip].decodedBytes, "reader decoded length changed");
+            for (size_t i = 0; i < decoded.size(); ++i) {
+                require(decoded[i] == block[i % block.size()], "reader decoded bytes changed");
+            }
+        }
+        require(!reader.decode(99, decoded, log) && decoded.empty(), "invalid mip retained stale bytes");
+        reader.close();
+        require(!reader.decode(0, decoded, log), "closed reader accepted decode");
+        require(reader.open(info, log) && reader.decode(2, decoded, log), "reader failed to reopen");
+        require(reader.stats().fileOpens == 2 && reader.stats().decoderCreations == 1,
+                "reader did not reuse decoder across opens");
+        reader.close();
+        const auto truncatedPath = directory / "truncated.ktx2";
+        std::filesystem::copy_file(info.path, truncatedPath, std::filesystem::copy_options::overwrite_existing);
+        std::filesystem::resize_file(truncatedPath, std::filesystem::file_size(truncatedPath) - 1);
+        auto truncatedInfo = info;
+        truncatedInfo.path = truncatedPath;
+        require(reader.open(truncatedInfo, log) && !reader.decode(2, decoded, log) && decoded.empty(),
+                "payload truncation after header inspection accepted");
+        reader.close();
+        auto badInfo = info;
+        badInfo.path = directory / "missing.ktx2";
+        require(!reader.open(badInfo, log) && !reader.decode(0, decoded, log), "failed open reused old file");
+        require(reader.open(info, log) && reader.decode(2, decoded, log), "reader did not recover from failure");
+        reader.close();
+        const auto damagedPath = directory / "damaged.ktx2";
+        std::filesystem::copy_file(info.path, damagedPath, std::filesystem::copy_options::overwrite_existing);
+        {
+            std::fstream damaged(damagedPath, std::ios::binary | std::ios::in | std::ios::out);
+            damaged.seekp(info.levels[2].offset);
+            std::vector<char> zeros(size_t(info.levels[2].storedBytes), 0);
+            damaged.write(zeros.data(), zeros.size());
+        }
+        auto damagedInfo = info;
+        damagedInfo.path = damagedPath;
+        require(reader.open(damagedInfo, log) && !reader.decode(2, decoded, log) && decoded.empty(),
+                "damaged Zstd payload accepted");
+        reader.close();
+        require(reader.open(info, log) && reader.decode(2, decoded, log) && decoded == constantBlock(139),
+                "reused decoder failed after corrupt frame");
+        reader.close();
+        auto rawInfo = info;
+        rawInfo.path = directory / "raw-payload.bin";
+        rawInfo.supercompression = 0;
+        const auto rawBytes = constantBlock(139);
+        rawInfo.levels = {{0, rawBytes.size(), rawBytes.size()}};
+        {
+            std::ofstream raw(rawInfo.path, std::ios::binary);
+            raw.write(reinterpret_cast<const char*>(rawBytes.data()), rawBytes.size());
+        }
+        require(reader.open(rawInfo, log) && reader.decode(0, decoded, log) && decoded == rawBytes,
+                "reused reader raw payload failed");
+        reader.close();
+        const auto loadProfile = r.uploadStats();
+        require(loadProfile.ktx.fileOpens == r.textureStats().ktxImageCount && loadProfile.ktx.decoderCreations >= 1 &&
+                    loadProfile.ktx.decoderCreations <= loadProfile.prefetch.workers,
+                "GPU texture preparation reopened files/decoders per mip");
+        for (const uint32_t workers : {1u, 2u, 4u, 8u}) {
+            std::vector<Ktx2PrefetchRequest> requests;
+            for (uint32_t i = 0; i < 17; ++i) { requests.push_back({info, i % 3}); }
+            const uint64_t limit = Ktx2TexturePrefetch::requiredBytes(info, 0) * 2;
+            Ktx2TexturePrefetch loader(std::move(requests), workers, limit);
+            for (uint32_t i = 0; i < 17; ++i) {
+                loader.wait();
+                const auto* ready = loader.front();
+                require(ready && ready->error.empty(), "parallel decode failed");
+                for (uint32_t mip = i % 3; mip < info.levels.size(); ++mip) {
+                    require(decodeKtx2Mip(info, mip, decoded, log) && ready->mips[mip - i % 3] == decoded,
+                        "parallel decode order or bytes changed");
+                }
+                loader.pop();
+            }
+            const auto bounded = loader.stats();
+            require(bounded.peakBytes <= limit && bounded.peakJobs <= workers * 2,
+                "prefetch exceeded byte/job credits");
+            // Destruction with completed results and blocked producers must join.
+            Ktx2TexturePrefetch cancelled({{info,0},{info,0},{info,0},{info,0}}, workers,
+                Ktx2TexturePrefetch::requiredBytes(info,0));
+            cancelled.wait();
+        }
+        {
+            Ktx2TexturePrefetch loader({{damagedInfo,0},{info,0}}, 2,
+                Ktx2TexturePrefetch::requiredBytes(info,0) * 2);
+            loader.wait();
+            require(loader.front() && !loader.front()->error.empty(), "parallel corrupt frame accepted");
+            loader.pop();
+            loader.wait();
+            require(loader.front() && loader.front()->error.empty(), "parallel decoder failed after error");
+            loader.pop();
+        }
+        {
+            ScenePathTraceResources cancelled;
+            require(cancelled.beginPrepareAsync(context.device, context.graphicsQueue, props, scene, log, true), log);
+            bool complete = false;
+            scene::SceneLoadProgress progress;
+            require(cancelled.pumpPrepareAsync(0.1, complete, progress, log), log);
+            cancelled.clear();
+            require(cancelled.prepare(context.device, context.graphicsQueue, props, &scene, log), log);
+            require(cancelled.logicalTextureIndices().size() == r.logicalTextureIndices().size() &&
+                std::equal(cancelled.logicalTextureIndices().begin(), cancelled.logicalTextureIndices().end(),
+                    r.logicalTextureIndices().begin()), "cancel/restart changed logical texture mapping");
+            cancelled.clear();
+            Ktx2TextureInfo lateInfo;
+            require(readKtx2TextureInfo(directory / "299.ktx2", lateInfo, log), log);
+            require(cancelled.beginPrepareAsync(context.device, context.graphicsQueue, props, scene, log, true), log);
+            // The bounded queue cannot have admitted image 299 before any consumption.
+            {
+                std::fstream damaged(lateInfo.path, std::ios::binary | std::ios::in | std::ios::out);
+                damaged.seekp(lateInfo.levels.back().offset);
+                damaged.put(0);
+            }
+            complete = false;
+            Result outcome;
+            while (outcome && !complete) {
+                outcome = cancelled.pumpPrepareAsync(5, complete, progress, log);
+                std::this_thread::yield();
+            }
+            makeKtx(directory, "299.ktx2", 146, "rgba");
+            require(!outcome && !cancelled.valid() && log.find("Zstd") != std::string::npos,
+                "late prefetch failure published an incomplete texture scene");
+            cancelled.clear();
+            require(cancelled.prepare(context.device, context.graphicsQueue, props, &scene, log), log);
+        }
+        require(loadProfile.copyCompletionSamples == loadProfile.completedBatches &&
+                    loadProfile.textureWallMs > 0 && !loadProfile.slowestTextures.empty(),
+                "upload profile missing completed observations");
+        if (context.device.capabilities().independentCopyQueue) {
+            require(loadProfile.acquireCompletionSamples == loadProfile.completedBatches,
+                    "upload profile lost graphics acquire observations");
+        }
         {
             std::fstream corrupt(directory / "0.ktx2", std::ios::binary | std::ios::in | std::ios::out);
             corrupt.seekp(96);
@@ -351,17 +512,32 @@ class ZorahTextureResourcesTest final : public RhiTest {
         require(resources.prepare(context.device, context.graphicsQueue,
                                   {{"path", path.string()},
                                    {"materialTextureMaxDimension", 512},
-                                   {"materialTextureBudgetMiB", 2048}},
+                                   {"materialTextureBudgetMiB", 2048},
+                                   {"materialTextureLoadWorkers", std::getenv("METALLIC_KTX_LOAD_WORKERS")
+                                       ? std::atoi(std::getenv("METALLIC_KTX_LOAD_WORKERS")) : 4}},
                                   &scene, log),
                 log);
         const auto stats = resources.textureStats();
         require(stats.logicalTextureCount == 4418 && stats.ktxImageCount == 4418 &&
                     resources.materialTextureCount() == 4419,
                 "Full texture references missing");
+        require(resources.uploadStats().ktx.fileOpens == 4418 &&
+                    resources.uploadStats().ktx.decodedMips == 44140 &&
+                    resources.uploadStats().ktx.decoderCreations >= 1 &&
+                    resources.uploadStats().ktx.decoderCreations <= resources.uploadStats().prefetch.workers &&
+                    resources.uploadStats().ktx.decodedBytes + 4 == stats.residentPayloadBytes,
+                "Full mip reader reuse/count/payload mismatch");
+        require(resources.uploadStats().prefetch.peakBytes <= resources.uploadStats().prefetch.byteLimit &&
+                resources.uploadStats().prefetch.peakJobs <= resources.uploadStats().prefetch.workers * 2,
+                "Full prefetch exceeded bounds");
         require(stats.selectedMaxDimension == 512 && stats.residentAllocationBytes <= stats.budgetBytes,
                 "Full 512 mip budget mismatch");
         require(resources.uploadStats().submittedBatches == resources.uploadStats().completedBatches,
                 "texture publication precedes completion");
+        if (context.device.capabilities().independentCopyQueue) {
+            require(resources.uploadStats().acquireCompletionSamples == resources.uploadStats().completedBatches,
+                    "Full upload profile lost acquire observations");
+        }
         for (auto index : resources.logicalTextureIndices()) {
             require(index > 0 && index < resources.materialTextureCount(), "invalid Full logical descriptor");
         }
@@ -373,7 +549,10 @@ class ZorahTextureResourcesTest final : public RhiTest {
         report["geometryPayloadRead"] = false;
         report["allMipTailsUploaded"] = true;
         report["lastDescriptorSample"] = pixel;
-        std::ofstream(context.outputDirectory / "zorah-textures.json") << report.dump(2);
+        std::filesystem::create_directories(context.outputDirectory);
+        std::ofstream output(context.outputDirectory / "zorah-textures.json");
+        output << report.dump(2);
+        require(bool(output), "Failed to write Full texture upload evidence");
         return RhiTestResult::pass(
             "Full 4418 KTX2 tails uploaded under 2 GiB allocation budget; no geometry cook/render");
     }

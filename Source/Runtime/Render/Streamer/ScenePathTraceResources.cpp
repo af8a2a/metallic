@@ -12,6 +12,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <thread>
 #include <bit>
 #include <chrono>
@@ -44,6 +45,12 @@ double sceneResourceElapsedMilliseconds(SceneResourceLogClock::time_point begin)
 {
     return std::chrono::duration<double, std::milli>(SceneResourceLogClock::now() - begin).count();
 }
+
+struct UploadCpuTimer {
+    double& elapsed;
+    SceneResourceLogClock::time_point begin = SceneResourceLogClock::now();
+    ~UploadCpuTimer() { elapsed += sceneResourceElapsedMilliseconds(begin); }
+};
 
 class SceneResourceLogScope {
 public:
@@ -745,8 +752,12 @@ Result createMaterialTexture(
 }
 
 Result createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena,
-    const Ktx2TextureInfo& info, uint32_t firstMip, ScenePathTraceMaterialTexture& texture, std::string& log)
+    Ktx2MipReader& reader, std::vector<uint8_t>& bytes, SceneTextureLoadTiming& timing,
+    const Ktx2TextureInfo& info, uint32_t firstMip, ScenePathTraceMaterialTexture& texture, std::string& log,
+    const Ktx2PrefetchResult* prefetched = nullptr)
 {
+    UploadCpuTimer totalTimer{timing.totalMs};
+    timing.path = info.path.string();
     texture = {};
     const auto desc = info.textureDesc(firstMip);
     texture.width = desc.width; texture.height = desc.height; texture.mipCount = desc.mipCount;
@@ -759,20 +770,34 @@ Result createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena,
         texture.mipUploads.push_back({offset,std::max(desc.width >> i,1u),std::max(desc.height >> i,1u),bytes});
         size = offset + bytes;
     }
+    auto phaseBegin = SceneResourceLogClock::now();
     Result result = device.createTexture(desc, texture.texture);
     if (!result) { log = "Cannot allocate KTX2 texture: " + info.path.string(); return result; }
     result = device.createTextureView(*texture.texture,
         {.format=desc.format,.mipCount=desc.mipCount,.swizzle=info.swizzle}, texture.view);
+    timing.imageCreateMs += sceneResourceElapsedMilliseconds(phaseBegin);
     if (!result) { return result; }
     void* mapped = nullptr;
+    phaseBegin = SceneResourceLogClock::now();
     result = arena.allocate(device,size,alignment,texture.uploadBuffer,texture.uploadBufferOffset,mapped,log,"KTX2 mip tail");
+    timing.stagingMs += sceneResourceElapsedMilliseconds(phaseBegin);
     if (!result) { return result; }
-    std::vector<uint8_t> bytes;
+    const auto before = reader.stats();
+    if (!prefetched && !reader.open(info, log)) { return makeError(Error::Failure); }
     for (uint32_t i = 0; i < desc.mipCount; ++i) {
-        if (!decodeKtx2Mip(info,firstMip+i,bytes,log)) { return makeError(Error::Failure); }
-        std::memcpy(static_cast<uint8_t*>(mapped)+texture.mipUploads[i].bufferOffset,bytes.data(),bytes.size());
+        if (!prefetched && !reader.decode(firstMip+i,bytes,log)) { reader.close(); return makeError(Error::Failure); }
+        const auto& source = prefetched ? prefetched->mips[i] : bytes;
+        UploadCpuTimer copyTimer{timing.copyMs};
+        std::memcpy(static_cast<uint8_t*>(mapped)+texture.mipUploads[i].bufferOffset,source.data(),source.size());
     }
+    reader.close();
+    timing.openMs = prefetched ? prefetched->stats.openMs : reader.stats().openMs - before.openMs;
+    timing.readMs = prefetched ? prefetched->stats.readMs : reader.stats().readMs - before.readMs;
+    timing.decodeMs = prefetched ? prefetched->stats.decodeMs : reader.stats().decodeMs - before.decodeMs;
+    if (prefetched) { timing.totalMs += prefetched->workerMs; }
+    phaseBegin = SceneResourceLogClock::now();
     texture.uploadBuffer->flush(texture.uploadBufferOffset,size);
+    timing.flushMs += sceneResourceElapsedMilliseconds(phaseBegin);
     texture.uploadAllocationSize = size;
     return {};
 }
@@ -1309,6 +1334,9 @@ struct ScenePathTraceResources::Impl {
         std::unique_ptr<Semaphore> timeline;
         uint64_t completionValue = 0;
         bool includesNeuralUploads = false;
+        SceneResourceLogClock::time_point copySubmitted{}, acquireSubmitted{};
+        bool copyObserved = false, acquireObserved = false;
+        uint64_t observedCompletionValue = 0;
 
         bool complete() const
         {
@@ -1318,12 +1346,7 @@ struct ScenePathTraceResources::Impl {
 
     uint64_t pendingUploadByteSize() const
     {
-        uint64_t byteSize = neuralTextures.pendingUploadByteSize();
-        for (const ScenePathTraceMaterialTexture& texture : materialTextures) {
-            if (!texture.uploaded && texture.uploadBuffer != nullptr) {
-                byteSize += texture.uploadAllocationSize;
-            }
-        }
+        uint64_t byteSize = neuralTextures.pendingUploadByteSize() + pendingTextureBytes;
         for (const ScenePathTraceBufferUpload& upload : bufferUploads) {
             byteSize += upload.byteSize;
         }
@@ -1333,12 +1356,7 @@ struct ScenePathTraceResources::Impl {
     uint32_t pendingUploadRegionCount() const
     {
         uint64_t regionCount = bufferUploads.size() +
-            neuralTextures.pendingUploadRegionCount();
-        for (const ScenePathTraceMaterialTexture& texture : materialTextures) {
-            if (!texture.uploaded && texture.uploadBuffer != nullptr) {
-                regionCount += texture.mipUploads.size();
-            }
-        }
+            neuralTextures.pendingUploadRegionCount() + pendingTextureRegions;
         return static_cast<uint32_t>(std::min<uint64_t>(regionCount, UINT32_MAX));
     }
 
@@ -1457,6 +1475,7 @@ struct ScenePathTraceResources::Impl {
         }
         const bool requiresGraphicsAcquire = uploadQueue != &graphicsQueue;
 
+        auto phaseBegin = SceneResourceLogClock::now();
         Result result = device.createCommandPool(*uploadQueue, batch->uploadPool);
         if (!result || batch->uploadPool == nullptr) {
             log += resultMessage("createCommandPool(scene texture uploads)", result);
@@ -1474,13 +1493,15 @@ struct ScenePathTraceResources::Impl {
             log += resultMessage("createSemaphore(scene uploads)", result);
             return result ? makeError(Error::Failure) : result;
         }
+        uploadStats.commandSetupMs += sceneResourceElapsedMilliseconds(phaseBegin);
+        phaseBegin = SceneResourceLogClock::now();
         result = batch->uploadCommands->begin();
         if (!result) {
             log += resultMessage("CommandBuffer::begin(scene texture uploads)", result);
             return result;
         }
-        for (ScenePathTraceMaterialTexture& texture : materialTextures) {
-            result = uploadTexture(*batch->uploadCommands, texture);
+        for (const auto index : pendingTextures) {
+            result = uploadTexture(*batch->uploadCommands, materialTextures[index]);
             if (!result) {
                 return result;
             }
@@ -1512,12 +1533,15 @@ struct ScenePathTraceResources::Impl {
             .value = 1,
             .stages = requiresGraphicsAcquire ? PipelineStageBits::Transfer : PipelineStageBits::AllCommands,
         };
+        uploadStats.recordMs += sceneResourceElapsedMilliseconds(phaseBegin);
+        batch->copySubmitted = SceneResourceLogClock::now();
         result = uploadQueue->submit(QueueSubmitDesc{
             .commandBuffers = commandBuffers,
             .commandBufferCount = 1,
             .signalSemaphores = &signal,
             .signalSemaphoreCount = 1,
         });
+        uploadStats.copySubmitMs += sceneResourceElapsedMilliseconds(batch->copySubmitted);
         if (!result) {
             log += resultMessage("Queue::submit(scene texture uploads)", result);
             return result;
@@ -1529,6 +1553,7 @@ struct ScenePathTraceResources::Impl {
         uploadStats.inFlightBatches = static_cast<uint32_t>(uploadBatches.size());
         uploadStats.peakInFlightBatches = std::max(uploadStats.peakInFlightBatches, uploadStats.inFlightBatches);
         if (requiresGraphicsAcquire) {
+            phaseBegin = SceneResourceLogClock::now();
             result = device.createCommandPool(graphicsQueue, batch->acquirePool);
             if (!result || batch->acquirePool == nullptr) {
                 log += resultMessage("createCommandPool(scene upload acquire)", result);
@@ -1539,6 +1564,8 @@ struct ScenePathTraceResources::Impl {
                 log += resultMessage("createCommandBuffer(scene upload acquire)", result);
                 return result ? makeError(Error::Failure) : result;
             }
+            uploadStats.commandSetupMs += sceneResourceElapsedMilliseconds(phaseBegin);
+            phaseBegin = SceneResourceLogClock::now();
             result = batch->acquireCommands->begin();
             if (!result) {
                 log += resultMessage("CommandBuffer::begin(scene upload acquire)", result);
@@ -1562,6 +1589,8 @@ struct ScenePathTraceResources::Impl {
                 .value = 2,
                 .stages = PipelineStageBits::AllCommands,
             };
+            uploadStats.recordMs += sceneResourceElapsedMilliseconds(phaseBegin);
+            batch->acquireSubmitted = SceneResourceLogClock::now();
             result = graphicsQueue.submit(QueueSubmitDesc{
                 .waitSemaphores = &wait,
                 .waitSemaphoreCount = 1,
@@ -1570,6 +1599,7 @@ struct ScenePathTraceResources::Impl {
                 .signalSemaphores = &acquireSignal,
                 .signalSemaphoreCount = 1,
             });
+            uploadStats.acquireSubmitMs += sceneResourceElapsedMilliseconds(batch->acquireSubmitted);
             if (!result) {
                 log += resultMessage("Queue::submit(scene upload acquire)", result);
                 return result;
@@ -1579,32 +1609,65 @@ struct ScenePathTraceResources::Impl {
         // The batch arena owns every staging page until its acquire completes.
         // Remove only this batch's pending uploads so later batches cannot
         // record them again or have their data retired by an earlier batch.
-        for (auto& texture : materialTextures) {
+        for (const auto index : pendingTextures) {
+            auto& texture = materialTextures[index];
             if (texture.uploaded) {
                 texture.uploadBuffer.reset();
             }
         }
+        pendingTextures.clear();
+        pendingTextureBytes = pendingTextureRegions = 0;
         bufferUploads.clear();
-        spdlog::info(
+        spdlog::debug(
             "[SceneResources] Submitted scene upload batch bytes={} regions={} queue={} independentCopy={} inFlight={}/{}",
             batchByteSize,
             batchRegionCount,
             uploadQueue->type() == QueueType::Copy ? "copy" : "graphics",
             device.capabilities().independentCopyQueue,
             uploadBatches.size(), kMaxUploadBatchesInFlight);
+        if (sceneResourceElapsedMilliseconds(lastUploadProgress) >= 1000) {
+            spdlog::info("[SceneResources] Upload progress textures={}/{} batches={} bytes={} inFlight={}/{} open/read/decode={:.1f}/{:.1f}/{:.1f} ms",
+                asyncTextureCursor, asyncReferencedTextures.size(), uploadStats.submittedBatches,
+                uploadStats.submittedBytes, uploadBatches.size(), kMaxUploadBatchesInFlight,
+                uploadStats.ktx.openMs, uploadStats.ktx.readMs, uploadStats.ktx.decodeMs);
+            lastUploadProgress = SceneResourceLogClock::now();
+        }
         return {};
     }
 
-    bool textureUploadsReady() const
+    bool textureUploadsReady()
     {
-        return std::all_of(uploadBatches.begin(), uploadBatches.end(), [](const auto& batch) {
-            return batch->complete();
-        });
+        retireCompletedTextureUploads();
+        const bool ready = uploadBatches.empty();
+        if (ready && prepared) { finishUploadProfile(); }
+        return ready;
     }
 
     void retireCompletedTextureUploads()
     {
-        while (!uploadBatches.empty() && uploadBatches.front()->complete()) {
+        for (auto& batch : uploadBatches) {
+            if (batch->completionValue == 0 || !batch->timeline) { continue; }
+            const auto value = batch->timeline->currentValue();
+            batch->observedCompletionValue = value;
+            if (value >= 1 && !batch->copyObserved) {
+                const auto ms = sceneResourceElapsedMilliseconds(batch->copySubmitted);
+                uploadStats.copyCompletionObservedMs += ms;
+                uploadStats.maxCopyCompletionObservedMs = std::max(uploadStats.maxCopyCompletionObservedMs, ms);
+                ++uploadStats.copyCompletionSamples;
+                batch->copyObserved = true;
+            }
+            if (value >= 2 && batch->completionValue == 2 && !batch->acquireObserved) {
+                const auto ms = sceneResourceElapsedMilliseconds(batch->acquireSubmitted);
+                uploadStats.acquireCompletionObservedMs += ms;
+                uploadStats.maxAcquireCompletionObservedMs = std::max(uploadStats.maxAcquireCompletionObservedMs, ms);
+                ++uploadStats.acquireCompletionSamples;
+                batch->acquireObserved = true;
+            }
+        }
+        // Retire from the same observation used for timing. A second counter
+        // query could complete acquire between queries and lose that sample.
+        while (!uploadBatches.empty() && (uploadBatches.front()->completionValue == 0 ||
+            uploadBatches.front()->observedCompletionValue >= uploadBatches.front()->completionValue)) {
             auto& batch = *uploadBatches.front();
             if (batch.includesNeuralUploads) {
                 neuralTextures.releaseUploadBuffers();
@@ -1616,6 +1679,31 @@ struct ScenePathTraceResources::Impl {
             uploadBatches.pop_front();
         }
         uploadStats.inFlightBatches = static_cast<uint32_t>(uploadBatches.size());
+    }
+
+    void finishUploadProfile()
+    {
+        if (uploadProfileReported) { return; }
+        uploadProfileReported = true;
+        uploadStats.textureWallMs = sceneResourceElapsedMilliseconds(textureLoadBegin);
+        spdlog::info("[SceneResources] Upload profile wall={:.2f} header={:.2f} plan={:.2f} build={:.2f} open={:.2f} read={:.2f} decode={:.2f} image={:.2f} staging={:.2f} memcpy={:.2f} flush={:.2f} ms",
+            uploadStats.textureWallMs, uploadStats.textureHeaderMs, uploadStats.texturePlanMs, uploadStats.textureBuildMs,
+            uploadStats.ktx.openMs, uploadStats.ktx.readMs, uploadStats.ktx.decodeMs, uploadStats.imageCreateMs,
+            uploadStats.stagingMs, uploadStats.stagingCopyMs, uploadStats.stagingFlushMs);
+        spdlog::info("[SceneResources] Upload profile setup={:.2f} record={:.2f} copySubmit={:.2f} acquireSubmit={:.2f} backpressure={:.2f} finalWait={:.2f} ms; opens={} mips={} decoders={} storedBytes={} decodedBytes={}",
+            uploadStats.commandSetupMs, uploadStats.recordMs, uploadStats.copySubmitMs, uploadStats.acquireSubmitMs,
+            uploadStats.backpressureMs, uploadStats.finalWaitMs, uploadStats.ktx.fileOpens, uploadStats.ktx.decodedMips,
+            uploadStats.ktx.decoderCreations, uploadStats.ktx.storedBytes, uploadStats.ktx.decodedBytes);
+        spdlog::info("[SceneResources] Host-observed completion latency (NOT GPU time): copy avg/max={:.2f}/{:.2f} acquire avg/max={:.2f}/{:.2f} ms",
+            uploadStats.copyCompletionObservedMs / std::max<uint64_t>(1, uploadStats.copyCompletionSamples), uploadStats.maxCopyCompletionObservedMs,
+            uploadStats.acquireCompletionObservedMs / std::max<uint64_t>(1, uploadStats.acquireCompletionSamples), uploadStats.maxAcquireCompletionObservedMs);
+        spdlog::info("[SceneResources] CPU prefetch workers={} peakJobs={} peakBytes={}/{} decodeWait={:.2f} ms; build/open/read/decode are accumulated work, not wall time",
+            uploadStats.prefetch.workers, uploadStats.prefetch.peakJobs, uploadStats.prefetch.peakBytes,
+            uploadStats.prefetch.byteLimit, uploadStats.decodeWaitMs);
+        for (const auto& t : uploadStats.slowestTextures) {
+            spdlog::info("[SceneResources] Slow texture total={:.2f} open/read/decode={:.2f}/{:.2f}/{:.2f} image={:.2f} staging/copy/flush={:.2f}/{:.2f}/{:.2f} ms path='{}'",
+                t.totalMs, t.openMs, t.readMs, t.decodeMs, t.imageCreateMs, t.stagingMs, t.copyMs, t.flushMs, t.path);
+        }
     }
 
     void waitForTextureUploads()
@@ -1630,27 +1718,52 @@ struct ScenePathTraceResources::Impl {
 
     Result planTextureResources(Device& device, const scene::Scene& scene, std::string& log)
     {
+        auto phaseBegin = SceneResourceLogClock::now();
         textureStats = {};
         ktxImages.clear(); ktxImages.resize(scene.images().size());
         ktxFirstMips.assign(scene.images().size(),0);
         const auto referenced = referencedMaterialTextures(scene);
+        struct Probe { uint32_t imageIndex; std::filesystem::path path; std::string error; };
+        std::vector<Probe> probes;
+        std::vector<bool> visited(scene.images().size());
         for (size_t t = 0; t < scene.textures().size(); ++t) {
             if (!referenced[t] || neuralTextures.logicalTextureSetIndex(uint32_t(t)) != kInvalidNeuralTextureSetIndex) { continue; }
             ++textureStats.logicalTextureCount;
             const auto imageIndex = scene.textures()[t].imageIndex;
             if (imageIndex < 0 || size_t(imageIndex) >= scene.images().size()) { continue; }
-            auto& info = ktxImages[imageIndex];
-            if (info) { continue; }
+            if (visited[imageIndex]) { continue; }
+            visited[imageIndex] = true;
             const auto& image = scene.images()[imageIndex];
             if (image.uri.empty() || image.uri.starts_with("data:")) { continue; }
             auto path = std::filesystem::path(image.uri);
             if (path.is_relative()) { path = scene.filename().parent_path()/path; }
-            if (!isKtx2File(path) && path.extension() != ".ktx2") { continue; }
-            info.emplace();
-            if (!readKtx2TextureInfo(path,*info,log)) { return makeError(Error::InvalidArgument); }
-            ++textureStats.ktxImageCount;
-            if (!image.mimeType.empty() && image.mimeType != "image/ktx2") { ++textureStats.mimeMismatchCount; }
+            probes.push_back({uint32_t(imageIndex), std::move(path), {}});
         }
+        std::atomic<size_t> nextProbe = 0;
+        std::vector<std::jthread> probeWorkers;
+        for (size_t worker = 0; worker < std::min<size_t>(textureLoadWorkers, probes.size()); ++worker) {
+            probeWorkers.emplace_back([&] {
+                for (size_t i = nextProbe.fetch_add(1); i < probes.size(); i = nextProbe.fetch_add(1)) {
+                    auto& probe = probes[i];
+                    try {
+                        if (!isKtx2File(probe.path) && probe.path.extension() != ".ktx2") { continue; }
+                        auto& info = ktxImages[probe.imageIndex];
+                        info.emplace();
+                        readKtx2TextureInfo(probe.path, *info, probe.error);
+                    } catch (const std::exception& exception) { probe.error = exception.what(); }
+                }
+            });
+        }
+        probeWorkers.clear(); // Join all probes before allocation planning or error return.
+        for (const auto& probe : probes) {
+            if (!probe.error.empty()) { log = probe.error; return makeError(Error::InvalidArgument); }
+            if (!ktxImages[probe.imageIndex]) { continue; }
+            ++textureStats.ktxImageCount;
+            const auto& mime = scene.images()[probe.imageIndex].mimeType;
+            if (!mime.empty() && mime != "image/ktx2") { ++textureStats.mimeMismatchCount; }
+        }
+        uploadStats.textureHeaderMs += sceneResourceElapsedMilliseconds(phaseBegin);
+        UploadCpuTimer planTimer{uploadStats.texturePlanMs};
         const TextureDesc fallback{.usage=TextureUsageBits::Sampled|TextureUsageBits::TransferDestination,
             .format=Format::Rgba8Unorm,.queueAccess=QueueAccessBits::Graphics|QueueAccessBits::Copy};
         uint64_t fallbackBytes = 0;
@@ -1699,6 +1812,7 @@ struct ScenePathTraceResources::Impl {
         while (result && !complete) {
             retireCompletedTextureUploads();
             if (uploadBatches.size() >= kMaxUploadBatchesInFlight) {
+                UploadCpuTimer waitTimer{uploadStats.backpressureMs};
                 result = uploadBatches.front()->timeline->wait(uploadBatches.front()->completionValue);
                 continue;
             }
@@ -1706,9 +1820,11 @@ struct ScenePathTraceResources::Impl {
                 result = submitTextureUploads(device,*graphicsQueue,log); continue;
             }
             result = buildMaterialTextureStep(device,loadedScene,complete,log);
+            if (result && textureDecodePending) { ktxPrefetch->wait(); }
             if (result && uploadBatchLimitReached()) { result = submitTextureUploads(device,*graphicsQueue,log); }
         }
         outTextureIndexMap = textureIndexMap;
+        if (!result) { ktxPrefetch.reset(); }
         return result;
     }
 
@@ -1717,6 +1833,10 @@ struct ScenePathTraceResources::Impl {
         const scene::Scene& loadedScene,
         std::string& log)
     {
+        textureLoadBegin = SceneResourceLogClock::now();
+        lastUploadProgress = textureLoadBegin;
+        ktxReader = std::make_unique<Ktx2MipReader>();
+        decodedKtxScratch.clear();
         Result result = neuralTextures.prepare(device, loadedScene, log);
         if (!result) {
             return result;
@@ -1725,6 +1845,8 @@ struct ScenePathTraceResources::Impl {
         materialTextureViews.clear();
         materialTextureCount = 0;
         textureIndexMap.assign(loadedScene.textures().size(), kInvalidMaterialTextureIndex);
+        pendingTextures.clear();
+        pendingTextureBytes = pendingTextureRegions = 0;
         asyncImageTextureIndexMap.assign(
             loadedScene.images().size(),
             kInvalidMaterialTextureIndex);
@@ -1732,6 +1854,20 @@ struct ScenePathTraceResources::Impl {
         asyncTextureCursor = 0;
         result = planTextureResources(device,loadedScene,log);
         if (!result) { return result; }
+
+        std::vector<Ktx2PrefetchRequest> requests;
+        prefetchedImages.assign(ktxImages.size(), false);
+        // Admission follows logical texture order, so a later ready result can
+        // never hold all credits ahead of an unscheduled earlier texture.
+        for (size_t t = 0; t < loadedScene.textures().size(); ++t) {
+            if (!asyncReferencedTextures[t] || neuralTextures.logicalTextureSetIndex(uint32_t(t)) != kInvalidNeuralTextureSetIndex) { continue; }
+            const auto image = loadedScene.textures()[t].imageIndex;
+            if (image < 0 || size_t(image) >= ktxImages.size() || !ktxImages[image] || prefetchedImages[image]) { continue; }
+            if (Ktx2TexturePrefetch::requiredBytes(*ktxImages[image], ktxFirstMips[image]) > kTexturePrefetchBytes) { continue; }
+            prefetchedImages[image] = true;
+            requests.push_back({*ktxImages[image], ktxFirstMips[image]});
+        }
+        ktxPrefetch = std::make_unique<Ktx2TexturePrefetch>(std::move(requests), textureLoadWorkers, kTexturePrefetchBytes);
 
         const uint8_t fallbackPixels[4] = {255, 255, 255, 255};
         ScenePathTraceMaterialTexture fallbackTexture;
@@ -1748,6 +1884,9 @@ struct ScenePathTraceResources::Impl {
             return result;
         }
         trackTexture(fallbackTexture);
+        pendingTextures.push_back(0);
+        pendingTextureBytes += fallbackTexture.uploadAllocationSize;
+        pendingTextureRegions += fallbackTexture.mipUploads.size();
         materialTextures.push_back(std::move(fallbackTexture));
         return {};
     }
@@ -1759,6 +1898,7 @@ struct ScenePathTraceResources::Impl {
         std::string& log)
     {
         complete = false;
+        textureDecodePending = false;
         if (asyncTextureCursor < loadedScene.textures().size()) {
             const uint32_t textureIndex = static_cast<uint32_t>(asyncTextureCursor++);
             const scene::RenderTexture& logicalTexture = loadedScene.textures()[textureIndex];
@@ -1789,8 +1929,54 @@ struct ScenePathTraceResources::Impl {
             Result result;
             const size_t imageIndex = logicalTexture.imageIndex < 0 ? SIZE_MAX : size_t(logicalTexture.imageIndex);
             if (imageIndex < ktxImages.size() && ktxImages[imageIndex]) {
-                result = createKtxMaterialTexture(device,stagingArena,*ktxImages[imageIndex],
-                    ktxFirstMips[imageIndex],materialTexture,log);
+                const Ktx2PrefetchResult* prefetched = nullptr;
+                if (prefetchedImages[imageIndex]) {
+                    prefetched = ktxPrefetch->front();
+                    if (!prefetched) {
+                        --asyncTextureCursor;
+                        textureDecodePending = true;
+                        if (!decodeWaitBegin) { decodeWaitBegin = SceneResourceLogClock::now(); }
+                        return {};
+                    }
+                    if (decodeWaitBegin) {
+                        uploadStats.decodeWaitMs += sceneResourceElapsedMilliseconds(*decodeWaitBegin);
+                        decodeWaitBegin.reset();
+                    }
+                    if (!prefetched->error.empty()) {
+                        log = prefetched->error;
+                        ktxPrefetch.reset();
+                        return makeError(Error::Failure);
+                    }
+                }
+                SceneTextureLoadTiming timing;
+                const auto before = ktxReader->stats();
+                result = createKtxMaterialTexture(device,stagingArena,*ktxReader,decodedKtxScratch,timing,*ktxImages[imageIndex],
+                    ktxFirstMips[imageIndex],materialTexture,log,prefetched);
+                auto delta = prefetched ? prefetched->stats : ktxReader->stats();
+                if (!prefetched) {
+                    delta.fileOpens -= before.fileOpens; delta.decodedMips -= before.decodedMips;
+                    delta.storedBytes -= before.storedBytes; delta.decodedBytes -= before.decodedBytes;
+                    delta.decoderCreations -= before.decoderCreations; delta.openMs -= before.openMs;
+                    delta.readMs -= before.readMs; delta.decodeMs -= before.decodeMs;
+                }
+                auto& stats = uploadStats.ktx;
+                stats.fileOpens += delta.fileOpens; stats.decodedMips += delta.decodedMips;
+                stats.storedBytes += delta.storedBytes; stats.decodedBytes += delta.decodedBytes;
+                stats.decoderCreations += delta.decoderCreations; stats.openMs += delta.openMs;
+                stats.readMs += delta.readMs; stats.decodeMs += delta.decodeMs;
+                if (prefetched) {
+                    uploadStats.prefetch = ktxPrefetch->stats();
+                    ktxPrefetch->pop();
+                }
+                uploadStats.textureBuildMs += timing.totalMs;
+                uploadStats.imageCreateMs += timing.imageCreateMs;
+                uploadStats.stagingMs += timing.stagingMs;
+                uploadStats.stagingCopyMs += timing.copyMs;
+                uploadStats.stagingFlushMs += timing.flushMs;
+                auto& slowest = uploadStats.slowestTextures;
+                slowest.push_back(std::move(timing));
+                std::sort(slowest.begin(), slowest.end(), [](const auto& a, const auto& b) { return a.totalMs > b.totalMs; });
+                if (slowest.size() > 5) { slowest.resize(5); }
             } else {
                 DecodedMaterialTexture decodedTexture;
                 if (!decodeSceneTexture(loadedScene,textureIndex,decodedTexture,log) ||
@@ -1798,10 +1984,11 @@ struct ScenePathTraceResources::Impl {
                 result = createMaterialTexture(device,stagingArena,decodedTexture.pixels.data(),
                     decodedTexture.width,decodedTexture.height,decodedTexture.label,materialTexture,log,decodedTexture.preparedMips);
             }
-            if (!result) { return result; }
+            if (!result) { ktxPrefetch.reset(); return result; }
             if (materialTexture.texture->allocationSize() > textureBudgetBytes -
                 std::min(textureStats.residentAllocationBytes,textureBudgetBytes)) {
                 log = "Material texture allocation exceeds budget";
+                ktxPrefetch.reset();
                 return makeError(Error::OutOfMemory);
             }
             trackTexture(materialTexture);
@@ -1812,6 +1999,9 @@ struct ScenePathTraceResources::Impl {
                 asyncImageTextureIndexMap[static_cast<size_t>(logicalTexture.imageIndex)] =
                     materialTextureIndex;
             }
+            pendingTextures.push_back(materialTextureIndex);
+            pendingTextureBytes += materialTexture.uploadAllocationSize;
+            pendingTextureRegions += materialTexture.mipUploads.size();
             materialTextures.push_back(std::move(materialTexture));
             return {};
         }
@@ -1828,6 +2018,7 @@ struct ScenePathTraceResources::Impl {
             materialTextureViews[textureIndex] = materialTextures[textureIndex].view.get();
         }
         materialTextureCount = static_cast<uint32_t>(materialTextures.size());
+        ktxPrefetch.reset();
         asyncImageTextureIndexMap.clear();
         complete = true;
         return {};
@@ -1901,8 +2092,8 @@ struct ScenePathTraceResources::Impl {
             texture.state = ResourceState::ShaderRead;
         };
 
-        for (ScenePathTraceMaterialTexture& texture : materialTextures) {
-            transitionTexture(texture);
+        for (const auto index : pendingTextures) {
+            transitionTexture(materialTextures[index]);
         }
 
         std::vector<BufferBarrierDesc> bufferBarriers;
@@ -1963,9 +2154,15 @@ struct ScenePathTraceResources::Impl {
 
     void clear()
     {
+        ktxPrefetch.reset();
+        prefetchedImages.clear();
+        textureDecodePending = false;
+        decodeWaitBegin.reset();
         resetGpuBuffers();
         ktxImages.clear();
         ktxFirstMips.clear();
+        ktxReader.reset();
+        decodedKtxScratch = {};
         textureStats = {};
         rtxBuilder.clear();
         drawBounds = scene::Bounds{};
@@ -1973,6 +2170,10 @@ struct ScenePathTraceResources::Impl {
         prepared = false;
         materialOnly = false;
         uploadStats = {};
+        uploadProfileReported = false;
+        backpressureBegin.reset();
+        pendingTextures.clear();
+        pendingTextureBytes = pendingTextureRegions = 0;
         asyncPrepareStage = AsyncPrepareStage::Idle;
         partialUploadResumeStage = AsyncPrepareStage::Idle;
         asyncScene = nullptr;
@@ -2056,6 +2257,8 @@ struct ScenePathTraceResources::Impl {
     SceneUploadStagingArena stagingArena;
     std::vector<ScenePathTraceBufferUpload> bufferUploads;
     std::vector<ScenePathTraceMaterialTexture> materialTextures;
+    std::vector<uint32_t> pendingTextures;
+    uint64_t pendingTextureBytes = 0, pendingTextureRegions = 0;
     std::vector<uint32_t> textureIndexMap;
     std::vector<uint32_t> asyncImageTextureIndexMap;
     std::vector<bool> asyncReferencedTextures;
@@ -2063,6 +2266,18 @@ struct ScenePathTraceResources::Impl {
     std::vector<TextureView*> materialTextureViews;
     std::vector<std::optional<Ktx2TextureInfo>> ktxImages;
     std::vector<uint32_t> ktxFirstMips;
+    std::unique_ptr<Ktx2MipReader> ktxReader;
+    static constexpr uint64_t kTexturePrefetchBytes = 64ull * 1024 * 1024;
+    uint32_t textureLoadWorkers = 4;
+    std::unique_ptr<Ktx2TexturePrefetch> ktxPrefetch;
+    std::vector<bool> prefetchedImages;
+    bool textureDecodePending = false;
+    std::optional<SceneResourceLogClock::time_point> decodeWaitBegin;
+    std::vector<uint8_t> decodedKtxScratch;
+    SceneResourceLogClock::time_point textureLoadBegin{}, lastUploadProgress{};
+    std::optional<SceneResourceLogClock::time_point> backpressureBegin;
+    SceneResourceLogClock::time_point finalWaitBegin{};
+    bool uploadProfileReported = false;
     uint64_t textureBudgetBytes = 2048ull * 1024 * 1024;
     uint32_t textureMaxDimension = 512;
     SceneTextureStats textureStats;
@@ -2105,7 +2320,10 @@ Result ScenePathTraceResources::prepare(
         scene::SceneLoadProgress progress;
         while (result && !complete) {
             result = pumpPrepareAsync(std::numeric_limits<double>::max(), complete, progress, log);
-            if (result && !complete) { std::this_thread::yield(); }
+            if (result && !complete) {
+                if (impl_->textureDecodePending) { impl_->ktxPrefetch->wait(); }
+                else { std::this_thread::yield(); }
+            }
         }
         return result;
     }
@@ -2133,6 +2351,7 @@ Result ScenePathTraceResources::prepare(
 
     impl_->textureBudgetBytes = uint64_t(std::clamp(properties.value("materialTextureBudgetMiB",2048),1,65536)) * 1024 * 1024;
     impl_->textureMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768));
+    impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
     scene::SceneDocument fallbackScene;
     if (boundScene == nullptr) {
         SceneResourceLogScope scope("load scene for render pass resources");
@@ -2335,6 +2554,7 @@ Result ScenePathTraceResources::beginPrepareAsync(
     impl_->asyncScene = boundScene;
     impl_->textureBudgetBytes = uint64_t(std::clamp(properties.value("materialTextureBudgetMiB",2048),1,65536)) * 1024 * 1024;
     impl_->textureMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768));
+    impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
     impl_->materialOnly = materialsOnly || boundScene->hasStreamGeometry();
     impl_->asyncScenePath = path;
     impl_->asyncSourceResourceIdentity = boundScene->resourceIdentity();
@@ -2398,9 +2618,14 @@ Result ScenePathTraceResources::pumpPrepareAsync(
     Result result;
     while (sceneResourceElapsedMilliseconds(begin) < budget) {
         impl_->retireCompletedTextureUploads();
+        if (impl_->backpressureBegin && impl_->uploadBatches.size() < Impl::kMaxUploadBatchesInFlight) {
+            impl_->uploadStats.backpressureMs += sceneResourceElapsedMilliseconds(*impl_->backpressureBegin);
+            impl_->backpressureBegin.reset();
+        }
         switch (impl_->asyncPrepareStage) {
         case Impl::AsyncPrepareStage::MaterialTextures: {
             if (impl_->uploadBatches.size() >= Impl::kMaxUploadBatchesInFlight) {
+                if (!impl_->backpressureBegin) { impl_->backpressureBegin = SceneResourceLogClock::now(); }
                 return {};
             }
             const uint64_t nextUploadBytes =
@@ -2423,6 +2648,7 @@ Result ScenePathTraceResources::pumpPrepareAsync(
                 return result;
             }
             progress.phase = scene::SceneLoadPhase::GpuUpload;
+            if (impl_->textureDecodePending) { return {}; }
             progress.completedUnits = impl_->asyncTextureCursor;
             progress.totalUnits = impl_->asyncScene->textures().size();
             progress.fraction = 0.65f + 0.10f * static_cast<float>(impl_->asyncTextureCursor) /
@@ -2576,6 +2802,7 @@ Result ScenePathTraceResources::pumpPrepareAsync(
                 *impl_->graphicsQueue,
                 log);
             if (!result) {
+                impl_->ktxPrefetch.reset();
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
                 return result;
             }
@@ -2596,6 +2823,7 @@ Result ScenePathTraceResources::pumpPrepareAsync(
                 return result;
             }
             impl_->asyncPrepareStage = Impl::AsyncPrepareStage::WaitForGpu;
+            impl_->finalWaitBegin = SceneResourceLogClock::now();
             progress.phase = scene::SceneLoadPhase::AccelerationStructures;
             progress.fraction = 0.94f;
             return {};
@@ -2626,6 +2854,8 @@ Result ScenePathTraceResources::pumpPrepareAsync(
             // All copy/acquire work has completed; keep no large idle staging
             // pages attached to the prepared scene during normal rendering.
             impl_->stagingArena.clear();
+            impl_->uploadStats.finalWaitMs += sceneResourceElapsedMilliseconds(impl_->finalWaitBegin);
+            impl_->finishUploadProfile();
             spdlog::info("[SceneResources] Uploads completed batches={} bytes={} peakInFlight={}/{}",
                 impl_->uploadStats.completedBatches, impl_->uploadStats.submittedBytes,
                 impl_->uploadStats.peakInFlightBatches, Impl::kMaxUploadBatchesInFlight);

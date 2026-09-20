@@ -3,6 +3,7 @@
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/NeuralTextureResources.h"
 #include "Runtime/Render/SceneShadingVertex.h"
+#include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/Scene.h"
 
@@ -20,12 +21,31 @@ struct SceneTextureStats {
     uint64_t residentPayloadBytes = 0, residentAllocationBytes = 0, peakStagingBytes = 0;
 };
 
+struct SceneTextureLoadTiming {
+    std::string path;
+    double totalMs = 0, openMs = 0, readMs = 0, decodeMs = 0;
+    double imageCreateMs = 0, stagingMs = 0, copyMs = 0, flushMs = 0;
+};
+
 struct SceneUploadStats {
     uint64_t submittedBatches = 0;
     uint64_t completedBatches = 0;
     uint64_t submittedBytes = 0;
     uint32_t inFlightBatches = 0;
     uint32_t peakInFlightBatches = 0;
+    Ktx2ReadStats ktx;
+    Ktx2PrefetchStats prefetch;
+    double decodeWaitMs = 0;
+    double textureHeaderMs = 0, texturePlanMs = 0, textureBuildMs = 0;
+    double imageCreateMs = 0, stagingMs = 0, stagingCopyMs = 0, stagingFlushMs = 0;
+    double commandSetupMs = 0, recordMs = 0, copySubmitMs = 0, acquireSubmitMs = 0;
+    double backpressureMs = 0, finalWaitMs = 0, textureWallMs = 0;
+    // Host-observed latency from successful submit to the first completion poll.
+    // Includes scheduling/polling delay; these are NOT GPU execution timestamps.
+    double copyCompletionObservedMs = 0, acquireCompletionObservedMs = 0;
+    double maxCopyCompletionObservedMs = 0, maxAcquireCompletionObservedMs = 0;
+    uint64_t copyCompletionSamples = 0, acquireCompletionSamples = 0;
+    std::vector<SceneTextureLoadTiming> slowestTextures;
 };
 
 class ScenePathTraceResources final {
