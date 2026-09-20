@@ -1499,10 +1499,10 @@ private:
         streamClusterPreparePipeline_.reset();
         streamClusterBinShader_.reset();
         streamClusterCullShader_.reset();
-        streamClusterRasterShader_.reset();
+        for (auto& shader : streamClusterRasterShaders_) { shader.reset(); }
         streamClusterBinPipeline_.reset();
         streamClusterCullPipeline_.reset();
-        streamClusterRasterPipeline_.reset();
+        for (auto& pipeline : streamClusterRasterPipelines_) { pipeline.reset(); }
         streamVisibilityImageHandle_ = {};
         streamDepthImageHandle_ = {};
         streamInstanceVisibilityHandle_ = {};
@@ -1985,9 +1985,11 @@ private:
             result = createShader(device, kMeshletStreamShaderModuleName,
                 "streamClusterBinMain", false, streamClusterBinShader_, log);
             if (result) { result = createStreamCompute(*streamClusterBinShader_, streamClusterBinPipeline_, "cluster bin"); }
-            if (result) { result = createShader(device, kMeshletStreamShaderModuleName,
-                "streamClusterRasterMain", false, streamClusterRasterShader_, log); }
-            if (result) { result = createStreamCompute(*streamClusterRasterShader_, streamClusterRasterPipeline_, "cluster raster"); }
+            const char* rasterEntries[] = {"streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain"};
+            for (size_t i=0; result && i<streamClusterRasterShaders_.size(); ++i) {
+                result = createShader(device, kMeshletStreamShaderModuleName, rasterEntries[i], false, streamClusterRasterShaders_[i], log);
+                if (result) { result = createStreamCompute(*streamClusterRasterShaders_[i], streamClusterRasterPipelines_[i], rasterEntries[i]); }
+            }
             if (!result) { return result; }
         }
         result = createStreamCompute(
@@ -3372,7 +3374,10 @@ private:
             if (async) { commands.barrier({.buffers = acquires, .bufferCount = 3}); }
             commands.beginDebugLabel({.name = "Hybrid raster: stream software clusters"});
             commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
-            commands.bindComputePipeline(*streamClusterRasterPipeline_);
+            // Keep the measured reference as default until the prepared path shows a repeatable gain.
+            const size_t rasterMode = !boolProperty(&properties(), "softwareRasterPreparedVertices", false) ? 1u :
+                boolProperty(&properties(), "softwareRasterIncrementalDepth", false) ? 2u : 0u;
+            commands.bindComputePipeline(*streamClusterRasterPipelines_[rasterMode]);
 
             commands.pushBindlessData(&push, sizeof(push));
             const Result result = commands.dispatchIndirect(hybridRasterizer_->clusterArguments(),
@@ -4948,13 +4953,13 @@ private:
     std::unique_ptr<ShaderModule> clusterRasterShader_;
     std::unique_ptr<ShaderModule> streamClusterBinShader_;
     std::unique_ptr<ShaderModule> streamClusterCullShader_;
-    std::unique_ptr<ShaderModule> streamClusterRasterShader_;
+    std::array<std::unique_ptr<ShaderModule>, 3> streamClusterRasterShaders_;
     std::unique_ptr<ComputePipeline> clusterBinPipeline_;
     std::unique_ptr<ComputePipeline> clusterCountPipeline_;
     std::unique_ptr<ComputePipeline> clusterRasterPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterBinPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterCullPipeline_;
-    std::unique_ptr<ComputePipeline> streamClusterRasterPipeline_;
+    std::array<std::unique_ptr<ComputePipeline>, 3> streamClusterRasterPipelines_;
     BindlessHandle streamHybridQueueHandle_;
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
     std::unique_ptr<Buffer> streamMaterialTextureRemapBuffer_;

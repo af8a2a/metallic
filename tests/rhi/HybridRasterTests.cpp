@@ -78,6 +78,69 @@ public:
         BindlessHandle inputHandle, queueHandle;
         HYBRID_REQUIRE(heap->allocateBuffer(inputHandle)); HYBRID_REQUIRE(heap->allocateBuffer(queueHandle));
         HYBRID_REQUIRE(heap->writeStorageBuffer(inputHandle, *input));
+        // Compare the new shared-vertex/integer-step SW kernel to the legacy
+        // kernel before testing either against HW. Include both subpixel grids.
+        {
+            ShaderCompileResult compiled;
+            const char* paths[] = {PROJECT_SOURCE_DIR "/Shaders"};
+            HYBRID_REQUIRE(compileSlangShaderToSpirv({.moduleName="PreparedRasterProbe", .entryPointName="compareMain",
+                .searchPath=PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths=paths, .additionalSearchPathCount=1}, compiled));
+            log=compiled.diagnostics;
+            std::unique_ptr<ShaderModule> shader;
+            std::unique_ptr<ComputePipeline> compute;
+            HYBRID_REQUIRE(device->createShaderModule({.code=compiled.spirv.data(),.byteSize=compiled.spirv.size()*4},shader));
+            HYBRID_REQUIRE(device->createComputePipeline({.computeShader=shader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40},compute));
+            std::unique_ptr<BindlessHeap> compareHeap;
+            HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers=3},compareHeap));
+            BindlessHandle vertexHandle;
+            HYBRID_REQUIRE(compareHeap->allocateBuffer(vertexHandle));
+            HYBRID_REQUIRE(compareHeap->writeStorageBuffer(vertexHandle,*input));
+            std::array<std::unique_ptr<Buffer>,2> pixels;
+            std::array<BindlessHandle,2> handles;
+            for (size_t i=0;i<2;++i) {
+                HYBRID_REQUIRE(device->createBuffer({.size=pixelCount*8,.structureStride=8,.usage=BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+                    .memoryLocation=MemoryLocation::HostUpload},pixels[i]));
+                HYBRID_REQUIRE(compareHeap->allocateBuffer(handles[i]));
+                HYBRID_REQUIRE(compareHeap->writeStorageBuffer(handles[i],*pixels[i]));
+            }
+            auto* queue=device->getQueue(QueueType::Graphics);
+            std::unique_ptr<CommandPool> pool;
+            std::unique_ptr<CommandBuffer> commands;
+            std::unique_ptr<Fence> fence;
+            HYBRID_REQUIRE(device->createCommandPool(*queue,pool)); HYBRID_REQUIRE(pool->createCommandBuffer(commands));
+            HYBRID_REQUIRE(device->createFence(false,fence));
+            bool submitted=false;
+            size_t written=0;
+            for (uint32_t bits : {4u,8u}) for (uint32_t reversed : {0u,1u}) for (uint32_t sided : {0u,1u}) for (uint32_t plane : {0u,1u}) {
+                if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
+                for (auto& output:pixels) {
+                    auto* data=output->map(); if (!data) { return RhiTestResult::fail("Prepared raster map failed"); }
+                    std::memset(data,0,pixelCount*8); output->flush(); output->unmap();
+                }
+                HYBRID_REQUIRE(commands->begin());
+                commands->bindBindlessHeap(*compareHeap); commands->bindComputePipeline(*compute);
+                uint32_t push[]={vertexHandle.index,handles[0].index,handles[1].index,width,height,reversed,sided,bits,plane,uint32_t(vertices.size()/3)};
+                commands->pushBindlessData(push,sizeof(push)); commands->dispatch((push[9]+63)/64);
+                HYBRID_REQUIRE(commands->end()); CommandBuffer* list[]={commands.get()};
+                HYBRID_REQUIRE(queue->submit({.commandBuffers=list,.commandBufferCount=1,.signalFence=fence.get()}));
+                HYBRID_REQUIRE(fence->wait()); submitted=true;
+                std::array<std::vector<uint64_t>,2> values;
+                for (size_t i=0;i<2;++i) {
+                    pixels[i]->invalidate(); const auto* data=static_cast<const uint64_t*>(pixels[i]->map());
+                    if (!data) { return RhiTestResult::fail("Prepared raster read failed"); }
+                    values[i].assign(data,data+pixelCount); pixels[i]->unmap();
+                }
+                for (size_t i=0;i<pixelCount;++i) {
+                    auto a=values[0][i],b=values[1][i]; written+=uint32_t(a)!=0;
+                    if (!plane && a!=b) { return RhiTestResult::fail("Prepared SW is not bit exact at pixel "+std::to_string(i)+" bits="+std::to_string(bits)+" values="+std::to_string(a)+"/"+std::to_string(b)); }
+                    uint32_t za=uint32_t(a>>32),zb=uint32_t(b>>32); if (!reversed) { za=~za; zb=~zb; }
+                    if (plane && (uint32_t(a)!=uint32_t(b) || (uint32_t(a)!=0 && std::abs(std::bit_cast<float>(za)-std::bit_cast<float>(zb))>2e-6f))) {
+                        return RhiTestResult::fail("Incremental plane coverage/ID/depth tolerance mismatch at "+std::to_string(i));
+                    }
+                }
+            }
+            if (written<1000) { return RhiTestResult::fail("Prepared SW fixture did not cover enough pixels"); }
+        }
         std::array<std::unique_ptr<ShaderModule>, 2> shaders;
         const char* entries[] = {"probeMeshMain", "probeFragmentMain"};
         const char* capabilities[] = {"spvMeshShadingEXT"};

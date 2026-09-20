@@ -212,6 +212,8 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}});
         }
         // Reverse and rotate order to expose warm-cache/clock/order effects.
+        const bool swComparison = config.value("swComparison", false);
+        constexpr uint32_t swOrders[3][4] = {{0,10,11,12},{12,11,10,0},{11,0,12,10}};
         const bool metadataComparison = config.value("metadataComparison", false);
         constexpr uint32_t metadataOrders[3][3] = {{0,8,9},{9,8,0},{8,0,9}};
         constexpr uint32_t orders[3][5] = {{0,1,2,4,8},{8,4,2,1,0},{2,0,8,1,4}};
@@ -228,13 +230,15 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             return snap;
         };
         for (uint32_t round=0; round<rounds; ++round) {
-            const auto sequence = metadataComparison ? std::span<const uint32_t>(metadataOrders[round]) : std::span<const uint32_t>(orders[round]);
+            const auto sequence = swComparison ? std::span<const uint32_t>(swOrders[round]) : metadataComparison ? std::span<const uint32_t>(metadataOrders[round]) : std::span<const uint32_t>(orders[round]);
             for (uint32_t mode : sequence) {
-                const std::string variant = !mode ? "0" : metadataComparison ? (mode == 8 ? "exact8" : "fast8") : std::to_string(mode);
+                const std::string variant = !mode ? "0" : swComparison ? (mode == 10 ? "swLegacy" : mode == 11 ? "swPrepared" : "swPlane") : metadataComparison ? (mode == 8 ? "exact8" : "fast8") : std::to_string(mode);
                 const std::string name = "round"+std::to_string(round+1)+"-"+variant;
+                set("VBuffer","softwareRasterPreparedVertices", swComparison && mode != 10);
+                set("VBuffer","softwareRasterIncrementalDepth", swComparison && mode == 12);
                 set("VBuffer","metadataFastClassification", !metadataComparison || mode != 8);
                 set("VBuffer","benchmarkForceHardwareRaster",mode==0);
-                set("VBuffer","softwareRasterMaxPixels",metadataComparison ? 8u : mode ? mode : 8u);
+                set("VBuffer","softwareRasterMaxPixels",(metadataComparison || swComparison) ? 8u : mode ? mode : 8u);
                 for (uint32_t i=0; i<settle; ++i) { draw(); }
                 const auto before = checkpoint(name+"-before");
                 // Readback/copy cache effects are outside measurement, followed
@@ -286,7 +290,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                 const auto file=name+"-frames.json";
                 std::ofstream framesFile(output/file); framesFile.exceptions(std::ios::badbit|std::ios::failbit);
                 framesFile<<rows.dump()<<'\n'; framesFile.close();
-                report["cases"].push_back({{"name",name},{"round",round+1},{"maxPixels",metadataComparison ? 8u : mode},{"variant",variant},
+                report["cases"].push_back({{"name",name},{"round",round+1},{"maxPixels",(metadataComparison || swComparison) ? 8u : mode},{"variant",variant},
                     {"fullHardware",mode==0},{"framesFile",file},{"frames",samples},{"before",before},{"after",after}});
                 std::ofstream(output/"Progress.json")<<report.dump(2)<<'\n';
                 spdlog::info("[Raster Comparison] {} complete, {} measured frames, cut={} pages={}",name,samples,cutHash,mappingHash);
@@ -297,6 +301,8 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         set("VBuffer","benchmarkForceHardwareRaster",false);
         set("VBuffer","softwareRasterMaxPixels",8.0f);
         set("VBuffer","metadataFastClassification",true);
+        set("VBuffer","softwareRasterPreparedVertices",false);
+        set("VBuffer","softwareRasterIncrementalDepth",false);
         report["status"]="capture_complete"; passed=true;
     } catch (const std::exception& e) {
         report["error"]=e.what();

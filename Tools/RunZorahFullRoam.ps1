@@ -9,13 +9,15 @@ param(
     [switch]$Validation,
     [switch]$RasterComparison,
     [switch]$MetadataComparison,
+    [switch]$SwComparison,
     [ValidateRange(8,512)][int]$SampleFrames=64,
     [ValidateRange(2,120)][int]$SettleFrames=8,
     [ValidateRange(1,3)][int]$Rounds=3,
     [int]$TimeoutSeconds=900
 )
 $ErrorActionPreference='Stop'
-if ($MetadataComparison) { $RasterComparison=$true }
+if ($MetadataComparison -or $SwComparison) { $RasterComparison=$true }
+if ($MetadataComparison -and $SwComparison) { throw "Choose one comparison suite" }
 $repo=Split-Path -Parent $PSScriptRoot
 $output=[IO.Path]::GetFullPath($OutputRoot)
 $exe=Join-Path $repo 'build-release/Source/MetallicGPUDrivenSample.exe'
@@ -31,6 +33,7 @@ if ($RouteConfig) {
 if ($Width) { $config.width=$Width; $config.height=$Height }
 if ($RasterComparison) { $config.rasterComparison=$true; $config.sampleFrames=$SampleFrames; $config.settleFrames=$SettleFrames; $config.rounds=$Rounds }
 if ($MetadataComparison) { $config.metadataComparison=$true }
+if ($SwComparison) { $config.swComparison=$true }
 $analyzer=if ($config.rasterComparison) {"AnalyzeZorahFullRasterComparison.py"} else {"AnalyzeZorahFullRoam.py"}
 New-Item -ItemType Directory -Path $output | Out-Null
 $config | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath (Join-Path $output 'Config.json') -Encoding utf8

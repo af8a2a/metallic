@@ -3741,6 +3741,51 @@ float4 streamClusterClip(StreamRasterCluster c, uint vertex, GPUDrivenStreamAsse
     return clip;
 }
 
+// Preserve projection arithmetic, but build camera-only terms once per cluster.
+struct StreamRasterProjection
+{
+    float3 eye; float3 forward; float3 right; float3 up;
+    float nearZ; float farZ; float aspect; float halfHeight; float yScale;
+    float2 jitter;
+    bool ortho; bool reversedZ; bool jitterEnabled;
+};
+StreamRasterProjection prepareStreamRasterProjection(GPUDrivenStreamAssetParams p)
+{
+    StreamRasterProjection r;
+    r.jitterEnabled = p.renderViewport.y > 0.0;
+    r.jitter = r.jitterEnabled ? 2.0 * float2(p.renderEye.w,-p.renderCenter.w) / p.renderViewport.yz : float2(0);
+    if (r.jitterEnabled) {
+        p.eye=p.renderEye; p.center=p.renderCenter; p.upProjection=p.renderUpProjection;
+        p.viewport=p.renderViewport; p.clipOrtho=p.renderClipOrtho;
+    }
+    r.eye=p.eye.xyz;
+    r.forward=safeNormalize(p.center.xyz-p.eye.xyz,float3(0,0,-1));
+    float3 cameraUp=safeNormalize(p.upProjection.xyz,float3(0,1,0));
+    r.right=safeNormalize(cross(r.forward,cameraUp),float3(1,0,0));
+    r.up=safeNormalize(cross(r.right,r.forward),float3(0,1,0));
+    r.nearZ=max(p.clipOrtho.x,0.0001); r.farZ=max(p.clipOrtho.y,r.nearZ+0.0001);
+    r.aspect=max(p.viewport.x,0.001); r.halfHeight=max(p.clipOrtho.z*0.5,0.0001);
+    r.yScale=1.0/tan(clamp(p.viewport.w,0.017453292,3.12413936)*0.5);
+    r.ortho=p.upProjection.w>0.5; r.reversedZ=p.clipOrtho.w>0.5;
+    return r;
+}
+float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push, StreamRasterProjection r)
+{
+    DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase+push.pageBuffer,0));
+    uint word=c.pageWord+c.positionOffsetBytes/4u+(c.vertexOffset+vertex)*c.positionStrideWords;
+    float3 local=asfloat(uint3(pages[word],pages[word+1u],pages[word+2u]));
+    float3 world=c.group.world0.xyz*local.x+c.group.world1.xyz*local.y+c.group.world2.xyz*local.z+c.group.world3.xyz;
+    float3 delta=world-r.eye;
+    float3 view=float3(dot(delta,r.right),dot(delta,r.up),dot(delta,r.forward));
+    float z=conservativeProjectDepth(view.z,r.nearZ,r.farZ,r.ortho,r.reversedZ);
+    float4 clip=r.ortho ? float4(view.x/(r.halfHeight*r.aspect),view.y/r.halfHeight,z,1.0) :
+        float4(view.x*r.yScale/r.aspect,view.y*r.yScale,z*view.z,view.z);
+    if (r.jitterEnabled) { clip.xy-=r.jitter*clip.w; }
+    clip.y=-clip.y;
+    return clip;
+}
+groupshared StreamRasterProjection g_StreamRasterProjection;
+
 uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStreamAssetPush push)
 {
     DescriptorHandle<StructuredBuffer<uint>> pages =
@@ -3854,6 +3899,8 @@ void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_Gro
 
 groupshared StreamRasterCluster g_StreamRasterCluster;
 groupshared float4 g_StreamRasterClip[128];
+// Raw words avoid interpreting negative snapped coordinates as float NaNs.
+groupshared uint4 g_StreamRasterWords[128];
 groupshared uint g_StreamBinVisible;
 groupshared uint g_StreamBinHardware;
 
@@ -4102,24 +4149,45 @@ void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, u
     if (lane == 0u) { hybridClassifyCluster(bins, g_StreamBinHardware != 0u ? 0u : kHybridSoftwareBin, record, candidate); }
 }
 
-[shader("compute")]
-[numthreads(128, 1, 1)]
-void streamClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool prepared, bool incrementalDepth)
 {
     DescriptorHandle<StructuredBuffer<uint>> bins =
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
-    if (lane == 0u) { bool retryLate; g_StreamBinVisible = loadStreamRasterCluster(record, false, false, push, g_StreamRasterCluster, retryLate) ? 1u : 0u; }
+    if (lane == 0u) {
+        bool retryLate;
+        g_StreamBinVisible = loadStreamRasterCluster(record, false, false, push, g_StreamRasterCluster, retryLate) ? 1u : 0u;
+        if (prepared && g_StreamBinVisible != 0u) { g_StreamRasterProjection = prepareStreamRasterProjection(g_StreamRasterCluster.params); }
+    }
     GroupMemoryBarrierWithGroupSync();
     if (g_StreamBinVisible == 0u) { return; }
-    if (lane < g_StreamRasterCluster.vertexCount) { g_StreamRasterClip[lane] = streamClusterClip(g_StreamRasterCluster, lane, push); }
+    if (lane < g_StreamRasterCluster.vertexCount) {
+        float4 clip = prepared ? streamClusterClipCached(g_StreamRasterCluster, lane, push, g_StreamRasterProjection) :
+            streamClusterClip(g_StreamRasterCluster, lane, push);
+        if (prepared) {
+            HybridScreenVertex vertex = hybridPrepareVertex(clip, float2(bins[6],bins[7]), bins[10]);
+            // Reuse the clip scratch: one shared allocation in both A/B paths.
+            g_StreamRasterWords[lane] = uint4(uint2(vertex.position),asuint(vertex.depth),0u);
+        }
+        else { g_StreamRasterWords[lane] = asuint(clip); }
+    }
     GroupMemoryBarrierWithGroupSync();
     if (lane < g_StreamRasterCluster.triangleCount) {
         uint3 tri = streamClusterTriangle(g_StreamRasterCluster, lane, push);
-        hybridRasterTriangle(g_StreamRasterClip[tri.x], g_StreamRasterClip[tri.y], g_StreamRasterClip[tri.z],
-            packVisibilityId(g_StreamRasterCluster.recordIndex, lane), (g_StreamRasterCluster.instanceFlags & 2u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], bins[11], push.bufferShaderIndexBase);
+        uint id = packVisibilityId(g_StreamRasterCluster.recordIndex, lane);
+        bool doubleSided = (g_StreamRasterCluster.instanceFlags & 2u) != 0u;
+        if (prepared) {
+            HybridScreenVertex a, b, c;
+            a.position = asint(g_StreamRasterWords[tri.x].xy); a.depth = asfloat(g_StreamRasterWords[tri.x].z);
+            b.position = asint(g_StreamRasterWords[tri.y].xy); b.depth = asfloat(g_StreamRasterWords[tri.y].z);
+            c.position = asint(g_StreamRasterWords[tri.z].xy); c.depth = asfloat(g_StreamRasterWords[tri.z].z);
+            hybridRasterPreparedTriangle(a, b, c,
+                id, doubleSided, bins[6], bins[7], bins[9], bins[10], bins[11], push.bufferShaderIndexBase, incrementalDepth);
+        } else {
+            hybridRasterTriangle(asfloat(g_StreamRasterWords[tri.x]), asfloat(g_StreamRasterWords[tri.y]), asfloat(g_StreamRasterWords[tri.z]),
+                id, doubleSided, bins[6], bins[7], bins[9], bins[10], bins[11], push.bufferShaderIndexBase);
+        }
     }
 }
 
@@ -4597,3 +4665,18 @@ uint gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, ui
 }
 
 #include "../VisibilityBuffer/VisibilityTessellationStream.slang"
+
+[shader("compute")]
+[numthreads(128,1,1)]
+void streamClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{ rasterStreamCluster(group,lane,push,true,false); }
+
+[shader("compute")]
+[numthreads(128,1,1)]
+void streamClusterRasterLegacyMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{ rasterStreamCluster(group,lane,push,false,false); }
+
+[shader("compute")]
+[numthreads(128,1,1)]
+void streamClusterRasterPlaneMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{ rasterStreamCluster(group,lane,push,true,true); }

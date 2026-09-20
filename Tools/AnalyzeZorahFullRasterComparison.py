@@ -119,6 +119,15 @@ def analyze(directory):
                     assert sum(counts[k] for k in ("exactClusters", "fastSoftware", "fastHardware")) == bins["hardwareClusters"] + bins["softwareClusters"]
                     if r["variant"] == "exact8":
                         assert counts["fastSoftware"] == counts["fastHardware"] == 0
+    if capture["config"].get("swComparison"):
+        legacy = next(c["after"] for c in capture["cases"] if c["variant"] == "swLegacy")
+        for r,c in zip(results,capture["cases"]):
+            r["vsLegacySoftware"] = image_difference(directory,legacy,c["after"])
+            if r["variant"] == "swPrepared":
+                for resource in ("VBuffer.visibility", "VBuffer.depth"):
+                    assert c["after"][resource]["hash"] == legacy[resource]["hash"], "Prepared SW changed reference image"
+                for phase in ("AfterStreamEarlyBins", "AfterStreamLateBins"):
+                    assert c["after"][phase] == legacy[phase], "Prepared SW changed bins"
     summary = {"protocol": capture["protocol"], "outputExtent": capture["outputExtent"], "renderExtent": capture["renderExtent"],
                "cutHash": base["cutHash"], "pageMappingsHash": base["pageMappingsHash"], "activeGroups": base["activeGroups"],
                "residentState": residency, "sameCutAndResidency": True, "sameModeImagesStable": True, "cases": results,
@@ -129,13 +138,22 @@ def analyze(directory):
              f"Cut `{base['cutHash']}`, page mappings `{base['pageMappingsHash']}`, {base['activeGroups']} active groups. Residency identical in measured samples.", "",
              "| Mode | Samples | Raster mean ms | Raster p50 | Raster p95 | Classify mean | SW mean | HW mean | Graph mean |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for mode, stats in sorted(summary["pooled"].items(), key=lambda x: {"exact8": 8,"fast8": 9}.get(x[0],int(x[0]) if x[0].isdigit() else 10)):
-        label = {"0":"Full HW","exact8":"8 px exact","fast8":"8 px metadata"}.get(mode,mode + " px")
+        label = {"0":"Full HW","exact8":"8 px exact","fast8":"8 px metadata","swLegacy":"8 px legacy SW","swPrepared":"8 px prepared SW","swPlane":"8 px depth plane"}.get(mode,mode + " px")
         t = stats["rasterTotal"]
         lines.append(f"| {label} | {t['count']} | {t['mean']:.3f} | {t['p50']:.3f} | {t['p95']:.3f} | {stats['classification']['mean']:.3f} | {stats['software']['mean']:.3f} | {stats['hardware']['mean']:.3f} | {stats['graphGpu']['mean']:.3f} |")
     lines += ["", "| Case | Early HW / SW | Coverage different vs HW | Visibility different % | Max depth abs | Depth >8 ULP |", "|---|---:|---:|---:|---:|---:|"]
     for r in results:
         b, d = r["earlyBins"], r["vsFullHardware"]
         lines.append(f"| {r['name']} | {b['hardwareClusters']} / {b['softwareClusters']} | {d['coverageDifferentPixels']} | {d['visibilityDifferentPercent']:.5f} | {d['coveredDepthMaxAbs']:.7g} | {d['coveredDepthOver8UlpPixels']} |")
+    if capture["config"].get("swComparison"):
+        lines += ["", "Prepared SW is required to match legacy depth/visibility and bins exactly.", "",
+                  "| Case | Coverage different vs legacy SW | Visibility different | Max depth ULP |",
+                  "|---|---:|---:|---:|"]
+        for r in results:
+            if r["variant"] == "0":
+                continue
+            d = r["vsLegacySoftware"]
+            lines.append(f"| {r['name']} | {d['coverageDifferentPixels']} | {d['visibilityDifferentPixels']} | {d['coveredDepthMaxUlp']} |")
     (directory / "Summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines[:14]))
     return summary
