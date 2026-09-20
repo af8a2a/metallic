@@ -90,6 +90,8 @@ def analyze(directory):
             values["graphGpu"].append(graph[0])
             values["editorLoop"].append(row["editorLoopMs"])
             assert len(row["streaming"]) == 1
+            if capture["config"].get("historyComparison") and capture.get("historyInvalidationPolicy") == "reprojection-v1":
+                assert row["streaming"][0]["softwareRaster"]["paramsHzbValid"], "Measured frame lost HZB history"
             if residency is None:
                 residency = [{k:v for k,v in item.items() if k != "softwareRaster"} for item in row["streaming"]]
             assert [{k:v for k,v in item.items() if k != "softwareRaster"} for item in row["streaming"]] == residency, "Geometry/CLAS/texture residency changed"
@@ -130,13 +132,22 @@ def analyze(directory):
                     assert c["after"][phase] == legacy[phase], "Exact SW changed bins"
     if capture["config"].get("historyComparison"):
         control = next(c for c in capture["cases"] if c["variant"] == "swWorkControl")
+        retains_motion_history = capture.get("historyInvalidationPolicy") == "reprojection-v1"
         shader = None
         for case in capture["cases"]:
             if case["variant"] not in ("swWorkControl", "swCameraReapply"):
                 continue
             for resource in ("VBuffer.visibility", "VBuffer.depth"):
                 assert case["after"][resource]["hash"] == control["after"][resource]["hash"], "Camera reapply changed image"
+            if retains_motion_history:
+                for phase in ("AfterStreamEarlyBins", "AfterStreamLateBins"):
+                    assert case["after"][phase] == control["after"][phase], "Camera reapply changed bins"
             for point in ("before", "after"):
+                if retains_motion_history:
+                    for actual, expected in zip(case[point].get("workloads", []), control[point].get("workloads", []), strict=True):
+                        assert actual["phase"] == expected["phase"], "Camera A/B workload phases differ"
+                        assert actual.get("counts") == expected.get("counts"), "Camera reapply changed raster workload"
+                        assert actual.get("bins") == expected.get("bins"), "Camera reapply changed workload bins"
                 for workload in case[point].get("workloads", []):
                     if workload["phase"] != "StreamEarlyWorkload":
                         continue
@@ -145,7 +156,7 @@ def analyze(directory):
                     if shader is None:
                         shader = key
                     assert shader == key, "Camera A/B selected different shader"
-                    assert bool(identity["paramsHzbValid"]) == (case["variant"] == "swWorkControl"), "Expected HZB state not reproduced"
+                    assert bool(identity["paramsHzbValid"]) == (retains_motion_history or case["variant"] == "swWorkControl"), "Expected HZB state not reproduced"
     summary = {"protocol": capture["protocol"], "outputExtent": capture["outputExtent"], "renderExtent": capture["renderExtent"],
                "cutHash": base["cutHash"], "pageMappingsHash": base["pageMappingsHash"], "activeGroups": base["activeGroups"],
                "residentState": residency, "sameCutAndResidency": True, "sameModeImagesStable": True, "cases": results,

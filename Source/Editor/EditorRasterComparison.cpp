@@ -207,6 +207,8 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         set("Deferred","benchmarkFreezeStreaming",true);
         const auto generation = graphExecutor_->executionStats().graphGeneration;
         report["config"] = config;
+        // Version the expected behavior so older causal captures remain readable.
+        report["historyInvalidationPolicy"] = "reprojection-v1";
         report["validationRequested"] = debugRuntime_ && std::getenv("METALLIC_DEBUG_VALIDATION");
         report["hidden"] = std::getenv("METALLIC_FULL_ROAM_HIDDEN") != nullptr;
         report["camera"] = viewportCameraProperties();

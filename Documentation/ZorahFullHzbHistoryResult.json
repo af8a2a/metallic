@@ -1,0 +1,1209 @@
+{
+  "date": "2026-09-20",
+  "fix": "VBuffer observes reprojectionInvalidationRevision instead of general invalidationRevision",
+  "frozenBefore": {
+    "source": "build-release\\full-sw-history-causal\\run1",
+    "validation": false,
+    "cutHash": "3018165815145797720",
+    "pageMappingsHash": "14115650577649230408",
+    "activeGroups": 222528,
+    "modes": {
+      "swWorkControl": {
+        "softwareMs": {
+          "count": 32,
+          "mean": 9.90569,
+          "p50": 9.8348,
+          "p95": 10.650606400000001,
+          "p99": 10.94093248,
+          "max": 10.945952
+        },
+        "graphGpuMs": {
+          "count": 32,
+          "mean": 17.881016,
+          "p50": 17.582943999999998,
+          "p95": 19.1283488,
+          "p99": 19.699814080000003,
+          "max": 19.926496
+        },
+        "shader": {
+          "asyncRequested": false,
+          "counterSemantics": "Coverage replay; atomic attempts, not winning writes; diagnostic timings excluded",
+          "entryPoint": "streamClusterRasterWorkControlMain",
+          "exactCoverageSupported": true,
+          "forceHardware": false,
+          "hzbValid": true,
+          "mode": 5,
+          "module": "Features/GPUDriven/GPUDrivenStreamWorkRaster",
+          "paramsHzbValid": 1,
+          "prebin": true,
+          "snapshotFrozen": true,
+          "spirvFnv1a64": "14699073418322314354",
+          "thresholdPixels": 8.0,
+          "workloadEnabled": true
+        },
+        "counts": {
+          "activeTriangleLanes": 42565256,
+          "atomicAttempts": 638149,
+          "bboxArea1To4": 1306824,
+          "bboxArea5To16": 123935,
+          "bboxRows": 1944994,
+          "bboxVisits": 3203542,
+          "clusters": 1041657,
+          "coveredSamples": 638149,
+          "emptyTriangles": 41124170,
+          "invalidClusters": 0,
+          "launchedTriangleLanes": 133332096,
+          "maxBboxWidth": 8,
+          "nonemptyTriangles": 1441086,
+          "sumWaveMaxRows": 443930,
+          "triangles": 42565256,
+          "uniqueVertices": 103089190
+        },
+        "visibilityHash": "9366615267609933005",
+        "depthHash": "11372954878244664520"
+      },
+      "swCameraReapply": {
+        "softwareMs": {
+          "count": 32,
+          "mean": 43.014795,
+          "p50": 42.786512,
+          "p95": 44.4641088,
+          "p99": 44.673191360000004,
+          "max": 44.714528
+        },
+        "graphGpuMs": {
+          "count": 32,
+          "mean": 51.439063,
+          "p50": 51.081072,
+          "p95": 53.126075199999995,
+          "p99": 53.23947456,
+          "max": 53.277984
+        },
+        "shader": {
+          "asyncRequested": false,
+          "counterSemantics": "Coverage replay; atomic attempts, not winning writes; diagnostic timings excluded",
+          "entryPoint": "streamClusterRasterWorkControlMain",
+          "exactCoverageSupported": true,
+          "forceHardware": false,
+          "hzbValid": false,
+          "mode": 5,
+          "module": "Features/GPUDriven/GPUDrivenStreamWorkRaster",
+          "paramsHzbValid": 0,
+          "prebin": true,
+          "snapshotFrozen": true,
+          "spirvFnv1a64": "14699073418322314354",
+          "thresholdPixels": 8.0,
+          "workloadEnabled": true
+        },
+        "counts": {
+          "activeTriangleLanes": 188582571,
+          "atomicAttempts": 1420953,
+          "bboxArea1To4": 3439146,
+          "bboxArea5To16": 237710,
+          "bboxRows": 4666670,
+          "bboxVisits": 7245368,
+          "clusters": 4598812,
+          "coveredSamples": 1420953,
+          "emptyTriangles": 184885644,
+          "invalidClusters": 0,
+          "launchedTriangleLanes": 588647936,
+          "maxBboxWidth": 8,
+          "nonemptyTriangles": 3696927,
+          "sumWaveMaxRows": 1158735,
+          "triangles": 188582571,
+          "uniqueVertices": 451470079
+        },
+        "visibilityHash": "9366615267609933005",
+        "depthHash": "11372954878244664520"
+      }
+    }
+  },
+  "frozenAfter": {
+    "source": "build-release\\full-hzb-history-fixed\\run1",
+    "validation": true,
+    "cutHash": "7230532556492933287",
+    "pageMappingsHash": "6928581180108922903",
+    "activeGroups": 221402,
+    "modes": {
+      "swWorkControl": {
+        "softwareMs": {
+          "count": 32,
+          "mean": 9.71373,
+          "p50": 9.511376,
+          "p95": 10.6931072,
+          "p99": 10.74850208,
+          "max": 10.755456
+        },
+        "graphGpuMs": {
+          "count": 32,
+          "mean": 17.47936,
+          "p50": 17.267263999999997,
+          "p95": 18.7010896,
+          "p99": 18.70301056,
+          "max": 18.703328
+        },
+        "shader": {
+          "asyncRequested": false,
+          "counterSemantics": "Coverage replay; atomic attempts, not winning writes; diagnostic timings excluded",
+          "entryPoint": "streamClusterRasterWorkControlMain",
+          "exactCoverageSupported": true,
+          "forceHardware": false,
+          "hzbValid": true,
+          "mode": 5,
+          "module": "Features/GPUDriven/GPUDrivenStreamWorkRaster",
+          "paramsHzbValid": 1,
+          "prebin": true,
+          "snapshotFrozen": true,
+          "spirvFnv1a64": "14699073418322314354",
+          "thresholdPixels": 8.0,
+          "workloadEnabled": true
+        },
+        "counts": {
+          "activeTriangleLanes": 42244207,
+          "atomicAttempts": 612525,
+          "bboxArea1To4": 1259972,
+          "bboxArea5To16": 118909,
+          "bboxRows": 1872267,
+          "bboxVisits": 3077995,
+          "clusters": 1037662,
+          "coveredSamples": 612525,
+          "emptyTriangles": 40855314,
+          "invalidClusters": 0,
+          "launchedTriangleLanes": 132820736,
+          "maxBboxWidth": 8,
+          "nonemptyTriangles": 1388893,
+          "sumWaveMaxRows": 431401,
+          "triangles": 42244207,
+          "uniqueVertices": 102726972
+        },
+        "visibilityHash": "10797902277908176038",
+        "depthHash": "3607267050190706998"
+      },
+      "swCameraReapply": {
+        "softwareMs": {
+          "count": 32,
+          "mean": 9.75015,
+          "p50": 9.798176000000002,
+          "p95": 10.185465599999999,
+          "p99": 10.33755648,
+          "max": 10.353984
+        },
+        "graphGpuMs": {
+          "count": 32,
+          "mean": 17.408083,
+          "p50": 17.337328,
+          "p95": 17.953984,
+          "p99": 18.10799136,
+          "max": 18.128
+        },
+        "shader": {
+          "asyncRequested": false,
+          "counterSemantics": "Coverage replay; atomic attempts, not winning writes; diagnostic timings excluded",
+          "entryPoint": "streamClusterRasterWorkControlMain",
+          "exactCoverageSupported": true,
+          "forceHardware": false,
+          "hzbValid": true,
+          "mode": 5,
+          "module": "Features/GPUDriven/GPUDrivenStreamWorkRaster",
+          "paramsHzbValid": 1,
+          "prebin": true,
+          "snapshotFrozen": true,
+          "spirvFnv1a64": "14699073418322314354",
+          "thresholdPixels": 8.0,
+          "workloadEnabled": true
+        },
+        "counts": {
+          "activeTriangleLanes": 42244207,
+          "atomicAttempts": 612525,
+          "bboxArea1To4": 1259972,
+          "bboxArea5To16": 118909,
+          "bboxRows": 1872267,
+          "bboxVisits": 3077995,
+          "clusters": 1037662,
+          "coveredSamples": 612525,
+          "emptyTriangles": 40855314,
+          "invalidClusters": 0,
+          "launchedTriangleLanes": 132820736,
+          "maxBboxWidth": 8,
+          "nonemptyTriangles": 1388893,
+          "sumWaveMaxRows": 431401,
+          "triangles": 42244207,
+          "uniqueVertices": 102726972
+        },
+        "visibilityHash": "10797902277908176038",
+        "depthHash": "3607267050190706998"
+      }
+    }
+  },
+  "roamBefore": {
+    "source": "build-release\\full-sw-workload-roam\\run1",
+    "frameMs": {
+      "count": 454,
+      "mean": 66.13178215859031,
+      "p50": 66.235,
+      "p95": 75.9047,
+      "p99": 80.6557,
+      "max": 105.4146
+    },
+    "overBudget": 454,
+    "sampledRouteMeets30Fps": false,
+    "diagnosticRun": false,
+    "missingGpuFrames": 0,
+    "historyValidFrames": 0,
+    "drainReasons": {
+      "4": 454
+    },
+    "scopes": {
+      "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight": {
+        "cpuMs": {
+          "count": 454,
+          "mean": 3.394960352422907,
+          "p50": 3.2432,
+          "p95": 5.2828,
+          "p99": 6.4436,
+          "max": 7.3088
+        },
+        "gpuMs": null
+      },
+      "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Prior frame drain": {
+        "cpuMs": {
+          "count": 454,
+          "mean": 33.76799295154185,
+          "p50": 34.716,
+          "p95": 39.2174,
+          "p99": 39.8443,
+          "max": 65.6172
+        },
+        "gpuMs": null
+      },
+      "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope": {
+        "cpuMs": {
+          "count": 454,
+          "mean": 23.64772555066079,
+          "p50": 23.2701,
+          "p95": 30.7362,
+          "p99": 36.3975,
+          "max": 42.8016
+        },
+        "gpuMs": {
+          "count": 454,
+          "mean": 42.176200458149786,
+          "p50": 43.473344,
+          "p95": 47.040864,
+          "p99": 48.115072,
+          "max": 48.885664
+        }
+      },
+      "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster": {
+        "cpuMs": {
+          "count": 454,
+          "mean": 0.004963215859030837,
+          "p50": 0.0044,
+          "p95": 0.0074,
+          "p99": 0.0107,
+          "max": 0.0164
+        },
+        "gpuMs": {
+          "count": 454,
+          "mean": 28.539708969162998,
+          "p50": 29.789376,
+          "p95": 32.916768,
+          "p99": 33.383264,
+          "max": 34.032896
+        }
+      },
+      "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream late/Software raster": {
+        "cpuMs": {
+          "count": 454,
+          "mean": 0.0037251101321585903,
+          "p50": 0.0031,
+          "p95": 0.006,
+          "p99": 0.01,
+          "max": 0.0134
+        },
+        "gpuMs": {
+          "count": 454,
+          "mean": 0.005393691629955947,
+          "p50": 0.00416,
+          "p95": 0.011296,
+          "p99": 0.01136,
+          "max": 0.012384
+        }
+      }
+    },
+    "conditions": {
+      "config": {
+        "distance": 6.0,
+        "durationSeconds": 30.0,
+        "keyframes": [
+          {
+            "forward": 0.0,
+            "stage": "static",
+            "t": 0.0,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "first-visit",
+            "t": 0.08333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "near-wall",
+            "t": 0.3333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "turn",
+            "t": 0.4444444444444444,
+            "yaw": 65.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "return",
+            "t": 0.6666666666666666,
+            "yaw": -65.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "settle",
+            "t": 0.8888888888888888,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "end",
+            "t": 1.0,
+            "yaw": 0.0
+          }
+        ],
+        "warmupSeconds": 10.0
+      },
+      "absoluteKeyframes": [
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -0.484482079744339,
+                4.163491249084473,
+                -8.020232200622559
+              ],
+              "eye": [
+                7.729438781738281,
+                2.27831768989563,
+                -11.146185874938965
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 0.0,
+          "stage": "static"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -0.484482079744339,
+                4.163491249084473,
+                -8.020232200622559
+              ],
+              "eye": [
+                7.729438781738281,
+                2.27831768989563,
+                -11.146185874938965
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 2.5,
+          "stage": "first-visit"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -6.0921256404618,
+                4.163491249084473,
+                -5.886143707625141
+              ],
+              "eye": [
+                2.12179522102082,
+                2.27831768989563,
+                -9.012097381941548
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 10.0,
+          "stage": "near-wall"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                1.4835184214141535,
+                4.163491249084473,
+                -0.24667183495550882
+              ],
+              "eye": [
+                2.12179522102082,
+                2.27831768989563,
+                -9.012097381941548
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 13.333333333333332,
+          "stage": "turn"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -4.1826338924834205,
+                4.163491249084473,
+                -15.135352712684481
+              ],
+              "eye": [
+                2.12179522102082,
+                2.27831768989563,
+                -9.012097381941548
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 20.0,
+          "stage": "return"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -0.484482079744339,
+                4.163491249084473,
+                -8.020232200622559
+              ],
+              "eye": [
+                7.729438781738281,
+                2.27831768989563,
+                -11.146185874938965
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 26.666666666666664,
+          "stage": "settle"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -0.484482079744339,
+                4.163491249084473,
+                -8.020232200622559
+              ],
+              "eye": [
+                7.729438781738281,
+                2.27831768989563,
+                -11.146185874938965
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 30.0,
+          "stage": "end"
+        }
+      ],
+      "outputExtent": [
+        1797,
+        660
+      ],
+      "renderExtent": [
+        1198,
+        440
+      ],
+      "graph": [
+        {
+          "name": "VBuffer",
+          "properties": {
+            "asyncSoftwareRaster": false,
+            "autoBuildStreamAsset": false,
+            "autoLod": true,
+            "coldPageRetentionFrames": 120,
+            "compactClas": true,
+            "compactShadingAttributes": true,
+            "distributedDemandMinGroups": 65536,
+            "distributedPageDemand": true,
+            "enableClas": true,
+            "enableClusterRtx": true,
+            "enableMeshletStreaming": true,
+            "hybridRaster": true,
+            "instanceFrustumCull": true,
+            "instanceHzbCull": true,
+            "lodPixelError": 1.5,
+            "materialTextureBudgetMiB": 512,
+            "materialTextureColdFrames": 180,
+            "materialTextureMaskMaxDimension": 512,
+            "materialTextureMaxDimension": 128,
+            "materialTextureRefineDimension": 512,
+            "materialTextureStreaming": true,
+            "maxActiveGroups": 1048575,
+            "maxBlasBytes": 536870912,
+            "maxClasBuildClusters": 8192,
+            "maxClasBytes": 2147483648,
+            "maxGpuPageRequests": 65536,
+            "maxGpuPageUnloadRequests": 65536,
+            "maxLockedFallbackPages": 65536,
+            "maxPageLoadsInFlight": 1024,
+            "maxPageUploadsPerFrame": 256,
+            "maxResidentBytes": 3758096384,
+            "maxResidentPages": 0,
+            "maxTraversalWorkItems": 1048576,
+            "maxTraversalWorkers": 4096,
+            "maxUploadBytesPerFrame": 8388608,
+            "meshletFrustumCull": true,
+            "meshletNormalConeCull": false,
+            "pageLoadConcurrency": 4,
+            "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+            "sceneBinding": "asset",
+            "streamAssetOnly": true,
+            "streamAssetPath": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+            "viewBinding": "global",
+            "visualization": "none"
+          },
+          "type": "VisibilityBufferPass"
+        },
+        {
+          "name": "Shadows",
+          "properties": {
+            "materialTextureBudgetMiB": 512,
+            "materialTextureColdFrames": 180,
+            "materialTextureMaskMaxDimension": 512,
+            "materialTextureMaxDimension": 128,
+            "materialTextureRefineDimension": 512,
+            "materialTextureStreaming": true,
+            "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+            "rayTracedShadows": true,
+            "shadowAngularRadius": 0.266,
+            "shadowBias": 0.01,
+            "shadowLightIndex": -1,
+            "shadowLightRadius": 0.05,
+            "shadowRayLength": 100000.0,
+            "sigmaDenoise": true,
+            "sigmaHistoryLength": 5
+          },
+          "type": "RayTracedShadowPass"
+        },
+        {
+          "name": "Deferred",
+          "properties": {
+            "accumulate": false,
+            "exportUpscalerGuides": true,
+            "lightingMode": "realtime",
+            "materialBinning": true,
+            "materialTextureBudgetMiB": 512,
+            "materialTextureColdFrames": 180,
+            "materialTextureMaskMaxDimension": 512,
+            "materialTextureMaxDimension": 128,
+            "materialTextureRefineDimension": 512,
+            "materialTextureStreaming": true,
+            "outputLinear": true,
+            "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf"
+          },
+          "type": "VisibilityBufferDeferredPass"
+        },
+        {
+          "name": "DlssSr",
+          "properties": {
+            "exportOutputGuides": true,
+            "mode": "Quality"
+          },
+          "type": "StreamlineDlssSrPass"
+        },
+        {
+          "name": "AutoExposure",
+          "properties": {},
+          "type": "AutoExposurePass"
+        },
+        {
+          "name": "DlssNr",
+          "properties": {
+            "depthInverted": false,
+            "enabled": false,
+            "fallbackToInput": true,
+            "intensity": 1.0,
+            "preset": 0,
+            "style": 0
+          },
+          "type": "DlssNrPass"
+        },
+        {
+          "name": "FinalBlit",
+          "properties": {},
+          "type": "FinalBlitPass"
+        }
+      ],
+      "hidden": true,
+      "vsync": true,
+      "validationRequested": false
+    }
+  },
+  "roamAfter": {
+    "source": "build-release\\full-hzb-history-roam\\run1",
+    "frameMs": {
+      "count": 604,
+      "mean": 49.68463509933775,
+      "p50": 48.9004,
+      "p95": 61.0361,
+      "p99": 66.0871,
+      "max": 71.892
+    },
+    "overBudget": 604,
+    "sampledRouteMeets30Fps": false,
+    "diagnosticRun": false,
+    "missingGpuFrames": 0,
+    "historyValidFrames": 604,
+    "drainReasons": {
+      "4": 604
+    },
+    "scopes": {
+      "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight": {
+        "cpuMs": {
+          "count": 604,
+          "mean": 3.7068087748344367,
+          "p50": 3.5094,
+          "p95": 5.6543,
+          "p99": 7.4635,
+          "max": 10.4102
+        },
+        "gpuMs": null
+      },
+      "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Prior frame drain": {
+        "cpuMs": {
+          "count": 604,
+          "mean": 16.73877450331126,
+          "p50": 17.5553,
+          "p95": 21.8877,
+          "p99": 23.7723,
+          "max": 25.8684
+        },
+        "gpuMs": null
+      },
+      "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope": {
+        "cpuMs": {
+          "count": 604,
+          "mean": 23.71976920529801,
+          "p50": 23.3922,
+          "p95": 32.2133,
+          "p99": 37.4182,
+          "max": 42.9495
+        },
+        "gpuMs": {
+          "count": 604,
+          "mean": 25.616494728476823,
+          "p50": 26.236928,
+          "p95": 31.851104,
+          "p99": 32.602848,
+          "max": 34.792896
+        }
+      },
+      "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster": {
+        "cpuMs": {
+          "count": 604,
+          "mean": 0.004893543046357616,
+          "p50": 0.0044,
+          "p95": 0.0069,
+          "p99": 0.009,
+          "max": 0.0321
+        },
+        "gpuMs": {
+          "count": 604,
+          "mean": 9.201277298013244,
+          "p50": 9.892448,
+          "p95": 14.151936,
+          "p99": 14.789024,
+          "max": 15.077344
+        }
+      },
+      "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream late/Software raster": {
+        "cpuMs": {
+          "count": 604,
+          "mean": 0.003657119205298013,
+          "p50": 0.0032,
+          "p95": 0.0054,
+          "p99": 0.0072,
+          "max": 0.0113
+        },
+        "gpuMs": {
+          "count": 604,
+          "mean": 0.6849153377483445,
+          "p50": 0.587392,
+          "p95": 1.328416,
+          "p99": 1.697408,
+          "max": 1.908352
+        }
+      }
+    },
+    "conditions": {
+      "config": {
+        "distance": 6.0,
+        "durationSeconds": 30.0,
+        "keyframes": [
+          {
+            "forward": 0.0,
+            "stage": "static",
+            "t": 0.0,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "first-visit",
+            "t": 0.08333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "near-wall",
+            "t": 0.3333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "turn",
+            "t": 0.4444444444444444,
+            "yaw": 65.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "return",
+            "t": 0.6666666666666666,
+            "yaw": -65.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "settle",
+            "t": 0.8888888888888888,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "end",
+            "t": 1.0,
+            "yaw": 0.0
+          }
+        ],
+        "warmupSeconds": 10.0
+      },
+      "absoluteKeyframes": [
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -0.484482079744339,
+                4.163491249084473,
+                -8.020232200622559
+              ],
+              "eye": [
+                7.729438781738281,
+                2.27831768989563,
+                -11.146185874938965
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 0.0,
+          "stage": "static"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -0.484482079744339,
+                4.163491249084473,
+                -8.020232200622559
+              ],
+              "eye": [
+                7.729438781738281,
+                2.27831768989563,
+                -11.146185874938965
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 2.5,
+          "stage": "first-visit"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -6.0921256404618,
+                4.163491249084473,
+                -5.886143707625141
+              ],
+              "eye": [
+                2.12179522102082,
+                2.27831768989563,
+                -9.012097381941548
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 10.0,
+          "stage": "near-wall"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                1.4835184214141535,
+                4.163491249084473,
+                -0.24667183495550882
+              ],
+              "eye": [
+                2.12179522102082,
+                2.27831768989563,
+                -9.012097381941548
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 13.333333333333332,
+          "stage": "turn"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -4.1826338924834205,
+                4.163491249084473,
+                -15.135352712684481
+              ],
+              "eye": [
+                2.12179522102082,
+                2.27831768989563,
+                -9.012097381941548
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 20.0,
+          "stage": "return"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -0.484482079744339,
+                4.163491249084473,
+                -8.020232200622559
+              ],
+              "eye": [
+                7.729438781738281,
+                2.27831768989563,
+                -11.146185874938965
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 26.666666666666664,
+          "stage": "settle"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                -0.484482079744339,
+                4.163491249084473,
+                -8.020232200622559
+              ],
+              "eye": [
+                7.729438781738281,
+                2.27831768989563,
+                -11.146185874938965
+              ],
+              "fovDegrees": 60.00000762939453,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 30.0,
+          "stage": "end"
+        }
+      ],
+      "outputExtent": [
+        1797,
+        660
+      ],
+      "renderExtent": [
+        1198,
+        440
+      ],
+      "graph": [
+        {
+          "name": "VBuffer",
+          "properties": {
+            "asyncSoftwareRaster": false,
+            "autoBuildStreamAsset": false,
+            "autoLod": true,
+            "coldPageRetentionFrames": 120,
+            "compactClas": true,
+            "compactShadingAttributes": true,
+            "distributedDemandMinGroups": 65536,
+            "distributedPageDemand": true,
+            "enableClas": true,
+            "enableClusterRtx": true,
+            "enableMeshletStreaming": true,
+            "hybridRaster": true,
+            "instanceFrustumCull": true,
+            "instanceHzbCull": true,
+            "lodPixelError": 1.5,
+            "materialTextureBudgetMiB": 512,
+            "materialTextureColdFrames": 180,
+            "materialTextureMaskMaxDimension": 512,
+            "materialTextureMaxDimension": 128,
+            "materialTextureRefineDimension": 512,
+            "materialTextureStreaming": true,
+            "maxActiveGroups": 1048575,
+            "maxBlasBytes": 536870912,
+            "maxClasBuildClusters": 8192,
+            "maxClasBytes": 2147483648,
+            "maxGpuPageRequests": 65536,
+            "maxGpuPageUnloadRequests": 65536,
+            "maxLockedFallbackPages": 65536,
+            "maxPageLoadsInFlight": 1024,
+            "maxPageUploadsPerFrame": 256,
+            "maxResidentBytes": 3758096384,
+            "maxResidentPages": 0,
+            "maxTraversalWorkItems": 1048576,
+            "maxTraversalWorkers": 4096,
+            "maxUploadBytesPerFrame": 8388608,
+            "meshletFrustumCull": true,
+            "meshletNormalConeCull": false,
+            "pageLoadConcurrency": 4,
+            "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+            "sceneBinding": "asset",
+            "streamAssetOnly": true,
+            "streamAssetPath": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+            "viewBinding": "global",
+            "visualization": "none"
+          },
+          "type": "VisibilityBufferPass"
+        },
+        {
+          "name": "Shadows",
+          "properties": {
+            "materialTextureBudgetMiB": 512,
+            "materialTextureColdFrames": 180,
+            "materialTextureMaskMaxDimension": 512,
+            "materialTextureMaxDimension": 128,
+            "materialTextureRefineDimension": 512,
+            "materialTextureStreaming": true,
+            "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+            "rayTracedShadows": true,
+            "shadowAngularRadius": 0.266,
+            "shadowBias": 0.01,
+            "shadowLightIndex": -1,
+            "shadowLightRadius": 0.05,
+            "shadowRayLength": 100000.0,
+            "sigmaDenoise": true,
+            "sigmaHistoryLength": 5
+          },
+          "type": "RayTracedShadowPass"
+        },
+        {
+          "name": "Deferred",
+          "properties": {
+            "accumulate": false,
+            "exportUpscalerGuides": true,
+            "lightingMode": "realtime",
+            "materialBinning": true,
+            "materialTextureBudgetMiB": 512,
+            "materialTextureColdFrames": 180,
+            "materialTextureMaskMaxDimension": 512,
+            "materialTextureMaxDimension": 128,
+            "materialTextureRefineDimension": 512,
+            "materialTextureStreaming": true,
+            "outputLinear": true,
+            "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf"
+          },
+          "type": "VisibilityBufferDeferredPass"
+        },
+        {
+          "name": "DlssSr",
+          "properties": {
+            "exportOutputGuides": true,
+            "mode": "Quality"
+          },
+          "type": "StreamlineDlssSrPass"
+        },
+        {
+          "name": "AutoExposure",
+          "properties": {},
+          "type": "AutoExposurePass"
+        },
+        {
+          "name": "DlssNr",
+          "properties": {
+            "depthInverted": false,
+            "enabled": false,
+            "fallbackToInput": true,
+            "intensity": 1.0,
+            "preset": 0,
+            "style": 0
+          },
+          "type": "DlssNrPass"
+        },
+        {
+          "name": "FinalBlit",
+          "properties": {},
+          "type": "FinalBlitPass"
+        }
+      ],
+      "hidden": true,
+      "vsync": true,
+      "validationRequested": false
+    }
+  },
+  "sameRoamConfiguration": true
+}

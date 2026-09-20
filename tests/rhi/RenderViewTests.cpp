@@ -62,15 +62,55 @@ public:
             moved.jitter[2] != first.jitter[0] || moved.current.viewport[0] != 320.0f / 180.0f) {
             return RhiTestResult::fail("Rotation retains the previous view and jitter");
         }
+        // Reapplying the same camera is a successful setter, not a cut.
+        const auto stableRevision = view.revision();
+        if (!view.setCamera(view.camera()) || view.revision() != stableRevision ||
+            !view.constants(2, 320, 180, 640, 360, &moved).frame[1]) {
+            return RhiTestResult::fail("Identical camera retains temporal history");
+        }
+        camera = view.camera();
+        camera.eye[0] += 0.5f;
+        camera.center[0] += 0.5f;
+        if (!view.setCamera(camera) || !view.constants(2, 320, 180, 640, 360, &moved).frame[1]) {
+            return RhiTestResult::fail("Translation retains reprojection history");
+        }
+        if (view.constants(3, 320, 180, 640, 360, &moved).frame[1] ||
+            view.constants(2, 321, 180, 640, 360, &moved).frame[1] ||
+            view.constants(2, 320, 180, 641, 360, &moved).frame[1]) {
+            return RhiTestResult::fail("Frame gap and render/output resize invalidate history");
+        }
+        for (uint32_t change = 0; change < 4; ++change) {
+            auto before = view.constants(1, 320, 180, 640, 360);
+            camera = view.camera();
+            if (change == 0) { camera.orthographic = !camera.orthographic; }
+            if (change == 1) { camera.reversedZ = !camera.reversedZ; }
+            if (change == 2) { camera.nearPlane *= 2.0f; }
+            if (change == 3) { camera.farPlane *= 2.0f; }
+            if (!view.setCamera(camera) || view.constants(2, 320, 180, 640, 360, &before).frame[1]) {
+                return RhiTestResult::fail("Projection/depth convention change invalidates history");
+            }
+        }
         view.cameraCut();
         if (view.constants(2, 320, 180, 640, 360, &moved).frame[1] ||
             view.constants(2, 321, 181, 640, 360, &moved).frame[1]) { return RhiTestResult::fail("Cut/resize invalidates history"); }
         camera.up = {0, 0, 0};
         if (view.setCamera(camera)) { return RhiTestResult::fail("Reject invalid view without replacing it"); }
         render::HistoryResourceManager history;
+        if (!history.initialize(context.device) || !history.ensureBuffer("accumulation", {
+                .size = 64, .usage = render::BufferUsageBits::Storage})) {
+            return RhiTestResult::fail("Initialize progressive history fixture");
+        }
+        history.beginFrame(0);
+        history.markWritten("accumulation");
+        history.beginFrame(1);
+        if (!history.hasPrevious("accumulation")) { return RhiTestResult::fail("Progressive history fixture is not valid"); }
         auto revision = history.reprojectionInvalidationRevision();
+        const auto accumulationRevision = history.invalidationRevision();
         history.invalidateAll(render::HistoryInvalidationReason::CameraMotion);
-        if (history.reprojectionInvalidationRevision() != revision) { return RhiTestResult::fail("Motion retains reprojection history"); }
+        if (history.reprojectionInvalidationRevision() != revision ||
+            history.invalidationRevision() == accumulationRevision || history.hasPrevious("accumulation")) {
+            return RhiTestResult::fail("Motion must reset progressive accumulation while retaining reprojection history");
+        }
         history.invalidateAll();
         if (history.reprojectionInvalidationRevision() == revision) { return RhiTestResult::fail("Scene edits reset reprojection history"); }
 

@@ -952,7 +952,7 @@ public:
         sceneContentRevision_ = runtimeContentRevision;
         sceneMaterialRevision_ = runtimeScene != nullptr ? runtimeScene->materialRevision() : 0;
         compiledScene_ = runtimeScene;
-        observedHistoryInvalidationRevision_ = 0;
+        observedReprojectionInvalidationRevision_ = 0;
         previousParams_ = params;
         return {};
     }
@@ -1046,11 +1046,14 @@ public:
         }
         bool cameraCut = false;
         if (HistoryResourceManager* historyResources = context.historyResources()) {
+            // CameraMotion resets progressive accumulation, but the previous
+            // camera still projects into the previous HZB. Only discontinuities
+            // invalidate that history; ordinary motion uses two-pass recovery.
             const uint64_t invalidationRevision =
-                historyResources->invalidationRevision();
-            cameraCut = observedHistoryInvalidationRevision_ != 0 &&
-                observedHistoryInvalidationRevision_ != invalidationRevision;
-            observedHistoryInvalidationRevision_ = invalidationRevision;
+                historyResources->reprojectionInvalidationRevision();
+            cameraCut = observedReprojectionInvalidationRevision_ != 0 &&
+                observedReprojectionInvalidationRevision_ != invalidationRevision;
+            observedReprojectionInvalidationRevision_ = invalidationRevision;
         }
         result = prepareGPUSceneView(*gpuSceneSubsystem, cameraCut, context.properties(), context.viewConstants());
         if (!result) {
@@ -5127,7 +5130,7 @@ private:
     uint64_t sceneStructuralRevision_ = 0;
     uint64_t sceneContentRevision_ = 0;
     uint64_t sceneMaterialRevision_ = 0;
-    uint64_t observedHistoryInvalidationRevision_ = 0;
+    uint64_t observedReprojectionInvalidationRevision_ = 0;
     uint64_t gpuSceneDrawSetRevision_ = 0;
     uint64_t gpuSceneViewAllocationId_ = 0;
     uint64_t bindingViewAllocationId_ = 0;
