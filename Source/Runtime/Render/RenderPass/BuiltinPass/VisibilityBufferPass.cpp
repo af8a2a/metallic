@@ -1012,6 +1012,7 @@ public:
         }
         activeFrameSlot_ = frameSlot;
         MeshletStreamFrameDesc streamFrame;
+        streamFrame.freezeRasterSnapshot = boolProperty(&context.properties(), "benchmarkFreezeStreaming", false);
         if (streamEnabled_) {
             gpuSceneLog.clear();
             result = syncStreamRuntimeScene(
@@ -1450,18 +1451,23 @@ private:
         hybridRasterizer_->begin(commandBuffer, softwareRasterMaxPixels(), reversedZ);
     }
 
-    void debugClusterBins(RenderGraphExecutionContext& context, std::string_view checkpoint)
+    void debugClusterBins(RenderGraphExecutionContext& context, std::string_view checkpoint, ResourceState state = ResourceState::ShaderRead)
     {
         if (!context.debugEnabled()) { return; }
         const std::string prefix = "hybrid." + context.passName() + ".";
         const DebugResourceBinding resources[] = {
             {.id = prefix + "clusters", .buffer = &hybridRasterizer_->clusterBuffer(),
-                .state = ResourceState::ShaderRead, .size = hybridRasterizer_->clusterBuffer().desc().size,
-                .metadata = {{"capacity", hybridRasterizer_->clusterCapacity()}, {"headerWords", 16},
-                    {"binCount", 5}, {"softwareBin", 4}, {"validity", "Each list has header[bin] live indices at 16 + bin * capacity"}}},
+                .state = state, .size = hybridRasterizer_->clusterBuffer().desc().size,
+                .metadata = state == ResourceState::General
+                    ? RenderGraphProperties{{"headerWords", 16}, {"exactWord", 0}, {"fastSoftwareWord", 1}, {"fastHardwareWord", 2},
+                        {"validity", "Post-cull counters; stable bin lists are not built yet"}}
+                    : RenderGraphProperties{{"capacity", hybridRasterizer_->clusterCapacity()}, {"headerWords", 16},
+                        {"binCount", 5}, {"softwareBin", 4}, {"validity", "Each list has header[bin] live indices at 16 + bin * capacity"}}},
             {.id = prefix + "arguments", .buffer = &hybridRasterizer_->clusterArguments(),
                 .state = ResourceState::IndirectArgument, .size = hybridRasterizer_->clusterArguments().desc().size}};
-        context.debugCheckpoint(checkpoint, resources);
+        // Before binning, the draw arguments are not ready for indirect use.
+        context.debugCheckpoint(checkpoint, std::span<const DebugResourceBinding>(
+            resources, state == ResourceState::General ? 1u : 2u));
     }
 
     static void dispatchClusterCandidates(CommandBuffer& commands, uint32_t count)
@@ -3136,6 +3142,7 @@ private:
                 .gpuSceneInstanceBuffer = streamGPUSceneInstanceHandle_.index,
                 .tessellationBuffer = tessellationEnabled() ? streamTessellationHandle_.index : UINT32_MAX,
                 .displacementBound = previousParams_.displacementBound,
+                .classificationFlags = boolProperty(&properties(), "metadataFastClassification", true) ? 0u : 1u,
                 .materialBuffer = streamMaterialHandle_.index,
                 .materialTextureRemapBuffer = streamMaterialTextureRemapHandle_.index,
                 .materialTextureCount = materialTextureCount_,
@@ -3301,6 +3308,8 @@ private:
         };
         const bool prebin = clusterPrebinEnabled();
         MeshletStreamUserPush push = streamRuntime_->userPush();
+        const bool forceHardware = prebin && !tessellationEnabled() &&
+            boolProperty(&properties(), "benchmarkForceHardwareRaster", false);
         push.hybridQueueBuffer = hybridRasterEnabled() && !prebin ? streamHybridQueueHandle_.index : UINT32_MAX;
         push.hybridClusterBuffer = prebin ? streamHybridClusterHandle_.index : UINT32_MAX;
         push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
@@ -3311,7 +3320,7 @@ private:
             auto binProfile = context.profileScope("Candidates");
             const uint32_t count = streamRuntime_->visibleClusterCapacity();
             result = hybridRasterizer_->beginClusters(commandBuffer,
-                softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.index, count, true, true, tessellationEnabled());
+                forceHardware ? 0.0f : softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.index, count, true, true, tessellationEnabled());
             if (!result) { return result; }
             commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: compact stream candidates"});
@@ -3328,15 +3337,17 @@ private:
             push.hybridQueueBuffer = UINT32_MAX;
             commandBuffer.endDebugLabel();
             if (!result) { return result; }
-            context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClusterCull" : "AfterStreamLateClusterCull");
-            binProfile.next("Soft/hard classification");
-            commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify stream clusters"});
-            commandBuffer.bindComputePipeline(*streamClusterBinPipeline_);
-            commandBuffer.pushBindlessData(&push, sizeof(push));
-            result = commandBuffer.dispatchIndirect(hybridRasterizer_->candidateArguments());
-            commandBuffer.endDebugLabel();
-            if (!result) { return result; }
-            context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClassify" : "AfterStreamLateClassify");
+            debugClusterBins(context, phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClusterCull" : "AfterStreamLateClusterCull", ResourceState::General);
+            if (!forceHardware) {
+                binProfile.next("Soft/hard classification");
+                commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify stream clusters"});
+                commandBuffer.bindComputePipeline(*streamClusterBinPipeline_);
+                commandBuffer.pushBindlessData(&push, sizeof(push));
+                result = commandBuffer.dispatchIndirect(hybridRasterizer_->candidateArguments());
+                commandBuffer.endDebugLabel();
+                if (!result) { return result; }
+                context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClassify" : "AfterStreamLateClassify");
+            }
             binProfile.next("Stable bins");
             result = hybridRasterizer_->finishClusterBins(commandBuffer);
             if (!result) { return result; }
@@ -3345,11 +3356,11 @@ private:
         } else if (hybridRasterEnabled()) {
             beginHybridRaster(commandBuffer, reversedZ);
         }
-        const bool async = !tessellationEnabled() && prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
+        const bool async = !forceHardware && !tessellationEnabled() && prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
             (phase == GPUSceneCullPhase::Early || boolProperty(&properties(), "asyncLateRaster", false)) &&
             context.supportsParallelCompute();
         const auto software = [&](CommandBuffer& commands) -> Result {
-            if (!prebin || tessellationEnabled()) { return {}; }
+            if (!prebin || tessellationEnabled() || forceHardware) { return {}; }
             auto profile = context.profileScope(commands, "Software raster");
             const BufferBarrierDesc acquires[] = {
                 {.buffer = &hybridRasterizer_->clusterBuffer(), .before = ResourceState::ShaderRead,
@@ -3406,6 +3417,7 @@ private:
             if (rasterResult) { rasterResult = hardware(commandBuffer); }
         }
         if (!rasterResult) { return rasterResult; }
+        if (forceHardware) { return {}; }
         auto mergeProfile = context.profileScope("Raster merge");
         context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyRaster" : "AfterStreamLateRaster");
         result = hybridRasterEnabled() ? hybridRasterizer_->resolve(context.commandBuffer(), visibilityTexture, visibility, depthTexture, depth, prebin) : Result{};

@@ -22,6 +22,15 @@ void referenceStreamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_Grou
     }
     GroupMemoryBarrierWithGroupSync();
     if (g_StreamBinVisible == 0u || g_StreamRasterCluster.triangleCount == 0u) { return; }
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> raster =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
+    // The retained reference predates Full coverage materials. Their HW-only
+    // contract is independent of the candidate scheduling being compared.
+    if (asfloat(bins[8]) == 0.0 || (g_StreamRasterCluster.instanceFlags & 12u) != 0u ||
+        raster[0].tessellationBuffer != 0xffffffffu) {
+        if (lane == 0u) { hybridClassifyCluster(bins, 0u, record, candidate); }
+        return;
+    }
     if (lane < g_StreamRasterCluster.vertexCount) { g_StreamRasterClip[lane] = streamClusterClip(g_StreamRasterCluster, lane, push); }
     GroupMemoryBarrierWithGroupSync();
     if (lane < g_StreamRasterCluster.triangleCount) {

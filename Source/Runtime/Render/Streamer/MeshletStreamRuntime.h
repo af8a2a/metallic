@@ -344,7 +344,7 @@ struct MeshletStreamGpuRasterBindings {
     uint32_t gpuSceneInstanceBuffer = UINT32_MAX;
     uint32_t tessellationBuffer = UINT32_MAX;
     float displacementBound = 0.0f;
-    uint32_t padding2 = 0;
+    uint32_t classificationFlags = 0; // bit 0: disable metadata fast classification
     uint32_t materialBuffer = UINT32_MAX;
     uint32_t materialTextureRemapBuffer = UINT32_MAX;
     uint32_t materialTextureCount = 0;
@@ -503,6 +503,8 @@ struct MeshletStreamFrameDesc {
     bool useSeparateRenderCamera = false;
     float jitterX = 0.0f;
     float jitterY = 0.0f;
+    // Diagnostic raster A/B: retain the last published GPU cut and page mappings.
+    bool freezeRasterSnapshot = false;
 };
 
 class MeshletStreamRuntime {
@@ -565,6 +567,7 @@ public:
 
 private:
     CpuProfileRecorder beginFrameCpuProfile_;
+    bool rasterSnapshotFrozen_ = false;
     std::shared_ptr<bool> blasCacheInitialized_ = std::make_shared<bool>(false);
     struct FrameUploads {
         std::unique_ptr<Buffer> params, raster, clear;

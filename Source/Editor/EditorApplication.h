@@ -55,6 +55,7 @@ private:
     bool runSliderDebugSmokeTest();
     bool runSceneSwitchSmokeTest();
     bool runZorahFullRoamBenchmark();
+    bool runZorahFullRasterComparison(const render::RenderGraphProperties& config, const std::filesystem::path& output);
     bool runDlssCameraSmokeTest();
     bool runVisibilityPreviewSmokeTest();
     bool runMaterialInspectorSmokeTest();

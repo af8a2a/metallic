@@ -338,6 +338,7 @@ set(METALLIC_EDITOR_SOURCES
     Editor/EditorDisplayRenderer.cpp
     Editor/EditorApplicationSmokeTests.cpp
     Editor/EditorFullRoamBenchmark.cpp
+    Editor/EditorRasterComparison.cpp
     Editor/EditorMaterialInspector.cpp
     Editor/EditorMaterialInspectorSmoke.cpp
     Editor/EditorSliderDebug.cpp

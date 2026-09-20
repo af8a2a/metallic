@@ -73,6 +73,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             std::ifstream input(path);
             config = Json::parse(input);
         }
+        if (config.value("rasterComparison", false)) { return runZorahFullRasterComparison(config, output); }
         const double duration = config.value("durationSeconds",180.0);
         const double warmup = config.value("warmupSeconds",5.0);
         const double distance = config.value("distance",6.0);

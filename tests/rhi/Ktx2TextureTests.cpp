@@ -579,14 +579,14 @@ public:
         uint64_t index = 0;
         CpuProfileRecorder textureProfile;
         bool sawTextureSchedule = false;
-        const auto tick = [&](bool visible, bool cancel=false) {
+        const auto tick = [&](bool visible, bool cancel=false, bool frozen=false) {
             require(frame.wait(),"feedback wait");
             require(pool->reset(),"feedback reset");
             require(frame.begin(index++),"feedback frame");
             require(commands->begin(&frame),"feedback begin");
             Buffer* feedback = nullptr;
             textureProfile.reset();
-            require(resources.beginTextureStreaming(*commands,index,feedback,&textureProfile),"streaming tick");
+            require(resources.beginTextureStreaming(*commands,index,feedback,&textureProfile,frozen),"streaming tick");
             for (size_t section=0; section<textureProfile.sections.size(); ++section) {
                 const auto& timing=textureProfile.sections[section];
                 require(timing.parent==UINT32_MAX || timing.parent<section,"Invalid texture profile parent");
@@ -621,6 +621,17 @@ public:
         require(resources.materialTextureFirstMips()[0]==initialMips[0],"Unseen texture refined");
         require(resources.materialTextureFirstMips()[299]==initialMips[299],"MASK floor moved");
         const auto hot = resources.textureStats();
+        // A frozen raster comparison must neither consume demand nor publish a
+        // replacement, even when enough frames pass to make these images cold.
+        const auto frozenMips = resources.materialTextureFirstMips();
+        const std::vector<uint32_t> frozenMipCopy(frozenMips.begin(),frozenMips.end());
+        for (uint32_t i=0;i<120;++i) { tick(false,false,true); }
+        require(frame.wait(),"frozen texture wait");
+        const auto frozenStats = resources.textureStats();
+        require(frozenStats.upgrades==hot.upgrades && frozenStats.downgrades==hot.downgrades &&
+            frozenStats.residentAllocationBytes==hot.residentAllocationBytes &&
+            std::equal(frozenMipCopy.begin(),frozenMipCopy.end(),resources.materialTextureFirstMips().begin()),
+            "Frozen texture publication changed residency");
         require(hot.upgrades==2 && hot.residentAllocationBytes>baseline,"Expected two physical tail upgrades");
         require(hot.peakLiveAllocationBytes<=hot.budgetBytes,"Migration exceeded combined old/new budget");
         require(frame.wait(),"sample refined wait");

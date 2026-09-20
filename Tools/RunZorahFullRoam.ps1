@@ -7,9 +7,15 @@ param(
     [int]$Height=0,
     [string]$RouteConfig='',
     [switch]$Validation,
+    [switch]$RasterComparison,
+    [switch]$MetadataComparison,
+    [ValidateRange(8,512)][int]$SampleFrames=64,
+    [ValidateRange(2,120)][int]$SettleFrames=8,
+    [ValidateRange(1,3)][int]$Rounds=3,
     [int]$TimeoutSeconds=900
 )
 $ErrorActionPreference='Stop'
+if ($MetadataComparison) { $RasterComparison=$true }
 $repo=Split-Path -Parent $PSScriptRoot
 $output=[IO.Path]::GetFullPath($OutputRoot)
 $exe=Join-Path $repo 'build-release/Source/MetallicGPUDrivenSample.exe'
@@ -23,6 +29,9 @@ if ($RouteConfig) {
     $config.warmupSeconds=$WarmupSeconds
 }
 if ($Width) { $config.width=$Width; $config.height=$Height }
+if ($RasterComparison) { $config.rasterComparison=$true; $config.sampleFrames=$SampleFrames; $config.settleFrames=$SettleFrames; $config.rounds=$Rounds }
+if ($MetadataComparison) { $config.metadataComparison=$true }
+$analyzer=if ($config.rasterComparison) {"AnalyzeZorahFullRasterComparison.py"} else {"AnalyzeZorahFullRoam.py"}
 New-Item -ItemType Directory -Path $output | Out-Null
 $config | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath (Join-Path $output 'Config.json') -Encoding utf8
 $keys=@('METALLIC_FULL_ROAM_OUTPUT','METALLIC_FULL_ROAM_CONFIG','METALLIC_FULL_ROAM_HIDDEN','METALLIC_NSIGHT_GRAPHICS_CAPTURE','METALLIC_DEBUG_CONTROL','METALLIC_DEBUG_VALIDATION')
@@ -36,7 +45,7 @@ function Get-ShaderDigest {
     try { return [Convert]::ToHexString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($records -join "`n")))) }
     finally { $hash.Dispose() }
 }
-$manifest=@{protocol='zorah-full-editor-roam-v1'; started=(Get-Date).ToString('o'); gitHead=(& git -C $repo rev-parse HEAD)
+$manifest=@{protocol=$(if ($RasterComparison) {'zorah-full-raster-comparison-v1'} else {'zorah-full-editor-roam-v1'}); started=(Get-Date).ToString('o'); gitHead=(& git -C $repo rev-parse HEAD)
     executableSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash; shaderSha256=(Get-ShaderDigest)
     config=$config; validation=[bool]$Validation; hidden=$true; runs=$Runs; gpu=(& nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader)
     dirty=(& git -C $repo status --short)
@@ -73,16 +82,17 @@ try {
             $capture=Get-Content -LiteralPath (Join-Path $directory 'Capture.json') -Raw | ConvertFrom-Json
             if ($capture.status -ne 'capture_complete') { throw "Capture failed: $($capture.error)" }
             if (Select-String -LiteralPath (Join-Path $directory 'stdout.log'),(Join-Path $directory 'stderr.log') -Pattern 'Validation Error|VUID-|DeviceLost' -Quiet) { throw 'Validation/device error in capture' }
-            python (Join-Path $PSScriptRoot 'AnalyzeZorahFullRoam.py') $directory
+            python (Join-Path $PSScriptRoot $analyzer) $directory
             if ($LASTEXITCODE -ne 0) { throw 'Capture analysis failed' }
-            Write-Output "Full roam $run/$Runs complete: $($capture.frames) frames, output $($capture.outputExtent), render $($capture.renderExtent)"
+            $frameCount=if ($RasterComparison) { ($capture.cases | Measure-Object -Property frames -Sum).Sum } else { $capture.frames }
+            Write-Output "Full capture $run/$Runs complete: $frameCount frames, output $($capture.outputExtent), render $($capture.renderExtent)"
         } finally {
             if ($null -ne $process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force }
             if (-not $competition.HasExited) { Stop-Process -Id $competition.Id -Force }
             if (-not $monitor.HasExited) { Stop-Process -Id $monitor.Id -Force }
         }
     }
-    python (Join-Path $PSScriptRoot 'AnalyzeZorahFullRoam.py') $output
+    python (Join-Path $PSScriptRoot $analyzer) $output
     if ($LASTEXITCODE -ne 0) { throw 'Cross-run conditions differ' }
     if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -ne $manifest.executableSha256 -or (Get-ShaderDigest) -ne $manifest.shaderSha256) { throw 'Binary or shader changed during replay' }
 } finally { foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key,$previous[$key],'Process') } }

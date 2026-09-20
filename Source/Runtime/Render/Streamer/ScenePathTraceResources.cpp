@@ -1654,7 +1654,7 @@ struct ScenePathTraceResources::Impl {
         textureMigration = std::move(migration);
     }
 
-    Result beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler)
+    Result beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler, bool freezePublication)
     {
         if (!emptyTextureFeedback) {
             std::unique_ptr<Buffer> buffer;
@@ -1669,7 +1669,7 @@ struct ScenePathTraceResources::Impl {
         auto* frame = commands.frameContext();
         if (!frame) { return {}; }
         frame->retain(emptyTextureFeedback);
-        if (!textureStreaming || baseTextureMips.empty()) { return {}; }
+        if (freezePublication || !textureStreaming || baseTextureMips.empty()) { return {}; }
         CpuProfileScope phase(profiler, "Consume texture feedback");
         streamingFrame = frameIndex;
         consumeTextureFeedback();
@@ -3508,9 +3508,9 @@ Result ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandBuf
     return impl_->uploadMaterialTextures(commandBuffer);
 }
 
-Result ScenePathTraceResources::beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler)
+Result ScenePathTraceResources::beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler, bool freezePublication)
 {
-    return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler);
+    return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler, freezePublication);
 }
 
 void ScenePathTraceResources::clear()

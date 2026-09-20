@@ -145,7 +145,7 @@ struct GPUDrivenStreamAssetRasterBindings
     uint gpuSceneInstanceBuffer;
     uint tessellationBuffer;
     float displacementBound;
-    uint padding2;
+    uint classificationFlags; // bit 0 disables metadata classification for A/B
     uint materialBuffer;
     uint materialTextureRemapBuffer;
     uint materialTextureCount;
@@ -3421,7 +3421,53 @@ struct StreamRasterCluster
     uint recordIndex;
     uint clusterIndex;
     uint instanceFlags;
+    float4 worldSphere;
+    uint classificationFlags;
+    bool forceHardware;
 };
+
+// A projected enclosing sphere bounds every triangle bbox, but a large sphere
+// does not imply any large triangle. Only accept SW here; uncertainty falls back.
+bool streamSphereFitsSoftware(StreamRasterCluster c, float2 viewport, float maxPixels)
+{
+    if (!all(isfinite(c.worldSphere)) || c.worldSphere.w < 0.0) { return false; }
+    GPUDrivenStreamAssetParams p = c.params;
+    GPUDrivenStreamAssetCameraData camera = currentStreamCamera(p);
+    float2 jitter = float2(0);
+    if (p.renderViewport.y > 0.0) {
+        camera.eye = p.renderEye; camera.center = p.renderCenter;
+        camera.upProjection = p.renderUpProjection; camera.viewport = p.renderViewport;
+        camera.clipOrtho = p.renderClipOrtho;
+        jitter = float2(p.renderEye.w, p.renderCenter.w);
+    }
+    float3 v = streamWorldToView(c.worldSphere.xyz, camera);
+    // Outward slack covers sphere/affine/view arithmetic; uncertain boundaries
+    // additionally retain a 1/16 pixel margin and use the exact classifier.
+    float magnitude = max(max(abs(c.worldSphere.x), abs(c.worldSphere.y)), abs(c.worldSphere.z)) +
+        max(max(abs(camera.eye.x), abs(camera.eye.y)), abs(camera.eye.z)) + 1.0;
+    float r = c.worldSphere.w * 1.0001 + magnitude * 0.000002;
+    float nearZ = max(camera.clipOrtho.x, 0.0001);
+    float farZ = max(camera.clipOrtho.y, nearZ + 0.0001);
+    if (!all(isfinite(v)) || v.z - r <= nearZ || v.z + r >= farZ) { return false; }
+    float2 lo = v.xy - r, hi = v.xy + r;
+    float aspect = max(camera.viewport.x, 0.001);
+    if (camera.upProjection.w > 0.5) {
+        float h = max(camera.clipOrtho.z * 0.5, 0.0001);
+        lo /= float2(h * aspect, h); hi /= float2(h * aspect, h);
+    } else {
+        // Interval division with strictly positive depth. Includes off-axis
+        // perspective growth and handles reflected/nonuniform instances.
+        float2 a = lo / (v.z - r), b = lo / (v.z + r);
+        float2 d = hi / (v.z - r), e = hi / (v.z + r);
+        float yScale = 1.0 / tan(clamp(camera.viewport.w, 0.017453292, 3.12413936) * 0.5);
+        lo = min(a,b) * float2(yScale / aspect,yScale);
+        hi = max(d,e) * float2(yScale / aspect,yScale);
+    }
+    float2 lower = (float2(lo.x, -hi.y) * 0.5 + 0.5) * viewport - jitter - 0.0625;
+    float2 upper = (float2(hi.x, -lo.y) * 0.5 + 0.5) * viewport - jitter + 0.0625;
+    return all(isfinite(lower)) && all(isfinite(upper)) && all(upper - lower <= maxPixels) &&
+        all(lower >= -32.0) && all(upper <= viewport + 32.0);
+}
 
 bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool publishRecord,
     GPUDrivenStreamAssetPush push, out StreamRasterCluster output, out bool retryLate)
@@ -3582,7 +3628,8 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
         asfloat(pageWords[clusterWord + 12u]),
         asfloat(pageWords[clusterWord + 13u]),
         asfloat(pageWords[clusterWord + 14u]));
-    float localSphereRadius = max(asfloat(pageWords[clusterWord + 15u]), 0.0);
+    float rawSphereRadius = asfloat(pageWords[clusterWord + 15u]);
+    float localSphereRadius = max(rawSphereRadius, 0.0);
     float3 worldSphereCenter =
         group.world0.xyz * localSphereCenter.x +
         group.world1.xyz * localSphereCenter.y +
@@ -3669,6 +3716,15 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     output.recordIndex = recordIndex;
     output.clusterIndex = clusterIndex;
     output.instanceFlags = instanceFlags;
+    // Include cancellation in local-to-world arithmetic in the fast-path
+    // slack; the culling sphere and exact classifier remain unchanged.
+    float3 affineMagnitude = abs(group.world0.xyz * localSphereCenter.x) +
+        abs(group.world1.xyz * localSphereCenter.y) + abs(group.world2.xyz * localSphereCenter.z) + abs(group.world3.xyz);
+    float affineSlack = max(max(affineMagnitude.x, affineMagnitude.y), affineMagnitude.z) * 0.000002;
+    output.worldSphere = float4(worldSphereCenter, worldSphereRadius + affineSlack);
+    output.classificationFlags = rasterBindings.classificationFlags |
+        ((!isfinite(rawSphereRadius) || rawSphereRadius < 0.0) ? 1u : 0u);
+    output.forceHardware = (instanceFlags & 12u) != 0u || rasterBindings.tessellationBuffer != 0xffffffffu;
     return true;
 }
 
@@ -3959,6 +4015,26 @@ void streamClusterCullMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, 
             InterlockedOr(bins[hybridRetryBase(bins[5]) + record / bins[13]], 1u << (record % bins[13]));
         }
     }
+    // Zero is an internal full-HW comparison mode, never a relaxed SW limit.
+    // Publish exactly the same survivors/records without a geometry-classify dispatch.
+    if (asfloat(bins[8]) == 0.0) {
+        if (visible) { hybridClassifyCluster(bins, 0u, bins[hybridCandidateBase(bins[5]) + candidate * 2u], candidate); }
+        return;
+    }
+    bool fastHardware = visible && (cluster.classificationFlags & 1u) == 0u && cluster.forceHardware;
+    bool fastSoftware = visible && (cluster.classificationFlags & 1u) == 0u && !cluster.forceHardware &&
+        streamSphereFitsSoftware(cluster, float2(bins[6], bins[7]), asfloat(bins[8]));
+    if (fastHardware || fastSoftware) {
+        hybridClassifyCluster(bins, fastHardware ? 0u : kHybridSoftwareBin,
+            bins[hybridCandidateBase(bins[5]) + candidate * 2u], candidate);
+    }
+    // These counters are diagnostic until stable binning replaces all five.
+    uint swCount = WaveActiveCountBits(fastSoftware), hwCount = WaveActiveCountBits(fastHardware);
+    if (WaveIsFirstLane()) {
+        if (swCount != 0u) { InterlockedAdd(bins[1], swCount); }
+        if (hwCount != 0u) { InterlockedAdd(bins[2], hwCount); }
+    }
+    visible = visible && !fastHardware && !fastSoftware;
     uint count = WaveActiveCountBits(visible);
     uint offset = WavePrefixCountBits(visible);
     uint base = 0u;

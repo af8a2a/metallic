@@ -1,3 +1,4 @@
+#include <limits>
 #include "RhiTest.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -83,7 +84,7 @@ public:
         const uint64_t binBytes = rasterizers[0].clusterBuffer().desc().size;
         const uint64_t recordBytes = inputs[Records]->desc().size;
         std::unique_ptr<Buffer> readback;
-        CLASSIFY_REQUIRE(device->createBuffer({.size = binBytes + recordBytes + 36,
+        CLASSIFY_REQUIRE(device->createBuffer({.size = binBytes + recordBytes + 52,
             .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, readback));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
@@ -92,11 +93,14 @@ public:
         CLASSIFY_REQUIRE(device->createCommandPool(*queue, pool));
         CLASSIFY_REQUIRE(pool->createCommandBuffer(commands));
         CLASSIFY_REQUIRE(device->createFence(false, fence));
+        bool sawFastSoftware = false, sawFastHardware = false;
         bool submitted = false, sawRetry = false, sawLate = false, sawSoftware = false, sawHardware = false, saw2D = false;
-        struct Case { uint32_t groups; float maxPixels; bool ortho; bool reversed; uint32_t culling; bool dense = false; bool jitter = false; };
+        struct Case { uint32_t groups; float maxPixels; bool ortho; bool reversed; uint32_t culling; bool dense = false; bool jitter = false; bool tessellation = false; };
         const Case cases[] = {{2305, 8, true, true, 0, true}, {0, 8, true, true, 28},
             {1, 1, false, true, 0}, {127, 8, false, false, 12}, {129, 32, true, false, 28},
-            {2305, 8, false, true, 28}, {129, 1, true, true, 28, false, true}, {1, 32, false, false, 0}};
+            {2305, 8, false, true, 28}, {129, 1, true, true, 28, false, true}, {1, 32, false, false, 0},
+            {129, 2, false, true, 0}, {129, 4, true, false, 0},
+            {2305, 0, true, true, 0, true}, {129, 0, false, true, 28}, {0, 0, true, false, 28}, {129, 8, true, true, 0, false, false, true}};
         size_t caseIndex = 0;
         for (const auto test : cases) {
             std::vector<uint8_t> page(pageBytes);
@@ -116,7 +120,9 @@ public:
                 cluster.vertexOffset = c * 128; cluster.vertexCount = 128;
                 cluster.triangleOffset = c * 128 * 3; cluster.triangleCount = kind == 6 ? 0 : 128;
                 cluster.boundingSphere[0] = kind == 7 ? 20.f : 0.f;
-                cluster.boundingSphere[2] = z; cluster.boundingSphere[3] = size * 2;
+                cluster.boundingSphere[2] = z; cluster.boundingSphere[3] = kind == 11 ? 2.1f : size * 2;
+                if (kind == 14) { cluster.boundingSphere[3] = std::numeric_limits<float>::quiet_NaN(); }
+                if (kind == 15) { cluster.boundingSphere[3] = -1.f; }
                 cluster.coneApexCutoff[2] = z; cluster.coneApexCutoff[3] = kind == 8 ? .5f : 1.f;
                 cluster.coneAxisLodError[2] = 1.f;
                 if (kind == 9) { cluster.vertexCount = 129; }
@@ -137,6 +143,7 @@ public:
                 g.clusterCount = 32; g.clusterSelectionMask = UINT32_MAX; g.gpuSceneInstanceIndex = i % instanceCount;
                 g.pageIndex = !test.dense && i % 13 == 0 ? 1 : !test.dense && i % 17 == 0 ? 2 : 0;
                 g.world0[0] = 1.f; g.world1[1] = !test.dense && i % 5 == 0 ? 2.f : 1.f; g.world2[2] = 1.f; g.world3[3] = 1.f;
+                if (!test.dense && i % 3 == 0) { g.world0[0] = -1.f; g.world1[0] = .3f; }
                 if (!test.dense && i % 7 == 0) { g.clusterSelectionMask = 0x80010001u; }
             }
             std::array<StreamPageTableEntry, 3> pages{};
@@ -159,12 +166,14 @@ public:
             MeshletStreamGpuRasterBindings bindings{.visibleClusterBuffer = handles[Records].index,
                 .instanceVisibilityBuffer = handles[Visibility].index, .hzbBuffer0 = handles[Hzb0].index, .hzbBuffer1 = handles[Hzb1].index,
                 .visibleRecordBase = 371, .visibleRecordCapacity = capacity, .hzbMipCount = 8, .hzbValid = 1,
-                .cullingFlags = test.culling, .width = 128, .height = 128, .gpuSceneInstanceBuffer = handles[Instances].index};
+                .cullingFlags = test.culling, .width = 128, .height = 128, .gpuSceneInstanceBuffer = handles[Instances].index,
+                .tessellationBuffer = test.tessellation ? 0u : UINT32_MAX,
+                .classificationFlags = test.dense ? 1u : 0u};
             std::array<uint32_t, instanceCount> visibility;
             std::array<GPUSceneGpuInstanceRecord, instanceCount> instances;
             for (uint32_t i = 0; i < instanceCount; ++i) {
                 visibility[i] = test.dense ? 1 : i % 4;
-                instances[i].identity[3] = i % 2 ? 6 : 0;
+                instances[i].identity[3] = i % 3 == 1 ? 6 : 0;
             }
             std::vector<float> hzb(hzbElements, test.reversed ? 0.f : 1.f);
             CLASSIFY_REQUIRE(upload(Hzb0, hzb.data(), hzb.size() * 4));
@@ -197,9 +206,19 @@ public:
                         .hybridQueueBuffer = handles[13 + schedule * 2].index, .hybridClusterBuffer = handles[12 + schedule * 2].index};
                     CLASSIFY_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, *pipelines[0], push));
                     if (schedule == 1) { CLASSIFY_REQUIRE(rasterizer.cullStreamClusters(*commands, *pipelines[1], push)); }
-                    commands->bindComputePipeline(*pipelines[schedule == 1 ? 2 : 3]);
-                    commands->pushBindlessData(&push, sizeof(push));
-                    CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
+                    if (schedule == 0 || test.maxPixels != 0) {
+                        commands->bindComputePipeline(*pipelines[schedule == 1 ? 2 : 3]);
+                        commands->pushBindlessData(&push, sizeof(push));
+                        CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
+                    }
+                    if (schedule == 1) {
+                        BufferBarrierDesc counterCopy{.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General, .after = ResourceState::TransferSource};
+                        commands->barrier({.buffers = &counterCopy, .bufferCount = 1});
+                        commands->copyBuffer({.source = &rasterizer.clusterBuffer(), .destination = readback.get(),
+                            .destinationOffset = binBytes + recordBytes + 36, .size = 16});
+                        std::swap(counterCopy.before,counterCopy.after);
+                        commands->barrier({.buffers = &counterCopy, .bufferCount = 1});
+                    }
                     CLASSIFY_REQUIRE(rasterizer.finishClusterBins(*commands));
                     const BufferBarrierDesc copies[] = {
                         {.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},
@@ -219,7 +238,7 @@ public:
                     readback->invalidate();
                     const auto* mapped = static_cast<const uint32_t*>(readback->map());
                     if (!mapped) { return RhiTestResult::fail("Cannot map classification output"); }
-                    std::vector<uint32_t> actual(mapped, mapped + (binBytes + recordBytes + 36) / 4);
+                    std::vector<uint32_t> actual(mapped, mapped + (binBytes + recordBytes + 52) / 4);
                     readback->unmap();
                     if (schedule == 0) { reference = std::move(actual); continue; }
                     bool equal = std::equal(reference.begin(), reference.begin() + 16, actual.begin());
@@ -233,8 +252,18 @@ public:
                             reference.begin() + 16 + bin * capacity + reference[bin], actual.begin() + 16 + bin * capacity);
                     }
                     const uint32_t* args = actual.data() + (binBytes + recordBytes) / 4;
-                    equal &= args[0] == std::min(visibleCount, 65535u) && args[1] == std::max(1u, (visibleCount + 65534u) / 65535u) && args[2] == 1;
-                    if (!equal) { return RhiTestResult::fail("Classification mismatch in case " + std::to_string(caseIndex) + " phase " + std::to_string(phase)); }
+                    const uint32_t* counters = actual.data() + (binBytes + recordBytes + 36) / 4;
+                    const uint32_t classifyCount = counters[0];
+                    if (test.maxPixels != 0) { equal &= classifyCount + counters[1] + counters[2] == visibleCount; }
+                    sawFastSoftware |= counters[1] != 0; sawFastHardware |= counters[2] != 0;
+                    equal &= args[0] == std::min(classifyCount, 65535u) && args[1] == std::max(1u, (classifyCount + 65534u) / 65535u) && args[2] == 1;
+                    if (test.maxPixels == 0) { equal &= actual[4] == 0; }
+                    if (!equal) {
+                        std::string detail;
+                        for (uint32_t i=0; i<16; ++i) { detail += " h"+std::to_string(i)+"="+std::to_string(reference[i])+"/"+std::to_string(actual[i]); }
+                        detail += " args="+std::to_string(args[0])+","+std::to_string(args[1]);
+                        return RhiTestResult::fail("Classification mismatch in case " + std::to_string(caseIndex) + " phase " + std::to_string(phase)+detail);
+                    }
                     sawHardware |= actual[0] != 0; sawSoftware |= actual[4] != 0; saw2D |= args[1] > 1;
                     sawLate |= phase == 1 && visibleCount != 0;
                     for (uint32_t i = 0; i < test.groups; ++i) { sawRetry |= actual[retryBase + i] != 0; }
@@ -242,8 +271,8 @@ public:
             }
             ++caseIndex;
         }
-        if (!sawRetry || !sawLate || !sawSoftware || !sawHardware || !saw2D) { return RhiTestResult::fail("Fixture did not exercise all required classification paths"); }
-        return RhiTestResult::pass("8 early/late GPU comparisons: stable bins/IDs, HZB retry, clip boundaries, malformed payload, 1/8/32px, jitter, 2D survivors and empty reuse");
+        if (!sawFastSoftware || !sawFastHardware || !sawRetry || !sawLate || !sawSoftware || !sawHardware || !saw2D) { return RhiTestResult::fail("Missing paths fastSW/HW,retry,late,SW,HW,2D=" + std::to_string(sawFastSoftware)+std::to_string(sawFastHardware)+std::to_string(sawRetry)+std::to_string(sawLate)+std::to_string(sawSoftware)+std::to_string(sawHardware)+std::to_string(saw2D)); }
+        return RhiTestResult::pass("14 early/late GPU comparisons with metadata fast SW/HW including cull-only full HW: stable bins/IDs, HZB retry, clip boundaries, malformed payload, 1/8/32px, jitter, 2D survivors and empty reuse");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamClusterClassificationTest);

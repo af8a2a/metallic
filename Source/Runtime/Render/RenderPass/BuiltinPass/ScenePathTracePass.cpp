@@ -1657,7 +1657,7 @@ public:
             Result streamingResult;
             {
                 CpuProfileScope profile(&textureProfile, "Texture streaming");
-                streamingResult = sceneResources_.beginTextureStreaming(context.commandBuffer(), context.frameIndex(), textureFeedback, &textureProfile);
+                streamingResult = sceneResources_.beginTextureStreaming(context.commandBuffer(), context.frameIndex(), textureFeedback, &textureProfile, properties().value("benchmarkFreezeStreaming", false));
             }
             context.publishCpuProfile(textureProfile.sections);
             if (!streamingResult) { return streamingResult; }

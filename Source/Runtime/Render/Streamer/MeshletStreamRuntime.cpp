@@ -2142,6 +2142,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
 
 void MeshletStreamRuntime::reset()
 {
+    rasterSnapshotFrozen_ = false;
     ++debugGeneration_;
     debugRequestSourceKnown_ = false;
     tlasBuilt_ = false;
@@ -2377,7 +2378,7 @@ Result MeshletStreamRuntime::cmdBeginFrame(
     const MeshletStreamFrameDesc& frame,
     const std::function<void()>& flushUploads)
 {
-    (void)frame;
+    rasterSnapshotFrozen_ = frame.freezeRasterSnapshot;
     if (!ready()) {
         return makeError(Error::InvalidArgument);
     }
@@ -2405,6 +2406,12 @@ Result MeshletStreamRuntime::cmdBeginFrame(
         currentUploadSlot_ = uploadSlot;
     }
     nextUpload.completion = commandBuffer.frameContext() ? commandBuffer.frameContext()->completion() : GpuCompletionPoint{};
+    if (rasterSnapshotFrozen_) {
+        // Rotate host-write frame slots, but do not publish completions, consume
+        // requests, reclaim pages or enqueue new geometry/CLAS work.
+        currentFrameUploadCount_ = 0;
+        return {};
+    }
     residency_.beginFrame(profiler);
     if (clasPool_ != nullptr) {
         profile.next("CLAS completion / expiry");
@@ -2497,6 +2504,12 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
         return makeError(Error::InvalidArgument);
     }
 
+    if (rasterSnapshotFrozen_) {
+        Result result = clearRequestBuffer(commandBuffer);
+        if (result) { result = updateParamsBuffer(frame); }
+        if (result) { result = transitionPageBufferForTraversal(commandBuffer); }
+        return result;
+    }
     if (checkpoint) { checkpoint("BeforeStreamUpdates"); }
     Result result = initializePageTableIfNeeded(commandBuffer);
     if (!result) {
@@ -2619,6 +2632,7 @@ Result MeshletStreamRuntime::cmdPostTraversal(CommandBuffer& commandBuffer)
 
 Result MeshletStreamRuntime::cmdEndFrame(CommandBuffer& commandBuffer)
 {
+    if (rasterSnapshotFrozen_) { return ready() ? Result{} : makeError(Error::InvalidArgument); }
     if (!ready()) {
         return makeError(Error::InvalidArgument);
     }

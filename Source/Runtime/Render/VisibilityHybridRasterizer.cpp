@@ -175,7 +175,13 @@ Result VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, float 
     uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact, bool tessellation)
 {
     if (inputCount > push_.clusterCapacity) { return makeError(Error::InvalidArgument); }
-    begin(commands, maxPixels, reversedZ);
+    // Full HW never touches the software queue/pixel buffers; retain their
+    // last resolved state so switching back to hybrid remains valid.
+    if (stream && maxPixels == 0.0f) {
+        push_.maxPixels = 0.0f;
+        push_.reversedZ = reversedZ ? 1u : 0u;
+    } else { begin(commands, maxPixels, reversedZ); }
+    commands.bindBindlessHeap(*heap_);
     push_.producerPixelBuffer = producerPixelBuffer;
     push_.inputClusterCount = inputCount;
     push_.streamMode = (stream ? 1u : 0u) | (tessellation ? 2u : 0u);

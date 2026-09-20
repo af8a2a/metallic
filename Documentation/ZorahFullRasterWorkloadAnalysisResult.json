@@ -1,0 +1,3068 @@
+{
+  "date": "2026-09-20",
+  "sourceHead": "736b277eea640e6b7c4f3b3806f7760b6ad8ccd9",
+  "naniteLocalVersion": "5.7.4",
+  "oldNsightExport": "E:\\metallic\\build-relwithdebinfo\\minizorah-nsight-20260913\\gpu-trace-clean\\BASE_UNLOCKED",
+  "oldNsightEvents": [
+    {
+      "tsvRowIncludingHeader": 13,
+      "event": "Hybrid raster: classify stream clusters",
+      "durationMs": 2.46848,
+      "rawMetrics": {
+        "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed": 20.1642,
+        "dram__sectors.avg.pct_of_peak_sustained_elapsed": 5.498,
+        "Top_Level_Triage.sm__average_thread_inst_executed_pred_on_per_inst_executed_realtime.ratio": 9.57051
+      },
+      "sampledWarpStatesPerCycle": {
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.00649457,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 9.36459,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.0947164,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 1.38504,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 1.71116,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.529068,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.17846,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0186836,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.000282521,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0139359,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0376124,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.819991,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.0909211,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.0162665
+      }
+    },
+    {
+      "tsvRowIncludingHeader": 15,
+      "event": "Hybrid raster: stream hardware clusters",
+      "durationMs": 0.911103,
+      "rawMetrics": {
+        "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed": 30.3701,
+        "dram__sectors.avg.pct_of_peak_sustained_elapsed": 8.45508,
+        "Top_Level_Triage.sm__average_thread_inst_executed_pred_on_per_inst_executed_realtime.ratio": 15.3115
+      },
+      "sampledWarpStatesPerCycle": {
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0165704,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 1.19602,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.173,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 2.24926,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 2.57332,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.71623,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.246596,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0520043,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.115091,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0513879,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 1.27373,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.239124,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.00637257
+      }
+    },
+    {
+      "tsvRowIncludingHeader": 28,
+      "event": "Hybrid raster: classify stream clusters",
+      "durationMs": 0.780447,
+      "rawMetrics": {
+        "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed": 20.2124,
+        "dram__sectors.avg.pct_of_peak_sustained_elapsed": 2.91807,
+        "Top_Level_Triage.sm__average_thread_inst_executed_pred_on_per_inst_executed_realtime.ratio": 4.10902
+      },
+      "sampledWarpStatesPerCycle": {
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0026856,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 11.1199,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.100264,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 1.41773,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 1.35688,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.388121,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.205647,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.00945589,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.00490925,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0335504,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.807413,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.0385883,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.00494745
+      }
+    },
+    {
+      "tsvRowIncludingHeader": 30,
+      "event": "Hybrid raster: stream hardware clusters",
+      "durationMs": 3.1e-05,
+      "rawMetrics": {
+        "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed": 0.0,
+        "dram__sectors.avg.pct_of_peak_sustained_elapsed": 0.692841,
+        "Top_Level_Triage.sm__average_thread_inst_executed_pred_on_per_inst_executed_realtime.ratio": 0.0
+      },
+      "sampledWarpStatesPerCycle": {
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.0
+      }
+    },
+    {
+      "tsvRowIncludingHeader": 39,
+      "event": "Hybrid raster: stream software clusters",
+      "durationMs": 1.01968,
+      "rawMetrics": {
+        "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed": 30.7579,
+        "dram__sectors.avg.pct_of_peak_sustained_elapsed": 9.15412,
+        "Top_Level_Triage.sm__average_thread_inst_executed_pred_on_per_inst_executed_realtime.ratio": 15.1499
+      },
+      "sampledWarpStatesPerCycle": {
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.01475,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 2.05094,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.201358,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 2.25343,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 2.73485,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.731355,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.225039,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0541218,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.111447,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0579139,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 1.28509,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.257862,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.00606463
+      }
+    },
+    {
+      "tsvRowIncludingHeader": 41,
+      "event": "Hybrid raster: stream software clusters",
+      "durationMs": 1e-06,
+      "rawMetrics": {
+        "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed": 0.0,
+        "dram__sectors.avg.pct_of_peak_sustained_elapsed": 0.0,
+        "Top_Level_Triage.sm__average_thread_inst_executed_pred_on_per_inst_executed_realtime.ratio": 0.0
+      },
+      "sampledWarpStatesPerCycle": {
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_drain.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_barrier.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_membar.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_sleeping.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_branch_resolving.avg.per_cycle_elapsed": 0.000520269,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_wait.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.per_cycle_elapsed": 0.000520269,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_short_scoreboard.avg.per_cycle_elapsed": 0.000520269,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_no_instruction.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_math_pipe_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_tex_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_rtcore.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_lg_throttle.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_mio_throttle_pipe_mio.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_dispatch_stall.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_selected.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_not_selected.avg.per_cycle_elapsed": 0.0,
+        "GPUTrace.PCSampler.tpc__warps_issue_stalled_misc.avg.per_cycle_elapsed": 0.0
+      }
+    }
+  ],
+  "fullP0Runs": [
+    {
+      "run": 1,
+      "sourceDirectory": "E:\\metallic\\build-release\\full-roam-p0-baseline\\run1",
+      "frameMs": {
+        "count": 1530,
+        "mean": 117.70096607843138,
+        "p50": 119.1265,
+        "p95": 134.4312,
+        "p99": 146.5383,
+        "max": 172.1353
+      },
+      "earlyScopes": [
+        {
+          "cpuOnly": false,
+          "id": 100,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1530,
+            "mean": 0.0324202614379085,
+            "p50": 0.0315,
+            "p95": 0.0479,
+            "p99": 0.0754,
+            "max": 0.3617
+          },
+          "gpuMs": {
+            "count": 1530,
+            "mean": 0.29874603921568627,
+            "p50": 0.286016,
+            "p95": 0.469568,
+            "p99": 0.779712,
+            "max": 1.37392
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 101,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1530,
+            "mean": 0.008228300653594771,
+            "p50": 0.0081,
+            "p95": 0.012,
+            "p99": 0.0188,
+            "max": 0.1041
+          },
+          "gpuMs": {
+            "count": 1530,
+            "mean": 0.5465825673202614,
+            "p50": 0.538496,
+            "p95": 0.826016,
+            "p99": 1.0568,
+            "max": 1.34128
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 102,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1530,
+            "mean": 0.0040113725490196084,
+            "p50": 0.004,
+            "p95": 0.0059,
+            "p99": 0.0082,
+            "max": 0.0885
+          },
+          "gpuMs": {
+            "count": 1530,
+            "mean": 21.818862075816995,
+            "p50": 22.475232,
+            "p95": 25.475488,
+            "p99": 26.306944,
+            "max": 28.408736
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 103,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1530,
+            "mean": 0.015819803921568627,
+            "p50": 0.0155,
+            "p95": 0.0226,
+            "p99": 0.0352,
+            "max": 0.2822
+          },
+          "gpuMs": {
+            "count": 1530,
+            "mean": 0.24589458823529414,
+            "p50": 0.225568,
+            "p95": 0.538048,
+            "p99": 0.856384,
+            "max": 1.213792
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 104,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1530,
+            "mean": 0.0051137908496732025,
+            "p50": 0.0048,
+            "p95": 0.0076,
+            "p99": 0.0122,
+            "max": 0.1167
+          },
+          "gpuMs": {
+            "count": 1530,
+            "mean": 50.564709166013074,
+            "p50": 51.876736,
+            "p95": 58.6896,
+            "p99": 60.701856,
+            "max": 66.184352
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 105,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1530,
+            "mean": 0.013656928104575163,
+            "p50": 0.0131,
+            "p95": 0.0197,
+            "p99": 0.0275,
+            "max": 0.1396
+          },
+          "gpuMs": {
+            "count": 1530,
+            "mean": 1.1560625986928104,
+            "p50": 1.0864,
+            "p95": 1.714304,
+            "p99": 1.95872,
+            "max": 2.738272
+          }
+        }
+      ],
+      "stageScopes": {
+        "static": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.030379338842975206,
+              "p50": 0.03,
+              "p95": 0.0472,
+              "p99": 0.0616,
+              "max": 0.0861
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 0.32274353719008264,
+              "p50": 0.297312,
+              "p95": 0.500096,
+              "p99": 0.912096,
+              "max": 0.92192
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.007369421487603306,
+              "p50": 0.0077,
+              "p95": 0.0109,
+              "p99": 0.0145,
+              "max": 0.0165
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 0.6177880330578512,
+              "p50": 0.56512,
+              "p95": 0.9696,
+              "p99": 1.118272,
+              "max": 1.288224
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.0035413223140495866,
+              "p50": 0.0037,
+              "p95": 0.0047,
+              "p99": 0.0059,
+              "max": 0.0073
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 24.677430743801654,
+              "p50": 24.674016,
+              "p95": 25.553824,
+              "p99": 26.2192,
+              "max": 26.336032
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.014442148760330578,
+              "p50": 0.0147,
+              "p95": 0.0206,
+              "p99": 0.0282,
+              "max": 0.0498
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 0.3009123966942149,
+              "p50": 0.238784,
+              "p95": 0.73232,
+              "p99": 0.8616,
+              "max": 0.992352
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.005423140495867769,
+              "p50": 0.0046,
+              "p95": 0.0074,
+              "p99": 0.0161,
+              "max": 0.075
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 57.209843834710746,
+              "p50": 57.106592,
+              "p95": 59.149952,
+              "p99": 59.75568,
+              "max": 59.75904
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.013837190082644626,
+              "p50": 0.0126,
+              "p95": 0.0183,
+              "p99": 0.0259,
+              "max": 0.1346
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 1.2745131900826445,
+              "p50": 1.259776,
+              "p95": 1.69888,
+              "p99": 1.934272,
+              "max": 2.191424
+            }
+          }
+        ],
+        "first-visit": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 371,
+              "mean": 0.03237547169811321,
+              "p50": 0.0311,
+              "p95": 0.054,
+              "p99": 0.0894,
+              "max": 0.2757
+            },
+            "gpuMs": {
+              "count": 371,
+              "mean": 0.3124920754716981,
+              "p50": 0.290176,
+              "p95": 0.562432,
+              "p99": 0.799424,
+              "max": 0.832448
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 371,
+              "mean": 0.008160377358490565,
+              "p50": 0.0079,
+              "p95": 0.0121,
+              "p99": 0.0192,
+              "max": 0.0954
+            },
+            "gpuMs": {
+              "count": 371,
+              "mean": 0.5626733369272238,
+              "p50": 0.542592,
+              "p95": 0.833408,
+              "p99": 0.890752,
+              "max": 1.0568
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 371,
+              "mean": 0.003856603773584906,
+              "p50": 0.0038,
+              "p95": 0.006,
+              "p99": 0.0086,
+              "max": 0.013
+            },
+            "gpuMs": {
+              "count": 371,
+              "mean": 22.940124118598384,
+              "p50": 22.89632,
+              "p95": 24.982208,
+              "p99": 25.805728,
+              "max": 26.308224
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 371,
+              "mean": 0.016085175202156334,
+              "p50": 0.0155,
+              "p95": 0.0234,
+              "p99": 0.0455,
+              "max": 0.1101
+            },
+            "gpuMs": {
+              "count": 371,
+              "mean": 0.2576438167115903,
+              "p50": 0.227968,
+              "p95": 0.522528,
+              "p99": 0.77104,
+              "max": 0.914144
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 371,
+              "mean": 0.005125606469002696,
+              "p50": 0.0048,
+              "p95": 0.0077,
+              "p99": 0.0105,
+              "max": 0.0847
+            },
+            "gpuMs": {
+              "count": 371,
+              "mean": 53.11469093261456,
+              "p50": 53.080128,
+              "p95": 57.676736,
+              "p99": 59.046464,
+              "max": 66.184352
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 371,
+              "mean": 0.013764959568733153,
+              "p50": 0.0129,
+              "p95": 0.0197,
+              "p99": 0.0296,
+              "max": 0.1396
+            },
+            "gpuMs": {
+              "count": 371,
+              "mean": 1.2492087547169812,
+              "p50": 1.190848,
+              "p95": 1.738208,
+              "p99": 1.95872,
+              "max": 2.738272
+            }
+          }
+        ],
+        "near-wall": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 163,
+              "mean": 0.03315276073619632,
+              "p50": 0.0326,
+              "p95": 0.048,
+              "p99": 0.0736,
+              "max": 0.176
+            },
+            "gpuMs": {
+              "count": 163,
+              "mean": 0.311863754601227,
+              "p50": 0.285728,
+              "p95": 0.570336,
+              "p99": 0.802464,
+              "max": 0.83008
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 163,
+              "mean": 0.008050920245398774,
+              "p50": 0.0082,
+              "p95": 0.0121,
+              "p99": 0.0175,
+              "max": 0.0217
+            },
+            "gpuMs": {
+              "count": 163,
+              "mean": 0.5632797055214724,
+              "p50": 0.54176,
+              "p95": 0.841792,
+              "p99": 0.896928,
+              "max": 1.104832
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 163,
+              "mean": 0.004250306748466257,
+              "p50": 0.004,
+              "p95": 0.0061,
+              "p99": 0.0224,
+              "max": 0.0371
+            },
+            "gpuMs": {
+              "count": 163,
+              "mean": 22.864149595092027,
+              "p50": 23.090144,
+              "p95": 25.394784,
+              "p99": 25.736832,
+              "max": 26.201888
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 163,
+              "mean": 0.01520920245398773,
+              "p50": 0.0153,
+              "p95": 0.0226,
+              "p99": 0.0478,
+              "max": 0.0493
+            },
+            "gpuMs": {
+              "count": 163,
+              "mean": 0.24966242944785275,
+              "p50": 0.224512,
+              "p95": 0.499136,
+              "p99": 0.803008,
+              "max": 1.060512
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 163,
+              "mean": 0.005004294478527608,
+              "p50": 0.0049,
+              "p95": 0.0074,
+              "p99": 0.0105,
+              "max": 0.0421
+            },
+            "gpuMs": {
+              "count": 163,
+              "mean": 52.81717516564417,
+              "p50": 52.621696,
+              "p95": 58.300896,
+              "p99": 58.827872,
+              "max": 58.96752
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 163,
+              "mean": 0.013677914110429446,
+              "p50": 0.0132,
+              "p95": 0.0203,
+              "p99": 0.0301,
+              "max": 0.0333
+            },
+            "gpuMs": {
+              "count": 163,
+              "mean": 1.0275086134969325,
+              "p50": 0.885312,
+              "p95": 1.613536,
+              "p99": 1.979808,
+              "max": 2.057952
+            }
+          }
+        ],
+        "turn": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 350,
+              "mean": 0.03233457142857143,
+              "p50": 0.0311,
+              "p95": 0.0451,
+              "p99": 0.0751,
+              "max": 0.3617
+            },
+            "gpuMs": {
+              "count": 350,
+              "mean": 0.28081206857142854,
+              "p50": 0.271072,
+              "p95": 0.430304,
+              "p99": 0.609568,
+              "max": 0.783168
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 350,
+              "mean": 0.008360857142857142,
+              "p50": 0.0081,
+              "p95": 0.0119,
+              "p99": 0.0273,
+              "max": 0.1041
+            },
+            "gpuMs": {
+              "count": 350,
+              "mean": 0.5146932114285715,
+              "p50": 0.49344,
+              "p95": 0.77904,
+              "p99": 1.103648,
+              "max": 1.183616
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 350,
+              "mean": 0.003918571428571428,
+              "p50": 0.004,
+              "p95": 0.006,
+              "p99": 0.0072,
+              "max": 0.0084
+            },
+            "gpuMs": {
+              "count": 350,
+              "mean": 20.258682605714284,
+              "p50": 20.469024,
+              "p95": 25.034272,
+              "p99": 25.85152,
+              "max": 26.775456
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 350,
+              "mean": 0.015195142857142857,
+              "p50": 0.0152,
+              "p95": 0.0228,
+              "p99": 0.0405,
+              "max": 0.0965
+            },
+            "gpuMs": {
+              "count": 350,
+              "mean": 0.21744530285714286,
+              "p50": 0.198176,
+              "p95": 0.416224,
+              "p99": 0.835168,
+              "max": 0.934368
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 350,
+              "mean": 0.005102857142857143,
+              "p50": 0.0047,
+              "p95": 0.0073,
+              "p99": 0.0103,
+              "max": 0.1167
+            },
+            "gpuMs": {
+              "count": 350,
+              "mean": 47.05969408,
+              "p50": 47.607552,
+              "p95": 58.141888,
+              "p99": 58.770496,
+              "max": 59.062208
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 350,
+              "mean": 0.013387142857142858,
+              "p50": 0.0128,
+              "p95": 0.0206,
+              "p99": 0.0302,
+              "max": 0.0505
+            },
+            "gpuMs": {
+              "count": 350,
+              "mean": 1.0394415542857143,
+              "p50": 0.9528,
+              "p95": 1.592576,
+              "p99": 1.803328,
+              "max": 2.04624
+            }
+          }
+        ],
+        "return": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 368,
+              "mean": 0.03214021739130435,
+              "p50": 0.032,
+              "p95": 0.0449,
+              "p99": 0.0584,
+              "max": 0.1442
+            },
+            "gpuMs": {
+              "count": 368,
+              "mean": 0.2812817391304348,
+              "p50": 0.254592,
+              "p95": 0.420928,
+              "p99": 0.779712,
+              "max": 1.37392
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 368,
+              "mean": 0.008533695652173913,
+              "p50": 0.0084,
+              "p95": 0.012,
+              "p99": 0.0174,
+              "max": 0.0964
+            },
+            "gpuMs": {
+              "count": 368,
+              "mean": 0.5003293913043478,
+              "p50": 0.441248,
+              "p95": 0.77296,
+              "p99": 1.094528,
+              "max": 1.320832
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 368,
+              "mean": 0.004270108695652174,
+              "p50": 0.004,
+              "p95": 0.006,
+              "p99": 0.0076,
+              "max": 0.0885
+            },
+            "gpuMs": {
+              "count": 368,
+              "mean": 19.444699826086957,
+              "p50": 18.418304,
+              "p95": 25.477696,
+              "p99": 27.08704,
+              "max": 28.408736
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 368,
+              "mean": 0.0171625,
+              "p50": 0.0162,
+              "p95": 0.0225,
+              "p99": 0.0334,
+              "max": 0.2822
+            },
+            "gpuMs": {
+              "count": 368,
+              "mean": 0.2196535652173913,
+              "p50": 0.163392,
+              "p95": 0.54896,
+              "p99": 0.88992,
+              "max": 1.0248
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 368,
+              "mean": 0.005003532608695652,
+              "p50": 0.0048,
+              "p95": 0.0076,
+              "p99": 0.0104,
+              "max": 0.0419
+            },
+            "gpuMs": {
+              "count": 368,
+              "mean": 45.13247947826087,
+              "p50": 42.644352,
+              "p95": 58.24864,
+              "p99": 61.70032,
+              "max": 62.644672
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 368,
+              "mean": 0.013612500000000001,
+              "p50": 0.0132,
+              "p95": 0.0192,
+              "p99": 0.0258,
+              "max": 0.0666
+            },
+            "gpuMs": {
+              "count": 368,
+              "mean": 1.113809304347826,
+              "p50": 1.065696,
+              "p95": 1.736704,
+              "p99": 2.07984,
+              "max": 2.154016
+            }
+          }
+        ],
+        "settle": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 157,
+              "mean": 0.0341859872611465,
+              "p50": 0.0328,
+              "p95": 0.0586,
+              "p99": 0.094,
+              "max": 0.1339
+            },
+            "gpuMs": {
+              "count": 157,
+              "mean": 0.3150650700636943,
+              "p50": 0.30144,
+              "p95": 0.473088,
+              "p99": 0.625888,
+              "max": 0.859808
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 157,
+              "mean": 0.008223566878980891,
+              "p50": 0.0081,
+              "p95": 0.0125,
+              "p99": 0.0338,
+              "max": 0.0472
+            },
+            "gpuMs": {
+              "count": 157,
+              "mean": 0.615851821656051,
+              "p50": 0.569472,
+              "p95": 0.909216,
+              "p99": 1.126304,
+              "max": 1.34128
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 157,
+              "mean": 0.00409171974522293,
+              "p50": 0.004,
+              "p95": 0.0058,
+              "p99": 0.0184,
+              "max": 0.0231
+            },
+            "gpuMs": {
+              "count": 157,
+              "mean": 24.923942522292993,
+              "p50": 24.842784,
+              "p95": 26.000064,
+              "p99": 26.641088,
+              "max": 27.0312
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 157,
+              "mean": 0.015133757961783439,
+              "p50": 0.0156,
+              "p95": 0.0215,
+              "p99": 0.0281,
+              "max": 0.0289
+            },
+            "gpuMs": {
+              "count": 157,
+              "mean": 0.2967459872611465,
+              "p50": 0.242944,
+              "p95": 0.65136,
+              "p99": 0.899776,
+              "max": 1.213792
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 157,
+              "mean": 0.005243949044585987,
+              "p50": 0.0048,
+              "p95": 0.0084,
+              "p99": 0.0235,
+              "max": 0.0245
+            },
+            "gpuMs": {
+              "count": 157,
+              "mean": 57.62559653503184,
+              "p50": 57.130624,
+              "p95": 60.610144,
+              "p99": 61.198048,
+              "max": 61.425248
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 157,
+              "mean": 0.013946496815286624,
+              "p50": 0.0136,
+              "p95": 0.0207,
+              "p99": 0.0249,
+              "max": 0.0349
+            },
+            "gpuMs": {
+              "count": 157,
+              "mean": 1.337152611464968,
+              "p50": 1.286912,
+              "p95": 1.813824,
+              "p99": 2.15664,
+              "max": 2.295616
+            }
+          }
+        ]
+      },
+      "pairedFrames": 1530,
+      "classificationSoftwarePearsonR": 0.9781717016854242,
+      "softwareToClassificationMedianRatio": 2.320337007686256
+    },
+    {
+      "run": 2,
+      "sourceDirectory": "E:\\metallic\\build-release\\full-roam-p0-baseline\\run2",
+      "frameMs": {
+        "count": 1518,
+        "mean": 118.64725019762847,
+        "p50": 119.7638,
+        "p95": 134.3076,
+        "p99": 152.7967,
+        "max": 295.1894
+      },
+      "earlyScopes": [
+        {
+          "cpuOnly": false,
+          "id": 100,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1518,
+            "mean": 0.03277812911725955,
+            "p50": 0.0315,
+            "p95": 0.0469,
+            "p99": 0.0807,
+            "max": 0.6453
+          },
+          "gpuMs": {
+            "count": 1518,
+            "mean": 0.29495005006587616,
+            "p50": 0.286528,
+            "p95": 0.463072,
+            "p99": 0.689856,
+            "max": 1.091232
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 101,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1518,
+            "mean": 0.00794433465085639,
+            "p50": 0.008,
+            "p95": 0.0113,
+            "p99": 0.0161,
+            "max": 0.1765
+          },
+          "gpuMs": {
+            "count": 1518,
+            "mean": 0.5451288326745718,
+            "p50": 0.538528,
+            "p95": 0.816896,
+            "p99": 1.044352,
+            "max": 1.57664
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 102,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1518,
+            "mean": 0.00376699604743083,
+            "p50": 0.0037,
+            "p95": 0.0055,
+            "p99": 0.0078,
+            "max": 0.066
+          },
+          "gpuMs": {
+            "count": 1518,
+            "mean": 21.920323246376814,
+            "p50": 22.58208,
+            "p95": 25.64864,
+            "p99": 26.27344,
+            "max": 27.126432
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 103,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1518,
+            "mean": 0.015538142292490119,
+            "p50": 0.0152,
+            "p95": 0.0223,
+            "p99": 0.0376,
+            "max": 0.2246
+          },
+          "gpuMs": {
+            "count": 1518,
+            "mean": 0.24502393675889325,
+            "p50": 0.225984,
+            "p95": 0.538496,
+            "p99": 0.79184,
+            "max": 1.306944
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 104,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1518,
+            "mean": 0.004973254281949935,
+            "p50": 0.0047,
+            "p95": 0.0071,
+            "p99": 0.0124,
+            "max": 0.1585
+          },
+          "gpuMs": {
+            "count": 1518,
+            "mean": 50.75244243478261,
+            "p50": 52.188992,
+            "p95": 58.82176,
+            "p99": 59.661408,
+            "max": 62.30336
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 105,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1518,
+            "mean": 0.013346376811594202,
+            "p50": 0.0129,
+            "p95": 0.0187,
+            "p99": 0.0281,
+            "max": 0.0883
+          },
+          "gpuMs": {
+            "count": 1518,
+            "mean": 1.1700856916996047,
+            "p50": 1.09552,
+            "p95": 1.74768,
+            "p99": 2.040064,
+            "max": 2.364544
+          }
+        }
+      ],
+      "stageScopes": {
+        "static": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 117,
+              "mean": 0.03427435897435898,
+              "p50": 0.0328,
+              "p95": 0.0587,
+              "p99": 0.0826,
+              "max": 0.1088
+            },
+            "gpuMs": {
+              "count": 117,
+              "mean": 0.3220682393162393,
+              "p50": 0.299616,
+              "p95": 0.501792,
+              "p99": 0.743776,
+              "max": 1.0312
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 117,
+              "mean": 0.007847008547008547,
+              "p50": 0.008,
+              "p95": 0.0118,
+              "p99": 0.0151,
+              "max": 0.0183
+            },
+            "gpuMs": {
+              "count": 117,
+              "mean": 0.600350905982906,
+              "p50": 0.562048,
+              "p95": 0.868224,
+              "p99": 1.030976,
+              "max": 1.110912
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 117,
+              "mean": 0.0039811965811965815,
+              "p50": 0.0037,
+              "p95": 0.0062,
+              "p99": 0.0238,
+              "max": 0.0265
+            },
+            "gpuMs": {
+              "count": 117,
+              "mean": 25.126921025641025,
+              "p50": 25.1248,
+              "p95": 26.341408,
+              "p99": 26.678176,
+              "max": 26.695328
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 117,
+              "mean": 0.014785470085470086,
+              "p50": 0.0146,
+              "p95": 0.0232,
+              "p99": 0.0325,
+              "max": 0.0372
+            },
+            "gpuMs": {
+              "count": 117,
+              "mean": 0.28814769230769227,
+              "p50": 0.241216,
+              "p95": 0.654336,
+              "p99": 0.864384,
+              "max": 0.92016
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 117,
+              "mean": 0.005571794871794872,
+              "p50": 0.0046,
+              "p95": 0.0077,
+              "p99": 0.0182,
+              "max": 0.0848
+            },
+            "gpuMs": {
+              "count": 117,
+              "mean": 57.91272205128205,
+              "p50": 57.992192,
+              "p95": 59.26208,
+              "p99": 60.607456,
+              "max": 60.618432
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 117,
+              "mean": 0.01403162393162393,
+              "p50": 0.0129,
+              "p95": 0.0234,
+              "p99": 0.0329,
+              "max": 0.0593
+            },
+            "gpuMs": {
+              "count": 117,
+              "mean": 1.314662564102564,
+              "p50": 1.253312,
+              "p95": 1.831616,
+              "p99": 2.21424,
+              "max": 2.364544
+            }
+          }
+        ],
+        "first-visit": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 373,
+              "mean": 0.03299731903485255,
+              "p50": 0.0313,
+              "p95": 0.049,
+              "p99": 0.1247,
+              "max": 0.3947
+            },
+            "gpuMs": {
+              "count": 373,
+              "mean": 0.31015129222520105,
+              "p50": 0.29296,
+              "p95": 0.475968,
+              "p99": 0.660448,
+              "max": 1.091232
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 373,
+              "mean": 0.008332439678284183,
+              "p50": 0.0079,
+              "p95": 0.012,
+              "p99": 0.0231,
+              "max": 0.1765
+            },
+            "gpuMs": {
+              "count": 373,
+              "mean": 0.5631611367292225,
+              "p50": 0.54064,
+              "p95": 0.777024,
+              "p99": 1.005472,
+              "max": 1.57664
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 373,
+              "mean": 0.003720911528150134,
+              "p50": 0.0036,
+              "p95": 0.0059,
+              "p99": 0.009,
+              "max": 0.024
+            },
+            "gpuMs": {
+              "count": 373,
+              "mean": 22.81382674530831,
+              "p50": 22.901216,
+              "p95": 24.99424,
+              "p99": 25.679488,
+              "max": 26.328832
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 373,
+              "mean": 0.015920375335120644,
+              "p50": 0.0155,
+              "p95": 0.0227,
+              "p99": 0.0369,
+              "max": 0.2246
+            },
+            "gpuMs": {
+              "count": 373,
+              "mean": 0.2684738230563003,
+              "p50": 0.228448,
+              "p95": 0.570304,
+              "p99": 0.957312,
+              "max": 1.306944
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 373,
+              "mean": 0.004887131367292225,
+              "p50": 0.0047,
+              "p95": 0.0077,
+              "p99": 0.0115,
+              "max": 0.0412
+            },
+            "gpuMs": {
+              "count": 373,
+              "mean": 52.59181228954424,
+              "p50": 52.68768,
+              "p95": 56.529184,
+              "p99": 57.37744,
+              "max": 57.820192
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 373,
+              "mean": 0.013179892761394103,
+              "p50": 0.0128,
+              "p95": 0.0198,
+              "p99": 0.0259,
+              "max": 0.0469
+            },
+            "gpuMs": {
+              "count": 373,
+              "mean": 1.2629480321715818,
+              "p50": 1.233824,
+              "p95": 1.822368,
+              "p99": 2.05888,
+              "max": 2.281184
+            }
+          }
+        ],
+        "near-wall": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.0360639751552795,
+              "p50": 0.0316,
+              "p95": 0.0529,
+              "p99": 0.0807,
+              "max": 0.6453
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 0.3003531925465839,
+              "p50": 0.280448,
+              "p95": 0.446144,
+              "p99": 0.718848,
+              "max": 0.796128
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.00777639751552795,
+              "p50": 0.008,
+              "p95": 0.0107,
+              "p99": 0.0149,
+              "max": 0.0153
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 0.5752224596273292,
+              "p50": 0.53248,
+              "p95": 0.880608,
+              "p99": 1.43456,
+              "max": 1.444736
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.0035795031055900622,
+              "p50": 0.0036,
+              "p95": 0.0055,
+              "p99": 0.0064,
+              "max": 0.0066
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 22.721127354037268,
+              "p50": 23.058752,
+              "p95": 25.559744,
+              "p99": 26.361088,
+              "max": 26.44448
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.015173291925465838,
+              "p50": 0.0154,
+              "p95": 0.0227,
+              "p99": 0.0376,
+              "max": 0.0534
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 0.24781098136645963,
+              "p50": 0.222368,
+              "p95": 0.480928,
+              "p99": 0.744064,
+              "max": 0.836512
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.004942857142857143,
+              "p50": 0.0048,
+              "p95": 0.0075,
+              "p99": 0.0136,
+              "max": 0.0139
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 52.58173614906832,
+              "p50": 52.875552,
+              "p95": 58.914976,
+              "p99": 59.588096,
+              "max": 59.799488
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.013932298136645963,
+              "p50": 0.0131,
+              "p95": 0.0195,
+              "p99": 0.0304,
+              "max": 0.0768
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 0.9948972919254658,
+              "p50": 0.894784,
+              "p95": 1.445312,
+              "p99": 1.636992,
+              "max": 1.652672
+            }
+          }
+        ],
+        "turn": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 339,
+              "mean": 0.033260766961651915,
+              "p50": 0.0313,
+              "p95": 0.0479,
+              "p99": 0.0889,
+              "max": 0.455
+            },
+            "gpuMs": {
+              "count": 339,
+              "mean": 0.28351801769911505,
+              "p50": 0.269088,
+              "p95": 0.468032,
+              "p99": 0.669312,
+              "max": 0.943872
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 339,
+              "mean": 0.007865486725663716,
+              "p50": 0.0079,
+              "p95": 0.012,
+              "p99": 0.0151,
+              "max": 0.0336
+            },
+            "gpuMs": {
+              "count": 339,
+              "mean": 0.5191866902654867,
+              "p50": 0.491552,
+              "p95": 0.843776,
+              "p99": 1.078528,
+              "max": 1.188928
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 339,
+              "mean": 0.0037389380530973453,
+              "p50": 0.0037,
+              "p95": 0.0056,
+              "p99": 0.0075,
+              "max": 0.02
+            },
+            "gpuMs": {
+              "count": 339,
+              "mean": 20.594007032448378,
+              "p50": 20.759232,
+              "p95": 25.517664,
+              "p99": 26.324608,
+              "max": 26.960544
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 339,
+              "mean": 0.01620265486725664,
+              "p50": 0.0149,
+              "p95": 0.0236,
+              "p99": 0.0674,
+              "max": 0.1888
+            },
+            "gpuMs": {
+              "count": 339,
+              "mean": 0.22910329203539823,
+              "p50": 0.196544,
+              "p95": 0.55296,
+              "p99": 0.79184,
+              "max": 1.104736
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 339,
+              "mean": 0.005318289085545723,
+              "p50": 0.0047,
+              "p95": 0.007,
+              "p99": 0.0169,
+              "max": 0.1585
+            },
+            "gpuMs": {
+              "count": 339,
+              "mean": 47.80374418879056,
+              "p50": 48.443296,
+              "p95": 58.9592,
+              "p99": 59.91152,
+              "max": 62.30336
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 339,
+              "mean": 0.013551622418879057,
+              "p50": 0.0129,
+              "p95": 0.0201,
+              "p99": 0.0292,
+              "max": 0.0883
+            },
+            "gpuMs": {
+              "count": 339,
+              "mean": 1.04738001179941,
+              "p50": 0.979392,
+              "p95": 1.588768,
+              "p99": 1.941248,
+              "max": 2.348192
+            }
+          }
+        ],
+        "return": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 367,
+              "mean": 0.031070299727520435,
+              "p50": 0.032,
+              "p95": 0.0433,
+              "p99": 0.0497,
+              "max": 0.0609
+            },
+            "gpuMs": {
+              "count": 367,
+              "mean": 0.27253824523160763,
+              "p50": 0.250848,
+              "p95": 0.370624,
+              "p99": 0.663616,
+              "max": 0.803424
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 367,
+              "mean": 0.007931062670299726,
+              "p50": 0.0082,
+              "p95": 0.0107,
+              "p99": 0.0164,
+              "max": 0.0431
+            },
+            "gpuMs": {
+              "count": 367,
+              "mean": 0.4898768392370572,
+              "p50": 0.440192,
+              "p95": 0.72896,
+              "p99": 0.864192,
+              "max": 0.961632
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 367,
+              "mean": 0.003997820163487739,
+              "p50": 0.0038,
+              "p95": 0.0054,
+              "p99": 0.012,
+              "max": 0.066
+            },
+            "gpuMs": {
+              "count": 367,
+              "mean": 19.504014910081743,
+              "p50": 18.422368,
+              "p95": 24.657504,
+              "p99": 25.052384,
+              "max": 25.558112
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 367,
+              "mean": 0.015531880108991826,
+              "p50": 0.0158,
+              "p95": 0.0218,
+              "p99": 0.0295,
+              "max": 0.0632
+            },
+            "gpuMs": {
+              "count": 367,
+              "mean": 0.20443003814713898,
+              "p50": 0.15872,
+              "p95": 0.464576,
+              "p99": 0.699552,
+              "max": 0.798208
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 367,
+              "mean": 0.004767847411444142,
+              "p50": 0.0048,
+              "p95": 0.0069,
+              "p99": 0.0097,
+              "max": 0.0197
+            },
+            "gpuMs": {
+              "count": 367,
+              "mean": 45.34093950953679,
+              "p50": 42.906784,
+              "p95": 56.951456,
+              "p99": 58.093888,
+              "max": 58.681056
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 367,
+              "mean": 0.013094277929155313,
+              "p50": 0.0129,
+              "p95": 0.0182,
+              "p99": 0.0226,
+              "max": 0.0244
+            },
+            "gpuMs": {
+              "count": 367,
+              "mean": 1.1360823978201635,
+              "p50": 1.093152,
+              "p95": 1.74096,
+              "p99": 1.854144,
+              "max": 2.055584
+            }
+          }
+        ],
+        "settle": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.030773913043478263,
+              "p50": 0.0315,
+              "p95": 0.0432,
+              "p99": 0.0553,
+              "max": 0.081
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 0.30978106832298136,
+              "p50": 0.297664,
+              "p95": 0.314656,
+              "p99": 0.827936,
+              "max": 0.886848
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.007480124223602484,
+              "p50": 0.0076,
+              "p95": 0.0098,
+              "p99": 0.0154,
+              "max": 0.0299
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 0.6136987826086956,
+              "p50": 0.569216,
+              "p95": 0.87232,
+              "p99": 1.151744,
+              "max": 1.32496
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.0034385093167701862,
+              "p50": 0.0036,
+              "p95": 0.0046,
+              "p99": 0.0069,
+              "max": 0.0085
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 25.019876968944097,
+              "p50": 24.921536,
+              "p95": 25.840992,
+              "p99": 26.580672,
+              "max": 27.126432
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.014179503105590062,
+              "p50": 0.0145,
+              "p95": 0.0188,
+              "p99": 0.0429,
+              "max": 0.0483
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 0.28262678260869567,
+              "p50": 0.241024,
+              "p95": 0.595328,
+              "p99": 0.810688,
+              "max": 0.841792
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.004509937888198758,
+              "p50": 0.0046,
+              "p95": 0.0059,
+              "p99": 0.0085,
+              "max": 0.0093
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 58.002605913043475,
+              "p50": 57.94272,
+              "p95": 59.5064,
+              "p99": 60.558336,
+              "max": 60.78992
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 161,
+              "mean": 0.012790683229813663,
+              "p50": 0.0126,
+              "p95": 0.017,
+              "p99": 0.0307,
+              "max": 0.0437
+            },
+            "gpuMs": {
+              "count": 161,
+              "mean": 1.3609466832298136,
+              "p50": 1.344736,
+              "p95": 1.83376,
+              "p99": 2.071616,
+              "max": 2.088352
+            }
+          }
+        ]
+      },
+      "pairedFrames": 1518,
+      "classificationSoftwarePearsonR": 0.9751607878062704,
+      "softwareToClassificationMedianRatio": 2.3227680556607377
+    },
+    {
+      "run": 3,
+      "sourceDirectory": "E:\\metallic\\build-release\\full-roam-p0-baseline\\run3",
+      "frameMs": {
+        "count": 1609,
+        "mean": 111.91993412057178,
+        "p50": 113.0208,
+        "p95": 128.3298,
+        "p99": 135.6856,
+        "max": 176.0789
+      },
+      "earlyScopes": [
+        {
+          "cpuOnly": false,
+          "id": 100,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1609,
+            "mean": 0.028584275947793662,
+            "p50": 0.0241,
+            "p95": 0.0422,
+            "p99": 0.0632,
+            "max": 0.2023
+          },
+          "gpuMs": {
+            "count": 1609,
+            "mean": 0.30235127408328155,
+            "p50": 0.284864,
+            "p95": 0.557152,
+            "p99": 0.773888,
+            "max": 1.258496
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 101,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1609,
+            "mean": 0.007277625854568055,
+            "p50": 0.006,
+            "p95": 0.0103,
+            "p99": 0.0163,
+            "max": 0.1327
+          },
+          "gpuMs": {
+            "count": 1609,
+            "mean": 0.5454852057178372,
+            "p50": 0.53744,
+            "p95": 0.850816,
+            "p99": 1.044352,
+            "max": 1.662944
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 102,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1609,
+            "mean": 0.0034221255438160346,
+            "p50": 0.0029,
+            "p95": 0.005,
+            "p99": 0.0089,
+            "max": 0.0496
+          },
+          "gpuMs": {
+            "count": 1609,
+            "mean": 21.93477715848353,
+            "p50": 22.203104,
+            "p95": 25.780576,
+            "p99": 26.26528,
+            "max": 27.829856
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 103,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1609,
+            "mean": 0.013779117464263519,
+            "p50": 0.0118,
+            "p95": 0.0198,
+            "p99": 0.0287,
+            "max": 0.1569
+          },
+          "gpuMs": {
+            "count": 1609,
+            "mean": 0.24655248228713486,
+            "p50": 0.224064,
+            "p95": 0.576096,
+            "p99": 0.808288,
+            "max": 1.210304
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 104,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1609,
+            "mean": 0.0043353635798632694,
+            "p50": 0.0039,
+            "p95": 0.0062,
+            "p99": 0.0089,
+            "max": 0.0457
+          },
+          "gpuMs": {
+            "count": 1609,
+            "mean": 51.072151985083906,
+            "p50": 51.679584,
+            "p95": 60.181376,
+            "p99": 61.292352,
+            "max": 64.211136
+          }
+        },
+        {
+          "cpuOnly": false,
+          "id": 105,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1609,
+            "mean": 0.012372715972653821,
+            "p50": 0.0107,
+            "p95": 0.0172,
+            "p99": 0.0262,
+            "max": 0.2913
+          },
+          "gpuMs": {
+            "count": 1609,
+            "mean": 1.1721770839030454,
+            "p50": 1.093888,
+            "p95": 1.724192,
+            "p99": 2.015808,
+            "max": 3.597344
+          }
+        }
+      ],
+      "stageScopes": {
+        "static": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.03281157024793389,
+              "p50": 0.0318,
+              "p95": 0.0602,
+              "p99": 0.0962,
+              "max": 0.1061
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 0.31965514049586774,
+              "p50": 0.29776,
+              "p95": 0.60896,
+              "p99": 0.678144,
+              "max": 0.751296
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.007509090909090909,
+              "p50": 0.0076,
+              "p95": 0.0103,
+              "p99": 0.0146,
+              "max": 0.0253
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 0.6038399999999999,
+              "p50": 0.562912,
+              "p95": 0.840608,
+              "p99": 1.050496,
+              "max": 1.082272
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.0036024793388429754,
+              "p50": 0.0036,
+              "p95": 0.0052,
+              "p99": 0.0117,
+              "max": 0.0162
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 24.80548945454545,
+              "p50": 24.841792,
+              "p95": 25.59552,
+              "p99": 26.09936,
+              "max": 26.195936
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.013944628099173554,
+              "p50": 0.0143,
+              "p95": 0.0192,
+              "p99": 0.0261,
+              "max": 0.0287
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 0.28421897520661155,
+              "p50": 0.236512,
+              "p95": 0.591936,
+              "p99": 0.726112,
+              "max": 0.796224
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.00473305785123967,
+              "p50": 0.0046,
+              "p95": 0.0068,
+              "p99": 0.0143,
+              "max": 0.0202
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 57.30036310743802,
+              "p50": 57.260096,
+              "p95": 58.558176,
+              "p99": 59.30448,
+              "max": 59.357216
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 121,
+              "mean": 0.014204958677685951,
+              "p50": 0.0127,
+              "p95": 0.0219,
+              "p99": 0.0447,
+              "max": 0.1228
+            },
+            "gpuMs": {
+              "count": 121,
+              "mean": 1.2775949752066116,
+              "p50": 1.259616,
+              "p95": 1.704992,
+              "p99": 1.946176,
+              "max": 2.023008
+            }
+          }
+        ],
+        "first-visit": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 386,
+              "mean": 0.03072875647668394,
+              "p50": 0.0306,
+              "p95": 0.0431,
+              "p99": 0.0664,
+              "max": 0.2023
+            },
+            "gpuMs": {
+              "count": 386,
+              "mean": 0.3168300932642487,
+              "p50": 0.289696,
+              "p95": 0.538752,
+              "p99": 0.831328,
+              "max": 0.925536
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 386,
+              "mean": 0.0076119170984455965,
+              "p50": 0.0078,
+              "p95": 0.0108,
+              "p99": 0.0144,
+              "max": 0.0207
+            },
+            "gpuMs": {
+              "count": 386,
+              "mean": 0.5719764559585493,
+              "p50": 0.542432,
+              "p95": 0.847776,
+              "p99": 0.9808,
+              "max": 1.189728
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 386,
+              "mean": 0.003638082901554404,
+              "p50": 0.0036,
+              "p95": 0.0054,
+              "p99": 0.0089,
+              "max": 0.0253
+            },
+            "gpuMs": {
+              "count": 386,
+              "mean": 22.730926176165802,
+              "p50": 22.48064,
+              "p95": 25.129536,
+              "p99": 26.185024,
+              "max": 26.833536
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 386,
+              "mean": 0.014983937823834198,
+              "p50": 0.015,
+              "p95": 0.0219,
+              "p99": 0.0287,
+              "max": 0.0405
+            },
+            "gpuMs": {
+              "count": 386,
+              "mean": 0.26476070466321244,
+              "p50": 0.226016,
+              "p95": 0.572288,
+              "p99": 0.888,
+              "max": 1.18064
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 386,
+              "mean": 0.004718911917098445,
+              "p50": 0.0047,
+              "p95": 0.0065,
+              "p99": 0.0088,
+              "max": 0.0457
+            },
+            "gpuMs": {
+              "count": 386,
+              "mean": 52.70931316062177,
+              "p50": 52.341536,
+              "p95": 58.071264,
+              "p99": 58.747936,
+              "max": 59.43168
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 386,
+              "mean": 0.012855699481865285,
+              "p50": 0.0127,
+              "p95": 0.0173,
+              "p99": 0.0262,
+              "max": 0.0624
+            },
+            "gpuMs": {
+              "count": 386,
+              "mean": 1.2781211191709845,
+              "p50": 1.254112,
+              "p95": 1.787936,
+              "p99": 2.08,
+              "max": 3.597344
+            }
+          }
+        ],
+        "near-wall": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 173,
+              "mean": 0.02968901734104046,
+              "p50": 0.0276,
+              "p95": 0.047,
+              "p99": 0.0709,
+              "max": 0.0874
+            },
+            "gpuMs": {
+              "count": 173,
+              "mean": 0.30056490173410405,
+              "p50": 0.282144,
+              "p95": 0.4544,
+              "p99": 0.773984,
+              "max": 0.848576
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 173,
+              "mean": 0.007350289017341041,
+              "p50": 0.0062,
+              "p95": 0.0101,
+              "p99": 0.0258,
+              "max": 0.0277
+            },
+            "gpuMs": {
+              "count": 173,
+              "mean": 0.5549230982658959,
+              "p50": 0.538496,
+              "p95": 0.790208,
+              "p99": 1.01264,
+              "max": 1.043392
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 173,
+              "mean": 0.003547398843930636,
+              "p50": 0.003,
+              "p95": 0.0048,
+              "p99": 0.018,
+              "max": 0.0181
+            },
+            "gpuMs": {
+              "count": 173,
+              "mean": 22.804742843930637,
+              "p50": 22.960064,
+              "p95": 25.618048,
+              "p99": 26.246912,
+              "max": 26.525568
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 173,
+              "mean": 0.014191907514450867,
+              "p50": 0.012,
+              "p95": 0.0218,
+              "p99": 0.0354,
+              "max": 0.0358
+            },
+            "gpuMs": {
+              "count": 173,
+              "mean": 0.27784231213872834,
+              "p50": 0.224416,
+              "p95": 0.602752,
+              "p99": 0.84192,
+              "max": 1.036352
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 173,
+              "mean": 0.004599421965317919,
+              "p50": 0.004,
+              "p95": 0.0065,
+              "p99": 0.0174,
+              "max": 0.0237
+            },
+            "gpuMs": {
+              "count": 173,
+              "mean": 53.06813188439306,
+              "p50": 53.17056,
+              "p95": 59.368896,
+              "p99": 60.70384,
+              "max": 61.380928
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 173,
+              "mean": 0.012347976878612717,
+              "p50": 0.0115,
+              "p95": 0.0177,
+              "p99": 0.0256,
+              "max": 0.0421
+            },
+            "gpuMs": {
+              "count": 173,
+              "mean": 1.032134289017341,
+              "p50": 0.950784,
+              "p95": 1.587936,
+              "p99": 1.770912,
+              "max": 1.782656
+            }
+          }
+        ],
+        "turn": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 380,
+              "mean": 0.025069210526315788,
+              "p50": 0.0221,
+              "p95": 0.037,
+              "p99": 0.0579,
+              "max": 0.0719
+            },
+            "gpuMs": {
+              "count": 380,
+              "mean": 0.2958220631578947,
+              "p50": 0.27152,
+              "p95": 0.581632,
+              "p99": 0.843456,
+              "max": 0.909408
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 380,
+              "mean": 0.00681,
+              "p50": 0.0057,
+              "p95": 0.0093,
+              "p99": 0.0276,
+              "max": 0.1242
+            },
+            "gpuMs": {
+              "count": 380,
+              "mean": 0.5180599578947368,
+              "p50": 0.49344,
+              "p95": 0.845824,
+              "p99": 1.076256,
+              "max": 1.662944
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 380,
+              "mean": 0.003061578947368421,
+              "p50": 0.0027,
+              "p95": 0.0046,
+              "p99": 0.0078,
+              "max": 0.0192
+            },
+            "gpuMs": {
+              "count": 380,
+              "mean": 20.426993684210526,
+              "p50": 20.513088,
+              "p95": 25.293696,
+              "p99": 25.9704,
+              "max": 26.1496
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 380,
+              "mean": 0.012175,
+              "p50": 0.0107,
+              "p95": 0.018,
+              "p99": 0.0233,
+              "max": 0.0592
+            },
+            "gpuMs": {
+              "count": 380,
+              "mean": 0.21890812631578946,
+              "p50": 0.196064,
+              "p95": 0.505856,
+              "p99": 0.732064,
+              "max": 1.210304
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 380,
+              "mean": 0.003838947368421053,
+              "p50": 0.0035,
+              "p95": 0.0058,
+              "p99": 0.0076,
+              "max": 0.0097
+            },
+            "gpuMs": {
+              "count": 380,
+              "mean": 47.63139882105263,
+              "p50": 48.135936,
+              "p95": 59.01184,
+              "p99": 60.71344,
+              "max": 61.162496
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 380,
+              "mean": 0.011428947368421052,
+              "p50": 0.0098,
+              "p95": 0.0159,
+              "p99": 0.0238,
+              "max": 0.138
+            },
+            "gpuMs": {
+              "count": 380,
+              "mean": 1.0367083789473683,
+              "p50": 0.948064,
+              "p95": 1.57744,
+              "p99": 1.849952,
+              "max": 2.099424
+            }
+          }
+        ],
+        "return": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 384,
+              "mean": 0.028288281250000002,
+              "p50": 0.0233,
+              "p95": 0.0409,
+              "p99": 0.1059,
+              "max": 0.18
+            },
+            "gpuMs": {
+              "count": 384,
+              "mean": 0.27912575,
+              "p50": 0.25008,
+              "p95": 0.512128,
+              "p99": 0.766976,
+              "max": 1.258496
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 384,
+              "mean": 0.00740625,
+              "p50": 0.006,
+              "p95": 0.0104,
+              "p99": 0.0167,
+              "max": 0.1327
+            },
+            "gpuMs": {
+              "count": 384,
+              "mean": 0.49130199999999996,
+              "p50": 0.4392,
+              "p95": 0.748576,
+              "p99": 0.987008,
+              "max": 1.257312
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 384,
+              "mean": 0.003545052083333333,
+              "p50": 0.0029,
+              "p95": 0.0053,
+              "p99": 0.0099,
+              "max": 0.0496
+            },
+            "gpuMs": {
+              "count": 384,
+              "mean": 19.769428166666668,
+              "p50": 18.637024,
+              "p95": 25.311296,
+              "p99": 25.83408,
+              "max": 26.09616
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 384,
+              "mean": 0.014193489583333335,
+              "p50": 0.0118,
+              "p95": 0.0201,
+              "p99": 0.0349,
+              "max": 0.1569
+            },
+            "gpuMs": {
+              "count": 384,
+              "mean": 0.21328833333333333,
+              "p50": 0.162336,
+              "p95": 0.555584,
+              "p99": 0.748704,
+              "max": 0.953504
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 384,
+              "mean": 0.00419453125,
+              "p50": 0.0037,
+              "p95": 0.0061,
+              "p99": 0.0093,
+              "max": 0.0108
+            },
+            "gpuMs": {
+              "count": 384,
+              "mean": 46.13489275,
+              "p50": 43.470624,
+              "p95": 59.078592,
+              "p99": 60.229152,
+              "max": 60.840992
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 384,
+              "mean": 0.01243125,
+              "p50": 0.0103,
+              "p95": 0.0169,
+              "p99": 0.0273,
+              "max": 0.2913
+            },
+            "gpuMs": {
+              "count": 384,
+              "mean": 1.1487154166666667,
+              "p50": 1.093504,
+              "p95": 1.76064,
+              "p99": 2.009536,
+              "max": 2.124544
+            }
+          }
+        ],
+        "settle": [
+          {
+            "cpuOnly": false,
+            "id": 100,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Candidates",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 165,
+              "mean": 0.02809333333333333,
+              "p50": 0.0243,
+              "p95": 0.0414,
+              "p99": 0.0552,
+              "max": 0.0616
+            },
+            "gpuMs": {
+              "count": 165,
+              "mean": 0.326752193939394,
+              "p50": 0.297376,
+              "p95": 0.5984,
+              "p99": 0.847872,
+              "max": 0.860352
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 101,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Cluster cull",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 165,
+              "mean": 0.0070272727272727275,
+              "p50": 0.0059,
+              "p95": 0.0099,
+              "p99": 0.0146,
+              "max": 0.0206
+            },
+            "gpuMs": {
+              "count": 165,
+              "mean": 0.6200830060606061,
+              "p50": 0.567264,
+              "p95": 0.98,
+              "p99": 1.124224,
+              "max": 1.149824
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 102,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Soft/hard classification",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 165,
+              "mean": 0.003197575757575757,
+              "p50": 0.0028,
+              "p95": 0.0044,
+              "p99": 0.007,
+              "max": 0.0071
+            },
+            "gpuMs": {
+              "count": 165,
+              "mean": 25.5667648,
+              "p50": 25.54064,
+              "p95": 26.392896,
+              "p99": 27.153056,
+              "max": 27.829856
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 103,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Stable bins",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 165,
+              "mean": 0.013136363636363637,
+              "p50": 0.0118,
+              "p95": 0.0183,
+              "p99": 0.0229,
+              "max": 0.0243
+            },
+            "gpuMs": {
+              "count": 165,
+              "mean": 0.28460780606060604,
+              "p50": 0.240448,
+              "p95": 0.615584,
+              "p99": 0.719904,
+              "max": 1.072448
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 104,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 165,
+              "mean": 0.00434060606060606,
+              "p50": 0.0038,
+              "p95": 0.006,
+              "p99": 0.0137,
+              "max": 0.0138
+            },
+            "gpuMs": {
+              "count": 165,
+              "mean": 59.99658511515152,
+              "p50": 60.039424,
+              "p95": 61.503872,
+              "p99": 63.086848,
+              "max": 64.211136
+            }
+          },
+          {
+            "cpuOnly": false,
+            "id": 105,
+            "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Hardware raster",
+            "queue": "graphics",
+            "cpuMs": {
+              "count": 165,
+              "mean": 0.011962424242424243,
+              "p50": 0.0108,
+              "p95": 0.0163,
+              "p99": 0.0285,
+              "max": 0.0293
+            },
+            "gpuMs": {
+              "count": 165,
+              "mean": 1.3604487757575758,
+              "p50": 1.295648,
+              "p95": 1.96048,
+              "p99": 2.200096,
+              "max": 2.381856
+            }
+          }
+        ]
+      },
+      "pairedFrames": 1609,
+      "classificationSoftwarePearsonR": 0.9785156422366501,
+      "softwareToClassificationMedianRatio": 2.330775891580579
+    }
+  ],
+  "limitations": [
+    "Old Nsight capture is MiniZorah before cull/classification split; no Full Nsight capture found in searched capture/build directories.",
+    "Old HW/SW ranges overlap and raw range counters are not isolated shader counters.",
+    "Full measurements are RHI timestamp scopes, not hardware counters.",
+    "Correlation does not distinguish workload, clocks, memory latency or contention.",
+    "No fresh GPU execution or rendering change in this analysis."
+  ]
+}

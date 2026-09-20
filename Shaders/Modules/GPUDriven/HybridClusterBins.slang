@@ -34,6 +34,8 @@ public uint hybridBlockBase(uint capacity) { return hybridRankBase(capacity) + c
 // item with compact classification work (candidate, vertex base, counts,
 // triangle base). Header word 0 temporarily counts this work. Stable binning
 // consumes original candidate tags and overwrites both regions afterwards.
+// During stream culling header 1/2 count metadata SW/forced HW shortcuts;
+// those diagnostic counters are also overwritten by stable binning.
 public uint hybridStreamClassifyBase(uint item) { return kHybridBinHeaderWords + 4u * item; }
 
 // Per-active-group retry masks for stream early/late culling. At most capacity groups.

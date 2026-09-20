@@ -1,0 +1,1494 @@
+{
+  "protocol": "zorah-full-raster-comparison-v1",
+  "outputExtent": [
+    1797,
+    660
+  ],
+  "renderExtent": [
+    1198,
+    440
+  ],
+  "cutHash": "7230532556492933287",
+  "pageMappingsHash": "6928581180108922903",
+  "activeGroups": 221402,
+  "residentState": [
+    {
+      "clasBytes": 1775049344,
+      "geometryBytes": 3758094592,
+      "residentPages": 59914,
+      "textureBytes": 176566784,
+      "textureDowngrades": 3,
+      "textureUpgrades": 392
+    }
+  ],
+  "sameCutAndResidency": true,
+  "sameModeImagesStable": true,
+  "cases": [
+    {
+      "name": "round1-0",
+      "maxPixels": 8,
+      "variant": "0",
+      "classificationCounts": {
+        "AfterStreamEarlyClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        },
+        "AfterStreamLateClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        }
+      },
+      "timingsMs": {
+        "rasterTotal": {
+          "count": 64,
+          "mean": 21.029969,
+          "p50": 21.048512000000002,
+          "p95": 21.7853136,
+          "p99": 22.044136,
+          "max": 22.187776
+        },
+        "classification": {
+          "count": 64,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0
+        },
+        "software": {
+          "count": 64,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0
+        },
+        "hardware": {
+          "count": 64,
+          "mean": 18.971155500000002,
+          "p50": 19.041311999999998,
+          "p95": 19.5654672,
+          "p99": 20.095837120000002,
+          "max": 20.280160000000002
+        },
+        "cull": {
+          "count": 64,
+          "mean": 1.346447,
+          "p50": 1.238864,
+          "p95": 1.7153536,
+          "p99": 1.7634796799999999,
+          "max": 1.79376
+        },
+        "candidates": {
+          "count": 64,
+          "mean": 0.4844255,
+          "p50": 0.441104,
+          "p95": 0.8486223999999997,
+          "p99": 0.89314752,
+          "max": 0.902784
+        },
+        "bins": {
+          "count": 64,
+          "mean": 0.2235955,
+          "p50": 0.21766400000000002,
+          "p95": 0.237088,
+          "p99": 0.2995007999999997,
+          "max": 0.38457600000000003
+        },
+        "merge": {
+          "count": 64,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0
+        },
+        "graphGpu": {
+          "count": 64,
+          "mean": 23.949869,
+          "p50": 23.961952,
+          "p95": 24.63336,
+          "p99": 24.936778559999997,
+          "max": 25.384512
+        },
+        "editorLoop": {
+          "count": 64,
+          "mean": 34.054034375,
+          "p50": 33.77225,
+          "p95": 37.471915,
+          "p99": 39.095036,
+          "max": 39.1157
+        }
+      },
+      "earlyBins": {
+        "candidates": 4537456,
+        "capacity": 33554400,
+        "hardwareClusters": 1074684,
+        "softwareClusters": 0
+      },
+      "lateBins": {
+        "candidates": 3125008,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsFullHardware": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round1-exact8",
+      "maxPixels": 8,
+      "variant": "exact8",
+      "classificationCounts": {
+        "AfterStreamEarlyClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 1074681,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        },
+        "AfterStreamLateClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        }
+      },
+      "timingsMs": {
+        "rasterTotal": {
+          "count": 64,
+          "mean": 24.3513645,
+          "p50": 24.290928,
+          "p95": 25.167152,
+          "p99": 25.41999552,
+          "max": 25.53648
+        },
+        "classification": {
+          "count": 64,
+          "mean": 5.8413925,
+          "p50": 5.847552,
+          "p95": 6.319632,
+          "p99": 6.4188550399999995,
+          "max": 6.489536
+        },
+        "software": {
+          "count": 64,
+          "mean": 15.622316,
+          "p50": 15.660208,
+          "p95": 16.1800544,
+          "p99": 16.332474559999998,
+          "max": 16.400191999999997
+        },
+        "hardware": {
+          "count": 64,
+          "mean": 0.67558,
+          "p50": 0.6037440000000001,
+          "p95": 1.0167552,
+          "p99": 1.1474383999999997,
+          "max": 1.18544
+        },
+        "cull": {
+          "count": 64,
+          "mean": 1.4346165,
+          "p50": 1.300816,
+          "p95": 1.8936591999999994,
+          "p99": 2.22021696,
+          "max": 2.252352
+        },
+        "candidates": {
+          "count": 64,
+          "mean": 0.481453,
+          "p50": 0.462928,
+          "p95": 0.5844975999999994,
+          "p99": 0.9501260799999998,
+          "max": 1.008832
+        },
+        "bins": {
+          "count": 64,
+          "mean": 0.26246,
+          "p50": 0.228608,
+          "p95": 0.3968448,
+          "p99": 0.9489977599999999,
+          "max": 0.971456
+        },
+        "merge": {
+          "count": 64,
+          "mean": 0.028969,
+          "p50": 0.027312000000000003,
+          "p95": 0.0362352,
+          "p99": 0.0366352,
+          "max": 0.036736000000000005
+        },
+        "graphGpu": {
+          "count": 64,
+          "mean": 27.302248,
+          "p50": 27.21848,
+          "p95": 28.279763199999998,
+          "p99": 28.43391936,
+          "max": 28.576128
+        },
+        "editorLoop": {
+          "count": 64,
+          "mean": 36.500096875,
+          "p50": 36.1603,
+          "p95": 40.192555,
+          "p99": 41.429438,
+          "max": 42.3476
+        }
+      },
+      "earlyBins": {
+        "candidates": 4537456,
+        "capacity": 33554400,
+        "hardwareClusters": 37019,
+        "softwareClusters": 1037662
+      },
+      "lateBins": {
+        "candidates": 3125011,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsFullHardware": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 66,
+        "visibilityDifferentPercent": 0.012520868113522536,
+        "coveredDepthMaxAbs": 0.0012487838976085186,
+        "coveredDepthMeanAbs": 5.165568507315717e-09,
+        "coveredDepthMaxUlp": 8340777,
+        "coveredDepthOver8UlpPixels": 2842
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round1-fast8",
+      "maxPixels": 8,
+      "variant": "fast8",
+      "classificationCounts": {
+        "AfterStreamEarlyClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 114833,
+          "fastHardware": 8733,
+          "fastSoftware": 951115
+        },
+        "AfterStreamLateClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        }
+      },
+      "timingsMs": {
+        "rasterTotal": {
+          "count": 64,
+          "mean": 19.32,
+          "p50": 19.2804,
+          "p95": 20.0484624,
+          "p99": 20.360795200000002,
+          "max": 20.366944
+        },
+        "classification": {
+          "count": 64,
+          "mean": 0.5657845,
+          "p50": 0.55888,
+          "p95": 0.5692336,
+          "p99": 0.72505952,
+          "max": 0.741248
+        },
+        "software": {
+          "count": 64,
+          "mean": 15.7208225,
+          "p50": 15.737616,
+          "p95": 16.350227200000003,
+          "p99": 16.65945408,
+          "max": 16.809888
+        },
+        "hardware": {
+          "count": 64,
+          "mean": 0.7585815,
+          "p50": 0.605248,
+          "p95": 1.0794848000000001,
+          "p99": 1.2327135999999999,
+          "max": 1.274848
+        },
+        "cull": {
+          "count": 64,
+          "mean": 1.4211285,
+          "p50": 1.308608,
+          "p95": 1.7913839999999999,
+          "p99": 1.9250870399999997,
+          "max": 1.954944
+        },
+        "candidates": {
+          "count": 64,
+          "mean": 0.5346805,
+          "p50": 0.465696,
+          "p95": 0.9639471999999998,
+          "p99": 1.13391648,
+          "max": 1.174176
+        },
+        "bins": {
+          "count": 64,
+          "mean": 0.2801465,
+          "p50": 0.232928,
+          "p95": 0.7029231999999997,
+          "p99": 0.7531171199999999,
+          "max": 0.7741439999999999
+        },
+        "merge": {
+          "count": 64,
+          "mean": 0.034283,
+          "p50": 0.028352,
+          "p95": 0.037427199999999994,
+          "p99": 0.1440425599999993,
+          "max": 0.32163200000000003
+        },
+        "graphGpu": {
+          "count": 64,
+          "mean": 22.3050715,
+          "p50": 22.274496,
+          "p95": 23.035999999999998,
+          "p99": 23.35323936,
+          "max": 23.410272
+        },
+        "editorLoop": {
+          "count": 64,
+          "mean": 32.366059375,
+          "p50": 32.0656,
+          "p95": 36.30141,
+          "p99": 38.867543999999995,
+          "max": 39.5613
+        }
+      },
+      "earlyBins": {
+        "candidates": 4537456,
+        "capacity": 33554400,
+        "hardwareClusters": 37019,
+        "softwareClusters": 1037662
+      },
+      "lateBins": {
+        "candidates": 3125011,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsFullHardware": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 66,
+        "visibilityDifferentPercent": 0.012520868113522536,
+        "coveredDepthMaxAbs": 0.0012487838976085186,
+        "coveredDepthMeanAbs": 5.165568507315717e-09,
+        "coveredDepthMaxUlp": 8340777,
+        "coveredDepthOver8UlpPixels": 2842
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round2-fast8",
+      "maxPixels": 8,
+      "variant": "fast8",
+      "classificationCounts": {
+        "AfterStreamEarlyClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 114833,
+          "fastHardware": 8733,
+          "fastSoftware": 951115
+        },
+        "AfterStreamLateClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        }
+      },
+      "timingsMs": {
+        "rasterTotal": {
+          "count": 64,
+          "mean": 19.246134,
+          "p50": 19.196512,
+          "p95": 19.8415488,
+          "p99": 19.97116448,
+          "max": 20.029568
+        },
+        "classification": {
+          "count": 64,
+          "mean": 0.5786035,
+          "p50": 0.5589120000000001,
+          "p95": 0.5680768,
+          "p99": 1.0435385599999982,
+          "max": 1.495808
+        },
+        "software": {
+          "count": 64,
+          "mean": 15.682427500000001,
+          "p50": 15.680288000000001,
+          "p95": 16.251377599999998,
+          "p99": 16.54823904,
+          "max": 16.567008
+        },
+        "hardware": {
+          "count": 64,
+          "mean": 0.7254745,
+          "p50": 0.60224,
+          "p95": 1.0636607999999999,
+          "p99": 1.6557011199999998,
+          "max": 1.71856
+        },
+        "cull": {
+          "count": 64,
+          "mean": 1.444141,
+          "p50": 1.311088,
+          "p95": 1.7888848,
+          "p99": 2.0721289599999997,
+          "max": 2.195488
+        },
+        "candidates": {
+          "count": 64,
+          "mean": 0.506469,
+          "p50": 0.463312,
+          "p95": 0.7929023999999999,
+          "p99": 0.8972847999999999,
+          "max": 0.925408
+        },
+        "bins": {
+          "count": 64,
+          "mean": 0.2639915,
+          "p50": 0.231888,
+          "p95": 0.5153039999999992,
+          "p99": 0.64075328,
+          "max": 0.649664
+        },
+        "merge": {
+          "count": 64,
+          "mean": 0.0404355,
+          "p50": 0.027632,
+          "p95": 0.03667039999999999,
+          "p99": 0.30669215999999816,
+          "max": 0.763296
+        },
+        "graphGpu": {
+          "count": 64,
+          "mean": 22.141696,
+          "p50": 22.141904,
+          "p95": 22.856095999999997,
+          "p99": 22.95282912,
+          "max": 22.996032
+        },
+        "editorLoop": {
+          "count": 64,
+          "mean": 35.2873109375,
+          "p50": 35.1651,
+          "p95": 38.48203999999999,
+          "p99": 40.02154399999999,
+          "max": 40.5074
+        }
+      },
+      "earlyBins": {
+        "candidates": 4537456,
+        "capacity": 33554400,
+        "hardwareClusters": 37019,
+        "softwareClusters": 1037662
+      },
+      "lateBins": {
+        "candidates": 3125011,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsFullHardware": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 66,
+        "visibilityDifferentPercent": 0.012520868113522536,
+        "coveredDepthMaxAbs": 0.0012487838976085186,
+        "coveredDepthMeanAbs": 5.165568507315717e-09,
+        "coveredDepthMaxUlp": 8340777,
+        "coveredDepthOver8UlpPixels": 2842
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round2-exact8",
+      "maxPixels": 8,
+      "variant": "exact8",
+      "classificationCounts": {
+        "AfterStreamEarlyClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 1074681,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        },
+        "AfterStreamLateClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        }
+      },
+      "timingsMs": {
+        "rasterTotal": {
+          "count": 64,
+          "mean": 24.3430475,
+          "p50": 24.369343999999998,
+          "p95": 24.9777168,
+          "p99": 25.096661119999997,
+          "max": 25.097023999999998
+        },
+        "classification": {
+          "count": 64,
+          "mean": 5.7819715,
+          "p50": 5.794304,
+          "p95": 6.2563264,
+          "p99": 6.30305056,
+          "max": 6.315328
+        },
+        "software": {
+          "count": 64,
+          "mean": 15.624231,
+          "p50": 15.689536,
+          "p95": 16.0898272,
+          "p99": 16.15808832,
+          "max": 16.18224
+        },
+        "hardware": {
+          "count": 64,
+          "mean": 0.726086,
+          "p50": 0.60392,
+          "p95": 1.0873007999999997,
+          "p99": 1.4352118399999996,
+          "max": 1.532
+        },
+        "cull": {
+          "count": 64,
+          "mean": 1.4119295,
+          "p50": 1.298,
+          "p95": 1.8766751999999998,
+          "p99": 2.1583833599999993,
+          "max": 2.285472
+        },
+        "candidates": {
+          "count": 64,
+          "mean": 0.498239,
+          "p50": 0.46624,
+          "p95": 0.8178847999999996,
+          "p99": 0.8725980799999999,
+          "max": 0.8975360000000001
+        },
+        "bins": {
+          "count": 64,
+          "mean": 0.2611995,
+          "p50": 0.229296,
+          "p95": 0.5095599999999993,
+          "p99": 0.5983081599999999,
+          "max": 0.619456
+        },
+        "merge": {
+          "count": 64,
+          "mean": 0.0346895,
+          "p50": 0.027824,
+          "p95": 0.0367744,
+          "p99": 0.16773471999999912,
+          "max": 0.389152
+        },
+        "graphGpu": {
+          "count": 64,
+          "mean": 27.2747385,
+          "p50": 27.279072,
+          "p95": 27.9919184,
+          "p99": 28.2074048,
+          "max": 28.371104
+        },
+        "editorLoop": {
+          "count": 64,
+          "mean": 36.6216109375,
+          "p50": 36.17635,
+          "p95": 40.138655,
+          "p99": 41.187383,
+          "max": 42.3251
+        }
+      },
+      "earlyBins": {
+        "candidates": 4537456,
+        "capacity": 33554400,
+        "hardwareClusters": 37019,
+        "softwareClusters": 1037662
+      },
+      "lateBins": {
+        "candidates": 3125011,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsFullHardware": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 66,
+        "visibilityDifferentPercent": 0.012520868113522536,
+        "coveredDepthMaxAbs": 0.0012487838976085186,
+        "coveredDepthMeanAbs": 5.165568507315717e-09,
+        "coveredDepthMaxUlp": 8340777,
+        "coveredDepthOver8UlpPixels": 2842
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round2-0",
+      "maxPixels": 8,
+      "variant": "0",
+      "classificationCounts": {
+        "AfterStreamEarlyClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        },
+        "AfterStreamLateClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        }
+      },
+      "timingsMs": {
+        "rasterTotal": {
+          "count": 64,
+          "mean": 21.154365,
+          "p50": 21.159039999999997,
+          "p95": 21.904828799999997,
+          "p99": 22.19533312,
+          "max": 22.362015999999997
+        },
+        "classification": {
+          "count": 64,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0
+        },
+        "software": {
+          "count": 64,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0
+        },
+        "hardware": {
+          "count": 64,
+          "mean": 19.12198,
+          "p50": 19.184240000000003,
+          "p95": 19.853312,
+          "p99": 20.121898239999997,
+          "max": 20.47744
+        },
+        "cull": {
+          "count": 64,
+          "mean": 1.3123885,
+          "p50": 1.239376,
+          "p95": 1.6301712,
+          "p99": 1.8026492799999991,
+          "max": 1.99552
+        },
+        "candidates": {
+          "count": 64,
+          "mean": 0.4681995,
+          "p50": 0.43835199999999996,
+          "p95": 0.7235807999999996,
+          "p99": 0.9363196799999999,
+          "max": 0.94896
+        },
+        "bins": {
+          "count": 64,
+          "mean": 0.2475835,
+          "p50": 0.218352,
+          "p95": 0.45335359999999936,
+          "p99": 0.6921798399999995,
+          "max": 0.797536
+        },
+        "merge": {
+          "count": 64,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0
+        },
+        "graphGpu": {
+          "count": 64,
+          "mean": 24.1125065,
+          "p50": 24.20288,
+          "p95": 24.8460416,
+          "p99": 24.9771472,
+          "max": 25.029664
+        },
+        "editorLoop": {
+          "count": 64,
+          "mean": 34.89703125,
+          "p50": 35.8923,
+          "p95": 38.159035,
+          "p99": 38.3472,
+          "max": 38.4165
+        }
+      },
+      "earlyBins": {
+        "candidates": 4537456,
+        "capacity": 33554400,
+        "hardwareClusters": 1074684,
+        "softwareClusters": 0
+      },
+      "lateBins": {
+        "candidates": 3125008,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsFullHardware": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round3-exact8",
+      "maxPixels": 8,
+      "variant": "exact8",
+      "classificationCounts": {
+        "AfterStreamEarlyClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 1074681,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        },
+        "AfterStreamLateClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        }
+      },
+      "timingsMs": {
+        "rasterTotal": {
+          "count": 64,
+          "mean": 24.2726945,
+          "p50": 24.267424,
+          "p95": 25.0341696,
+          "p99": 25.31545408,
+          "max": 25.732
+        },
+        "classification": {
+          "count": 64,
+          "mean": 5.759138,
+          "p50": 5.779008,
+          "p95": 6.180835200000001,
+          "p99": 6.33144096,
+          "max": 6.3610560000000005
+        },
+        "software": {
+          "count": 64,
+          "mean": 15.566625,
+          "p50": 15.665872,
+          "p95": 15.996284800000002,
+          "p99": 16.17297088,
+          "max": 16.28752
+        },
+        "hardware": {
+          "count": 64,
+          "mean": 0.7092155,
+          "p50": 0.6044640000000001,
+          "p95": 1.0802416,
+          "p99": 1.1641350399999997,
+          "max": 1.238848
+        },
+        "cull": {
+          "count": 64,
+          "mean": 1.4366955,
+          "p50": 1.298304,
+          "p95": 1.9322575999999994,
+          "p99": 2.1282863999999995,
+          "max": 2.243904
+        },
+        "candidates": {
+          "count": 64,
+          "mean": 0.4765125,
+          "p50": 0.464736,
+          "p95": 0.6007583999999994,
+          "p99": 0.7501222399999993,
+          "max": 0.9201919999999999
+        },
+        "bins": {
+          "count": 64,
+          "mean": 0.288688,
+          "p50": 0.230128,
+          "p95": 0.6451887999999992,
+          "p99": 1.0801104,
+          "max": 1.120128
+        },
+        "merge": {
+          "count": 64,
+          "mean": 0.0288205,
+          "p50": 0.027168,
+          "p95": 0.0354224,
+          "p99": 0.04080927999999999,
+          "max": 0.043168
+        },
+        "graphGpu": {
+          "count": 64,
+          "mean": 27.179627,
+          "p50": 27.179408000000002,
+          "p95": 27.9352096,
+          "p99": 28.14111616,
+          "max": 28.38352
+        },
+        "editorLoop": {
+          "count": 64,
+          "mean": 36.11804375,
+          "p50": 35.7765,
+          "p95": 38.932455,
+          "p99": 40.148287999999994,
+          "max": 40.2191
+        }
+      },
+      "earlyBins": {
+        "candidates": 4537456,
+        "capacity": 33554400,
+        "hardwareClusters": 37019,
+        "softwareClusters": 1037662
+      },
+      "lateBins": {
+        "candidates": 3125011,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsFullHardware": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 66,
+        "visibilityDifferentPercent": 0.012520868113522536,
+        "coveredDepthMaxAbs": 0.0012487838976085186,
+        "coveredDepthMeanAbs": 5.165568507315717e-09,
+        "coveredDepthMaxUlp": 8340777,
+        "coveredDepthOver8UlpPixels": 2842
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round3-0",
+      "maxPixels": 8,
+      "variant": "0",
+      "classificationCounts": {
+        "AfterStreamEarlyClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        },
+        "AfterStreamLateClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        }
+      },
+      "timingsMs": {
+        "rasterTotal": {
+          "count": 64,
+          "mean": 20.909901,
+          "p50": 20.838768,
+          "p95": 21.6742608,
+          "p99": 21.84415712,
+          "max": 21.95792
+        },
+        "classification": {
+          "count": 64,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0
+        },
+        "software": {
+          "count": 64,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0
+        },
+        "hardware": {
+          "count": 64,
+          "mean": 18.820648,
+          "p50": 18.861504,
+          "p95": 19.5579152,
+          "p99": 19.78456224,
+          "max": 19.874496
+        },
+        "cull": {
+          "count": 64,
+          "mean": 1.364118,
+          "p50": 1.24384,
+          "p95": 1.681008,
+          "p99": 1.8138451199999996,
+          "max": 1.9331520000000002
+        },
+        "candidates": {
+          "count": 64,
+          "mean": 0.4824135,
+          "p50": 0.444064,
+          "p95": 0.7789103999999997,
+          "p99": 0.9667145599999994,
+          "max": 1.109024
+        },
+        "bins": {
+          "count": 64,
+          "mean": 0.238452,
+          "p50": 0.21872000000000003,
+          "p95": 0.24506719999999999,
+          "p99": 0.6353612799999995,
+          "max": 0.764224
+        },
+        "merge": {
+          "count": 64,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0
+        },
+        "graphGpu": {
+          "count": 64,
+          "mean": 23.7480705,
+          "p50": 23.794992,
+          "p95": 24.434088,
+          "p99": 24.869561599999997,
+          "max": 25.362272
+        },
+        "editorLoop": {
+          "count": 64,
+          "mean": 32.6514421875,
+          "p50": 32.3352,
+          "p95": 35.174215,
+          "p99": 37.49624199999999,
+          "max": 39.403
+        }
+      },
+      "earlyBins": {
+        "candidates": 4537456,
+        "capacity": 33554400,
+        "hardwareClusters": 1074684,
+        "softwareClusters": 0
+      },
+      "lateBins": {
+        "candidates": 3125008,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsFullHardware": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    },
+    {
+      "name": "round3-fast8",
+      "maxPixels": 8,
+      "variant": "fast8",
+      "classificationCounts": {
+        "AfterStreamEarlyClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 114833,
+          "fastHardware": 8733,
+          "fastSoftware": 951115
+        },
+        "AfterStreamLateClusterCull": {
+          "candidateOverflow": 0,
+          "exactClusters": 0,
+          "fastHardware": 0,
+          "fastSoftware": 0
+        }
+      },
+      "timingsMs": {
+        "rasterTotal": {
+          "count": 64,
+          "mean": 19.1711905,
+          "p50": 19.224576,
+          "p95": 19.7701536,
+          "p99": 20.137106879999997,
+          "max": 20.167488
+        },
+        "classification": {
+          "count": 64,
+          "mean": 0.5858975000000001,
+          "p50": 0.55888,
+          "p95": 0.7465887999999999,
+          "p99": 0.9867107199999998,
+          "max": 1.0408
+        },
+        "software": {
+          "count": 64,
+          "mean": 15.5541605,
+          "p50": 15.580064,
+          "p95": 16.267622399999997,
+          "p99": 16.479225279999998,
+          "max": 16.524928
+        },
+        "hardware": {
+          "count": 64,
+          "mean": 0.7043355,
+          "p50": 0.6029119999999999,
+          "p95": 1.0396176000000001,
+          "p99": 1.2515711999999988,
+          "max": 1.551552
+        },
+        "cull": {
+          "count": 64,
+          "mean": 1.4629355,
+          "p50": 1.308704,
+          "p95": 1.9148207999999998,
+          "p99": 2.00260224,
+          "max": 2.043648
+        },
+        "candidates": {
+          "count": 64,
+          "mean": 0.4955365,
+          "p50": 0.46224000000000004,
+          "p95": 0.7508943999999996,
+          "p99": 0.8364105599999999,
+          "max": 0.8577600000000001
+        },
+        "bins": {
+          "count": 64,
+          "mean": 0.326391,
+          "p50": 0.232384,
+          "p95": 0.6542943999999999,
+          "p99": 0.7592099199999994,
+          "max": 0.89152
+        },
+        "merge": {
+          "count": 64,
+          "mean": 0.0374005,
+          "p50": 0.028943999999999998,
+          "p95": 0.0366896,
+          "p99": 0.2561414399999996,
+          "max": 0.356256
+        },
+        "graphGpu": {
+          "count": 64,
+          "mean": 22.093562,
+          "p50": 22.133776,
+          "p95": 22.867772799999997,
+          "p99": 23.028431679999997,
+          "max": 23.217472
+        },
+        "editorLoop": {
+          "count": 64,
+          "mean": 31.0353453125,
+          "p50": 30.4317,
+          "p95": 34.150879999999994,
+          "p99": 34.816624999999995,
+          "max": 35.7191
+        }
+      },
+      "earlyBins": {
+        "candidates": 4537456,
+        "capacity": 33554400,
+        "hardwareClusters": 37019,
+        "softwareClusters": 1037662
+      },
+      "lateBins": {
+        "candidates": 3125011,
+        "capacity": 33554400,
+        "hardwareClusters": 0,
+        "softwareClusters": 0
+      },
+      "vsFullHardware": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 66,
+        "visibilityDifferentPercent": 0.012520868113522536,
+        "coveredDepthMaxAbs": 0.0012487838976085186,
+        "coveredDepthMeanAbs": 5.165568507315717e-09,
+        "coveredDepthMaxUlp": 8340777,
+        "coveredDepthOver8UlpPixels": 2842
+      },
+      "beforeAfter": {
+        "pixels": 527120,
+        "referenceCovered": 404266,
+        "coverageDifferentPixels": 0,
+        "visibilityDifferentPixels": 0,
+        "visibilityDifferentPercent": 0.0,
+        "coveredDepthMaxAbs": 0.0,
+        "coveredDepthMeanAbs": 0.0,
+        "coveredDepthMaxUlp": 0,
+        "coveredDepthOver8UlpPixels": 0
+      }
+    }
+  ],
+  "pooled": {
+    "0": {
+      "rasterTotal": {
+        "count": 192,
+        "mean": 21.031411666666667,
+        "p50": 21.048512000000002,
+        "p95": 21.8010672,
+        "p99": 22.105570240000002,
+        "max": 22.362015999999997
+      },
+      "classification": {
+        "count": 192,
+        "mean": 0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0
+      },
+      "software": {
+        "count": 192,
+        "mean": 0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0
+      },
+      "hardware": {
+        "count": 192,
+        "mean": 18.971261166666668,
+        "p50": 19.019696000000003,
+        "p95": 19.7486384,
+        "p99": 20.013915840000003,
+        "max": 20.47744
+      },
+      "cull": {
+        "count": 192,
+        "mean": 1.3409845,
+        "p50": 1.241488,
+        "p95": 1.694848,
+        "p99": 1.8063052800000006,
+        "max": 1.99552
+      },
+      "candidates": {
+        "count": 192,
+        "mean": 0.4783461666666667,
+        "p50": 0.44112,
+        "p95": 0.7941439999999999,
+        "p99": 0.93070176,
+        "max": 1.109024
+      },
+      "bins": {
+        "count": 192,
+        "mean": 0.23654366666666665,
+        "p50": 0.217856,
+        "p95": 0.24715999999999994,
+        "p99": 0.6423568000000004,
+        "max": 0.797536
+      },
+      "merge": {
+        "count": 192,
+        "mean": 0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0
+      },
+      "graphGpu": {
+        "count": 192,
+        "mean": 23.936815333333332,
+        "p50": 23.989568,
+        "p95": 24.7227328,
+        "p99": 25.05959872,
+        "max": 25.384512
+      },
+      "editorLoop": {
+        "count": 192,
+        "mean": 33.86750260416667,
+        "p50": 33.346149999999994,
+        "p95": 37.754855,
+        "p99": 39.085852,
+        "max": 39.403
+      }
+    },
+    "exact8": {
+      "rasterTotal": {
+        "count": 192,
+        "mean": 24.322368833333332,
+        "p50": 24.281888000000002,
+        "p95": 25.051472,
+        "p99": 25.368224640000005,
+        "max": 25.732
+      },
+      "classification": {
+        "count": 192,
+        "mean": 5.794167333333333,
+        "p50": 5.801184,
+        "p95": 6.2889616,
+        "p99": 6.36444384,
+        "max": 6.489536
+      },
+      "software": {
+        "count": 192,
+        "mean": 15.604390666666667,
+        "p50": 15.671632,
+        "p95": 16.140536,
+        "p99": 16.28798656,
+        "max": 16.400191999999997
+      },
+      "hardware": {
+        "count": 192,
+        "mean": 0.7036271666666667,
+        "p50": 0.604368,
+        "p95": 1.0722671999999998,
+        "p99": 1.2514048000000004,
+        "max": 1.532
+      },
+      "cull": {
+        "count": 192,
+        "mean": 1.4277471666666666,
+        "p50": 1.298624,
+        "p95": 1.9051023999999999,
+        "p99": 2.24466432,
+        "max": 2.285472
+      },
+      "candidates": {
+        "count": 192,
+        "mean": 0.4854015,
+        "p50": 0.464784,
+        "p95": 0.6413151999999999,
+        "p99": 0.91605696,
+        "max": 1.008832
+      },
+      "bins": {
+        "count": 192,
+        "mean": 0.2707825,
+        "p50": 0.22976000000000002,
+        "p95": 0.5246064,
+        "p99": 0.9940000000000002,
+        "max": 1.120128
+      },
+      "merge": {
+        "count": 192,
+        "mean": 0.030826333333333334,
+        "p50": 0.027392,
+        "p95": 0.036491199999999994,
+        "p99": 0.03976096000000001,
+        "max": 0.389152
+      },
+      "graphGpu": {
+        "count": 192,
+        "mean": 27.2522045,
+        "p50": 27.249152000000002,
+        "p95": 28.0383152,
+        "p99": 28.37222144,
+        "max": 28.576128
+      },
+      "editorLoop": {
+        "count": 192,
+        "mean": 36.41325052083334,
+        "p50": 35.94455,
+        "p95": 40.11309,
+        "p99": 41.019341000000004,
+        "max": 42.3476
+      }
+    },
+    "fast8": {
+      "rasterTotal": {
+        "count": 192,
+        "mean": 19.245774833333332,
+        "p50": 19.228352,
+        "p95": 19.9489536,
+        "p99": 20.206429760000002,
+        "max": 20.366944
+      },
+      "classification": {
+        "count": 192,
+        "mean": 0.5767618333333333,
+        "p50": 0.55888,
+        "p95": 0.5701296,
+        "p99": 0.9626710400000003,
+        "max": 1.495808
+      },
+      "software": {
+        "count": 192,
+        "mean": 15.652470166666667,
+        "p50": 15.658159999999999,
+        "p95": 16.3427728,
+        "p99": 16.567376640000003,
+        "max": 16.809888
+      },
+      "hardware": {
+        "count": 192,
+        "mean": 0.7294638333333333,
+        "p50": 0.6030719999999999,
+        "p95": 1.0744064,
+        "p99": 1.5576028800000004,
+        "max": 1.71856
+      },
+      "cull": {
+        "count": 192,
+        "mean": 1.442735,
+        "p50": 1.3091840000000001,
+        "p95": 1.8206175999999998,
+        "p99": 2.00363712,
+        "max": 2.195488
+      },
+      "candidates": {
+        "count": 192,
+        "mean": 0.5122286666666667,
+        "p50": 0.46368,
+        "p95": 0.8484847999999999,
+        "p99": 0.9966166400000005,
+        "max": 1.174176
+      },
+      "bins": {
+        "count": 192,
+        "mean": 0.2901763333333333,
+        "p50": 0.23263999999999999,
+        "p95": 0.6500096,
+        "p99": 0.7437718400000001,
+        "max": 0.89152
+      },
+      "merge": {
+        "count": 192,
+        "mean": 0.037373,
+        "p50": 0.02808,
+        "p95": 0.037159999999999985,
+        "p99": 0.3247481600000001,
+        "max": 0.763296
+      },
+      "graphGpu": {
+        "count": 192,
+        "mean": 22.180109833333333,
+        "p50": 22.203823999999997,
+        "p95": 22.9688224,
+        "p99": 23.226676480000002,
+        "max": 23.410272
+      },
+      "editorLoop": {
+        "count": 192,
+        "mean": 32.89623854166667,
+        "p50": 32.7196,
+        "p95": 36.99674,
+        "p99": 39.577041,
+        "max": 40.5074
+      }
+    }
+  },
+  "metadataOutputBitExact": true,
+  "sourceDirectory": "build-release\\full-metadata-classify-formal\\run1",
+  "manifest": "build-release/full-metadata-classify-formal/Manifest.json"
+}
