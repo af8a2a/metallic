@@ -12,6 +12,11 @@ namespace metallic::render {
 
 // The standalone GPUDriven executable defaults to streamed MiniZorah with realtime lighting.
 inline constexpr const char* kDefaultGPUDrivenSampleId = "gpu-driven-sample";
+inline constexpr const char* kGPUDrivenZorahFullSampleId = "gpu-driven-zorah-full";
+inline constexpr bool isGPUDrivenSceneSample(std::string_view id)
+{
+    return id == kDefaultGPUDrivenSampleId || id == kGPUDrivenZorahFullSampleId;
+}
 inline constexpr const char* kGPUDrivenVisibilitySampleId = "gpu-driven-visibility-buffer";
 
 struct RenderSampleEnvironmentDesc {
@@ -69,6 +74,9 @@ bool loadRenderSample(
     RenderSampleLoadResult& outResult,
     std::string& outMessage);
 std::vector<RenderSampleDesc> listBuiltInRenderSamples();
+// The standalone GPUDriven application exposes only these two production scenes.
+std::vector<RenderSampleDesc> listGPUDrivenSceneSamples();
+const char* gpuDrivenSceneSampleIdForPath(const std::filesystem::path& path);
 bool loadBuiltInRenderSample(
     std::string_view id,
     RenderSampleLoadResult& outResult,

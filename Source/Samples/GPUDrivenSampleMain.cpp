@@ -16,9 +16,11 @@ void printUsage()
         "  --smoke-test                 Render one frame and exit\n"
         "  --debug-control              Enable local Agent debug control\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization\n"
-        "  --scene <source>             Override streaming metadata scene (requires matching cook)\n"
-        "  --streamasset-path <file>    Override the cooked StreamAsset path\n"
-        "  --sample <id>                Explicitly select a diagnostic or another sample");
+        "  --minizorah                 Load MiniZorah (default)\n"
+        "  --zorah-full                 Load the full textured Zorah scene\n"
+        "  --list-scenes               List the two supported scenes and exit\n"
+        "  --streamasset-path <file>    Use a matching cook for the selected startup scene\n"
+        "  --sample <id>                Compatibility: gpu-driven-sample or gpu-driven-zorah-full");
 }
 
 } // namespace
@@ -29,7 +31,6 @@ int main(int argc, char** argv)
     bool waitForGraphicsDebugger = false;
     bool debugControl = false;
     const char* sampleId = metallic::render::kDefaultGPUDrivenSampleId;
-    std::string scenePath;
     std::string streamAssetPath;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
@@ -50,21 +51,30 @@ int main(int argc, char** argv)
             sampleId = argv[++index];
             continue;
         }
-        if (argument == "--minizorah" || argument == "--minizorah-vbuffer" || argument == "--streamasset") {
+        if (argument == "--list-scenes") {
+            for (const auto& scene : metallic::render::listGPUDrivenSceneSamples()) {
+                spdlog::info("{} ({}) - {}", scene.name, scene.id, scene.scenePath);
+            }
+            return 0;
+        }
+        if (argument == "--minizorah") {
             sampleId = metallic::render::kDefaultGPUDrivenSampleId;
+            continue;
+        }
+        if (argument == "--zorah-full") {
+            sampleId = metallic::render::kGPUDrivenZorahFullSampleId;
             continue;
         }
         if (argument == "--debug-control") {
             debugControl = true;
             continue;
         }
-        if (argument == "--scene" || argument == "--streamasset-path") {
+        if (argument == "--streamasset-path") {
             if (index + 1 >= argc) {
                 spdlog::error("{} requires a path", argument);
                 return 1;
             }
-            std::string& path = argument == "--scene" ? scenePath : streamAssetPath;
-            path = argv[++index];
+            streamAssetPath = argv[++index];
             continue;
         }
 
@@ -73,9 +83,8 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (!scenePath.empty() && streamAssetPath.empty() &&
-        std::string_view(sampleId) == metallic::render::kDefaultGPUDrivenSampleId) {
-        spdlog::error("--scene requires --streamasset-path with a matching pre-cooked stream asset");
+    if (!metallic::render::isGPUDrivenSceneSample(sampleId)) {
+        spdlog::error("GPUDrivenSample supports only MiniZorah and ZorahFull; use --list-scenes");
         return 1;
     }
 
@@ -84,7 +93,7 @@ int main(int argc, char** argv)
         smokeTest,
         waitForGraphicsDebugger,
         sampleId,
-        scenePath.empty() ? nullptr : scenePath.c_str(),
+        nullptr,
         streamAssetPath.empty() ? nullptr : streamAssetPath.c_str(),
-        false, false, debugControl);
+        false, false, debugControl, true);
 }

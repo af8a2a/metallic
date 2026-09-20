@@ -21,7 +21,7 @@ the engine's usual dependencies. Paths below use the Ninja build layout; for a
 multi-config build, add the appropriate configuration directory.
 
 ```powershell
-.\build\Source\MetallicGPUDrivenSample.exe --debug-control --streamasset
+.\build\Source\MetallicGPUDrivenSample.exe --debug-control --minizorah
 .\build\Source\metallicctl.exe --json list
 .\build\Source\metallicctl.exe --pid 1234 --json hello
 .\build\Source\metallicctl.exe --pid 1234 --json schema gpuScene
@@ -33,8 +33,13 @@ Use a current StreamAsset. For a small reproducible fixture:
 
 ```powershell
 .\build\Source\Metallic.exe --build-meshstream Asset\StandfordBunny\scene.gltf --output .tmp\debug-bunny.meshstream.bin
-.\build\Source\MetallicGPUDrivenSample.exe --debug-control --streamasset --scene Asset\StandfordBunny\scene.gltf --streamasset-path .tmp\debug-bunny.meshstream.bin
+.\build\Source\Metallic.exe --debug-control
 ```
+
+For the Bunny fixture, use the generic editor's Built-in Sample selector to load
+the StreamAsset diagnostic, then set its source and StreamAsset paths to the
+files above. GPUDrivenSample only exposes MiniZorah and ZorahFull; it no longer
+accepts arbitrary scene overrides or diagnostic sample IDs.
 
 `METALLIC_DEBUG_CONTROL=1` enables the service for other editor entry points.
 `METALLIC_DEBUG_VALIDATION=1` additionally enables Vulkan validation when the

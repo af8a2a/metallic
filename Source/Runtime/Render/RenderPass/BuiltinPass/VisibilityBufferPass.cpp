@@ -301,6 +301,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .gpuDecompressionMinBatchBytes = previewStreamUint64Property(properties, "gpuDecompressionMinBatchBytes", 1024 * 1024),
         .prefetchPages = boolProperty(&properties, "prefetchPages", true),
         .rasterMaterialTextureCapacity = textureCapacity,
+        .compactShadingAttributes = boolProperty(&properties, "compactShadingAttributes", false),
     };
 }
 

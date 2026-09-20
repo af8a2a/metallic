@@ -39,7 +39,8 @@ public:
         const char* startupStreamAssetPath = nullptr,
         bool enableNsightGraphicsCapture = false,
         bool enableNsightShaderDebug = false,
-        bool enableDebugControl = false);
+        bool enableDebugControl = false,
+        bool gpuDrivenScenesOnly = false);
 
 private:
     enum class PendingSceneAction : int32_t;
@@ -367,6 +368,7 @@ private:
     std::string sceneStatus_ = "No scene loaded.";
     std::string sceneAccelerationStructureStatus_ = "RTAS not built.";
     std::string startupSampleId_;
+    bool gpuDrivenScenesOnly_ = false;
     std::string startupScenePath_;
     std::string startupStreamAssetPath_;
     SceneSelection sceneSelection_;

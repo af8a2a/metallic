@@ -6,7 +6,7 @@
 cmake-build-release-visual-studio\Source\MetallicGPUDrivenSample.exe --smoke-test
 ```
 
-诊断场景通过 `--sample <id>` 显式选择，例如 `--sample gpu-driven-visibility-buffer` 加载 Sponza 可见性诊断。默认流式模式的场景覆盖需要同时提供 `--scene <metadata.gltf>` 与 `--streamasset-path <cook.meshstream.bin>`；缺失或过期的缓存会明确报错。旧 `--minizorah`、`--minizorah-vbuffer`、`--streamasset` 参数统一进入默认实时管线。
+GPUDrivenSample 仅加载 MiniZorah 与 ZorahFull，入口和切换方式见 [GPUDrivenSample](GPUDrivenSample.md)。Sponza 等诊断样例在通用 `Metallic` 编辑器的 Built-in Sample 中选择。下文保留历史诊断验收记录；其中旧 GPUDrivenSample 诊断参数不再用于当前入口。
 
 ## 帧内数据流
 

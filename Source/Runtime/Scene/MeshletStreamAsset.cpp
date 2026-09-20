@@ -1,5 +1,7 @@
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include <spdlog/spdlog.h>
 #include "Runtime/Scene/GeometryAttributes.h"
+#include "Runtime/Scene/GeometryEncoding.h"
 #include "Runtime/Scene/GltfGpuInstancing.h"
 #include "Runtime/Scene/MeshletStreamGpuCodec.h"
 
@@ -42,7 +44,7 @@ constexpr std::array<char, 8> kMeshletStreamPartialMagic{'M', 'T', 'L', 'M', 'S'
 constexpr std::array<char, 8> kMeshoptDecodeCacheMagic{'M', 'T', 'L', 'M', 'O', 'P', 'T', 'C'};
 constexpr uint32_t kMeshletStreamVersion = 9;
 constexpr uint32_t kMeshletStreamLegacyVersion = 8;
-constexpr uint32_t kMeshletStreamPartialVersion = 9;
+constexpr uint32_t kMeshletStreamPartialVersion = 10;
 constexpr uint32_t kMeshoptDecodeCacheVersion = 1;
 constexpr uint32_t kMeshletStreamEndian = 0x01020304;
 constexpr uint32_t kPayloadMagic = 0x4d535047u; // "GSPM"
@@ -515,11 +517,13 @@ bool validatePayloadHeader(
     const uint64_t positionBytes = static_cast<uint64_t>(payloadHeader.vertexCount) * positionStride;
     const uint64_t normalBytes =
         (payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeNormal) != 0u
-            ? static_cast<uint64_t>(payloadHeader.vertexCount) * sizeof(float) * 4u
+            ? static_cast<uint64_t>(payloadHeader.vertexCount) *
+                (payloadHeader.normalFormat == uint32_t(MeshletStreamPayloadFormat::OctahedralNormal) ? 4u : 16u)
             : 0u;
     const uint64_t tangentBytes =
         (payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeTangent) != 0u
-            ? static_cast<uint64_t>(payloadHeader.vertexCount) * sizeof(float) * 4u
+            ? static_cast<uint64_t>(payloadHeader.vertexCount) *
+                (payloadHeader.tangentFormat == uint32_t(MeshletStreamPayloadFormat::OctahedralTangent) ? 4u : 16u)
             : 0u;
     const uint64_t texcoord0Bytes =
         (payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeTexcoord0) != 0u
@@ -563,9 +567,13 @@ bool validatePayloadHeader(
         positionStride == 0u ||
         ((page.payloadFlags & kMeshletStreamPayloadCompactPositions) != 0u) != (positionStride == 12u) ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeNormal) != 0u &&
-            payloadHeader.normalFormat != static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4)) ||
+            payloadHeader.normalFormat != static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4) &&
+            (!(page.payloadFlags & kMeshletStreamPayloadCompactShading) ||
+             payloadHeader.normalFormat != uint32_t(MeshletStreamPayloadFormat::OctahedralNormal))) ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeTangent) != 0u &&
-            payloadHeader.tangentFormat != static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4)) ||
+            payloadHeader.tangentFormat != static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x4) &&
+            (!(page.payloadFlags & kMeshletStreamPayloadCompactShading) ||
+             payloadHeader.tangentFormat != uint32_t(MeshletStreamPayloadFormat::OctahedralTangent))) ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeTexcoord0) != 0u &&
             payloadHeader.texcoord0Format != static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x2)) ||
         ((payloadHeader.attributeFlags & kMeshletStreamPayloadAttributeMaterial) != 0u &&
@@ -3420,6 +3428,11 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
     }
 
     outPrimitive.triangleCount = triangleCountForStreamPrimitive(outPrimitive.mode, outPrimitive.indexCount);
+    const uint32_t repairedNormals = repairZeroGeometryNormals(outPrimitive);
+    if (repairedNormals != 0) {
+        spdlog::warn("Stream cook mesh {} primitive {}: repaired {} zero-length normals from geometry",
+            meshIndex, primitiveIndex, repairedNormals);
+    }
     if (!validateGeometryAttributes(outPrimitive, reason)) { return false; }
     generateMissingTangents(outPrimitive);
     return true;
@@ -4164,6 +4177,7 @@ struct MeshletStreamAsset::Impl {
     std::span<const uint32_t> refinedGroups;
     std::span<const MeshletStreamNodeInfo> nodes;
     std::span<const MeshletStreamPageInfo> pages;
+    std::vector<MeshletStreamPageInfo> devicePages;
     std::span<const uint64_t> pageOffsets;
     std::span<const char> sourceDependencyPaths;
 };
@@ -4455,6 +4469,7 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
             page.payloadOffset > impl->dataSize ||
             page.payloadSize > impl->dataSize - page.payloadOffset ||
             page.uncompressedSize == 0 ||
+            (page.payloadFlags & kMeshletStreamPayloadCompactShading) != 0u ||
             page.payloadSize == 0 ||
             page.payloadSize > std::numeric_limits<uint32_t>::max() ||
             !meshletStreamCompressionSupported(page.compressionMode) ||
@@ -4594,9 +4609,9 @@ bool MeshletStreamAsset::isRuntimeCompatibleForSource(const std::filesystem::pat
     }
     reason = "geometry cook revision " + std::to_string(impl_->header.reserved1) +
         " requires re-cooking for revision " + std::to_string(kGeometryCookRevision);
-    // Revision 1 changed attribute preparation/simplification, not position-only
-    // pages. Keep this exception specific to that migration, not future revisions.
-    if (kGeometryCookRevision != 1 || impl_->header.reserved1 != 0) {
+    // Revisions 1/2 changed attribute simplification/zero-normal repair, not
+    // position-only pages. Do not automatically extend this to future policies.
+    if ((kGeometryCookRevision != 1 && kGeometryCookRevision != 2) || impl_->header.reserved1 != 0) {
         return false;
     }
     constexpr uint32_t compatibleFlags = kMeshletStreamPayloadAttributePosition | kMeshletStreamPayloadAttributeMaterial;
@@ -4792,6 +4807,24 @@ std::span<const uint8_t> MeshletStreamAsset::pagePayload(uint32_t pageIndex) con
         static_cast<size_t>(page.payloadSize));
 }
 
+bool MeshletStreamAsset::compactShadingForDevice(std::string& reason)
+{
+    if (!valid()) { reason = "Compact shading requires an open asset"; return false; }
+    constexpr uint32_t flags = kMeshletStreamPayloadAttributeNormal | kMeshletStreamPayloadAttributeTangent;
+    for (const auto& page : impl_->pages) {
+        if ((page.attributeFlags & flags) && page.compressionMode == uint32_t(MeshletStreamPayloadCompression::GpuTiles)) {
+            reason = "Compact shading requires a raw/ByteRle cook; GPU tile layouts cannot be resized during upload";
+            return false;
+        }
+    }
+    if (impl_->devicePages.empty()) { impl_->devicePages.assign(impl_->pages.begin(), impl_->pages.end()); }
+    for (auto& page : impl_->devicePages) {
+        if (page.attributeFlags & flags) { page.payloadFlags |= kMeshletStreamPayloadCompactShading; }
+    }
+    impl_->pages = impl_->devicePages;
+    return true;
+}
+
 namespace {
 bool compactDevicePositions(
     const MeshletStreamPageInfo& page,
@@ -4826,7 +4859,7 @@ bool compactDevicePositions(
     if (payload.data() != storage.data()) {
         storage.assign(payload.begin(), payload.end());
     }
-    const uint32_t saved = uint32_t(payload.size() - meshletStreamDevicePayloadSize(page));
+    const uint32_t saved = uint32_t(uint64_t(page.vertexCount) * 4u & ~uint64_t(15));
     auto* positions = storage.data() + header.positionOffsetBytes;
     for (uint32_t i = 0; i < header.vertexCount; ++i) {
         std::memmove(positions + uint64_t(i) * 12u, positions + uint64_t(i) * 16u, 12u);
@@ -4843,6 +4876,58 @@ bool compactDevicePositions(
     output = storage;
     return true;
 }
+
+bool compactDeviceShading(const MeshletStreamPageInfo& page, std::vector<uint8_t>& storage,
+    std::span<const uint8_t>& output, std::string& reason)
+{
+    if (!(page.payloadFlags & kMeshletStreamPayloadCompactShading)) { return true; }
+    if (output.data() != storage.data()) { storage.assign(output.begin(), output.end()); }
+    MeshletStreamPayloadHeader header;
+    std::memcpy(&header, storage.data(), sizeof(header));
+    for (bool tangent : {false, true}) {
+        const uint32_t flag = tangent ? kMeshletStreamPayloadAttributeTangent : kMeshletStreamPayloadAttributeNormal;
+        if (!(header.attributeFlags & flag)) { continue; }
+        const uint32_t start = tangent ? header.tangentOffsetBytes : header.normalOffsetBytes;
+        const uint64_t end = uint64_t(start) + uint64_t(header.vertexCount) * 16u;
+        if (start < sizeof(header) || end > storage.size()) { reason = "Compact shading range is invalid"; return false; }
+        const std::pair<uint32_t,uint64_t> otherSections[] = {
+            {header.clusterOffsetBytes, uint64_t(header.clusterCount)*sizeof(MeshletStreamPayloadCluster)},
+            {header.positionOffsetBytes, uint64_t(header.vertexCount)*meshletStreamPositionStride(header.positionFormat)},
+            {header.texcoord0OffsetBytes, (header.attributeFlags & kMeshletStreamPayloadAttributeTexcoord0) ? uint64_t(header.vertexCount)*8u : 0u},
+            {header.materialOffsetBytes, uint64_t(header.materialCount)*4u},
+            {header.triangleOffsetBytes, header.triangleIndexCount},
+            {tangent ? header.normalOffsetBytes : header.tangentOffsetBytes,
+                (header.attributeFlags & (tangent ? kMeshletStreamPayloadAttributeNormal : kMeshletStreamPayloadAttributeTangent))
+                    ? uint64_t(header.vertexCount)*(tangent ? 4u : 16u) : 0u},
+        };
+        for (const auto& [offset, size] : otherSections) {
+            if (size && uint64_t(offset)<end && uint64_t(offset)+size>start) {
+                reason = "Compact shading sections overlap"; return false;
+            }
+        }
+        for (uint32_t v=0; v<header.vertexCount; ++v) {
+            float value[4]; std::memcpy(value, storage.data()+start+uint64_t(v)*16u, 16);
+            const uint32_t packed = tangent ? packSceneTangent(value[0],value[1],value[2],value[3])
+                : packSceneNormal(value[0],value[1],value[2]);
+            std::memcpy(storage.data()+start+uint64_t(v)*4u, &packed, 4);
+        }
+        const uint32_t saved = header.vertexCount*16u-uint32_t(alignUp(uint64_t(header.vertexCount)*4u,16));
+        std::memmove(storage.data()+end-saved,storage.data()+end,storage.size()-end);
+        for (uint32_t* offset : {&header.clusterOffsetBytes,&header.positionOffsetBytes,
+                 &header.normalOffsetBytes,&header.tangentOffsetBytes,&header.texcoord0OffsetBytes,
+                 &header.materialOffsetBytes,&header.triangleOffsetBytes}) {
+            if (*offset>start) { *offset-=saved; }
+        }
+        storage.resize(storage.size()-saved);
+        (tangent ? header.tangentFormat : header.normalFormat) = uint32_t(tangent
+            ? MeshletStreamPayloadFormat::OctahedralTangent : MeshletStreamPayloadFormat::OctahedralNormal);
+    }
+    header.payloadByteSize = header.uncompressedPayloadByteSize = uint32_t(storage.size());
+    std::memcpy(storage.data(), &header, sizeof(header));
+    output = storage;
+    if (output.size()!=meshletStreamDevicePayloadSize(page)) { reason="Compact shading size mismatch"; return false; }
+    return true;
+}
 } // namespace
 
 bool validateMeshletStreamDeviceHeader(const MeshletStreamPayloadHeader& header,
@@ -4852,7 +4937,8 @@ bool validateMeshletStreamDeviceHeader(const MeshletStreamPayloadHeader& header,
     // against the decoded size without requiring the decoded bytes on the CPU.
     auto decodedPage = page;
     decodedPage.payloadOffset = 0;
-    decodedPage.payloadSize = page.uncompressedSize;
+    decodedPage.payloadSize = decodedPage.uncompressedSize = meshletStreamDevicePayloadSize(page);
+    decodedPage.payloadFlags |= kMeshletStreamPayloadCompactPositions;
     decodedPage.compressionMode = uint32_t(MeshletStreamPayloadCompression::None);
     return validatePayloadHeader(reinterpret_cast<const uint8_t*>(&header),
         decodedPage.payloadSize, decodedPage, 0, reason);
@@ -4901,7 +4987,8 @@ bool decodeMeshletStreamPayloadForDevice(
         if (!validateDevicePayloadClusters(storedPayload, page, reason)) {
             return false;
         }
-        return compactDevicePositions(page, storedPayload, scratchPayload, outDevicePayload, reason);
+        return compactDevicePositions(page, storedPayload, scratchPayload, outDevicePayload, reason) &&
+            compactDeviceShading(page, scratchPayload, outDevicePayload, reason);
     }
 
     if (page.compressionMode != static_cast<uint32_t>(MeshletStreamPayloadCompression::ByteRle)) {
@@ -4944,7 +5031,8 @@ bool decodeMeshletStreamPayloadForDevice(
     if (!validateDevicePayloadClusters(scratchPayload, page, reason)) {
         return false;
     }
-    return compactDevicePositions(page, scratchPayload, scratchPayload, outDevicePayload, reason);
+    return compactDevicePositions(page, scratchPayload, scratchPayload, outDevicePayload, reason) &&
+        compactDeviceShading(page, scratchPayload, outDevicePayload, reason);
 }
 
 std::filesystem::path meshletStreamAssetPathFor(const std::filesystem::path& sourcePath)

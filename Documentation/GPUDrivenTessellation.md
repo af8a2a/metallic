@@ -164,5 +164,8 @@ The original 3000-frame MiniZorah replay completed with tessellation disabled. T
 ./build-release/tests/MetallicRhiTests.exe '--gtest_filter=*tessellation*:*stream_wave_work_distribution:*meshlet_lod_stream*:*hybrid_raster_scene_equivalence:*render_graph_gpu_driven_mixed_producer_render:*render_graph_sample_load:*pipeline_cache_persistence_and_shader_invalidation' --rhi-validation --output-dir .cache/tessellation/validation
 ./build-release/tests/MetallicSceneTests.exe '--gtest_filter=SceneEditing.Material*'
 ./Tools/RunMetallicCfgReplay.ps1 -Replay .cache/gpudriven-four/Replay.json -OutputRoot .cache/tessellation/roam -Cases m1 -Realtime -QualityWithoutValidation
-./build-release/Source/MetallicGPUDrivenSample.exe --sample gpu-driven-tessellation --debug-control
+./build-release/Source/Metallic.exe --debug-control
 ```
+
+In the generic editor, select `GPU Driven / Material Displacement` from Built-in Sample.
+The standalone GPUDrivenSample now only exposes MiniZorah and ZorahFull.

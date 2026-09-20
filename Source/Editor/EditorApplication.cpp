@@ -1950,8 +1950,17 @@ int EditorApplication::run(
     const char* startupStreamAssetPath,
     bool enableNsightGraphicsCapture,
     bool enableNsightShaderDebug,
-    bool enableDebugControl)
+    bool enableDebugControl,
+    bool gpuDrivenScenesOnly)
 {
+    gpuDrivenScenesOnly_ = gpuDrivenScenesOnly;
+    if (gpuDrivenScenesOnly_) {
+        if (!startupSampleId) { startupSampleId = render::kDefaultGPUDrivenSampleId; }
+        if (!render::isGPUDrivenSceneSample(startupSampleId) || startupScenePath) {
+            spdlog::error("GPUDrivenSample supports only MiniZorah and ZorahFull without scene path overrides");
+            return 1;
+        }
+    }
     const auto taskInitialization = task::initializeTaskSystem();
     if (!taskInitialization) {
         spdlog::error("TaskSystem initialization failed: {}", taskInitialization.error().message);
@@ -3055,10 +3064,16 @@ void EditorApplication::drawDockspace()
 
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("New Render Graph")) {
+            if (gpuDrivenScenesOnly_) {
+                for (const auto& sample : render::listGPUDrivenSceneSamples()) {
+                    if (ImGui::MenuItem(sample.name.c_str())) { loadBuiltInSample(sample.id.c_str()); }
+                }
+                ImGui::Separator();
+            }
+            if (ImGui::MenuItem(gpuDrivenScenesOnly_ ? "Reset Scene" : "New Render Graph")) {
                 resetDefaultRenderGraph();
             }
-            if (ImGui::MenuItem("Load Render Graph")) {
+            if (!gpuDrivenScenesOnly_ && ImGui::MenuItem("Load Render Graph")) {
                 loadRenderGraph();
             }
             if (ImGui::MenuItem("Save Render Graph")) {
@@ -3079,6 +3094,7 @@ void EditorApplication::drawDockspace()
                     ImGui::TextDisabled("No recent scenes");
                 }
                 for (const std::filesystem::path& recentPath : recentScenePaths_) {
+                    if (gpuDrivenScenesOnly_ && !render::gpuDrivenSceneSampleIdForPath(recentPath)) { continue; }
                     if (ImGui::MenuItem(recentPath.string().c_str())) {
                         loadDroppedScene(recentPath);
                     }
@@ -6851,6 +6867,10 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
 
 void EditorApplication::loadBuiltInSample(const char* sampleId)
 {
+    if (gpuDrivenScenesOnly_ && (!sampleId || !render::isGPUDrivenSceneSample(sampleId))) {
+        renderGraphStatus_ = "GPUDrivenSample supports only MiniZorah and ZorahFull.";
+        return;
+    }
     if (scene_.dirty()) {
         requestPendingSceneAction(
             PendingSceneAction::LoadSample,
@@ -6873,7 +6893,8 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         spdlog::warn("[Startup] Built-in sample scene override failed: {}", message);
         return;
     }
-    if (!startupStreamAssetPath_.empty()) {
+    if (!startupStreamAssetPath_.empty() &&
+        (!gpuDrivenScenesOnly_ || sample.desc.id == startupSampleId_)) {
         bool applied = false;
         for (const std::string& target : sample.desc.scenePathTargets) {
             render::RenderGraphNode* node = sample.graph.findNode(target);
@@ -6959,6 +6980,11 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
 
 void EditorApplication::resetDefaultRenderGraph()
 {
+    if (gpuDrivenScenesOnly_) {
+        const char* id = render::gpuDrivenSceneSampleIdForPath(firstScenePathFromGraph(renderGraph_));
+        loadBuiltInSample(id ? id : render::kDefaultGPUDrivenSampleId);
+        return;
+    }
     loadBuiltInSample(kDefaultRenderSampleId);
 }
 
@@ -6977,6 +7003,10 @@ void EditorApplication::saveRenderGraph()
 
 void EditorApplication::loadRenderGraph()
 {
+    if (gpuDrivenScenesOnly_) {
+        renderGraphStatus_ = "Select MiniZorah or ZorahFull to load its render graph.";
+        return;
+    }
     if (scene_.dirty()) {
         requestPendingSceneAction(
             PendingSceneAction::LoadRenderGraph,
@@ -7224,6 +7254,17 @@ void EditorApplication::setEnvironmentPath(const std::filesystem::path& path)
 
 void EditorApplication::loadScene()
 {
+    if (gpuDrivenScenesOnly_) {
+        const char* id = render::gpuDrivenSceneSampleIdForPath(resolveSceneAssetPath(sceneFilePath_));
+        if (!id) {
+            sceneStatus_ = "GPUDrivenSample supports only the MiniZorah and ZorahFull scene files.";
+            return;
+        }
+        // Switch the entire preset so Full receives its own camera, compact
+        // attribute upload and root-page/CLAS budgets, not Mini's old settings.
+        loadBuiltInSample(id);
+        return;
+    }
     StartupLogScope scope(std::string("Editor scene load '") + sceneFilePath_ + "'");
 
     const std::filesystem::path path = resolveSceneAssetPath(sceneFilePath_);
@@ -7757,12 +7798,12 @@ void EditorApplication::drawRenderGraphEditorWindow()
         return;
     }
 
-    if (ImGui::Button("New Graph")) {
+    if (ImGui::Button(gpuDrivenScenesOnly_ ? "Reset Scene" : "New Graph")) {
         resetDefaultRenderGraph();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Load")) {
-        loadRenderGraph();
+    if (!gpuDrivenScenesOnly_) {
+        ImGui::SameLine();
+        if (ImGui::Button("Load")) { loadRenderGraph(); }
     }
     ImGui::SameLine();
     if (ImGui::Button("Save")) {
@@ -8015,12 +8056,12 @@ void EditorApplication::drawRenderGraphSettingsPanel()
     ImGui::InputText("##GraphPath", graphFilePath_, sizeof(graphFilePath_));
     ImGui::PopItemWidth();
 
-    if (ImGui::Button("New Graph")) {
+    if (ImGui::Button(gpuDrivenScenesOnly_ ? "Reset Scene" : "New Graph")) {
         resetDefaultRenderGraph();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Load")) {
-        loadRenderGraph();
+    if (!gpuDrivenScenesOnly_) {
+        ImGui::SameLine();
+        if (ImGui::Button("Load")) { loadRenderGraph(); }
     }
     ImGui::SameLine();
     if (ImGui::Button("Save")) {
@@ -8033,8 +8074,9 @@ void EditorApplication::drawRenderGraphSettingsPanel()
         renderGraphStatus_ = log;
     }
 
-    if (ImGui::BeginCombo("Built-in Sample", "Load Sample...")) {
-        for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
+    if (ImGui::BeginCombo(gpuDrivenScenesOnly_ ? "Scene" : "Built-in Sample", "Load...")) {
+        const auto samples = gpuDrivenScenesOnly_ ? render::listGPUDrivenSceneSamples() : render::listBuiltInRenderSamples();
+        for (const render::RenderSampleDesc& desc : samples) {
             if (ImGui::Selectable(desc.name.c_str())) {
                 loadBuiltInSample(desc.id.c_str());
             }

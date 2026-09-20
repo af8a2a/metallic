@@ -12,7 +12,9 @@
 
 2026-09-18 Z3 更新：**受预算的 KTX2/BC 纹理资源与寻址已完成**，4418 张纹理的 512 mip 尾链已上传并验证；实际 image allocation 1.369 GiB，峰值 staging 192 MiB。见 [ZorahFullZ3Textures.md](E:/metallic/Documentation/ZorahFullZ3Textures.md)。
 
-2026-09-19 Z4 更新：流式属性、OpenPBR specular/unlit、MASK 光栅与 CLAS alpha、BLEND/玻璃续追已接入。实现、探针验收及透明阴影边界见 [ZorahFullZ4StreamingShading.md](E:/metallic/Documentation/ZorahFullZ4StreamingShading.md)。完整场景仍不能仅替换路径：下一步是 Z5 全量属性 cook 与首帧验收。
+2026-09-19 Z4 更新：流式属性、OpenPBR specular/unlit、MASK 光栅与 CLAS alpha、BLEND/玻璃续追已接入。实现、探针验收及透明阴影边界见 [ZorahFullZ4StreamingShading.md](E:/metallic/Documentation/ZorahFullZ4StreamingShading.md)。
+
+2026-09-20 Z5 更新：**全量 cook 与完整材质首帧已完成**。5715 份去重几何、43068 个实例、1676913 页通过原始/紧凑布局全页校验；GPU 根页由 5.232 GiB 降到 2.956 GiB。独立 asset 和编辑器 world 入口均通过首帧及释放检查，4418 张纹理使用 512 mip 尾链。运行 `MetallicGPUDrivenSample.exe --zorah-full` 或选择 `GPUDriven / ZorahFull`，采用 Full 专用的 3.5 GiB geometry / 2 GiB CLAS 预算。详情和图像见 [ZorahFullZ5FirstFrame.md](E:/metallic/Documentation/ZorahFullZ5FirstFrame.md)。当前几何池细化后会触顶，尚未验收 1.5 px 收敛或持续纹理细节流送。
 
 2026-09-18 编辑器入口修复：在 GPUDrivenSample 的流式 VBuffer 图中使用 File/Open，现在先异步校验所选场景的 meshstream，再导入 metadata，不进入普通常驻 glTF 几何/图像解码和静态 RTAS 准备。重载同一场景保留图中显式缓存路径；切换场景使用 `<source.gltf>.meshstream.bin`，校验成功后一起提交源路径、缓存路径和 world 绑定。缓存缺失或过期会显示具体路径和 `MetallicMeshletCook --source ... --output ...` 命令，保留当前场景。ZorahFull 的无 URI buffer 是 meshopt 解压目标，原先 File/Open 的 “uri is missing” 是入口未接入流式加载的误导性错误；普通常驻入口也会提前明确报告不支持 meshopt，而非报缺文件。Full 全量缓存尚未生成，完整材质和首帧仍按 Z4/Z5 推进。
 
@@ -81,7 +83,7 @@ KTX2 的每个 mip 可独立 Zstd 解压，适合按需读入；容器提供 for
 | Z2：属性 cook 与保真 | **2026-09-18 cook/数据验收完成**；normal/UV/tangent 契约、seam/手性保护、缺失切线拆分、缓存恢复、同材质精确几何复用 | 9 探针 106 页全 LOD 属性及 LOD0 绕序一致，粗级合成 UV/TBN 检查通过；最大单 primitive 17.3M 三角形 cook 峰值提交 2.78 GiB；真实材质像素对照随 Z3/Z4 完成，未全量 cook |
 | Z3：KTX2 与受预算的纹理资源 | **2026-09-18 资源验收完成**；BC4/5/7、Zstd、swizzle、色彩、mip-tail；实际数量描述符与 stream raster/deferred 共享 owner | 4418 引用均有效；合成图案 GPU 采样、小块/NPOT 回读、低预算降 mip 通过；512 cap payload 1.358 GiB、image allocation 1.369 GiB、峰值 staging 192 MiB。完整材质/stream shadow 像素验收属 Z4 |
 | Z4：完整流式材质消费者 | **2026-09-19 主链路及探针验收完成**；stream normal/UV/tangent、OpenPBR specular/unlit、MASK/双面及 CLAS alpha、BLEND/玻璃续追 | 8 个真实探针分批对照、HW/混合覆盖、MASK 阴影及 ID >255 通过，详情见 Z4 报告；透明 SIGMA 阴影仍为明确边界 |
-| Z5：全场景 cook 与首帧 | 在 Z2 格式和小场景材质验收稳定后全量 cook；固定 cfg 相机、512 cap 全材质首帧，后续可调到预算内更细 mip | 全 root 几何和保底纹理就绪后显示；无漏实例/黑贴图/错误材质；完整场景中的 MASK、玻璃和 BLEND 无静默丢失；内存受限、重复切换及退出正常 |
+| Z5：全场景 cook 与首帧 | **2026-09-20 已完成**；全量 revision 2 cook、上传时紧凑 N/T、Full cfg 相机和 512 cap 全材质首帧 | 原始/紧凑全部 1676913 页通过校验，51764 根页完整 ready；43068 实例、4418 纹理及有效 descriptor 完整，asset/world 两入口加载释放通过；持续质量收敛归 Z6 |
 | Z6：持续漫游与细节流送 | 保底 mip 常驻，按可见纹理 footprint 提升/降低 mip；几何、CLAS、纹理共享总预算协调及上传节流；profiling 图表 | 固定路线往返、急转、近景、低预算测试；无 DeviceLost/悬空 descriptor；质量收敛、请求尾延迟、重载量和 P95/P99 可解释 |
 
 依赖为 **Z1 → Z2**，**Z1 → Z3**，**Z2+Z3 → Z4 → Z5 → Z6**。Z2/Z3 是独立模块；全量 cook 应等格式和小场景验证稳定，避免昂贵的反复烘焙。

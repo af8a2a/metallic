@@ -16,7 +16,7 @@ VisibilityBuffer 和保留的 StreamAsset 诊断 Pass 通过 `acquireStream()` �
 
 当前 position-only StreamAsset 格式提供位置与标量材质，流式法线由三角形恢复。此路径要求不透明材质；纹理、真实透明或体积透射不能由该缓存表达，会明确拒绝。材质资源可独立于常驻几何和 RTAS 准备，避免加载 MiniZorah 的全量源几何。流式阴影精度随驻留 LOD 变化；当前流式着色使用主光源阴影信号，其余灯光仍参与 LightGrid 照明。
 
-命令行保留 `--scene`、`--streamasset-path`、`--smoke-test`、`--debug-control`，通过 `--sample <id>` 显式访问诊断场景。旧 MiniZorah/StreamAsset 快捷参数归一到默认实时路径。
+`MetallicGPUDrivenSample` 仅提供 MiniZorah 与 ZorahFull 两个正式场景；默认 MiniZorah，`--zorah-full` 加载 Full，`--list-scenes` 列出入口。File 菜单直接切换场景；File/Open 或拖入这两个源文件会加载对应的完整预设，包括相机、缓存与预算。保留 `--streamasset-path`、`--smoke-test`、`--debug-control`；`--sample` 仅接受这两个场景的 ID，不再支持任意 `--scene` 覆盖。其他诊断样例仍可在通用 `Metallic` 编辑器的 Built-in Sample 中选择。用法见 [GPUDrivenSample](GPUDrivenSample.md)。
 
 相关回归：`streamed_realtime_pipeline` 覆盖独立材质资源、禁止 resident 回退、流式 TLAS、材质分箱一致性、相机 guides、resize 和会话回收；`minizorah_realtime_pipeline` 在 `METALLIC_TEST_MINIZORAH=1` 下验证完整默认场景及 DLSS-SR。两者使用 `--rhi-realtime` 设备。原有 `stream_metadata_contract`、`stream_metadata_vbuffer` 与 Sponza 剔除测试保留。
 

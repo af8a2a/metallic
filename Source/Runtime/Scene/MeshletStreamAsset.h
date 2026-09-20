@@ -36,6 +36,8 @@ enum class MeshletStreamPayloadFormat : uint32_t {
     Float32x4 = 2,
     Uint32 = 3,
     Float32x3 = 4,
+    OctahedralNormal = 5, // Same snorm16 x 2 encoding as resident shading vertices.
+    OctahedralTangent = 6, // snorm15 x 2 + exact handedness + valid bit.
 };
 
 struct MeshletStreamBounds {
@@ -141,6 +143,8 @@ struct MeshletStreamPageInfo {
 // Disk metadata keeps the original uncompressed size. Legacy float4 pages are
 // compacted at decode time, without changing their on-disk cache or XYZ bits.
 inline constexpr uint32_t kMeshletStreamPayloadCompactPositions = 1u;
+// Runtime-only flag on a private directory copy. Never written into the cook.
+inline constexpr uint32_t kMeshletStreamPayloadCompactShading = 0x80000000u;
 inline constexpr uint32_t meshletStreamPositionStride(uint32_t format)
 {
     return format == static_cast<uint32_t>(MeshletStreamPayloadFormat::Float32x3) ? 12u :
@@ -148,8 +152,14 @@ inline constexpr uint32_t meshletStreamPositionStride(uint32_t format)
 }
 inline constexpr uint64_t meshletStreamDevicePayloadSize(const MeshletStreamPageInfo& page)
 {
-    const uint64_t savings = (page.payloadFlags & kMeshletStreamPayloadCompactPositions) != 0u
+    uint64_t savings = (page.payloadFlags & kMeshletStreamPayloadCompactPositions) != 0u
         ? 0u : (uint64_t(page.vertexCount) * 4u & ~uint64_t(15));
+    if (page.payloadFlags & kMeshletStreamPayloadCompactShading) {
+        const uint64_t perStream = uint64_t(page.vertexCount) * 16u -
+            ((uint64_t(page.vertexCount) * 4u + 15u) & ~uint64_t(15));
+        if (page.attributeFlags & kMeshletStreamPayloadAttributeNormal) { savings += perStream; }
+        if (page.attributeFlags & kMeshletStreamPayloadAttributeTangent) { savings += perStream; }
+    }
     return savings <= page.uncompressedSize ? page.uncompressedSize - savings : 0u;
 }
 
@@ -215,6 +225,9 @@ public:
 
     bool open(const std::filesystem::path& path, std::string& reason);
     void close();
+    // Call before starting residency; the original file and source streams stay
+    // exact. CPU uploads pack N/T as on the resident path; P/UV are untouched.
+    bool compactShadingForDevice(std::string& reason);
 
     bool valid() const;
     const std::filesystem::path& path() const { return path_; }

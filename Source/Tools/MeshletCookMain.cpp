@@ -90,7 +90,7 @@ Json inspectAsset(const MeshletStreamAsset& asset, bool validatePayloads)
     for (uint32_t index = 0; index < asset.pageCount(); ++index) {
         const auto& page = asset.pages()[index];
         storedBytes += page.payloadSize;
-        deviceBytes += alignedPageBytes(page.uncompressedSize);
+        deviceBytes += alignedPageBytes(meshletStreamDevicePayloadSize(page));
         clusters += page.clusterCount;
         triangles += page.triangleIndexCount / 3u;
         Json& level = levels[std::to_string(page.lodLevel)];
@@ -98,7 +98,7 @@ Json inspectAsset(const MeshletStreamAsset& asset, bool validatePayloads)
         for (const auto& [key, value] : std::initializer_list<std::pair<const char*, uint64_t>>{
                 {"pages", 1}, {"clusters", page.clusterCount},
                 {"triangles", page.triangleIndexCount / 3u},
-                {"storedBytes", page.payloadSize}, {"deviceBytes", alignedPageBytes(page.uncompressedSize)}}) {
+                {"storedBytes", page.payloadSize}, {"deviceBytes", alignedPageBytes(meshletStreamDevicePayloadSize(page))}}) {
             level[key] = level.value(key, uint64_t(0)) + value;
         }
         if (validatePayloads) {
@@ -118,7 +118,7 @@ Json inspectAsset(const MeshletStreamAsset& asset, bool validatePayloads)
     for (uint32_t group : asset.terminalGroups()) {
         const auto pageId = asset.groups()[group].pageIndex;
         terminalPages.push_back(pageId);
-        terminalBytes += alignedPageBytes(asset.pages()[pageId].uncompressedSize);
+        terminalBytes += alignedPageBytes(meshletStreamDevicePayloadSize(asset.pages()[pageId]));
     }
     uint64_t terminalInstanceGroups = 0, terminalInstanceClusters = 0, stateBytes = 0;
     Json geometries = Json::array();
@@ -160,9 +160,11 @@ int run(int argc, char** argv)
     std::filesystem::path manifestPath;
     uint64_t memoryMiB = 0;
     bool inspectOnly = false, validatePayloads = false, validateAttributes = false;
+    bool compactShading = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view option(argv[i]);
         if (option == "--inspect") { inspectOnly = true; continue; }
+        if (option == "--compact-shading") { compactShading = true; continue; }
         if (option == "--validate-payloads") { validatePayloads = true; continue; }
         if (option == "--validate-attributes") { validateAttributes = true; validatePayloads = true; continue; }
         if (option == "--help") {
@@ -170,6 +172,7 @@ int run(int argc, char** argv)
                 "  --report file.json --workers N --memory-mib N\n"
                 "  --max-geometries N --checkpoint-interval N --compression none|byte-rle\n"
                 "  --inspect (skip cooking) --validate-payloads (check every page)\n"
+                "  --compact-shading (inspect runtime packed normal/tangent sizes; requires --inspect)\n"
                 "  --validate-attributes (requires --source; exact LOD0 and all-LOD vertex attributes)\n"
                 "Exit 2 means a recoverable geometry-budget pause. Zero budgets preserve library defaults.");
             return 0;
@@ -194,6 +197,9 @@ int run(int argc, char** argv)
     }
     if (desc.outputPath.empty() || (!inspectOnly && desc.sourcePath.empty())) {
         throw std::runtime_error("--output and (for cooking) --source are required");
+    }
+    if (compactShading && (!inspectOnly || validateAttributes)) {
+        throw std::runtime_error("--compact-shading requires --inspect and cannot use exact raw attribute validation");
     }
     if (memoryMiB > UINT64_MAX / (1024u * 1024u)) { throw std::runtime_error("Memory budget overflow"); }
     MemoryBudget budget;
@@ -234,7 +240,9 @@ int run(int argc, char** argv)
     if (!desc.sourcePath.empty() && !asset.isCurrentForSource(desc.sourcePath)) {
         throw std::runtime_error("Cooked asset does not match source dependencies");
     }
+    if (compactShading && !asset.compactShadingForDevice(reason)) { throw std::runtime_error(reason); }
     Json report = inspectAsset(asset, validatePayloads);
+    report["compactShadingAttributes"] = compactShading;
     report["cookRevision"] = asset.cookRevision();
     if (validateAttributes) {
         if (desc.sourcePath.empty()) { throw std::runtime_error("--validate-attributes requires --source"); }

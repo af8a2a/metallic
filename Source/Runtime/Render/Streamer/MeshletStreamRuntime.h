@@ -471,6 +471,7 @@ struct MeshletStreamRuntimeDesc {
     uint64_t gpuDecompressionMinBatchBytes = 1024 * 1024;
     bool prefetchPages = true;
     uint32_t rasterMaterialTextureCapacity = 0;
+    bool compactShadingAttributes = false;
 
     bool operator==(const MeshletStreamRuntimeDesc&) const = default;
 };

@@ -1,5 +1,6 @@
 #ifndef METALLIC_VISIBILITY_STREAM_DECODE
 #define METALLIC_VISIBILITY_STREAM_DECODE
+#include "StreamAttributeDecode.slang"
 // Shared validation and position decoding for the cooked StreamAsset format.
 // Callers supply their descriptors; no pass-specific bindings live here.
 struct StreamActiveGroup {
@@ -89,26 +90,26 @@ uint decodeStreamAttributesAtPage(uint pageIndex, uint clusterIndex, uint triang
     uint address = page * 4u + pages[page + 11u] + pages[cluster + 2u] + triangle * 3u;
     uint normalOffset = pages[page + 16u], uvOffset = pages[page + 17u];
     uint required = pages[cluster] + pages[cluster + 1u];
-    bool hasNormal = (flags & 2u) != 0u && pages[page + 21u] == 2u && normalOffset % 4u == 0u &&
-        normalOffset <= bytes && required <= (bytes - normalOffset) / 16u;
+    uint normalFormat = pages[page + 21u], normalStride = streamNormalStride(normalFormat);
+    bool hasNormal = (flags & 2u) != 0u && normalStride != 0u && normalOffset % 4u == 0u &&
+        normalOffset <= bytes && required <= (bytes - normalOffset) / max(normalStride, 1u);
     bool hasUv = (flags & 4u) != 0u && pages[page + 22u] == 1u && uvOffset % 4u == 0u &&
         uvOffset <= bytes && required <= (bytes - uvOffset) / 8u;
     uint tangentOffset = pages[page + 24u];
-    bool hasTangent = (flags & 16u) != 0u && pages[page + 25u] == 2u && tangentOffset % 4u == 0u &&
-        tangentOffset <= bytes && required <= (bytes - tangentOffset) / 16u;
+    uint tangentFormat = pages[page + 25u], tangentStride = streamTangentStride(tangentFormat);
+    bool hasTangent = (flags & 16u) != 0u && tangentStride != 0u && tangentOffset % 4u == 0u &&
+        tangentOffset <= bytes && required <= (bytes - tangentOffset) / max(tangentStride, 1u);
     for (uint i = 0; i < 3; ++i) {
         uint v = pages[cluster] + streamPageByte(pages, address + i);
         if (hasNormal) {
-            uint n = page + normalOffset / 4u + v * 4u;
-            normals[i] = asfloat(uint3(pages[n], pages[n + 1u], pages[n + 2u]));
+            normals[i] = streamLoadNormal(pages,page,normalOffset,v,normalFormat);
         }
         if (hasUv) {
             uint uv = page + uvOffset / 4u + v * 2u;
             uvs[i] = asfloat(uint2(pages[uv], pages[uv + 1u]));
         }
         if (hasTangent) {
-            uint t = page + tangentOffset / 4u + v * 4u;
-            tangents[i] = asfloat(uint4(pages[t], pages[t + 1u], pages[t + 2u], pages[t + 3u]));
+            tangents[i] = streamLoadTangent(pages,page,tangentOffset,v,tangentFormat);
         }
     }
     return (hasNormal ? 2u : 0u) | (hasUv ? 4u : 0u) | (hasTangent ? 16u : 0u);

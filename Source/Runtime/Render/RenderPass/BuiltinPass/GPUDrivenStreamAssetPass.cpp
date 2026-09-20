@@ -264,6 +264,7 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
         .enableGpuDecompression = boolProperty(properties, "enableGpuDecompression", false),
         .gpuDecompressionMinBatchBytes = uint64Property(properties, "gpuDecompressionMinBatchBytes", 1024 * 1024),
         .prefetchPages = boolProperty(properties, "prefetchPages", true),
+        .compactShadingAttributes = boolProperty(properties, "compactShadingAttributes", false),
     };
 }
 

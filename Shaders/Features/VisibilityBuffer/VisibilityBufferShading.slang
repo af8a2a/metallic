@@ -1,3 +1,4 @@
+#include "StreamAttributeDecode.slang"
 import GPUDriven;
 using Metallic.GPUDriven;
 import Core;
@@ -622,12 +623,12 @@ bool decodeStreamDeferredSurface(
             triangleIndexCount,
             payloadBytes) ||
         (hasNormals &&
-            (normalFormat != kStreamPayloadFormatFloat32x4 ||
+            (streamNormalStride(normalFormat) == 0u ||
              (normalOffsetBytes & 3u) != 0u ||
              !streamDeferredArrayRangeValid(
                  normalOffsetBytes,
                  payloadVertexCount,
-                 16u,
+                 streamNormalStride(normalFormat),
                  payloadBytes))) ||
         (hasTexcoords &&
             (texcoordFormat != kStreamPayloadFormatFloat32x2 ||
@@ -638,12 +639,12 @@ bool decodeStreamDeferredSurface(
                  8u,
                  payloadBytes))) ||
         (hasTangents &&
-            (tangentFormat != kStreamPayloadFormatFloat32x4 ||
+            (streamTangentStride(tangentFormat) == 0u ||
              (tangentOffsetBytes & 3u) != 0u ||
              !streamDeferredArrayRangeValid(
                  tangentOffsetBytes,
                  payloadVertexCount,
-                 16u,
+                 streamTangentStride(tangentFormat),
                  payloadBytes)))) {
         return false;
     }
@@ -713,21 +714,9 @@ bool decodeStreamDeferredSurface(
         float3(0.0, 0.0, 1.0));
     surface.normal = surface.geometryNormal;
     if (hasNormals) {
-        float3 normal0 = streamDeferredLoadFloat4(
-            pageWords,
-            pageWord,
-            normalOffsetBytes,
-            vertexIndices.x).xyz;
-        float3 normal1 = streamDeferredLoadFloat4(
-            pageWords,
-            pageWord,
-            normalOffsetBytes,
-            vertexIndices.y).xyz;
-        float3 normal2 = streamDeferredLoadFloat4(
-            pageWords,
-            pageWord,
-            normalOffsetBytes,
-            vertexIndices.z).xyz;
+        float3 normal0 = streamLoadNormal(pageWords,pageWord,normalOffsetBytes,vertexIndices.x,normalFormat);
+        float3 normal1 = streamLoadNormal(pageWords,pageWord,normalOffsetBytes,vertexIndices.y,normalFormat);
+        float3 normal2 = streamLoadNormal(pageWords,pageWord,normalOffsetBytes,vertexIndices.z,normalFormat);
         float3 localNormal = normal0 * barycentrics.x +
             normal1 * barycentrics.y + normal2 * barycentrics.z;
         surface.normal = transformNormal(transform, localNormal);
@@ -743,21 +732,9 @@ bool decodeStreamDeferredSurface(
             surface.normal),
         float3(1.0, 0.0, 0.0));
     if (hasTangents) {
-        float4 tangent0 = streamDeferredLoadFloat4(
-            pageWords,
-            pageWord,
-            tangentOffsetBytes,
-            vertexIndices.x);
-        float4 tangent1 = streamDeferredLoadFloat4(
-            pageWords,
-            pageWord,
-            tangentOffsetBytes,
-            vertexIndices.y);
-        float4 tangent2 = streamDeferredLoadFloat4(
-            pageWords,
-            pageWord,
-            tangentOffsetBytes,
-            vertexIndices.z);
+        float4 tangent0 = streamLoadTangent(pageWords,pageWord,tangentOffsetBytes,vertexIndices.x,tangentFormat);
+        float4 tangent1 = streamLoadTangent(pageWords,pageWord,tangentOffsetBytes,vertexIndices.y,tangentFormat);
+        float4 tangent2 = streamLoadTangent(pageWords,pageWord,tangentOffsetBytes,vertexIndices.z,tangentFormat);
         float4 localTangent = tangent0 * barycentrics.x +
             tangent1 * barycentrics.y + tangent2 * barycentrics.z;
         float3 worldTangent = transformDirection(transform, localTangent.xyz);

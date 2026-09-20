@@ -1950,6 +1950,77 @@ private:
     std::string previewOutput_;
 };
 
+class GPUDrivenSceneCatalogTest : public RhiTest {
+public:
+    GPUDrivenSceneCatalogTest()
+    {
+        type = RhiTestType::Validation;
+        name = "gpu_driven_scene_catalog";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const auto scenes = render::listGPUDrivenSceneSamples();
+        if (scenes.size() != 2 || scenes[0].name != "MiniZorah" || scenes[1].name != "ZorahFull") {
+            return RhiTestResult::fail("GPUDriven scene selector must expose MiniZorah and ZorahFull only");
+        }
+        for (const auto& scene : scenes) {
+            for (const auto& path : {std::filesystem::path(scene.scenePath),
+                     std::filesystem::path(PROJECT_SOURCE_DIR) / scene.scenePath}) {
+                const char* id = render::gpuDrivenSceneSampleIdForPath(path);
+                if (!id || scene.id != id) {
+                    return RhiTestResult::fail("Relative/absolute File Open path selected the wrong scene preset");
+                }
+            }
+#if defined(_WIN32)
+            auto caseVariant = std::filesystem::path(PROJECT_SOURCE_DIR) / "aSSET" /
+                std::filesystem::path(scene.scenePath).lexically_relative("Asset");
+            const char* caseId = render::gpuDrivenSceneSampleIdForPath(caseVariant);
+            if (!caseId || scene.id != caseId) {
+                return RhiTestResult::fail("Windows scene path matching must ignore filename case");
+            }
+#endif
+            render::RenderSampleLoadResult loaded;
+            std::string message;
+            if (!render::loadBuiltInRenderSample(scene.id, loaded, message)) {
+                return RhiTestResult::fail(message);
+            }
+            const auto* vbuffer = loaded.graph.findNode("VBuffer");
+            if (!vbuffer || loaded.desc.loadSceneInEditor ||
+                vbuffer->properties.value("path", "") != scene.scenePath ||
+                !vbuffer->properties.value("streamAssetOnly", false) ||
+                vbuffer->properties.value("autoBuildStreamAsset", true) ||
+                !loaded.graph.viewProperties().contains("camera")) {
+                return RhiTestResult::fail("Scene preset must select metadata streaming, its own source and camera");
+            }
+            const bool full = scene.id == render::kGPUDrivenZorahFullSampleId;
+            if (vbuffer->properties.value("maxResidentBytes", uint64_t(0)) !=
+                    (full ? 3758096384ull : 536870912ull) ||
+                vbuffer->properties.value("maxClasBytes", uint64_t(0)) !=
+                    (full ? 2147483648ull : 268435456ull) ||
+                vbuffer->properties.value("compactShadingAttributes", false) != full ||
+                vbuffer->properties.value("streamAssetPath", "") !=
+                    (full ? "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin" :
+                            "Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin")) {
+                return RhiTestResult::fail("Scene switch must load the matching cook, attribute layout and budgets");
+            }
+        }
+        if (render::gpuDrivenSceneSampleIdForPath({}) ||
+            render::gpuDrivenSceneSampleIdForPath("Asset/Other/zorah_main_public.v2.gltf") ||
+            render::gpuDrivenSceneSampleIdForPath("Asset/meet_mat.glb") ||
+            render::isGPUDrivenSceneSample("gpu-driven-visibility-buffer")) {
+            return RhiTestResult::fail("Unsupported scenes and matching basenames must not enter GPUDrivenSample");
+        }
+        const auto allSamples = render::listBuiltInRenderSamples();
+        if (std::none_of(allSamples.begin(), allSamples.end(), [](const auto& sample) {
+                return sample.id == render::kGPUDrivenVisibilitySampleId;
+            })) {
+            return RhiTestResult::fail("The generic editor must retain diagnostic samples");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
 class RenderSampleLoadTest : public RhiTest {
 public:
     RenderSampleLoadTest()
@@ -9695,6 +9766,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphDlssRrMotionVectorContractTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRuntimeSettingsDeclarationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRuntimeRebuildDirtyTest);
 METALLIC_REGISTER_RHI_TEST(RenderSampleLoadTest);
+METALLIC_REGISTER_RHI_TEST(GPUDrivenSceneCatalogTest);
 METALLIC_REGISTER_RHI_TEST(RenderSampleFallbackAndValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewTest);

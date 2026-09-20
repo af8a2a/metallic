@@ -1,5 +1,6 @@
 // Task/mesh patch path for the same active cut used by ordinary stream raster.
 #include "VisibilityTessellationSplit.slang"
+#include "StreamAttributeDecode.slang"
 groupshared float3 g_StreamTessSource[3];
 groupshared float3 g_StreamTessNormal[3];
 groupshared float2 g_StreamTessUv[3];
@@ -38,7 +39,7 @@ void streamTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + bindings.tessellationBuffer, 0));
         DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
         uint material = instances[c.group.gpuSceneInstanceIndex].identity.y;
-        bool attributes = (pages[c.pageWord + 14u] & 6u) == 6u && pages[c.pageWord + 21u] == 2u && pages[c.pageWord + 22u] == 1u;
+        bool attributes = (pages[c.pageWord + 14u] & 6u) == 6u && streamNormalStride(pages[c.pageWord + 21u]) != 0u && pages[c.pageWord + 22u] == 1u;
         bool enabled = attributes && tessMaterial(data, material).enabled != 0u;
         if (lane == 0u) {
             g_TessPatches.record = record; g_TessPatches.first = first;
@@ -113,17 +114,17 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     uint address = c.triangleBaseByte + originalTriangle * 3u;
     uint3 original = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));
     uint payloadBytes = pages[c.pageWord + 12u], normalOffset = pages[c.pageWord + 16u], uvOffset = pages[c.pageWord + 17u];
+    uint normalFormat = pages[c.pageWord + 21u], normalStride = streamNormalStride(normalFormat);
     uint required = c.vertexOffset + c.vertexCount;
     if (any(original >= c.vertexCount) || (normalOffset | uvOffset) % 4u != 0u ||
-        normalOffset > payloadBytes || required > (payloadBytes - normalOffset) / 16u ||
+        normalStride == 0u || normalOffset > payloadBytes || required > (payloadBytes - normalOffset) / max(normalStride, 1u) ||
         uvOffset > payloadBytes || required > (payloadBytes - uvOffset) / 8u) { SetMeshOutputCounts(0, 0); return; }
     if (lane < 3u) {
         uint v = c.vertexOffset + original[lane];
         uint p = c.pageWord + c.positionOffsetBytes / 4u + v * c.positionStrideWords;
         float3 local = asfloat(uint3(pages[p], pages[p + 1u], pages[p + 2u]));
         g_StreamTessSource[lane] = c.group.world0.xyz * local.x + c.group.world1.xyz * local.y + c.group.world2.xyz * local.z + c.group.world3.xyz;
-        uint n = c.pageWord + normalOffset / 4u + v * 4u;
-        g_StreamTessNormal[lane] = transformStreamNormal(c.group, asfloat(uint3(pages[n], pages[n + 1u], pages[n + 2u])), float3(0, 1, 0)) *
+        g_StreamTessNormal[lane] = transformStreamNormal(c.group, streamLoadNormal(pages,c.pageWord,normalOffset,v,normalFormat), float3(0, 1, 0)) *
             (dot(cross(c.group.world0.xyz, c.group.world1.xyz), c.group.world2.xyz) < 0.0 ? -1.0 : 1.0);
         uint uv = c.pageWord + uvOffset / 4u + v * 2u;
         g_StreamTessUv[lane] = asfloat(uint2(pages[uv], pages[uv + 1u]));

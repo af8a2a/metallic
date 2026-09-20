@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 
 #include <algorithm>
 #include <string>
@@ -505,6 +506,20 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_realtime.metallic_graph.json"; }
 };
 
+class GPUDrivenZorahFullSample final : public RealtimeLightingSample {
+public:
+    std::string_view id() const override { return kGPUDrivenZorahFullSampleId; }
+    std::string_view name() const override { return "GPUDriven / ZorahFull"; }
+    std::string_view category() const override { return "GPUDriven"; }
+    std::string_view description() const override
+    {
+        return "Full textured Zorah with bounded geometry/CLAS streaming, 512 mip tails and realtime OpenPBR. Requires the completed Z5 cook.";
+    }
+    std::string scenePath() const override { return "Asset/ZorahFull/zorah_textured_public.v1.gltf"; }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_zorah_full.metallic_graph.json"; }
+};
+
 class GPUDrivenVisibilitySample final : public RenderSample {
 public:
     std::string_view id() const override { return kGPUDrivenVisibilitySampleId; }
@@ -774,6 +789,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const LookDevABeautifulGameSample lookDevABeautifulGame;
     static const PathTracingDlssNrSample pathTracingDlssNr;
     static const GPUDrivenVisibilitySample gpuDrivenVisibility;
+    static const GPUDrivenZorahFullSample gpuDrivenZorahFull;
     static const GPUDrivenMiniZorahSample gpuDrivenMiniZorah;
     static const GPUDrivenMiniZorahVBufferSample gpuDrivenMiniZorahVBuffer;
     return {
@@ -796,6 +812,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &rtxcrMaterialSample(),
         &materialVisualizationABeautifulGameSample(),
         &gpuDrivenSample(),
+        &gpuDrivenZorahFull,
         &gpuDrivenVisibility,
         &gpuDrivenUsdSample(),
         &gpuDrivenStreamAssetSample(),
@@ -884,6 +901,30 @@ std::vector<RenderSampleDesc> listBuiltInRenderSamples()
         samples.push_back(sample->desc());
     }
     return samples;
+}
+
+std::vector<RenderSampleDesc> listGPUDrivenSceneSamples()
+{
+    auto samples = listBuiltInRenderSamples();
+    std::erase_if(samples, [](const auto& sample) { return !isGPUDrivenSceneSample(sample.id); });
+    for (auto& sample : samples) {
+        sample.name = sample.id == kDefaultGPUDrivenSampleId ? "MiniZorah" : "ZorahFull";
+    }
+    return samples;
+}
+
+const char* gpuDrivenSceneSampleIdForPath(const std::filesystem::path& path)
+{
+    if (path.empty()) { return nullptr; }
+    const auto normalized = normalizedScenePath(path);
+    for (const auto& sample : listGPUDrivenSceneSamples()) {
+        std::error_code error;
+        const auto source = normalizedScenePath(sample.scenePath);
+        if (normalized == source || std::filesystem::equivalent(normalized, source, error)) {
+            return sample.id == kDefaultGPUDrivenSampleId ? kDefaultGPUDrivenSampleId : kGPUDrivenZorahFullSampleId;
+        }
+    }
+    return nullptr;
 }
 
 bool loadBuiltInRenderSample(

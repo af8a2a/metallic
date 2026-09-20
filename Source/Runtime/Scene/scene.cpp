@@ -87,7 +87,7 @@ constexpr float kMeshletClusterFillWeight = 0.5f;
 constexpr float kMeshletLodErrorMergePrevious = 1.5f;
 constexpr float kMeshletLodErrorMergeAdditive = 0.0f;
 constexpr std::array<char, 8> kMeshletCacheMagic{'M', 'T', 'L', 'M', 'S', 'H', 'L', 'T'};
-constexpr uint32_t kMeshletCacheVersion = 2;
+constexpr uint32_t kMeshletCacheVersion = 3;
 constexpr uint32_t kMeshletCacheEndian = 0x01020304;
 constexpr const char* kMeshletCacheSuffix = ".meshlets.bin";
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
@@ -3647,6 +3647,7 @@ bool Scene::loadUsdInternal(
                 } else {
                     primitive = prototypes[primitiveIndex];
                 }
+                repairZeroGeometryNormals(primitive);
                 if (primitive.tangents.empty()) {
                     generateMissingTangents(primitive);
                 }
@@ -4394,6 +4395,7 @@ bool Scene::loadInternal(
                                     "' could not be converted to DOTS geometry");
                         }
                     }
+                    repairZeroGeometryNormals(primitive);
                     if (primitive.tangents.empty()) {
                         generateMissingTangents(primitive);
                     }

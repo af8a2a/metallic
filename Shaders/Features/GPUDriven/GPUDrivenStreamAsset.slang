@@ -1,3 +1,4 @@
+#include "../VisibilityBuffer/StreamAttributeDecode.slang"
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
@@ -4284,12 +4285,12 @@ void gpuDrivenStreamAssetDeferredMain(
             triangleIndexCount,
             payloadBytes) ||
         (hasNormals &&
-            (normalFormat != kPayloadFormatFloat32x4 ||
+            (streamNormalStride(normalFormat) == 0u ||
              (normalOffsetBytes & 3u) != 0u ||
              !streamPayloadArrayRangeValid(
                  normalOffsetBytes,
                  payloadVertexCount,
-                 16u,
+                 streamNormalStride(normalFormat),
                  payloadBytes))) ||
         (hasTexcoords &&
             (texcoordFormat != kPayloadFormatFloat32x2 ||
@@ -4300,12 +4301,12 @@ void gpuDrivenStreamAssetDeferredMain(
                  8u,
                  payloadBytes))) ||
         (hasTangents &&
-            (tangentFormat != kPayloadFormatFloat32x4 ||
+            (streamTangentStride(tangentFormat) == 0u ||
              (tangentOffsetBytes & 3u) != 0u ||
              !streamPayloadArrayRangeValid(
                  tangentOffsetBytes,
                  payloadVertexCount,
-                 16u,
+                 streamTangentStride(tangentFormat),
                  payloadBytes)))) {
         output[outputIndex] = packStreamColor(params.clearColor.xyz);
         return;
@@ -4367,9 +4368,9 @@ void gpuDrivenStreamAssetDeferredMain(
         float3(0.0, 1.0, 0.0));
     float3 authoredNormal = geometryNormal;
     if (hasNormals) {
-        float3 normal0 = loadPayloadFloat4(pageWords, pageWord, normalOffsetBytes, vertexIndices.x).xyz;
-        float3 normal1 = loadPayloadFloat4(pageWords, pageWord, normalOffsetBytes, vertexIndices.y).xyz;
-        float3 normal2 = loadPayloadFloat4(pageWords, pageWord, normalOffsetBytes, vertexIndices.z).xyz;
+        float3 normal0 = streamLoadNormal(pageWords,pageWord,normalOffsetBytes,vertexIndices.x,normalFormat);
+        float3 normal1 = streamLoadNormal(pageWords,pageWord,normalOffsetBytes,vertexIndices.y,normalFormat);
+        float3 normal2 = streamLoadNormal(pageWords,pageWord,normalOffsetBytes,vertexIndices.z,normalFormat);
         float3 localNormal = normal0 * barycentrics.x + normal1 * barycentrics.y +
             normal2 * barycentrics.z;
         authoredNormal = transformStreamNormal(
@@ -4386,9 +4387,9 @@ void gpuDrivenStreamAssetDeferredMain(
         float3(1.0, 0.0, 0.0));
     float handedness = 1.0;
     if (hasTangents) {
-        float4 tangent0 = loadPayloadFloat4(pageWords, pageWord, tangentOffsetBytes, vertexIndices.x);
-        float4 tangent1 = loadPayloadFloat4(pageWords, pageWord, tangentOffsetBytes, vertexIndices.y);
-        float4 tangent2 = loadPayloadFloat4(pageWords, pageWord, tangentOffsetBytes, vertexIndices.z);
+        float4 tangent0 = streamLoadTangent(pageWords,pageWord,tangentOffsetBytes,vertexIndices.x,tangentFormat);
+        float4 tangent1 = streamLoadTangent(pageWords,pageWord,tangentOffsetBytes,vertexIndices.y,tangentFormat);
+        float4 tangent2 = streamLoadTangent(pageWords,pageWord,tangentOffsetBytes,vertexIndices.z,tangentFormat);
         float4 localTangent = tangent0 * barycentrics.x + tangent1 * barycentrics.y +
             tangent2 * barycentrics.z;
         float3 worldTangent = transformStreamDirection(group, localTangent.xyz);

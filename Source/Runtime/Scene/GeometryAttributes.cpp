@@ -5,8 +5,61 @@
 #include <cstring>
 #include <numeric>
 #include <stdexcept>
+#include <array>
+#include <unordered_map>
 
 namespace metallic::scene {
+
+uint32_t repairZeroGeometryNormals(RenderPrimitive& primitive)
+{
+    if (primitive.mode != 4 || primitive.normals.size() != primitive.positions.size()) { return 0; }
+    struct Recovery {
+        std::array<double, 3> sum{}, first{};
+    };
+    std::unordered_map<uint32_t, Recovery> invalid;
+    for (uint32_t i = 0; i < primitive.normals.size(); ++i) {
+        const float lengthSquared = dot(primitive.normals[i], primitive.normals[i]);
+        if (std::isfinite(lengthSquared) && lengthSquared < 1e-12f) { invalid.emplace(i, Recovery{}); }
+    }
+    if (invalid.empty()) { return 0; }
+    const size_t cornerCount = primitive.indices.empty() ? primitive.positions.size() : primitive.indices.size();
+    for (size_t i = 0; i + 2 < cornerCount; i += 3) {
+        uint32_t ids[3];
+        for (uint32_t c = 0; c < 3; ++c) {
+            ids[c] = primitive.indices.empty() ? uint32_t(i + c) : primitive.indices[i + c];
+        }
+        if (ids[0] >= primitive.positions.size() || ids[1] >= primitive.positions.size() ||
+            ids[2] >= primitive.positions.size()) { continue; }
+        if (!invalid.contains(ids[0]) && !invalid.contains(ids[1]) && !invalid.contains(ids[2])) { continue; }
+        const auto& a = primitive.positions[ids[0]];
+        const auto& b = primitive.positions[ids[1]];
+        const auto& c = primitive.positions[ids[2]];
+        const double ux = double(b.x)-a.x, uy = double(b.y)-a.y, uz = double(b.z)-a.z;
+        const double vx = double(c.x)-a.x, vy = double(c.y)-a.y, vz = double(c.z)-a.z;
+        const std::array<double, 3> n{uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx};
+        const double length = n[0]*n[0]+n[1]*n[1]+n[2]*n[2];
+        if (!std::isfinite(length) || length == 0) { continue; }
+        for (uint32_t id : ids) {
+            if (auto entry = invalid.find(id); entry != invalid.end()) {
+                for (uint32_t axis = 0; axis < 3; ++axis) { entry->second.sum[axis] += n[axis]; }
+                if (entry->second.first == std::array<double, 3>{}) { entry->second.first = n; }
+            }
+        }
+    }
+    for (const auto& [id, recovery] : invalid) {
+        auto n = recovery.sum;
+        double length = std::sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
+        if (length == 0) {
+            n = recovery.first;
+            length = std::sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
+        }
+        // Unreferenced vertices and exclusively degenerate triangles have no
+        // surface orientation. Give them a deterministic finite tangent frame.
+        primitive.normals[id] = length > 0 ? float3(float(n[0]/length), float(n[1]/length), float(n[2]/length))
+            : float3(0, 1, 0);
+    }
+    return static_cast<uint32_t>(invalid.size());
+}
 
 bool validateGeometryAttributes(const RenderPrimitive& primitive, std::string& reason)
 {

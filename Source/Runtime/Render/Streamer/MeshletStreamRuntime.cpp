@@ -842,6 +842,10 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
 
     phase.next("streamInit.boundsAndBudget");
     asset_ = std::move(openedAsset);
+    if (desc.compactShadingAttributes && !asset_.compactShadingForDevice(reason)) {
+        log = "MeshletStreamRuntime compact shading: " + reason;
+        return makeError(Error::InvalidArgument);
+    }
     drawBounds_ = computeDrawBounds(asset_);
     if (!drawBounds_.valid) {
         log = "MeshletStreamRuntime streamasset bounds are unavailable";

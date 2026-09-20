@@ -84,6 +84,7 @@ RenderGraph materialGraph(const std::filesystem::path& path, const std::filesyst
     Json camera = {{"eye", {0,0,3}}, {"center",{0,0,0}}, {"up",{0,1,0}}, {"fovDegrees",60}, {"znear",.001}, {"zfar",20}, {"reversedZ",true}};
     graph.addNode("VisibilityBufferPass", "Raster", {{"path",path.generic_string()}, {"streamAssetPath",cache.generic_string()},
         {"enableMeshletStreaming",streamed}, {"streamAssetOnly",streamed}, {"autoBuildStreamAsset",false},
+        {"compactShadingAttributes",streamed && std::getenv("METALLIC_TEST_STREAM_COMPACT_SHADING") != nullptr},
         {"maxResidentPages",32}, {"maxLockedFallbackPages",32}, {"maxActiveGroups",128}, {"maxGpuPageRequests",128},
         {"maxTraversalWorkers",32}, {"maxTraversalWorkItems",256}, {"autoLod",false}, {"lodLevel",0},
         {"instanceHzbCull",false}, {"meshletHzbCull",false}, {"meshletNormalConeCull",false}, {"hybridRaster",false},

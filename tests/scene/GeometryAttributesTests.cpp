@@ -53,6 +53,28 @@ TEST(GeometryAttributes, SplitsMirroredUvCornersAndPreservesAuthoredData)
     EXPECT_TRUE(p.tangents.empty());
 }
 
+TEST(GeometryAttributes, RepairsZeroNormalsWithoutChangingValidAuthoredValues)
+{
+    auto p = mirroredQuad();
+    p.normals[0] = float3(0, 0, 0);
+    p.normals[1] = float3(0, 0, .9997f);
+    // Tiny but nondegenerate source triangles must retain their orientation.
+    for (auto& v : p.positions) { v *= 1e-5f; }
+    EXPECT_EQ(repairZeroGeometryNormals(p), 1u);
+    EXPECT_FLOAT_EQ(p.normals[0].x, 0); EXPECT_FLOAT_EQ(p.normals[0].y, 0); EXPECT_FLOAT_EQ(p.normals[0].z, 1);
+    EXPECT_FLOAT_EQ(p.normals[1].x, 0); EXPECT_FLOAT_EQ(p.normals[1].y, 0); EXPECT_FLOAT_EQ(p.normals[1].z, .9997f);
+    EXPECT_EQ(repairZeroGeometryNormals(p), 0u);
+    generateMissingTangents(p);
+    std::string reason;
+    EXPECT_TRUE(validateGeometryAttributes(p, reason)) << reason;
+    p.normals[0].x = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_EQ(repairZeroGeometryNormals(p), 0u);
+    EXPECT_FALSE(validateGeometryAttributes(p, reason));
+    p = mirroredQuad(); p.indices = {0, 0, 0}; p.normals[0] = float3(0.0f);
+    EXPECT_EQ(repairZeroGeometryNormals(p), 1u);
+    EXPECT_FLOAT_EQ(p.normals[0].x, 0); EXPECT_FLOAT_EQ(p.normals[0].y, 1); EXPECT_FLOAT_EQ(p.normals[0].z, 0);
+}
+
 TEST(GeometryAttributes, CoarseLodsPreserveChartsAndUseUvError)
 {
     RenderPrimitive p;
@@ -147,6 +169,56 @@ struct AttributeFixture {
         std::ofstream file(path); file << root.dump(); return path;
     }
 };
+
+TEST(GeometryAttributes, CompactUploadPreservesGeometryUvAndDiskPayload)
+{
+    for (bool byteRle : {false, true}) {
+        AttributeFixture fixture;
+        const auto source = fixture.save();
+        const auto cache = fixture.directory / "compact.bin";
+        std::string reason;
+        ASSERT_TRUE(buildMeshletStreamAssetOffline({.sourcePath=source,.outputPath=cache,
+            .compressionMode=byteRle ? MeshletStreamPayloadCompression::ByteRle : MeshletStreamPayloadCompression::None},reason)) << reason;
+        MeshletStreamAsset original, compact;
+        ASSERT_TRUE(original.open(cache,reason)) << reason;
+        ASSERT_TRUE(compact.open(cache,reason)) << reason;
+        ASSERT_TRUE(compact.compactShadingForDevice(reason)) << reason;
+        uint64_t saved = 0;
+        for (uint32_t page=0; page<original.pageCount(); ++page) {
+            std::vector<uint8_t> aStorage,bStorage;
+            std::span<const uint8_t> a,b;
+            ASSERT_TRUE(decodeMeshletStreamPayloadForDevice(original.pages()[page],original.pagePayload(page),aStorage,a,reason)) << reason;
+            ASSERT_TRUE(decodeMeshletStreamPayloadForDevice(compact.pages()[page],compact.pagePayload(page),bStorage,b,reason)) << reason;
+            MeshletStreamPayloadHeader ah,bh;
+            std::memcpy(&ah,a.data(),sizeof(ah)); std::memcpy(&bh,b.data(),sizeof(bh));
+            ASSERT_EQ(b.size(),meshletStreamDevicePayloadSize(compact.pages()[page]));
+            EXPECT_TRUE(validateMeshletStreamDeviceHeader(bh,compact.pages()[page],reason)) << reason;
+            ASSERT_LT(b.size(),a.size()); saved += a.size()-b.size();
+            EXPECT_EQ(bh.normalFormat,uint32_t(MeshletStreamPayloadFormat::OctahedralNormal));
+            EXPECT_EQ(bh.tangentFormat,uint32_t(MeshletStreamPayloadFormat::OctahedralTangent));
+            EXPECT_EQ(std::memcmp(a.data()+ah.positionOffsetBytes,b.data()+bh.positionOffsetBytes,ah.vertexCount*12u),0);
+            EXPECT_EQ(std::memcmp(a.data()+ah.texcoord0OffsetBytes,b.data()+bh.texcoord0OffsetBytes,ah.vertexCount*8u),0);
+            EXPECT_EQ(std::memcmp(a.data()+ah.clusterOffsetBytes,b.data()+bh.clusterOffsetBytes,ah.clusterCount*sizeof(MeshletStreamPayloadCluster)),0);
+            EXPECT_EQ(std::memcmp(a.data()+ah.triangleOffsetBytes,b.data()+bh.triangleOffsetBytes,ah.triangleIndexCount),0);
+            for (uint32_t v=0; v<ah.vertexCount; ++v) {
+                float w; uint32_t packed;
+                std::memcpy(&w,a.data()+ah.tangentOffsetBytes+v*16u+12u,4);
+                std::memcpy(&packed,b.data()+bh.tangentOffsetBytes+v*4u,4);
+                EXPECT_EQ((packed & 0x40000000u)!=0,w<0);
+            }
+            MeshletStreamPayloadHeader disk;
+            std::memcpy(&disk,compact.pagePayload(page).data(),sizeof(disk));
+            EXPECT_EQ(disk.normalFormat,uint32_t(MeshletStreamPayloadFormat::Float32x4));
+            if (!byteRle) {
+                std::vector<uint8_t> damaged(compact.pagePayload(page).begin(),compact.pagePayload(page).end());
+                disk.normalOffsetBytes=disk.positionOffsetBytes; std::memcpy(damaged.data(),&disk,sizeof(disk));
+                EXPECT_FALSE(decodeMeshletStreamPayloadForDevice(compact.pages()[page],damaged,bStorage,b,reason));
+                EXPECT_NE(reason.find("overlap"),std::string::npos) << reason;
+            }
+        }
+        EXPECT_GT(saved,0u);
+    }
+}
 
 TEST(GeometryAttributes, CookAttributesReuseAndResume)
 {
