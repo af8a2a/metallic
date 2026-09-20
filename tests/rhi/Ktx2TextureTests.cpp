@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -533,6 +534,107 @@ class KtxTextureResourcesTest final : public RhiTest {
             "BC4/5/7, swizzle, sRGB, NPOT/sub-block mips, Zstd, 300 logical textures and shared owners");
     }
 };
+
+class KtxTextureStreamingTest final : public RhiTest {
+public:
+    KtxTextureStreamingTest() { type=RhiTestType::Rendering; name="ktx2_texture_streaming"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        if (!context.device.capabilities().bindlessDescriptorHeap) {
+            return RhiTestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
+        }
+        const auto directory = context.outputDirectory / "texture-streaming";
+        std::filesystem::create_directories(directory);
+        const auto path = makeScene(directory,true);
+        Json sceneJson;
+        { std::ifstream input(path); input >> sceneJson; }
+        sceneJson["materials"][0]["alphaMode"] = "MASK";
+        { std::ofstream output(path); output << sceneJson; }
+        scene::Scene scene;
+        require(scene.loadStreamMetadata(path),scene.lastLoadResult().error);
+        ScenePathTraceResources resources;
+        std::string log;
+        require(resources.prepare(context.device,context.graphicsQueue,
+            {{"path",path.string()},{"materialTextureMaxDimension",128},{"materialTextureMaskMaxDimension",4},
+             {"materialTextureBudgetMiB",4},{"materialTextureStreaming",true},
+             {"materialTextureRefineDimension",512},{"materialTextureColdFrames",16}},&scene,log),log);
+        const auto baseline = resources.textureStats().residentAllocationBytes;
+        const auto initialMips = resources.materialTextureFirstMips();
+        const auto logical = std::vector<uint32_t>(resources.logicalTextureIndices().begin(),resources.logicalTextureIndices().end());
+        const auto imageSlot = logical[1];
+        ShaderCompileResult shader;
+        require(compileSlangShaderToSpirv({.moduleName="Features/Debug/TextureResidencyProbe",.entryPointName="main",
+            .searchPath=PROJECT_SOURCE_DIR "/Shaders"},shader),shader.diagnostics);
+        ComputeProgram program;
+        const ComputeProgramBindingDesc binding{.binding=0};
+        require(program.initialize(context.device,{.spirv=shader.spirv.data(),.byteSize=shader.spirv.size()*4,
+            .pushConstantSize=16,.bindings=&binding,.bindingCount=1,.requiresRayQuery=false},log),log);
+        std::unique_ptr<CommandPool> pool;
+        std::unique_ptr<CommandBuffer> commands;
+        QueueSubmissionTracker tracker;
+        RenderFrameContext frame;
+        require(context.device.createCommandPool(context.graphicsQueue,pool),"stream test pool");
+        require(pool->createCommandBuffer(commands),"stream test commands");
+        require(tracker.initialize(context.device,context.graphicsQueue),"stream test tracker");
+        uint64_t index = 0;
+        const auto tick = [&](bool visible, bool cancel=false) {
+            require(frame.wait(),"feedback wait");
+            require(pool->reset(),"feedback reset");
+            require(frame.begin(index++),"feedback frame");
+            require(commands->begin(&frame),"feedback begin");
+            Buffer* feedback = nullptr;
+            require(resources.beginTextureStreaming(*commands,index,feedback),"streaming tick");
+            require(resources.uploadMaterialTextures(*commands),"retain current texture generation");
+            ComputeDispatchBinding view{.binding=0,.buffer=feedback};
+            const uint32_t push[]{imageSlot,0,visible ? 1000u : 0u,0};
+            require(program.dispatch({.commandBuffer=commands.get(),.bindings=&view,.bindingCount=1,
+                .pushData=push,.pushDataSize=16}),"feedback dispatch");
+            require(commands->end(),"feedback end");
+            if (cancel) { frame.cancel(); return; }
+            auto* command = commands.get();
+            require(tracker.submit({.commandBuffers=&command,.commandBufferCount=1},frame),"feedback submit");
+        };
+        tick(true,true); // An unsubmitted frame must not become a demand sample.
+        struct RestorePolicy {
+            Device& device; MemoryBudgetPolicy policy;
+            ~RestorePolicy() { device.setMemoryBudgetPolicy(policy); }
+        } restore{context.device,context.device.memoryBudget().policy};
+        // Warm the reusable feedback buffers before forcing an impossible heap cap.
+        for (uint32_t i=0;i<4;++i) { tick(false); }
+        auto pressure = restore.policy; pressure.enabled = true; pressure.deviceLocalHeapLimitBytes = 1;
+        context.device.setMemoryBudgetPolicy(pressure);
+        for (uint32_t i=0;i<24;++i) { tick(true); }
+        require(resources.textureStats().upgrades==0 && resources.textureStats().residentAllocationBytes==baseline,
+            "Refinement ignored shared heap headroom");
+        context.device.setMemoryBudgetPolicy(restore.policy);
+        for (uint32_t i=0;i<300 && resources.materialTextureFirstMips()[1]!=1;++i) { tick(true); }
+        require(resources.materialTextureFirstMips()[1]==1,"Visible texture did not refine from 128 to 512");
+        require(resources.materialTextureFirstMips()[0]==initialMips[0],"Unseen texture refined");
+        require(resources.materialTextureFirstMips()[299]==initialMips[299],"MASK floor moved");
+        const auto hot = resources.textureStats();
+        require(hot.upgrades==2 && hot.residentAllocationBytes>baseline,"Expected two physical tail upgrades");
+        require(hot.peakLiveAllocationBytes<=hot.budgetBytes,"Migration exceeded combined old/new budget");
+        require(frame.wait(),"sample refined wait");
+        auto sample = sampleTexture(context,resources,imageSlot,0,2);
+        require(std::abs(sample[4]-64.f/255)<.003f,"Refined image lost BC5 channels");
+        for (uint32_t i=0;i<120;++i) { tick(false); }
+        require(frame.wait(),"cold wait");
+        require(resources.materialTextureFirstMips()[1]==initialMips[1],"Cold texture did not return to base tail");
+        const auto cold = resources.textureStats();
+        require(cold.downgrades==1 && cold.residentAllocationBytes==baseline && cold.retiredAllocationBytes==0,
+            "Cold image allocations did not return to baseline after GPU retirement");
+        require(std::equal(logical.begin(),logical.end(),resources.logicalTextureIndices().begin()),"Logical texture IDs changed");
+        require(cold.feedbackFrames>0 && cold.streamingUploadBytes>0,"No GPU feedback/upload telemetry");
+        Json report{{"baseBytes",baseline},{"hotBytes",hot.residentAllocationBytes},{"coldBytes",cold.residentAllocationBytes},
+            {"peakLiveBytes",cold.peakLiveAllocationBytes},{"budgetBytes",cold.budgetBytes},{"upgrades",cold.upgrades},
+            {"downgrades",cold.downgrades},{"feedbackFrames",cold.feedbackFrames},{"maxRequestFrames",cold.maxRequestLatencyFrames}};
+        { std::ofstream output(directory/"residency.json"); output << report.dump(2); }
+        commands.reset(); require(frame.reset(),"final frame reset");
+        resources.clear();
+        return RhiTestResult::pass("GPU demand refines only visible tails; cold physical replacement retires to base under budget, MASK/IDs stable");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(KtxTextureStreamingTest);
 
 class ZorahTextureResourcesTest final : public RhiTest {
   public:

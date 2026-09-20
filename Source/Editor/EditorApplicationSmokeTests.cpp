@@ -254,6 +254,18 @@ bool EditorApplication::runSceneSwitchSmokeTest()
                 spdlog::error("[Smoke Full Switch] Full root pages did not become ready");
                 return false;
             }
+            const auto* source = subsystemHost_.get<render::GPUSceneSubsystem>()->sourceOverride();
+            auto* streamer = subsystemHost_.get<render::StreamerSubsystem>();
+            std::shared_ptr<render::SceneResourceSnapshot> materials;
+            std::string textureLog;
+            if (!streamer->manager().acquire(*device_, *graphicsQueue_, renderGraph_.findNode("Deferred")->properties,
+                source, render::SceneResourceFeatureBits::Materials, materials, textureLog)) { return false; }
+            const auto textures = materials->pathTraceResources->textureStats();
+            spdlog::info("[Smoke Full Switch] Texture streaming cycle={} resident={} pending={} retired={} upgrades={} feedback={}",
+                cycle,textures.residentAllocationBytes,textures.pendingAllocationBytes,textures.retiredAllocationBytes,
+                textures.upgrades,textures.feedbackFrames);
+            if (!textures.streamingEnabled || !textures.upgrades || !textures.feedbackFrames ||
+                textures.peakLiveAllocationBytes > textures.budgetBytes) { return false; }
         }
         // Read the actual DLSS presentation output with the environment hidden.
         // Stream readiness alone cannot prove that the deferred decoder shaded it.

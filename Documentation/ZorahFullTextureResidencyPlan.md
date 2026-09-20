@@ -76,3 +76,5 @@ T1 的子分配改动只针对材质纹理，避免直接全局改变所有 Devi
 2026-09-20 实施更新：T0 的统一预算、分配观测、图/DLSS 预留与加载前 cap 降档已接入，详见 [实现与压力验证](ZorahFullUnifiedMemoryBudget.md)。动态 CLAS 增长额度调度、MASK 分级保真和纹理子分配仍待后续阶段；本文前部保留调研时的实现状态。
 
 2026-09-20 T1 实施更新：首帧尾链、MASK 质量下限、小材质 image 池及三消费者共享已完成，并通过完整 Full 双入口验证，详见 [首帧驻留验收](ZorahFullFirstFrameResidency.md)。运行中细化与冷回收尚未实现。
+
+2026-09-20 T2/T3 更新：已接入 GPU 采样需求驱动的 mip 细化、预算内 image 替换与冷回收。Full 默认基础上限改为 128，可见图按需恢复至 512；MASK 保持 512。实现、实际往返数据及边界见 [按需细化与冷回收](ZorahFullTextureStreaming.md)。

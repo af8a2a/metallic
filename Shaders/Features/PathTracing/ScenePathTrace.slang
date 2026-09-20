@@ -1019,6 +1019,23 @@ float4 loadMaterialTextureForMaterial(
     bool deterministicMip0,
     inout uint seed)
 {
+#if METALLIC_DEFERRED_LIGHT_GRID
+    // Demand uses the source dimensions, never the currently coarse resident tail.
+    // The same UV transform and ray-cone footprint drive sampling and residency.
+    if (hasMaterialTexture(textureInfo, push) && (seed & 7u) == 0u) {
+        RWStructuredBuffer<uint> feedback = getResource<RWStructuredBuffer<uint>>(95);
+        uint count, stride;
+        feedback.GetDimensions(count, stride);
+        uint offset = textureInfo.textureIndex * 8u;
+        if (offset + 7u < count && feedback[offset] != 0u) {
+            float wanted = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection,
+                feedback[offset], feedback[offset + 1u], feedback[offset + 2u]);
+            uint ignored;
+            InterlockedMin(feedback[offset + 4u], uint(max(floor(wanted), 0.0)), ignored);
+            InterlockedAdd(feedback[offset + 5u], 1u, ignored);
+        }
+    }
+#endif
     if (deterministicMip0) {
         return loadMaterialTextureMip0(textureInfo, uv, fallback, push);
     }

@@ -59,3 +59,5 @@ T1 默认纹理测试 local heap 为 **26 blocks / 4420 allocations**，小预�
 ## MiniZorah → Full 切换补充验收
 
 14:33 用户日志暴露了旧场景仍被已完成的帧槽持有的问题。已修复回收点，并补充原生两轮切换、1404×674 完整 DLSS 图两轮切换与失败重试验收，见 [场景切换修复记录](ZorahFullSceneSwitchFix.md)。上文的单独 Full 加载测试未覆盖这一生命周期缺口。
+
+2026-09-20 T2/T3 更新：已接入 GPU 采样需求驱动的 mip 细化、预算内 image 替换与冷回收。Full 默认基础上限改为 128，可见图按需恢复至 512；MASK 保持 512。实现、实际往返数据及边界见 [按需细化与冷回收](ZorahFullTextureStreaming.md)。

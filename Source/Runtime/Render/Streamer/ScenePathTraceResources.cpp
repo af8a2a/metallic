@@ -145,8 +145,8 @@ struct ScenePathTraceMaterialTexture {
     std::shared_ptr<Buffer> uploadBuffer;
     uint64_t uploadBufferOffset = 0;
     uint64_t uploadAllocationSize = 0;
-    std::unique_ptr<Texture> texture;
-    std::unique_ptr<TextureView> view;
+    std::shared_ptr<Texture> texture;
+    std::shared_ptr<TextureView> view;
     uint32_t width = 1;
     uint32_t height = 1;
     uint32_t mipCount = 1;
@@ -155,6 +155,21 @@ struct ScenePathTraceMaterialTexture {
     ResourceState state = ResourceState::Undefined;
     bool uploaded = false;
 };
+
+Result createSharedTexture(Device& device, const TextureDesc& desc, std::shared_ptr<Texture>& output)
+{
+    std::unique_ptr<Texture> texture;
+    auto result = device.createTexture(desc, texture);
+    output = std::move(texture);
+    return result;
+}
+Result createSharedTextureView(Device& device, Texture& texture, const TextureViewDesc& desc, std::shared_ptr<TextureView>& output)
+{
+    std::unique_ptr<TextureView> view;
+    auto result = device.createTextureView(texture, desc, view);
+    output = std::move(view);
+    return result;
+}
 
 struct DecodedMaterialTexture {
     std::vector<uint8_t> pixels;
@@ -713,7 +728,7 @@ Result createMaterialTexture(
     outTexture.uploadBuffer->flush(outTexture.uploadBufferOffset, allocationSize);
     outTexture.uploadAllocationSize = allocationSize;
 
-    result = device.createTexture(
+    result = createSharedTexture(device,
         TextureDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
@@ -734,7 +749,7 @@ Result createMaterialTexture(
         return result ? makeError(Error::Failure) : result;
     }
 
-    result = device.createTextureView(
+    result = createSharedTextureView(device,
         *outTexture.texture,
         TextureViewDesc{
             .format = outTexture.format,
@@ -772,9 +787,9 @@ Result createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena,
         size = offset + bytes;
     }
     auto phaseBegin = SceneResourceLogClock::now();
-    Result result = device.createTexture(desc, texture.texture);
+    Result result = createSharedTexture(device, desc, texture.texture);
     if (!result) { log = "Cannot allocate KTX2 texture: " + info.path.string(); return result; }
-    result = device.createTextureView(*texture.texture,
+    result = createSharedTextureView(device, *texture.texture,
         {.format=desc.format,.mipCount=desc.mipCount,.swizzle=info.swizzle}, texture.view);
     timing.imageCreateMs += sceneResourceElapsedMilliseconds(phaseBegin);
     if (!result) { return result; }
@@ -1345,6 +1360,322 @@ struct ScenePathTraceResources::Impl {
         }
     };
 
+    // Physical images are versioned independently of the stable material IDs.
+    // Every submitting frame retains its immutable generation, including views.
+    struct TextureImageOwner {
+        std::shared_ptr<Texture> texture;
+        std::shared_ptr<TextureView> view; // Destroy the view before its image.
+    };
+    using TextureGeneration = std::vector<TextureImageOwner>;
+    std::shared_ptr<TextureGeneration> textureGeneration;
+    GpuCompletionPoint texturePublication;
+    struct TextureFeedback {
+        std::shared_ptr<Buffer> buffer;
+        GpuCompletionPoint completion;
+        uint64_t frame = 0;
+    };
+    struct RetiredTexture { std::weak_ptr<Texture> texture; uint64_t bytes = 0; };
+    struct TextureRequest { uint32_t image = 0, slot = 0, mip = 0; uint64_t bytes = 0; };
+    struct TextureMigration {
+        std::vector<TextureRequest> requests;
+        std::vector<ScenePathTraceMaterialTexture> textures;
+        std::unique_ptr<Ktx2TexturePrefetch> decode;
+        SceneUploadStagingArena staging;
+        Ktx2MipReader reader;
+        std::vector<uint8_t> scratch;
+        std::unique_ptr<CommandPool> pool;
+        std::unique_ptr<CommandBuffer> commands;
+        RenderFrameContext frame;
+        QueueSubmissionTracker tracker;
+        bool submitted = false;
+        uint64_t requestedFrame = 0;
+        ~TextureMigration()
+        {
+            if (submitted) { (void)frame.wait(); }
+            commands.reset();
+            (void)frame.reset();
+        }
+    };
+    std::unique_ptr<TextureMigration> textureMigration;
+    std::vector<TextureFeedback> textureFeedback;
+    std::vector<std::shared_ptr<Buffer>> freeTextureFeedback;
+    std::vector<RetiredTexture> retiredTextures;
+    std::shared_ptr<Buffer> emptyTextureFeedback;
+    std::vector<bool> pinnedImages;
+    std::vector<uint32_t> baseTextureMips, desiredTextureMips, textureHits;
+    std::vector<uint64_t> textureLastSeen, textureLastChanged;
+    uint64_t streamingFrame = 0, lastFeedbackFrame = 0, nextTextureRetry = 0;
+
+    void refreshTextureGeneration()
+    {
+        auto generation = std::make_shared<TextureGeneration>();
+        generation->reserve(materialTextures.size());
+        for (size_t slot = 0; slot < materialTextures.size(); ++slot) {
+            generation->push_back({materialTextures[slot].texture,materialTextures[slot].view});
+            materialTextureViews[slot] = materialTextures[slot].view.get();
+        }
+        textureGeneration = std::move(generation);
+    }
+
+    void initializeTextureStreaming()
+    {
+        baseTextureMips = desiredTextureMips = ktxFirstMips;
+        textureHits.assign(ktxImages.size(), 0);
+        textureLastSeen.assign(ktxImages.size(), 0);
+        textureLastChanged.assign(ktxImages.size(), 0);
+        textureStats.streamingEnabled = textureStreaming;
+        textureStats.peakLiveAllocationBytes = textureStats.residentAllocationBytes;
+        refreshTextureGeneration();
+    }
+
+    void resetTextureStreaming()
+    {
+        textureMigration.reset(); // Cancel/join CPU work and wait only during teardown.
+        textureFeedback.clear(); freeTextureFeedback.clear();
+        retiredTextures.clear();
+        emptyTextureFeedback.reset();
+        textureGeneration.reset();
+        texturePublication = {};
+        baseTextureMips.clear(); desiredTextureMips.clear(); textureHits.clear();
+        textureLastSeen.clear(); textureLastChanged.clear(); pinnedImages.clear();
+        streamingFrame = lastFeedbackFrame = nextTextureRetry = 0;
+    }
+
+    void consumeTextureFeedback()
+    {
+        for (auto it = textureFeedback.begin(); it != textureFeedback.end();) {
+            if (it->completion.isCancelled()) { it = textureFeedback.erase(it); continue; }
+            if (!it->completion.isComplete()) { ++it; continue; }
+            if (it->frame >= lastFeedbackFrame) {
+                it->buffer->invalidate();
+                auto* words = static_cast<const uint32_t*>(it->buffer->map());
+                if (words) {
+                    for (uint32_t image = 0; image < ktxImages.size(); ++image) {
+                        const uint32_t slot = asyncImageTextureIndexMap[image];
+                        if (!ktxImages[image] || slot == kInvalidMaterialTextureIndex || pinnedImages[image]) { continue; }
+                        const uint32_t mip = words[slot * 8 + 4], hits = words[slot * 8 + 5];
+                        if (mip != UINT32_MAX && hits) {
+                            const uint32_t finest = ktxImages[image]->firstMipForDimension(textureRefineDimension);
+                            desiredTextureMips[image] = std::clamp(mip, std::min(finest, baseTextureMips[image]), baseTextureMips[image]);
+                            textureLastSeen[image] = it->frame;
+                            textureHits[image] = hits;
+                        }
+                    }
+                    it->buffer->unmap();
+                    ++textureStats.feedbackFrames;
+                    lastFeedbackFrame = it->frame;
+                }
+            }
+            freeTextureFeedback.push_back(std::move(it->buffer));
+            it = textureFeedback.erase(it);
+        }
+        std::erase_if(retiredTextures, [](const auto& retired) { return retired.texture.expired(); });
+        textureStats.retiredAllocationBytes = 0;
+        for (const auto& retired : retiredTextures) { textureStats.retiredAllocationBytes += retired.bytes; }
+    }
+
+    Result pumpTextureMigration()
+    {
+        if (!textureMigration) { return {}; }
+        auto& migration = *textureMigration;
+        if (migration.submitted) {
+            if (!migration.frame.completion().isComplete()) { return {}; }
+            texturePublication = migration.frame.completion();
+            for (size_t i = 0; i < migration.requests.size(); ++i) {
+                const auto& request = migration.requests[i];
+                auto& old = materialTextures[request.slot];
+                retiredTextures.push_back({old.texture, old.texture->allocationSize()});
+                textureStats.residentAllocationBytes -= old.texture->allocationSize();
+                textureStats.residentPayloadBytes -= old.byteSize;
+                textureStats.residentAllocationBytes += migration.textures[i].texture->allocationSize();
+                textureStats.residentPayloadBytes += migration.textures[i].byteSize;
+                if (request.mip < ktxFirstMips[request.image]) { ++textureStats.upgrades; }
+                else { ++textureStats.downgrades; }
+                old = std::move(migration.textures[i]);
+                old.uploadBuffer.reset(); old.uploadAllocationSize = 0;
+                ktxFirstMips[request.image] = request.mip;
+                textureLastChanged[request.image] = streamingFrame;
+            }
+            textureStats.maxRequestLatencyFrames = std::max(textureStats.maxRequestLatencyFrames,
+                streamingFrame - migration.requestedFrame);
+            refreshTextureGeneration();
+            textureMigration.reset();
+            textureStats.pendingImages = 0; textureStats.pendingAllocationBytes = 0;
+            return {};
+        }
+        const auto prepareStarted = SceneResourceLogClock::now();
+        Result result;
+        // Consume ready jobs only; cap image count/bytes at scheduling and spend
+        // at most one millisecond preparing a batch per tick (one image may overrun).
+        while (migration.textures.size() != migration.requests.size()) {
+            // Ordered prefetch consumption is nonblocking; at most eight small tails.
+            const auto* decoded = migration.decode->front();
+            if (!decoded) { return {}; }
+            if (!decoded->error.empty()) { return makeError(Error::Failure); }
+            const auto& request = migration.requests[migration.textures.size()];
+            const auto budget = device->memoryBudget();
+            if (budget.policy.enabled && request.bytes > budget.availableBytes) { return makeError(Error::OutOfMemory); }
+            ScenePathTraceMaterialTexture texture;
+            SceneTextureLoadTiming timing;
+            std::string log;
+            result = createKtxMaterialTexture(*device, migration.staging, migration.reader, migration.scratch,
+                timing, *ktxImages[request.image], request.mip, texture, log, decoded);
+            if (!result) { return result; }
+            // Validate the actual requirement as well as the pre-allocation estimate.
+            if (texture.texture->allocationSize() > request.bytes) { return makeError(Error::OutOfMemory); }
+            migration.textures.push_back(std::move(texture));
+            migration.decode->pop();
+            if (migration.textures.size() != migration.requests.size() &&
+                sceneResourceElapsedMilliseconds(prepareStarted) >= 1.0) { return {}; }
+        }
+        migration.decode.reset();
+        if (!(result = device->createCommandPool(*graphicsQueue, migration.pool)) ||
+            !(result = migration.pool->createCommandBuffer(migration.commands)) ||
+            !(result = migration.tracker.initialize(*device, *graphicsQueue)) ||
+            !(result = migration.frame.begin(streamingFrame)) ||
+            !(result = migration.commands->begin(&migration.frame))) { return result; }
+        for (auto& image : migration.textures) {
+            if (!(result = uploadTexture(*migration.commands, image))) { return result; }
+            TextureBarrierDesc barrier{.texture=image.texture.get(), .before=ResourceState::TransferDestination,
+                .after=ResourceState::ShaderRead, .mipCount=image.mipCount, .layerCount=1};
+            migration.commands->barrier({.textures=&barrier, .textureCount=1});
+            image.state = ResourceState::ShaderRead;
+        }
+        if (!(result = migration.commands->end())) { return result; }
+        CommandBuffer* commands[] = {migration.commands.get()};
+        if (!(result = migration.tracker.submit({.commandBuffers=commands, .commandBufferCount=1}, migration.frame))) { return result; }
+        migration.submitted = true;
+        for (const auto& image : migration.textures) { textureStats.streamingUploadBytes += image.byteSize; }
+        return {};
+    }
+
+    void scheduleTextureMigration()
+    {
+        if (textureMigration || streamingFrame < nextTextureRetry) { return; }
+        constexpr uint64_t maxBatchBytes = 4ull * 1024 * 1024;
+        // Keep real headroom for replacement tails; old + new coexist until retire.
+        const uint64_t reserve = std::min<uint64_t>(16ull * 1024 * 1024, textureStats.budgetBytes / 8);
+        const uint64_t steadyBudget = textureStats.budgetBytes - reserve;
+        const auto budget = device->memoryBudget();
+        const bool pressure = textureStats.residentAllocationBytes > steadyBudget ||
+            (budget.policy.enabled && budget.availableBytes < reserve);
+        struct Candidate { TextureRequest request; double priority; };
+        std::vector<Candidate> candidates;
+        textureStats.refinedImages = textureStats.requestedImages = 0;
+        for (uint32_t image = 0; image < ktxImages.size(); ++image) {
+            if (!ktxImages[image] || pinnedImages[image]) { continue; }
+            const uint32_t slot = asyncImageTextureIndexMap[image];
+            if (slot == kInvalidMaterialTextureIndex) { continue; }
+            const uint32_t current = ktxFirstMips[image], base = baseTextureMips[image];
+            textureStats.refinedImages += current < base;
+            const uint64_t age = streamingFrame - textureLastSeen[image];
+            uint32_t target = current;
+            const bool cold = age >= textureColdFrames || (pressure && age >= std::min(30u, textureColdFrames));
+            if (cold && current < base) { target = base; }
+            else if (age < 16 && desiredTextureMips[image] < current) {
+                ++textureStats.requestedImages;
+                if (!pressure) { target = std::max(desiredTextureMips[image], current - 1); }
+                else { ++textureStats.budgetDeferrals; }
+            }
+            // A separate cooldown prevents refine/evict oscillation around a view cut.
+            if (target == current || streamingFrame - textureLastChanged[image] < std::min(30u, textureColdFrames)) { continue; }
+            uint64_t bytes = 0;
+            if (!device->textureAllocationSize(ktxImages[image]->textureDesc(target), bytes)) { continue; }
+            const uint64_t oldBytes = materialTextures[slot].texture->allocationSize();
+            const double priority = target > current ? 1e12 + double(oldBytes) :
+                double(textureHits[image]) * (current - target) / double(std::max<uint64_t>(bytes - std::min(bytes,oldBytes),1));
+            candidates.push_back({{image,slot,target,bytes},priority});
+        }
+        std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) { return a.priority > b.priority; });
+        auto migration = std::make_unique<TextureMigration>();
+        uint64_t bytes = 0, cpuBytes = 0;
+        uint64_t projected = textureStats.residentAllocationBytes;
+        const uint64_t live = projected + textureStats.retiredAllocationBytes;
+        std::vector<Ktx2PrefetchRequest> decode;
+        for (const auto& candidate : candidates) {
+            const auto& request = candidate.request;
+            const uint64_t workingBytes = Ktx2TexturePrefetch::requiredBytes(*ktxImages[request.image], request.mip);
+            if (request.bytes > maxBatchBytes || bytes + request.bytes > maxBatchBytes || cpuBytes + workingBytes > kTexturePrefetchBytes) { continue; }
+            const uint64_t after = projected - materialTextures[request.slot].texture->allocationSize() + request.bytes;
+            const bool upgrade = request.mip < ktxFirstMips[request.image];
+            if (live + bytes + request.bytes > textureStats.budgetBytes || (upgrade && after > steadyBudget) ||
+                (budget.policy.enabled && bytes + request.bytes > budget.availableBytes)) { ++textureStats.budgetDeferrals; continue; }
+            bytes += request.bytes; cpuBytes += workingBytes; projected = after;
+            migration->requests.push_back(request);
+            decode.push_back({*ktxImages[request.image],request.mip});
+            if (decode.size() == 8) { break; }
+        }
+        if (decode.empty()) { return; }
+        migration->decode = std::make_unique<Ktx2TexturePrefetch>(std::move(decode), std::min(textureLoadWorkers,2u), kTexturePrefetchBytes);
+        migration->requestedFrame = streamingFrame;
+        textureStats.pendingImages = uint32_t(migration->requests.size());
+        textureStats.pendingAllocationBytes = bytes;
+        textureStats.peakLiveAllocationBytes = std::max(textureStats.peakLiveAllocationBytes,live + bytes);
+        textureMigration = std::move(migration);
+    }
+
+    Result beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback)
+    {
+        if (!emptyTextureFeedback) {
+            std::unique_ptr<Buffer> buffer;
+            auto result = device->createBuffer({.size=32, .usage=BufferUsageBits::Storage,
+                .memoryLocation=MemoryLocation::HostUpload}, buffer);
+            if (!result) { return result; }
+            auto* mapped = buffer->map(); if (!mapped) { return makeError(Error::Failure); }
+            std::memset(mapped,0,32); buffer->flush(); buffer->unmap();
+            emptyTextureFeedback = std::move(buffer);
+        }
+        feedback = emptyTextureFeedback.get();
+        auto* frame = commands.frameContext();
+        if (!frame) { return {}; }
+        frame->retain(emptyTextureFeedback);
+        if (!textureStreaming || baseTextureMips.empty()) { return {}; }
+        streamingFrame = frameIndex;
+        consumeTextureFeedback();
+        auto result = pumpTextureMigration();
+        if (!result) {
+            spdlog::warn("[TextureStreaming] Migration deferred: {}", resultToString(result));
+            textureMigration.reset();
+            textureStats.pendingImages = 0; textureStats.pendingAllocationBytes = 0;
+            nextTextureRetry = streamingFrame + 60;
+            ++textureStats.budgetDeferrals;
+            if (hasError(result,Error::DeviceLost)) { return result; }
+        }
+        // Publication can release the previous generation immediately if no frame uses it.
+        consumeTextureFeedback();
+        scheduleTextureMigration();
+        if (textureFeedback.size() >= 4) { return {}; }
+        std::shared_ptr<Buffer> buffer;
+        if (!freeTextureFeedback.empty()) {
+            buffer = std::move(freeTextureFeedback.back()); freeTextureFeedback.pop_back();
+        } else {
+            std::unique_ptr<Buffer> created;
+            result = device->createBuffer({.size=materialTextures.size()*32, .usage=BufferUsageBits::Storage,
+                .memoryLocation=MemoryLocation::HostReadback},created);
+            if (!result) { return result; }
+            buffer = std::move(created);
+        }
+        auto* words = static_cast<uint32_t*>(buffer->map());
+        if (!words) { return makeError(Error::Failure); }
+        std::memset(words,0,materialTextures.size()*32);
+        for (uint32_t image = 0; image < ktxImages.size(); ++image) {
+            const uint32_t slot = asyncImageTextureIndexMap[image];
+            if (!ktxImages[image] || pinnedImages[image] || slot == kInvalidMaterialTextureIndex) { continue; }
+            words[slot*8] = ktxImages[image]->width;
+            words[slot*8+1] = ktxImages[image]->height;
+            words[slot*8+2] = uint32_t(ktxImages[image]->levels.size());
+            words[slot*8+3] = ktxFirstMips[image];
+            words[slot*8+4] = UINT32_MAX;
+        }
+        buffer->flush(); buffer->unmap();
+        TextureFeedback entry{std::move(buffer),frame->completion(),frameIndex};
+        feedback = entry.buffer.get(); frame->retain(entry.buffer);
+        BufferBarrierDesc ready{.buffer=feedback, .before=ResourceState::Undefined, .after=ResourceState::General};
+        commands.barrier({.buffers=&ready, .bufferCount=1});
+        textureFeedback.push_back(std::move(entry));
+        return {};
+    }
+
     uint64_t pendingUploadByteSize() const
     {
         uint64_t byteSize = neuralTextures.pendingUploadByteSize() + pendingTextureBytes;
@@ -1726,6 +2057,7 @@ struct ScenePathTraceResources::Impl {
         device.logMemoryBudget("texture planning");
         ktxImages.clear(); ktxImages.resize(scene.images().size());
         ktxFirstMips.assign(scene.images().size(),0);
+        pinnedImages.assign(scene.images().size(), false);
         const auto referenced = referencedMaterialTextures(scene);
         struct Probe { uint32_t imageIndex; std::filesystem::path path; std::string error; };
         std::vector<Probe> probes;
@@ -1774,6 +2106,15 @@ struct ScenePathTraceResources::Impl {
             if (imageIndex >= 0 && size_t(imageIndex) < ktxImages.size() && ktxImages[imageIndex]) {
                 protectedImages[imageIndex] = true;
             }
+        }
+        for (const auto& material : scene.materials()) {
+            const auto pin = [&](int32_t texture) {
+                if (texture < 0 || size_t(texture) >= scene.textures().size()) { return; }
+                const auto image = scene.textures()[texture].imageIndex;
+                if (image >= 0 && size_t(image) < pinnedImages.size()) { pinnedImages[image] = true; }
+            };
+            if (material.alphaMode != "OPAQUE") { pin(material.baseColorTexture.textureIndex); }
+            if (material.displacementMagnitude != 0) { pin(material.displacementTexture.textureIndex); }
         }
         textureStats.maskImageCount = uint32_t(std::count(protectedImages.begin(), protectedImages.end(), true));
         textureStats.maskMaxDimension = textureMaskMaxDimension;
@@ -2064,7 +2405,7 @@ struct ScenePathTraceResources::Impl {
         }
         materialTextureCount = static_cast<uint32_t>(materialTextures.size());
         ktxPrefetch.reset();
-        asyncImageTextureIndexMap.clear();
+        initializeTextureStreaming();
         complete = true;
         return {};
     }
@@ -2182,6 +2523,7 @@ struct ScenePathTraceResources::Impl {
 
     void resetGpuBuffers()
     {
+        resetTextureStreaming();
         waitForTextureUploads();
         bufferUploads.clear();
         stagingArena.clear();
@@ -2263,7 +2605,10 @@ struct ScenePathTraceResources::Impl {
 
     bool textureSettingsMatch(const RenderGraphProperties& properties) const
     {
-        return textureMaskMaxDimension == uint32_t(std::clamp(properties.value("materialTextureMaskMaxDimension",0),0,32768)) &&
+        return textureStreaming == properties.value("materialTextureStreaming", false) &&
+            textureRefineDimension == uint32_t(std::clamp(properties.value("materialTextureRefineDimension",512),1,4096)) &&
+            textureColdFrames == uint32_t(std::clamp(properties.value("materialTextureColdFrames",180),2,36000)) &&
+            textureMaskMaxDimension == uint32_t(std::clamp(properties.value("materialTextureMaskMaxDimension",0),0,32768)) &&
             textureMaxDimension == uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768)) &&
             textureBudgetBytes == uint64_t(std::clamp(properties.value("materialTextureBudgetMiB",2048),1,65536)) * 1024 * 1024;
     }
@@ -2327,6 +2672,8 @@ struct ScenePathTraceResources::Impl {
     uint64_t textureBudgetBytes = 2048ull * 1024 * 1024;
     uint32_t textureMaxDimension = 512;
     uint32_t textureMaskMaxDimension = 0;
+    bool textureStreaming = false;
+    uint32_t textureRefineDimension = 512, textureColdFrames = 180;
     SceneTextureStats textureStats;
     uint32_t materialTextureCount = 0;
     std::deque<std::unique_ptr<UploadBatch>> uploadBatches;
@@ -2399,6 +2746,9 @@ Result ScenePathTraceResources::prepare(
     impl_->textureBudgetBytes = uint64_t(std::clamp(properties.value("materialTextureBudgetMiB",2048),1,65536)) * 1024 * 1024;
     impl_->textureMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768));
     impl_->textureMaskMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaskMaxDimension",0),0,32768));
+    impl_->textureStreaming = properties.value("materialTextureStreaming",false);
+    impl_->textureRefineDimension = uint32_t(std::clamp(properties.value("materialTextureRefineDimension",512),1,4096));
+    impl_->textureColdFrames = uint32_t(std::clamp(properties.value("materialTextureColdFrames",180),2,36000));
     impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
     scene::SceneDocument fallbackScene;
     if (boundScene == nullptr) {
@@ -2603,6 +2953,9 @@ Result ScenePathTraceResources::beginPrepareAsync(
     impl_->textureBudgetBytes = uint64_t(std::clamp(properties.value("materialTextureBudgetMiB",2048),1,65536)) * 1024 * 1024;
     impl_->textureMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768));
     impl_->textureMaskMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaskMaxDimension",0),0,32768));
+    impl_->textureStreaming = properties.value("materialTextureStreaming",false);
+    impl_->textureRefineDimension = uint32_t(std::clamp(properties.value("materialTextureRefineDimension",512),1,4096));
+    impl_->textureColdFrames = uint32_t(std::clamp(properties.value("materialTextureColdFrames",180),2,36000));
     impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
     impl_->materialOnly = materialsOnly || boundScene->hasStreamGeometry();
     impl_->asyncScenePath = path;
@@ -2963,6 +3316,9 @@ Result ScenePathTraceResources::syncRuntimeScene(
             {"path", impl_->scenePath.string()},
             {"materialTextureMaxDimension", impl_->textureMaxDimension},
             {"materialTextureMaskMaxDimension", impl_->textureMaskMaxDimension},
+            {"materialTextureStreaming", impl_->textureStreaming},
+            {"materialTextureRefineDimension", impl_->textureRefineDimension},
+            {"materialTextureColdFrames", impl_->textureColdFrames},
             {"materialTextureBudgetMiB", impl_->textureBudgetBytes / (1024 * 1024)},
         };
         Result result = prepare(
@@ -3096,8 +3452,20 @@ Result ScenePathTraceResources::syncRuntimeScene(
 
 Result ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandBuffer)
 {
-    if (auto* frame = commandBuffer.frameContext()) { frame->retain(impl_); }
+    if (auto* frame = commandBuffer.frameContext()) {
+        frame->retain(impl_);
+        frame->retain(impl_->textureGeneration);
+        if (impl_->texturePublication.valid()) {
+            auto result = frame->addDependency(impl_->texturePublication);
+            if (!result) { return result; }
+        }
+    }
     return impl_->uploadMaterialTextures(commandBuffer);
+}
+
+Result ScenePathTraceResources::beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback)
+{
+    return impl_->beginTextureStreaming(commands, frameIndex, feedback);
 }
 
 void ScenePathTraceResources::clear()
@@ -3205,7 +3573,9 @@ bool ScenePathTraceResources::gpuWorkComplete()
             spdlog::error("[SceneResources] {}", log);
         }
     }
-    return impl_->textureUploadsReady() && (accelerationStructureComplete || !result);
+    const bool migrationComplete = !impl_->textureMigration || !impl_->textureMigration->submitted ||
+        impl_->textureMigration->frame.completion().isComplete();
+    return migrationComplete && impl_->textureUploadsReady() && (accelerationStructureComplete || !result);
 }
 
 } // namespace metallic::render

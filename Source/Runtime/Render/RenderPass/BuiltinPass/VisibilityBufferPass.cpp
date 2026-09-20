@@ -652,6 +652,9 @@ public:
             compiledTessellationKey_ == tessellationKey() &&
             compiledTextureMaxDimension_ == properties().value("materialTextureMaxDimension", 512) &&
             compiledTextureBudgetMiB_ == properties().value("materialTextureBudgetMiB", 2048) &&
+            compiledTextureStreaming_ == properties().value("materialTextureStreaming", false) &&
+            compiledTextureRefineDimension_ == properties().value("materialTextureRefineDimension", 512) &&
+            compiledTextureColdFrames_ == properties().value("materialTextureColdFrames", 180) &&
             compiledTextureMaskMaxDimension_ == properties().value("materialTextureMaskMaxDimension", 0) &&
             compiledScene_ == runtimeScene &&
             sceneResourceIdentity_ == runtimeResourceIdentity &&
@@ -934,6 +937,9 @@ public:
         compiledTessellationKey_ = tessellationKey();
         compiledTextureMaxDimension_ = properties().value("materialTextureMaxDimension", 512);
         compiledTextureBudgetMiB_ = properties().value("materialTextureBudgetMiB", 2048);
+        compiledTextureStreaming_ = properties().value("materialTextureStreaming", false);
+        compiledTextureRefineDimension_ = properties().value("materialTextureRefineDimension", 512);
+        compiledTextureColdFrames_ = properties().value("materialTextureColdFrames", 180);
         compiledTextureMaskMaxDimension_ = properties().value("materialTextureMaskMaxDimension", 0);
         sceneResourceIdentity_ = runtimeResourceIdentity;
         sceneRevision_ = runtimeRevision;
@@ -1370,7 +1376,23 @@ public:
                 return result;
             }
         }
-        if (streamEnabled_) { context.publishStreamingProfile(streamRuntime_->profilingStats()); }
+        if (streamEnabled_) {
+            auto profile = streamRuntime_->profilingStats();
+            if (sharedTextureResources_) {
+                const auto textures = sharedTextureResources_->textureStats();
+                profile.textureStreaming = textures.streamingEnabled;
+                profile.textureResidentBytes = textures.residentAllocationBytes;
+                profile.textureBudgetBytes = textures.budgetBytes;
+                profile.texturePendingBytes = textures.pendingAllocationBytes;
+                profile.textureRetiredBytes = textures.retiredAllocationBytes;
+                profile.textureUpgrades = textures.upgrades; profile.textureDowngrades = textures.downgrades;
+                profile.textureBudgetDeferrals = textures.budgetDeferrals; profile.textureFeedbackFrames = textures.feedbackFrames;
+                profile.textureUploadBytes = textures.streamingUploadBytes; profile.textureMaxRequestFrames = textures.maxRequestLatencyFrames;
+                profile.textureRefinedImages = textures.refinedImages; profile.textureRequestedImages = textures.requestedImages;
+                profile.texturePendingImages = textures.pendingImages;
+            }
+            context.publishStreamingProfile(std::move(profile));
+        }
         gpuSceneSubsystem->publishVisibilityStream(gpuSceneView_, context.frameIndex(), sceneResourceIdentity_,
             streamEnabled_ ? streamRuntime_->deferredGpuResources() : MeshletStreamDeferredGpuResourcesView{});
         ++frameIndex_;
@@ -3421,6 +3443,24 @@ private:
         const auto indices = sharedTextureResources_->logicalTextureIndices();
         logicalTextureToMaterialTexture_.assign(indices.begin(), indices.end());
         alphaTestTextureIndices_ = alphaTestTextureIndices(loadedScene);
+        if (properties().value("materialTextureStreaming", false)) {
+            // Raster descriptors only sample alpha/displacement. Never leave an
+            // unused descriptor pointing at a reclaimable shading texture.
+            std::vector<bool> pinned(materialViews_.size());
+            for (const auto& material : loadedScene.materials()) {
+                const auto pin = [&](int32_t logical) {
+                    if (logical >= 0 && size_t(logical) < logicalTextureToMaterialTexture_.size()) {
+                        const auto slot = logicalTextureToMaterialTexture_[logical];
+                        if (slot < pinned.size()) { pinned[slot] = true; }
+                    }
+                };
+                if (material.alphaMode != "OPAQUE") { pin(material.baseColorTexture.textureIndex); }
+                if (material.displacementMagnitude != 0) { pin(material.displacementTexture.textureIndex); }
+            }
+            for (size_t i = 1; i < materialViews_.size(); ++i) {
+                if (!pinned[i]) { materialViews_[i] = materialViews_[0]; }
+            }
+        }
         return {};
     }
 
@@ -4904,6 +4944,8 @@ private:
     std::string compiledTessellationKey_;
     int compiledTextureMaxDimension_ = 512;
     int compiledTextureBudgetMiB_ = 2048;
+    bool compiledTextureStreaming_ = false;
+    int compiledTextureRefineDimension_ = 512, compiledTextureColdFrames_ = 180;
     int compiledTextureMaskMaxDimension_ = 0;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer_;
     std::vector<GPUDrivenPreviewFrameSlotResources> frameSlotResources_;

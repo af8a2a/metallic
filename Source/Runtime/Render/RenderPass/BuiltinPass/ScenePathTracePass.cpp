@@ -1083,6 +1083,7 @@ public:
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
             baseBindings.push_back({.binding = 94, .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = 95, .kind = ComputeResourceBindingKind::StorageBuffer});
             for (uint32_t binding = 83; binding <= 87; ++binding) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
@@ -1650,6 +1651,11 @@ public:
             hasPreviousCamera_ = false;
         }
         TextureHandle color = context.outputTexture("color");
+        Buffer* textureFeedback = nullptr;
+        if (visibilityDeferred_) {
+            auto streamingResult = sceneResources_.beginTextureStreaming(context.commandBuffer(), context.frameIndex(), textureFeedback);
+            if (!streamingResult) { return streamingResult; }
+        }
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         TextureView* environmentTextureView = environment.radianceView;
         TextureView* environmentImportancePdfView = environment.pdfView;
@@ -2032,6 +2038,7 @@ public:
             }
             Buffer* fallback = deferredViews->geometries.buffer;
             bindings.push_back({.binding = 94, .buffer = deferredStream ? deferredStream->paramsBuffer : fallback});
+            bindings.push_back({.binding = 95, .buffer = textureFeedback});
             const std::array streamBuffers{
                 deferredStream ? deferredStream->visibleClusterBuffer : fallback,
                 deferredStream ? deferredStream->activeGroupBuffer : fallback,

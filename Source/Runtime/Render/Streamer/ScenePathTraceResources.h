@@ -22,6 +22,11 @@ struct SceneTextureStats {
     uint64_t residentPayloadBytes = 0, residentAllocationBytes = 0, peakStagingBytes = 0;
     uint64_t configuredBudgetBytes = 0, sharedAvailableBytes = 0;
     uint64_t plannedHeapOverheadBytes = 0;
+    bool streamingEnabled = false;
+    uint32_t refinedImages = 0, requestedImages = 0, pendingImages = 0;
+    uint64_t upgrades = 0, downgrades = 0, budgetDeferrals = 0, feedbackFrames = 0;
+    uint64_t pendingAllocationBytes = 0, retiredAllocationBytes = 0, peakLiveAllocationBytes = 0;
+    uint64_t streamingUploadBytes = 0, maxRequestLatencyFrames = 0;
 };
 
 struct SceneTextureLoadTiming {
@@ -83,6 +88,8 @@ public:
     bool preparing() const;
     Result syncRuntimeScene(const scene::Scene* runtimeScene, std::string& log);
     Result uploadMaterialTextures(CommandBuffer& commandBuffer);
+    // Called once by the deferred consumer; never waits for feedback or decode.
+    Result beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback);
     bool textureUploadsReady() const;
     bool gpuWorkComplete();
     SceneUploadStats uploadStats() const;

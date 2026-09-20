@@ -80,6 +80,11 @@ struct SceneStreamingProfile {
     uint64_t gpuDecompressedPages = 0;
     uint64_t totalGpuDecompressedPages = 0;
     uint64_t loadFailures = 0;
+    bool textureStreaming = false;
+    uint64_t textureResidentBytes = 0, textureBudgetBytes = 0, texturePendingBytes = 0, textureRetiredBytes = 0;
+    uint64_t textureUpgrades = 0, textureDowngrades = 0, textureBudgetDeferrals = 0;
+    uint64_t textureFeedbackFrames = 0, textureUploadBytes = 0, textureMaxRequestFrames = 0;
+    uint32_t textureRefinedImages = 0, textureRequestedImages = 0, texturePendingImages = 0;
     MeshletStreamThroughput throughput;
     StreamCpuWorkCounters cpuWork;
 };

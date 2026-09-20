@@ -488,6 +488,24 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
         drawHistoryPlot("Streaming memory (MiB)", frames, memory, "MiB", 200, true,
             showBudget ? (last.geometryBudgetBytes + last.clasCapacityBytes) / mib : 0.0);
     }
+    if (last.textureStreaming && ImGui::CollapsingHeader("Texture Residency")) {
+        ImGui::Text("Resident %.1f / %.1f MiB | Pending reserve %.2f MiB | Retiring %.2f MiB",
+            last.textureResidentBytes/mib, last.textureBudgetBytes/mib, last.texturePendingBytes/mib, last.textureRetiredBytes/mib);
+        ImGui::Text("Refined %u | Requested %u | In flight %u",last.textureRefinedImages,last.textureRequestedImages,last.texturePendingImages);
+        ImGui::Text("Upgrades %llu | Cold downgrades %llu | Budget deferrals %llu",
+            (unsigned long long)last.textureUpgrades,(unsigned long long)last.textureDowngrades,(unsigned long long)last.textureBudgetDeferrals);
+        ImGui::Text("Feedback frames %llu | Uploaded %.2f MiB | Max request latency %llu frames",
+            (unsigned long long)last.textureFeedbackFrames,last.textureUploadBytes/mib,(unsigned long long)last.textureMaxRequestFrames);
+        std::vector<PlotSeries> textures{{"Resident",IM_COL32(105,194,242,255),{}},
+            {"Pending",IM_COL32(255,211,92,255),{}},{"Retiring",IM_COL32(246,123,123,255),{}}};
+        for (const auto& sample : it->samples) {
+            textures[0].values.push_back(sample.textureResidentBytes/mib);
+            textures[1].values.push_back(sample.texturePendingBytes/mib);
+            textures[2].values.push_back(sample.textureRetiredBytes/mib);
+        }
+        drawHistoryPlot("Texture allocation (MiB)",frames,textures,"MiB",180,true,last.textureBudgetBytes/mib);
+        ImGui::TextDisabled("Resident/retiring are image allocations; pending is reserved capacity. Alpha/displacement stay pinned.");
+    }
     if (ImGui::CollapsingHeader("Page Traffic")) {
         drawHistoryPlot("Page traffic (pages/frame)", frames, pages, "pages", 170);
     }

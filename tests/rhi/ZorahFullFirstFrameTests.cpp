@@ -184,8 +184,8 @@ public:
                 const auto tex=materials->pathTraceResources->textureStats();
                 const auto memory = device->memoryBudget();
                 const auto& textureDomain = memory.domains[size_t(MemoryBudgetDomain::MaterialTextures)];
-                requireFull(textureDomain.allocationBytes <= tex.residentAllocationBytes + 1024 * 1024 &&
-                    textureDomain.allocationCount <= tex.residentImageCount + 16,
+                requireFull(textureDomain.allocationBytes <= tex.residentAllocationBytes + tex.pendingAllocationBytes + tex.retiredAllocationBytes + 1024 * 1024 &&
+                    textureDomain.allocationCount <= tex.residentImageCount + 32,
                     "Scene consumers retained duplicate material texture owners");
                 run["materialDomainBytes"] = textureDomain.allocationBytes;
                 run["materialDomainImages"] = textureDomain.allocationCount;
@@ -194,7 +194,9 @@ public:
                     {"allocationBytes", localHeap.allocationBytes}, {"blockCount", localHeap.blockCount}};
                 run["textures"]={{"logical",tex.logicalTextureCount},{"residentIncludingFallback",tex.residentImageCount},
                     {"maxDimension",tex.selectedMaxDimension},{"maskImages",tex.maskImageCount},{"maskMaxDimension",tex.maskMaxDimension},{"payloadBytes",tex.residentPayloadBytes},
-                    {"allocationBytes",tex.residentAllocationBytes},{"budgetBytes",tex.budgetBytes},{"peakStagingBytes",tex.peakStagingBytes}};
+                    {"allocationBytes",tex.residentAllocationBytes},{"budgetBytes",tex.budgetBytes},{"peakStagingBytes",tex.peakStagingBytes},
+                    {"upgrades",tex.upgrades},{"downgrades",tex.downgrades},{"refinedImages",tex.refinedImages},
+                    {"feedbackFrames",tex.feedbackFrames},{"peakLiveBytes",tex.peakLiveAllocationBytes}};
                 report["currentRun"]=run; save();
                 requireFull(tex.logicalTextureCount==4418 && tex.ktxImageCount==4418 &&
                     tex.residentImageCount==4419 && tex.selectedMaxDimension<=256 &&
@@ -221,6 +223,49 @@ public:
                 requireFull(run["unbinnedBaseColorNonblackPixels"].get<size_t>()>10000,"Unbinned Full decode has negligible geometry coverage");
                 graph.setNodeRuntimeProperty(deferredId,"materialBinning",true);
                 graph.setNodeRuntimeProperty(deferredId,"debugView","final");
+                if (std::getenv("METALLIC_TEST_TEXTURE_ROAM")) {
+                    const auto originalView = graph.viewProperties();
+                    const auto row = [&](const char* phase, uint32_t frame) {
+                        const auto t=materials->pathTraceResources->textureStats();
+                        run["textureRoam"].push_back({{"phase",phase},{"frame",frame},{"residentBytes",t.residentAllocationBytes},
+                            {"pendingBytes",t.pendingAllocationBytes},{"retiredBytes",t.retiredAllocationBytes},
+                            {"upgrades",t.upgrades},{"downgrades",t.downgrades},{"refined",t.refinedImages},
+                            {"requested",t.requestedImages},{"feedbackFrames",t.feedbackFrames},{"maxRequestFrames",t.maxRequestLatencyFrames}});
+                        requireFull(t.peakLiveAllocationBytes<=t.budgetBytes,"Texture replacement exceeded total budget");
+                    };
+                    requireFull(tex.streamingEnabled && tex.upgrades>0 && tex.feedbackFrames>0,"Full shading produced no refinement demand");
+                    auto moved=originalView;
+                    for (size_t axis=0;axis<3;++axis) {
+                        const double eye=originalView["camera"]["eye"][axis], center=originalView["camera"]["center"][axis];
+                        moved["camera"]["eye"][axis]=eye+(center-eye)*.5;
+                        moved["camera"]["center"][axis]=center+(center-eye)*.5;
+                    }
+                    graph.setViewProperties(moved);
+                    for (uint32_t frame=0;frame<180;++frame) {
+                        requireFull(bool(preview.render(graph,960,540,"FinalBlit.color",true)),preview.lastLog());
+                        if (frame%15==0) { row("forward",frame); }
+                    }
+                    capture("ZorahFull-refined");
+                    const auto hot=materials->pathTraceResources->textureStats();
+                    auto away=originalView;
+                    away["camera"]["eye"]={0,1000000,0}; away["camera"]["center"]={0,1000001,0}; away["camera"]["up"]={0,0,1};
+                    graph.setViewProperties(away);
+                    for (uint32_t frame=0;frame<420;++frame) {
+                        requireFull(bool(preview.render(graph,960,540,"FinalBlit.color",true)),preview.lastLog());
+                        if (frame%15==0) { row("away",frame); }
+                    }
+                    const auto cold=materials->pathTraceResources->textureStats();
+                    requireFull(cold.downgrades>hot.downgrades && cold.residentAllocationBytes<hot.residentAllocationBytes,
+                        "Full cold textures did not release physical image allocations");
+                    graph.setViewProperties(originalView);
+                    for (uint32_t frame=0;frame<120;++frame) {
+                        requireFull(bool(preview.render(graph,960,540,"FinalBlit.color",true)),preview.lastLog());
+                        if (frame%15==0) { row("return",frame); }
+                    }
+                    capture("ZorahFull-return");
+                    requireFull(materials->pathTraceResources->textureStats().upgrades>cold.upgrades,"Full textures did not refine after returning");
+                    report["currentRun"]=run; save();
+                }
                 // Exercise graph removal and retirement before the next full load.
                 RenderGraph empty; empty.addNode("FinalBlitPass","Empty"); empty.markOutput("Empty.color");
                 for (uint32_t frame=0; frame<=host->frameSlotCount(); ++frame) {
