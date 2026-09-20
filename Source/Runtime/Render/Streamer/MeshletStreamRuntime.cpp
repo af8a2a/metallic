@@ -916,6 +916,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             .usage = pageBufferUsage,
             .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
+            .memoryDomain = MemoryBudgetDomain::Geometry,
         },
         pageBuffer_);
     if (!result || pageBuffer_ == nullptr) {

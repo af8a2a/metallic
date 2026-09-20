@@ -3111,27 +3111,34 @@ struct SwapchainSemaphoreImpl {
     VkSemaphore semaphore = VK_NULL_HANDLE;
 };
 
+struct MemoryBudgetState {
+    std::mutex mutex;
+    MemoryBudgetPolicy policy;
+    std::array<MemoryDomainBudget, size_t(MemoryBudgetDomain::Count)> domains{};
+    uint64_t reservedBytes = 0, deniedAllocations = 0;
+};
+
 struct BufferImpl {
     DeviceImpl* device = nullptr;
     BufferDesc desc;
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
     void* mapped = nullptr;
+    uint64_t allocationBytes = 0;
+    bool deviceLocal = false;
+    ~BufferImpl();
 };
 
 struct MicromapIdentityIndexBuffer {
+    DeviceImpl* device = nullptr;
     VmaAllocator allocator = VK_NULL_HANDLE;
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
     VkDeviceAddress address = 0;
     uint32_t triangleCount = 0;
-
-    ~MicromapIdentityIndexBuffer()
-    {
-        if (buffer != VK_NULL_HANDLE) {
-            vmaDestroyBuffer(allocator, buffer, allocation);
-        }
-    }
+    uint64_t allocationBytes = 0;
+    bool deviceLocal = false;
+    ~MicromapIdentityIndexBuffer();
 };
 
 struct RayTracingAccelerationStructureImpl {
@@ -3175,6 +3182,8 @@ struct TextureImpl {
     VkImageUsageFlags usage = 0;
     bool ownsImage = false;
     uint64_t allocationSize = 0;
+    bool deviceLocal = false;
+    ~TextureImpl();
 };
 
 struct TextureViewImpl {
@@ -3293,6 +3302,8 @@ struct BindlessHeapBuffer {
     VkDeviceAddress address = 0;
     VkDeviceSize size = 0;
     VkDeviceSize mappedOffset = 0;
+    uint64_t allocationBytes = 0;
+    bool deviceLocal = false;
 };
 
 struct BindlessHeapImpl {
@@ -3317,6 +3328,15 @@ struct DeviceImpl {
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
+    std::shared_ptr<MemoryBudgetState> memoryBudgetState = std::make_shared<MemoryBudgetState>();
+    bool memoryBudgetExtension = false;
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    mutable std::chrono::steady_clock::time_point lastBudgetRefresh{};
+    mutable uint32_t budgetRefreshIndex = 0;
+    DeviceMemoryBudget memoryBudgetLocked() const;
+    bool admitMemoryLocked(uint32_t memoryType, uint64_t bytes, MemoryBudgetDomain domain);
+    Result prepareBufferAllocationLocked(const VkBufferCreateInfo& info, VmaAllocationCreateInfo& allocationInfo, MemoryBudgetDomain domain);
+    void trackMemoryLocked(MemoryBudgetDomain domain, uint64_t bytes, bool local, bool add);
     DeviceCapabilities capabilities;
     PipelineCacheFileIdentity pipelineCacheFileIdentity;
     DescriptorHeapWriter descriptorHeapWriter;
@@ -3355,6 +3375,128 @@ struct DeviceImpl {
         uint32_t timestampValidBits,
         QueueType type);
 };
+
+DeviceMemoryBudget DeviceImpl::memoryBudgetLocked() const
+{
+    DeviceMemoryBudget result;
+    const auto& state = *memoryBudgetState;
+    result.policy = state.policy;
+    result.reservedBytes = state.reservedBytes;
+    result.deniedAllocations = state.deniedAllocations;
+    result.domains = state.domains;
+    result.driverBudget = memoryBudgetExtension;
+    VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+    // VMA otherwise refreshes only after enough allocation operations; external
+    // processes and DLSS can change pressure while our allocation count is idle.
+    const auto now = std::chrono::steady_clock::now();
+    if (memoryBudgetExtension && now - lastBudgetRefresh >= std::chrono::milliseconds(100)) {
+        vmaSetCurrentFrameIndex(allocator, ++budgetRefreshIndex);
+        lastBudgetRefresh = now;
+    }
+    vmaGetHeapBudgets(allocator, budgets);
+    for (uint32_t i = 0; i < memoryProperties.memoryHeapCount; ++i) {
+        const auto& heap = memoryProperties.memoryHeaps[i];
+        const bool local = (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+        uint64_t limit = std::min<uint64_t>(heap.size, budgets[i].budget);
+        if (local && state.policy.deviceLocalHeapLimitBytes) {
+            limit = std::min(limit, state.policy.deviceLocalHeapLimitBytes);
+        }
+        result.heaps.push_back({heap.size, limit, std::max<uint64_t>(budgets[i].usage, budgets[i].statistics.blockBytes),
+            budgets[i].statistics.blockBytes, budgets[i].statistics.allocationBytes,
+            budgets[i].statistics.blockCount, budgets[i].statistics.allocationCount, local});
+        if (local && (result.primaryDeviceLocalHeap == UINT32_MAX ||
+                heap.size > memoryProperties.memoryHeaps[result.primaryDeviceLocalHeap].size)) {
+            result.primaryDeviceLocalHeap = i;
+        }
+    }
+    if (result.primaryDeviceLocalHeap != UINT32_MAX) {
+        const auto& heap = result.heaps[result.primaryDeviceLocalHeap];
+        uint64_t available = heap.budgetBytes - std::min(heap.budgetBytes, heap.usageBytes);
+        if (state.policy.enabled) {
+            available -= std::min(available, state.policy.safetyBytes);
+            available -= std::min(available, state.reservedBytes);
+        }
+        result.availableBytes = available;
+    }
+    return result;
+}
+
+bool DeviceImpl::admitMemoryLocked(uint32_t memoryType, uint64_t bytes, MemoryBudgetDomain domain)
+{
+    auto& state = *memoryBudgetState;
+    if (!state.policy.enabled) { return true; }
+    const uint32_t heapIndex = memoryProperties.memoryTypes[memoryType].heapIndex;
+    if (!(memoryProperties.memoryHeaps[heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) { return true; }
+    const auto budget = memoryBudgetLocked();
+    const auto& heap = budget.heaps[heapIndex];
+    uint64_t available = heap.budgetBytes - std::min(heap.budgetBytes, heap.usageBytes);
+    available -= std::min(available, state.policy.safetyBytes);
+    available -= std::min(available, state.reservedBytes);
+    if (bytes <= available) { return true; }
+    ++state.deniedAllocations;
+    spdlog::error("[GpuBudget] Allocation denied domain={} requested={} available={} heap={} usage={} budget={} reserved={} safety={}",
+        uint32_t(domain), bytes, available, heapIndex, heap.usageBytes, heap.budgetBytes,
+        state.reservedBytes, state.policy.safetyBytes);
+    spdlog::error("[GpuBudget] Denied allocation context blockBytes={} allocationBytes={} textures={} uploadLocal={}",
+        heap.blockBytes, heap.allocationBytes,
+        state.domains[size_t(MemoryBudgetDomain::MaterialTextures)].deviceLocalBytes,
+        state.domains[size_t(MemoryBudgetDomain::Upload)].deviceLocalBytes);
+    return false;
+}
+
+void DeviceImpl::trackMemoryLocked(MemoryBudgetDomain domain, uint64_t bytes, bool local, bool add)
+{
+    auto& stats = memoryBudgetState->domains[size_t(domain)];
+    if (add) {
+        stats.allocationBytes += bytes;
+        if (local) { stats.deviceLocalBytes += bytes; }
+        ++stats.allocationCount;
+        stats.peakAllocationBytes = std::max(stats.peakAllocationBytes, stats.allocationBytes);
+    } else {
+        stats.allocationBytes -= bytes;
+        if (local) { stats.deviceLocalBytes -= bytes; }
+        --stats.allocationCount;
+    }
+}
+
+Result DeviceImpl::prepareBufferAllocationLocked(const VkBufferCreateInfo& info, VmaAllocationCreateInfo& allocationInfo, MemoryBudgetDomain domain)
+{
+    uint32_t memoryType = 0;
+    const VkResult result = vmaFindMemoryTypeIndexForBufferInfo(allocator, &info, &allocationInfo, &memoryType);
+    if (result != VK_SUCCESS) { return resultFromVk(result); }
+    VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+    const VkDeviceBufferMemoryRequirements request{.sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS, .pCreateInfo = &info};
+    vkGetDeviceBufferMemoryRequirements(device, &request, &requirements);
+    if (!admitMemoryLocked(memoryType, requirements.memoryRequirements.size, domain)) { return makeError(Error::OutOfMemory); }
+    allocationInfo.memoryTypeBits = 1u << memoryType;
+    if (memoryBudgetState->policy.enabled) { allocationInfo.flags |= VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT; }
+    return {};
+}
+
+MicromapIdentityIndexBuffer::~MicromapIdentityIndexBuffer()
+{
+    if (!device || buffer == VK_NULL_HANDLE) { return; }
+    std::lock_guard lock(device->memoryBudgetState->mutex);
+    vmaDestroyBuffer(allocator, buffer, allocation);
+    device->trackMemoryLocked(MemoryBudgetDomain::RayTracing, allocationBytes, deviceLocal, false);
+}
+
+BufferImpl::~BufferImpl()
+{
+    if (!device || buffer == VK_NULL_HANDLE) { return; }
+    std::lock_guard lock(device->memoryBudgetState->mutex);
+    if (mapped) { vmaUnmapMemory(device->allocator, allocation); }
+    vmaDestroyBuffer(device->allocator, buffer, allocation);
+    device->trackMemoryLocked(desc.memoryDomain, allocationBytes, deviceLocal, false);
+}
+
+TextureImpl::~TextureImpl()
+{
+    if (!device || !ownsImage || image == VK_NULL_HANDLE) { return; }
+    std::lock_guard lock(device->memoryBudgetState->mutex);
+    vmaDestroyImage(device->allocator, image, allocation);
+    device->trackMemoryLocked(desc.memoryDomain, allocationSize, deviceLocal, false);
+}
 
 RayTracingAccelerationStructureImpl::~RayTracingAccelerationStructureImpl()
 {
@@ -3689,14 +3831,23 @@ Result ensureMicromapIdentityIndices(
         .queueFamilyIndexCount = families.size() > 1 ? static_cast<uint32_t>(families.size()) : 0,
         .pQueueFamilyIndices = families.size() > 1 ? families.data() : nullptr,
     };
-    const auto allocationInfo = allocationInfoForMemory(MemoryLocation::HostUpload);
+    auto allocationInfo = allocationInfoForMemory(MemoryLocation::HostUpload);
     auto indices = std::make_unique<MicromapIdentityIndexBuffer>();
+    std::unique_lock budgetLock(device.memoryBudgetState->mutex);
+    const Result admitted = device.prepareBufferAllocationLocked(bufferInfo, allocationInfo, MemoryBudgetDomain::RayTracing);
+    if (!admitted) { return admitted; }
+    indices->device = &device;
     indices->allocator = device.allocator;
+    VmaAllocationInfo allocatedInfo{};
     VkResult result = vmaCreateBuffer(device.allocator, &bufferInfo, &allocationInfo,
-        &indices->buffer, &indices->allocation, nullptr);
+        &indices->buffer, &indices->allocation, &allocatedInfo);
     if (result != VK_SUCCESS) {
         return resultFromVk(result);
     }
+    indices->allocationBytes = allocatedInfo.size;
+    indices->deviceLocal = (device.memoryProperties.memoryHeaps[device.memoryProperties.memoryTypes[allocatedInfo.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+    device.trackMemoryLocked(MemoryBudgetDomain::RayTracing, indices->allocationBytes, indices->deviceLocal, true);
+    budgetLock.unlock();
     void* mapped = nullptr;
     result = vmaMapMemory(device.allocator, indices->allocation, &mapped);
     if (result != VK_SUCCESS) {
@@ -3806,6 +3957,9 @@ Result BindlessHeapImpl::createHeapBuffer(VkDeviceSize size, VkDeviceSize alignm
     VmaAllocationInfo allocatedInfo{};
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
+    std::unique_lock budgetLock(device->memoryBudgetState->mutex);
+    const Result admitted = device->prepareBufferAllocationLocked(bufferInfo, allocationInfo, MemoryBudgetDomain::FrameResources);
+    if (!admitted) { return admitted; }
     const VkResult vkResult = vmaCreateBuffer(
         device->allocator,
         &bufferInfo,
@@ -3836,14 +3990,19 @@ Result BindlessHeapImpl::createHeapBuffer(VkDeviceSize size, VkDeviceSize alignm
         .address = address,
         .size = size,
         .mappedOffset = mappedOffset,
+        .allocationBytes = allocatedInfo.size,
+        .deviceLocal = (device->memoryProperties.memoryHeaps[device->memoryProperties.memoryTypes[allocatedInfo.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0,
     };
+    device->trackMemoryLocked(MemoryBudgetDomain::FrameResources, outBuffer.allocationBytes, outBuffer.deviceLocal, true);
     return {};
 }
 
 void BindlessHeapImpl::destroyHeapBuffer(BindlessHeapBuffer& buffer)
 {
     if (device != nullptr && buffer.buffer != VK_NULL_HANDLE) {
+        std::lock_guard lock(device->memoryBudgetState->mutex);
         vmaDestroyBuffer(device->allocator, buffer.buffer, buffer.allocation);
+        device->trackMemoryLocked(MemoryBudgetDomain::FrameResources, buffer.allocationBytes, buffer.deviceLocal, false);
     }
     buffer = {};
 }
@@ -4541,20 +4700,7 @@ Buffer::Buffer(std::unique_ptr<detail::BufferImpl> impl)
 {
 }
 
-Buffer::~Buffer()
-{
-    if (impl_ != nullptr) {
-        if (impl_->mapped != nullptr) {
-            vmaUnmapMemory(impl_->device->allocator, impl_->allocation);
-            impl_->mapped = nullptr;
-        }
-        if (impl_->buffer != VK_NULL_HANDLE) {
-            vmaDestroyBuffer(impl_->device->allocator, impl_->buffer, impl_->allocation);
-            impl_->buffer = VK_NULL_HANDLE;
-            impl_->allocation = VK_NULL_HANDLE;
-        }
-    }
-}
+Buffer::~Buffer() = default;
 
 Buffer::Buffer(Buffer&&) noexcept = default;
 Buffer& Buffer::operator=(Buffer&&) noexcept = default;
@@ -4699,14 +4845,7 @@ Texture::Texture(std::unique_ptr<detail::TextureImpl> impl)
 {
 }
 
-Texture::~Texture()
-{
-    if (impl_ != nullptr && impl_->ownsImage && impl_->image != VK_NULL_HANDLE) {
-        vmaDestroyImage(impl_->device->allocator, impl_->image, impl_->allocation);
-        impl_->image = VK_NULL_HANDLE;
-        impl_->allocation = VK_NULL_HANDLE;
-    }
-}
+Texture::~Texture() = default;
 
 Texture::Texture(Texture&&) noexcept = default;
 Texture& Texture::operator=(Texture&&) noexcept = default;
@@ -7765,6 +7904,79 @@ Device::~Device() = default;
 Device::Device(Device&&) noexcept = default;
 Device& Device::operator=(Device&&) noexcept = default;
 
+MemoryBudgetReservation::~MemoryBudgetReservation() { reset(); }
+MemoryBudgetReservation::MemoryBudgetReservation(MemoryBudgetReservation&& other) noexcept
+    : state_(std::move(other.state_)), bytes_(std::exchange(other.bytes_, 0)) {}
+MemoryBudgetReservation& MemoryBudgetReservation::operator=(MemoryBudgetReservation&& other) noexcept
+{
+    if (this != &other) { reset(); state_ = std::move(other.state_); bytes_ = std::exchange(other.bytes_, 0); }
+    return *this;
+}
+void MemoryBudgetReservation::reset()
+{
+    if (state_ && bytes_) {
+        std::lock_guard lock(state_->mutex);
+        state_->reservedBytes -= bytes_;
+    }
+    bytes_ = 0;
+    state_.reset();
+}
+DeviceMemoryBudget Device::memoryBudget() const
+{
+    if (!impl_ || !impl_->allocator) { return {}; }
+    std::lock_guard lock(impl_->memoryBudgetState->mutex);
+    return impl_->memoryBudgetLocked();
+}
+void Device::setMemoryBudgetPolicy(const MemoryBudgetPolicy& policy)
+{
+    if (!impl_) { return; }
+    std::lock_guard lock(impl_->memoryBudgetState->mutex);
+    impl_->memoryBudgetState->policy = policy;
+}
+Result Device::reserveMemoryBudget(uint64_t bytes, MemoryBudgetReservation& reservation)
+{
+    reservation.reset();
+    if (!impl_ || !impl_->allocator) { return makeError(Error::InvalidArgument); }
+    std::lock_guard lock(impl_->memoryBudgetState->mutex);
+    auto& state = *impl_->memoryBudgetState;
+    if (!state.policy.enabled || !bytes) { return {}; }
+    const auto budget = impl_->memoryBudgetLocked();
+    if (bytes > budget.availableBytes) {
+        ++state.deniedAllocations;
+        spdlog::error("[GpuBudget] Reservation denied requested={} available={} existingReservations={}", bytes, budget.availableBytes, state.reservedBytes);
+        return makeError(Error::OutOfMemory);
+    }
+    state.reservedBytes += bytes;
+    reservation.state_ = impl_->memoryBudgetState;
+    reservation.bytes_ = bytes;
+    return {};
+}
+void Device::logMemoryBudget(const char* phase) const
+{
+    if (!impl_ || !impl_->allocator) { return; }
+    DeviceMemoryBudget budget;
+    {
+        std::lock_guard lock(impl_->memoryBudgetState->mutex);
+        if (!impl_->memoryBudgetState->policy.enabled) { return; }
+        // Phase markers around external SDK calls must observe their new usage,
+        // even when less than the normal refresh interval has elapsed.
+        impl_->lastBudgetRefresh = {};
+        budget = impl_->memoryBudgetLocked();
+    }
+    for (uint32_t i = 0; i < budget.heaps.size(); ++i) {
+        const auto& h = budget.heaps[i];
+        spdlog::info("[GpuBudget] {} heap={} local={} driverBudget={} usage={} budget={} blocks={}/{} allocations={}/{} reserved={} safety={} primaryAvailable={} denied={}",
+            phase, i, h.deviceLocal, budget.driverBudget, h.usageBytes, h.budgetBytes, h.blockCount, h.blockBytes,
+            h.allocationCount, h.allocationBytes, budget.reservedBytes, budget.policy.safetyBytes, budget.availableBytes, budget.deniedAllocations);
+    }
+    static constexpr const char* names[] = {"other", "geometry", "clas", "clasScratch", "rtas", "textures", "frame", "upload"};
+    for (size_t i = 0; i < budget.domains.size(); ++i) {
+        const auto& d = budget.domains[i];
+        spdlog::info("[GpuBudget] {} domain={} liveAndRetained={} deviceLocal={} peak={} allocations={}",
+            phase, names[i], d.allocationBytes, d.deviceLocalBytes, d.peakAllocationBytes, d.allocationCount);
+    }
+}
+
 const DeviceCapabilities& Device::capabilities() const
 {
     static const DeviceCapabilities emptyCapabilities;
@@ -8834,13 +9046,28 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
     VmaAllocationCreateInfo allocationInfo = allocationInfoForMemory(desc.memoryLocation);
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
+    if (size_t(desc.memoryDomain) >= size_t(MemoryBudgetDomain::Count)) { return makeError(Error::InvalidArgument); }
+    const auto domain = desc.memoryDomain != MemoryBudgetDomain::Other ? desc.memoryDomain :
+        desc.memoryLocation != MemoryLocation::Device ? MemoryBudgetDomain::Upload :
+        hasFlag(desc.usage, BufferUsageBits::AccelerationStructureStorage) ? MemoryBudgetDomain::RayTracing : MemoryBudgetDomain::Other;
+    std::unique_lock budgetLock(impl_->memoryBudgetState->mutex);
+    // Pure staging does not benefit from occupying the device-local heap on a
+    // discrete GPU with a large host-visible BAR. Keep directly GPU-read host
+    // buffers on the normal AUTO policy, and let UMA fall back to its local heap.
+    if (impl_->memoryBudgetState->policy.enabled && desc.memoryLocation == MemoryLocation::HostUpload &&
+            desc.usage == BufferUsageBits::TransferSource) {
+        allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+    }
+    const Result admitted = impl_->prepareBufferAllocationLocked(bufferInfo, allocationInfo, domain);
+    if (!admitted) { return admitted; }
+    VmaAllocationInfo allocatedInfo{};
     const VkResult result = vmaCreateBuffer(
         impl_->allocator,
         &bufferInfo,
         &allocationInfo,
         &buffer,
         &allocation,
-        nullptr);
+        &allocatedInfo);
     if (result != VK_SUCCESS) {
         spdlog::error(
             "[Vulkan] vmaCreateBuffer failed VkResult={} size={} usage=0x{:x} memoryLocation={} queueFamilyCount={}",
@@ -8855,8 +9082,12 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
     auto bufferImpl = std::make_unique<detail::BufferImpl>();
     bufferImpl->device = impl_.get();
     bufferImpl->desc = desc;
+    bufferImpl->desc.memoryDomain = domain;
     bufferImpl->buffer = buffer;
     bufferImpl->allocation = allocation;
+    bufferImpl->allocationBytes = allocatedInfo.size;
+    bufferImpl->deviceLocal = (impl_->memoryProperties.memoryHeaps[impl_->memoryProperties.memoryTypes[allocatedInfo.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+    impl_->trackMemoryLocked(domain, allocatedInfo.size, bufferImpl->deviceLocal, true);
     outBuffer.reset(new Buffer(std::move(bufferImpl)));
     return {};
 }
@@ -8989,6 +9220,19 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     VmaAllocationInfo allocatedInfo{};
     VkImage image = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
+    if (size_t(desc.memoryDomain) >= size_t(MemoryBudgetDomain::Count)) { return makeError(Error::InvalidArgument); }
+    const auto domain = desc.memoryDomain != MemoryBudgetDomain::Other ? desc.memoryDomain :
+        MemoryBudgetDomain::FrameResources;
+    std::unique_lock budgetLock(impl_->memoryBudgetState->mutex);
+    uint32_t memoryType = 0;
+    VkResult typeResult = vmaFindMemoryTypeIndexForImageInfo(impl_->allocator, &imageInfo, &allocationInfo, &memoryType);
+    if (typeResult != VK_SUCCESS) { return resultFromVk(typeResult); }
+    VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+    const VkDeviceImageMemoryRequirements request{.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS, .pCreateInfo = &imageInfo};
+    vkGetDeviceImageMemoryRequirements(impl_->device, &request, &requirements);
+    if (!impl_->admitMemoryLocked(memoryType, requirements.memoryRequirements.size, domain)) { return makeError(Error::OutOfMemory); }
+    allocationInfo.memoryTypeBits = 1u << memoryType;
+    if (impl_->memoryBudgetState->policy.enabled) { allocationInfo.flags |= VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT; }
     const VkResult result = vmaCreateImage(
         impl_->allocator,
         &imageInfo,
@@ -9003,6 +9247,7 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     auto textureImpl = std::make_unique<detail::TextureImpl>();
     textureImpl->device = impl_.get();
     textureImpl->desc = desc;
+    textureImpl->desc.memoryDomain = domain;
     textureImpl->image = image;
     textureImpl->memory = allocatedInfo.deviceMemory;
     textureImpl->allocation = allocation;
@@ -9010,6 +9255,8 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     textureImpl->usage = imageInfo.usage;
     textureImpl->ownsImage = true;
     textureImpl->allocationSize = allocatedInfo.size;
+    textureImpl->deviceLocal = (impl_->memoryProperties.memoryHeaps[impl_->memoryProperties.memoryTypes[allocatedInfo.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+    impl_->trackMemoryLocked(domain, allocatedInfo.size, textureImpl->deviceLocal, true);
     outTexture.reset(new Texture(std::move(textureImpl)));
     return {};
 }
@@ -10332,6 +10579,14 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     VulkanEnabledFeatureChain enabledFeatureChain(selectedFeatures);
     std::vector<const char*> deviceExtensions = enabledDeviceExtensions(selectedFeatures);
     const VulkanExtensionSet selectedDeviceExtensions = VulkanExtensionSet::query(deviceImpl->physicalDevice);
+    deviceImpl->memoryBudgetExtension = selectedDeviceExtensions.has(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    if (deviceImpl->memoryBudgetExtension && std::none_of(deviceExtensions.begin(), deviceExtensions.end(), [](const char* name) {
+            return std::strcmp(name, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0;
+        })) {
+        deviceExtensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    }
+    vkGetPhysicalDeviceMemoryProperties(deviceImpl->physicalDevice, &deviceImpl->memoryProperties);
+    deviceImpl->memoryBudgetState->policy = desc.memoryBudget;
 #if defined(VK_NV_low_latency2) && defined(VK_KHR_present_id)
     // Streamline's Reflex plugin can inject low_latency2 into vkCreateDevice.
     // Supply its present-id dependency when the adapter exposes that extension.
@@ -10589,6 +10844,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     allocatorInfo.vulkanApiVersion = kVulkanApiVersion;
     // Vulkan 1.4 exposes usage2; tell VMA to inspect it instead of legacy usage.
     allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_KHR_MAINTENANCE5_BIT;
+    if (deviceImpl->memoryBudgetExtension) { allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT; }
     if (deviceImpl->bufferDeviceAddressEnabled) {
         allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     }

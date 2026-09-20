@@ -725,6 +725,7 @@ Result createMaterialTexture(
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
+            .memoryDomain = MemoryBudgetDomain::MaterialTextures,
         },
         outTexture.texture);
     if (!result || outTexture.texture == nullptr) {
@@ -1631,6 +1632,7 @@ struct ScenePathTraceResources::Impl {
                 uploadStats.submittedBytes, uploadBatches.size(), kMaxUploadBatchesInFlight,
                 uploadStats.ktx.openMs, uploadStats.ktx.readMs, uploadStats.ktx.decodeMs);
             lastUploadProgress = SceneResourceLogClock::now();
+            device.logMemoryBudget("texture upload progress");
         }
         return {};
     }
@@ -1686,6 +1688,7 @@ struct ScenePathTraceResources::Impl {
         if (uploadProfileReported) { return; }
         uploadProfileReported = true;
         uploadStats.textureWallMs = sceneResourceElapsedMilliseconds(textureLoadBegin);
+        if (device) { device->logMemoryBudget("texture uploads completed"); }
         spdlog::info("[SceneResources] Upload profile wall={:.2f} header={:.2f} plan={:.2f} build={:.2f} open={:.2f} read={:.2f} decode={:.2f} image={:.2f} staging={:.2f} memcpy={:.2f} flush={:.2f} ms",
             uploadStats.textureWallMs, uploadStats.textureHeaderMs, uploadStats.texturePlanMs, uploadStats.textureBuildMs,
             uploadStats.ktx.openMs, uploadStats.ktx.readMs, uploadStats.ktx.decodeMs, uploadStats.imageCreateMs,
@@ -1720,6 +1723,7 @@ struct ScenePathTraceResources::Impl {
     {
         auto phaseBegin = SceneResourceLogClock::now();
         textureStats = {};
+        device.logMemoryBudget("texture planning");
         ktxImages.clear(); ktxImages.resize(scene.images().size());
         ktxFirstMips.assign(scene.images().size(),0);
         const auto referenced = referencedMaterialTextures(scene);
@@ -1764,6 +1768,20 @@ struct ScenePathTraceResources::Impl {
         }
         uploadStats.textureHeaderMs += sceneResourceElapsedMilliseconds(phaseBegin);
         UploadCpuTimer planTimer{uploadStats.texturePlanMs};
+        const auto sharedBudget = device.memoryBudget();
+        // Dedicated images consume more driver heap space than the sum of
+        // VkMemoryRequirements (observed with thousands of small BC tails).
+        // Keep this conservative allowance separate from actual image bytes.
+        const uint64_t imageCount = uint64_t(textureStats.ktxImageCount) + 1;
+        const uint64_t overheadPerImage = sharedBudget.policy.enabled ? sharedBudget.policy.materialImageOverheadBytes : 0;
+        const uint64_t heapOverhead = overheadPerImage > UINT64_MAX / imageCount
+            ? UINT64_MAX : overheadPerImage * imageCount;
+        const uint64_t textureAvailable = sharedBudget.availableBytes - std::min(sharedBudget.availableBytes, heapOverhead);
+        const uint64_t effectiveBudget = sharedBudget.policy.enabled
+            ? std::min(textureBudgetBytes, textureAvailable) : textureBudgetBytes;
+        textureStats.configuredBudgetBytes = textureBudgetBytes;
+        textureStats.sharedAvailableBytes = sharedBudget.availableBytes;
+        textureStats.plannedHeapOverheadBytes = heapOverhead;
         const TextureDesc fallback{.usage=TextureUsageBits::Sampled|TextureUsageBits::TransferDestination,
             .format=Format::Rgba8Unorm,.queueAccess=QueueAccessBits::Graphics|QueueAccessBits::Copy};
         uint64_t fallbackBytes = 0;
@@ -1781,16 +1799,24 @@ struct ScenePathTraceResources::Impl {
                 if (!result) { log = "Unsupported texture allocation: " + info.path.string(); return result; }
                 allocation += bytes; payload += info.tailBytes(first); ktxFirstMips[i] = first;
             }
-            if (allocation <= textureBudgetBytes) {
+            if (allocation <= effectiveBudget) {
                 textureStats.plannedAllocationBytes = allocation; textureStats.plannedPayloadBytes = payload;
-                textureStats.selectedMaxDimension = cap; textureStats.budgetBytes = textureBudgetBytes; break;
+                textureStats.selectedMaxDimension = cap; textureStats.budgetBytes = effectiveBudget; break;
             }
-            if (cap == 1) { log = "Material texture budget cannot hold minimum mip tails"; return makeError(Error::OutOfMemory); }
+            if (cap == 1) {
+                log = "Unified GPU / material texture budget cannot hold minimum mip tails: required=" +
+                    std::to_string(allocation) + " available=" + std::to_string(effectiveBudget);
+                return makeError(Error::OutOfMemory);
+            }
             cap = std::max(cap/2,1u);
         }
         spdlog::info("[SceneTextures] logical={} KTX2={} MIME-mismatch={} cap={} payload={} allocation={} budget={}",
             textureStats.logicalTextureCount,textureStats.ktxImageCount,textureStats.mimeMismatchCount,
-            textureStats.selectedMaxDimension,textureStats.plannedPayloadBytes,textureStats.plannedAllocationBytes,textureBudgetBytes);
+            textureStats.selectedMaxDimension,textureStats.plannedPayloadBytes,textureStats.plannedAllocationBytes,effectiveBudget);
+        if (effectiveBudget < textureBudgetBytes) {
+            spdlog::info("[SceneTextures] Unified budget limits textures configured={} available={} imageHeapAllowance={} effective={} selectedCap={}",
+                textureBudgetBytes, sharedBudget.availableBytes, heapOverhead, effectiveBudget, cap);
+        }
         return {};
     }
 

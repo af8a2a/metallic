@@ -35,6 +35,7 @@ Result createClasBuffer(
             .size = size,
             .usage = usage,
             .memoryLocation = location,
+            .memoryDomain = MemoryBudgetDomain::ClasScratch,
         },
         outBuffer);
     if (!result || outBuffer == nullptr) {

@@ -75,10 +75,12 @@ struct MeshletStreamCompactClasPool::Impl {
     // Shared with cancellation callbacks; never capture a pool's lifetime.
     std::shared_ptr<Publications> publications = std::make_shared<Publications>();
 
-    Result buffer(uint64_t bytes, MemoryLocation location, std::unique_ptr<Buffer>& output)
+    Result buffer(uint64_t bytes, MemoryLocation location, std::unique_ptr<Buffer>& output,
+        MemoryBudgetDomain domain = MemoryBudgetDomain::ClasScratch)
     {
         return device->createBuffer(
-            {.size = std::max(bytes, uint64_t(8)), .usage = kCompactBufferUsage, .memoryLocation = location}, output);
+            {.size = std::max(bytes, uint64_t(8)), .usage = kCompactBufferUsage, .memoryLocation = location,
+                .memoryDomain = domain}, output);
     }
     void publish(uint32_t id, const Page* page, bool orderedMove = false)
     {
@@ -306,7 +308,7 @@ Result MeshletStreamCompactClasPool::initialize(Device& device, const MeshletStr
     }
     // MOVE_OBJECTS uses updateScratchSize; buildScratchSize may be zero.
     // Keep the alignment padding inside the allocation as for triangle builds.
-    if (!(result = p.buffer(capacity, MemoryLocation::Device, p.storageBuffer)) ||
+    if (!(result = p.buffer(capacity, MemoryLocation::Device, p.storageBuffer, MemoryBudgetDomain::Clas)) ||
         !(result = p.buffer(move.updateScratchSize + properties.scratchAlignment, MemoryLocation::Device, p.scratch)) ||
         !(result = p.buffer(slots * 8, MemoryLocation::HostUpload, p.addresses)) ||
         !(result = p.buffer(uint64_t(p.asset->pageCount()) * 4, MemoryLocation::HostUpload, p.pageTable))) {

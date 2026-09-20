@@ -337,6 +337,58 @@ struct ValidationSink {
     void* context = nullptr;
 };
 
+enum class MemoryBudgetDomain : uint8_t {
+    Other, Geometry, Clas, ClasScratch, RayTracing, MaterialTextures, FrameResources, Upload, Count
+};
+struct MemoryBudgetPolicy {
+    bool enabled = false;
+    uint64_t safetyBytes = 256ull * 1024 * 1024;
+    uint64_t graphReserveBytes = 256ull * 1024 * 1024;
+    uint64_t externalFeatureReserveBytes = 512ull * 1024 * 1024;
+    // Planning allowance for driver/OS overhead of each dedicated material
+    // image, in addition to its Vulkan memory requirement. Not a heap guarantee.
+    uint64_t materialImageOverheadBytes = 64ull * 1024;
+    // Optional per-device-local-heap ceiling, also useful for reproducible pressure tests.
+    uint64_t deviceLocalHeapLimitBytes = 0;
+};
+struct MemoryHeapBudget {
+    uint64_t sizeBytes = 0, budgetBytes = 0, usageBytes = 0;
+    uint64_t blockBytes = 0, allocationBytes = 0;
+    uint32_t blockCount = 0, allocationCount = 0;
+    bool deviceLocal = false;
+};
+struct MemoryDomainBudget {
+    uint64_t allocationBytes = 0, peakAllocationBytes = 0;
+    uint64_t deviceLocalBytes = 0, allocationCount = 0;
+};
+struct DeviceMemoryBudget {
+    std::vector<MemoryHeapBudget> heaps;
+    std::array<MemoryDomainBudget, size_t(MemoryBudgetDomain::Count)> domains{};
+    MemoryBudgetPolicy policy;
+    uint32_t primaryDeviceLocalHeap = UINT32_MAX;
+    bool driverBudget = false;
+    uint64_t reservedBytes = 0, deniedAllocations = 0;
+    uint64_t availableBytes = 0;
+};
+namespace detail { struct MemoryBudgetState; }
+// A promise for not-yet-created resources. Release before spending it; live
+// allocations are already included in heap usage. Safe to outlive the device.
+class MemoryBudgetReservation {
+public:
+    MemoryBudgetReservation() = default;
+    ~MemoryBudgetReservation();
+    MemoryBudgetReservation(MemoryBudgetReservation&&) noexcept;
+    MemoryBudgetReservation& operator=(MemoryBudgetReservation&&) noexcept;
+    MemoryBudgetReservation(const MemoryBudgetReservation&) = delete;
+    MemoryBudgetReservation& operator=(const MemoryBudgetReservation&) = delete;
+    void reset();
+    explicit operator bool() const { return bytes_ != 0; }
+private:
+    std::shared_ptr<detail::MemoryBudgetState> state_;
+    uint64_t bytes_ = 0;
+    friend class Device;
+};
+
 struct DeviceDesc {
     const char* applicationName = "Metallic";
     bool enableValidation = false;
@@ -369,6 +421,7 @@ struct DeviceDesc {
     bool enableAsyncCompute = false;
     // Optional: unsupported devices keep ordinary command recording.
     bool enableDeviceGeneratedCommands = true;
+    MemoryBudgetPolicy memoryBudget;
 };
 
 struct DeviceCapabilities {
@@ -426,6 +479,7 @@ struct BufferDesc {
     BufferUsageBits usage = BufferUsageBits::None;
     MemoryLocation memoryLocation = MemoryLocation::Device;
     QueueAccessBits queueAccess = QueueAccessBits::Graphics;
+    MemoryBudgetDomain memoryDomain = MemoryBudgetDomain::Other;
 };
 
 enum class BufferViewType : uint8_t {
@@ -454,6 +508,7 @@ struct TextureDesc {
     uint32_t layerCount = 1;
     MemoryLocation memoryLocation = MemoryLocation::Device;
     QueueAccessBits queueAccess = QueueAccessBits::Graphics;
+    MemoryBudgetDomain memoryDomain = MemoryBudgetDomain::Other;
 };
 
 struct TextureViewDesc {
@@ -2018,6 +2073,10 @@ public:
     Device& operator=(const Device&) = delete;
 
     const DeviceCapabilities& capabilities() const;
+    DeviceMemoryBudget memoryBudget() const;
+    void setMemoryBudgetPolicy(const MemoryBudgetPolicy& policy);
+    Result reserveMemoryBudget(uint64_t bytes, MemoryBudgetReservation& reservation);
+    void logMemoryBudget(const char* phase) const;
     Queue* getQueue(QueueType type, uint32_t indwriteStorageBufferex = 0);
     Result waitIdle();
     Result createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapchain>& outSwapchain);

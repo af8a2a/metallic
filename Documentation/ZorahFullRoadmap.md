@@ -8,6 +8,10 @@
 
 ## 结论
 
+2026-09-20 T0 已实现统一 heap 预算、资源分域记账、图/DLSS 预留和纹理预算降档。两档 Full 全量纹理压力验证通过；实现、数据与尚未完成的边界见 [统一预算验收](ZorahFullUnifiedMemoryBudget.md)。
+
+2026-09-20 13:07 日志后优先级更新：纹理并行已生效，但 image 创建和上传背压在预算压力下占主导。下一批建议 **T0 共享显存预算＋T1 首帧 mip 驻留/小纹理分配**，随后按视图需求升级与冷回收；定量方案见 [贴图驻留调研](ZorahFullTextureResidencyPlan.md)。
+
 2026-09-20 上传进展：U0＋U1 后已接入有界并行 header/纹理预取；默认 4 worker，Full 预热纹理阶段中位数约 1.10 秒，见 [实现与基准](ZorahFullBoundedTextureUpload.md)。这不代表完整编辑器首帧或 DLSS 加载问题已解决。
 
 最新执行优先级：先推进 [材质上传专项 U0–U4](ZorahFullTextureUploadPlan.md)，重点为逐 mip 文件/解码器重复创建、120-region 小批次、同步等待与有界并行；不改变 512 cap 或材质质量来换取加载时间。

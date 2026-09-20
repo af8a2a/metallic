@@ -6117,6 +6117,18 @@ public:
     {
         registerTestPass();
 
+        const auto initialBudget = context.device.memoryBudget();
+        struct RestoreBudget {
+            render::Device& device;
+            render::MemoryBudgetPolicy policy;
+            ~RestoreBudget() { device.setMemoryBudgetPolicy(policy); }
+        } restoreBudget{context.device, initialBudget.policy};
+        auto policy = initialBudget.policy;
+        policy.enabled = true;
+        policy.safetyBytes = 8ull * 1024 * 1024;
+        policy.graphReserveBytes = 8ull * 1024 * 1024;
+        context.device.setMemoryBudgetPolicy(policy);
+
         render::RenderGraph graph;
         graph.setName("ResizeReuse");
         render::RenderGraphNode* node = graph.addNode("TestResizeCompilePass", "Resize");
@@ -6174,6 +6186,23 @@ public:
             return RhiTestResult::fail(
                 std::string("static property change did not force full pass compile; compile count is ") +
                 std::to_string(compileCount));
+        }
+
+        if (context.device.memoryBudget().reservedBytes != initialBudget.reservedBytes) {
+            return RhiTestResult::fail("Compile/resize leaked graph budget reservations");
+        }
+        policy.graphReserveBytes = UINT64_MAX;
+        context.device.setMemoryBudgetPolicy(policy);
+        result = executor.compile(context.device, graph, 128, 96, log);
+        if (!render::hasError(result, render::Error::OutOfMemory) ||
+                context.device.memoryBudget().reservedBytes != initialBudget.reservedBytes) {
+            return RhiTestResult::fail("Failed graph budget preflight did not release reservations");
+        }
+        policy.graphReserveBytes = 8ull * 1024 * 1024;
+        context.device.setMemoryBudgetPolicy(policy);
+        result = executor.compile(context.device, graph, 128, 96, log);
+        if (!result || context.device.memoryBudget().reservedBytes != initialBudget.reservedBytes) {
+            return RhiTestResult::fail("Graph could not recover after budget preflight failure: " + log);
         }
 
         return RhiTestResult::pass();

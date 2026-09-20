@@ -2416,6 +2416,7 @@ bool EditorApplication::initializeRhi()
                 .enableAftermath = !smokeTest_ || environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH"),
                 .validationSink = debugRuntime_ ? debugRuntime_->validationSink() : render::ValidationSink{},
                 .enableAsyncCompute = true,
+                .memoryBudget = {.enabled = gpuDrivenScenesOnly_},
             },
             device_);
     }

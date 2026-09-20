@@ -19,6 +19,8 @@ struct SceneTextureStats {
     uint32_t residentImageCount = 0, selectedMaxDimension = 0;
     uint64_t budgetBytes = 0, plannedPayloadBytes = 0, plannedAllocationBytes = 0;
     uint64_t residentPayloadBytes = 0, residentAllocationBytes = 0, peakStagingBytes = 0;
+    uint64_t configuredBudgetBytes = 0, sharedAvailableBytes = 0;
+    uint64_t plannedHeapOverheadBytes = 0;
 };
 
 struct SceneTextureLoadTiming {

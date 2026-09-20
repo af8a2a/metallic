@@ -67,7 +67,8 @@ TextureDesc Ktx2TextureInfo::textureDesc(uint32_t firstMip) const
             .width = std::max(width >> firstMip, 1u),
             .height = std::max(height >> firstMip, 1u),
             .mipCount = uint32_t(levels.size()) - firstMip,
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy};
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
+            .memoryDomain = MemoryBudgetDomain::MaterialTextures};
 }
 
 bool readKtx2TextureInfo(const std::filesystem::path& path, Ktx2TextureInfo& info, std::string& reason)

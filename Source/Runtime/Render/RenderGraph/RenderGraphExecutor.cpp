@@ -330,6 +330,7 @@ struct RenderGraphExecutor::Impl {
     static constexpr uint32_t kGpuTimingSlotCount = 3;
 
     Device* device = nullptr;
+    std::unordered_map<std::string, MemoryBudgetReservation> firstFeatureReservations;
     uint32_t width = 0;
     uint32_t height = 0;
     Format defaultFormat = Format::Rgba8Unorm;
@@ -1824,7 +1825,14 @@ struct RenderGraphExecutor::Impl {
         };
         context.streamingProfile_ = [&](SceneStreamingProfile sample) { lastExecutionStats.streaming.push_back(std::move(sample)); };
         const auto cpuBegin = std::chrono::steady_clock::now();
+        const auto featureReservation = firstFeatureReservations.find(node.name);
+        const bool firstFeature = featureReservation != firstFeatureReservations.end() && bool(featureReservation->second);
+        if (firstFeature) { device->logMemoryBudget("before first external feature"); }
         Result result = node.pass->execute(context);
+        if (firstFeature) {
+            firstFeatureReservations.erase(featureReservation);
+            device->logMemoryBudget("after first external feature");
+        }
         if (!result) {
             const auto& sections = lastExecutionStats.nodes[nodeIndex].sections;
             spdlog::error("[RenderGraph] Pass '{}' ({}) failed in '{}': {}", node.name, node.type,
@@ -1922,6 +1930,26 @@ Result RenderGraphExecutor::compile(
         impl_->isCompiled = false;
         return pendingResult;
     }
+
+    impl_->firstFeatureReservations.clear();
+    device.logMemoryBudget("graph load / previous work complete");
+    MemoryBudgetReservation graphReservation;
+    std::unordered_map<std::string, MemoryBudgetReservation> featureReservations;
+    const auto budgetPolicy = device.memoryBudget().policy;
+    Result budgetResult = device.reserveMemoryBudget(budgetPolicy.graphReserveBytes, graphReservation);
+    for (const auto& passName : activeGraph.executionOrder) {
+        const auto* node = graph.findNode(passName);
+        if (budgetResult && node && mergeRenderGraphProperties(node->properties, node->runtimeProperties).value("enabled", true) &&
+                (node->type == "StreamlineDlssSrPass" || node->type == "StreamlineDlssRrPass" || node->type == "DlssNrPass")) {
+            budgetResult = device.reserveMemoryBudget(budgetPolicy.externalFeatureReserveBytes, featureReservations[node->name]);
+        }
+    }
+    if (!budgetResult) {
+        log = "Unified GPU budget cannot reserve headroom for graph resources and external features";
+        impl_->isCompiled = false;
+        return budgetResult;
+    }
+    device.logMemoryBudget("graph load / headroom reserved");
 
     if (impl_->device != nullptr && impl_->device != &device) {
         impl_->tracyGpuProfiler = {};
@@ -2068,6 +2096,7 @@ Result RenderGraphExecutor::compile(
         }
 
         Result resourceResult;
+        graphReservation.reset();
         {
             RenderGraphLogScope scope("rebuild graph resources");
             resourceResult = impl_->rebuildGraphResources(device, graph, activeGraph, options, log);
@@ -2079,6 +2108,8 @@ Result RenderGraphExecutor::compile(
         impl_->sceneBindingsReady = true;
         impl_->isCompiled = true;
         log = dimensionsChanged ? "RenderGraph resized" : "RenderGraph resources rebuilt";
+        impl_->firstFeatureReservations = std::move(featureReservations);
+        device.logMemoryBudget("graph rebuilt / external feature pending");
         impl_->publishDebugGraph(graph);
         return {};
     }
@@ -2088,6 +2119,7 @@ Result RenderGraphExecutor::compile(
     impl_->inputAliases.clear();
     impl_->bindlessHeap.reset();
     impl_->isCompiled = false;
+    device.logMemoryBudget("graph load / previous graph resources released");
 
     for (const std::string& passName : activeGraph.executionOrder) {
         const RenderGraphNode* node = graph.findNode(passName);
@@ -2150,6 +2182,7 @@ Result RenderGraphExecutor::compile(
     }
 
     Result resourceResult;
+    graphReservation.reset(); // Spend the graph promise; newly created resources enter heap usage.
     {
         RenderGraphLogScope scope("allocate graph resources");
         resourceResult = impl_->allocateGraphResources(
@@ -2168,6 +2201,8 @@ Result RenderGraphExecutor::compile(
     impl_->initializeGpuTiming(device);
     impl_->sceneBindingsReady = true;
     impl_->isCompiled = true;
+    impl_->firstFeatureReservations = std::move(featureReservations);
+    device.logMemoryBudget("graph compiled / external feature pending");
     log = "RenderGraph compiled";
     impl_->publishDebugGraph(graph);
     return {};

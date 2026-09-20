@@ -212,6 +212,8 @@ Json statsJson(const ScenePathTraceResources& resources)
             {"descriptorCount", resources.materialTextureCount()},
             {"selectedMaxDimension", s.selectedMaxDimension},
             {"budgetBytes", s.budgetBytes},
+            {"configuredBudgetBytes", s.configuredBudgetBytes}, {"sharedAvailableBytes", s.sharedAvailableBytes},
+            {"plannedHeapOverheadBytes", s.plannedHeapOverheadBytes},
             {"plannedPayloadBytes", s.plannedPayloadBytes},
             {"plannedAllocationBytes", s.plannedAllocationBytes},
             {"residentPayloadBytes", s.residentPayloadBytes},
@@ -508,6 +510,24 @@ class ZorahTextureResourcesTest final : public RhiTest {
         scene::Scene scene;
         require(scene.loadStreamMetadata(path), scene.lastLoadResult().error);
         ScenePathTraceResources resources;
+        const auto initialBudget = context.device.memoryBudget();
+        struct RestorePolicy {
+            Device& device;
+            MemoryBudgetPolicy policy;
+            ~RestorePolicy() { device.setMemoryBudgetPolicy(policy); }
+        } restore{context.device, initialBudget.policy};
+        MemoryBudgetReservation futureResources;
+        if (const char* testLimit = std::getenv("METALLIC_TEST_TEXTURE_SHARED_MIB")) {
+            auto policy = initialBudget.policy;
+            policy.enabled = true;
+            policy.safetyBytes = 64ull * 1024 * 1024;
+            const auto heap = initialBudget.primaryDeviceLocalHeap;
+            require(heap != UINT32_MAX, "No device-local heap for budget test");
+            policy.deviceLocalHeapLimitBytes = initialBudget.heaps[heap].usageBytes +
+                uint64_t(std::max(1, std::atoi(testLimit))) * 1024 * 1024 + policy.safetyBytes;
+            context.device.setMemoryBudgetPolicy(policy);
+            require(context.device.reserveMemoryBudget(128ull * 1024 * 1024, futureResources), "Cannot reserve future feature budget");
+        }
         std::string log;
         require(resources.prepare(context.device, context.graphicsQueue,
                                   {{"path", path.string()},
@@ -522,7 +542,8 @@ class ZorahTextureResourcesTest final : public RhiTest {
                     resources.materialTextureCount() == 4419,
                 "Full texture references missing");
         require(resources.uploadStats().ktx.fileOpens == 4418 &&
-                    resources.uploadStats().ktx.decodedMips == 44140 &&
+                    resources.uploadStats().ktx.decodedMips == (resources.textureStats().selectedMaxDimension == 512 ? 44140 :
+                        resources.textureStats().selectedMaxDimension == 256 ? 39730 : 35319) &&
                     resources.uploadStats().ktx.decoderCreations >= 1 &&
                     resources.uploadStats().ktx.decoderCreations <= resources.uploadStats().prefetch.workers &&
                     resources.uploadStats().ktx.decodedBytes + 4 == stats.residentPayloadBytes,
@@ -530,8 +551,13 @@ class ZorahTextureResourcesTest final : public RhiTest {
         require(resources.uploadStats().prefetch.peakBytes <= resources.uploadStats().prefetch.byteLimit &&
                 resources.uploadStats().prefetch.peakJobs <= resources.uploadStats().prefetch.workers * 2,
                 "Full prefetch exceeded bounds");
-        require(stats.selectedMaxDimension == 512 && stats.residentAllocationBytes <= stats.budgetBytes,
+        require((stats.selectedMaxDimension == 512 || std::getenv("METALLIC_TEST_TEXTURE_SHARED_MIB")) &&
+                    stats.residentAllocationBytes <= stats.budgetBytes,
                 "Full 512 mip budget mismatch");
+        if (std::getenv("METALLIC_TEST_TEXTURE_SHARED_MIB")) {
+            require(stats.selectedMaxDimension < 512 && stats.budgetBytes < stats.configuredBudgetBytes,
+                "Shared budget did not reduce Full texture residency");
+        }
         require(resources.uploadStats().submittedBatches == resources.uploadStats().completedBatches,
                 "texture publication precedes completion");
         if (context.device.capabilities().independentCopyQueue) {
@@ -546,6 +572,15 @@ class ZorahTextureResourcesTest final : public RhiTest {
             require(std::isfinite(channel), "invalid last Full descriptor sample");
         }
         auto report = statsJson(resources);
+        const auto memory = context.device.memoryBudget();
+        if (memory.primaryDeviceLocalHeap != UINT32_MAX) {
+            const auto& heap = memory.heaps[memory.primaryDeviceLocalHeap];
+            report["localHeap"] = {{"usageBytes", heap.usageBytes}, {"budgetBytes", heap.budgetBytes},
+                {"blockBytes", heap.blockBytes}, {"allocationBytes", heap.allocationBytes},
+                {"reservedBytes", memory.reservedBytes}, {"safetyBytes", memory.policy.safetyBytes},
+                {"availableBytes", memory.availableBytes},
+                {"uploadLocalBytes", memory.domains[size_t(MemoryBudgetDomain::Upload)].deviceLocalBytes}};
+        }
         report["geometryPayloadRead"] = false;
         report["allMipTailsUploaded"] = true;
         report["lastDescriptorSample"] = pixel;
