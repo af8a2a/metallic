@@ -1082,6 +1082,7 @@ public:
             for (uint32_t binding = 62; binding <= 69; ++binding) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
+            baseBindings.push_back({.binding = 94, .kind = ComputeResourceBindingKind::StorageBuffer});
             for (uint32_t binding = 83; binding <= 87; ++binding) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
@@ -2030,6 +2031,7 @@ public:
                 bindings.push_back({.binding = 93, .buffer = deferredStream->activeHeaderBuffer});
             }
             Buffer* fallback = deferredViews->geometries.buffer;
+            bindings.push_back({.binding = 94, .buffer = deferredStream ? deferredStream->paramsBuffer : fallback});
             const std::array streamBuffers{
                 deferredStream ? deferredStream->visibleClusterBuffer : fallback,
                 deferredStream ? deferredStream->activeGroupBuffer : fallback,

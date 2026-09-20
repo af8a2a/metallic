@@ -652,6 +652,7 @@ public:
             compiledTessellationKey_ == tessellationKey() &&
             compiledTextureMaxDimension_ == properties().value("materialTextureMaxDimension", 512) &&
             compiledTextureBudgetMiB_ == properties().value("materialTextureBudgetMiB", 2048) &&
+            compiledTextureMaskMaxDimension_ == properties().value("materialTextureMaskMaxDimension", 0) &&
             compiledScene_ == runtimeScene &&
             sceneResourceIdentity_ == runtimeResourceIdentity &&
             sceneLifetimeRevision_ == runtimeLifetimeRevision &&
@@ -933,6 +934,7 @@ public:
         compiledTessellationKey_ = tessellationKey();
         compiledTextureMaxDimension_ = properties().value("materialTextureMaxDimension", 512);
         compiledTextureBudgetMiB_ = properties().value("materialTextureBudgetMiB", 2048);
+        compiledTextureMaskMaxDimension_ = properties().value("materialTextureMaskMaxDimension", 0);
         sceneResourceIdentity_ = runtimeResourceIdentity;
         sceneRevision_ = runtimeRevision;
         sceneVisibilityRevision_ = runtimeScene != nullptr ? runtimeScene->visibilityRevision() : 0;
@@ -4902,6 +4904,7 @@ private:
     std::string compiledTessellationKey_;
     int compiledTextureMaxDimension_ = 512;
     int compiledTextureBudgetMiB_ = 2048;
+    int compiledTextureMaskMaxDimension_ = 0;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer_;
     std::vector<GPUDrivenPreviewFrameSlotResources> frameSlotResources_;
     std::array<Buffer*, 2> hzbBuffers_{};

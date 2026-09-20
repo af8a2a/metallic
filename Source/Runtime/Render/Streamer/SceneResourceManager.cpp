@@ -35,7 +35,8 @@ std::string resourceKey(const std::filesystem::path& scenePath, const RenderGrap
 {
     return normalizedScenePath(scenePath).generic_string() + "#textures:" +
         std::to_string(properties.value("materialTextureMaxDimension",512)) + ":" +
-        std::to_string(properties.value("materialTextureBudgetMiB",2048));
+        std::to_string(properties.value("materialTextureBudgetMiB",2048)) + ":" +
+        std::to_string(properties.value("materialTextureMaskMaxDimension",0));
 }
 
 void stampSnapshot(

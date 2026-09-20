@@ -37,9 +37,9 @@ def main():
     graph['name'] = 'ZorahFull Streamed Realtime'
     for node in graph['nodes']:
         props = node['properties']
-        if node['name'] in ('VBuffer', 'Deferred'):
+        if node['name'] in ('VBuffer', 'Deferred', 'Shadows'):
             props.update(path=source.relative_to(ROOT).as_posix(),
-                         materialTextureMaxDimension=512, materialTextureBudgetMiB=2048)
+                         materialTextureMaxDimension=256, materialTextureMaskMaxDimension=512, materialTextureBudgetMiB=512)
         if node['name'] == 'VBuffer':
             props.update(streamAssetPath=Path(manifest['asset']).relative_to(ROOT).as_posix(),
                          maxResidentBytes=budget, maxClasBytes=args.clas_mib * 1024**2,

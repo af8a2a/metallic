@@ -114,7 +114,7 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     VisibleClusterRecord record;
     float3 a, b, c;
     if (!decodeStreamTriangle(recordIndex, triangleIndex, gStreamRecords, gStreamGroups,
-        gStreamPages, gStreamPageTable, record, a, b, c)) { return false; }
+        gStreamPages, gStreamPageTable, streamPageWordCount(getResource<ByteAddressBuffer>(94)), record, a, b, c)) { return false; }
     uint count, stride;
     gRasterInstances.GetDimensions(count, stride);
     if (record.instanceIndex >= count) { return false; }

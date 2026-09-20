@@ -1429,6 +1429,14 @@ struct RenderGraphExecutor::Impl {
         // is introduced beyond the caller's existing completion wait above.
         phase.next("drain.resolveTimings");
         (void)resolveGpuTimings();
+        // Completion alone does not release retained scene/stream owners. A
+        // graph switch must retire them before allocating the replacement graph,
+        // rather than waiting for begin() on a slot the new graph may never reach.
+        phase.next("drain.releaseResources");
+        for (const auto& slot : submissionSlots) {
+            Result result = slot->frame.reset();
+            if (!result) { return result; }
+        }
         return {};
     }
 

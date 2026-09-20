@@ -40,7 +40,7 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
     if (clusterStride == 0u) { return false; }
     uint pageIndex = clusterId / clusterStride, cluster = clusterId % clusterStride;
     float3 a, b, c;
-    if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, a, b, c)) { return false; }
+    if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, streamPageWordCount(getResource<ByteAddressBuffer>(94)), a, b, c)) { return false; }
     float3 n[3]; float2 uv[3]; float4 tangents[3];
     uint attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, n, uv, tangents);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);

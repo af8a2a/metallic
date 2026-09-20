@@ -48,7 +48,7 @@ bool decodeTriangle(uint id, MaterialPush push, out uint instanceId, out float3 
     } else {
         index -= push.residentCount;
         if (index >= push.streamCount) { return false; }
-        if (!decodeStreamTriangle(index, triangle, gStreamRecords, gGroups, gPages, gPageTable, record, a, b, c)) { return false; }
+        if (!decodeStreamTriangle(index, triangle, gStreamRecords, gGroups, gPages, gPageTable, streamPageWordCount(getResource<ByteAddressBuffer>(14)), record, a, b, c)) { return false; }
     }
     uint count, stride;
     gInstances.GetDimensions(count, stride);

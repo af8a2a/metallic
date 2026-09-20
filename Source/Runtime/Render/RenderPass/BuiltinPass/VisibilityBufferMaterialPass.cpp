@@ -56,7 +56,7 @@ public:
             .entryPointName = "visibilityBufferMaterialMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
         if (!result) { log = shader.diagnostics; return result; }
-        std::array<ComputeProgramBindingDesc, 14> bindings;
+        std::array<ComputeProgramBindingDesc, 15> bindings;
         for (uint32_t slot = 0; slot < bindings.size(); ++slot) {
             bindings[slot] = {.binding = slot, .kind = ComputeResourceBindingKind::StorageBuffer};
         }
@@ -111,6 +111,7 @@ public:
             {.binding = 11, .buffer = stream ? stream->activeGroupBuffer : fallback},
             {.binding = 12, .buffer = stream ? stream->pageBuffer : fallback},
             {.binding = 13, .buffer = stream ? stream->pageTableBuffer : fallback},
+            {.binding = 14, .buffer = stream ? stream->paramsBuffer : fallback},
         };
         struct Push { uint32_t width, height, residentCount, streamCount, mode; float eye[3]; };
         const auto mode = properties().value("visualization", "shaded");

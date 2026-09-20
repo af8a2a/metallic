@@ -211,6 +211,7 @@ Json statsJson(const ScenePathTraceResources& resources)
             {"residentImagesIncludingFallback", s.residentImageCount},
             {"descriptorCount", resources.materialTextureCount()},
             {"selectedMaxDimension", s.selectedMaxDimension},
+            {"maskImageCount", s.maskImageCount}, {"maskMaxDimension", s.maskMaxDimension},
             {"budgetBytes", s.budgetBytes},
             {"configuredBudgetBytes", s.configuredBudgetBytes}, {"sharedAvailableBytes", s.sharedAvailableBytes},
             {"plannedHeapOverheadBytes", s.plannedHeapOverheadBytes},
@@ -484,6 +485,49 @@ class KtxTextureResourcesTest final : public RhiTest {
         require(near(sampleTexture(context, *pressure->pathTraceResources, 1, 0, 0)[3], 77.f / 255),
                 "budgeted BC tail upload differs");
         report["budgetPressure"] = statsJson(*pressure->pathTraceResources);
+        // Same source image can be shared by opaque and MASK consumers. The
+        // strongest policy must win, and policy changes must not reuse stale owners.
+        Json maskDocument;
+        { std::ifstream input(path); input >> maskDocument; }
+        maskDocument["materials"][0]["alphaMode"] = "MASK";
+        const auto maskPath = directory / "mask.gltf";
+        { std::ofstream output(maskPath); output << maskDocument.dump(); }
+        scene::Scene maskScene;
+        require(maskScene.loadStreamMetadata(maskPath), maskScene.lastLoadResult().error);
+        RenderGraphProperties maskProps{{"path", maskPath.string()}, {"materialTextureMaxDimension", 1},
+            {"materialTextureMaskMaxDimension", 4}, {"materialTextureBudgetMiB", 16}};
+        std::shared_ptr<SceneResourceSnapshot> mask, maskSame, unprotected;
+        require(manager.acquire(context.device, context.graphicsQueue, maskProps, &maskScene, features, mask, log), log);
+        require(manager.acquire(context.device, context.graphicsQueue, maskProps, &maskScene, features, maskSame, log), log);
+        require(mask == maskSame, "MASK policy did not share its owner");
+        const auto& tails = mask->pathTraceResources->materialTextureFirstMips();
+        require(tails[299] == 1 && tails[0] == 2, "MASK floor or ordinary tail selection failed");
+        const auto protectedSample = sampleTexture(context, *mask->pathTraceResources, 300, 0, 1);
+        const auto referenceSample = sampleTexture(context, r, 300, 1, 1);
+        for (size_t i = 0; i < protectedSample.size(); ++i) {
+            require(near(protectedSample[i], referenceSample[i]), "MASK mip rebase changed GPU sampling");
+        }
+        maskProps["materialTextureMaskMaxDimension"] = 0;
+        require(manager.acquire(context.device, context.graphicsQueue, maskProps, &maskScene, features, unprotected, log), log);
+        require(mask != unprotected && unprotected->pathTraceResources->materialTextureFirstMips()[299] == 2,
+            "MASK floor change reused stale texture resources");
+        report["maskFloor"] = statsJson(*mask->pathTraceResources);
+        Json tooLarge;
+        { std::ifstream input(pressurePath); input >> tooLarge; }
+        for (uint32_t i = 0; i < 2; ++i) {
+            tooLarge["materials"][i]["alphaMode"] = "MASK";
+            tooLarge["materials"][i]["pbrMetallicRoughness"]["baseColorTexture"]["index"] = i;
+        }
+        const auto impossiblePath = pressureDirectory / "mask-too-large.gltf";
+        { std::ofstream output(impossiblePath); output << tooLarge.dump(); }
+        scene::Scene impossibleScene;
+        require(impossibleScene.loadStreamMetadata(impossiblePath), impossibleScene.lastLoadResult().error);
+        ScenePathTraceResources impossibleResources;
+        const auto impossible = impossibleResources.prepare(context.device, context.graphicsQueue,
+            {{"path", impossiblePath.string()}, {"materialTextureMaxDimension", 1},
+             {"materialTextureMaskMaxDimension", 1024}, {"materialTextureBudgetMiB", 1}}, &impossibleScene, log);
+        require(hasError(impossible, Error::OutOfMemory) && log.find("MASK quality floor") != std::string::npos &&
+            !impossibleResources.valid(), "Insufficient budget silently reduced the MASK quality floor");
         std::ofstream(directory / "validation.json") << report.dump(2);
         return RhiTestResult::pass(
             "BC4/5/7, swizzle, sRGB, NPOT/sub-block mips, Zstd, 300 logical textures and shared owners");
@@ -528,22 +572,31 @@ class ZorahTextureResourcesTest final : public RhiTest {
             context.device.setMemoryBudgetPolicy(policy);
             require(context.device.reserveMemoryBudget(128ull * 1024 * 1024, futureResources), "Cannot reserve future feature budget");
         }
+        const bool firstFrame = std::getenv("METALLIC_TEST_FIRST_FRAME_TEXTURES") != nullptr;
+        RenderGraphProperties textureProps{{"path", path.string()}, {"materialTextureMaxDimension", 512},
+            {"materialTextureBudgetMiB", 2048}};
+        if (firstFrame) {
+            Json graph;
+            std::ifstream input(PROJECT_SOURCE_DIR "/Pipelines/Samples/gpu_driven_zorah_full.metallic_graph.json");
+            input >> graph;
+            textureProps = graph["nodes"][0]["properties"];
+            for (const auto& node : graph["nodes"]) {
+                if (node["name"] != "Deferred" && node["name"] != "Shadows") { continue; }
+                for (const char* key : {"materialTextureMaxDimension", "materialTextureMaskMaxDimension", "materialTextureBudgetMiB"}) {
+                    require(node["properties"][key] == textureProps[key], "Full passes disagree on texture residency");
+                }
+            }
+        }
+        textureProps["materialTextureLoadWorkers"] = std::getenv("METALLIC_KTX_LOAD_WORKERS")
+            ? std::atoi(std::getenv("METALLIC_KTX_LOAD_WORKERS")) : 4;
         std::string log;
-        require(resources.prepare(context.device, context.graphicsQueue,
-                                  {{"path", path.string()},
-                                   {"materialTextureMaxDimension", 512},
-                                   {"materialTextureBudgetMiB", 2048},
-                                   {"materialTextureLoadWorkers", std::getenv("METALLIC_KTX_LOAD_WORKERS")
-                                       ? std::atoi(std::getenv("METALLIC_KTX_LOAD_WORKERS")) : 4}},
-                                  &scene, log),
-                log);
+        require(resources.prepare(context.device, context.graphicsQueue, textureProps, &scene, log), log);
         const auto stats = resources.textureStats();
         require(stats.logicalTextureCount == 4418 && stats.ktxImageCount == 4418 &&
                     resources.materialTextureCount() == 4419,
                 "Full texture references missing");
         require(resources.uploadStats().ktx.fileOpens == 4418 &&
-                    resources.uploadStats().ktx.decodedMips == (resources.textureStats().selectedMaxDimension == 512 ? 44140 :
-                        resources.textureStats().selectedMaxDimension == 256 ? 39730 : 35319) &&
+
                     resources.uploadStats().ktx.decoderCreations >= 1 &&
                     resources.uploadStats().ktx.decoderCreations <= resources.uploadStats().prefetch.workers &&
                     resources.uploadStats().ktx.decodedBytes + 4 == stats.residentPayloadBytes,
@@ -551,11 +604,30 @@ class ZorahTextureResourcesTest final : public RhiTest {
         require(resources.uploadStats().prefetch.peakBytes <= resources.uploadStats().prefetch.byteLimit &&
                 resources.uploadStats().prefetch.peakJobs <= resources.uploadStats().prefetch.workers * 2,
                 "Full prefetch exceeded bounds");
-        require((stats.selectedMaxDimension == 512 || std::getenv("METALLIC_TEST_TEXTURE_SHARED_MIB")) &&
+        std::vector<bool> masked(scene.images().size());
+        for (const auto& material : scene.materials()) {
+            const auto t = material.baseColorTexture.textureIndex;
+            if (material.alphaMode == "MASK" && t >= 0) { masked[scene.textures()[t].imageIndex] = true; }
+        }
+        uint64_t expectedMips = 0;
+        for (size_t i = 0; i < scene.images().size(); ++i) {
+            Ktx2TextureInfo info;
+            require(readKtx2TextureInfo(path.parent_path() / scene.images()[i].uri, info, log), log);
+            const uint32_t cap = firstFrame && masked[i] ? std::max(512u, stats.selectedMaxDimension) : stats.selectedMaxDimension;
+            const auto first = info.firstMipForDimension(cap);
+            require(resources.materialTextureFirstMips()[i] == first, "Full per-image tail policy differs");
+            expectedMips += info.levels.size() - first;
+        }
+        require(resources.uploadStats().ktx.decodedMips == expectedMips, "Full selected mip count differs");
+        if (firstFrame) {
+            require(stats.maskImageCount == 110 && stats.maskMaxDimension == 512 && stats.selectedMaxDimension <= 256,
+                "Full first-frame MASK floor or ordinary cap differs");
+        }
+        require((firstFrame || stats.selectedMaxDimension == 512 || std::getenv("METALLIC_TEST_TEXTURE_SHARED_MIB")) &&
                     stats.residentAllocationBytes <= stats.budgetBytes,
                 "Full 512 mip budget mismatch");
         if (std::getenv("METALLIC_TEST_TEXTURE_SHARED_MIB")) {
-            require(stats.selectedMaxDimension < 512 && stats.budgetBytes < stats.configuredBudgetBytes,
+            require(stats.selectedMaxDimension < 512 && (firstFrame || stats.budgetBytes < stats.configuredBudgetBytes),
                 "Shared budget did not reduce Full texture residency");
         }
         require(resources.uploadStats().submittedBatches == resources.uploadStats().completedBatches,
@@ -577,6 +649,7 @@ class ZorahTextureResourcesTest final : public RhiTest {
             const auto& heap = memory.heaps[memory.primaryDeviceLocalHeap];
             report["localHeap"] = {{"usageBytes", heap.usageBytes}, {"budgetBytes", heap.budgetBytes},
                 {"blockBytes", heap.blockBytes}, {"allocationBytes", heap.allocationBytes},
+                {"blockCount", heap.blockCount}, {"allocationCount", heap.allocationCount},
                 {"reservedBytes", memory.reservedBytes}, {"safetyBytes", memory.policy.safetyBytes},
                 {"availableBytes", memory.availableBytes},
                 {"uploadLocalBytes", memory.domains[size_t(MemoryBudgetDomain::Upload)].deviceLocalBytes}};

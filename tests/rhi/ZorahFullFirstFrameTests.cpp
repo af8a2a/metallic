@@ -34,7 +34,7 @@ public:
         const auto directory = std::filesystem::absolute(context.outputDirectory);
         std::filesystem::create_directories(directory);
         Json report{{"status", "running"}, {"protocol", "zorah-full-first-frame-v1"},
-            {"width", 960}, {"height", 540}, {"dlss", false}, {"validation",context.enableValidation},
+            {"width", 960}, {"height", 540}, {"dlss", false}, {"switchFromMiniZorah", true}, {"validation",context.enableValidation},
             {"skipMeshesApplied", false}, {"runs", Json::array()}};
         const auto save = [&]() { std::ofstream(directory / "ZorahFullFirstFrame.json") << report.dump(2) << '\n'; };
         save();
@@ -44,6 +44,7 @@ public:
             requireFull(loadBuiltInRenderSample(kGPUDrivenZorahFullSampleId, sample, log), log);
             requireFull(!sample.desc.loadSceneInEditor, "Full sample must bypass resident import");
             auto graph = sample.graph;
+            graph.markOutput("VBuffer.color");
             // Headless evidence uses native resolution. The interactive sample
             // retains DLSS-SR; its timing is not compared to this readback run.
             graph.removeNode(graph.findNode("DlssSr")->id);
@@ -68,8 +69,30 @@ public:
             RenderGraphPreviewRenderer preview;
             const auto deviceStarted = Clock::now();
             requireFull(bool(preview.initialize(context.enableValidation, true, false)), preview.lastLog());
+            RenderGraph warmup;
+            warmup.addNode("FinalBlitPass", "Warmup"); warmup.markOutput("Warmup.color");
+            requireFull(bool(preview.render(warmup, 32, 32, "Warmup.color")), preview.lastLog());
+            auto* budgetDevice = preview.subsystemHost()->device();
+            auto budgetPolicy = budgetDevice->memoryBudget().policy;
+            budgetPolicy.enabled = true;
+            budgetDevice->setMemoryBudgetPolicy(budgetPolicy);
             report["deviceInitializeSeconds"] = std::chrono::duration<double>(Clock::now()-deviceStarted).count();
             for (uint32_t cycle = 0; cycle < cycles; ++cycle) {
+                // Populate the executor-owned queued frame slots with MiniZorah
+                // before Full. A readback-only warmup does not cover editor switches.
+                RenderSampleLoadResult mini;
+                requireFull(loadBuiltInRenderSample(kDefaultGPUDrivenSampleId, mini, log), log);
+                mini.graph.removeNode(mini.graph.findNode("DlssSr")->id);
+                mini.graph.removeNode(mini.graph.findNode("DlssNr")->id);
+                mini.graph.addEdge("Deferred.color", "AutoExposure.source");
+                mini.graph.addEdge("AutoExposure.color", "FinalBlit.source");
+                preview.bindRuntimeScene(nullptr);
+                for (uint32_t frame = 0; frame < 8; ++frame) {
+                    requireFull(bool(preview.render(mini.graph,960,540,mini.desc.previewOutput,false)),preview.lastLog());
+                }
+                requireFull(preview.subsystemHost()->get<StreamerSubsystem>()->streamCount()==1,
+                    "MiniZorah warmup did not retain exactly one stream");
+                graph.markDirty();
                 const auto started = Clock::now();
                 const auto elapsed = [&]() { return std::chrono::duration<double>(Clock::now()-started).count(); };
                 requireFull(scene.loadStreamMetadata(source), scene.lastLoadResult().error);
@@ -85,7 +108,7 @@ public:
                 Json run{{"metadataSeconds",elapsed()}, {"cycle",cycle},
                     {"sceneBinding",worldBinding ? "world" : "asset"}, {"frames",Json::array()}};
                 preview.setEnvironment({.enabled=true,
-                    .path=std::filesystem::path(PROJECT_SOURCE_DIR)/sample.desc.environment->path});
+                    .path=std::filesystem::path(PROJECT_SOURCE_DIR)/sample.desc.environment->path, .visible=false});
                 scene::LightingSettings lighting;
                 lighting.autoExposure.enabled = false; lighting.exposureEV100 = 2;
                 scene::PunctualLight sun;
@@ -99,7 +122,7 @@ public:
                     requireFull(saveRgba8Png(directory / (name+"-"+std::to_string(cycle)+".png"),
                         reinterpret_cast<const uint8_t*>(preview.pixels().data()),960,540,log),log);
                     const std::set<uint32_t> colors(preview.pixels().begin(),preview.pixels().end());
-                    requireFull(colors.size()>256, "Full frame has no useful shaded image");
+                    requireFull(colors.size()>256, "Full frame has no useful geometry image (environment background disabled)");
                 };
                 for (uint32_t frame=0; frame<1200; ++frame) {
                     const double begin=elapsed();
@@ -125,6 +148,11 @@ public:
                     if (readyFrame) { requireFull(readiness.ready,"Full fallback readiness regressed"); }
                     if (!readyFrame && readiness.ready) {
                         readyFrame=frame+1; run["firstReadyFrame"]=readyFrame; run["firstReadySeconds"]=elapsed();
+                        graph.setNodeRuntimeProperty(graph.findNode("VBuffer")->id,"visualization","meshlet");
+                        requireFull(bool(preview.render(graph,960,540,"VBuffer.color",true)),preview.lastLog());
+                        capture("ZorahFull-meshlets");
+                        graph.setNodeRuntimeProperty(graph.findNode("VBuffer")->id,"visualization","none");
+                        requireFull(bool(preview.render(graph,960,540,"FinalBlit.color",true)),preview.lastLog());
                         capture("ZorahFull-first-ready");
                     }
                     if (frame%30==0 || (readyFrame && frame+1==readyFrame)) {
@@ -154,13 +182,24 @@ public:
                 requireFull(bool(streamer->manager().acquire(*device,*device->getQueue(QueueType::Graphics),
                     graph.findNode("Deferred")->properties,renderedScene,SceneResourceFeatureBits::Materials,materials,log)),log);
                 const auto tex=materials->pathTraceResources->textureStats();
+                const auto memory = device->memoryBudget();
+                const auto& textureDomain = memory.domains[size_t(MemoryBudgetDomain::MaterialTextures)];
+                requireFull(textureDomain.allocationBytes <= tex.residentAllocationBytes + 1024 * 1024 &&
+                    textureDomain.allocationCount <= tex.residentImageCount + 16,
+                    "Scene consumers retained duplicate material texture owners");
+                run["materialDomainBytes"] = textureDomain.allocationBytes;
+                run["materialDomainImages"] = textureDomain.allocationCount;
+                const auto& localHeap = memory.heaps[memory.primaryDeviceLocalHeap];
+                run["localHeap"] = {{"usageBytes", localHeap.usageBytes}, {"blockBytes", localHeap.blockBytes},
+                    {"allocationBytes", localHeap.allocationBytes}, {"blockCount", localHeap.blockCount}};
                 run["textures"]={{"logical",tex.logicalTextureCount},{"residentIncludingFallback",tex.residentImageCount},
-                    {"maxDimension",tex.selectedMaxDimension},{"payloadBytes",tex.residentPayloadBytes},
+                    {"maxDimension",tex.selectedMaxDimension},{"maskImages",tex.maskImageCount},{"maskMaxDimension",tex.maskMaxDimension},{"payloadBytes",tex.residentPayloadBytes},
                     {"allocationBytes",tex.residentAllocationBytes},{"budgetBytes",tex.budgetBytes},{"peakStagingBytes",tex.peakStagingBytes}};
                 report["currentRun"]=run; save();
                 requireFull(tex.logicalTextureCount==4418 && tex.ktxImageCount==4418 &&
-                    tex.residentImageCount==4419 && tex.selectedMaxDimension==512,
-                    "Full texture tails are incomplete or silently reduced");
+                    tex.residentImageCount==4419 && tex.selectedMaxDimension<=256 &&
+                    tex.maskImageCount==110 && tex.maskMaxDimension==512,
+                    "Full texture tails or protected MASK quality differ");
                 for (uint32_t index : materials->pathTraceResources->logicalTextureIndices()) {
                     requireFull(index>0 && index<materials->pathTraceResources->materialTextureCount(),
                         "Full logical texture references the fallback descriptor");
@@ -175,6 +214,12 @@ public:
                 run["baseColorNonblackPixels"]=std::count_if(preview.pixels().begin(),preview.pixels().end(),
                     [](uint32_t pixel) { return (pixel & 0x00ffffffu)!=0; });
                 requireFull(run["baseColorNonblackPixels"].get<size_t>()>10000,"Full visibility has negligible material coverage");
+                graph.setNodeRuntimeProperty(deferredId,"materialBinning",false);
+                requireFull(bool(preview.render(graph,960,540,"Deferred.color",true)),preview.lastLog());
+                run["unbinnedBaseColorNonblackPixels"] = std::count_if(preview.pixels().begin(),preview.pixels().end(),
+                    [](uint32_t pixel) { return (pixel & 0x00ffffffu)!=0; });
+                requireFull(run["unbinnedBaseColorNonblackPixels"].get<size_t>()>10000,"Unbinned Full decode has negligible geometry coverage");
+                graph.setNodeRuntimeProperty(deferredId,"materialBinning",true);
                 graph.setNodeRuntimeProperty(deferredId,"debugView","final");
                 // Exercise graph removal and retirement before the next full load.
                 RenderGraph empty; empty.addNode("FinalBlitPass","Empty"); empty.markOutput("Empty.color");
@@ -187,7 +232,7 @@ public:
                 report["runs"].push_back(run); report.erase("currentRun"); save();
             }
             report["status"]="passed"; save();
-            return RhiTestResult::pass("Full source instances, 512 texture tails, bounded coarse first frame and repeated release/load");
+            return RhiTestResult::pass("Full source instances, budgeted texture tails with MASK floor, bounded first frame and repeated release/load");
         } catch (const std::exception& error) {
             report["status"]="failed"; report["error"]=error.what(); save();
             return RhiTestResult::fail(error.what());

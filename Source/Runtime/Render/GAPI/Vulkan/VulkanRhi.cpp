@@ -3328,6 +3328,7 @@ struct DeviceImpl {
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
+    std::array<VmaPool, VK_MAX_MEMORY_TYPES> materialImagePools{};
     std::shared_ptr<MemoryBudgetState> memoryBudgetState = std::make_shared<MemoryBudgetState>();
     bool memoryBudgetExtension = false;
     VkPhysicalDeviceMemoryProperties memoryProperties{};
@@ -3533,6 +3534,9 @@ DeviceImpl::~DeviceImpl()
     }
 
     if (allocator != VK_NULL_HANDLE) {
+        for (auto pool : materialImagePools) {
+            if (pool) { vmaDestroyPool(allocator, pool); }
+        }
         vmaDestroyAllocator(allocator);
         allocator = VK_NULL_HANDLE;
     }
@@ -9227,10 +9231,30 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     uint32_t memoryType = 0;
     VkResult typeResult = vmaFindMemoryTypeIndexForImageInfo(impl_->allocator, &imageInfo, &allocationInfo, &memoryType);
     if (typeResult != VK_SUCCESS) { return resultFromVk(typeResult); }
-    VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+    VkMemoryDedicatedRequirements dedicated{.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+    VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
     const VkDeviceImageMemoryRequirements request{.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS, .pCreateInfo = &imageInfo};
     vkGetDeviceImageMemoryRequirements(impl_->device, &request, &requirements);
-    if (!impl_->admitMemoryLocked(memoryType, requirements.memoryRequirements.size, domain)) { return makeError(Error::OutOfMemory); }
+    uint64_t heapGrowth = requirements.memoryRequirements.size;
+    constexpr uint64_t kMaterialBlockBytes = 16ull * 1024 * 1024;
+    if (domain == MemoryBudgetDomain::MaterialTextures && desc.memoryLocation == MemoryLocation::Device &&
+            !dedicated.requiresDedicatedAllocation && heapGrowth <= kMaterialBlockBytes) {
+        auto& pool = impl_->materialImagePools[memoryType];
+        if (!pool) {
+            const VmaPoolCreateInfo poolInfo{.memoryTypeIndex = memoryType, .blockSize = kMaterialBlockBytes};
+            const VkResult created = vmaCreatePool(impl_->allocator, &poolInfo, &pool);
+            if (created != VK_SUCCESS) { return resultFromVk(created); }
+        }
+        VmaDetailedStatistics stats{};
+        vmaCalculatePoolStatistics(impl_->allocator, pool, &stats);
+        // Existing free ranges already contribute to heapUsage. Otherwise admit
+        // an entire new block, not just the small image's memory requirement.
+        heapGrowth = stats.unusedRangeSizeMax >= requirements.memoryRequirements.size + requirements.memoryRequirements.alignment
+            ? 0 : kMaterialBlockBytes;
+        allocationInfo.pool = pool;
+        allocationInfo.flags &= ~VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    }
+    if (!impl_->admitMemoryLocked(memoryType, heapGrowth, domain)) { return makeError(Error::OutOfMemory); }
     allocationInfo.memoryTypeBits = 1u << memoryType;
     if (impl_->memoryBudgetState->policy.enabled) { allocationInfo.flags |= VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT; }
     const VkResult result = vmaCreateImage(

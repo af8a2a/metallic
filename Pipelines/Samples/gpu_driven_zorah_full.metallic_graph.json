@@ -48,8 +48,9 @@
                 "hybridRaster": true,
                 "asyncSoftwareRaster": false,
                 "maxBlasBytes": 536870912,
-                "materialTextureMaxDimension": 512,
-                "materialTextureBudgetMiB": 2048,
+                "materialTextureMaxDimension": 256,
+                "materialTextureMaskMaxDimension": 512,
+                "materialTextureBudgetMiB": 512,
                 "compactShadingAttributes": true
             }
         },
@@ -62,6 +63,9 @@
                 "y": 0
             },
             "properties": {
+                "materialTextureMaxDimension": 256,
+                "materialTextureMaskMaxDimension": 512,
+                "materialTextureBudgetMiB": 512,
                 "sigmaDenoise": true,
                 "shadowLightIndex": -1,
                 "shadowBias": 0.01,
@@ -87,8 +91,9 @@
                 "materialBinning": true,
                 "accumulate": false,
                 "outputLinear": true,
-                "materialTextureMaxDimension": 512,
-                "materialTextureBudgetMiB": 2048
+                "materialTextureMaxDimension": 256,
+                "materialTextureMaskMaxDimension": 512,
+                "materialTextureBudgetMiB": 512
             }
         },
         {

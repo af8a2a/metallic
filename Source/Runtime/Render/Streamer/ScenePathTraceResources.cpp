@@ -1766,6 +1766,17 @@ struct ScenePathTraceResources::Impl {
             const auto& mime = scene.images()[probe.imageIndex].mimeType;
             if (!mime.empty() && mime != "image/ktx2") { ++textureStats.mimeMismatchCount; }
         }
+        std::vector<bool> protectedImages(ktxImages.size());
+        for (const auto& material : scene.materials()) {
+            const auto textureIndex = material.baseColorTexture.textureIndex;
+            if (material.alphaMode != "MASK" || textureIndex < 0 || size_t(textureIndex) >= scene.textures().size()) { continue; }
+            const auto imageIndex = scene.textures()[textureIndex].imageIndex;
+            if (imageIndex >= 0 && size_t(imageIndex) < ktxImages.size() && ktxImages[imageIndex]) {
+                protectedImages[imageIndex] = true;
+            }
+        }
+        textureStats.maskImageCount = uint32_t(std::count(protectedImages.begin(), protectedImages.end(), true));
+        textureStats.maskMaxDimension = textureMaskMaxDimension;
         uploadStats.textureHeaderMs += sceneResourceElapsedMilliseconds(phaseBegin);
         UploadCpuTimer planTimer{uploadStats.texturePlanMs};
         const auto sharedBudget = device.memoryBudget();
@@ -1774,8 +1785,13 @@ struct ScenePathTraceResources::Impl {
         // Keep this conservative allowance separate from actual image bytes.
         const uint64_t imageCount = uint64_t(textureStats.ktxImageCount) + 1;
         const uint64_t overheadPerImage = sharedBudget.policy.enabled ? sharedBudget.policy.materialImageOverheadBytes : 0;
-        const uint64_t heapOverhead = overheadPerImage > UINT64_MAX / imageCount
+        const uint64_t dedicatedOverhead = overheadPerImage > UINT64_MAX / imageCount
             ? UINT64_MAX : overheadPerImage * imageCount;
+        // Small material images share 16 MiB blocks. Leave two blocks for
+        // alignment/tail slack; retain the conservative per-image estimate for
+        // large-image policies that can exceed a pool block.
+        const uint64_t heapOverhead = std::max(textureMaxDimension, textureMaskMaxDimension) <= 1024
+            ? std::min(dedicatedOverhead, 32ull * 1024 * 1024) : dedicatedOverhead;
         const uint64_t textureAvailable = sharedBudget.availableBytes - std::min(sharedBudget.availableBytes, heapOverhead);
         const uint64_t effectiveBudget = sharedBudget.policy.enabled
             ? std::min(textureBudgetBytes, textureAvailable) : textureBudgetBytes;
@@ -1793,7 +1809,8 @@ struct ScenePathTraceResources::Impl {
             for (size_t i = 0; i < ktxImages.size(); ++i) {
                 if (!ktxImages[i]) { continue; }
                 const auto& info = *ktxImages[i];
-                const uint32_t first = info.firstMipForDimension(cap);
+                const uint32_t first = info.firstMipForDimension(protectedImages[i] && textureMaskMaxDimension != 0
+                    ? std::max(cap, textureMaskMaxDimension) : cap);
                 uint64_t bytes = 0;
                 result = device.textureAllocationSize(info.textureDesc(first),bytes);
                 if (!result) { log = "Unsupported texture allocation: " + info.path.string(); return result; }
@@ -1804,7 +1821,7 @@ struct ScenePathTraceResources::Impl {
                 textureStats.selectedMaxDimension = cap; textureStats.budgetBytes = effectiveBudget; break;
             }
             if (cap == 1) {
-                log = "Unified GPU / material texture budget cannot hold minimum mip tails: required=" +
+                log = "Unified GPU / material texture budget cannot hold minimum mip tails with MASK quality floor: required=" +
                     std::to_string(allocation) + " available=" + std::to_string(effectiveBudget);
                 return makeError(Error::OutOfMemory);
             }
@@ -1813,6 +1830,8 @@ struct ScenePathTraceResources::Impl {
         spdlog::info("[SceneTextures] logical={} KTX2={} MIME-mismatch={} cap={} payload={} allocation={} budget={}",
             textureStats.logicalTextureCount,textureStats.ktxImageCount,textureStats.mimeMismatchCount,
             textureStats.selectedMaxDimension,textureStats.plannedPayloadBytes,textureStats.plannedAllocationBytes,effectiveBudget);
+        spdlog::info("[SceneTextures] MASK images={} protectedCap={} ordinaryCap={}",
+            textureStats.maskImageCount, textureMaskMaxDimension, cap);
         if (effectiveBudget < textureBudgetBytes) {
             spdlog::info("[SceneTextures] Unified budget limits textures configured={} available={} imageHeapAllowance={} effective={} selectedCap={}",
                 textureBudgetBytes, sharedBudget.availableBytes, heapOverhead, effectiveBudget, cap);
@@ -2244,7 +2263,8 @@ struct ScenePathTraceResources::Impl {
 
     bool textureSettingsMatch(const RenderGraphProperties& properties) const
     {
-        return textureMaxDimension == uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768)) &&
+        return textureMaskMaxDimension == uint32_t(std::clamp(properties.value("materialTextureMaskMaxDimension",0),0,32768)) &&
+            textureMaxDimension == uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768)) &&
             textureBudgetBytes == uint64_t(std::clamp(properties.value("materialTextureBudgetMiB",2048),1,65536)) * 1024 * 1024;
     }
 
@@ -2306,6 +2326,7 @@ struct ScenePathTraceResources::Impl {
     bool uploadProfileReported = false;
     uint64_t textureBudgetBytes = 2048ull * 1024 * 1024;
     uint32_t textureMaxDimension = 512;
+    uint32_t textureMaskMaxDimension = 0;
     SceneTextureStats textureStats;
     uint32_t materialTextureCount = 0;
     std::deque<std::unique_ptr<UploadBatch>> uploadBatches;
@@ -2377,6 +2398,7 @@ Result ScenePathTraceResources::prepare(
 
     impl_->textureBudgetBytes = uint64_t(std::clamp(properties.value("materialTextureBudgetMiB",2048),1,65536)) * 1024 * 1024;
     impl_->textureMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768));
+    impl_->textureMaskMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaskMaxDimension",0),0,32768));
     impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
     scene::SceneDocument fallbackScene;
     if (boundScene == nullptr) {
@@ -2580,6 +2602,7 @@ Result ScenePathTraceResources::beginPrepareAsync(
     impl_->asyncScene = boundScene;
     impl_->textureBudgetBytes = uint64_t(std::clamp(properties.value("materialTextureBudgetMiB",2048),1,65536)) * 1024 * 1024;
     impl_->textureMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768));
+    impl_->textureMaskMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaskMaxDimension",0),0,32768));
     impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
     impl_->materialOnly = materialsOnly || boundScene->hasStreamGeometry();
     impl_->asyncScenePath = path;
@@ -2939,6 +2962,7 @@ Result ScenePathTraceResources::syncRuntimeScene(
         const RenderGraphProperties properties{
             {"path", impl_->scenePath.string()},
             {"materialTextureMaxDimension", impl_->textureMaxDimension},
+            {"materialTextureMaskMaxDimension", impl_->textureMaskMaxDimension},
             {"materialTextureBudgetMiB", impl_->textureBudgetBytes / (1024 * 1024)},
         };
         Result result = prepare(
@@ -3139,6 +3163,11 @@ Buffer* ScenePathTraceResources::materialBuffer() const
 const std::vector<TextureView*>& ScenePathTraceResources::materialTextureViews() const
 {
     return impl_->materialTextureViews;
+}
+
+const std::vector<uint32_t>& ScenePathTraceResources::materialTextureFirstMips() const
+{
+    return impl_->ktxFirstMips;
 }
 
 uint32_t ScenePathTraceResources::materialTextureCount() const

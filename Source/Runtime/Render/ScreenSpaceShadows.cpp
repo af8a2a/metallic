@@ -161,7 +161,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
         if (streamTlas) {
             layout.push_back({.binding = 6});
             layout.push_back({.binding = 9, .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = textureCount});
-            for (uint32_t i = 90; i <= 93; ++i) { layout.push_back({.binding = i}); }
+            for (uint32_t i = 90; i <= 94; ++i) { layout.push_back({.binding = i}); }
         }
         if (!streamed) {
             for (uint32_t i = 2; i <= 6; ++i) { layout.push_back({.binding = i}); }
@@ -276,6 +276,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
             bindings.push_back({.binding = 91, .buffer = streamGeometry->pageTableBuffer});
             bindings.push_back({.binding = 92, .buffer = streamGeometry->instanceBuffer});
             bindings.push_back({.binding = 93, .buffer = streamGeometry->activeHeaderBuffer});
+            bindings.push_back({.binding = 94, .buffer = streamGeometry->paramsBuffer});
             geometryPush[0] = textureCount;
         }
     } else {

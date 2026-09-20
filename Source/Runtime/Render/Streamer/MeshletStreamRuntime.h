@@ -430,6 +430,8 @@ static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGpuParams) == 416);
+// VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
+static_assert(offsetof(MeshletStreamGpuParams, pageBufferBytes) == 100);
 static_assert(sizeof(MeshletStreamGpuRasterBindings) == 96);
 static_assert(sizeof(MeshletStreamUserPush) == 136);
 

@@ -8,6 +8,8 @@
 
 ## 结论
 
+2026-09-20 T1 已减少首帧驻留：普通纹理 256、MASK 基色 512、512 MiB 上限及小纹理池；asset/world 完整首帧两轮通过，材质 image 分配为 373.55 MiB。详见 [首帧驻留验收](ZorahFullFirstFrameResidency.md)。
+
 2026-09-20 T0 已实现统一 heap 预算、资源分域记账、图/DLSS 预留和纹理预算降档。两档 Full 全量纹理压力验证通过；实现、数据与尚未完成的边界见 [统一预算验收](ZorahFullUnifiedMemoryBudget.md)。
 
 2026-09-20 13:07 日志后优先级更新：纹理并行已生效，但 image 创建和上传背压在预算压力下占主导。下一批建议 **T0 共享显存预算＋T1 首帧 mip 驻留/小纹理分配**，随后按视图需求升级与冷回收；定量方案见 [贴图驻留调研](ZorahFullTextureResidencyPlan.md)。
@@ -149,3 +151,5 @@ cfg 还启用属性 7、多材质、法线/UV 简化权重 0.5、材质权重 32
 - CPU/GPU：texture demand、decode、upload、material resolve、alpha raster/shadow、总图区间；并发 scope 不简单相加。报告首个完整粗级帧时间，以及视图几何和纹理各自的收敛时间。
 
 下一阶段推进 **Z5 全量 cook 与首帧**，沿用 Z2 属性格式、Z3 的 512 cap / 2 GiB 纹理预算和 Z4 实时着色链路。先验证完整根级工作集的几何/CLAS/纹理总驻留，再建立 Full cfg 相机的首帧证据；小探针不替代完整场景或持续漫游验收。
+
+2026-09-20：修复 Full 大页池解码容量查询异常导致的仅背景画面；此前首帧图像证据已纠正，新增隐藏背景的原生及 Editor / DLSS 几何覆盖验收，见 [几何解码修复记录](ZorahFullGeometryDecodeFix.md)。

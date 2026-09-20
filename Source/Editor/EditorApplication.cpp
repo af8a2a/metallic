@@ -2074,7 +2074,8 @@ int EditorApplication::run(
             return passed ? 0 : 1;
         }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_SCENE_SWITCH") ||
-            environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH")) {
+            environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH") ||
+            environmentFlagEnabled("METALLIC_SMOKE_TEST_ZORAH_FULL_SWITCH")) {
             const bool passed = runSceneSwitchSmokeTest();
             shutdown();
             return passed ? 0 : 1;
@@ -3882,13 +3883,23 @@ void EditorApplication::drawStatisticsPanel()
         return;
     }
 
-    if (!scene_.valid()) {
+    const scene::Scene* statisticsScene = &scene_;
+    if (!statisticsScene->valid()) {
+        if (const auto* gpuScene = subsystemHost_.get<render::GPUSceneSubsystem>();
+            gpuScene && gpuScene->sourceOverride()) {
+            statisticsScene = gpuScene->sourceOverride();
+        }
+    }
+    if (!statisticsScene->valid()) {
         ImGui::TextDisabled("No scene loaded");
         ImGui::End();
         return;
     }
 
-    const scene::SceneStats& stats = scene_.stats();
+    if (statisticsScene->hasStreamGeometry()) {
+        ImGui::TextDisabled("Streamed scene metadata (resident pages: Profiler / Streaming)");
+    }
+    const scene::SceneStats& stats = statisticsScene->stats();
     if (ImGui::BeginTable("SceneStatisticsTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("Property", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, 96.0f * mainScale_);
@@ -3901,7 +3912,7 @@ void EditorApplication::drawStatisticsPanel()
             ImGui::TableSetColumnIndex(1);
             ImGui::Text("%llu", static_cast<unsigned long long>(value));
         };
-        addStat("Nodes", scene_.nodes().size());
+        addStat("Nodes", statisticsScene->nodes().size());
         addStat("Meshes", stats.meshCount);
         addStat("Render Nodes", stats.renderNodeCount);
         addStat("Render Primitives", stats.primitiveCount);
@@ -3915,13 +3926,13 @@ void EditorApplication::drawStatisticsPanel()
         addStat("Meshlet LOD Clusters", stats.meshletLodClusterCount);
         addStat("Meshlet LOD Vertex References", stats.meshletLodVertexReferenceCount);
         addStat("Meshlet LOD Triangle Indices", stats.meshletLodTriangleIndexCount);
-        addStat("Lights", scene_.lights().size());
+        addStat("Lights", statisticsScene->lights().size());
         addStat("Textures", stats.textureCount);
         addStat("Images", stats.imageCount);
         ImGui::EndTable();
     }
 
-    const scene::Bounds& bounds = scene_.bounds();
+    const scene::Bounds& bounds = statisticsScene->bounds();
     ImGui::Separator();
     if (bounds.valid) {
         ImGui::Text("Bounds min: %s", scene::formatVec3(bounds.min).c_str());
@@ -3931,7 +3942,7 @@ void EditorApplication::drawStatisticsPanel()
     }
 
     render::SceneAccelerationStructureStats accelerationStructureStats;
-    const bool hasAccelerationStructureStats = snapshotReadyAccelerationStructureStats(
+    const bool hasAccelerationStructureStats = statisticsScene == &scene_ && snapshotReadyAccelerationStructureStats(
         sceneAccelerationStructure_.get(),
         accelerationStructureStats);
     if (hasAccelerationStructureStats) {
@@ -3942,7 +3953,7 @@ void EditorApplication::drawStatisticsPanel()
     if (ImGui::Button("Copy to Clipboard")) {
         ImGui::LogToClipboard();
         ImGui::LogText("Scene Statistics:\n");
-        ImGui::LogText("Nodes: %zu\n", scene_.nodes().size());
+        ImGui::LogText("Nodes: %zu\n", statisticsScene->nodes().size());
         ImGui::LogText("Meshes: %llu\n", static_cast<unsigned long long>(stats.meshCount));
         ImGui::LogText("Render Nodes: %llu\n", static_cast<unsigned long long>(stats.renderNodeCount));
         ImGui::LogText("Render Primitives: %llu\n", static_cast<unsigned long long>(stats.primitiveCount));
@@ -3964,7 +3975,7 @@ void EditorApplication::drawStatisticsPanel()
         ImGui::LogText(
             "Meshlet LOD Triangle Indices: %llu\n",
             static_cast<unsigned long long>(stats.meshletLodTriangleIndexCount));
-        ImGui::LogText("Lights: %zu\n", scene_.lights().size());
+        ImGui::LogText("Lights: %zu\n", statisticsScene->lights().size());
         ImGui::LogText("Textures: %llu\n", static_cast<unsigned long long>(stats.textureCount));
         ImGui::LogText("Images: %llu\n", static_cast<unsigned long long>(stats.imageCount));
         if (hasAccelerationStructureStats) {
@@ -6144,6 +6155,11 @@ void EditorApplication::drawViewportPanel()
         : (gizmoOperation_ == GizmoOperation::Rotate ? &rotateSnap_ : &scaleSnap_);
     ImGui::DragFloat("##SnapStep", snapValue, 0.05f, 0.001f, 1000.0f, "%.3f");
     drawSliderDebugControls();
+    if (viewportCompileFailed_) {
+        ImGui::SameLine();
+        if (ImGui::Button("Retry scene load")) { renderGraph_.markDirty(); }
+        ImGui::SetItemTooltip("Scene preparation failed. Free GPU memory or adjust settings, then retry. See Console for details.");
+    }
 
     ImVec2 available = ImGui::GetContentRegionAvail();
     available.x = std::max(available.x, 1.0f);
@@ -6161,6 +6177,10 @@ void EditorApplication::drawViewportPanel()
     if (smokeTest_ && environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH")) {
         previewWidth = 1564;
         previewHeight = 708;
+    }
+    if (smokeTest_ && environmentFlagEnabled("METALLIC_SMOKE_TEST_ZORAH_FULL_SWITCH")) {
+        previewWidth = 1404;
+        previewHeight = 674;
     }
     const bool hasRhiPreview = updateViewportPreview(previewWidth, previewHeight);
     const uint32_t displayWidth = hasRhiPreview && viewportTextureWidth_ > 0
@@ -6453,6 +6473,15 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
         return false;
     }
 
+    // Consume a failed compile request once. New graph/settings/output/extent
+    // requests (or explicit retry) can try again without an allocation storm.
+    if (viewportCompileFailed_ && !renderGraph_.dirty() &&
+        failedPreviewWidth_ == width && failedPreviewHeight_ == height &&
+        failedPreviewOutput_ == previewOutput) {
+        return false;
+    }
+    viewportCompileFailed_ = false;
+
     // Diagnostic raster outputs bypass temporal reconstruction. Apply their
     // sampling policy to the global View before any pass records this frame.
     // This also covers manual output selection and preserves the saved DLSS setting.
@@ -6516,6 +6545,11 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     }
     renderGraphStatus_ = log;
     if (!result) {
+        viewportCompileFailed_ = true;
+        failedPreviewWidth_ = width;
+        failedPreviewHeight_ = height;
+        failedPreviewOutput_ = previewOutput;
+        renderGraph_.clearDirty();
         spdlog::error(
             "RenderGraph compile failed with Result {}: {}",
             render::resultToString(result),
@@ -6950,6 +6984,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
     preserveSampleEnvironmentForNextSceneLoad_ = environmentFromSample_;
 
     renderGraph_ = std::move(sample.graph);
+    viewportCompileFailed_ = false;
     initializeViewportView();
     graphEditorPositionsInitialized_ = false;
     selectedGraphNodeId_ = -1;
@@ -7033,6 +7068,7 @@ void EditorApplication::loadRenderGraph()
         }
     }
     renderGraph_ = std::move(loadedGraph);
+    viewportCompileFailed_ = false;
     initializeViewportView();
     graphEditorPositionsInitialized_ = false;
     selectedGraphNodeId_ = -1;

@@ -1,6 +1,9 @@
 #include "Editor/EditorApplication.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
+#include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/Streamer/StreamerSubsystem.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -219,6 +222,115 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
 
 bool EditorApplication::runSceneSwitchSmokeTest()
 {
+    if (std::getenv("METALLIC_SMOKE_TEST_ZORAH_FULL_SWITCH")) {
+        const auto render = [&]() {
+            auto profileFrame = profiler_.beginFrame();
+            const render::vulkan::StreamlineFrameScope streamlineFrame;
+            return waitForFrameSlotBeforeInput() && renderFrame() && viewportPreviewValid_;
+        };
+        for (uint32_t cycle = 0; cycle < 2; ++cycle) {
+            loadBuiltInSample(render::kDefaultGPUDrivenSampleId);
+            for (uint32_t frame = 0; frame < 16; ++frame) {
+                if (!render()) { return false; }
+            }
+            loadBuiltInSample(render::kGPUDrivenZorahFullSampleId);
+            auto environment = renderWorld_.environment();
+            environment.visible = false; // A sky image must not satisfy geometry coverage.
+            renderWorld_.setEnvironment(std::move(environment));
+            uint32_t readyFrame = 0;
+            for (uint32_t frame = 1; frame <= 1200; ++frame) {
+                if (!render()) { return false; }
+                const auto* streamer = subsystemHost_.get<render::StreamerSubsystem>();
+                const auto readiness = streamer->sceneReadiness();
+                if (!readyFrame && readiness.ready) {
+                    readyFrame = frame;
+                    spdlog::info("[Smoke Full Switch] cycle={} readyFrame={} pages={}/{}",
+                        cycle, frame, readiness.completedPages, readiness.requiredPages);
+                    device_->logMemoryBudget("Full editor switch ready");
+                }
+                if (readyFrame && frame >= readyFrame + 60) { break; }
+            }
+            if (!readyFrame) {
+                spdlog::error("[Smoke Full Switch] Full root pages did not become ready");
+                return false;
+            }
+        }
+        // Read the actual DLSS presentation output with the environment hidden.
+        // Stream readiness alone cannot prove that the deferred decoder shaded it.
+        if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { return false; }
+        const auto* source = subsystemHost_.get<render::GPUSceneSubsystem>()->sourceOverride();
+        if (!source || source->renderNodes().size() != 43068) {
+            spdlog::error("[Smoke Full Switch] Unexpected stream metadata: nodes={}", source ? source->renderNodes().size() : 0);
+            return false;
+        }
+        auto* output = graphExecutor_->outputResource(activePreviewOutput_);
+        if (!output || (output->desc.format != render::Format::Rgba8Unorm && output->desc.format != render::Format::Rgba16Sfloat)) {
+            spdlog::error("[Smoke Full Switch] Unsupported readback output '{}' format={}", activePreviewOutput_, output ? int(output->desc.format) : -1);
+            return false;
+        }
+        const bool hdr = output->desc.format == render::Format::Rgba16Sfloat;
+        const size_t pixelCount = size_t(output->desc.width) * output->desc.height;
+        std::unique_ptr<render::Buffer> readback;
+        render::RenderFrameContext frame;
+        render::QueueSubmissionTracker tracker;
+        std::unique_ptr<render::CommandPool> pool;
+        std::unique_ptr<render::CommandBuffer> commands;
+        if (!device_->createBuffer({.size = pixelCount * (hdr ? 8u : 4u),
+                .usage = render::BufferUsageBits::TransferDestination, .memoryLocation = render::MemoryLocation::HostReadback}, readback) ||
+            !device_->createCommandPool(*graphicsQueue_, pool) || !pool->createCommandBuffer(commands) ||
+            !tracker.initialize(*device_, *graphicsQueue_) || !frame.begin(0) || !commands->begin(&frame) ||
+            !graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::TransferSource)) { return false; }
+        commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
+            .width = output->desc.width, .height = output->desc.height});
+        if (!graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::ShaderRead) ||
+            !commands->end()) { return false; }
+        render::CommandBuffer* buffers[] = {commands.get()};
+        if (!tracker.submit({.commandBuffers = buffers, .commandBufferCount = 1}, frame) || !frame.wait()) { return false; }
+        readback->invalidate();
+        const auto* pixels = static_cast<const uint8_t*>(readback->map());
+        if (!pixels) { return false; }
+        size_t shadedPixels = 0;
+        for (size_t pixel = 0; pixel < pixelCount; ++pixel) {
+            bool shaded = false;
+            for (size_t component = 0; component < 3; ++component) {
+                if (hdr) {
+                    uint16_t half;
+                    std::memcpy(&half, pixels + (pixel * 4 + component) * 2, sizeof(half));
+                    // Positive finite half values above 0.03125; alpha never counts.
+                    shaded |= half > 0x2800u && half < 0x7c00u;
+                } else {
+                    shaded |= pixels[pixel * 4 + component] > 8u;
+                }
+            }
+            shadedPixels += shaded;
+        }
+        readback->unmap();
+        spdlog::info("[Smoke Full Switch] DLSS shaded geometry pixels={}/{} (environment hidden)", shadedPixels, pixelCount);
+        if (shadedPixels < 10000) { return false; }
+        // Release executable references before the retry test rebuilds the graph.
+        commands.reset();
+        if (!frame.reset()) { return false; }
+        // A failed budget admission must pause automatic retries. Restoring the
+        // budget alone must not compile again until the user requests a retry.
+        const auto policy = device_->memoryBudget().policy;
+        auto deniedPolicy = policy;
+        deniedPolicy.graphReserveBytes = UINT64_MAX;
+        device_->setMemoryBudgetPolicy(deniedPolicy);
+        renderGraph_.markDirty();
+        const bool denied = !updateViewportPreview(1404, 674) && viewportCompileFailed_ && !renderGraph_.dirty();
+        device_->setMemoryBudgetPolicy(policy);
+        if (!denied || updateViewportPreview(1404, 674) || !viewportCompileFailed_) {
+            spdlog::error("[Smoke Full Switch] Failed compile was retried automatically");
+            return false;
+        }
+        renderGraph_.markDirty();
+        if (!updateViewportPreview(1404, 674) || viewportCompileFailed_ || !render()) {
+            spdlog::error("[Smoke Full Switch] Explicit retry failed");
+            return false;
+        }
+        spdlog::info("[Smoke Full Switch] Passed two MiniZorah-to-Full DLSS switches and failed-compile retry gate");
+        return true;
+    }
     if (std::getenv("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH")) {
         const char* cycleCount = std::getenv("METALLIC_SMOKE_TEST_SWITCH_CYCLES");
         const char* frameCount = std::getenv("METALLIC_SMOKE_TEST_ROAM_FRAMES");

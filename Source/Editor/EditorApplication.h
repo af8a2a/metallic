@@ -307,6 +307,10 @@ private:
     bool imguiPlatformInitialized_ = false;
     bool imguiRendererInitialized_ = false;
     bool viewportPreviewValid_ = false;
+    bool viewportCompileFailed_ = false;
+    uint32_t failedPreviewWidth_ = 0;
+    uint32_t failedPreviewHeight_ = 0;
+    std::string failedPreviewOutput_;
     bool viewportPreviewNeedsRender_ = false;
     bool swapchainOutOfDate_ = false;
     bool dockLayoutInitialized_ = false;

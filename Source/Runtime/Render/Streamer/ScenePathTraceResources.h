@@ -17,6 +17,7 @@ namespace metallic::render {
 struct SceneTextureStats {
     uint32_t logicalTextureCount = 0, ktxImageCount = 0, mimeMismatchCount = 0;
     uint32_t residentImageCount = 0, selectedMaxDimension = 0;
+    uint32_t maskImageCount = 0, maskMaxDimension = 0;
     uint64_t budgetBytes = 0, plannedPayloadBytes = 0, plannedAllocationBytes = 0;
     uint64_t residentPayloadBytes = 0, residentAllocationBytes = 0, peakStagingBytes = 0;
     uint64_t configuredBudgetBytes = 0, sharedAvailableBytes = 0;
@@ -104,6 +105,8 @@ public:
     Buffer* materialBuffer() const;
     const std::vector<TextureView*>& materialTextureViews() const;
     uint32_t materialTextureCount() const;
+    // Source-image indexed KTX tail selection; non-KTX entries are zero.
+    const std::vector<uint32_t>& materialTextureFirstMips() const;
     const NeuralTextureResources& neuralTextures() const;
 
 private:

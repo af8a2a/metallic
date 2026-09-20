@@ -1,6 +1,13 @@
 #ifndef METALLIC_VISIBILITY_STREAM_DECODE
 #define METALLIC_VISIBILITY_STREAM_DECODE
 #include "StreamAttributeDecode.slang"
+// Large descriptor-heap buffers can report zero from GetDimensions(). Use the
+// producer's bounded pool capacity, just as the raster decoder does. Offset is
+// asserted against MeshletStreamGpuParams::pageBufferBytes on the CPU.
+uint streamPageWordCount(ByteAddressBuffer params)
+{
+    return params.Load(100u) / 4u;
+}
 // Shared validation and position decoding for the cooked StreamAsset format.
 // Callers supply their descriptors; no pass-specific bindings live here.
 struct StreamActiveGroup {
@@ -19,7 +26,7 @@ float3 streamPagePosition(StructuredBuffer<uint> pages, uint word)
 }
 
 bool decodeStreamTriangleAtPage(uint pageIndex, uint clusterIndex, uint triangle,
-    StructuredBuffer<uint> pages, StructuredBuffer<uint2> pageTable,
+    StructuredBuffer<uint> pages, StructuredBuffer<uint2> pageTable, uint pageWordCount,
     out float3 a, out float3 b, out float3 c)
 {
     a = b = c = float3(0);
@@ -29,7 +36,7 @@ bool decodeStreamTriangleAtPage(uint pageIndex, uint clusterIndex, uint triangle
     uint entry = pageTable[pageIndex].x;
     if ((entry & 7u) != 2u && (entry & 7u) != 3u) { return false; }
     uint page = (entry & 0xfffffff8u) / 4u;
-    pages.GetDimensions(count, stride);
+    count = pageWordCount;
     if (page > count || count - page < 28u) { return false; }
     uint bytes = pages[page + 12];
     uint positionFormat = pages[page + 20];
@@ -58,7 +65,7 @@ bool decodeStreamTriangleAtPage(uint pageIndex, uint clusterIndex, uint triangle
 
 bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<VisibleClusterRecord> records,
     StructuredBuffer<StreamActiveGroup> groups, StructuredBuffer<uint> pages,
-    StructuredBuffer<uint2> pageTable, out VisibleClusterRecord record,
+    StructuredBuffer<uint2> pageTable, uint pageWordCount, out VisibleClusterRecord record,
     out float3 a, out float3 b, out float3 c)
 {
     record = (VisibleClusterRecord)0; a = b = c = float3(0);
@@ -74,7 +81,7 @@ bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<VisibleClu
     pageTable.GetDimensions(count, stride);
     if (group.pageIndex >= count || record.clusterIndex >= group.clusterCount ||
         record.instanceIndex != group.gpuSceneInstanceIndex) { return false; }
-    return decodeStreamTriangleAtPage(group.pageIndex, record.clusterIndex, triangle, pages, pageTable, a, b, c);
+    return decodeStreamTriangleAtPage(group.pageIndex, record.clusterIndex, triangle, pages, pageTable, pageWordCount, a, b, c);
 }
 
 // Optional shading streams. Position-only pages continue to use geometric

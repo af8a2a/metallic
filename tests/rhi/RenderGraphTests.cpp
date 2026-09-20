@@ -487,6 +487,45 @@ public:
     }
 };
 
+// Models a stream owner shared by a pass and submitted frame slots.
+std::weak_ptr<render::Buffer> testRetainedSceneBuffer;
+class TestRetainedScenePass final : public render::RasterPass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addOutput("color", "Retirement test output");
+        return reflection;
+    }
+    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    {
+        if (!testRetainedSceneBuffer.expired()) {
+            log = "Previous scene buffer is still retained before replacement allocation";
+            return render::makeError(render::Error::OutOfMemory);
+        }
+        std::unique_ptr<render::Buffer> buffer;
+        auto result = context.device->createBuffer(render::BufferDesc{
+            .size = 16ull * 1024 * 1024,
+            .usage = render::BufferUsageBits::Storage,
+            .memoryLocation = render::MemoryLocation::Device,
+        }, buffer);
+        if (!result) { return result; }
+        buffer_ = std::move(buffer);
+        testRetainedSceneBuffer = buffer_;
+        return {};
+    }
+    render::Result execute(render::RenderGraphExecutionContext& context) override
+    {
+        auto* frame = context.commandBuffer().frameContext();
+        if (!frame) { return render::makeError(render::Error::InvalidArgument); }
+        frame->retain(buffer_);
+        return {};
+    }
+private:
+    std::shared_ptr<render::Buffer> buffer_;
+};
+
 struct TestTextureExtentExecutionState {
     uint32_t producerContextWidth = 0;
     uint32_t producerContextHeight = 0;
@@ -768,6 +807,9 @@ void registerTestPass()
         "TestBindlessSamplePass",
         "Test-only pass that samples a RenderGraph input through bindless",
         []() { return std::make_unique<TestBindlessSamplePass>(); });
+    render::registerRenderGraphPassType(
+        "TestRetainedScenePass", "Test submitted scene owner retirement",
+        []() { return std::make_unique<TestRetainedScenePass>(); });
     render::registerRenderGraphPassType(
         "TestResizeCompilePass",
         "Test-only pass that counts RenderGraph compile calls",
@@ -6105,6 +6147,43 @@ public:
     }
 };
 
+class RenderGraphSceneSwitchRetirementTest : public RhiTest {
+public:
+    RenderGraphSceneSwitchRetirementTest()
+    {
+        type = RhiTestType::Resource;
+        name = "render_graph_scene_switch_retirement";
+    }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        registerTestPass();
+        render::RenderGraph graph;
+        auto* node = graph.addNode("TestRetainedScenePass", "Scene");
+        graph.markOutput("Scene.color");
+        {
+            render::RenderGraphExecutor executor;
+            for (uint32_t scene = 0; scene < 3; ++scene) {
+                graph.setNodeProperties(node->id, {{"scene", scene}});
+                std::string log;
+                auto result = executor.compile(context.device, graph, 32, 32, log);
+                if (!result) { return RhiTestResult::fail(log); }
+                // Leave both queued slots populated. Compile must wait and release
+                // these owners before the next scene's compile allocates anything.
+                for (uint32_t frame = 0; frame < 2; ++frame) {
+                    result = executor.execute(render::RenderGraphSubmitDesc{
+                        .graphicsQueue = context.device.getQueue(render::QueueType::Graphics),
+                    });
+                    if (!result) { return RhiTestResult::fail(toString(result)); }
+                }
+            }
+        }
+        if (!testRetainedSceneBuffer.expired()) {
+            return RhiTestResult::fail("Submitted scene owner survived executor destruction");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
 class RenderGraphResizeReusesCompiledPassesTest : public RhiTest {
 public:
     RenderGraphResizeReusesCompiledPassesTest()
@@ -9828,6 +9907,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingEnvironmentRotationTest)
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceTransmissionTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceAlphaMaskPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphSceneSwitchRetirementTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphResizeReusesCompiledPassesTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewActualOutputExtentTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphTextureExtentConstraintPropagationTest);
