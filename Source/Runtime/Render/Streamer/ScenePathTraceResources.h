@@ -7,6 +7,8 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/Scene.h"
 
+#include "Runtime/Render/Profiling/CpuProfile.h"
+
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -15,6 +17,7 @@
 namespace metallic::render {
 
 struct SceneTextureStats {
+    TextureUploadProfile lastUpload;
     uint32_t logicalTextureCount = 0, ktxImageCount = 0, mimeMismatchCount = 0;
     uint32_t residentImageCount = 0, selectedMaxDimension = 0;
     uint32_t maskImageCount = 0, maskMaxDimension = 0;
@@ -89,7 +92,7 @@ public:
     Result syncRuntimeScene(const scene::Scene* runtimeScene, std::string& log);
     Result uploadMaterialTextures(CommandBuffer& commandBuffer);
     // Called once by the deferred consumer; never waits for feedback or decode.
-    Result beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback);
+    Result beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler = nullptr);
     bool textureUploadsReady() const;
     bool gpuWorkComplete();
     SceneUploadStats uploadStats() const;

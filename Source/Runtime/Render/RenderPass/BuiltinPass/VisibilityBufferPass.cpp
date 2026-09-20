@@ -1139,6 +1139,16 @@ public:
                     else if (checkpoint == "AfterStreamPrefetch") { phaseProfile.next("Traversal finalize"); }
                     else if (checkpoint == "BeforeStreamClasBuild") { phaseProfile.next("CLAS build"); }
                     else if (checkpoint == "AfterStreamClasBuild") { phaseProfile.end(); }
+                    else if (checkpoint == "BeforeFallbackBlas") { phaseProfile.next("Fallback BLAS"); }
+                    else if (checkpoint == "BeforeBlasReset") { phaseProfile.next("BLAS reset"); }
+                    else if (checkpoint == "BeforeBlasCompare") { phaseProfile.next("BLAS cut compare"); }
+                    else if (checkpoint == "BeforeBlasCount") { phaseProfile.next("BLAS count"); }
+                    else if (checkpoint == "BeforeBlasSetup") { phaseProfile.next("BLAS setup"); }
+                    else if (checkpoint == "BeforeBlasInsert") { phaseProfile.next("BLAS insert"); }
+                    else if (checkpoint == "BeforeBlasBuild") { phaseProfile.next("BLAS build"); }
+                    else if (checkpoint == "BeforeTlasInput") { phaseProfile.next("TLAS input"); }
+                    else if (checkpoint == "BeforeTlasBuild") { phaseProfile.next("TLAS build"); }
+                    else if (checkpoint == "AfterTlasBuild") { phaseProfile.end(); }
                     gpuDrivenDebugCheckpoint(context, checkpoint, gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_,
                         streamRuntime_.get(), UINT32_MAX, residentRecordCapacity_);
                 });
@@ -1380,6 +1390,7 @@ public:
             auto profile = streamRuntime_->profilingStats();
             if (sharedTextureResources_) {
                 const auto textures = sharedTextureResources_->textureStats();
+                profile.textureUpload = textures.lastUpload;
                 profile.textureStreaming = textures.streamingEnabled;
                 profile.textureResidentBytes = textures.residentAllocationBytes;
                 profile.textureBudgetBytes = textures.budgetBytes;

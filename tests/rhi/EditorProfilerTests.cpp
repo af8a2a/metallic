@@ -65,6 +65,48 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerHistoryTest);
 
+class EditorProfilerCaptureTest final : public RhiTest {
+public:
+    EditorProfilerCaptureTest() { type = RhiTestType::Command; name = "editor_profiler_capture_attribution"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        EditorProfiler profiler;
+        profiler.beginCapture();
+        RenderGraphExecutionStats stats{.graphGeneration=1};
+        stats.nodes.push_back({.id=7, .name="Pass", .cpuMilliseconds=1});
+        stats.streaming.push_back({.passName="Pass", .assetPath="capture", .generation=1});
+        for (uint64_t i=0; i<540; ++i) {
+            stats.executionId=i; stats.streaming[0].frameIndex=i;
+            auto frame=profiler.beginFrame(); profiler.addRenderGraphStats(stats);
+        }
+        profiler.endCapture();
+        checkProfile(profiler.history().size()==500 && profiler.capturedFrames().size()==540,
+            "Capture was truncated with UI history");
+        checkProfile(profiler.capturedFrames()[0].streaming[0].frameIndex==0,
+            "Capture lost original streaming frame");
+        auto completed=stats; completed.executionId=0; completed.gpuTimingAvailable=true;
+        completed.nodes[0].gpuTimingAvailable=true; completed.nodes[0].gpuMilliseconds=0;
+        // Resolve old capture after a graph reload reuses the same execution ID.
+        stats.graphGeneration=2; stats.executionId=0;
+        { auto frame=profiler.beginFrame(); profiler.addRenderGraphStats(stats); }
+        profiler.updateRenderGraphGpuStats(completed);
+        checkProfile(profiler.capturedFrames()[0].nodes.back().gpuTimingAvailable &&
+            profiler.capturedFrames()[0].nodes.back().gpuMilliseconds==0,
+            "Completed capture did not accept a delayed valid zero GPU result");
+        checkProfile(!profiler.capturedFrames().back().nodes.back().gpuTimingAvailable &&
+            !profiler.history().back().nodes.back().gpuTimingAvailable,
+            "GPU result crossed frame/generation boundaries");
+        profiler.beginCapture();
+        { auto frame=profiler.beginFrame(); profiler.addRenderGraphStats(stats); }
+        profiler.endCapture();
+        profiler.updateRenderGraphGpuStats(completed);
+        checkProfile(profiler.capturedFrames().size()==1 && !profiler.capturedFrames()[0].nodes.back().gpuTimingAvailable,
+            "Restarted capture retained stale GPU mappings");
+        return RhiTestResult::pass("Unbounded capture retains frame/stream identity beyond UI history and accepts only matching delayed GPU results");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(EditorProfilerCaptureTest);
+
 class EditorProfilerSortingTest final : public RhiTest {
 public:
     EditorProfilerSortingTest() { type = RhiTestType::Command; name = "editor_profiler_column_sorting"; }

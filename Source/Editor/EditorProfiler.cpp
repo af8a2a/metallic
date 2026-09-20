@@ -496,6 +496,14 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
             (unsigned long long)last.textureUpgrades,(unsigned long long)last.textureDowngrades,(unsigned long long)last.textureBudgetDeferrals);
         ImGui::Text("Feedback frames %llu | Uploaded %.2f MiB | Max request latency %llu frames",
             (unsigned long long)last.textureFeedbackFrames,last.textureUploadBytes/mib,(unsigned long long)last.textureMaxRequestFrames);
+        if (last.textureUpload.sequence) {
+            const auto& upload = last.textureUpload;
+            if (upload.gpuTimingAvailable) { ImGui::Text("Last independent upload GPU %.3f ms (graphics)", upload.gpuMilliseconds); }
+            else { ImGui::TextUnformatted("Last independent upload GPU: unavailable"); }
+            ImGui::Text("Submit frame %llu -> observed %llu | %.2f ms incl. queue/poll | %.2f MiB",
+                (unsigned long long)upload.submitFrame, (unsigned long long)upload.completionFrame,
+                upload.completionObservedMilliseconds, upload.bytes/mib);
+        }
         std::vector<PlotSeries> textures{{"Resident",IM_COL32(105,194,242,255),{}},
             {"Pending",IM_COL32(255,211,92,255),{}},{"Retiring",IM_COL32(246,123,123,255),{}}};
         for (const auto& sample : it->samples) {
@@ -683,6 +691,14 @@ EditorProfiler::Scope& EditorProfiler::Scope::operator=(Scope&& other) noexcept
     return *this;
 }
 
+void EditorProfiler::beginCapture()
+{
+    capturedFrames_.clear();
+    capturedExecutions_.clear();
+    capturing_ = true;
+    captureOverflow_ = false;
+}
+
 EditorProfiler::FrameScope EditorProfiler::beginFrame()
 {
     if (frameActive_) {
@@ -759,6 +775,11 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
 
 void EditorProfiler::updateRenderGraphGpuStats(const render::RenderGraphExecutionStats& stats)
 {
+    const auto captured = capturedExecutions_.find({stats.graphGeneration, stats.executionId});
+    if (captured != capturedExecutions_.end()) {
+        applyRenderGraphGpuStats(capturedFrames_[captured->second].nodes, stats);
+        capturedExecutions_.erase(captured);
+    }
     if (stats.graphGeneration != graphGeneration_) { return; }
     applyRenderGraphGpuStats(currentNodes_, stats);
     applyRenderGraphGpuStats(latestFrame_.nodes, stats);
@@ -937,6 +958,18 @@ void EditorProfiler::endFrame()
         endSection(stack_.back());
     }
 
+    if (capturing_) {
+        if (capturedFrames_.size() >= 60000) { captureOverflow_ = true; capturing_ = false; }
+        else {
+            const size_t index = capturedFrames_.size();
+            capturedFrames_.push_back({currentNodes_, frameIndex_, currentOverflow_, currentStreaming_});
+            for (const auto& node : currentNodes_) {
+                if (node.renderGraphExecutionId != UINT64_MAX) {
+                    capturedExecutions_[{graphGeneration_, node.renderGraphExecutionId}] = index;
+                }
+            }
+        }
+    }
     latestFrame_.index = frameIndex_++;
     latestFrame_.profilingOverflow = currentOverflow_;
     // Remove sources no longer present, including a switch to a non-streaming scene.

@@ -1653,7 +1653,13 @@ public:
         TextureHandle color = context.outputTexture("color");
         Buffer* textureFeedback = nullptr;
         if (visibilityDeferred_) {
-            auto streamingResult = sceneResources_.beginTextureStreaming(context.commandBuffer(), context.frameIndex(), textureFeedback);
+            CpuProfileRecorder textureProfile;
+            Result streamingResult;
+            {
+                CpuProfileScope profile(&textureProfile, "Texture streaming");
+                streamingResult = sceneResources_.beginTextureStreaming(context.commandBuffer(), context.frameIndex(), textureFeedback, &textureProfile);
+            }
+            context.publishCpuProfile(textureProfile.sections);
             if (!streamingResult) { return streamingResult; }
         }
         const auto& materialTextureViews = sceneResources_.materialTextureViews();

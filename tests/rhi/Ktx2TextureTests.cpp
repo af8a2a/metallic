@@ -577,13 +577,22 @@ public:
         require(pool->createCommandBuffer(commands),"stream test commands");
         require(tracker.initialize(context.device,context.graphicsQueue),"stream test tracker");
         uint64_t index = 0;
+        CpuProfileRecorder textureProfile;
+        bool sawTextureSchedule = false;
         const auto tick = [&](bool visible, bool cancel=false) {
             require(frame.wait(),"feedback wait");
             require(pool->reset(),"feedback reset");
             require(frame.begin(index++),"feedback frame");
             require(commands->begin(&frame),"feedback begin");
             Buffer* feedback = nullptr;
-            require(resources.beginTextureStreaming(*commands,index,feedback),"streaming tick");
+            textureProfile.reset();
+            require(resources.beginTextureStreaming(*commands,index,feedback,&textureProfile),"streaming tick");
+            for (size_t section=0; section<textureProfile.sections.size(); ++section) {
+                const auto& timing=textureProfile.sections[section];
+                require(timing.parent==UINT32_MAX || timing.parent<section,"Invalid texture profile parent");
+                require(timing.cpuOnly && timing.cpuMilliseconds>=0,"Invalid texture CPU scope");
+                sawTextureSchedule |= timing.name=="Candidates and allocation queries";
+            }
             require(resources.uploadMaterialTextures(*commands),"retain current texture generation");
             ComputeDispatchBinding view{.binding=0,.buffer=feedback};
             const uint32_t push[]{imageSlot,0,visible ? 1000u : 0u,0};
@@ -625,6 +634,13 @@ public:
             "Cold image allocations did not return to baseline after GPU retirement");
         require(std::equal(logical.begin(),logical.end(),resources.logicalTextureIndices().begin()),"Logical texture IDs changed");
         require(cold.feedbackFrames>0 && cold.streamingUploadBytes>0,"No GPU feedback/upload telemetry");
+        require(sawTextureSchedule,"Texture scheduling CPU scope missing");
+        require(cold.lastUpload.sequence==cold.upgrades+cold.downgrades,"Missing independent upload samples");
+        require(cold.lastUpload.requestFrame<=cold.lastUpload.submitFrame &&
+            cold.lastUpload.submitFrame<=cold.lastUpload.completionFrame,"Upload frame attribution invalid");
+        if (context.graphicsQueue.timestampValidBits()) {
+            require(cold.lastUpload.gpuTimingAvailable && cold.lastUpload.gpuMilliseconds>=0,"Upload timestamps missing");
+        }
         Json report{{"baseBytes",baseline},{"hotBytes",hot.residentAllocationBytes},{"coldBytes",cold.residentAllocationBytes},
             {"peakLiveBytes",cold.peakLiveAllocationBytes},{"budgetBytes",cold.budgetBytes},{"upgrades",cold.upgrades},
             {"downgrades",cold.downgrades},{"feedbackFrames",cold.feedbackFrames},{"maxRequestFrames",cold.maxRequestLatencyFrames}};

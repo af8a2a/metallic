@@ -601,7 +601,7 @@ private:
     Result clearRequestBuffer(CommandBuffer& commandBuffer);
     Result dispatchTraversal(CommandBuffer& commandBuffer, uint32_t threadCount, uint32_t traversalPhase);
     Result buildActiveTable(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
-    Result buildBlasInputs(CommandBuffer& commandBuffer);
+    Result buildBlasInputs(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
     Result cmdBuildBlas(CommandBuffer& commandBuffer);
     Result cmdBuildFallbackBlas(CommandBuffer& commandBuffer);
     Result buildTlasInstances(CommandBuffer& commandBuffer);
@@ -671,6 +671,7 @@ private:
     uint32_t maxClasBuildClusters_ = 0;
     uint32_t coldPageRetentionFrames_ = 0;
     bool clusterRtxEnabled_ = false;
+    MeshletStreamGpuBlasHeader recentBlasHeader_;
     BindlessHandle pageHandle_;
     BindlessHandle activeGroupHandle_;
     BindlessHandle activeHeaderHandle_;

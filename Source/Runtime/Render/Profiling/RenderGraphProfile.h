@@ -36,6 +36,16 @@ struct StreamCpuWorkCounters {
     uint32_t pendingFreePages = 0;
 };
 
+// One completed independent graphics upload; frame IDs are producer history frames.
+// Completion latency includes queueing and polling, unlike the timestamp interval.
+struct TextureUploadProfile {
+    uint64_t sequence = 0, requestFrame = 0, submitFrame = 0, completionFrame = 0;
+    uint64_t bytes = 0;
+    uint32_t images = 0;
+    bool gpuTimingAvailable = false;
+    double gpuMilliseconds = 0, completionObservedMilliseconds = 0;
+};
+
 // CPU-visible streaming counters; never triggers a GPU readback or page scan.
 struct SceneStreamingProfile {
     std::string passName;
@@ -43,6 +53,9 @@ struct SceneStreamingProfile {
     uint64_t generation = 0;
     uint64_t frameIndex = 0;
     uint64_t feedbackFrame = UINT64_MAX;
+    bool blasFeedbackAvailable = false;
+    uint64_t blasFeedbackFrame = 0;
+    uint32_t blasBuildCount = 0, blasClusterReferences = 0, blasOverflowCount = 0;
     uint64_t geometryUsedBytes = 0;
     uint64_t geometryBudgetBytes = 0;
     uint64_t clasUsedBytes = 0;
@@ -80,6 +93,7 @@ struct SceneStreamingProfile {
     uint64_t gpuDecompressedPages = 0;
     uint64_t totalGpuDecompressedPages = 0;
     uint64_t loadFailures = 0;
+    TextureUploadProfile textureUpload;
     bool textureStreaming = false;
     uint64_t textureResidentBytes = 0, textureBudgetBytes = 0, texturePendingBytes = 0, textureRetiredBytes = 0;
     uint64_t textureUpgrades = 0, textureDowngrades = 0, textureBudgetDeferrals = 0;

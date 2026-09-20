@@ -1797,7 +1797,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = requestReadbackByteSize + sizeof(uint32_t),
+            .size = requestReadbackByteSize + sizeof(uint32_t) + sizeof(MeshletStreamGpuBlasHeader),
             .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback,
         },
@@ -2262,6 +2262,7 @@ void MeshletStreamRuntime::reset()
     tlasInstanceBufferState_ = ResourceState::Undefined;
     pageTableInitialized_ = std::make_shared<bool>(false);
     currentFrameOrderedUploadCount_ = 0;
+    recentBlasHeader_ = {};
     requestReadbackValid_ = false;
     frameIndex_ = 0;
     maxResidentPages_ = 0;
@@ -2585,23 +2586,29 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
     }
     if (checkpoint) { checkpoint("AfterStreamClasBuild"); }
     if (!clusterRtxEnabled_) { return {}; }
+    if (checkpoint) { checkpoint("BeforeFallbackBlas"); }
     result = cmdBuildFallbackBlas(commandBuffer);
     if (!result) {
         return result;
     }
-    result = buildBlasInputs(commandBuffer);
+    result = buildBlasInputs(commandBuffer, checkpoint);
     if (!result) {
         return result;
     }
+    if (checkpoint) { checkpoint("BeforeBlasBuild"); }
     result = cmdBuildBlas(commandBuffer);
     if (!result) {
         return result;
     }
+    if (checkpoint) { checkpoint("BeforeTlasInput"); }
     result = buildTlasInstances(commandBuffer);
     if (!result) {
         return result;
     }
-    return cmdBuildTlas(commandBuffer);
+    if (checkpoint) { checkpoint("BeforeTlasBuild"); }
+    result = cmdBuildTlas(commandBuffer);
+    if (checkpoint) { checkpoint("AfterTlasBuild"); }
+    return result;
 }
 
 Result MeshletStreamRuntime::cmdPostTraversal(CommandBuffer& commandBuffer)
@@ -3305,7 +3312,7 @@ Result MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& command
         .destination = requestReadbackBuffer_.get(),
         .sourceOffset = 0,
         .destinationOffset = 0,
-        .size = requestReadbackBuffer_->desc().size - sizeof(uint32_t),
+        .size = requestReadbackBuffer_->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader),
     });
     if (distributedPageDemand_) {
         // Piggyback one work counter on the existing completed request feedback;
@@ -3314,9 +3321,15 @@ Result MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& command
         commandBuffer.copyBuffer(BufferCopyDesc{
             .source = demandBuffer_.get(), .destination = requestReadbackBuffer_.get(),
             .sourceOffset = 18u * sizeof(uint32_t),
-            .destinationOffset = requestReadbackBuffer_->desc().size - sizeof(uint32_t),
+            .destinationOffset = requestReadbackBuffer_->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader),
             .size = sizeof(uint32_t),
         });
+    }
+    if (clusterRtxEnabled_ && blasHeaderBuffer_) {
+        transitionBuffer(commandBuffer, *blasHeaderBuffer_, blasHeaderBufferState_, ResourceState::TransferSource);
+        commandBuffer.copyBuffer({.source=blasHeaderBuffer_.get(), .destination=requestReadbackBuffer_.get(),
+            .sourceOffset=0, .destinationOffset=requestReadbackBuffer_->desc().size - sizeof(MeshletStreamGpuBlasHeader),
+            .size=sizeof(MeshletStreamGpuBlasHeader)});
     }
     requestReadbackValid_ = true;
     return {};
@@ -3537,7 +3550,7 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, cons
     return {};
 }
 
-Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
+Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint)
 {
     if (blasInputPass_ == nullptr ||
         !blasInputPass_->ready() ||
@@ -3575,6 +3588,7 @@ Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
             blasClusterReferenceBufferState_);
     };
 
+    if (checkpoint) { checkpoint("BeforeBlasReset"); }
     Result result = dispatchPhase(
         kMeshletStreamBlasInputResetPhase,
         std::max(asset_.instanceCount(), 1u));
@@ -3583,6 +3597,7 @@ Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
     }
     // Compare the complete logical cut before resetting any cached instance.
     // CLAS publication revisions invalidate relocated/retired references as well.
+    if (checkpoint) { checkpoint("BeforeBlasCompare"); }
     result = dispatchPhase(4u, maxActiveGroups_);
     if (!result) { return result; }
     result = dispatchPhase(5u, std::max(asset_.instanceCount(), 1u));
@@ -3591,16 +3606,19 @@ Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
         [valid = blasCacheInitialized_] { *valid = false; }));
     if (!result) { return result; }
     *blasCacheInitialized_ = true;
+    if (checkpoint) { checkpoint("BeforeBlasCount"); }
     result = dispatchPhase(kMeshletStreamBlasInputCountPhase, maxActiveGroups_);
     if (!result) {
         return result;
     }
+    if (checkpoint) { checkpoint("BeforeBlasSetup"); }
     result = dispatchPhase(
         kMeshletStreamBlasInputSetupPhase,
         std::max(asset_.instanceCount(), 1u));
     if (!result) {
         return result;
     }
+    if (checkpoint) { checkpoint("BeforeBlasInsert"); }
     return dispatchPhase(kMeshletStreamBlasInputInsertPhase, maxActiveGroups_);
 }
 
@@ -3829,7 +3847,11 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profile
     const auto* header = static_cast<const StreamRequestBufferHeader*>(mapped);
     if (distributedPageDemand_) {
         std::memcpy(&recentDemandGroupTests_, static_cast<const uint8_t*>(mapped) +
-            requestReadbackBuffer_->desc().size - sizeof(uint32_t), sizeof(uint32_t));
+            requestReadbackBuffer_->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader), sizeof(uint32_t));
+    }
+    if (clusterRtxEnabled_) {
+        std::memcpy(&recentBlasHeader_, static_cast<const uint8_t*>(mapped) +
+            requestReadbackBuffer_->desc().size - sizeof(MeshletStreamGpuBlasHeader), sizeof(recentBlasHeader_));
     }
     recentGpuRequestCount_ = header->loadCounter;
     // This header is already consumed for residency even when debug capture is off.
@@ -3908,6 +3930,11 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.generation = debugGeneration_;
     result.frameIndex = frameIndex_;
     result.feedbackFrame = debugRequestSourceKnown_ ? debugRequestSourceFrame_ : UINT64_MAX;
+    result.blasFeedbackAvailable = clusterRtxEnabled_ && debugRequestSourceKnown_;
+    result.blasFeedbackFrame = recentBlasHeader_.frameIndex;
+    result.blasBuildCount = recentBlasHeader_.blasBuildCount;
+    result.blasClusterReferences = recentBlasHeader_.clusterReferenceCount;
+    result.blasOverflowCount = recentBlasHeader_.overflowCount;
     result.geometryUsedBytes = stats.usedResidentBytes;
     result.geometryBudgetBytes = stats.maxResidentBytes;
     result.totalPages = stats.pageCount;

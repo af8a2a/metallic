@@ -2052,6 +2052,12 @@ int EditorApplication::run(
         return 1;
     }
 
+    if (std::getenv("METALLIC_FULL_ROAM_OUTPUT")) {
+        const bool passed = runZorahFullRoamBenchmark();
+        shutdown();
+        return passed ? 0 : 1;
+    }
+
     if (smokeTest) {
         if (!waitForPendingSceneLoad(30000)) {
             spdlog::error("Smoke test scene load did not complete: {}", sceneStatus_);
@@ -2146,6 +2152,10 @@ int EditorApplication::run(
 
     uint64_t nsightFrameIndex = 0;
     while (running_) {
+        if (fullRoamRequested_) {
+            fullRoamRequested_ = false;
+            (void)runZorahFullRoamBenchmark();
+        }
         METALLIC_TRACY_CPU_SCOPE("Editor Frame");
         const render::profiling::NsightProfileRange frameMarker(
             render::profiling::NsightDomain::Editor,
@@ -2296,7 +2306,8 @@ bool EditorApplication::initialize()
     }
 
     SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-    if (!smokeTest_ || !environmentFlagEnabled("METALLIC_SMOKE_TEST_HIDDEN")) { SDL_ShowWindow(window_); }
+    if ((!smokeTest_ || !environmentFlagEnabled("METALLIC_SMOKE_TEST_HIDDEN")) &&
+        !environmentFlagEnabled("METALLIC_FULL_ROAM_HIDDEN")) { SDL_ShowWindow(window_); }
 
     if (waitForGraphicsDebugger_) {
         SDL_ShowSimpleMessageBox(
@@ -2324,12 +2335,18 @@ bool EditorApplication::initialize()
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        if (!smokeTest_ || !environmentFlagEnabled("METALLIC_SMOKE_TEST_HIDDEN")) {
+        if ((!smokeTest_ || !environmentFlagEnabled("METALLIC_SMOKE_TEST_HIDDEN")) &&
+        !environmentFlagEnabled("METALLIC_FULL_ROAM_HIDDEN")) {
             io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
         }
         io.ConfigDpiScaleFonts = true;
         io.ConfigDpiScaleViewports = true;
         loadDefaultImGuiLayoutIfMissing();
+        if (std::getenv("METALLIC_FULL_ROAM_OUTPUT") && io.IniFilename) {
+            // CLI captures reuse the saved layout but never overwrite the user's layout.
+            ImGui::LoadIniSettingsFromDisk(io.IniFilename);
+            io.IniFilename = nullptr;
+        }
 
         applyNvproImGuiStyle();
         ImGuiStyle& style = ImGui::GetStyle();
@@ -3069,6 +3086,9 @@ void EditorApplication::drawDockspace()
             if (gpuDrivenScenesOnly_) {
                 for (const auto& sample : render::listGPUDrivenSceneSamples()) {
                     if (ImGui::MenuItem(sample.name.c_str())) { loadBuiltInSample(sample.id.c_str()); }
+                }
+                if (ImGui::MenuItem("Benchmark ZorahFull (180s)", nullptr, false, !fullRoamActive_)) {
+                    fullRoamRequested_ = true;
                 }
                 ImGui::Separator();
             }
@@ -6182,6 +6202,9 @@ void EditorApplication::drawViewportPanel()
         previewWidth = 1404;
         previewHeight = 674;
     }
+    if (fullRoamActive_ && fullRoamWidth_ && fullRoamHeight_) {
+        previewWidth = fullRoamWidth_; previewHeight = fullRoamHeight_;
+    }
     const bool hasRhiPreview = updateViewportPreview(previewWidth, previewHeight);
     const uint32_t displayWidth = hasRhiPreview && viewportTextureWidth_ > 0
         ? viewportTextureWidth_
@@ -6210,7 +6233,7 @@ void EditorApplication::drawViewportPanel()
     const bool previewMatchesRequestedExtent = hasRhiPreview &&
         viewportTextureWidth_ == previewWidth && viewportTextureHeight_ == previewHeight;
     const bool popupOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
-    viewportInteractionEnabled_ = previewMatchesRequestedExtent && !loadingScene && !popupOpen;
+    viewportInteractionEnabled_ = previewMatchesRequestedExtent && !loadingScene && !popupOpen && !fullRoamActive_;
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const bool mouseInsideImage = mouse.x >= min.x && mouse.x < max.x &&
         mouse.y >= min.y && mouse.y < max.y;

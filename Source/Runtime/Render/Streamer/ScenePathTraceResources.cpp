@@ -1388,7 +1388,9 @@ struct ScenePathTraceResources::Impl {
         RenderFrameContext frame;
         QueueSubmissionTracker tracker;
         bool submitted = false;
-        uint64_t requestedFrame = 0;
+        uint64_t requestedFrame = 0, submittedFrame = 0;
+        SceneResourceLogClock::time_point submittedAt;
+        std::unique_ptr<TimestampQueryPool> timestamps;
         ~TextureMigration()
         {
             if (submitted) { (void)frame.wait(); }
@@ -1474,12 +1476,32 @@ struct ScenePathTraceResources::Impl {
         for (const auto& retired : retiredTextures) { textureStats.retiredAllocationBytes += retired.bytes; }
     }
 
-    Result pumpTextureMigration()
+    Result pumpTextureMigration(CpuProfileRecorder* profiler)
     {
+        CpuProfileScope phase(profiler, "Poll migration completion");
         if (!textureMigration) { return {}; }
         auto& migration = *textureMigration;
         if (migration.submitted) {
             if (!migration.frame.completion().isComplete()) { return {}; }
+            phase.next("Resolve upload timestamps");
+            TextureUploadProfile upload;
+            upload.sequence = textureStats.lastUpload.sequence + 1;
+            upload.requestFrame = migration.requestedFrame;
+            upload.submitFrame = migration.submittedFrame;
+            upload.completionFrame = streamingFrame;
+            upload.images = uint32_t(migration.textures.size());
+            for (const auto& image : migration.textures) { upload.bytes += image.byteSize; }
+            upload.completionObservedMilliseconds = sceneResourceElapsedMilliseconds(migration.submittedAt);
+            if (migration.timestamps) {
+                TimestampQueryResult values[2];
+                const auto queryResult = migration.timestamps->readResults(0, 2, values);
+                if (queryResult && values[0].available && values[1].available) {
+                    upload.gpuTimingAvailable = true;
+                    upload.gpuMilliseconds = migration.timestamps->durationMilliseconds(values[0].value, values[1].value);
+                }
+            }
+            textureStats.lastUpload = upload;
+            phase.next("Publish texture generation");
             texturePublication = migration.frame.completion();
             for (size_t i = 0; i < migration.requests.size(); ++i) {
                 const auto& request = migration.requests[i];
@@ -1503,6 +1525,7 @@ struct ScenePathTraceResources::Impl {
             textureStats.pendingImages = 0; textureStats.pendingAllocationBytes = 0;
             return {};
         }
+        phase.next("Prepare images and staging");
         const auto prepareStarted = SceneResourceLogClock::now();
         Result result;
         // Consume ready jobs only; cap image count/bytes at scheduling and spend
@@ -1528,12 +1551,21 @@ struct ScenePathTraceResources::Impl {
             if (migration.textures.size() != migration.requests.size() &&
                 sceneResourceElapsedMilliseconds(prepareStarted) >= 1.0) { return {}; }
         }
+        phase.next("Release decode workers");
         migration.decode.reset();
+        phase.next("Upload command setup");
         if (!(result = device->createCommandPool(*graphicsQueue, migration.pool)) ||
             !(result = migration.pool->createCommandBuffer(migration.commands)) ||
             !(result = migration.tracker.initialize(*device, *graphicsQueue)) ||
             !(result = migration.frame.begin(streamingFrame)) ||
             !(result = migration.commands->begin(&migration.frame))) { return result; }
+        if (graphicsQueue->timestampValidBits() != 0) {
+            if (device->createTimestampQueryPool(*graphicsQueue, {.queryCount=2}, migration.timestamps)) {
+                if (!(result = migration.commands->resetTimestampQueries(*migration.timestamps, 0, 2)) ||
+                    !(result = migration.commands->writeTimestamp(*migration.timestamps, 0, PipelineStageBits::TopOfPipe))) { return result; }
+            }
+        }
+        phase.next("Record texture copies");
         for (auto& image : migration.textures) {
             if (!(result = uploadTexture(*migration.commands, image))) { return result; }
             TextureBarrierDesc barrier{.texture=image.texture.get(), .before=ResourceState::TransferDestination,
@@ -1541,21 +1573,27 @@ struct ScenePathTraceResources::Impl {
             migration.commands->barrier({.textures=&barrier, .textureCount=1});
             image.state = ResourceState::ShaderRead;
         }
+        if (migration.timestamps && !(result = migration.commands->writeTimestamp(
+            *migration.timestamps, 1, PipelineStageBits::BottomOfPipe))) { return result; }
         if (!(result = migration.commands->end())) { return result; }
+        phase.next("Submit texture upload");
         CommandBuffer* commands[] = {migration.commands.get()};
         if (!(result = migration.tracker.submit({.commandBuffers=commands, .commandBufferCount=1}, migration.frame))) { return result; }
         migration.submitted = true;
+        migration.submittedFrame = streamingFrame;
+        migration.submittedAt = SceneResourceLogClock::now();
         for (const auto& image : migration.textures) { textureStats.streamingUploadBytes += image.byteSize; }
         return {};
     }
 
-    void scheduleTextureMigration()
+    void scheduleTextureMigration(CpuProfileRecorder* profiler)
     {
         if (textureMigration || streamingFrame < nextTextureRetry) { return; }
         constexpr uint64_t maxBatchBytes = 4ull * 1024 * 1024;
         // Keep real headroom for replacement tails; old + new coexist until retire.
         const uint64_t reserve = std::min<uint64_t>(16ull * 1024 * 1024, textureStats.budgetBytes / 8);
         const uint64_t steadyBudget = textureStats.budgetBytes - reserve;
+        CpuProfileScope phase(profiler, "Candidates and allocation queries");
         const auto budget = device->memoryBudget();
         const bool pressure = textureStats.residentAllocationBytes > steadyBudget ||
             (budget.policy.enabled && budget.availableBytes < reserve);
@@ -1586,6 +1624,7 @@ struct ScenePathTraceResources::Impl {
                 double(textureHits[image]) * (current - target) / double(std::max<uint64_t>(bytes - std::min(bytes,oldBytes),1));
             candidates.push_back({{image,slot,target,bytes},priority});
         }
+        phase.next("Sort and admit candidates");
         std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) { return a.priority > b.priority; });
         auto migration = std::make_unique<TextureMigration>();
         uint64_t bytes = 0, cpuBytes = 0;
@@ -1606,6 +1645,7 @@ struct ScenePathTraceResources::Impl {
             if (decode.size() == 8) { break; }
         }
         if (decode.empty()) { return; }
+        phase.next("Start decode workers");
         migration->decode = std::make_unique<Ktx2TexturePrefetch>(std::move(decode), std::min(textureLoadWorkers,2u), kTexturePrefetchBytes);
         migration->requestedFrame = streamingFrame;
         textureStats.pendingImages = uint32_t(migration->requests.size());
@@ -1614,7 +1654,7 @@ struct ScenePathTraceResources::Impl {
         textureMigration = std::move(migration);
     }
 
-    Result beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback)
+    Result beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler)
     {
         if (!emptyTextureFeedback) {
             std::unique_ptr<Buffer> buffer;
@@ -1630,9 +1670,11 @@ struct ScenePathTraceResources::Impl {
         if (!frame) { return {}; }
         frame->retain(emptyTextureFeedback);
         if (!textureStreaming || baseTextureMips.empty()) { return {}; }
+        CpuProfileScope phase(profiler, "Consume texture feedback");
         streamingFrame = frameIndex;
         consumeTextureFeedback();
-        auto result = pumpTextureMigration();
+        phase.next("Texture migration");
+        auto result = pumpTextureMigration(profiler);
         if (!result) {
             spdlog::warn("[TextureStreaming] Migration deferred: {}", resultToString(result));
             textureMigration.reset();
@@ -1642,8 +1684,11 @@ struct ScenePathTraceResources::Impl {
             if (hasError(result,Error::DeviceLost)) { return result; }
         }
         // Publication can release the previous generation immediately if no frame uses it.
+        phase.next("Retire texture generations");
         consumeTextureFeedback();
-        scheduleTextureMigration();
+        phase.next("Schedule texture migration");
+        scheduleTextureMigration(profiler);
+        phase.next("Prepare texture feedback");
         if (textureFeedback.size() >= 4) { return {}; }
         std::shared_ptr<Buffer> buffer;
         if (!freeTextureFeedback.empty()) {
@@ -3463,9 +3508,9 @@ Result ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandBuf
     return impl_->uploadMaterialTextures(commandBuffer);
 }
 
-Result ScenePathTraceResources::beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback)
+Result ScenePathTraceResources::beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler)
 {
-    return impl_->beginTextureStreaming(commands, frameIndex, feedback);
+    return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler);
 }
 
 void ScenePathTraceResources::clear()

@@ -54,6 +54,7 @@ private:
     bool runMultiViewportSmokeTest();
     bool runSliderDebugSmokeTest();
     bool runSceneSwitchSmokeTest();
+    bool runZorahFullRoamBenchmark();
     bool runDlssCameraSmokeTest();
     bool runVisibilityPreviewSmokeTest();
     bool runMaterialInspectorSmokeTest();
@@ -298,6 +299,8 @@ private:
     uint32_t viewportResizeStableFrameCount_ = 0;
     uint64_t historyFrameIndex_ = 0;
     bool running_ = true;
+    bool fullRoamRequested_ = false, fullRoamActive_ = false;
+    uint32_t fullRoamWidth_ = 0, fullRoamHeight_ = 0;
     bool smokeTest_ = false;
     bool waitForGraphicsDebugger_ = false;
     bool nsightGraphicsCaptureRequested_ = false;

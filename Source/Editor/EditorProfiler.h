@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 
 #include <chrono>
+#include <map>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -44,6 +45,7 @@ public:
         std::vector<Node> nodes;
         uint64_t index = 0;
         bool profilingOverflow = false;
+        std::vector<render::SceneStreamingProfile> streaming;
     };
 
     struct StreamingHistory {
@@ -91,6 +93,13 @@ public:
         size_t nodeIndex_ = 0;
     };
 
+    // Capture is independent of the bounded UI history. Late GPU results update
+    // only the matching generation/execution; never copy a previous frame's GPU time.
+    void beginCapture();
+    void endCapture() { capturing_ = false; }
+    const std::vector<Frame>& capturedFrames() const { return capturedFrames_; }
+    bool captureOverflow() const { return captureOverflow_; }
+    uint64_t nextFrameIndex() const { return frameIndex_; }
     FrameScope beginFrame();
     Scope scope(std::string_view name, uint32_t color = 0);
     void addRenderGraphStats(const render::RenderGraphExecutionStats& stats);
@@ -105,6 +114,9 @@ private:
 
     static uint32_t colorFromName(std::string_view name);
 
+    bool capturing_ = false, captureOverflow_ = false;
+    std::vector<Frame> capturedFrames_;
+    std::map<std::pair<uint64_t, uint64_t>, size_t> capturedExecutions_;
     bool frameActive_ = false;
     std::vector<Node> currentNodes_;
     std::vector<size_t> stack_;
