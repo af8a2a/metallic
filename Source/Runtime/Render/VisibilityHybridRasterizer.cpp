@@ -59,6 +59,9 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
     const char* clusterEntries[] = {"hybridClusterResetMain", "hybridClusterHistogramMain",
         "hybridClusterArgumentsMain", "hybridClusterScatterMain"};
     // Classification, stable bins, and active-group count/scatter dispatches.
+    result = device.createBuffer({.size = 16 * sizeof(uint64_t), .structureStride = 8,
+        .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource}, workloadBuffer_);
+    if (!result) { return result; }
     result = device.createBuffer({.size = 36, .structureStride = 4,
         .usage = BufferUsageBits::Storage | BufferUsageBits::Indirect | BufferUsageBits::TransferSource}, candidateArguments_);
     if (!result) { return result; }

@@ -91,8 +91,8 @@ def analyze(directory):
             values["editorLoop"].append(row["editorLoopMs"])
             assert len(row["streaming"]) == 1
             if residency is None:
-                residency = row["streaming"]
-            assert row["streaming"] == residency, "Geometry/CLAS/texture residency changed"
+                residency = [{k:v for k,v in item.items() if k != "softwareRaster"} for item in row["streaming"]]
+            assert [{k:v for k,v in item.items() if k != "softwareRaster"} for item in row["streaming"]] == residency, "Geometry/CLAS/texture residency changed"
         key = case.get("variant",str(case["maxPixels"]))
         if key not in pooled:
             pooled[key] = {k: [] for k in values}
@@ -119,15 +119,33 @@ def analyze(directory):
                     assert sum(counts[k] for k in ("exactClusters", "fastSoftware", "fastHardware")) == bins["hardwareClusters"] + bins["softwareClusters"]
                     if r["variant"] == "exact8":
                         assert counts["fastSoftware"] == counts["fastHardware"] == 0
-    if capture["config"].get("swComparison"):
+    if not capture["config"].get("historyComparison") and any(capture["config"].get(key) for key in ("swComparison", "swLoadComparison", "swWorkComparison")):
         legacy = next(c["after"] for c in capture["cases"] if c["variant"] == "swLegacy")
         for r,c in zip(results,capture["cases"]):
             r["vsLegacySoftware"] = image_difference(directory,legacy,c["after"])
-            if r["variant"] in ("swPrepared", "swCooperative"):
+            if r["variant"] in ("swPrepared", "swCooperative", "swWorkBins", "swWorkControl"):
                 for resource in ("VBuffer.visibility", "VBuffer.depth"):
                     assert c["after"][resource]["hash"] == legacy[resource]["hash"], "Exact SW changed reference image"
                 for phase in ("AfterStreamEarlyBins", "AfterStreamLateBins"):
                     assert c["after"][phase] == legacy[phase], "Exact SW changed bins"
+    if capture["config"].get("historyComparison"):
+        control = next(c for c in capture["cases"] if c["variant"] == "swWorkControl")
+        shader = None
+        for case in capture["cases"]:
+            if case["variant"] not in ("swWorkControl", "swCameraReapply"):
+                continue
+            for resource in ("VBuffer.visibility", "VBuffer.depth"):
+                assert case["after"][resource]["hash"] == control["after"][resource]["hash"], "Camera reapply changed image"
+            for point in ("before", "after"):
+                for workload in case[point].get("workloads", []):
+                    if workload["phase"] != "StreamEarlyWorkload":
+                        continue
+                    identity = workload["shader"]
+                    key = (identity["module"], identity["entryPoint"], identity["spirvFnv1a64"])
+                    if shader is None:
+                        shader = key
+                    assert shader == key, "Camera A/B selected different shader"
+                    assert bool(identity["paramsHzbValid"]) == (case["variant"] == "swWorkControl"), "Expected HZB state not reproduced"
     summary = {"protocol": capture["protocol"], "outputExtent": capture["outputExtent"], "renderExtent": capture["renderExtent"],
                "cutHash": base["cutHash"], "pageMappingsHash": base["pageMappingsHash"], "activeGroups": base["activeGroups"],
                "residentState": residency, "sameCutAndResidency": True, "sameModeImagesStable": True, "cases": results,
@@ -138,14 +156,14 @@ def analyze(directory):
              f"Cut `{base['cutHash']}`, page mappings `{base['pageMappingsHash']}`, {base['activeGroups']} active groups. Residency identical in measured samples.", "",
              "| Mode | Samples | Raster mean ms | Raster p50 | Raster p95 | Classify mean | SW mean | HW mean | Graph mean |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for mode, stats in sorted(summary["pooled"].items(), key=lambda x: {"exact8": 8,"fast8": 9}.get(x[0],int(x[0]) if x[0].isdigit() else 10)):
-        label = {"0":"Full HW","exact8":"8 px exact","fast8":"8 px metadata","swLegacy":"8 px legacy SW","swPrepared":"8 px prepared SW","swPlane":"8 px depth plane","swCooperative":"8 px cooperative load"}.get(mode,mode + " px")
+        label = {"0":"Full HW","exact8":"8 px exact","fast8":"8 px metadata","swLegacy":"8 px legacy SW","swPrepared":"8 px prepared SW","swPlane":"8 px depth plane","swCooperative":"8 px cooperative load","swWorkBins":"8 px local work bins","swWorkControl":"8 px reused setup control","swCameraReapply":"same camera reapplied"}.get(mode,mode + " px")
         t = stats["rasterTotal"]
         lines.append(f"| {label} | {t['count']} | {t['mean']:.3f} | {t['p50']:.3f} | {t['p95']:.3f} | {stats['classification']['mean']:.3f} | {stats['software']['mean']:.3f} | {stats['hardware']['mean']:.3f} | {stats['graphGpu']['mean']:.3f} |")
     lines += ["", "| Case | Early HW / SW | Coverage different vs HW | Visibility different % | Max depth abs | Depth >8 ULP |", "|---|---:|---:|---:|---:|---:|"]
     for r in results:
         b, d = r["earlyBins"], r["vsFullHardware"]
         lines.append(f"| {r['name']} | {b['hardwareClusters']} / {b['softwareClusters']} | {d['coverageDifferentPixels']} | {d['visibilityDifferentPercent']:.5f} | {d['coveredDepthMaxAbs']:.7g} | {d['coveredDepthOver8UlpPixels']} |")
-    if capture["config"].get("swComparison"):
+    if not capture["config"].get("historyComparison") and any(capture["config"].get(key) for key in ("swComparison", "swLoadComparison", "swWorkComparison")):
         lines += ["", "Prepared SW is required to match legacy depth/visibility and bins exactly.", "",
                   "| Case | Coverage different vs legacy SW | Visibility different | Max depth ULP |",
                   "|---|---:|---:|---:|"]

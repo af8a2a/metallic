@@ -28,6 +28,7 @@ public:
         MeshletStreamUserPush push);
     Buffer& candidateArguments() const { return *candidateArguments_; }
     Result finishClusterBins(CommandBuffer& commands);
+    Buffer& workloadBuffer() const { return *workloadBuffer_; }
     Buffer& clusterBuffer() const { return *clusterBuffer_; }
     Buffer& clusterArguments() const { return *clusterArguments_; }
     uint32_t clusterCapacity() const { return push_.clusterCapacity; }
@@ -63,6 +64,7 @@ private:
     std::array<std::unique_ptr<ShaderModule>, 5> shaders_;
     std::array<std::unique_ptr<ComputePipeline>, 3> compute_;
     std::array<std::unique_ptr<GraphicsPipeline>, 2> resolve_;
+    std::unique_ptr<Buffer> workloadBuffer_;
     std::unique_ptr<Buffer> clusterBuffer_;
     std::unique_ptr<Buffer> clusterArguments_;
     std::unique_ptr<Buffer> candidateArguments_;

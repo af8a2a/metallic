@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Editor/EditorRasterWorkload.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
@@ -35,15 +36,18 @@ std::string rasterHash(const void* data, size_t bytes)
 class RasterComparisonObserver final : public IRenderDebugObserver {
 public:
     bool capture = false;
+    RasterWorkloadObserver workload;
     Device* device = nullptr;
     std::map<std::string, std::unique_ptr<Buffer>> copies;
     void compiled(Json) override {}
-    void beginExecution(Device& d, debug::DebugEvidenceStamp, RenderSubsystemHost*) override { device = &d; }
+    void beginExecution(Device& d, debug::DebugEvidenceStamp stamp, RenderSubsystemHost* host) override { device = &d; workload.beginExecution(d, stamp, host); }
     void endExecution(bool) override {}
     void boundary(CommandBuffer& commands, std::string_view checkpoint, uint32_t,
-        std::string_view pass, std::span<const DebugResourceBinding> resources, const Json&) override
+        std::string_view pass, std::span<const DebugResourceBinding> resources, const Json& values) override
     {
         if (!capture || pass != "VBuffer") { return; }
+        workload.capture = true;
+        workload.boundary(commands, checkpoint, 0, pass, resources, values);
         for (const auto& resource : resources) {
             std::string key;
             uint64_t bytes = 0;
@@ -125,6 +129,7 @@ public:
             stream.write(reinterpret_cast<const char*>(data.data()),std::streamsize(data.size()*4));
             result[resource] = {{"file",file},{"hash",rasterHash(data.data(),data.size()*4)},{"pixels",data.size()}};
         }
+        result["workloads"] = workload.takeAfterDrain();
         return result;
     }
 };
@@ -169,7 +174,9 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         set("VBuffer","debugStreamingPages",false);
         set("VBuffer","temporalJitter",false);
         set("VBuffer","asyncSoftwareRaster",false);
+        bool reapplyCamera = false;
         const auto draw = [&]() {
+            if (reapplyCamera) { applyViewportCameraProperties(viewportCameraProperties(), nullptr); }
             checkRaster(!viewportView_.temporalJitter(), "Raster comparison jitter was re-enabled");
             auto frame = profiler_.beginFrame();
             checkRaster(waitForFrameSlotBeforeInput(),"Frame slot wait failed");
@@ -215,8 +222,12 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}});
         }
         // Reverse and rotate order to expose warm-cache/clock/order effects.
+        const bool historyComparison = config.value("historyComparison", false);
+        const bool swWorkComparison = historyComparison || config.value("swWorkComparison", false);
         const bool swLoadComparison = config.value("swLoadComparison", false);
-        const bool swComparison = swLoadComparison || config.value("swComparison", false);
+        const bool swComparison = swWorkComparison || swLoadComparison || config.value("swComparison", false);
+        constexpr uint32_t historyOrders[3][3] = {{0,15,16},{16,15,0},{15,0,16}};
+        constexpr uint32_t workOrders[3][5] = {{0,10,13,15,14},{14,15,13,10,0},{13,0,15,14,10}};
         constexpr uint32_t loadOrders[3][3] = {{0,10,13},{13,10,0},{10,0,13}};
         constexpr uint32_t swOrders[3][4] = {{0,10,11,12},{12,11,10,0},{11,0,12,10}};
         const bool metadataComparison = config.value("metadataComparison", false);
@@ -226,7 +237,11 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         const auto checkpoint = [&](const std::string& name) {
             drain();
             graphExecutor_->setDebugObserver(&observer); observer.capture=true;
+            set("VBuffer", "softwareRasterWorkload", config.value("workloadCounters", false));
+            observer.workload.editorFrame = profiler_.nextFrameIndex();
+            observer.workload.camera = viewportCameraProperties();
             draw(); drain();
+            set("VBuffer", "softwareRasterWorkload", false);
             graphExecutor_->setDebugObserver(nullptr); observer.capture=false;
             auto snap = observer.snapshot(output,name);
             if (cutHash.empty()) { cutHash=snap["cutHash"]; mappingHash=snap["pageMappingsHash"]; }
@@ -235,12 +250,15 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             return snap;
         };
         for (uint32_t round=0; round<rounds; ++round) {
-            const auto sequence = swLoadComparison ? std::span<const uint32_t>(loadOrders[round]) : swComparison ? std::span<const uint32_t>(swOrders[round]) : metadataComparison ? std::span<const uint32_t>(metadataOrders[round]) : std::span<const uint32_t>(orders[round]);
+            const auto sequence = historyComparison ? std::span<const uint32_t>(historyOrders[round]) : swWorkComparison ? std::span<const uint32_t>(workOrders[round]) : swLoadComparison ? std::span<const uint32_t>(loadOrders[round]) : swComparison ? std::span<const uint32_t>(swOrders[round]) : metadataComparison ? std::span<const uint32_t>(metadataOrders[round]) : std::span<const uint32_t>(orders[round]);
             for (uint32_t mode : sequence) {
-                const std::string variant = !mode ? "0" : swComparison ? (mode == 10 ? "swLegacy" : mode == 13 ? "swCooperative" : mode == 11 ? "swPrepared" : "swPlane") : metadataComparison ? (mode == 8 ? "exact8" : "fast8") : std::to_string(mode);
+                const std::string variant = !mode ? "0" : swComparison ? (mode == 16 ? "swCameraReapply" : mode == 10 ? "swLegacy" : mode == 15 ? "swWorkControl" : mode == 14 ? "swWorkBins" : mode == 13 ? "swCooperative" : mode == 11 ? "swPrepared" : "swPlane") : metadataComparison ? (mode == 8 ? "exact8" : "fast8") : std::to_string(mode);
+                reapplyCamera = historyComparison && mode == 16;
                 const std::string name = "round"+std::to_string(round+1)+"-"+variant;
                 set("VBuffer","softwareRasterPreparedVertices", swComparison && (mode == 11 || mode == 12));
-                set("VBuffer","softwareRasterCooperativeLoad", !swComparison || (swLoadComparison && mode == 13));
+                set("VBuffer","softwareRasterCooperativeLoad", !swComparison || ((swLoadComparison || swWorkComparison) && mode >= 13));
+                set("VBuffer","softwareRasterWorkBins", swWorkComparison && mode == 14);
+                set("VBuffer","softwareRasterSharedScreenVertices", !swComparison || (swWorkComparison && mode >= 15));
                 set("VBuffer","softwareRasterIncrementalDepth", swComparison && mode == 12);
                 set("VBuffer","metadataFastClassification", !metadataComparison || mode != 8);
                 set("VBuffer","benchmarkForceHardwareRaster",mode==0);
@@ -296,7 +314,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                     checkRaster(graphGpu && !f.profilingOverflow,"Missing raster GPU timestamps");
                     if (!mode) { checkRaster(!classified && !software,"Full HW still executed geometry classification or SW raster"); }
                     for (const auto& s : f.streaming) {
-                        row["streaming"].push_back({{"geometryBytes",s.geometryUsedBytes},{"residentPages",s.residentPages},
+                        row["streaming"].push_back({{"softwareRaster",s.softwareRasterIdentity.empty() ? Json(nullptr) : Json::parse(s.softwareRasterIdentity)},{"geometryBytes",s.geometryUsedBytes},{"residentPages",s.residentPages},
                             {"clasBytes",s.clasUsedBytes},{"textureBytes",s.textureResidentBytes},
                             {"textureUpgrades",s.textureUpgrades},{"textureDowngrades",s.textureDowngrades}});
                     }
@@ -314,6 +332,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                 spdlog::info("[Raster Comparison] {} complete, {} measured frames, cut={} pages={}",name,samples,cutHash,mappingHash);
             }
         }
+        reapplyCamera = false;
         set("VBuffer","benchmarkFreezeStreaming",false);
         set("Deferred","benchmarkFreezeStreaming",false);
         set("VBuffer","benchmarkForceHardwareRaster",false);
@@ -321,6 +340,8 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         set("VBuffer","metadataFastClassification",true);
         set("VBuffer","softwareRasterPreparedVertices",false);
         set("VBuffer","softwareRasterCooperativeLoad",true);
+        set("VBuffer","softwareRasterWorkBins",false);
+        set("VBuffer","softwareRasterSharedScreenVertices",true);
         set("VBuffer","softwareRasterIncrementalDepth",false);
         report["status"]="capture_complete"; passed=true;
     } catch (const std::exception& e) {

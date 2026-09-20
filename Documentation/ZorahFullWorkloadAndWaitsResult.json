@@ -1,0 +1,393 @@
+{
+  "date": "2026-09-20",
+  "conditions": {
+    "cutHash": "3018165815145797720",
+    "pageMappingsHash": "14115650577649230408",
+    "activeGroups": 222528,
+    "outputExtent": [
+      1797,
+      660
+    ],
+    "renderExtent": [
+      1198,
+      440
+    ],
+    "sameCutAndResidency": true,
+    "sameModeImagesStable": true
+  },
+  "causalComparison": [
+    {
+      "variant": "swWorkControl",
+      "shader": {
+        "asyncRequested": false,
+        "counterSemantics": "Coverage replay; atomic attempts, not winning writes; diagnostic timings excluded",
+        "entryPoint": "streamClusterRasterWorkControlMain",
+        "exactCoverageSupported": true,
+        "forceHardware": false,
+        "hzbValid": true,
+        "mode": 5,
+        "module": "Features/GPUDriven/GPUDrivenStreamWorkRaster",
+        "paramsHzbValid": 1,
+        "prebin": true,
+        "snapshotFrozen": true,
+        "spirvFnv1a64": "14699073418322314354",
+        "thresholdPixels": 8.0,
+        "workloadEnabled": true
+      },
+      "counts": {
+        "activeTriangleLanes": 42565256,
+        "atomicAttempts": 638149,
+        "bboxArea1To4": 1306824,
+        "bboxArea5To16": 123935,
+        "bboxRows": 1944994,
+        "bboxVisits": 3203542,
+        "clusters": 1041657,
+        "coveredSamples": 638149,
+        "emptyTriangles": 41124170,
+        "invalidClusters": 0,
+        "launchedTriangleLanes": 133332096,
+        "maxBboxWidth": 8,
+        "nonemptyTriangles": 1441086,
+        "sumWaveMaxRows": 443930,
+        "triangles": 42565256,
+        "uniqueVertices": 103089190
+      },
+      "gpuMs": {
+        "rasterTotal": {
+          "count": 32,
+          "mean": 14.493672,
+          "p50": 14.448208000000001,
+          "p95": 15.371224,
+          "p99": 15.65089056,
+          "max": 15.681216000000001
+        },
+        "classification": {
+          "count": 32,
+          "mean": 0.999089,
+          "p50": 0.760176,
+          "p95": 1.3991904,
+          "p99": 1.4802595200000002,
+          "max": 1.51616
+        },
+        "software": {
+          "count": 32,
+          "mean": 9.90569,
+          "p50": 9.8348,
+          "p95": 10.650606400000001,
+          "p99": 10.94093248,
+          "max": 10.945952
+        },
+        "hardware": {
+          "count": 32,
+          "mean": 0.915863,
+          "p50": 0.768192,
+          "p95": 1.2916480000000001,
+          "p99": 1.32425696,
+          "max": 1.333056
+        },
+        "cull": {
+          "count": 32,
+          "mean": 1.750998,
+          "p50": 1.621712,
+          "p95": 2.158888,
+          "p99": 2.24374272,
+          "max": 2.279296
+        },
+        "candidates": {
+          "count": 32,
+          "mean": 0.525066,
+          "p50": 0.5051840000000001,
+          "p95": 0.6207871999999999,
+          "p99": 0.8657916800000003,
+          "max": 0.928992
+        },
+        "bins": {
+          "count": 32,
+          "mean": 0.35519500000000004,
+          "p50": 0.318928,
+          "p95": 0.5654847999999999,
+          "p99": 0.6218268800000001,
+          "max": 0.628384
+        },
+        "merge": {
+          "count": 32,
+          "mean": 0.036503,
+          "p50": 0.036096,
+          "p95": 0.04308,
+          "p99": 0.04376416,
+          "max": 0.044032
+        },
+        "graphGpu": {
+          "count": 32,
+          "mean": 17.881016,
+          "p50": 17.582943999999998,
+          "p95": 19.1283488,
+          "p99": 19.699814080000003,
+          "max": 19.926496
+        },
+        "editorLoop": {
+          "count": 32,
+          "mean": 29.121153125,
+          "p50": 29.6176,
+          "p95": 31.505295,
+          "p99": 32.983692000000005,
+          "max": 33.6244
+        }
+      },
+      "imageHashes": {
+        "VBuffer.visibility": "9366615267609933005",
+        "VBuffer.depth": "11372954878244664520"
+      }
+    },
+    {
+      "variant": "swCameraReapply",
+      "shader": {
+        "asyncRequested": false,
+        "counterSemantics": "Coverage replay; atomic attempts, not winning writes; diagnostic timings excluded",
+        "entryPoint": "streamClusterRasterWorkControlMain",
+        "exactCoverageSupported": true,
+        "forceHardware": false,
+        "hzbValid": false,
+        "mode": 5,
+        "module": "Features/GPUDriven/GPUDrivenStreamWorkRaster",
+        "paramsHzbValid": 0,
+        "prebin": true,
+        "snapshotFrozen": true,
+        "spirvFnv1a64": "14699073418322314354",
+        "thresholdPixels": 8.0,
+        "workloadEnabled": true
+      },
+      "counts": {
+        "activeTriangleLanes": 188582571,
+        "atomicAttempts": 1420953,
+        "bboxArea1To4": 3439146,
+        "bboxArea5To16": 237710,
+        "bboxRows": 4666670,
+        "bboxVisits": 7245368,
+        "clusters": 4598812,
+        "coveredSamples": 1420953,
+        "emptyTriangles": 184885644,
+        "invalidClusters": 0,
+        "launchedTriangleLanes": 588647936,
+        "maxBboxWidth": 8,
+        "nonemptyTriangles": 3696927,
+        "sumWaveMaxRows": 1158735,
+        "triangles": 188582571,
+        "uniqueVertices": 451470079
+      },
+      "gpuMs": {
+        "rasterTotal": {
+          "count": 32,
+          "mean": 48.198143,
+          "p50": 47.84672,
+          "p95": 49.8656832,
+          "p99": 50.13632768000001,
+          "max": 50.255328000000006
+        },
+        "classification": {
+          "count": 32,
+          "mean": 1.861007,
+          "p50": 1.7581600000000002,
+          "p95": 2.1935072,
+          "p99": 2.22234304,
+          "max": 2.228672
+        },
+        "software": {
+          "count": 32,
+          "mean": 43.014795,
+          "p50": 42.786512,
+          "p95": 44.4641088,
+          "p99": 44.673191360000004,
+          "max": 44.714528
+        },
+        "hardware": {
+          "count": 32,
+          "mean": 1.646253,
+          "p50": 1.689968,
+          "p95": 1.8869951999999999,
+          "p99": 1.90784928,
+          "max": 1.909248
+        },
+        "cull": {
+          "count": 32,
+          "mean": 0.903158,
+          "p50": 0.895328,
+          "p95": 0.9036864,
+          "p99": 1.0746464000000004,
+          "max": 1.1513280000000001
+        },
+        "candidates": {
+          "count": 32,
+          "mean": 0.398063,
+          "p50": 0.396,
+          "p95": 0.41693759999999996,
+          "p99": 0.41965312,
+          "max": 0.420288
+        },
+        "bins": {
+          "count": 32,
+          "mean": 0.334937,
+          "p50": 0.32145599999999996,
+          "p95": 0.4201679999999999,
+          "p99": 0.5493433600000001,
+          "max": 0.56464
+        },
+        "merge": {
+          "count": 32,
+          "mean": 0.034535,
+          "p50": 0.036351999999999995,
+          "p95": 0.0444784,
+          "p99": 0.04575008,
+          "max": 0.045759999999999995
+        },
+        "graphGpu": {
+          "count": 32,
+          "mean": 51.439063,
+          "p50": 51.081072,
+          "p95": 53.126075199999995,
+          "p99": 53.23947456,
+          "max": 53.277984
+        },
+        "editorLoop": {
+          "count": 32,
+          "mean": 61.8752,
+          "p50": 60.66755,
+          "p95": 67.57249,
+          "p99": 68.10265700000001,
+          "max": 68.3151
+        }
+      },
+      "imageHashes": {
+        "VBuffer.visibility": "9366615267609933005",
+        "VBuffer.depth": "11372954878244664520"
+      }
+    }
+  ],
+  "roamFrameMs": {
+    "count": 454,
+    "mean": 66.13178215859031,
+    "p50": 66.235,
+    "p95": 75.9047,
+    "p99": 80.6557,
+    "max": 105.4146
+  },
+  "roamPreparationScopes": [
+    {
+      "cpuOnly": true,
+      "id": 23,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Refresh scene bindings",
+      "queue": "cpu",
+      "cpuMs": {
+        "count": 454,
+        "mean": 0.1322568281938326,
+        "p50": 0.1263,
+        "p95": 0.1845,
+        "p99": 0.211,
+        "max": 0.2299
+      },
+      "gpuMs": null
+    },
+    {
+      "cpuOnly": true,
+      "id": 24,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight",
+      "queue": "cpu",
+      "cpuMs": {
+        "count": 454,
+        "mean": 3.394960352422907,
+        "p50": 3.2432,
+        "p95": 5.2828,
+        "p99": 6.4436,
+        "max": 7.3088
+      },
+      "gpuMs": null
+    },
+    {
+      "cpuOnly": true,
+      "id": 25,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Prior frame drain",
+      "queue": "cpu",
+      "cpuMs": {
+        "count": 454,
+        "mean": 33.76799295154185,
+        "p50": 34.716,
+        "p95": 39.2174,
+        "p99": 39.8443,
+        "max": 65.6172
+      },
+      "gpuMs": null
+    },
+    {
+      "cpuOnly": true,
+      "id": 26,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Submission slot wait",
+      "queue": "cpu",
+      "cpuMs": {
+        "count": 454,
+        "mean": 0.00011497797356828195,
+        "p50": 0.0001,
+        "p95": 0.0002,
+        "p99": 0.0004,
+        "max": 0.0005
+      },
+      "gpuMs": null
+    },
+    {
+      "cpuOnly": true,
+      "id": 27,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Command pool reset",
+      "queue": "cpu",
+      "cpuMs": {
+        "count": 454,
+        "mean": 0.006757268722466961,
+        "p50": 0.0061,
+        "p95": 0.0103,
+        "p99": 0.0124,
+        "max": 0.0297
+      },
+      "gpuMs": null
+    },
+    {
+      "cpuOnly": true,
+      "id": 28,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Frame begin",
+      "queue": "cpu",
+      "cpuMs": {
+        "count": 454,
+        "mean": 0.00036145374449339204,
+        "p50": 0.0003,
+        "p95": 0.0008,
+        "p99": 0.0011,
+        "max": 0.0016
+      },
+      "gpuMs": null
+    },
+    {
+      "cpuOnly": true,
+      "id": 29,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Frame setup",
+      "queue": "cpu",
+      "cpuMs": {
+        "count": 454,
+        "mean": 0.0063442731277533046,
+        "p50": 0.0055,
+        "p95": 0.0119,
+        "p99": 0.0157,
+        "max": 0.0515
+      },
+      "gpuMs": null
+    }
+  ],
+  "evidence": {
+    "causal": "build-release/full-sw-history-causal/run1",
+    "frozenValidation": "build-release/full-sw-workload-frozen2/run1",
+    "roamTiming": "build-release/full-sw-workload-roam/run1",
+    "roamCounts": "build-release/full-sw-workload-counts/run1"
+  },
+  "limitations": [
+    "Diagnostic coverage replay counts attempted pixel atomics, not winning writes or atomic stalls",
+    "Diagnostic timing is excluded from frozen A/B and diagnostic roam is not used as a performance baseline",
+    "Unique vertices means per-cluster vertex setup, not globally unique scene vertices",
+    "Timing differs with GPU clock and surrounding load; no claim of a performance fix or 30 fps acceptance"
+  ]
+}

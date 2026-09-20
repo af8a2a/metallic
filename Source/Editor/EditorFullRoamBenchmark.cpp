@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Editor/EditorRasterWorkload.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
@@ -21,7 +22,8 @@ using Clock = std::chrono::steady_clock;
 
 Json streamSample(const render::SceneStreamingProfile& s)
 {
-    return {{"frame",s.frameIndex},{"feedbackFrame",s.feedbackFrame},{"generation",s.generation},
+    return {{"softwareRaster",s.softwareRasterIdentity.empty() ? Json(nullptr) : Json::parse(s.softwareRasterIdentity)},
+        {"frame",s.frameIndex},{"feedbackFrame",s.feedbackFrame},{"generation",s.generation},
         {"geometryBytes",s.geometryUsedBytes},{"geometryCapacity",s.geometryBudgetBytes},
         {"clasBytes",s.clasUsedBytes},{"clasCapacity",s.clasCapacityBytes},{"clasScratchBytes",s.clasScratchBytes},
         {"clasBuiltClusters",s.clasBuiltClusters},{"clasMovedClusters",s.clasMovedClusters},
@@ -66,6 +68,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
     fullRoamWidth_ = viewportTextureWidth_;
     fullRoamHeight_ = viewportTextureHeight_;
     bool passed = false;
+    RasterWorkloadObserver workloadObserver;
     try {
         std::filesystem::create_directories(output);
         Json config = Json::object();
@@ -74,6 +77,10 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             config = Json::parse(input);
         }
         if (config.value("rasterComparison", false)) { return runZorahFullRasterComparison(config, output); }
+        const uint32_t workloadEvery = config.value("workloadEvery", 0u);
+        if (workloadEvery && workloadEvery < 10) { throw std::runtime_error("workloadEvery must be 0 or at least 10"); }
+        report["workloadEvery"] = workloadEvery;
+        report["diagnosticRun"] = workloadEvery != 0;
         const double duration = config.value("durationSeconds",180.0);
         const double warmup = config.value("warmupSeconds",5.0);
         const double distance = config.value("distance",6.0);
@@ -106,7 +113,13 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 std::abs(f)>10 || std::abs(yaw)>360 || !point.at("stage").is_string()) { throw std::runtime_error("Invalid route keyframe"); }
             lastT=t;
         }
+        if (workloadEvery) { graphExecutor_->setDebugObserver(&workloadObserver); }
         loadBuiltInSample(render::kGPUDrivenZorahFullSampleId);
+        const auto workloadSetting = [&](bool enabled) {
+            const auto* node = renderGraph_.findNode("VBuffer");
+            if (!node) { throw std::runtime_error("Missing VBuffer"); }
+            renderGraph_.setNodeRuntimeProperty(node->id, "softwareRasterWorkload", enabled);
+        };
         const auto draw = [&]() {
             auto frame = profiler_.beginFrame();
             if (!waitForFrameSlotBeforeInput()) { return false; }
@@ -131,6 +144,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             }
             if (std::chrono::duration<double>(now-loadingStart).count()>600) { throw std::runtime_error("Full readiness timed out"); }
         }
+        if (workloadEvery) { graphExecutor_->setDebugObserver(nullptr); }
         if (!fullRoamWidth_) { fullRoamWidth_=viewportTextureWidth_; fullRoamHeight_=viewportTextureHeight_; }
         const auto original = viewportCameraProperties();
         const auto cameraAt = [&](double forward, double yaw) {
@@ -165,7 +179,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         for (const auto& node : renderGraph_.nodes()) { auto properties=node.properties; properties.merge_patch(node.runtimeProperties);
             report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}}); }
         const auto graphGeneration = graphExecutor_->executionStats().graphGeneration;
-        struct Sample { uint64_t frame; double seconds, ms; size_t segment; uint64_t availableBytes; };
+        struct Sample { uint64_t frame; double seconds, ms; size_t segment; uint64_t availableBytes; Json graphPreparation; bool diagnostic = false; };
         std::vector<Sample> samples;
         samples.reserve(size_t(duration*120));
         profiler_.beginCapture();
@@ -184,7 +198,20 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             const auto blend=[&](const char* key) { return a[key].get<double>()*(1-u)+b[key].get<double>()*u; };
             applyViewportCameraProperties(cameraAt(blend("forward"),blend("yaw")),nullptr);
             samples.push_back({profiler_.nextFrameIndex(),seconds,0,segment,device_->memoryBudget().availableBytes});
+            const bool diagnostic = workloadEvery && (samples.size() - 1) % workloadEvery == 0;
+            samples.back().diagnostic = diagnostic;
+            if (workloadEvery) {
+                workloadSetting(diagnostic);
+                workloadObserver.capture = diagnostic;
+                workloadObserver.editorFrame = samples.back().frame;
+                workloadObserver.camera = viewportCameraProperties();
+                graphExecutor_->setDebugObserver(diagnostic ? &workloadObserver : nullptr);
+            }
             if (!draw()) { throw std::runtime_error("Roam rendering failed/cancelled"); }
+            const auto& execution = graphExecutor_->executionStats();
+            samples.back().graphPreparation = {{"executionId", execution.executionId},
+                {"drainReasonMask", execution.drainReasonMask}, {"externalCompletionCount", execution.externalCompletionCount},
+                {"overlapBlockingPasses", execution.overlapBlockingPasses}};
             if (profiler_.captureOverflow()) { throw std::runtime_error("Profiler capture limit exceeded"); }
             if (viewportTextureWidth_!=fullRoamWidth_ || viewportTextureHeight_!=fullRoamHeight_ ||
                 graphExecutor_->executionStats().graphGeneration!=graphGeneration) { throw std::runtime_error("Viewport or graph changed during capture"); }
@@ -195,6 +222,11 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         std::vector<render::RenderGraphExecutionStats> completed;
         if (!graphExecutor_->collectCompletedGpuExecutionStats(completed)) { throw std::runtime_error("GPU query resolve failed"); }
         for (const auto& stats : completed) { profiler_.updateRenderGraphGpuStats(stats); }
+        if (workloadEvery) {
+            report["workloads"] = workloadObserver.takeAfterDrain();
+            graphExecutor_->setDebugObserver(nullptr);
+            workloadSetting(false);
+        }
         const auto& frames=profiler_.capturedFrames();
         if (frames.size()!=samples.size()) { throw std::runtime_error("CPU frame count mismatch"); }
         std::ofstream frameFile(output/"Frames.jsonl"), uploadFile(output/"Uploads.jsonl");
@@ -208,6 +240,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             if (f.index!=sample.frame || f.profilingOverflow) { throw std::runtime_error("Frame identity/section overflow"); }
             Json row{{"frame",f.index},{"seconds",sample.seconds},{"frameMs",sample.ms},
                 {"stage",points[sample.segment]["stage"]},{"availableBytes",sample.availableBytes},
+                {"graphPreparation",sample.graphPreparation},{"diagnostic",sample.diagnostic},
                 {"scopes",Json::array()},{"streaming",Json::array()}};
             std::vector<std::string> paths;
             bool graphGpu=false;
@@ -245,6 +278,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         spdlog::error("[Full Roam] {}",error.what());
     }
     profiler_.endCapture();
+    // Keep readback allocations alive until all submitted copies complete, also on failure.
+    if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { passed = false; report["status"] = "failed"; }
+    graphExecutor_->setDebugObserver(debugRuntime_.get());
     fullRoamActive_=false; fullRoamWidth_=fullRoamHeight_=0;
     profiler_.beginCapture(); profiler_.endCapture(); // Release retained capture samples after export.
     try {

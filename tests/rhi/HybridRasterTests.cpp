@@ -90,6 +90,22 @@ public:
             std::unique_ptr<ComputePipeline> compute;
             HYBRID_REQUIRE(device->createShaderModule({.code=compiled.spirv.data(),.byteSize=compiled.spirv.size()*4},shader));
             HYBRID_REQUIRE(device->createComputePipeline({.computeShader=shader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40},compute));
+            ShaderCompileResult workCompiled;
+            HYBRID_REQUIRE(compileSlangShaderToSpirv({.moduleName="PreparedRasterProbe", .entryPointName="compareWorkBinsMain",
+                .searchPath=PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths=paths, .additionalSearchPathCount=1}, workCompiled));
+            std::unique_ptr<ShaderModule> workShader;
+            std::unique_ptr<ComputePipeline> workCompute;
+            HYBRID_REQUIRE(device->createShaderModule({.code=workCompiled.spirv.data(),.byteSize=workCompiled.spirv.size()*4},workShader));
+            HYBRID_REQUIRE(device->createComputePipeline({.computeShader=workShader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40},workCompute));
+            ShaderCompileResult workloadCompiled;
+            const auto workloadResult = compileSlangShaderToSpirv({.moduleName="PreparedRasterProbe", .entryPointName="verifyWorkloadMain",
+                .searchPath=PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths=paths, .additionalSearchPathCount=1}, workloadCompiled);
+            log=workloadCompiled.diagnostics;
+            HYBRID_REQUIRE(workloadResult);
+            std::unique_ptr<ShaderModule> workloadShader;
+            std::unique_ptr<ComputePipeline> workloadCompute;
+            HYBRID_REQUIRE(device->createShaderModule({.code=workloadCompiled.spirv.data(),.byteSize=workloadCompiled.spirv.size()*4},workloadShader));
+            HYBRID_REQUIRE(device->createComputePipeline({.computeShader=workloadShader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40},workloadCompute));
             std::unique_ptr<BindlessHeap> compareHeap;
             HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers=3},compareHeap));
             BindlessHandle vertexHandle;
@@ -111,16 +127,19 @@ public:
             HYBRID_REQUIRE(device->createFence(false,fence));
             bool submitted=false;
             size_t written=0;
-            for (uint32_t bits : {4u,8u}) for (uint32_t reversed : {0u,1u}) for (uint32_t sided : {0u,1u}) for (uint32_t plane : {0u,1u}) {
+            for (uint32_t bits : {4u,8u}) for (uint32_t reversed : {0u,1u}) for (uint32_t sided : {0u,1u}) for (uint32_t plane : {0u,1u,2u,3u,4u}) for (uint32_t count : {0u,1u,127u,128u,129u,uint32_t(vertices.size()/3)}) {
+                if ((plane < 2u || plane == 4u) && count != vertices.size()/3) { continue; }
                 if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
                 for (auto& output:pixels) {
                     auto* data=output->map(); if (!data) { return RhiTestResult::fail("Prepared raster map failed"); }
                     std::memset(data,0,pixelCount*8); output->flush(); output->unmap();
                 }
                 HYBRID_REQUIRE(commands->begin());
-                commands->bindBindlessHeap(*compareHeap); commands->bindComputePipeline(*compute);
-                uint32_t push[]={vertexHandle.index,handles[0].index,handles[1].index,width,height,reversed,sided,bits,plane,uint32_t(vertices.size()/3)};
-                commands->pushBindlessData(push,sizeof(push)); commands->dispatch((push[9]+63)/64);
+                commands->bindBindlessHeap(*compareHeap); commands->bindComputePipeline(plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute);
+                uint32_t push[]={vertexHandle.index,handles[0].index,handles[1].index,width,height,reversed,sided,bits,plane,count};
+                commands->pushBindlessData(push,sizeof(push));
+                const uint32_t lanes=plane>=2u ? 128u : 64u;
+                commands->dispatch(std::max(1u,(push[9]+lanes-1u)/lanes));
                 HYBRID_REQUIRE(commands->end()); CommandBuffer* list[]={commands.get()};
                 HYBRID_REQUIRE(queue->submit({.commandBuffers=list,.commandBufferCount=1,.signalFence=fence.get()}));
                 HYBRID_REQUIRE(fence->wait()); submitted=true;
@@ -130,11 +149,15 @@ public:
                     if (!data) { return RhiTestResult::fail("Prepared raster read failed"); }
                     values[i].assign(data,data+pixelCount); pixels[i]->unmap();
                 }
+                if (plane == 4u) {
+                    if (values[1][0] != 0 || values[1][1] < 1000) { return RhiTestResult::fail("SW workload coverage/atomic attempt count mismatch"); }
+                    continue;
+                }
                 for (size_t i=0;i<pixelCount;++i) {
                     auto a=values[0][i],b=values[1][i]; written+=uint32_t(a)!=0;
-                    if (!plane && a!=b) { return RhiTestResult::fail("Prepared SW is not bit exact at pixel "+std::to_string(i)+" bits="+std::to_string(bits)+" values="+std::to_string(a)+"/"+std::to_string(b)); }
+                    if (plane!=1u && a!=b) { return RhiTestResult::fail("Exact SW is not bit exact mode="+std::to_string(plane)+" count="+std::to_string(count)+" pixel="+std::to_string(i)+" bits="+std::to_string(bits)+" values="+std::to_string(a)+"/"+std::to_string(b)); }
                     uint32_t za=uint32_t(a>>32),zb=uint32_t(b>>32); if (!reversed) { za=~za; zb=~zb; }
-                    if (plane && (uint32_t(a)!=uint32_t(b) || (uint32_t(a)!=0 && std::abs(std::bit_cast<float>(za)-std::bit_cast<float>(zb))>2e-6f))) {
+                    if (plane==1u && (uint32_t(a)!=uint32_t(b) || (uint32_t(a)!=0 && std::abs(std::bit_cast<float>(za)-std::bit_cast<float>(zb))>2e-6f))) {
                         return RhiTestResult::fail("Incremental plane coverage/ID/depth tolerance mismatch at "+std::to_string(i));
                     }
                 }

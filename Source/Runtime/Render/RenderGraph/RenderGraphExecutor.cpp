@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
+#include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -2611,6 +2612,8 @@ void RenderGraphExecutor::acceptSceneResourcePreparation()
 
 Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 {
+    CpuProfileRecorder preparation;
+    CpuProfileScope preparationPhase(&preparation, "Refresh scene bindings");
     profiling::CpuPhase phase("graph.refreshSceneBindings");
     DebugExecutionScope debugScope;
     if (!impl_->isCompiled || impl_->device == nullptr || impl_->executionList.empty()) {
@@ -2622,6 +2625,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     if (!sceneResult) { spdlog::error("[RenderGraph] {}", sceneLog); return sceneResult; }
 
     phase.next("graph.preflight");
+    preparationPhase.next("Preflight");
     // Preflight before beginning a slot or mutating subsystem/resource state.
     // Unreviewed passes retain the universal-queue execution contract.
     const auto selectedType = [](const Impl::CompiledNode& node) {
@@ -2658,8 +2662,15 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         : std::array<uint64_t, 5>{};
     const bool requiresCompletedFrame = std::any_of(impl_->executionList.begin(), impl_->executionList.end(),
         [](const auto& node) { return !node.pass->supportsFrameOverlap(); });
-    if (requiresCompletedFrame || sceneStamp != impl_->recordedSceneStamp || !impl_->externalCompletions.empty()) {
+    const uint32_t drainReasonMask = (requiresCompletedFrame ? 1u : 0u) |
+        (sceneStamp != impl_->recordedSceneStamp ? 2u : 0u) | (!impl_->externalCompletions.empty() ? 4u : 0u);
+    std::vector<std::string> overlapBlockingPasses;
+    for (const auto& node : impl_->executionList) {
+        if (!node.pass->supportsFrameOverlap()) { overlapBlockingPasses.push_back(node.name); }
+    }
+    if (drainReasonMask != 0) {
         phase.next("graph.priorFrameDrain");
+        preparationPhase.next("Prior frame drain");
         Result result = impl_->waitForSubmittedWork(desc.slotWaitTimeoutNanoseconds);
         if (!result) { return result; }
     }
@@ -2669,9 +2680,11 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     if (slotCount == 0) { return makeError(Error::InvalidArgument); }
     Impl::SubmissionSlot& slot = *impl_->submissionSlots[frameIndex % slotCount];
     phase.next("graph.slotWait", frameIndex);
+    preparationPhase.next("Submission slot wait");
     Result result = slot.frame.wait(desc.slotWaitTimeoutNanoseconds);
     if (!result) { return result; }
     phase.next("graph.poolReset");
+    preparationPhase.next("Command pool reset");
     slot.commandBuffers.clear();
     for (auto& context : slot.queues) {
         if (context.commandPool != nullptr) {
@@ -2680,9 +2693,11 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         }
     }
     phase.next("graph.frameBegin");
+    preparationPhase.next("Frame begin");
     result = slot.frame.begin(frameIndex, 0);
     if (!result) { return result; }
     phase.next("graph.frameSetup");
+    preparationPhase.next("Frame setup");
     // Shared graph targets/history remain ordered across frames on the GPU.
     // This bounds CPU recording to two slots without cloning persistent targets.
     result = impl_->lastSubmittedCompletion.appendWaits(initialWaits);
@@ -2697,8 +2712,13 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     }
     impl_->recordedSceneStamp = sceneStamp;
     impl_->historyResources = desc.historyResources;
+    preparationPhase.end();
     const auto cpuBegin = std::chrono::steady_clock::now();
     impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex, .graphGeneration = impl_->profilingGeneration};
+    impl_->lastExecutionStats.preparation = std::move(preparation.sections);
+    impl_->lastExecutionStats.drainReasonMask = drainReasonMask;
+    impl_->lastExecutionStats.externalCompletionCount = uint32_t(externalDependencies.size());
+    impl_->lastExecutionStats.overlapBlockingPasses = std::move(overlapBlockingPasses);
     const auto updateCpuTime = [&]() {
         impl_->lastExecutionStats.cpuMilliseconds = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - cpuBegin).count();

@@ -39,8 +39,8 @@ public:
         std::array<VisibilityHybridRasterizer, 2> rasterizers;
         for (auto& rasterizer : rasterizers) { CLASSIFY_REQUIRE(rasterizer.initialize(*device, 128, 128, log, 1, capacity)); }
         std::unique_ptr<BindlessHeap> heap;
-        CLASSIFY_REQUIRE(device->createBindlessHeap({.maxBuffers = 16}, heap));
-        std::array<BindlessHandle, 16> handles;
+        CLASSIFY_REQUIRE(device->createBindlessHeap({.maxBuffers = 18}, heap));
+        std::array<BindlessHandle, 18> handles;
         for (auto& handle : handles) { CLASSIFY_REQUIRE(heap->allocateBuffer(handle)); }
         enum Input { Header, Groups, Params, Pages, PageTable, Bindings, Visibility, Requests, Records, Hzb0, Hzb1, Instances, InputCount };
         const uint32_t strides[] = {sizeof(MeshletStreamGpuActiveHeader), sizeof(MeshletStreamGpuActiveGroup),
@@ -58,6 +58,7 @@ public:
         for (size_t i = 0; i < 2; ++i) {
             CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[12 + i * 2], rasterizers[i].clusterBuffer()));
             CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[13 + i * 2], rasterizers[i].candidateArguments()));
+            CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[16 + i], rasterizers[i].workloadBuffer()));
         }
         const auto upload = [&](size_t index, const void* data, size_t size) -> Result {
             void* mapped = inputs[index]->map();
@@ -66,14 +67,14 @@ public:
             inputs[index]->flush(); inputs[index]->unmap();
             return {};
         };
-        std::array<std::unique_ptr<ShaderModule>, 5> shaders;
-        std::array<std::unique_ptr<ComputePipeline>, 5> pipelines;
-        const char* entries[] = {"streamClusterPrepareMain", "streamClusterCullMain", "streamClusterBinMain", "referenceStreamClusterBinMain", "verifyStreamSoftwareLoadMain"};
+        std::array<std::unique_ptr<ShaderModule>, 7> shaders;
+        std::array<std::unique_ptr<ComputePipeline>, 7> pipelines;
+        const char* entries[] = {"streamClusterPrepareMain", "streamClusterCullMain", "streamClusterBinMain", "referenceStreamClusterBinMain", "verifyStreamSoftwareLoadMain", "streamWorkloadResetMain", "streamWorkloadMain"};
         for (size_t i = 0; i < pipelines.size(); ++i) {
             ShaderCompileResult compiled;
             const char* additional[] = {PROJECT_SOURCE_DIR "/Shaders"};
             const auto result = compileSlangShaderToSpirv({
-                .moduleName = i >= 3 ? "StreamClusterClassificationProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
+                .moduleName = i >= 5 ? "Features/GPUDriven/GPUDrivenStreamWorkload" : i >= 3 ? "StreamClusterClassificationProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = entries[i],
                 .searchPath = i >= 3 ? PROJECT_SOURCE_DIR "/tests/rhi/shaders" : PROJECT_SOURCE_DIR "/Shaders",
                 .additionalSearchPaths = additional, .additionalSearchPathCount = 1}, compiled);
@@ -93,10 +94,11 @@ public:
             } restoreShaderMode;
             for (const auto mode : {SlangShaderDebugMode::Disabled, SlangShaderDebugMode::CaptureSymbols}) {
                 setSlangShaderDebugMode(mode);
-                for (const char* entry : {"streamClusterRasterLegacyMain", "streamClusterRasterMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain"}) {
+                for (const char* entry : {"streamClusterRasterLegacyMain", "streamClusterRasterMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"}) {
                     spdlog::info("[SW Pipeline Probe] entry={} debugMode={}", entry, int(mode));
                     ShaderCompileResult compiled;
-                    CLASSIFY_REQUIRE(compileSlangShaderToSpirv({.moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
+                    CLASSIFY_REQUIRE(compileSlangShaderToSpirv({.moduleName = std::strncmp(entry, "streamClusterRasterWork", 23) == 0 ?
+                        "Features/GPUDriven/GPUDrivenStreamWorkRaster" : "Features/GPUDriven/GPUDrivenStreamAsset",
                         .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled));
                     std::unique_ptr<ShaderModule> shader;
                     std::unique_ptr<ComputePipeline> pipeline;
@@ -109,7 +111,7 @@ public:
         const uint64_t binBytes = rasterizers[0].clusterBuffer().desc().size;
         const uint64_t recordBytes = inputs[Records]->desc().size;
         std::unique_ptr<Buffer> readback;
-        CLASSIFY_REQUIRE(device->createBuffer({.size = binBytes + recordBytes + 52,
+        CLASSIFY_REQUIRE(device->createBuffer({.size = binBytes + recordBytes + 52 + 128,
             .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, readback));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
@@ -274,6 +276,25 @@ public:
                         commands->barrier({.buffers = &counterCopy, .bufferCount = 1});
                     }
                     CLASSIFY_REQUIRE(rasterizer.finishClusterBins(*commands));
+                    if (schedule == 1) {
+                        commands->bindBindlessHeap(*heap);
+                        auto diagnosticPush = push;
+                        diagnosticPush.hybridQueueBuffer = handles[16 + schedule].index;
+                        BufferBarrierDesc ready{.buffer = &rasterizer.workloadBuffer(), .before = ResourceState::General, .after = ResourceState::General};
+                        commands->barrier({.buffers = &ready, .bufferCount = 1});
+                        commands->bindComputePipeline(*pipelines[5]);
+                        commands->pushBindlessData(&diagnosticPush, sizeof(diagnosticPush));
+                        commands->dispatch(1);
+                        commands->barrier({.buffers = &ready, .bufferCount = 1});
+                        commands->bindComputePipeline(*pipelines[6]);
+                        CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.clusterArguments(), 4 * 3 * sizeof(uint32_t)));
+                        ready.after = ResourceState::TransferSource;
+                        commands->barrier({.buffers = &ready, .bufferCount = 1});
+                        commands->copyBuffer({.source = &rasterizer.workloadBuffer(), .destination = readback.get(),
+                            .destinationOffset = binBytes + recordBytes + 52, .size = 128});
+                        std::swap(ready.before, ready.after);
+                        commands->barrier({.buffers = &ready, .bufferCount = 1});
+                    }
                     const BufferBarrierDesc copies[] = {
                         {.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},
                         {.buffer = inputs[Records].get(), .before = ResourceState::General, .after = ResourceState::TransferSource},
@@ -292,7 +313,7 @@ public:
                     readback->invalidate();
                     const auto* mapped = static_cast<const uint32_t*>(readback->map());
                     if (!mapped) { return RhiTestResult::fail("Cannot map classification output"); }
-                    std::vector<uint32_t> actual(mapped, mapped + (binBytes + recordBytes + 52) / 4);
+                    std::vector<uint32_t> actual(mapped, mapped + (binBytes + recordBytes + 52 + 128) / 4);
                     readback->unmap();
                     if (schedule == 0) { reference = std::move(actual); continue; }
                     bool equal = std::equal(reference.begin(), reference.begin() + 16, actual.begin());
@@ -308,6 +329,12 @@ public:
                     const uint32_t* args = actual.data() + (binBytes + recordBytes) / 4;
                     const uint32_t* counters = actual.data() + (binBytes + recordBytes + 36) / 4;
                     const uint32_t classifyCount = counters[0];
+                    std::array<uint64_t, 16> workload{};
+                    std::memcpy(workload.data(), reinterpret_cast<const uint8_t*>(actual.data()) + binBytes + recordBytes + 52, 128);
+                    if (workload[0] + workload[15] != actual[4] || workload[1] != workload[3] + workload[8] ||
+                        workload[5] != workload[6] || workload[5] > workload[4] || workload[1] > workload[0] * 128) {
+                        return RhiTestResult::fail("SW workload/bin accounting mismatch");
+                    }
                     if (test.maxPixels != 0) { equal &= classifyCount + counters[1] + counters[2] == visibleCount; }
                     sawFastSoftware |= counters[1] != 0; sawFastHardware |= counters[2] != 0;
                     equal &= args[0] == std::min(classifyCount, 65535u) && args[1] == std::max(1u, (classifyCount + 65534u) / 65535u) && args[2] == 1;

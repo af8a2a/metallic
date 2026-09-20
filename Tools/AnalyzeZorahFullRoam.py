@@ -59,7 +59,8 @@ def analyze(root):
     uploads = [s for s in uploads if s['submitFrame'] in executions]
     slowest = sorted(rows, key=lambda r:r['frameMs'], reverse=True)[:20]
     result = dict(protocol=capture['protocol'], outputExtent=capture['outputExtent'], renderExtent=capture['renderExtent'],
-                  validation=capture['validationRequested'], **frame_stats(rows),
+                  validation=capture['validationRequested'], diagnosticRun=capture.get("diagnosticRun",False),
+                  diagnosticFrames=sum(r.get("diagnostic",False) for r in rows), **frame_stats(rows),
                   stages={k:frame_stats(v) for k,v in stages.items()}, scopes=scopes,
                   stageScopes={stage:[dict(**definitions[i], cpuMs=distribution(v['cpu']), gpuMs=distribution(v['gpu']))
                                       for i,v in counts.items()] for stage,counts in stage_timers.items()},
@@ -73,6 +74,8 @@ def analyze(root):
     for stage, data in [('all',result), *result['stages'].items()]:
         d=data['frameMs']
         lines.append(f"| {stage} | {d['count']} | {d['p50']:.3f} | {d['p95']:.3f} | {d['p99']:.3f} | {d['max']:.3f} | {data['overBudget']} |")
+    if result['diagnosticRun']:
+        lines += ['', '**Diagnostic run: workload replay/copies perturb timing; not a performance acceptance sample.**']
     lines += ['', 'GPU scopes are inclusive; do not sum parents and children. Scope means use recorded occurrences. Independent uploads are separate submissions.', '', '| Scope | GPU mean ms | GPU p99 ms |', '|---|---:|---:|']
     for s in gpu[:25]:
         lines.append(f"| {s['path']} | {s['gpuMs']['mean']:.3f} | {s['gpuMs']['p99']:.3f} |")

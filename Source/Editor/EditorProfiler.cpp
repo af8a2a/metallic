@@ -736,6 +736,11 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
     currentStreaming_.insert(currentStreaming_.end(), stats.streaming.begin(), stats.streaming.end());
     currentOverflow_ |= stats.profilingOverflow;
     const size_t parent = stack_.empty() ? 0 : stack_.back();
+    for (const auto& section : stats.preparation) {
+        const auto index = addFinishedSection(parent, "Graph preparation / " + section.name,
+            colorFromName(section.name), section.cpuMilliseconds);
+        currentNodes_[index].cpuOnly = true;
+    }
     const size_t group = addFinishedSection(
         parent,
         "RenderGraph GPU envelope",

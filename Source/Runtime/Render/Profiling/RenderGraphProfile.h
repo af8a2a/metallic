@@ -50,6 +50,7 @@ struct TextureUploadProfile {
 struct SceneStreamingProfile {
     std::string passName;
     std::string assetPath;
+    std::string softwareRasterIdentity; // Resolved module/entry/SPIR-V hash and runtime mode, JSON.
     uint64_t generation = 0;
     uint64_t frameIndex = 0;
     uint64_t feedbackFrame = UINT64_MAX;

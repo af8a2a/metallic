@@ -44,6 +44,10 @@ struct RenderGraphExecutionStats {
     std::vector<RenderGraphNodeExecutionStat> nodes;
     std::vector<SceneStreamingProfile> streaming;
     bool profilingOverflow = false;
+    std::vector<RenderGraphProfileSection> preparation;
+    std::vector<std::string> overlapBlockingPasses;
+    uint32_t drainReasonMask = 0; // 1: pass contract, 2: scene revision, 4: external completion
+    uint32_t externalCompletionCount = 0;
 };
 
 class RenderGraphExecutor {
