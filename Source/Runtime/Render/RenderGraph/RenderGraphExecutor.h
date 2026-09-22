@@ -46,8 +46,8 @@ struct RenderGraphExecutionStats {
     bool profilingOverflow = false;
     std::vector<RenderGraphProfileSection> preparation;
     std::vector<std::string> overlapBlockingPasses;
-    uint32_t drainReasonMask = 0; // 1: pass contract, 2: scene revision, 4: external completion
-    uint32_t externalCompletionCount = 0;
+    uint32_t drainReasonMask = 0; // 1: pass contract, 2: scene revision; legacy bit 4 no longer drains
+    uint32_t externalCompletionCount = 0; // Unfinished external consumers carried as GPU dependencies
 };
 
 class RenderGraphExecutor {

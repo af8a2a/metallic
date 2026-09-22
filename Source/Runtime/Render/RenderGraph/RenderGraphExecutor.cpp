@@ -2654,6 +2654,10 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (!result) { return result; }
     }
 
+    // Output consumers are GPU dependencies, not a reason to drain the CPU.
+    // Keep unfinished points for rebuild/shutdown and prune completed generations
+    // so a continuously presented viewport does not accumulate old frame states.
+    std::erase_if(impl_->externalCompletions, [](const auto& point) { return point.isComplete(); });
     const auto externalDependencies = impl_->externalCompletions;
     const scene::Scene* scene = impl_->runtimeScene;
     const std::array<uint64_t, 5> sceneStamp = scene != nullptr
@@ -2663,7 +2667,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     const bool requiresCompletedFrame = std::any_of(impl_->executionList.begin(), impl_->executionList.end(),
         [](const auto& node) { return !node.pass->supportsFrameOverlap(); });
     const uint32_t drainReasonMask = (requiresCompletedFrame ? 1u : 0u) |
-        (sceneStamp != impl_->recordedSceneStamp ? 2u : 0u) | (!impl_->externalCompletions.empty() ? 4u : 0u);
+        (sceneStamp != impl_->recordedSceneStamp ? 2u : 0u);
     std::vector<std::string> overlapBlockingPasses;
     for (const auto& node : impl_->executionList) {
         if (!node.pass->supportsFrameOverlap()) { overlapBlockingPasses.push_back(node.name); }
@@ -2706,6 +2710,10 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     for (const auto& point : desc.waitCompletions) {
         slot.frame.retain(std::make_shared<GpuCompletionPoint>(point));
     }
+    // Every queue segment waits for output readers before reusing shared targets.
+    // Frame dependencies retain their timeline semaphores until GPU completion.
+    // Do not retire the external points here: a failed recording or destructive
+    // graph change must still wait for the consumer that owns those resources.
     for (const auto& point : externalDependencies) {
         result = slot.frame.addDependency(point);
         if (!result) { slot.frame.cancel(); return result; }

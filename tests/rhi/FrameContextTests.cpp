@@ -963,6 +963,96 @@ void registerFrameGraphTransferPass()
     (void)registered;
 }
 
+// Hold the output reader on a GPU gate while recording the next producer.
+// Checking old frame contents catches missing WAR ordering across queues; a
+// zero host timeout catches accidentally serializing CPU recording again.
+class FrameOutputConsumerOverlapTest final : public RhiTest {
+public:
+    FrameOutputConsumerOverlapTest() { type = RhiTestType::Rendering; name = "frame_output_consumer_gpu_dependencies"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        FRAME_REQUIRE(render::createDevice({.applicationName = "Graph output consumer overlap",
+            .enableValidation = context.enableValidation, .enableAsyncCompute = true}, device));
+        auto* graphics = device->getQueue(render::QueueType::Graphics);
+        auto* compute = device->getQueue(render::QueueType::Compute);
+        registerFrameGraphTransferPass();
+        for (auto* readerQueue : {graphics, compute != nullptr ? compute : graphics}) {
+            render::RenderGraph graph;
+            graph.addNode("FrameGraphTransferPass", "Output");
+            graph.markOutput("Output.data");
+            render::RenderGraphExecutor executor;
+            render::QueueSubmissionTracker readerTracker;
+            Commands reader;
+            std::unique_ptr<render::Buffer> readback;
+            FRAME_REQUIRE(readerTracker.initialize(*device, *readerQueue));
+            FRAME_REQUIRE(reader.initialize(*device, *readerQueue));
+            FRAME_REQUIRE(device->createBuffer({.size = 16,
+                .usage = render::BufferUsageBits::TransferDestination,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+                .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute}, readback));
+            std::string log;
+            FRAME_REQUIRE(executor.compile(*device, graph, 1, 1, log));
+            const render::RenderGraphSubmitDesc submit{.graphicsQueue = graphics,
+                .computeQueue = compute, .slotWaitTimeoutNanoseconds = 0};
+            for (uint32_t cycle = 0; cycle < 4; ++cycle) {
+                std::unique_ptr<render::Semaphore> gate;
+                FRAME_REQUIRE(device->createSemaphore(gate));
+                DeviceDrain drain{*device, gate.get()};
+                GateWatchdog watchdog(*gate);
+                FRAME_REQUIRE(executor.execute(submit));
+                FRAME_REQUIRE(executor.lastSubmittedCompletion().wait(kWaitTimeout));
+                const uint32_t expected = 100 + static_cast<uint32_t>(executor.executionStats().executionId);
+                FRAME_REQUIRE(reader.begin(cycle));
+                FRAME_REQUIRE(executor.transitionOutput(*reader.buffer, "Output.data", render::ResourceState::TransferSource));
+                // Duplicate output requests must not multiply dependencies.
+                FRAME_REQUIRE(executor.transitionOutput(*reader.buffer, "Output.data", render::ResourceState::TransferSource));
+                reader.buffer->copyBuffer({.source = executor.outputResource("Output.data")->buffer,
+                    .destination = readback.get(), .size = 16});
+                FRAME_REQUIRE(reader.submit(readerTracker, gate.get()));
+                FRAME_REQUIRE(executor.execute(submit));
+                if (executor.executionStats().drainReasonMask != 0 || executor.executionStats().externalCompletionCount != 1 ||
+                    gate->currentValue() != 0 || reader.frame.completion().isComplete()) {
+                    return RhiTestResult::fail("External consumer blocked CPU recording or dependency generations accumulated");
+                }
+                if (executor.lastSubmittedCompletion().wait(100'000'000ull) || executor.waitForSubmittedWork(0)) {
+                    return RhiTestResult::fail("Graph overwrite/drain ignored the gated output reader");
+                }
+                FRAME_REQUIRE(gate->signal(1));
+                watchdog.worker.request_stop();
+                FRAME_REQUIRE(executor.lastSubmittedCompletion().wait(kWaitTimeout));
+                FRAME_REQUIRE(reader.frame.wait(kWaitTimeout));
+                std::array<uint32_t, 4> actual{};
+                if (!readWords(*readback, actual.data(), actual.size()) ||
+                    actual != std::array<uint32_t, 4>{expected, expected + 1, expected + 2, expected + 3}) {
+                    return RhiTestResult::fail("Next graph overwrote the output before its consumer read it");
+                }
+            }
+            // Destructive graph changes must still wait even though recording no
+            // longer waits. A delayed signal makes a premature rebuild observable.
+            std::unique_ptr<render::Semaphore> gate;
+            FRAME_REQUIRE(device->createSemaphore(gate));
+            DeviceDrain drain{*device, gate.get()};
+            FRAME_REQUIRE(reader.begin(4));
+            FRAME_REQUIRE(executor.transitionOutput(*reader.buffer, "Output.data", render::ResourceState::TransferSource));
+            reader.buffer->copyBuffer({.source = executor.outputResource("Output.data")->buffer,
+                .destination = readback.get(), .size = 16});
+            FRAME_REQUIRE(reader.submit(readerTracker, gate.get()));
+            if (executor.waitForSubmittedWork(0)) { return RhiTestResult::fail("Lost pending consumer before rebuild"); }
+            std::jthread release([&] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                (void)gate->signal(1);
+            });
+            FRAME_REQUIRE(executor.compile(*device, graph, 2, 2, log));
+            if (!reader.frame.completion().isComplete()) {
+                return RhiTestResult::fail("Rebuild released an output still used by an external consumer");
+            }
+        }
+        return RhiTestResult::pass("Same/cross queue output reads, two-slot reuse, GPU WAR ordering and rebuild lifetime");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(FrameOutputConsumerOverlapTest);
+
 class FrameSelfSubmitTwoSlotTest : public RhiTest {
 public:
     FrameSelfSubmitTwoSlotTest() { type = RhiTestType::Rendering; name = "frame_self_submit_two_slots"; }
