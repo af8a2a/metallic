@@ -59,6 +59,8 @@ struct SceneUploadStats {
     std::vector<SceneTextureLoadTiming> slowestTextures;
 };
 
+struct ComputeSampledImageSnapshot;
+
 class ScenePathTraceResources final {
 public:
     ScenePathTraceResources();
@@ -115,6 +117,7 @@ public:
     Buffer* materialBuffer() const;
     const std::vector<TextureView*>& materialTextureViews() const;
     uint32_t materialTextureCount() const;
+    std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot() const;
     // Source-image indexed KTX tail selection; non-KTX entries are zero.
     const std::vector<uint32_t>& materialTextureFirstMips() const;
     const NeuralTextureResources& neuralTextures() const;

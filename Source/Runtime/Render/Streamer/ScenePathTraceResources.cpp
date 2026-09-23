@@ -1,4 +1,5 @@
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
+#include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
@@ -1368,6 +1369,7 @@ struct ScenePathTraceResources::Impl {
     };
     using TextureGeneration = std::vector<TextureImageOwner>;
     std::shared_ptr<TextureGeneration> textureGeneration;
+    std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot;
     GpuCompletionPoint texturePublication;
     struct TextureFeedback {
         std::shared_ptr<Buffer> buffer;
@@ -1416,7 +1418,12 @@ struct ScenePathTraceResources::Impl {
             generation->push_back({materialTextures[slot].texture,materialTextures[slot].view});
             materialTextureViews[slot] = materialTextures[slot].view.get();
         }
+        auto snapshot = std::make_shared<ComputeSampledImageSnapshot>();
+        snapshot->owner = generation;
+        snapshot->views.reserve(generation->size());
+        for (const auto& image : *generation) { snapshot->views.push_back(image.view); }
         textureGeneration = std::move(generation);
+        materialTextureSnapshot = std::move(snapshot);
     }
 
     void initializeTextureStreaming()
@@ -1437,6 +1444,7 @@ struct ScenePathTraceResources::Impl {
         retiredTextures.clear();
         emptyTextureFeedback.reset();
         textureGeneration.reset();
+        materialTextureSnapshot.reset();
         texturePublication = {};
         baseTextureMips.clear(); desiredTextureMips.clear(); textureHits.clear();
         textureLastSeen.clear(); textureLastChanged.clear(); pinnedImages.clear();
@@ -3493,6 +3501,11 @@ Result ScenePathTraceResources::syncRuntimeScene(
         "[SceneResources] Updated instance transforms and refit TLAS revision={}",
         impl_->revision);
     return {};
+}
+
+std::shared_ptr<const ComputeSampledImageSnapshot> ScenePathTraceResources::materialTextureSnapshot() const
+{
+    return impl_->materialTextureSnapshot;
 }
 
 Result ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandBuffer)

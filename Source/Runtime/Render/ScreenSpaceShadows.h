@@ -8,6 +8,7 @@ namespace metallic::render {
 
 class ScenePathTraceResources;
 struct MeshletStreamDeferredGpuResourcesView;
+struct CpuProfileRecorder;
 
 struct ScreenSpaceShadowSettings {
     bool enabled = true;
@@ -51,7 +52,8 @@ public:
         TextureView& depth, const ViewConstants& view, std::span<const GpuPunctualLight> lights,
         uint64_t sceneRevision, uint64_t transformRevision, const ScreenSpaceShadowSettings& settings,
         ScreenSpaceShadowResult& output, std::string& log, ScenePathTraceResources* geometry,
-        const MeshletStreamDeferredGpuResourcesView* streamGeometry = nullptr);
+        const MeshletStreamDeferredGpuResourcesView* streamGeometry = nullptr,
+        CpuProfileRecorder* profiler = nullptr);
     void clear();
 
 private:

@@ -1,4 +1,5 @@
 #include "Runtime/Render/ScreenSpaceShadows.h"
+#include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/NrdRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -94,8 +95,9 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
     TextureView& depth, const ViewConstants& view, std::span<const GpuPunctualLight> lights,
     uint64_t sceneRevision, uint64_t transformRevision, const ScreenSpaceShadowSettings& settings,
     ScreenSpaceShadowResult& output, std::string& log, ScenePathTraceResources* geometry,
-    const MeshletStreamDeferredGpuResourcesView* streamGeometry)
+    const MeshletStreamDeferredGpuResourcesView* streamGeometry, CpuProfileRecorder* profiler)
 {
+    CpuProfileScope profile(profiler, "Validate shadow resources");
     output = {};
     const uint32_t width = static_cast<uint32_t>(view.current.viewport[1]);
     const uint32_t height = static_cast<uint32_t>(view.current.viewport[2]);
@@ -120,6 +122,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
     const auto* neural = streamed ? nullptr : &geometry->neuralTextures();
     const bool ntc = neural != nullptr && neural->active();
     const bool coop = ntc && neural->cooperativeVectorActive();
+    profile.next("Prepare trace pipeline");
     auto& trace = traces_[streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0)];
     constexpr uint32_t kShadowBinding = 80; // Keep the shared scene alpha-mask resource slots.
     const auto traceIndex = streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0);
@@ -182,6 +185,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
             .debugName = "Ray-traced shadows", .requiresRayQuery = true}, log);
         if (!result) { return result; }
     }
+    profile.next("Prepare shadow images");
     if (!state_ || state_->cancelled || state_->width != width || state_->height != height) {
         auto next = std::make_shared<State>();
         const Format formats[] = {Format::R16Sfloat, nrdNormalRoughnessFormat(), Format::R32Sfloat,
@@ -200,6 +204,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
     }
     auto state = state_;
     if (auto* frame = commands.frameContext()) { frame->retain(state); }
+    profile.next("Prepare shadow parameters");
     state->parameters.reset();
     for (auto& candidate : state->parameterPool) {
         if (candidate.use_count() == 1) { state->parameters = candidate; break; }
@@ -239,6 +244,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
     state->parameters->unmap();
     commands.hostWriteBarrier();
 
+    profile.next("Record image transitions");
     std::array<TextureBarrierDesc, 5> barriers;
     for (size_t i = 0; i < barriers.size(); ++i) {
         barriers[i] = {.texture = state->textures[i].get(),
@@ -255,6 +261,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
         }
         commands.barrier({.textures = barriers.data(), .textureCount = 5});
     }
+    profile.next("Prepare dispatch bindings");
     TextureView* depthView = &depth;
     std::vector<ComputeDispatchBinding> bindings{
         {.binding = kShadowBinding, .buffer = state->parameters.get()},
@@ -266,12 +273,13 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
     uint32_t geometryPush[2]{};
     if (streamed) {
         if (streamTlas) {
+            CpuProfileScope resources(profiler, "Prepare material textures");
             result = geometry->uploadMaterialTextures(commands);
             if (!result) { return result; }
             if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
             bindings.push_back({.binding = 0, .accelerationStructure = streamGeometry->accelerationStructure});
             bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
-            bindings.push_back({.binding = 9, .textureViews = geometry->materialTextureViews().data(), .textureViewCount = textureCount});
+            bindings.push_back({.binding = 9, .textureViews = geometry->materialTextureViews().data(), .textureViewCount = textureCount, .sampledImages = geometry->materialTextureSnapshot()});
             bindings.push_back({.binding = 90, .buffer = streamGeometry->pageBuffer});
             bindings.push_back({.binding = 91, .buffer = streamGeometry->pageTableBuffer});
             bindings.push_back({.binding = 92, .buffer = streamGeometry->instanceBuffer});
@@ -280,6 +288,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
             geometryPush[0] = textureCount;
         }
     } else {
+        CpuProfileScope resources(profiler, "Prepare material textures");
         result = geometry->uploadMaterialTextures(commands);
         if (!result) { return result; }
         if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
@@ -290,7 +299,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
         bindings.push_back({.binding = 5, .buffer = geometry->instanceBuffer()});
         bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
         bindings.push_back({.binding = 9, .textureViews = geometry->materialTextureViews().data(),
-            .textureViewCount = geometry->materialTextureCount()});
+            .textureViewCount = geometry->materialTextureCount(), .sampledImages = geometry->materialTextureSnapshot()});
         geometryPush[0] = geometry->materialTextureCount();
         geometryPush[1] = neural->textureSetCount();
     }
@@ -302,12 +311,14 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
         bindings.push_back({.binding = kNeuralTextureSetInfoBinding, .buffer = neural->setInfoBuffer()});
         bindings.push_back({.binding = kNeuralTextureSamplerBinding, .sampler = &neural->latentSampler()});
     }
+    profile.next("Record trace dispatch");
     commands.beginDebugLabel({.name = "Ray-traced shadows"});
     result = trace.dispatch({.commandBuffer = &commands, .bindings = bindings.data(), .bindingCount = uint32_t(bindings.size()),
         .pushData = geometryPush, .pushDataSize = sizeof(geometryPush),
-        .groupCountX = (width + 7) / 8, .groupCountY = (height + 7) / 8});
+        .groupCountX = (width + 7) / 8, .groupCountY = (height + 7) / 8, .profiler = profiler});
     commands.endDebugLabel();
     if (!result) { return result; }
+    profile.next("Record denoising");
 #if METALLIC_HAS_NRD
     if (denoise) {
         if (!state->sigma.valid()) {
@@ -350,6 +361,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
         if (!result) { return result; }
     }
 #endif
+    profile.next("Finalize shadow state");
     const TextureBarrierDesc shadowReady{.texture = state->textures[4].get(),
         .before = ResourceState::General, .after = ResourceState::ShaderRead, .mipCount = 1, .layerCount = 1};
     commands.barrier({.textures = &shadowReady, .textureCount = 1});

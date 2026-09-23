@@ -488,6 +488,117 @@ public:
     }
 };
 
+class FrameSampledImageCacheTest : public RhiTest {
+public:
+    FrameSampledImageCacheTest() { type = RhiTestType::Rendering; name = "frame_sampled_image_cache"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        auto setup = render::createDevice({.applicationName = "Sampled image cache",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+        if (!setup && render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("descriptor heap unsupported"); }
+        FRAME_REQUIRE(setup);
+        auto& queue = *device->getQueue(render::QueueType::Graphics);
+        render::QueueSubmissionTracker tracker;
+        Commands commands, pending(1);
+        render::ComputeProgram program;
+        std::unique_ptr<render::Buffer> output;
+        std::unique_ptr<render::Semaphore> gate;
+        struct Images {
+            std::array<std::unique_ptr<render::Texture>, 3> textures;
+            std::array<std::shared_ptr<render::TextureView>, 3> views;
+        };
+        auto images = std::make_shared<Images>();
+        FRAME_REQUIRE(tracker.initialize(*device, queue));
+        FRAME_REQUIRE(commands.initialize(*device, queue));
+        FRAME_REQUIRE(pending.initialize(*device, queue));
+        FRAME_REQUIRE(device->createSemaphore(gate));
+        FRAME_REQUIRE(device->createBuffer({.size = 8 * sizeof(uint32_t), .structureStride = 4,
+            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}, output));
+        for (size_t i = 0; i < 3; ++i) {
+            render::TextureDesc desc;
+            desc.width = 1; desc.height = 1;
+            desc.format = render::Format::Rgba32Sfloat;
+            desc.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::TransferDestination;
+            FRAME_REQUIRE(device->createTexture(desc, images->textures[i]));
+            std::unique_ptr<render::TextureView> view;
+            FRAME_REQUIRE(device->createTextureView(*images->textures[i], {}, view));
+            images->views[i] = std::move(view);
+        }
+        auto a = std::make_shared<const render::ComputeSampledImageSnapshot>(render::ComputeSampledImageSnapshot{
+            images, {images->views[0], images->views[1]}});
+        auto b = std::make_shared<const render::ComputeSampledImageSnapshot>(render::ComputeSampledImageSnapshot{
+            images, {images->views[0], images->views[2]}});
+        const render::ComputeProgramBindingDesc bindings[] = {
+            {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage, .descriptorCount = 2},
+            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
+        };
+        std::string log;
+        FRAME_REQUIRE(createProbe(*device, "sampleImages", bindings, program, log));
+        QueueDrain drain{queue, gate.get()};
+        const std::array<uint32_t, 6> writes{2, 0, 1, 2, 2, 1};
+        const std::array<uint32_t, 8> expected{30, 30, 40, 30, 30, 40, 30, 40};
+        for (uint32_t i = 0; i < 6; ++i) {
+            FRAME_REQUIRE(commands.begin(i));
+            if (i == 0) {
+                for (size_t j = 0; j < 3; ++j) {
+                    render::TextureBarrierDesc barrier{.texture = images->textures[j].get(),
+                        .before = render::ResourceState::Undefined, .after = render::ResourceState::TransferDestination};
+                    commands.buffer->barrier({.textures = &barrier, .textureCount = 1});
+                    commands.buffer->clearColorTexture(*images->textures[j], render::ResourceState::TransferDestination,
+                        {float((j + 1) * 10), 0, 0, 0});
+                    barrier.before = render::ResourceState::TransferDestination;
+                    barrier.after = render::ResourceState::ShaderRead;
+                    commands.buffer->barrier({.textures = &barrier, .textureCount = 1});
+                }
+            }
+            storageBarrier(*commands.buffer, *output);
+            render::TextureView* raw[] = {images->views[0].get(), images->views[1].get()};
+            const render::ComputeDispatchBinding resources[] = {
+                {.binding = 0, .textureViews = raw, .textureViewCount = 2,
+                    .sampledImages = i == 3 ? nullptr : ((i == 2 || i == 5) ? b : a)},
+                {.binding = 1, .buffer = output.get()},
+            };
+            render::ComputeDispatchStats stats;
+            FRAME_REQUIRE(program.dispatch({.commandBuffer = commands.buffer.get(), .bindings = resources,
+                .bindingCount = 2, .pushData = &i, .pushDataSize = 4, .stats = &stats}));
+            if (stats.sampledImageWrites != writes[i] || stats.sampledImageCacheHits != 2 - writes[i]) {
+                return RhiTestResult::fail("incorrect sampled-image generation reuse at step " + std::to_string(i));
+            }
+            FRAME_REQUIRE(commands.submit(tracker));
+            FRAME_REQUIRE(commands.frame.wait(kWaitTimeout));
+            FRAME_REQUIRE(commands.frame.reset());
+        }
+        // Keep two generations in flight and release the caller's ownership
+        // before execution. Cached weak entries must not own retired images.
+        for (uint32_t i = 6; i < 8; ++i) {
+            auto& frame = i == 6 ? commands : pending;
+            FRAME_REQUIRE(frame.begin(i));
+            storageBarrier(*frame.buffer, *output);
+            const render::ComputeDispatchBinding resources[] = {
+                {.binding = 0, .sampledImages = i == 6 ? a : b}, {.binding = 1, .buffer = output.get()},
+            };
+            FRAME_REQUIRE(program.dispatch({.commandBuffer = frame.buffer.get(), .bindings = resources,
+                .bindingCount = 2, .pushData = &i, .pushDataSize = 4}));
+            FRAME_REQUIRE(frame.submit(tracker, i == 6 ? gate.get() : nullptr));
+        }
+        std::weak_ptr<Images> lifetime = images;
+        images.reset(); a.reset(); b.reset();
+        if (lifetime.expired()) { return RhiTestResult::fail("in-flight sampled images released early"); }
+        FRAME_REQUIRE(gate->signal(1));
+        FRAME_REQUIRE(pending.frame.wait(kWaitTimeout));
+        FRAME_REQUIRE(commands.frame.reset());
+        FRAME_REQUIRE(pending.frame.reset());
+        if (!lifetime.expired()) { return RhiTestResult::fail("completed descriptor cache retains retired images"); }
+        std::array<uint32_t, 8> actual{};
+        if (!readWords(*output, actual.data(), actual.size()) || actual != expected) {
+            return RhiTestResult::fail("sampled descriptors returned stale/overwritten image values");
+        }
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(FrameSampledImageCacheTest);
+
 class FrameHistoryDependencyTest : public RhiTest {
 public:
     FrameHistoryDependencyTest() { type = RhiTestType::Rendering; name = "frame_history_dependencies"; }

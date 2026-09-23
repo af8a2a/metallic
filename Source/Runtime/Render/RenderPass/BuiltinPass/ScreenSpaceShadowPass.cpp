@@ -1,6 +1,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
+#include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/RenderFrameContext.h"
@@ -74,6 +75,15 @@ public:
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        CpuProfileRecorder profiler;
+        const auto result = executeProfiled(context, profiler);
+        context.publishCpuProfile(profiler.sections);
+        return result;
+    }
+
+    Result executeProfiled(RenderGraphExecutionContext& context, CpuProfileRecorder& profiler)
+    {
+        CpuProfileScope profile(&profiler, "Validate inputs and camera");
         const auto depth = context.inputTexture("depth");
         const auto metadata = context.inputBuffer("rasterInfo");
         const auto output = context.outputTexture("shadow");
@@ -121,7 +131,9 @@ public:
         auto result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
             [] {}, [history = history_] { history->valid = false; }));
         if (!result) { return result; }
+        profile.next("Build light records");
         const auto lights = buildScreenSpaceShadowLightRecords(scene, resolveSceneLighting(scene, context.world()));
+        profile.next("Resolve stream resources");
         const MeshletStreamDeferredGpuResourcesView* stream = nullptr;
         if (scene->hasStreamGeometry()) {
             const auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
@@ -133,14 +145,16 @@ public:
         }
         ScreenSpaceShadowResult shadow;
         std::string log;
+        profile.next("Prepare and record shadows");
         result = shadows_.record(*device_, commands, *context.streamer(), *depth.view(), view,
             lights, scene->contentRevision(), scene->transformRevision(),
-            screenSpaceShadowSettings(context.properties()), shadow, log, &geometry_, stream);
+            screenSpaceShadowSettings(context.properties()), shadow, log, &geometry_, stream, &profiler);
         if (!result) {
             spdlog::error("RayTracedShadowPass: {} ({})", log, resultToString(result));
             return result;
         }
 
+        profile.next("Publish shadow image");
         // Keep SIGMA's private output for the next history copy; publish a graph-owned snapshot.
         TextureBarrierDesc barrier{.texture = shadow.texture, .before = ResourceState::ShaderRead,
             .after = ResourceState::TransferSource, .mipCount = 1, .layerCount = 1};
@@ -150,6 +164,7 @@ public:
         barrier.before = ResourceState::TransferSource;
         barrier.after = ResourceState::ShaderRead;
         commands.barrier({.textures = &barrier, .textureCount = 1});
+        profile.next("Publish shadow parameters");
         mapped = shadow.parameters->map();
         if (mapped == nullptr) { return makeError(Error::Failure); }
         const StreamDataChunk chunk{mapped, sizeof(ScreenSpaceShadowParameters)};
@@ -158,6 +173,7 @@ public:
         shadow.parameters->unmap();
         if (!uploaded.valid()) { return makeError(Error::OutOfMemory); }
         commands.copyStreamedData(*context.streamer());
+        profile.next("Publish camera history");
         history_->view = view;
         history_->sceneIdentity = info.sceneIdentity;
         history_->valid = true;

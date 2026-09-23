@@ -1,4 +1,5 @@
 #include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/RenderFrameContext.h"
 
 #include <spdlog/spdlog.h>
@@ -95,6 +96,12 @@ struct ComputeDescriptorTables {
         ComputeProgramBindingDesc desc;
         uint32_t heapIndexOffset = 0;
         std::vector<BindlessHandle> handles;
+        struct CachedImage {
+            TextureView* view = nullptr;
+            std::weak_ptr<TextureView> owner;
+        };
+        std::vector<CachedImage> sampledImages;
+        std::vector<std::weak_ptr<const ComputeSampledImageSnapshot>> sampledSnapshots;
     };
 
     std::unique_ptr<BindlessHeap> heap;
@@ -176,6 +183,8 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
         // for both constant-base and pushed-base pipelines.
         for (auto& binding : tables->bindings) {
             binding.handles.clear();
+            binding.sampledImages.clear();
+            binding.sampledSnapshots.clear();
         }
         for (uint32_t set = 0; set < resourceTableCount; ++set) {
             for (size_t bindingIndex = 0; bindingIndex < bindings.size(); ++bindingIndex) {
@@ -557,6 +566,8 @@ Result ComputeProgram::dispatchIndirectBatch(const ComputeDispatchDesc& desc,
 Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
     std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches)
 {
+    CpuProfileScope profile(desc.profiler, "Acquire dispatch tables");
+    if (desc.stats) { *desc.stats = {}; }
     if (!valid() ||
         desc.commandBuffer == nullptr ||
         (desc.indirectArguments == nullptr &&
@@ -635,7 +646,8 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
             sizeof(bufferBase));
     }
 
-    for (const Impl::BindingState& expectedBinding : tables->bindings) {
+    profile.next("Update dispatch descriptors");
+    for (Impl::BindingState& expectedBinding : tables->bindings) {
         const ComputeDispatchBinding* binding =
             findDispatchBinding(desc, expectedBinding.desc.binding);
         if (binding == nullptr) {
@@ -736,33 +748,50 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
             break;
         }
         case ComputeResourceBindingKind::SampledImage: {
-            if (binding->textureViews == nullptr || binding->textureViewCount < descriptorCount) {
-                spdlog::error(
-                    "[ComputeProgram:{}] sampled image binding {} has {} views, expected {}",
-                    impl_->debugName,
-                    expectedBinding.desc.binding,
-                    binding->textureViewCount,
-                    descriptorCount);
+            const auto& snapshot = binding->sampledImages;
+            if (snapshot ? snapshot->views.size() < descriptorCount :
+                (binding->textureViews == nullptr || binding->textureViewCount < descriptorCount)) {
+                spdlog::error("[ComputeProgram:{}] invalid sampled image array at binding {}",
+                    impl_->debugName, expectedBinding.desc.binding);
                 return makeError(Error::InvalidArgument);
             }
-            for (uint32_t index = 0; index < descriptorCount; ++index) {
-                TextureView* textureView = binding->textureViews[index];
-                if (textureView == nullptr) {
-                    spdlog::error(
-                        "[ComputeProgram:{}] null sampled image binding {}[{}]",
-                        impl_->debugName,
-                        expectedBinding.desc.binding,
-                        index);
-                    return makeError(Error::InvalidArgument);
+            if (snapshot) {
+                if (auto* frame = desc.commandBuffer->frameContext()) {
+                    // Retention erases constness but never mutates the published snapshot.
+                    frame->retain(std::const_pointer_cast<ComputeSampledImageSnapshot>(snapshot));
                 }
-                result = tables->heap->writeSampledImage(
-                    expectedBinding.handles[firstHandle + index],
-                    *textureView,
-                    ResourceState::ShaderRead);
-                if (!result) {
-                    return result;
+                expectedBinding.sampledImages.resize(expectedBinding.handles.size());
+                expectedBinding.sampledSnapshots.resize(impl_->resourceTableCount);
+                if (expectedBinding.sampledSnapshots[desc.resourceTableIndex].lock() == snapshot) {
+                    if (desc.stats) { desc.stats->sampledImageCacheHits += descriptorCount; }
+                    break;
                 }
             }
+            // A failed/uncached update must never leave a whole-array cache hit.
+            if (!expectedBinding.sampledSnapshots.empty()) {
+                expectedBinding.sampledSnapshots[desc.resourceTableIndex].reset();
+            }
+            for (uint32_t index = 0; index < descriptorCount; ++index) {
+                TextureView* textureView = snapshot ? snapshot->views[index].get() : binding->textureViews[index];
+                if (textureView == nullptr) { return makeError(Error::InvalidArgument); }
+                auto* cached = expectedBinding.sampledImages.empty() ? nullptr :
+                    &expectedBinding.sampledImages[firstHandle + index];
+                if (snapshot && cached->view == textureView &&
+                    !cached->owner.owner_before(snapshot->views[index]) &&
+                    !snapshot->views[index].owner_before(cached->owner)) {
+                    // Weak ownership prevents ABA without retaining old texture
+                    // generations after the GPU has completed their frames.
+                    if (desc.stats) { ++desc.stats->sampledImageCacheHits; }
+                    continue;
+                }
+                if (cached) { *cached = {}; }
+                result = tables->heap->writeSampledImage(
+                    expectedBinding.handles[firstHandle + index], *textureView, ResourceState::ShaderRead);
+                if (!result) { return result; }
+                if (desc.stats) { ++desc.stats->sampledImageWrites; }
+                if (snapshot) { *cached = {textureView, snapshot->views[index]}; }
+            }
+            if (snapshot) { expectedBinding.sampledSnapshots[desc.resourceTableIndex] = snapshot; }
             break;
         }
         case ComputeResourceBindingKind::StorageBuffer: {
@@ -793,6 +822,7 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         }
     }
 
+    profile.next("Prepare dispatch constants");
     uint64_t constantsAddress = 0;
     const uint64_t constantStride = (uint64_t(impl_->pushConstantSize) + 15u) & ~uint64_t(15u);
     if (impl_->usesResourceTable) {
@@ -846,6 +876,7 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         std::memcpy(pushData.data(), &push, sizeof(push));
     }
 
+    profile.next("Record dispatch commands");
     desc.commandBuffer->bindBindlessHeap(*tables->heap);
     desc.commandBuffer->bindComputePipeline(*impl_->pipeline);
     if (!dispatches.empty()) {

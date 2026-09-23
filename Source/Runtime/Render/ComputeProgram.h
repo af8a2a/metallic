@@ -6,6 +6,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace metallic::render {
 
@@ -41,6 +42,20 @@ struct ComputeProgramDesc {
     PipelineCache* pipelineCache = nullptr;
 };
 
+struct CpuProfileRecorder;
+
+// Publish through shared_ptr<const ...> and never mutate afterwards. The owner
+// retains the underlying images, while views supply stable ownership identities.
+struct ComputeSampledImageSnapshot {
+    std::shared_ptr<const void> owner;
+    std::vector<std::shared_ptr<TextureView>> views;
+};
+
+struct ComputeDispatchStats {
+    uint32_t sampledImageWrites = 0;
+    uint32_t sampledImageCacheHits = 0;
+};
+
 struct ComputeDispatchBinding {
     uint32_t binding = 0;
     union {
@@ -54,6 +69,9 @@ struct ComputeDispatchBinding {
     Buffer* buffer = nullptr;
     uint64_t offset = 0;
     uint64_t size = UINT64_MAX;
+    // Optional immutable sampled-image array; takes precedence over textureViews.
+    // Only this opt-in binding uses cached descriptors. Other resources remain dynamic.
+    std::shared_ptr<const ComputeSampledImageSnapshot> sampledImages;
 };
 
 struct ComputeDispatchDesc {
@@ -70,6 +88,8 @@ struct ComputeDispatchDesc {
     // transitions this buffer to IndirectArgument and retains it until completion.
     Buffer* indirectArguments = nullptr;
     uint64_t indirectOffset = 0;
+    CpuProfileRecorder* profiler = nullptr;
+    ComputeDispatchStats* stats = nullptr;
 };
 
 class ComputeProgram;
