@@ -47,12 +47,31 @@ void setStreamlineLatencyMarker(StreamlineLatencyMarker marker);
 // Never call this in addition to an actual interposed presentation.
 Result notifyStreamlineOffscreenFrame();
 
+// Optional CPU wall timings for frame-begin diagnostics. The cached driver report
+// is refreshed at the normal cadence, not queried again for instrumentation.
+struct StreamlineFrameBeginProfile {
+    double totalMs = 0.0;
+    double mutexWaitMs = 0.0;
+    double tokenMs = 0.0;
+    double optionsMs = 0.0;
+    double sleepMs = 0.0;
+    double statusMs = 0.0;
+    double markerMs = 0.0;
+    uint64_t frameId = 0;
+    bool active = false;
+    bool sleepCalled = false;
+    bool optionsUpdated = false;
+    bool statusRefreshed = false;
+    StreamlineReflexOptions effectiveOptions;
+    StreamlineReflexStatus cachedStatus;
+};
+
 // One scope per application frame, before input polling. DLSS evaluations inside
 // the scope share its token. Offscreen callers can continue evaluating without it.
 // Must be externally serialized with device lifetime and other frame scopes.
 class StreamlineFrameScope {
 public:
-    explicit StreamlineFrameScope(bool allowLatency = true);
+    explicit StreamlineFrameScope(bool allowLatency = true, StreamlineFrameBeginProfile* profile = nullptr);
     ~StreamlineFrameScope();
     StreamlineFrameScope(const StreamlineFrameScope&) = delete;
     StreamlineFrameScope& operator=(const StreamlineFrameScope&) = delete;

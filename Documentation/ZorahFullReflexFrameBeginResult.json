@@ -1,0 +1,4125 @@
+{
+  "historicalSource": "build-release\\full-request-selection-pacing-0923\\run1",
+  "historical": {
+    "frameMs": {
+      "count": 1295,
+      "mean": 23.179637142857143,
+      "p50": 21.7464,
+      "p95": 34.3578,
+      "p99": 39.042,
+      "max": 53.2961
+    },
+    "overBudget": 96,
+    "scopes": [
+      {
+        "cpuOnly": false,
+        "id": 1,
+        "path": "Frame/Wait Frame Slot Before Input",
+        "queue": "cpu",
+        "cpuMs": {
+          "count": 1295,
+          "mean": 1.5524537451737452,
+          "p50": 0.0157,
+          "p95": 6.8267,
+          "p99": 9.3614,
+          "max": 29.101
+        },
+        "gpuMs": null
+      },
+      {
+        "cpuOnly": false,
+        "id": 2,
+        "path": "Frame/Streamline frame begin / Reflex pacing",
+        "queue": "cpu",
+        "cpuMs": {
+          "count": 1295,
+          "mean": 3.8560398455598457,
+          "p50": 0.0709,
+          "p95": 18.0661,
+          "p99": 19.859,
+          "max": 21.1955
+        },
+        "gpuMs": null
+      },
+      {
+        "cpuOnly": false,
+        "id": 20,
+        "path": "Frame/Render Frame/Acquire Swapchain Image",
+        "queue": "cpu",
+        "cpuMs": {
+          "count": 1295,
+          "mean": 0.0046044787644787645,
+          "p50": 0.0044,
+          "p95": 0.0062,
+          "p99": 0.0077,
+          "max": 0.0149
+        },
+        "gpuMs": null
+      },
+      {
+        "cpuOnly": false,
+        "id": 36,
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope",
+        "queue": "graphics",
+        "cpuMs": {
+          "count": 1295,
+          "mean": 16.46696926640927,
+          "p50": 15.9145,
+          "p95": 23.6744,
+          "p99": 28.5296,
+          "max": 35.5489
+        },
+        "gpuMs": {
+          "count": 1295,
+          "mean": 19.123498205405408,
+          "p50": 19.529632,
+          "p95": 23.286848,
+          "p99": 24.15424,
+          "max": 24.97744
+        }
+      },
+      {
+        "cpuOnly": false,
+        "id": 154,
+        "path": "Frame/Render Frame/Present",
+        "queue": "cpu",
+        "cpuMs": {
+          "count": 1295,
+          "mean": 0.1356488803088803,
+          "p50": 0.0961,
+          "p95": 0.3476,
+          "p99": 0.4817,
+          "max": 1.0064
+        },
+        "gpuMs": null
+      }
+    ]
+  },
+  "conditionsVerified": [
+    "executableSha256",
+    "shaderSha256",
+    "conditions",
+    "graph",
+    "absoluteKeyframes"
+  ],
+  "runs": [
+    {
+      "label": "on",
+      "manifest": {
+        "protocol": "zorah-full-editor-roam-v1",
+        "asset": {
+          "bytes": 205327470912,
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin"
+        },
+        "shaderSha256": "4414EAF63FA53AC7EDB7C9B977983FD508C5B107ACA7B18ACB9DE6449CBAAA38",
+        "executableSha256": "3FD3B15C7BAB9B9EB4F65006A4BEED2E991D005E59BAE91E720AA21B1C9B8B9C",
+        "hidden": true,
+        "started": "2026-09-23T23:20:37.1877180+08:00",
+        "config": {
+          "warmupSeconds": 10.0,
+          "width": 1797,
+          "durationSeconds": 30.0,
+          "height": 660
+        },
+        "validation": false,
+        "gitHead": "9c733fb949d6e0ea4d903d0cb6ca959fdf78b087",
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Editor/EditorFullRoamBenchmark.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
+        ],
+        "runs": 1,
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB"
+      },
+      "summary": {
+        "source": "build-release\\full-reflex-begin-on-0923\\run1",
+        "conditions": {
+          "outputExtent": [
+            1797,
+            660
+          ],
+          "renderExtent": [
+            1198,
+            440
+          ],
+          "hidden": true,
+          "vsync": true,
+          "frameSlots": 2,
+          "config": {
+            "distance": 6.0,
+            "durationSeconds": 30.0,
+            "keyframes": [
+              {
+                "forward": 0.0,
+                "stage": "static",
+                "t": 0.0,
+                "yaw": 0.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "first-visit",
+                "t": 0.08333333333333333,
+                "yaw": 0.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "near-wall",
+                "t": 0.3333333333333333,
+                "yaw": 0.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "turn",
+                "t": 0.4444444444444444,
+                "yaw": 65.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "return",
+                "t": 0.6666666666666666,
+                "yaw": -65.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "settle",
+                "t": 0.8888888888888888,
+                "yaw": 0.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "end",
+                "t": 1.0,
+                "yaw": 0.0
+              }
+            ],
+            "warmupSeconds": 10.0
+          }
+        },
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "sleepCalls": 1434,
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1434,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1434,
+              "mean": 0.0001397489539748954,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0004,
+              "max": 0.0049
+            },
+            "tokenMs": {
+              "count": 1434,
+              "mean": 0.0005527196652719665,
+              "p50": 0.0005,
+              "p95": 0.0009,
+              "p99": 0.0012,
+              "max": 0.0025
+            },
+            "optionsMs": {
+              "count": 1434,
+              "mean": 7.566248256624825e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0011
+            },
+            "sleepMs": {
+              "count": 1434,
+              "mean": 4.633203207810321,
+              "p50": 4.4347,
+              "p95": 9.5295,
+              "p99": 11.3764,
+              "max": 14.8719
+            },
+            "statusMs": {
+              "count": 1434,
+              "mean": 0.00011087866108786611,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.003,
+              "max": 0.0045
+            },
+            "markerMs": {
+              "count": 1434,
+              "mean": 0.0026368200836820086,
+              "p50": 0.0024,
+              "p95": 0.0033,
+              "p99": 0.0042,
+              "max": 0.1372
+            },
+            "totalMs": {
+              "count": 1434,
+              "mean": 4.636811506276151,
+              "p50": 4.4378,
+              "p95": 9.5328,
+              "p99": 11.3792,
+              "max": 14.8748
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1434,
+            "mean": 6.7754336122733605,
+            "p50": 6.626499999999999,
+            "p95": 12.275500000000001,
+            "p99": 13.649799999999999,
+            "max": 46.653200000000005
+          },
+          "sleepShare": 0.9992218147188113,
+          "nonSleepMs": {
+            "count": 1434,
+            "mean": 0.0036082984658298432,
+            "p50": 0.0033999999999998476,
+            "p95": 0.004699999999999704,
+            "p99": 0.006900000000000128,
+            "max": 0.1379999999999999
+          },
+          "frameMs": {
+            "count": 1434,
+            "mean": 20.928270153417014,
+            "p50": 20.6345,
+            "p95": 27.7612,
+            "p99": 30.9701,
+            "max": 66.8705
+          },
+          "overBudget": 4,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "slowestFivePercent": {
+          "count": 72,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 72,
+              "mean": 0.00010555555555555555,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0003
+            },
+            "tokenMs": {
+              "count": 72,
+              "mean": 0.0004875,
+              "p50": 0.0005,
+              "p95": 0.0007,
+              "p99": 0.0008,
+              "max": 0.0008
+            },
+            "optionsMs": {
+              "count": 72,
+              "mean": 6.805555555555555e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0004,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 72,
+              "mean": 10.659294444444445,
+              "p50": 10.2491,
+              "p95": 12.9668,
+              "p99": 14.8719,
+              "max": 14.8719
+            },
+            "statusMs": {
+              "count": 72,
+              "mean": 0.00014027777777777777,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0034,
+              "max": 0.0034
+            },
+            "markerMs": {
+              "count": 72,
+              "mean": 0.002673611111111111,
+              "p50": 0.0025,
+              "p95": 0.0036,
+              "p99": 0.0073,
+              "max": 0.0073
+            },
+            "totalMs": {
+              "count": 72,
+              "mean": 10.662865277777778,
+              "p50": 10.2525,
+              "p95": 12.9694,
+              "p99": 14.8748,
+              "max": 14.8748
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 72,
+            "mean": 11.569572222222222,
+            "p50": 11.2383,
+            "p95": 14.0443,
+            "p99": 14.8844,
+            "max": 14.8844
+          },
+          "sleepShare": 0.9996651150286241,
+          "nonSleepMs": {
+            "count": 72,
+            "mean": 0.0035708333333331777,
+            "p50": 0.0032999999999994145,
+            "p95": 0.004899999999999238,
+            "p99": 0.00849999999999973,
+            "max": 0.00849999999999973
+          },
+          "frameMs": {
+            "count": 72,
+            "mean": 24.149320833333334,
+            "p50": 23.4196,
+            "p95": 31.7123,
+            "p99": 36.598,
+            "max": 36.598
+          },
+          "overBudget": 1,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "refreshFrames": {
+          "count": 24,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 24,
+              "mean": 0.00015416666666666668,
+              "p50": 0.0002,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0003
+            },
+            "tokenMs": {
+              "count": 24,
+              "mean": 0.000575,
+              "p50": 0.0005,
+              "p95": 0.001,
+              "p99": 0.0012,
+              "max": 0.0012
+            },
+            "optionsMs": {
+              "count": 24,
+              "mean": 6.25e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0002,
+              "max": 0.0002
+            },
+            "sleepMs": {
+              "count": 24,
+              "mean": 4.5486125,
+              "p50": 4.9819,
+              "p95": 9.8146,
+              "p99": 9.8546,
+              "max": 9.8546
+            },
+            "statusMs": {
+              "count": 24,
+              "mean": 0.0031625,
+              "p50": 0.0032,
+              "p95": 0.0039,
+              "p99": 0.0045,
+              "max": 0.0045
+            },
+            "markerMs": {
+              "count": 24,
+              "mean": 0.0018333333333333333,
+              "p50": 0.0018,
+              "p95": 0.0024,
+              "p99": 0.0026,
+              "max": 0.0026
+            },
+            "totalMs": {
+              "count": 24,
+              "mean": 4.554495833333333,
+              "p50": 4.9874,
+              "p95": 9.8208,
+              "p99": 9.8601,
+              "max": 9.8601
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 24,
+            "mean": 6.208279166666666,
+            "p50": 6.137700000000001,
+            "p95": 11.4852,
+            "p99": 13.1196,
+            "max": 13.1196
+          },
+          "sleepShare": 0.9987082360927253,
+          "nonSleepMs": {
+            "count": 24,
+            "mean": 0.005883333333333313,
+            "p50": 0.005800000000000027,
+            "p95": 0.007200000000000095,
+            "p99": 0.007600000000000051,
+            "max": 0.007600000000000051
+          },
+          "frameMs": {
+            "count": 24,
+            "mean": 20.342000000000002,
+            "p50": 21.105,
+            "p95": 24.0609,
+            "p99": 29.1401,
+            "max": 29.1401
+          },
+          "overBudget": 0,
+          "longestOverBudgetRun": 0,
+          "sampledRouteMeets30Fps": true
+        },
+        "stages": {
+          "static": {
+            "count": 119,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 119,
+                "mean": 0.0001453781512605042,
+                "p50": 0.0001,
+                "p95": 0.0003,
+                "p99": 0.0004,
+                "max": 0.0004
+              },
+              "tokenMs": {
+                "count": 119,
+                "mean": 0.000553781512605042,
+                "p50": 0.0005,
+                "p95": 0.0009,
+                "p99": 0.0011,
+                "max": 0.0013
+              },
+              "optionsMs": {
+                "count": 119,
+                "mean": 8.319327731092437e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 119,
+                "mean": 7.755380672268908,
+                "p50": 7.592,
+                "p95": 11.9052,
+                "p99": 12.6868,
+                "max": 12.9668
+              },
+              "statusMs": {
+                "count": 119,
+                "mean": 0.0001184873949579832,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.0028,
+                "max": 0.0034
+              },
+              "markerMs": {
+                "count": 119,
+                "mean": 0.002622689075630252,
+                "p50": 0.0025,
+                "p95": 0.0035,
+                "p99": 0.0041,
+                "max": 0.007
+              },
+              "totalMs": {
+                "count": 119,
+                "mean": 7.759002521008403,
+                "p50": 7.5953,
+                "p95": 11.9089,
+                "p99": 12.6895,
+                "max": 12.9694
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 119,
+              "mean": 9.648966386554623,
+              "p50": 9.6103,
+              "p95": 12.978399999999999,
+              "p99": 13.4756,
+              "max": 13.610899999999999
+            },
+            "sleepShare": 0.9995332069129133,
+            "nonSleepMs": {
+              "count": 119,
+              "mean": 0.003621848739495812,
+              "p50": 0.003400000000000958,
+              "p95": 0.0049000000000001265,
+              "p99": 0.0062000000000006494,
+              "max": 0.008000000000000007
+            },
+            "frameMs": {
+              "count": 119,
+              "mean": 21.16548655462185,
+              "p50": 20.8316,
+              "p95": 24.8122,
+              "p99": 25.8903,
+              "max": 28.7517
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          },
+          "first-visit": {
+            "count": 355,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 355,
+                "mean": 0.00015380281690140845,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0004,
+                "max": 0.0049
+              },
+              "tokenMs": {
+                "count": 355,
+                "mean": 0.0005492957746478874,
+                "p50": 0.0005,
+                "p95": 0.0008,
+                "p99": 0.0011,
+                "max": 0.0025
+              },
+              "optionsMs": {
+                "count": 355,
+                "mean": 7.380281690140845e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0004,
+                "max": 0.0009
+              },
+              "sleepMs": {
+                "count": 355,
+                "mean": 3.990652112676056,
+                "p50": 3.861,
+                "p95": 7.3652,
+                "p99": 7.9532,
+                "max": 10.1357
+              },
+              "statusMs": {
+                "count": 355,
+                "mean": 0.00011746478873239436,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.0034,
+                "max": 0.0039
+              },
+              "markerMs": {
+                "count": 355,
+                "mean": 0.0025492957746478875,
+                "p50": 0.0025,
+                "p95": 0.0032,
+                "p99": 0.0036,
+                "max": 0.0077
+              },
+              "totalMs": {
+                "count": 355,
+                "mean": 3.994187605633803,
+                "p50": 3.8648,
+                "p95": 7.3684,
+                "p99": 7.9564,
+                "max": 10.1389
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 355,
+              "mean": 6.208470985915493,
+              "p50": 6.0773,
+              "p95": 11.0348,
+              "p99": 12.055299999999999,
+              "max": 23.379
+            },
+            "sleepShare": 0.9991148405365937,
+            "nonSleepMs": {
+              "count": 355,
+              "mean": 0.0035354929577465005,
+              "p50": 0.0034000000000000696,
+              "p95": 0.0043999999999999595,
+              "p99": 0.006900000000000128,
+              "max": 0.011700000000000266
+            },
+            "frameMs": {
+              "count": 355,
+              "mean": 21.102625352112675,
+              "p50": 21.1965,
+              "p95": 26.9485,
+              "p99": 29.0738,
+              "max": 41.2947
+            },
+            "overBudget": 1,
+            "longestOverBudgetRun": 1,
+            "sampledRouteMeets30Fps": false
+          },
+          "near-wall": {
+            "count": 139,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 139,
+                "mean": 0.00014028776978417266,
+                "p50": 0.0001,
+                "p95": 0.0003,
+                "p99": 0.0004,
+                "max": 0.0005
+              },
+              "tokenMs": {
+                "count": 139,
+                "mean": 0.0006676258992805755,
+                "p50": 0.0006,
+                "p95": 0.0011,
+                "p99": 0.0013,
+                "max": 0.0017
+              },
+              "optionsMs": {
+                "count": 139,
+                "mean": 0.00010359712230215829,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0003
+              },
+              "sleepMs": {
+                "count": 139,
+                "mean": 2.381611510791367,
+                "p50": 1.6327,
+                "p95": 7.7062,
+                "p99": 12.2867,
+                "max": 14.8719
+              },
+              "statusMs": {
+                "count": 139,
+                "mean": 0.00011942446043165468,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.003,
+                "max": 0.0045
+              },
+              "markerMs": {
+                "count": 139,
+                "mean": 0.0025028776978417264,
+                "p50": 0.0025,
+                "p95": 0.0033,
+                "p99": 0.004,
+                "max": 0.0048
+              },
+              "totalMs": {
+                "count": 139,
+                "mean": 2.3852388489208636,
+                "p50": 1.6368,
+                "p95": 7.7097,
+                "p99": 12.2903,
+                "max": 14.8748
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 139,
+              "mean": 4.804110791366906,
+              "p50": 3.9379999999999997,
+              "p95": 12.6396,
+              "p99": 14.6712,
+              "max": 14.8844
+            },
+            "sleepShare": 0.9984792558065463,
+            "nonSleepMs": {
+              "count": 139,
+              "mean": 0.003627338129496414,
+              "p50": 0.003599999999999992,
+              "p95": 0.0046000000000001595,
+              "p99": 0.007399999999999629,
+              "max": 0.007600000000000051
+            },
+            "frameMs": {
+              "count": 139,
+              "mean": 23.97933309352518,
+              "p50": 23.4265,
+              "p95": 30.9701,
+              "p99": 32.8056,
+              "max": 36.598
+            },
+            "overBudget": 1,
+            "longestOverBudgetRun": 1,
+            "sampledRouteMeets30Fps": false
+          },
+          "turn": {
+            "count": 321,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 321,
+                "mean": 0.0001364485981308411,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0004,
+                "max": 0.0008
+              },
+              "tokenMs": {
+                "count": 321,
+                "mean": 0.0005208722741433022,
+                "p50": 0.0005,
+                "p95": 0.0007,
+                "p99": 0.0012,
+                "max": 0.0022
+              },
+              "optionsMs": {
+                "count": 321,
+                "mean": 7.725856697819315e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 321,
+                "mean": 4.1410246105919,
+                "p50": 4.2124,
+                "p95": 8.7014,
+                "p99": 10.5585,
+                "max": 12.9986
+              },
+              "statusMs": {
+                "count": 321,
+                "mean": 0.00010685358255451712,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.0029,
+                "max": 0.0033
+              },
+              "markerMs": {
+                "count": 321,
+                "mean": 0.0025,
+                "p50": 0.0024,
+                "p95": 0.0032,
+                "p99": 0.0046,
+                "max": 0.0079
+              },
+              "totalMs": {
+                "count": 321,
+                "mean": 4.144457320872274,
+                "p50": 4.2164,
+                "p95": 8.7054,
+                "p99": 10.5618,
+                "max": 13.0028
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 321,
+              "mean": 6.319079750778816,
+              "p50": 6.1155,
+              "p95": 11.5915,
+              "p99": 12.6442,
+              "max": 46.653200000000005
+            },
+            "sleepShare": 0.9991717346772795,
+            "nonSleepMs": {
+              "count": 321,
+              "mean": 0.0034327102803738355,
+              "p50": 0.0032999999999998586,
+              "p95": 0.004699999999999704,
+              "p99": 0.00649999999999995,
+              "max": 0.008900000000000574
+            },
+            "frameMs": {
+              "count": 321,
+              "mean": 20.776936760124613,
+              "p50": 20.5123,
+              "p95": 28.6695,
+              "p99": 30.6952,
+              "max": 66.8705
+            },
+            "overBudget": 1,
+            "longestOverBudgetRun": 1,
+            "sampledRouteMeets30Fps": false
+          },
+          "return": {
+            "count": 354,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 354,
+                "mean": 0.00012966101694915255,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0005
+              },
+              "tokenMs": {
+                "count": 354,
+                "mean": 0.0005138418079096046,
+                "p50": 0.0005,
+                "p95": 0.0008,
+                "p99": 0.001,
+                "max": 0.0017
+              },
+              "optionsMs": {
+                "count": 354,
+                "mean": 6.1016949152542376e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 354,
+                "mean": 4.38674209039548,
+                "p50": 4.3771,
+                "p95": 8.8956,
+                "p99": 10.2637,
+                "max": 12.6293
+              },
+              "statusMs": {
+                "count": 354,
+                "mean": 9.80225988700565e-05,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.0027,
+                "max": 0.0032
+              },
+              "markerMs": {
+                "count": 354,
+                "mean": 0.0028112994350282484,
+                "p50": 0.0024,
+                "p95": 0.003,
+                "p99": 0.0037,
+                "max": 0.1372
+              },
+              "totalMs": {
+                "count": 354,
+                "mean": 4.390447740112994,
+                "p50": 4.3804,
+                "p95": 8.8988,
+                "p99": 10.267,
+                "max": 12.6323
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 354,
+              "mean": 6.452944915254238,
+              "p50": 6.1922,
+              "p95": 11.481,
+              "p99": 13.752,
+              "max": 14.5225
+            },
+            "sleepShare": 0.9991559745299647,
+            "nonSleepMs": {
+              "count": 354,
+              "mean": 0.003705649717514105,
+              "p50": 0.0032000000000000917,
+              "p95": 0.0041999999999999815,
+              "p99": 0.005900000000000016,
+              "max": 0.1379999999999999
+            },
+            "frameMs": {
+              "count": 354,
+              "mean": 18.855598587570622,
+              "p50": 18.2586,
+              "p95": 25.6338,
+              "p99": 28.9852,
+              "max": 31.1516
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          },
+          "settle": {
+            "count": 146,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 146,
+                "mean": 0.00013219178082191782,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0003
+              },
+              "tokenMs": {
+                "count": 146,
+                "mean": 0.000615068493150685,
+                "p50": 0.0006,
+                "p95": 0.001,
+                "p99": 0.0012,
+                "max": 0.0012
+              },
+              "optionsMs": {
+                "count": 146,
+                "mean": 7.945205479452055e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0011
+              },
+              "sleepMs": {
+                "count": 146,
+                "mean": 7.474123287671233,
+                "p50": 7.7958,
+                "p95": 10.4669,
+                "p99": 11.4354,
+                "max": 13.1122
+              },
+              "statusMs": {
+                "count": 146,
+                "mean": 0.00012054794520547946,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.0032,
+                "max": 0.0036
+              },
+              "markerMs": {
+                "count": 146,
+                "mean": 0.0028664383561643834,
+                "p50": 0.0027,
+                "p95": 0.0038,
+                "p99": 0.0085,
+                "max": 0.0094
+              },
+              "totalMs": {
+                "count": 146,
+                "mean": 7.478029452054795,
+                "p50": 7.8012,
+                "p95": 10.4707,
+                "p99": 11.4392,
+                "max": 13.116
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 146,
+              "mean": 9.473966438356165,
+              "p50": 9.763,
+              "p95": 12.9303,
+              "p99": 14.0443,
+              "max": 14.2229
+            },
+            "sleepShare": 0.9994776479006126,
+            "nonSleepMs": {
+              "count": 146,
+              "mean": 0.0039061643835615794,
+              "p50": 0.0036000000000000476,
+              "p95": 0.005499999999999616,
+              "p99": 0.009300000000000086,
+              "max": 0.010200000000000209
+            },
+            "frameMs": {
+              "count": 146,
+              "mean": 22.764442465753426,
+              "p50": 22.5301,
+              "p95": 28.0869,
+              "p99": 32.5898,
+              "max": 34.3637
+            },
+            "overBudget": 1,
+            "longestOverBudgetRun": 1,
+            "sampledRouteMeets30Fps": false
+          }
+        },
+        "scopes": {
+          "Frame/Wait Frame Slot Before Input": {
+            "cpu": {
+              "count": 1434,
+              "mean": 2.1422304044630405,
+              "p50": 1.2667,
+              "p95": 6.6406,
+              "p99": 8.6117,
+              "max": 46.4558
+            },
+            "gpu": null
+          },
+          "Frame/Streamline frame begin / Reflex pacing": {
+            "cpu": {
+              "count": 1434,
+              "mean": 4.638649372384937,
+              "p50": 4.4397,
+              "p95": 9.5348,
+              "p99": 11.3802,
+              "max": 14.8761
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Wait Frame Slot/Wait Slot Completion": {
+            "cpu": {
+              "count": 1434,
+              "mean": 0.013696304044630405,
+              "p50": 0.0132,
+              "p95": 0.0188,
+              "p99": 0.033,
+              "max": 0.0978
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Acquire Swapchain Image": {
+            "cpu": {
+              "count": 1434,
+              "mean": 0.005414225941422594,
+              "p50": 0.0051,
+              "p95": 0.0073,
+              "p99": 0.0088,
+              "max": 0.0908
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope": {
+            "cpu": {
+              "count": 1434,
+              "mean": 12.679910460251048,
+              "p50": 12.3136,
+              "p95": 18.4807,
+              "p99": 21.0943,
+              "max": 25.2922
+            },
+            "gpu": {
+              "count": 1434,
+              "mean": 20.34670591910739,
+              "p50": 20.504128,
+              "p95": 24.4752,
+              "p99": 26.600704,
+              "max": 28.79904
+            }
+          },
+          "Frame/Render Frame/Present": {
+            "cpu": {
+              "count": 1434,
+              "mean": 0.12787252440725244,
+              "p50": 0.0896,
+              "p95": 0.2835,
+              "p99": 0.7886,
+              "max": 2.3011
+            },
+            "gpu": null
+          }
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 25,
+          "renderLatencyMs": {
+            "count": 25,
+            "mean": 36.33616,
+            "p50": 36.545,
+            "p95": 44.248,
+            "p99": 44.906,
+            "max": 44.906
+          },
+          "gpuRenderMs": {
+            "count": 25,
+            "mean": 22.85388,
+            "p50": 22.361,
+            "p95": 31.044,
+            "p99": 32.123,
+            "max": 32.123
+          }
+        }
+      }
+    },
+    {
+      "label": "off",
+      "manifest": {
+        "started": "2026-09-23T23:23:09.6280712+08:00",
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Editor/EditorFullRoamBenchmark.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
+        ],
+        "config": {
+          "width": 1797,
+          "height": 660,
+          "warmupSeconds": 10.0,
+          "durationSeconds": 30.0
+        },
+        "executableSha256": "3FD3B15C7BAB9B9EB4F65006A4BEED2E991D005E59BAE91E720AA21B1C9B8B9C",
+        "protocol": "zorah-full-editor-roam-v1",
+        "asset": {
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "bytes": 205327470912
+        },
+        "hidden": true,
+        "runs": 1,
+        "validation": false,
+        "gitHead": "9c733fb949d6e0ea4d903d0cb6ca959fdf78b087",
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "shaderSha256": "4414EAF63FA53AC7EDB7C9B977983FD508C5B107ACA7B18ACB9DE6449CBAAA38"
+      },
+      "summary": {
+        "source": "build-release\\full-reflex-begin-off-0923\\run1",
+        "conditions": {
+          "outputExtent": [
+            1797,
+            660
+          ],
+          "renderExtent": [
+            1198,
+            440
+          ],
+          "hidden": true,
+          "vsync": true,
+          "frameSlots": 2,
+          "config": {
+            "distance": 6.0,
+            "durationSeconds": 30.0,
+            "keyframes": [
+              {
+                "forward": 0.0,
+                "stage": "static",
+                "t": 0.0,
+                "yaw": 0.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "first-visit",
+                "t": 0.08333333333333333,
+                "yaw": 0.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "near-wall",
+                "t": 0.3333333333333333,
+                "yaw": 0.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "turn",
+                "t": 0.4444444444444444,
+                "yaw": 65.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "return",
+                "t": 0.6666666666666666,
+                "yaw": -65.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "settle",
+                "t": 0.8888888888888888,
+                "yaw": 0.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "end",
+                "t": 1.0,
+                "yaw": 0.0
+              }
+            ],
+            "warmupSeconds": 10.0
+          }
+        },
+        "effectiveModes": [
+          0
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "sleepCalls": 1375,
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1375,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1375,
+              "mean": 0.00018792727272727274,
+              "p50": 0.0002,
+              "p95": 0.0003,
+              "p99": 0.0005,
+              "max": 0.001
+            },
+            "tokenMs": {
+              "count": 1375,
+              "mean": 0.0006486545454545455,
+              "p50": 0.0006,
+              "p95": 0.001,
+              "p99": 0.0014,
+              "max": 0.002
+            },
+            "optionsMs": {
+              "count": 1375,
+              "mean": 7.723636363636363e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0004,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1375,
+              "mean": 0.048644509090909095,
+              "p50": 0.0475,
+              "p95": 0.0883,
+              "p99": 0.1296,
+              "max": 0.2087
+            },
+            "statusMs": {
+              "count": 1375,
+              "mean": 7.549090909090909e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0026,
+              "max": 0.0032
+            },
+            "markerMs": {
+              "count": 1375,
+              "mean": 0.0017235636363636363,
+              "p50": 0.0017,
+              "p95": 0.0023,
+              "p99": 0.003,
+              "max": 0.0049
+            },
+            "totalMs": {
+              "count": 1375,
+              "mean": 0.051426690909090904,
+              "p50": 0.0502,
+              "p95": 0.092,
+              "p99": 0.1333,
+              "max": 0.2112
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1375,
+            "mean": 7.674712945454545,
+            "p50": 7.8466000000000005,
+            "p95": 12.694400000000002,
+            "p99": 14.3225,
+            "max": 15.6167
+          },
+          "sleepShare": 0.945900042001536,
+          "nonSleepMs": {
+            "count": 1375,
+            "mean": 0.002782181818181818,
+            "p50": 0.002600000000000005,
+            "p95": 0.0038999999999999972,
+            "p99": 0.005199999999999996,
+            "max": 0.0068000000000000005
+          },
+          "frameMs": {
+            "count": 1375,
+            "mean": 21.822982327272726,
+            "p50": 21.8586,
+            "p95": 28.0626,
+            "p99": 30.9769,
+            "max": 33.4496
+          },
+          "overBudget": 2,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "slowestFivePercent": {
+          "count": 69,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 69,
+              "mean": 0.00018985507246376812,
+              "p50": 0.0002,
+              "p95": 0.0004,
+              "p99": 0.0005,
+              "max": 0.0005
+            },
+            "tokenMs": {
+              "count": 69,
+              "mean": 0.0006985507246376812,
+              "p50": 0.0006,
+              "p95": 0.0012,
+              "p99": 0.0015,
+              "max": 0.0015
+            },
+            "optionsMs": {
+              "count": 69,
+              "mean": 6.956521739130436e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0004,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 69,
+              "mean": 0.11665507246376813,
+              "p50": 0.1139,
+              "p95": 0.1597,
+              "p99": 0.2087,
+              "max": 0.2087
+            },
+            "statusMs": {
+              "count": 69,
+              "mean": 8.405797101449276e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0025,
+              "max": 0.0025
+            },
+            "markerMs": {
+              "count": 69,
+              "mean": 0.001844927536231884,
+              "p50": 0.0017,
+              "p95": 0.0024,
+              "p99": 0.0049,
+              "max": 0.0049
+            },
+            "totalMs": {
+              "count": 69,
+              "mean": 0.1196231884057971,
+              "p50": 0.1174,
+              "p95": 0.1624,
+              "p99": 0.2112,
+              "max": 0.2112
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 69,
+            "mean": 7.458288405797101,
+            "p50": 7.0405999999999995,
+            "p95": 13.2441,
+            "p99": 14.8621,
+            "max": 14.8621
+          },
+          "sleepShare": 0.9751877877392781,
+          "nonSleepMs": {
+            "count": 69,
+            "mean": 0.0029681159420289855,
+            "p50": 0.002700000000000008,
+            "p95": 0.004300000000000026,
+            "p99": 0.0068000000000000005,
+            "max": 0.0068000000000000005
+          },
+          "frameMs": {
+            "count": 69,
+            "mean": 21.197159420289857,
+            "p50": 21.0631,
+            "p95": 26.761,
+            "p99": 33.3798,
+            "max": 33.3798
+          },
+          "overBudget": 1,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "refreshFrames": {
+          "count": 23,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 23,
+              "mean": 0.00018695652173913045,
+              "p50": 0.0002,
+              "p95": 0.0003,
+              "p99": 0.0004,
+              "max": 0.0004
+            },
+            "tokenMs": {
+              "count": 23,
+              "mean": 0.0006304347826086957,
+              "p50": 0.0006,
+              "p95": 0.0009,
+              "p99": 0.0009,
+              "max": 0.0009
+            },
+            "optionsMs": {
+              "count": 23,
+              "mean": 9.130434782608698e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0002,
+              "max": 0.0002
+            },
+            "sleepMs": {
+              "count": 23,
+              "mean": 0.05166521739130434,
+              "p50": 0.0497,
+              "p95": 0.0647,
+              "p99": 0.1128,
+              "max": 0.1128
+            },
+            "statusMs": {
+              "count": 23,
+              "mean": 0.0026304347826086954,
+              "p50": 0.0027,
+              "p95": 0.0031,
+              "p99": 0.0032,
+              "max": 0.0032
+            },
+            "markerMs": {
+              "count": 23,
+              "mean": 0.0015304347826086957,
+              "p50": 0.0015,
+              "p95": 0.0019,
+              "p99": 0.0019,
+              "max": 0.0019
+            },
+            "totalMs": {
+              "count": 23,
+              "mean": 0.05680869565217391,
+              "p50": 0.0547,
+              "p95": 0.0708,
+              "p99": 0.1176,
+              "max": 0.1176
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 23,
+            "mean": 6.455382608695652,
+            "p50": 6.1642,
+            "p95": 11.2017,
+            "p99": 13.9891,
+            "max": 13.9891
+          },
+          "sleepShare": 0.9094596663095055,
+          "nonSleepMs": {
+            "count": 23,
+            "mean": 0.0051434782608695655,
+            "p50": 0.0049999999999999975,
+            "p95": 0.006100000000000001,
+            "p99": 0.006100000000000008,
+            "max": 0.006100000000000008
+          },
+          "frameMs": {
+            "count": 23,
+            "mean": 20.906682608695654,
+            "p50": 21.5407,
+            "p95": 26.2642,
+            "p99": 29.6314,
+            "max": 29.6314
+          },
+          "overBudget": 0,
+          "longestOverBudgetRun": 0,
+          "sampledRouteMeets30Fps": true
+        },
+        "stages": {
+          "static": {
+            "count": 113,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 113,
+                "mean": 0.00021592920353982303,
+                "p50": 0.0002,
+                "p95": 0.0003,
+                "p99": 0.0005,
+                "max": 0.0006
+              },
+              "tokenMs": {
+                "count": 113,
+                "mean": 0.0006433628318584071,
+                "p50": 0.0006,
+                "p95": 0.001,
+                "p99": 0.0011,
+                "max": 0.0014
+              },
+              "optionsMs": {
+                "count": 113,
+                "mean": 7.964601769911506e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 113,
+                "mean": 0.04556637168141593,
+                "p50": 0.043,
+                "p95": 0.0834,
+                "p99": 0.1139,
+                "max": 0.2087
+              },
+              "statusMs": {
+                "count": 113,
+                "mean": 8.31858407079646e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0028,
+                "max": 0.0028
+              },
+              "markerMs": {
+                "count": 113,
+                "mean": 0.0017097345132743363,
+                "p50": 0.0016,
+                "p95": 0.0024,
+                "p99": 0.0025,
+                "max": 0.0025
+              },
+              "totalMs": {
+                "count": 113,
+                "mean": 0.04836637168141593,
+                "p50": 0.0456,
+                "p95": 0.0861,
+                "p99": 0.1165,
+                "max": 0.2112
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 113,
+              "mean": 11.162343362831859,
+              "p50": 11.5685,
+              "p95": 13.4386,
+              "p99": 14.114199999999999,
+              "max": 14.3881
+            },
+            "sleepShare": 0.9421085373440188,
+            "nonSleepMs": {
+              "count": 113,
+              "mean": 0.0028,
+              "p50": 0.002699999999999994,
+              "p95": 0.0039000000000000007,
+              "p99": 0.005500000000000005,
+              "max": 0.0059000000000000025
+            },
+            "frameMs": {
+              "count": 113,
+              "mean": 22.200430088495576,
+              "p50": 22.1103,
+              "p95": 25.2618,
+              "p99": 30.7425,
+              "max": 31.3226
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          },
+          "first-visit": {
+            "count": 335,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 335,
+                "mean": 0.0001808955223880597,
+                "p50": 0.0002,
+                "p95": 0.0003,
+                "p99": 0.0004,
+                "max": 0.0006
+              },
+              "tokenMs": {
+                "count": 335,
+                "mean": 0.0006256716417910448,
+                "p50": 0.0006,
+                "p95": 0.0009,
+                "p99": 0.0011,
+                "max": 0.0019
+              },
+              "optionsMs": {
+                "count": 335,
+                "mean": 7.283582089552239e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 335,
+                "mean": 0.049450447761194026,
+                "p50": 0.0472,
+                "p95": 0.0761,
+                "p99": 0.1196,
+                "max": 0.1726
+              },
+              "statusMs": {
+                "count": 335,
+                "mean": 8.358208955223881e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0028,
+                "max": 0.0032
+              },
+              "markerMs": {
+                "count": 335,
+                "mean": 0.0016865671641791043,
+                "p50": 0.0016,
+                "p95": 0.0021,
+                "p99": 0.0024,
+                "max": 0.0025
+              },
+              "totalMs": {
+                "count": 335,
+                "mean": 0.05216686567164179,
+                "p50": 0.05,
+                "p95": 0.0789,
+                "p99": 0.1229,
+                "max": 0.1758
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 335,
+              "mean": 7.355631940298507,
+              "p50": 7.4646,
+              "p95": 10.566099999999999,
+              "p99": 12.3587,
+              "max": 13.5254
+            },
+            "sleepShare": 0.9479282898162612,
+            "nonSleepMs": {
+              "count": 335,
+              "mean": 0.002716417910447761,
+              "p50": 0.002599999999999998,
+              "p95": 0.003500000000000003,
+              "p99": 0.005199999999999996,
+              "max": 0.006100000000000001
+            },
+            "frameMs": {
+              "count": 335,
+              "mean": 22.38927343283582,
+              "p50": 22.4205,
+              "p95": 27.3106,
+              "p99": 29.7143,
+              "max": 32.0963
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          },
+          "near-wall": {
+            "count": 133,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 133,
+                "mean": 0.00019699248120300754,
+                "p50": 0.0002,
+                "p95": 0.0004,
+                "p99": 0.0004,
+                "max": 0.0005
+              },
+              "tokenMs": {
+                "count": 133,
+                "mean": 0.0007375939849624059,
+                "p50": 0.0007,
+                "p95": 0.0011,
+                "p99": 0.0014,
+                "max": 0.0018
+              },
+              "optionsMs": {
+                "count": 133,
+                "mean": 9.699248120300752e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 133,
+                "mean": 0.05246541353383458,
+                "p50": 0.0513,
+                "p95": 0.0659,
+                "p99": 0.0743,
+                "max": 0.1448
+              },
+              "statusMs": {
+                "count": 133,
+                "mean": 8.045112781954887e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0029,
+                "max": 0.0031
+              },
+              "markerMs": {
+                "count": 133,
+                "mean": 0.0017924812030075188,
+                "p50": 0.0017,
+                "p95": 0.0023,
+                "p99": 0.0028,
+                "max": 0.0032
+              },
+              "totalMs": {
+                "count": 133,
+                "mean": 0.05543082706766917,
+                "p50": 0.054,
+                "p95": 0.0705,
+                "p99": 0.0785,
+                "max": 0.148
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 133,
+              "mean": 7.512548872180451,
+              "p50": 7.5196,
+              "p95": 12.012899999999998,
+              "p99": 14.2998,
+              "max": 14.3225
+            },
+            "sleepShare": 0.9465024483539737,
+            "nonSleepMs": {
+              "count": 133,
+              "mean": 0.0029654135338345864,
+              "p50": 0.002800000000000004,
+              "p95": 0.004199999999999995,
+              "p99": 0.005699999999999997,
+              "max": 0.006100000000000008
+            },
+            "frameMs": {
+              "count": 133,
+              "mean": 25.155320300751878,
+              "p50": 24.7747,
+              "p95": 30.7403,
+              "p99": 32.8438,
+              "max": 33.4496
+            },
+            "overBudget": 1,
+            "longestOverBudgetRun": 1,
+            "sampledRouteMeets30Fps": false
+          },
+          "turn": {
+            "count": 299,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 299,
+                "mean": 0.00018093645484949835,
+                "p50": 0.0002,
+                "p95": 0.0003,
+                "p99": 0.0005,
+                "max": 0.0005
+              },
+              "tokenMs": {
+                "count": 299,
+                "mean": 0.0006424749163879598,
+                "p50": 0.0006,
+                "p95": 0.0009,
+                "p99": 0.0015,
+                "max": 0.0018
+              },
+              "optionsMs": {
+                "count": 299,
+                "mean": 8.193979933110368e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0004,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 299,
+                "mean": 0.046940802675585286,
+                "p50": 0.0477,
+                "p95": 0.096,
+                "p99": 0.126,
+                "max": 0.1294
+              },
+              "statusMs": {
+                "count": 299,
+                "mean": 7.05685618729097e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0023,
+                "max": 0.0027
+              },
+              "markerMs": {
+                "count": 299,
+                "mean": 0.001706020066889632,
+                "p50": 0.0017,
+                "p95": 0.0022,
+                "p99": 0.0024,
+                "max": 0.0027
+              },
+              "totalMs": {
+                "count": 299,
+                "mean": 0.049694983277591975,
+                "p50": 0.0503,
+                "p95": 0.0994,
+                "p99": 0.1287,
+                "max": 0.1337
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 299,
+              "mean": 7.189728093645486,
+              "p50": 7.3336,
+              "p95": 11.6802,
+              "p99": 15.097900000000001,
+              "max": 15.4566
+            },
+            "sleepShare": 0.9445782970360997,
+            "nonSleepMs": {
+              "count": 299,
+              "mean": 0.002754180602006689,
+              "p50": 0.002600000000000005,
+              "p95": 0.003600000000000006,
+              "p99": 0.0049999999999999975,
+              "max": 0.005199999999999996
+            },
+            "frameMs": {
+              "count": 299,
+              "mean": 22.227852173913043,
+              "p50": 22.2277,
+              "p95": 29.2018,
+              "p99": 31.2329,
+              "max": 33.3798
+            },
+            "overBudget": 1,
+            "longestOverBudgetRun": 1,
+            "sampledRouteMeets30Fps": false
+          },
+          "return": {
+            "count": 348,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 348,
+                "mean": 0.00017586206896551726,
+                "p50": 0.0002,
+                "p95": 0.0003,
+                "p99": 0.0004,
+                "max": 0.0008
+              },
+              "tokenMs": {
+                "count": 348,
+                "mean": 0.0006094827586206897,
+                "p50": 0.0006,
+                "p95": 0.0009,
+                "p99": 0.0012,
+                "max": 0.0016
+              },
+              "optionsMs": {
+                "count": 348,
+                "mean": 7.011494252873564e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0004,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 348,
+                "mean": 0.048035919540229885,
+                "p50": 0.0466,
+                "p95": 0.1133,
+                "p99": 0.138,
+                "max": 0.1623
+              },
+              "statusMs": {
+                "count": 348,
+                "mean": 7.413793103448276e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0025,
+                "max": 0.0027
+              },
+              "markerMs": {
+                "count": 348,
+                "mean": 0.0016873563218390807,
+                "p50": 0.0016,
+                "p95": 0.0022,
+                "p99": 0.0028,
+                "max": 0.0043
+              },
+              "totalMs": {
+                "count": 348,
+                "mean": 0.05072183908045977,
+                "p50": 0.049,
+                "p95": 0.1157,
+                "p99": 0.1407,
+                "max": 0.1655
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 348,
+              "mean": 6.105999712643679,
+              "p50": 5.5089999999999995,
+              "p95": 12.2952,
+              "p99": 13.3211,
+              "max": 14.8621
+            },
+            "sleepShare": 0.9470460931834663,
+            "nonSleepMs": {
+              "count": 348,
+              "mean": 0.002685919540229885,
+              "p50": 0.002599999999999998,
+              "p95": 0.003599999999999999,
+              "p99": 0.004799999999999999,
+              "max": 0.005600000000000008
+            },
+            "frameMs": {
+              "count": 348,
+              "mean": 19.186468103448277,
+              "p50": 19.1753,
+              "p95": 24.5189,
+              "p99": 26.5968,
+              "max": 27.5748
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          },
+          "settle": {
+            "count": 147,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 147,
+                "mean": 0.00021700680272108841,
+                "p50": 0.0002,
+                "p95": 0.0005,
+                "p99": 0.001,
+                "max": 0.001
+              },
+              "tokenMs": {
+                "count": 147,
+                "mean": 0.0007299319727891156,
+                "p50": 0.0006,
+                "p95": 0.0014,
+                "p99": 0.0017,
+                "max": 0.002
+              },
+              "optionsMs": {
+                "count": 147,
+                "mean": 7.482993197278913e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0002,
+                "max": 0.0003
+              },
+              "sleepMs": {
+                "count": 147,
+                "mean": 0.050623129251700684,
+                "p50": 0.0492,
+                "p95": 0.106,
+                "p99": 0.1344,
+                "max": 0.1482
+              },
+              "statusMs": {
+                "count": 147,
+                "mean": 5.9863945578231295e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0022,
+                "max": 0.0026
+              },
+              "markerMs": {
+                "count": 147,
+                "mean": 0.0018775510204081635,
+                "p50": 0.0017,
+                "p95": 0.003,
+                "p99": 0.0037,
+                "max": 0.0049
+              },
+              "totalMs": {
+                "count": 147,
+                "mean": 0.053660544217687074,
+                "p50": 0.052,
+                "p95": 0.109,
+                "p99": 0.1382,
+                "max": 0.1515
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 147,
+              "mean": 10.567776870748299,
+              "p50": 10.7677,
+              "p95": 14.0588,
+              "p99": 15.184700000000001,
+              "max": 15.6167
+            },
+            "sleepShare": 0.9433957480255069,
+            "nonSleepMs": {
+              "count": 147,
+              "mean": 0.0030374149659863946,
+              "p50": 0.0028000000000000004,
+              "p95": 0.004700000000000003,
+              "p99": 0.005499999999999991,
+              "max": 0.0068000000000000005
+            },
+            "frameMs": {
+              "count": 147,
+              "mean": 22.645368707482994,
+              "p50": 22.3885,
+              "p95": 26.4356,
+              "p99": 28.0626,
+              "max": 28.982
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          }
+        },
+        "scopes": {
+          "Frame/Wait Frame Slot Before Input": {
+            "cpu": {
+              "count": 1375,
+              "mean": 7.626068436363637,
+              "p50": 7.7994,
+              "p95": 12.6552,
+              "p99": 14.27,
+              "max": 15.5634
+            },
+            "gpu": null
+          },
+          "Frame/Streamline frame begin / Reflex pacing": {
+            "cpu": {
+              "count": 1375,
+              "mean": 0.05373490909090908,
+              "p50": 0.0524,
+              "p95": 0.0958,
+              "p99": 0.1358,
+              "max": 0.2124
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Wait Frame Slot/Wait Slot Completion": {
+            "cpu": {
+              "count": 1375,
+              "mean": 0.007531345454545455,
+              "p50": 0.007,
+              "p95": 0.0111,
+              "p99": 0.0175,
+              "max": 0.1563
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Acquire Swapchain Image": {
+            "cpu": {
+              "count": 1375,
+              "mean": 0.005113890909090909,
+              "p50": 0.0048,
+              "p95": 0.0069,
+              "p99": 0.0086,
+              "max": 0.0373
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope": {
+            "cpu": {
+              "count": 1375,
+              "mean": 12.62378712727273,
+              "p50": 12.5355,
+              "p95": 17.2257,
+              "p99": 20.3374,
+              "max": 26.6782
+            },
+            "gpu": {
+              "count": 1375,
+              "mean": 21.670836480000002,
+              "p50": 22.078592,
+              "p95": 26.402912,
+              "p99": 27.536064,
+              "max": 29.880512
+            }
+          },
+          "Frame/Render Frame/Present": {
+            "cpu": {
+              "count": 1375,
+              "mean": 0.11320603636363637,
+              "p50": 0.0955,
+              "p95": 0.223,
+              "p99": 0.3928,
+              "max": 2.62
+            },
+            "gpu": null
+          }
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 24,
+          "renderLatencyMs": {
+            "count": 24,
+            "mean": 43.82541666666666,
+            "p50": 44.041,
+            "p95": 53.048,
+            "p99": 54.655,
+            "max": 54.655
+          },
+          "gpuRenderMs": {
+            "count": 24,
+            "mean": 29.526625,
+            "p50": 29.802,
+            "p95": 34.411,
+            "p99": 38.496,
+            "max": 38.496
+          }
+        }
+      }
+    },
+    {
+      "label": "on-repeat",
+      "manifest": {
+        "started": "2026-09-23T23:24:50.7600489+08:00",
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Editor/EditorFullRoamBenchmark.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.h",
+          "?? Tools/AnalyzeZorahFullReflex.py",
+          "?? Tools/__pycache__/AnalyzeZorahFullRoam.cpython-312.pyc"
+        ],
+        "validation": false,
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "executableSha256": "3FD3B15C7BAB9B9EB4F65006A4BEED2E991D005E59BAE91E720AA21B1C9B8B9C",
+        "asset": {
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin"
+        },
+        "config": {
+          "warmupSeconds": 10.0,
+          "width": 1797,
+          "height": 660,
+          "durationSeconds": 30.0
+        },
+        "runs": 1,
+        "hidden": true,
+        "protocol": "zorah-full-editor-roam-v1",
+        "gitHead": "9c733fb949d6e0ea4d903d0cb6ca959fdf78b087",
+        "shaderSha256": "4414EAF63FA53AC7EDB7C9B977983FD508C5B107ACA7B18ACB9DE6449CBAAA38"
+      },
+      "summary": {
+        "source": "build-release\\full-reflex-begin-on-repeat-0923\\run1",
+        "conditions": {
+          "outputExtent": [
+            1797,
+            660
+          ],
+          "renderExtent": [
+            1198,
+            440
+          ],
+          "hidden": true,
+          "vsync": true,
+          "frameSlots": 2,
+          "config": {
+            "distance": 6.0,
+            "durationSeconds": 30.0,
+            "keyframes": [
+              {
+                "forward": 0.0,
+                "stage": "static",
+                "t": 0.0,
+                "yaw": 0.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "first-visit",
+                "t": 0.08333333333333333,
+                "yaw": 0.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "near-wall",
+                "t": 0.3333333333333333,
+                "yaw": 0.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "turn",
+                "t": 0.4444444444444444,
+                "yaw": 65.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "return",
+                "t": 0.6666666666666666,
+                "yaw": -65.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "settle",
+                "t": 0.8888888888888888,
+                "yaw": 0.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "end",
+                "t": 1.0,
+                "yaw": 0.0
+              }
+            ],
+            "warmupSeconds": 10.0
+          }
+        },
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "sleepCalls": 1368,
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1368,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1368,
+              "mean": 0.00013662280701754386,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0004,
+              "max": 0.0008
+            },
+            "tokenMs": {
+              "count": 1368,
+              "mean": 0.0006114766081871346,
+              "p50": 0.0006,
+              "p95": 0.0008,
+              "p99": 0.001,
+              "max": 0.0265
+            },
+            "optionsMs": {
+              "count": 1368,
+              "mean": 8.31140350877193e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1368,
+              "mean": 5.366002192982456,
+              "p50": 5.1776,
+              "p95": 10.8644,
+              "p99": 11.804,
+              "max": 13.7725
+            },
+            "statusMs": {
+              "count": 1368,
+              "mean": 0.00011615497076023393,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0031,
+              "max": 0.0051
+            },
+            "markerMs": {
+              "count": 1368,
+              "mean": 0.0025301169590643273,
+              "p50": 0.0025,
+              "p95": 0.0033,
+              "p99": 0.004,
+              "max": 0.009
+            },
+            "totalMs": {
+              "count": 1368,
+              "mean": 5.36957514619883,
+              "p50": 5.1814,
+              "p95": 10.8689,
+              "p99": 11.8074,
+              "max": 13.7754
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1368,
+            "mean": 7.545669298245614,
+            "p50": 7.472200000000001,
+            "p95": 12.718,
+            "p99": 13.756,
+            "max": 48.1933
+          },
+          "sleepShare": 0.9993345929390887,
+          "nonSleepMs": {
+            "count": 1368,
+            "mean": 0.003572953216374283,
+            "p50": 0.0034000000000000696,
+            "p95": 0.0045000000000001705,
+            "p99": 0.0062000000000006494,
+            "max": 0.02919999999999945
+          },
+          "frameMs": {
+            "count": 1368,
+            "mean": 21.93412850877193,
+            "p50": 21.6772,
+            "p95": 28.4359,
+            "p99": 32.2426,
+            "max": 61.2691
+          },
+          "overBudget": 4,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "slowestFivePercent": {
+          "count": 69,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 69,
+              "mean": 0.00012318840579710145,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0003
+            },
+            "tokenMs": {
+              "count": 69,
+              "mean": 0.0005028985507246377,
+              "p50": 0.0005,
+              "p95": 0.0008,
+              "p99": 0.0009,
+              "max": 0.0009
+            },
+            "optionsMs": {
+              "count": 69,
+              "mean": 5.942028985507247e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0003
+            },
+            "sleepMs": {
+              "count": 69,
+              "mean": 11.497711594202897,
+              "p50": 11.3191,
+              "p95": 12.893,
+              "p99": 13.7725,
+              "max": 13.7725
+            },
+            "statusMs": {
+              "count": 69,
+              "mean": 5.6521739130434784e-05,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0002,
+              "max": 0.0002
+            },
+            "markerMs": {
+              "count": 69,
+              "mean": 0.002479710144927536,
+              "p50": 0.0024,
+              "p95": 0.0032,
+              "p99": 0.0035,
+              "max": 0.0035
+            },
+            "totalMs": {
+              "count": 69,
+              "mean": 11.501030434782608,
+              "p50": 11.3223,
+              "p95": 12.8971,
+              "p99": 13.7754,
+              "max": 13.7754
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 69,
+            "mean": 12.36130579710145,
+            "p50": 12.360100000000001,
+            "p95": 13.762599999999999,
+            "p99": 14.254100000000001,
+            "max": 14.254100000000001
+          },
+          "sleepShare": 0.9997114310236348,
+          "nonSleepMs": {
+            "count": 69,
+            "mean": 0.003318840579710133,
+            "p50": 0.003200000000001424,
+            "p95": 0.00420000000000087,
+            "p99": 0.0045000000000001705,
+            "max": 0.0045000000000001705
+          },
+          "frameMs": {
+            "count": 69,
+            "mean": 22.48444202898551,
+            "p50": 22.1864,
+            "p95": 26.3115,
+            "p99": 29.7168,
+            "max": 29.7168
+          },
+          "overBudget": 0,
+          "longestOverBudgetRun": 0,
+          "sampledRouteMeets30Fps": true
+        },
+        "refreshFrames": {
+          "count": 23,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 23,
+              "mean": 0.00014782608695652175,
+              "p50": 0.0001,
+              "p95": 0.0003,
+              "p99": 0.0004,
+              "max": 0.0004
+            },
+            "tokenMs": {
+              "count": 23,
+              "mean": 0.0005652173913043478,
+              "p50": 0.0006,
+              "p95": 0.0007,
+              "p99": 0.0008,
+              "max": 0.0008
+            },
+            "optionsMs": {
+              "count": 23,
+              "mean": 9.565217391304348e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0003
+            },
+            "sleepMs": {
+              "count": 23,
+              "mean": 5.02014347826087,
+              "p50": 5.9887,
+              "p95": 8.9437,
+              "p99": 9.9136,
+              "max": 9.9136
+            },
+            "statusMs": {
+              "count": 23,
+              "mean": 0.003356521739130435,
+              "p50": 0.0032,
+              "p95": 0.0045,
+              "p99": 0.0051,
+              "max": 0.0051
+            },
+            "markerMs": {
+              "count": 23,
+              "mean": 0.0019000000000000002,
+              "p50": 0.0018,
+              "p95": 0.0024,
+              "p99": 0.0028,
+              "max": 0.0028
+            },
+            "totalMs": {
+              "count": 23,
+              "mean": 5.026286956521739,
+              "p50": 5.9945,
+              "p95": 8.9497,
+              "p99": 9.9195,
+              "max": 9.9195
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 23,
+            "mean": 7.346369565217391,
+            "p50": 7.2188,
+            "p95": 13.097900000000001,
+            "p99": 15.1671,
+            "max": 15.1671
+          },
+          "sleepShare": 0.9987777302979293,
+          "nonSleepMs": {
+            "count": 23,
+            "mean": 0.006143478260869634,
+            "p50": 0.006000000000000227,
+            "p95": 0.008599999999999497,
+            "p99": 0.008600000000000385,
+            "max": 0.008600000000000385
+          },
+          "frameMs": {
+            "count": 23,
+            "mean": 21.4668,
+            "p50": 22.3946,
+            "p95": 26.4155,
+            "p99": 26.9345,
+            "max": 26.9345
+          },
+          "overBudget": 0,
+          "longestOverBudgetRun": 0,
+          "sampledRouteMeets30Fps": true
+        },
+        "stages": {
+          "static": {
+            "count": 112,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 112,
+                "mean": 0.00014285714285714287,
+                "p50": 0.0001,
+                "p95": 0.0003,
+                "p99": 0.0004,
+                "max": 0.0005
+              },
+              "tokenMs": {
+                "count": 112,
+                "mean": 0.0005535714285714286,
+                "p50": 0.0005,
+                "p95": 0.0007,
+                "p99": 0.0008,
+                "max": 0.0009
+              },
+              "optionsMs": {
+                "count": 112,
+                "mean": 9.285714285714287e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 112,
+                "mean": 9.423845535714287,
+                "p50": 9.4557,
+                "p95": 11.3374,
+                "p99": 11.804,
+                "max": 11.8713
+              },
+              "statusMs": {
+                "count": 112,
+                "mean": 0.00010892857142857144,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.0028,
+                "max": 0.0034
+              },
+              "markerMs": {
+                "count": 112,
+                "mean": 0.002538392857142857,
+                "p50": 0.0024,
+                "p95": 0.0034,
+                "p99": 0.0038,
+                "max": 0.004
+              },
+              "totalMs": {
+                "count": 112,
+                "mean": 9.427379464285716,
+                "p50": 9.4587,
+                "p95": 11.3402,
+                "p99": 11.8074,
+                "max": 11.8743
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 112,
+              "mean": 11.142969642857143,
+              "p50": 11.3718,
+              "p95": 13.2073,
+              "p99": 13.464599999999999,
+              "max": 13.9458
+            },
+            "sleepShare": 0.9996251420042211,
+            "nonSleepMs": {
+              "count": 112,
+              "mean": 0.0035339285714286145,
+              "p50": 0.0033999999999991815,
+              "p95": 0.0045000000000001705,
+              "p99": 0.005899999999998684,
+              "max": 0.006000000000000227
+            },
+            "frameMs": {
+              "count": 112,
+              "mean": 22.439891071428573,
+              "p50": 22.3201,
+              "p95": 24.9459,
+              "p99": 26.1309,
+              "max": 27.2733
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          },
+          "first-visit": {
+            "count": 329,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 329,
+                "mean": 0.00013677811550151978,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0008
+              },
+              "tokenMs": {
+                "count": 329,
+                "mean": 0.0006784194528875379,
+                "p50": 0.0006,
+                "p95": 0.0008,
+                "p99": 0.0012,
+                "max": 0.0265
+              },
+              "optionsMs": {
+                "count": 329,
+                "mean": 8.419452887537995e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 329,
+                "mean": 4.640058358662614,
+                "p50": 4.6381,
+                "p95": 7.9235,
+                "p99": 8.9657,
+                "max": 9.3628
+              },
+              "statusMs": {
+                "count": 329,
+                "mean": 0.00012583586626139818,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.0037,
+                "max": 0.0051
+              },
+              "markerMs": {
+                "count": 329,
+                "mean": 0.002578115501519757,
+                "p50": 0.0025,
+                "p95": 0.0032,
+                "p99": 0.004,
+                "max": 0.009
+              },
+              "totalMs": {
+                "count": 329,
+                "mean": 4.6437559270516715,
+                "p50": 4.6417,
+                "p95": 7.9267,
+                "p99": 8.9691,
+                "max": 9.366
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 329,
+              "mean": 7.107110334346505,
+              "p50": 7.187799999999999,
+              "p95": 11.7227,
+              "p99": 13.1113,
+              "max": 13.6219
+            },
+            "sleepShare": 0.9992037547952256,
+            "nonSleepMs": {
+              "count": 329,
+              "mean": 0.003697568389057738,
+              "p50": 0.0034999999999998366,
+              "p95": 0.0043999999999999595,
+              "p99": 0.006700000000000372,
+              "max": 0.02919999999999945
+            },
+            "frameMs": {
+              "count": 329,
+              "mean": 22.764470212765957,
+              "p50": 22.8914,
+              "p95": 27.5256,
+              "p99": 30.3091,
+              "max": 33.0209
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          },
+          "near-wall": {
+            "count": 134,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 134,
+                "mean": 0.00013507462686567165,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0004,
+                "max": 0.0004
+              },
+              "tokenMs": {
+                "count": 134,
+                "mean": 0.0007567164179104478,
+                "p50": 0.0006,
+                "p95": 0.001,
+                "p99": 0.0011,
+                "max": 0.0214
+              },
+              "optionsMs": {
+                "count": 134,
+                "mean": 8.731343283582089e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0004,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 134,
+                "mean": 4.900545522388059,
+                "p50": 4.7686,
+                "p95": 9.1818,
+                "p99": 9.6817,
+                "max": 10.1393
+              },
+              "statusMs": {
+                "count": 134,
+                "mean": 0.00011940298507462687,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.0028,
+                "max": 0.0045
+              },
+              "markerMs": {
+                "count": 134,
+                "mean": 0.0025746268656716416,
+                "p50": 0.0025,
+                "p95": 0.0036,
+                "p99": 0.0046,
+                "max": 0.0048
+              },
+              "totalMs": {
+                "count": 134,
+                "mean": 4.904317164179105,
+                "p50": 4.7716,
+                "p95": 9.1849,
+                "p99": 9.6858,
+                "max": 10.1424
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 134,
+              "mean": 7.002976865671642,
+              "p50": 7.119,
+              "p95": 11.6971,
+              "p99": 12.445799999999998,
+              "max": 13.6813
+            },
+            "sleepShare": 0.9992309547558236,
+            "nonSleepMs": {
+              "count": 134,
+              "mean": 0.00377164179104478,
+              "p50": 0.003400000000000958,
+              "p95": 0.004999999999999893,
+              "p99": 0.008600000000000385,
+              "max": 0.024499999999999966
+            },
+            "frameMs": {
+              "count": 134,
+              "mean": 25.039683582089552,
+              "p50": 24.9436,
+              "p95": 31.4935,
+              "p99": 33.1111,
+              "max": 35.2075
+            },
+            "overBudget": 1,
+            "longestOverBudgetRun": 1,
+            "sampledRouteMeets30Fps": false
+          },
+          "turn": {
+            "count": 294,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 294,
+                "mean": 0.0001326530612244898,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0004,
+                "max": 0.0004
+              },
+              "tokenMs": {
+                "count": 294,
+                "mean": 0.0006061224489795918,
+                "p50": 0.0006,
+                "p95": 0.0008,
+                "p99": 0.0009,
+                "max": 0.0011
+              },
+              "optionsMs": {
+                "count": 294,
+                "mean": 9.829931972789116e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 294,
+                "mean": 4.568271428571428,
+                "p50": 4.2909,
+                "p95": 9.6896,
+                "p99": 12.0582,
+                "max": 12.893
+              },
+              "statusMs": {
+                "count": 294,
+                "mean": 0.00011564625850340137,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.0032,
+                "max": 0.0035
+              },
+              "markerMs": {
+                "count": 294,
+                "mean": 0.0025809523809523813,
+                "p50": 0.0025,
+                "p95": 0.0034,
+                "p99": 0.0044,
+                "max": 0.0063
+              },
+              "totalMs": {
+                "count": 294,
+                "mean": 4.571905782312926,
+                "p50": 4.2945,
+                "p95": 9.6928,
+                "p99": 12.0618,
+                "max": 12.8971
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 294,
+              "mean": 6.5754863945578235,
+              "p50": 6.4588,
+              "p95": 12.1758,
+              "p99": 14.0571,
+              "max": 19.508499999999998
+            },
+            "sleepShare": 0.9992050681018938,
+            "nonSleepMs": {
+              "count": 294,
+              "mean": 0.003634353741496591,
+              "p50": 0.0034999999999998366,
+              "p95": 0.004899999999999238,
+              "p99": 0.00649999999999995,
+              "max": 0.007000000000000006
+            },
+            "frameMs": {
+              "count": 294,
+              "mean": 22.635829591836735,
+              "p50": 22.1968,
+              "p95": 30.0794,
+              "p99": 32.9129,
+              "max": 38.6313
+            },
+            "overBudget": 2,
+            "longestOverBudgetRun": 1,
+            "sampledRouteMeets30Fps": false
+          },
+          "return": {
+            "count": 344,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 344,
+                "mean": 0.00013982558139534885,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "tokenMs": {
+                "count": 344,
+                "mean": 0.0005575581395348837,
+                "p50": 0.0005,
+                "p95": 0.0008,
+                "p99": 0.001,
+                "max": 0.0016
+              },
+              "optionsMs": {
+                "count": 344,
+                "mean": 7.383720930232558e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 344,
+                "mean": 3.9073982558139533,
+                "p50": 3.3741,
+                "p95": 9.084,
+                "p99": 10.9423,
+                "max": 11.7041
+              },
+              "statusMs": {
+                "count": 344,
+                "mean": 0.00010610465116279069,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.0028,
+                "max": 0.0035
+              },
+              "markerMs": {
+                "count": 344,
+                "mean": 0.002454360465116279,
+                "p50": 0.0024,
+                "p95": 0.0031,
+                "p99": 0.0035,
+                "max": 0.0043
+              },
+              "totalMs": {
+                "count": 344,
+                "mean": 3.9108191860465116,
+                "p50": 3.3772,
+                "p95": 9.088,
+                "p99": 10.9458,
+                "max": 11.7076
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 344,
+              "mean": 6.192502325581396,
+              "p50": 5.8098,
+              "p95": 11.169699999999999,
+              "p99": 13.433399999999999,
+              "max": 48.1933
+            },
+            "sleepShare": 0.9991252650481097,
+            "nonSleepMs": {
+              "count": 344,
+              "mean": 0.00342093023255817,
+              "p50": 0.0033999999999998476,
+              "p95": 0.00420000000000087,
+              "p99": 0.005300000000000082,
+              "max": 0.006000000000000227
+            },
+            "frameMs": {
+              "count": 344,
+              "mean": 19.355291279069768,
+              "p50": 19.1251,
+              "p95": 24.2714,
+              "p99": 26.6062,
+              "max": 61.2691
+            },
+            "overBudget": 1,
+            "longestOverBudgetRun": 1,
+            "sampledRouteMeets30Fps": false
+          },
+          "settle": {
+            "count": 155,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 155,
+                "mean": 0.0001335483870967742,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0004,
+                "max": 0.0004
+              },
+              "tokenMs": {
+                "count": 155,
+                "mean": 0.0005154838709677419,
+                "p50": 0.0005,
+                "p95": 0.0008,
+                "p99": 0.0008,
+                "max": 0.0009
+              },
+              "optionsMs": {
+                "count": 155,
+                "mean": 6.193548387096774e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0003
+              },
+              "sleepMs": {
+                "count": 155,
+                "mean": 9.127427096774193,
+                "p50": 9.1721,
+                "p95": 12.096,
+                "p99": 13.751,
+                "max": 13.7725
+              },
+              "statusMs": {
+                "count": 155,
+                "mean": 0.00012129032258064516,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.003,
+                "max": 0.0033
+              },
+              "markerMs": {
+                "count": 155,
+                "mean": 0.002455483870967742,
+                "p50": 0.0024,
+                "p95": 0.0032,
+                "p99": 0.0035,
+                "max": 0.0036
+              },
+              "totalMs": {
+                "count": 155,
+                "mean": 9.130812903225808,
+                "p50": 9.1762,
+                "p95": 12.0989,
+                "p99": 13.7538,
+                "max": 13.7754
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 155,
+              "mean": 11.189748387096774,
+              "p50": 11.427700000000002,
+              "p95": 13.756,
+              "p99": 14.254100000000001,
+              "max": 15.1671
+            },
+            "sleepShare": 0.9996291889355856,
+            "nonSleepMs": {
+              "count": 155,
+              "mean": 0.0033858064516129657,
+              "p50": 0.0032999999999994145,
+              "p95": 0.0045000000000001705,
+              "p99": 0.0058000000000006935,
+              "max": 0.005899999999999572
+            },
+            "frameMs": {
+              "count": 155,
+              "mean": 21.513790967741937,
+              "p50": 21.2494,
+              "p95": 25.3814,
+              "p99": 26.9394,
+              "max": 27.7134
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          }
+        },
+        "scopes": {
+          "Frame/Wait Frame Slot Before Input": {
+            "cpu": {
+              "count": 1368,
+              "mean": 2.179667105263158,
+              "p50": 1.5004,
+              "p95": 6.2754,
+              "p99": 8.2832,
+              "max": 48.1159
+            },
+            "gpu": null
+          },
+          "Frame/Streamline frame begin / Reflex pacing": {
+            "cpu": {
+              "count": 1368,
+              "mean": 5.371725877192982,
+              "p50": 5.1834,
+              "p95": 10.8703,
+              "p99": 11.8089,
+              "max": 13.7767
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Wait Frame Slot/Wait Slot Completion": {
+            "cpu": {
+              "count": 1368,
+              "mean": 0.014120687134502924,
+              "p50": 0.0133,
+              "p95": 0.0191,
+              "p99": 0.0348,
+              "max": 0.1824
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Acquire Swapchain Image": {
+            "cpu": {
+              "count": 1368,
+              "mean": 0.005618786549707602,
+              "p50": 0.0054,
+              "p95": 0.0074,
+              "p99": 0.0089,
+              "max": 0.0902
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope": {
+            "cpu": {
+              "count": 1368,
+              "mean": 12.866384356725147,
+              "p50": 12.8084,
+              "p95": 18.2195,
+              "p99": 20.3211,
+              "max": 23.4985
+            },
+            "gpu": {
+              "count": 1368,
+              "mean": 21.412131157894738,
+              "p50": 21.526848,
+              "p95": 27.04352,
+              "p99": 28.25744,
+              "max": 30.54432
+            }
+          },
+          "Frame/Render Frame/Present": {
+            "cpu": {
+              "count": 1368,
+              "mean": 0.12156198830409357,
+              "p50": 0.0959,
+              "p95": 0.2711,
+              "p99": 0.4661,
+              "max": 1.5141
+            },
+            "gpu": null
+          }
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 24,
+          "renderLatencyMs": {
+            "count": 24,
+            "mean": 38.458,
+            "p50": 39.337,
+            "p95": 45.903,
+            "p99": 47.738,
+            "max": 47.738
+          },
+          "gpuRenderMs": {
+            "count": 24,
+            "mean": 24.649083333333333,
+            "p50": 22.62,
+            "p95": 34.306,
+            "p99": 35.579,
+            "max": 35.579
+          }
+        }
+      }
+    },
+    {
+      "label": "off-repeat",
+      "manifest": {
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Editor/EditorFullRoamBenchmark.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.h",
+          "?? Tools/AnalyzeZorahFullReflex.py",
+          "?? Tools/__pycache__/AnalyzeZorahFullRoam.cpython-312.pyc"
+        ],
+        "hidden": true,
+        "shaderSha256": "4414EAF63FA53AC7EDB7C9B977983FD508C5B107ACA7B18ACB9DE6449CBAAA38",
+        "started": "2026-09-23T23:26:37.5437745+08:00",
+        "runs": 1,
+        "gitHead": "9c733fb949d6e0ea4d903d0cb6ca959fdf78b087",
+        "protocol": "zorah-full-editor-roam-v1",
+        "asset": {
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin"
+        },
+        "config": {
+          "durationSeconds": 30.0,
+          "warmupSeconds": 10.0,
+          "width": 1797,
+          "height": 660
+        },
+        "executableSha256": "3FD3B15C7BAB9B9EB4F65006A4BEED2E991D005E59BAE91E720AA21B1C9B8B9C",
+        "validation": false
+      },
+      "summary": {
+        "source": "build-release\\full-reflex-begin-off-repeat-0923\\run1",
+        "conditions": {
+          "outputExtent": [
+            1797,
+            660
+          ],
+          "renderExtent": [
+            1198,
+            440
+          ],
+          "hidden": true,
+          "vsync": true,
+          "frameSlots": 2,
+          "config": {
+            "distance": 6.0,
+            "durationSeconds": 30.0,
+            "keyframes": [
+              {
+                "forward": 0.0,
+                "stage": "static",
+                "t": 0.0,
+                "yaw": 0.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "first-visit",
+                "t": 0.08333333333333333,
+                "yaw": 0.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "near-wall",
+                "t": 0.3333333333333333,
+                "yaw": 0.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "turn",
+                "t": 0.4444444444444444,
+                "yaw": 65.0
+              },
+              {
+                "forward": 1.0,
+                "stage": "return",
+                "t": 0.6666666666666666,
+                "yaw": -65.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "settle",
+                "t": 0.8888888888888888,
+                "yaw": 0.0
+              },
+              {
+                "forward": 0.0,
+                "stage": "end",
+                "t": 1.0,
+                "yaw": 0.0
+              }
+            ],
+            "warmupSeconds": 10.0
+          }
+        },
+        "effectiveModes": [
+          0
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "sleepCalls": 1369,
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1369,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1369,
+              "mean": 0.00024740686632578523,
+              "p50": 0.0002,
+              "p95": 0.0003,
+              "p99": 0.0004,
+              "max": 0.1123
+            },
+            "tokenMs": {
+              "count": 1369,
+              "mean": 0.0006299488677867056,
+              "p50": 0.0006,
+              "p95": 0.001,
+              "p99": 0.0013,
+              "max": 0.0068
+            },
+            "optionsMs": {
+              "count": 1369,
+              "mean": 8.151935719503287e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0004,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1369,
+              "mean": 0.04630014609203799,
+              "p50": 0.045,
+              "p95": 0.0919,
+              "p99": 0.1272,
+              "max": 0.2418
+            },
+            "statusMs": {
+              "count": 1369,
+              "mean": 7.991234477720963e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0024,
+              "max": 0.004
+            },
+            "markerMs": {
+              "count": 1369,
+              "mean": 0.0016721694667640615,
+              "p50": 0.0016,
+              "p95": 0.0023,
+              "p99": 0.003,
+              "max": 0.0085
+            },
+            "totalMs": {
+              "count": 1369,
+              "mean": 0.049078889700511316,
+              "p50": 0.0477,
+              "p95": 0.0945,
+              "p99": 0.1347,
+              "max": 0.2443
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1369,
+            "mean": 6.695508619430241,
+            "p50": 7.0986,
+            "p95": 12.613999999999999,
+            "p99": 13.6091,
+            "max": 20.986900000000002
+          },
+          "sleepShare": 0.9433821012368098,
+          "nonSleepMs": {
+            "count": 1369,
+            "mean": 0.0027787436084733383,
+            "p50": 0.002599999999999998,
+            "p95": 0.0038000000000000048,
+            "p99": 0.0053999999999999986,
+            "max": 0.1144
+          },
+          "frameMs": {
+            "count": 1369,
+            "mean": 21.915977720964207,
+            "p50": 21.4957,
+            "p95": 28.8038,
+            "p99": 37.7799,
+            "max": 81.3855
+          },
+          "overBudget": 29,
+          "longestOverBudgetRun": 6,
+          "sampledRouteMeets30Fps": false
+        },
+        "slowestFivePercent": {
+          "count": 69,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 69,
+              "mean": 0.0017782608695652174,
+              "p50": 0.0002,
+              "p95": 0.0002,
+              "p99": 0.1123,
+              "max": 0.1123
+            },
+            "tokenMs": {
+              "count": 69,
+              "mean": 0.0006304347826086957,
+              "p50": 0.0006,
+              "p95": 0.0011,
+              "p99": 0.0014,
+              "max": 0.0014
+            },
+            "optionsMs": {
+              "count": 69,
+              "mean": 8.260869565217392e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0003
+            },
+            "sleepMs": {
+              "count": 69,
+              "mean": 0.1173,
+              "p50": 0.1086,
+              "p95": 0.1721,
+              "p99": 0.2418,
+              "max": 0.2418
+            },
+            "statusMs": {
+              "count": 69,
+              "mean": 9.130434782608696e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.004,
+              "max": 0.004
+            },
+            "markerMs": {
+              "count": 69,
+              "mean": 0.0017797101449275362,
+              "p50": 0.0017,
+              "p95": 0.0024,
+              "p99": 0.0031,
+              "max": 0.0031
+            },
+            "totalMs": {
+              "count": 69,
+              "mean": 0.12172753623188406,
+              "p50": 0.1124,
+              "p95": 0.1742,
+              "p99": 0.2443,
+              "max": 0.2443
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 69,
+            "mean": 6.050123188405797,
+            "p50": 4.8256,
+            "p95": 12.7982,
+            "p99": 14.149000000000001,
+            "max": 14.149000000000001
+          },
+          "sleepShare": 0.9636274883322221,
+          "nonSleepMs": {
+            "count": 69,
+            "mean": 0.004427536231884057,
+            "p50": 0.002600000000000005,
+            "p95": 0.004299999999999998,
+            "p99": 0.1144,
+            "max": 0.1144
+          },
+          "frameMs": {
+            "count": 69,
+            "mean": 20.67989275362319,
+            "p50": 20.8807,
+            "p95": 25.4191,
+            "p99": 27.3973,
+            "max": 27.3973
+          },
+          "overBudget": 0,
+          "longestOverBudgetRun": 0,
+          "sampledRouteMeets30Fps": true
+        },
+        "refreshFrames": {
+          "count": 23,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 23,
+              "mean": 0.0001565217391304348,
+              "p50": 0.0001,
+              "p95": 0.0003,
+              "p99": 0.0004,
+              "max": 0.0004
+            },
+            "tokenMs": {
+              "count": 23,
+              "mean": 0.0006739130434782609,
+              "p50": 0.0007,
+              "p95": 0.0008,
+              "p99": 0.0011,
+              "max": 0.0011
+            },
+            "optionsMs": {
+              "count": 23,
+              "mean": 9.565217391304348e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0003
+            },
+            "sleepMs": {
+              "count": 23,
+              "mean": 0.040908695652173914,
+              "p50": 0.0431,
+              "p95": 0.0622,
+              "p99": 0.0993,
+              "max": 0.0993
+            },
+            "statusMs": {
+              "count": 23,
+              "mean": 0.002595652173913043,
+              "p50": 0.0025,
+              "p95": 0.0034,
+              "p99": 0.004,
+              "max": 0.004
+            },
+            "markerMs": {
+              "count": 23,
+              "mean": 0.0014782608695652175,
+              "p50": 0.0014,
+              "p95": 0.0019,
+              "p99": 0.0022,
+              "max": 0.0022
+            },
+            "totalMs": {
+              "count": 23,
+              "mean": 0.0459695652173913,
+              "p50": 0.0476,
+              "p95": 0.068,
+              "p99": 0.1066,
+              "max": 0.1066
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 23,
+            "mean": 6.150247826086956,
+            "p50": 6.8210999999999995,
+            "p95": 13.124600000000001,
+            "p99": 13.897499999999999,
+            "max": 13.897499999999999
+          },
+          "sleepShare": 0.8899082568807339,
+          "nonSleepMs": {
+            "count": 23,
+            "mean": 0.005060869565217391,
+            "p50": 0.0050000000000000044,
+            "p95": 0.006100000000000001,
+            "p99": 0.007300000000000001,
+            "max": 0.007300000000000001
+          },
+          "frameMs": {
+            "count": 23,
+            "mean": 22.006582608695652,
+            "p50": 21.353,
+            "p95": 26.6542,
+            "p99": 41.1523,
+            "max": 41.1523
+          },
+          "overBudget": 1,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "stages": {
+          "static": {
+            "count": 116,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 116,
+                "mean": 0.0001767241379310345,
+                "p50": 0.0002,
+                "p95": 0.0003,
+                "p99": 0.0005,
+                "max": 0.0005
+              },
+              "tokenMs": {
+                "count": 116,
+                "mean": 0.0005896551724137931,
+                "p50": 0.0006,
+                "p95": 0.0009,
+                "p99": 0.0013,
+                "max": 0.0013
+              },
+              "optionsMs": {
+                "count": 116,
+                "mean": 6.46551724137931e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0002,
+                "max": 0.0003
+              },
+              "sleepMs": {
+                "count": 116,
+                "mean": 0.04506206896551724,
+                "p50": 0.0409,
+                "p95": 0.0564,
+                "p99": 0.1351,
+                "max": 0.2418
+              },
+              "statusMs": {
+                "count": 116,
+                "mean": 8.793103448275863e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0024,
+                "max": 0.0025
+              },
+              "markerMs": {
+                "count": 116,
+                "mean": 0.0016448275862068966,
+                "p50": 0.0016,
+                "p95": 0.0024,
+                "p99": 0.0027,
+                "max": 0.0028
+              },
+              "totalMs": {
+                "count": 116,
+                "mean": 0.04769396551724138,
+                "p50": 0.0436,
+                "p95": 0.0594,
+                "p99": 0.1386,
+                "max": 0.2443
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 116,
+              "mean": 10.92123103448276,
+              "p50": 11.210799999999999,
+              "p95": 13.942699999999999,
+              "p99": 20.5516,
+              "max": 20.986900000000002
+            },
+            "sleepShare": 0.9448169905106191,
+            "nonSleepMs": {
+              "count": 116,
+              "mean": 0.002631896551724138,
+              "p50": 0.0024999999999999953,
+              "p95": 0.003700000000000002,
+              "p99": 0.004700000000000003,
+              "max": 0.0051
+            },
+            "frameMs": {
+              "count": 116,
+              "mean": 21.60639827586207,
+              "p50": 21.0897,
+              "p95": 27.9617,
+              "p99": 31.0991,
+              "max": 36.5118
+            },
+            "overBudget": 1,
+            "longestOverBudgetRun": 1,
+            "sampledRouteMeets30Fps": false
+          },
+          "first-visit": {
+            "count": 356,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 356,
+                "mean": 0.0001707865168539326,
+                "p50": 0.0002,
+                "p95": 0.0003,
+                "p99": 0.0004,
+                "max": 0.0009
+              },
+              "tokenMs": {
+                "count": 356,
+                "mean": 0.0005893258426966292,
+                "p50": 0.0005,
+                "p95": 0.0008,
+                "p99": 0.0013,
+                "max": 0.0068
+              },
+              "optionsMs": {
+                "count": 356,
+                "mean": 7.387640449438202e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0004,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 356,
+                "mean": 0.047908707865168536,
+                "p50": 0.0471,
+                "p95": 0.075,
+                "p99": 0.1052,
+                "max": 0.1671
+              },
+              "statusMs": {
+                "count": 356,
+                "mean": 7.865168539325843e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0022,
+                "max": 0.0034
+              },
+              "markerMs": {
+                "count": 356,
+                "mean": 0.0015960674157303371,
+                "p50": 0.0015,
+                "p95": 0.0023,
+                "p99": 0.0027,
+                "max": 0.0034
+              },
+              "totalMs": {
+                "count": 356,
+                "mean": 0.050488483146067416,
+                "p50": 0.0496,
+                "p95": 0.0771,
+                "p99": 0.1085,
+                "max": 0.171
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 356,
+              "mean": 7.32748511235955,
+              "p50": 7.718999999999999,
+              "p95": 10.9447,
+              "p99": 12.428700000000001,
+              "max": 13.2425
+            },
+            "sleepShare": 0.9489036881255597,
+            "nonSleepMs": {
+              "count": 356,
+              "mean": 0.0025797752808988765,
+              "p50": 0.0023999999999999994,
+              "p95": 0.003599999999999999,
+              "p99": 0.0046,
+              "max": 0.0087
+            },
+            "frameMs": {
+              "count": 356,
+              "mean": 21.119762921348315,
+              "p50": 20.8996,
+              "p95": 25.9674,
+              "p99": 28.604,
+              "max": 29.4843
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          },
+          "near-wall": {
+            "count": 134,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 134,
+                "mean": 0.00016940298507462688,
+                "p50": 0.0002,
+                "p95": 0.0003,
+                "p99": 0.0005,
+                "max": 0.0011
+              },
+              "tokenMs": {
+                "count": 134,
+                "mean": 0.0007164179104477612,
+                "p50": 0.0006,
+                "p95": 0.0012,
+                "p99": 0.0016,
+                "max": 0.0027
+              },
+              "optionsMs": {
+                "count": 134,
+                "mean": 0.00011567164179104477,
+                "p50": 0.0001,
+                "p95": 0.0003,
+                "p99": 0.0004,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 134,
+                "mean": 0.055549999999999995,
+                "p50": 0.0548,
+                "p95": 0.0849,
+                "p99": 0.1317,
+                "max": 0.1867
+              },
+              "statusMs": {
+                "count": 134,
+                "mean": 7.761194029850746e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0025,
+                "max": 0.0025
+              },
+              "markerMs": {
+                "count": 134,
+                "mean": 0.0018,
+                "p50": 0.0017,
+                "p95": 0.0023,
+                "p99": 0.0031,
+                "max": 0.0085
+              },
+              "totalMs": {
+                "count": 134,
+                "mean": 0.058496268656716414,
+                "p50": 0.0579,
+                "p95": 0.0879,
+                "p99": 0.1347,
+                "max": 0.1894
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 134,
+              "mean": 4.718730597014925,
+              "p50": 4.381,
+              "p95": 9.834800000000001,
+              "p99": 11.3468,
+              "max": 11.7082
+            },
+            "sleepShare": 0.9496332206417044,
+            "nonSleepMs": {
+              "count": 134,
+              "mean": 0.002946268656716418,
+              "p50": 0.002799999999999997,
+              "p95": 0.004600000000000007,
+              "p99": 0.005499999999999991,
+              "max": 0.009800000000000003
+            },
+            "frameMs": {
+              "count": 134,
+              "mean": 24.70552313432836,
+              "p50": 24.5005,
+              "p95": 30.2486,
+              "p99": 33.8938,
+              "max": 34.6516
+            },
+            "overBudget": 2,
+            "longestOverBudgetRun": 1,
+            "sampledRouteMeets30Fps": false
+          },
+          "turn": {
+            "count": 271,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 271,
+                "mean": 0.00014538745387453875,
+                "p50": 0.0001,
+                "p95": 0.0003,
+                "p99": 0.0005,
+                "max": 0.0006
+              },
+              "tokenMs": {
+                "count": 271,
+                "mean": 0.0006944649446494466,
+                "p50": 0.0007,
+                "p95": 0.0011,
+                "p99": 0.0014,
+                "max": 0.0019
+              },
+              "optionsMs": {
+                "count": 271,
+                "mean": 0.0001040590405904059,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0004,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 271,
+                "mean": 0.043774538745387455,
+                "p50": 0.0451,
+                "p95": 0.0886,
+                "p99": 0.1321,
+                "max": 0.1589
+              },
+              "statusMs": {
+                "count": 271,
+                "mean": 7.601476014760147e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0023,
+                "max": 0.0034
+              },
+              "markerMs": {
+                "count": 271,
+                "mean": 0.0017833948339483394,
+                "p50": 0.0017,
+                "p95": 0.0026,
+                "p99": 0.0035,
+                "max": 0.004
+              },
+              "totalMs": {
+                "count": 271,
+                "mean": 0.04664464944649447,
+                "p50": 0.0479,
+                "p95": 0.0932,
+                "p99": 0.1352,
+                "max": 0.1619
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 271,
+              "mean": 3.95760110701107,
+              "p50": 3.1274,
+              "p95": 10.7771,
+              "p99": 12.076,
+              "max": 14.3729
+            },
+            "sleepShare": 0.9384685974669124,
+            "nonSleepMs": {
+              "count": 271,
+              "mean": 0.002870110701107011,
+              "p50": 0.002799999999999997,
+              "p95": 0.0040999999999999995,
+              "p99": 0.0053999999999999986,
+              "max": 0.006100000000000001
+            },
+            "frameMs": {
+              "count": 271,
+              "mean": 24.59518413284133,
+              "p50": 23.5717,
+              "p95": 37.7799,
+              "p99": 49.9774,
+              "max": 81.3855
+            },
+            "overBudget": 26,
+            "longestOverBudgetRun": 6,
+            "sampledRouteMeets30Fps": false
+          },
+          "return": {
+            "count": 343,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 343,
+                "mean": 0.00016501457725947522,
+                "p50": 0.0002,
+                "p95": 0.0003,
+                "p99": 0.0004,
+                "max": 0.001
+              },
+              "tokenMs": {
+                "count": 343,
+                "mean": 0.0006221574344023324,
+                "p50": 0.0006,
+                "p95": 0.0009,
+                "p99": 0.0013,
+                "max": 0.0015
+              },
+              "optionsMs": {
+                "count": 343,
+                "mean": 7.376093294460641e-05,
+                "p50": 0.0001,
+                "p95": 0.0002,
+                "p99": 0.0003,
+                "max": 0.0004
+              },
+              "sleepMs": {
+                "count": 343,
+                "mean": 0.043865597667638485,
+                "p50": 0.0436,
+                "p95": 0.1017,
+                "p99": 0.1217,
+                "max": 0.1272
+              },
+              "statusMs": {
+                "count": 343,
+                "mean": 8.60058309037901e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0029,
+                "max": 0.004
+              },
+              "markerMs": {
+                "count": 343,
+                "mean": 0.0016521865889212828,
+                "p50": 0.0016,
+                "p95": 0.0022,
+                "p99": 0.0027,
+                "max": 0.0031
+              },
+              "totalMs": {
+                "count": 343,
+                "mean": 0.04653236151603499,
+                "p50": 0.0461,
+                "p95": 0.1044,
+                "p99": 0.1235,
+                "max": 0.1308
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 343,
+              "mean": 5.436595918367347,
+              "p50": 5.187600000000001,
+              "p95": 11.763399999999999,
+              "p99": 12.8745,
+              "max": 13.4059
+            },
+            "sleepShare": 0.9426901244314123,
+            "nonSleepMs": {
+              "count": 343,
+              "mean": 0.0026667638483965014,
+              "p50": 0.002599999999999998,
+              "p95": 0.003500000000000003,
+              "p99": 0.0057,
+              "max": 0.007300000000000001
+            },
+            "frameMs": {
+              "count": 343,
+              "mean": 19.441910495626825,
+              "p50": 19.1646,
+              "p95": 25.4539,
+              "p99": 28.2618,
+              "max": 31.2699
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          },
+          "settle": {
+            "count": 149,
+            "phases": {
+              "mutexWaitMs": {
+                "count": 149,
+                "mean": 0.0009308724832214764,
+                "p50": 0.0002,
+                "p95": 0.0003,
+                "p99": 0.0005,
+                "max": 0.1123
+              },
+              "tokenMs": {
+                "count": 149,
+                "mean": 0.0005812080536912751,
+                "p50": 0.0005,
+                "p95": 0.0009,
+                "p99": 0.001,
+                "max": 0.001
+              },
+              "optionsMs": {
+                "count": 149,
+                "mean": 5.906040268456376e-05,
+                "p50": 0.0001,
+                "p95": 0.0001,
+                "p99": 0.0003,
+                "max": 0.0003
+              },
+              "sleepMs": {
+                "count": 149,
+                "mean": 0.0453,
+                "p50": 0.0405,
+                "p95": 0.1061,
+                "p99": 0.1721,
+                "max": 0.1903
+              },
+              "statusMs": {
+                "count": 149,
+                "mean": 7.181208053691275e-05,
+                "p50": 0.0,
+                "p95": 0.0001,
+                "p99": 0.0019,
+                "max": 0.0024
+              },
+              "markerMs": {
+                "count": 149,
+                "mean": 0.0016040268456375838,
+                "p50": 0.0016,
+                "p95": 0.0021,
+                "p99": 0.0025,
+                "max": 0.0032
+              },
+              "totalMs": {
+                "count": 149,
+                "mean": 0.04860939597315436,
+                "p50": 0.043,
+                "p95": 0.1109,
+                "p99": 0.1742,
+                "max": 0.1932
+              }
+            },
+            "frameSlotPlusSleepMs": {
+              "count": 149,
+              "mean": 11.551218791946308,
+              "p50": 11.7789,
+              "p95": 13.5512,
+              "p99": 14.3736,
+              "max": 14.4078
+            },
+            "sleepShare": 0.9319185950185012,
+            "nonSleepMs": {
+              "count": 149,
+              "mean": 0.0033093959731543623,
+              "p50": 0.0024999999999999953,
+              "p95": 0.003300000000000001,
+              "p99": 0.004400000000000001,
+              "max": 0.1144
+            },
+            "frameMs": {
+              "count": 149,
+              "mean": 22.373056375838924,
+              "p50": 22.2049,
+              "p95": 25.7062,
+              "p99": 26.7093,
+              "max": 26.7462
+            },
+            "overBudget": 0,
+            "longestOverBudgetRun": 0,
+            "sampledRouteMeets30Fps": true
+          }
+        },
+        "scopes": {
+          "Frame/Wait Frame Slot Before Input": {
+            "cpu": {
+              "count": 1369,
+              "mean": 6.649208473338203,
+              "p50": 7.0534,
+              "p95": 12.5733,
+              "p99": 13.5695,
+              "max": 20.9476
+            },
+            "gpu": null
+          },
+          "Frame/Streamline frame begin / Reflex pacing": {
+            "cpu": {
+              "count": 1369,
+              "mean": 0.05150876552227904,
+              "p50": 0.0499,
+              "p95": 0.1004,
+              "p99": 0.1383,
+              "max": 0.2463
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Wait Frame Slot/Wait Slot Completion": {
+            "cpu": {
+              "count": 1369,
+              "mean": 0.008374653031409789,
+              "p50": 0.0072,
+              "p95": 0.0125,
+              "p99": 0.0247,
+              "max": 0.3986
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Acquire Swapchain Image": {
+            "cpu": {
+              "count": 1369,
+              "mean": 0.005727757487216947,
+              "p50": 0.0054,
+              "p95": 0.0079,
+              "p99": 0.0094,
+              "max": 0.0415
+            },
+            "gpu": null
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope": {
+            "cpu": {
+              "count": 1369,
+              "mean": 13.562726515704894,
+              "p50": 12.5387,
+              "p95": 21.72,
+              "p99": 34.0795,
+              "max": 61.1256
+            },
+            "gpu": {
+              "count": 1369,
+              "mean": 21.303202594594595,
+              "p50": 21.216416,
+              "p95": 25.640704,
+              "p99": 26.644064,
+              "max": 29.363392
+            }
+          },
+          "Frame/Render Frame/Present": {
+            "cpu": {
+              "count": 1369,
+              "mean": 0.13783878743608474,
+              "p50": 0.0905,
+              "p95": 0.2993,
+              "p99": 1.1871,
+              "max": 4.9331
+            },
+            "gpu": null
+          }
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 24,
+          "renderLatencyMs": {
+            "count": 24,
+            "mean": 43.14962499999999,
+            "p50": 43.173,
+            "p95": 52.029,
+            "p99": 52.47,
+            "max": 52.47
+          },
+          "gpuRenderMs": {
+            "count": 24,
+            "mean": 26.498833333333334,
+            "p50": 25.649,
+            "p95": 35.375,
+            "p99": 35.881,
+            "max": 35.881
+          }
+        }
+      }
+    }
+  ],
+  "caveats": [
+    "Time-based route; same route but not identical camera/cut/residency per captured frame.",
+    "CPU wall durations, not CPU active time; SDK internals are opaque in these captures.",
+    "Driver latency reports are cached, unique report IDs only; excludes display latency.",
+    "The historical 18.0661 ms scope had no per-call timings. Current repeated runs establish the dominant call, not an exact retrospective breakdown."
+  ]
+}

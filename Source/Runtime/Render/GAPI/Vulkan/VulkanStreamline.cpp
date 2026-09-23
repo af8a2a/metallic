@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -1219,10 +1220,30 @@ Result notifyStreamlineOffscreenFrame()
 #endif
 }
 
-StreamlineFrameScope::StreamlineFrameScope(bool allowLatency)
+StreamlineFrameScope::StreamlineFrameScope(bool allowLatency, StreamlineFrameBeginProfile* profile)
 {
+    using Clock = std::chrono::steady_clock;
+    const auto start = profile ? Clock::now() : Clock::time_point{};
+    auto previous = start;
+    if (profile) { *profile = {}; }
+    const auto checkpoint = [&](double StreamlineFrameBeginProfile::* field) {
+        if (profile) {
+            const auto now = Clock::now();
+            profile->*field = std::chrono::duration<double, std::milli>(now - previous).count();
+            previous = now;
+        }
+    };
+    struct TotalTimer {
+        StreamlineFrameBeginProfile* profile;
+        Clock::time_point start;
+        ~TotalTimer()
+        {
+            if (profile) { profile->totalMs = std::chrono::duration<double, std::milli>(Clock::now() - start).count(); }
+        }
+    } totalTimer{profile, start};
 #if METALLIC_HAS_STREAMLINE
     std::lock_guard lock(streamlineMutex());
+    checkpoint(&StreamlineFrameBeginProfile::mutexWaitMs);
     auto& state = streamlineState();
     if (!state.initialized || !state.vulkanDeviceSet || state.activeFrameToken != nullptr) {
         return;
@@ -1235,6 +1256,8 @@ StreamlineFrameScope::StreamlineFrameScope(bool allowLatency)
     }
     state.activeFrameToken = token;
     active_ = true;
+    checkpoint(&StreamlineFrameBeginProfile::tokenMs);
+    if (profile) { profile->active = true; profile->frameId = state.frameIndex - 1; }
 #if METALLIC_HAS_NV_LOW_LATENCY
     state.reflexStatus.suspended = !allowLatency;
     if (!allowLatency) {
@@ -1246,6 +1269,7 @@ StreamlineFrameScope::StreamlineFrameScope(bool allowLatency)
     }
     if (state.reflexSetOptions != nullptr &&
         (!state.reflexOptionsApplied || state.appliedReflexOptions != effectiveOptions)) {
+        if (profile) { profile->optionsUpdated = true; }
         sl::ReflexOptions options;
         options.mode = effectiveOptions.mode == StreamlineReflexMode::Boost
             ? sl::ReflexMode::eLowLatencyWithBoost
@@ -1263,20 +1287,28 @@ StreamlineFrameScope::StreamlineFrameScope(bool allowLatency)
             disableReflex(state, "slReflexSetOptions", result);
         }
     }
+    if (profile) { profile->effectiveOptions = effectiveOptions; }
+    checkpoint(&StreamlineFrameBeginProfile::optionsMs);
     // The plugin invokes NvLL_VK_Sleep and waits on its timeline semaphore.
     // Keep calling even in Off mode so driver frame limiting and PCL still work.
     if (allowLatency && state.reflexSleep != nullptr) {
+        if (profile) { profile->sleepCalled = true; }
         const auto result = state.reflexSleep(*token);
         if (result != sl::Result::eOk) {
             disableReflex(state, "slReflexSleep", result);
         }
     }
+    checkpoint(&StreamlineFrameBeginProfile::sleepMs);
     if (state.frameIndex % 60 == 0) {
+        if (profile) { profile->statusRefreshed = true; }
         refreshReflexStatus(state);
     }
+    checkpoint(&StreamlineFrameBeginProfile::statusMs);
     state.latencyFrameActive = allowLatency && state.pclSetMarker != nullptr;
     state.simulationOpen = state.latencyFrameActive;
     emitLatencyMarker(state, sl::PCLMarker::eSimulationStart);
+    checkpoint(&StreamlineFrameBeginProfile::markerMs);
+    if (profile) { profile->cachedStatus = state.reflexStatus; }
 #else
     (void)allowLatency;
 #endif

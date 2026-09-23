@@ -124,13 +124,14 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             if (!node) { throw std::runtime_error("Missing VBuffer"); }
             renderGraph_.setNodeRuntimeProperty(node->id, "softwareRasterWorkload", enabled);
         };
+        render::vulkan::StreamlineFrameBeginProfile frameBegin;
         const auto draw = [&]() {
             auto frame = profiler_.beginFrame();
             if (!waitForFrameSlotBeforeInput()) { return false; }
             const auto streamlineFrame = [&] {
                 auto scope = profiler_.scope("Streamline frame begin / Reflex pacing");
                 return render::vulkan::StreamlineFrameScope(
-                    (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED)==0 && ImGui::GetPlatformIO().Viewports.Size<=1);
+                    (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED)==0 && ImGui::GetPlatformIO().Viewports.Size<=1, &frameBegin);
             }();
             { auto scope = profiler_.scope("Poll Events"); pollEvents(); }
             if (!running_ || SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_ESCAPE]) { return false; }
@@ -186,7 +187,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         for (const auto& node : renderGraph_.nodes()) { auto properties=node.properties; properties.merge_patch(node.runtimeProperties);
             report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}}); }
         const auto graphGeneration = graphExecutor_->executionStats().graphGeneration;
-        struct Sample { uint64_t frame; double seconds, ms; size_t segment; uint64_t availableBytes; Json graphPreparation; bool diagnostic = false; };
+        struct Sample { uint64_t frame; double seconds, ms; size_t segment; uint64_t availableBytes; Json graphPreparation; bool diagnostic = false; render::vulkan::StreamlineFrameBeginProfile frameBegin; };
         std::vector<Sample> samples;
         samples.reserve(size_t(duration*120));
         profiler_.beginCapture();
@@ -215,6 +216,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 graphExecutor_->setDebugObserver(diagnostic ? &workloadObserver : nullptr);
             }
             if (!draw()) { throw std::runtime_error("Roam rendering failed/cancelled"); }
+            samples.back().frameBegin = frameBegin;
             const auto& execution = graphExecutor_->executionStats();
             samples.back().graphPreparation = {{"executionId", execution.executionId},
                 {"drainReasonMask", execution.drainReasonMask}, {"externalCompletionCount", execution.externalCompletionCount},
@@ -249,6 +251,16 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 {"stage",points[sample.segment]["stage"]},{"availableBytes",sample.availableBytes},
                 {"graphPreparation",sample.graphPreparation},{"diagnostic",sample.diagnostic},
                 {"scopes",Json::array()},{"streaming",Json::array()}};
+            const auto& begin = sample.frameBegin;
+            row["streamlineBegin"] = {{"totalMs", begin.totalMs}, {"mutexWaitMs", begin.mutexWaitMs},
+                {"tokenMs", begin.tokenMs}, {"optionsMs", begin.optionsMs}, {"sleepMs", begin.sleepMs},
+                {"statusMs", begin.statusMs}, {"markerMs", begin.markerMs}, {"frameId", begin.frameId},
+                {"active", begin.active}, {"sleepCalled", begin.sleepCalled}, {"optionsUpdated", begin.optionsUpdated},
+                {"statusRefreshed", begin.statusRefreshed}, {"effectiveMode", static_cast<uint32_t>(begin.effectiveOptions.mode)},
+                {"frameLimitUs", begin.effectiveOptions.frameLimitUs}, {"available", begin.cachedStatus.available},
+                {"suspended", begin.cachedStatus.suspended}, {"reportAvailable", begin.cachedStatus.latencyReportAvailable},
+                {"reportFrameId", begin.cachedStatus.reportFrameId}, {"renderLatencyMs", begin.cachedStatus.renderLatencyMs},
+                {"gpuRenderMs", begin.cachedStatus.gpuRenderMs}};
             std::vector<std::string> paths;
             bool graphGpu=false;
             for (size_t n=0; n<f.nodes.size(); ++n) {
