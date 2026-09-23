@@ -7,6 +7,7 @@
 #include "Runtime/Render/DisplayOutput.h"
 #include "Runtime/Render/RenderView.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
+#include "Runtime/Render/Streamer/SceneStreamingTypes.h"
 
 #include "json.hpp"
 
@@ -29,7 +30,7 @@ class IRenderDebugObserver;
 struct DebugResourceBinding;
 
 class HistoryResourceManager;
-class SceneResourceManager;
+struct MeshletStreamFrameDesc;
 
 using RenderGraphProperties = nlohmann::json;
 
@@ -172,7 +173,7 @@ struct RenderGraphCompileContext {
     Device* device = nullptr;
     Queue* graphicsQueue = nullptr;
     const scene::Scene* runtimeScene = nullptr;
-    SceneResourceManager* sceneResourceManager = nullptr;
+    std::shared_ptr<PreparedSceneResources> preparedScene;
     RenderWorld* renderWorld = nullptr;
     RenderSubsystemHost* subsystemHost = nullptr;
     uint32_t width = 1;
@@ -256,6 +257,7 @@ public:
     HistoryResourceManager* historyResources() const { return historyResources_; }
     Streamer* streamer() const { return streamer_; }
     const scene::Scene* runtimeScene() const { return runtimeScene_; }
+    const PreparedSceneResources* preparedScene() const { return preparedScene_.get(); }
     RenderWorld* world() const { return world_; }
     RenderSubsystemHost* subsystems() const { return subsystems_; }
     const ViewConstants* viewConstants() const { return viewConstants_; }
@@ -320,6 +322,7 @@ public:
         const RenderGraphProperties& values = RenderGraphProperties::object());
 
 private:
+    std::shared_ptr<PreparedSceneResources> preparedScene_;
     struct Binding {
         std::string fieldName;
         RenderGraphResource* resource = nullptr;
@@ -386,6 +389,12 @@ class RenderGraphPass {
 public:
     virtual ~RenderGraphPass() = default;
     virtual RenderGraphSceneDependency sceneDependency() const { return {}; }
+    virtual SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const { return {}; }
+    // Pure view description; scene scheduling and IO belong to StreamerSubsystem.
+    virtual void describeSceneView(const RenderGraphExecutionContext&, MeshletStreamFrameDesc&) const {}
+    // Render-only camera, HZB and descriptor setup before the subsystem's traversal.
+    virtual Result prepareExecution(RenderGraphExecutionContext&) { return {}; }
+    virtual void sceneTraversalCheckpoint(RenderGraphExecutionContext&, std::string_view) const {}
 
     virtual RenderPassReflection reflect(const RenderGraphCompileContext& context) const = 0;
     virtual RenderGraphPassKind kind() const;
@@ -449,6 +458,5 @@ void registerBuiltInRenderGraphPasses();
 RenderGraphSceneDependency renderGraphPassSceneDependency(std::string_view type);
 std::unique_ptr<RenderGraphPass> createRenderGraphPass(std::string_view type);
 std::vector<RenderGraphPassInfo> listRenderGraphPassTypes();
-
 
 } // namespace metallic::render

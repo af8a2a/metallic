@@ -1,40 +1,12 @@
 #pragma once
 
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
+#include "Runtime/Render/Streamer/SceneStreamingTypes.h"
 
 #include <filesystem>
 #include <memory>
 
 namespace metallic::render {
-
-enum class SceneResourceFeatureBits : uint32_t {
-    None = 0,
-    Geometry = 1u << 0,
-    Materials = 1u << 1,
-    MaterialTextures = 1u << 2,
-    Meshlets = 1u << 3,
-    StandardAccelerationStructure = 1u << 4,
-    ClusterAccelerationStructure = 1u << 5,
-};
-
-constexpr SceneResourceFeatureBits operator|(
-    SceneResourceFeatureBits lhs,
-    SceneResourceFeatureBits rhs)
-{
-    return static_cast<SceneResourceFeatureBits>(
-        static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
-}
-
-struct SceneResourceSnapshot {
-    std::filesystem::path scenePath;
-    SceneResourceFeatureBits features = SceneResourceFeatureBits::None;
-    uint64_t sourceResourceIdentity = 0;
-    uint64_t sourceStructuralRevision = 0;
-    uint64_t sourceTransformRevision = 0;
-    uint64_t sourceVisibilityRevision = 0;
-    uint64_t sourceMaterialRevision = 0;
-    std::shared_ptr<ScenePathTraceResources> pathTraceResources;
-};
 
 class SceneResourceManager {
 public:

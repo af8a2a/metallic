@@ -1,6 +1,5 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/Streamer/SceneResourceManager.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -32,13 +31,7 @@ public:
         const scene::Scene* runtimeScene = runtimeSceneForPath(
             context.runtimeScene,
             scenePathFromProperties(properties()));
-        if (runtimeScene == nullptr && context.sceneResourceManager != nullptr) {
-            Result sceneResult = context.sceneResourceManager->resolveScene(
-                properties(), context.runtimeScene, runtimeScene, log);
-            if (!sceneResult) {
-                return sceneResult;
-            }
-        }
+
         const uint64_t resourceIdentity = runtimeScene != nullptr ? runtimeScene->resourceIdentity() : 0;
         const uint64_t structuralRevision = runtimeScene != nullptr
             ? runtimeScene->sceneGraph().structuralRevision()
@@ -59,7 +52,7 @@ public:
         std::vector<uint32_t> materialIndices;
         std::vector<MaterialShaderObjectGpuMaterial> materials;
         std::vector<SceneGpuTransform> transforms;
-        if (!loadSceneGeometry(
+        if (!buildSceneGeometry(
                 properties(),
                 runtimeScene,
                 positions,
@@ -365,7 +358,7 @@ private:
         std::vector<MaterialShaderObjectBatch> batches;
         scene::Bounds bounds;
         std::string log;
-        if (!loadSceneGeometry(
+        if (!buildSceneGeometry(
                 properties(),
                 &runtimeScene,
                 positions,
@@ -592,7 +585,7 @@ private:
         outBounds.include(world);
     }
 
-    static bool loadSceneGeometry(
+    static bool buildSceneGeometry(
         const RenderGraphProperties& properties,
         const scene::Scene* runtimeScene,
         std::vector<MaterialShaderObjectGpuPosition>& outPositions,

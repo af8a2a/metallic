@@ -274,8 +274,6 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
     if (streamed) {
         if (streamTlas) {
             CpuProfileScope resources(profiler, "Prepare material textures");
-            result = geometry->uploadMaterialTextures(commands);
-            if (!result) { return result; }
             if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
             bindings.push_back({.binding = 0, .accelerationStructure = streamGeometry->accelerationStructure});
             bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
@@ -289,8 +287,6 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
         }
     } else {
         CpuProfileScope resources(profiler, "Prepare material textures");
-        result = geometry->uploadMaterialTextures(commands);
-        if (!result) { return result; }
         if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
         bindings.push_back({.binding = 0, .accelerationStructure = geometry->accelerationStructure().accelerationStructure()});
         bindings.push_back({.binding = 2, .buffer = geometry->shadingVertexBuffer()});

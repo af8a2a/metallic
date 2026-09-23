@@ -1,7 +1,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
-#include "Runtime/Render/Streamer/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/Profiling/CpuProfile.h"
@@ -567,6 +567,15 @@ struct ScenePathTraceCameraSnapshot {
 
 class ScenePathTracePass final : public ComputePass {
 public:
+    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext& context) const override
+    {
+        if (context.runtimeScene && context.runtimeScene->hasStreamGeometry()) {
+            return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures, .textureFeedback = visibilityDeferred_};
+        }
+        return {.features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
+            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure, .textureFeedback = visibilityDeferred_};
+    }
+
     RenderGraphSceneDependency sceneDependency() const override
     {
         return visibilityDeferred_
@@ -843,29 +852,13 @@ public:
         }
         device_ = context.device;
         graphicsQueue_ = context.graphicsQueue;
-        sceneResourceManager_ = context.sceneResourceManager != nullptr
-            ? context.sceneResourceManager : &fallbackSceneResourceManager_;
-
+        if (!context.preparedScene || !context.preparedScene->snapshot ||
+            !context.preparedScene->snapshot->pathTraceResources) {
+            log = "Scene resources were not prepared by StreamerSubsystem";
+            return makeError(Error::InvalidArgument);
+        }
+        sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
         Result result;
-        {
-            std::shared_ptr<SceneResourceSnapshot> snapshot;
-            result = sceneResourceManager_->acquire(
-                *context.device,
-                *context.graphicsQueue,
-                properties(),
-                context.runtimeScene,
-                streamMaterials_ ? (SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures) :
-                    (SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
-                        SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure),
-                snapshot,
-                log);
-            if (result && snapshot != nullptr) {
-                sceneResources_ = *snapshot->pathTraceResources;
-            }
-        }
-        if (!result) {
-            return result;
-        }
         const uint64_t resourceRevision = sceneResources_.revision();
         if (resourceRevision != sceneResourceRevision_) {
             sceneResourceRevision_ = resourceRevision;
@@ -1596,11 +1589,8 @@ public:
         CpuProfileScope profile(profiler, "Validate scene and environment");
         std::string syncLog;
         // RenderGraph prepares a single scene generation before recording any pass.
-        // Geometry, material tables and RTAS are acquired by compile(), never by
-        // independently resolving an authored path midway through this frame.
-        if (!sceneResources_.textureUploadsReady()) {
-            return {};
-        }
+        // StreamerSubsystem publishes geometry, material tables and RTAS together;
+        // a pass never resolves an authored path midway through this frame.
         if (sceneResources_.revision() != sceneResourceRevision_) {
             sceneResourceRevision_ = sceneResources_.revision();
             resetAccumulation_ = true;
@@ -1662,13 +1652,7 @@ public:
             hasPreviousCamera_ = false;
         }
         TextureHandle color = context.outputTexture("color");
-        Buffer* textureFeedback = nullptr;
-        if (visibilityDeferred_) {
-            profile.next("Texture streaming");
-            const auto streamingResult = sceneResources_.beginTextureStreaming(context.commandBuffer(),
-                context.frameIndex(), textureFeedback, profiler, properties().value("benchmarkFreezeStreaming", false));
-            if (!streamingResult) { return streamingResult; }
-        }
+        Buffer* textureFeedback = context.preparedScene() ? context.preparedScene()->textureFeedback : nullptr;
         profile.next("Prepare output and shading parameters");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         TextureView* environmentTextureView = environment.radianceView;
@@ -1886,10 +1870,6 @@ public:
         }
 
         profile.next("Prepare material textures and LUTs");
-        result = sceneResources_.uploadMaterialTextures(context.commandBuffer());
-        if (!result) {
-            return result;
-        }
         if (useOpenPBR) {
             result = openPBRLuts_.upload(context.commandBuffer());
             if (!result) {
@@ -3252,11 +3232,9 @@ private:
     bool compiledMaterialBinning_ = true;
     RenderGraphProperties deferredHistoryProperties_;
     SceneLightResources lights_;
-    SceneResourceManager fallbackSceneResourceManager_;
     ScenePathTraceResources sceneResources_;
     bool streamMaterials_ = false;
     bool streamRayQueries_ = false;
-    SceneResourceManager* sceneResourceManager_ = nullptr;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     OpenPBRLutResources openPBRLuts_;

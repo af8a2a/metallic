@@ -1,14 +1,15 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#define STB_IMAGE_STATIC
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
 
 class ImageSamplePass final : public UnsafePass {
 public:
+    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
+    {
+        return {.sampledImage = true};
+    }
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
 
@@ -33,85 +34,11 @@ public:
             return {};
         }
 
-        const std::string imagePath = imagePathFromProperties();
-        int imageWidth = 0;
-        int imageHeight = 0;
-        int channelCount = 0;
-        stbi_uc* pixels = stbi_load(imagePath.c_str(), &imageWidth, &imageHeight, &channelCount, 4);
-        if (pixels == nullptr || imageWidth <= 0 || imageHeight <= 0) {
-            log = std::string("ImageSamplePass failed to load image '") + imagePath + "'";
-            if (const char* reason = stbi_failure_reason()) {
-                log += ": ";
-                log += reason;
-            }
-            return makeError(Error::Failure);
+        if (!context.preparedScene || !context.preparedScene->imageView) {
+            log = "Image resource was not prepared by StreamerSubsystem";
+            return makeError(Error::InvalidArgument);
         }
-
-        imageWidth_ = static_cast<uint32_t>(imageWidth);
-        imageHeight_ = static_cast<uint32_t>(imageHeight);
-        const uint64_t imageByteSize =
-            static_cast<uint64_t>(imageWidth_) * static_cast<uint64_t>(imageHeight_) * 4ull;
-
-        Result result = context.device->createBuffer(
-            BufferDesc{
-                .size = imageByteSize,
-                .usage = BufferUsageBits::TransferSource,
-                .memoryLocation = MemoryLocation::HostUpload,
-            },
-            uploadBuffer_);
-        if (!result || uploadBuffer_ == nullptr) {
-            stbi_image_free(pixels);
-            log += resultMessage("createBuffer(ImageSamplePass upload)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        void* mapped = uploadBuffer_->map();
-        if (mapped == nullptr) {
-            stbi_image_free(pixels);
-            log = "ImageSamplePass failed to map upload buffer";
-            return makeError(Error::Failure);
-        }
-        std::memcpy(mapped, pixels, static_cast<size_t>(imageByteSize));
-        uploadBuffer_->flush(0, imageByteSize);
-        uploadBuffer_->unmap();
-        stbi_image_free(pixels);
-
-        result = context.device->createTexture(
-            TextureDesc{
-                .type = TextureType::Texture2D,
-                .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-                .format = Format::Rgba8Unorm,
-                .width = imageWidth_,
-                .height = imageHeight_,
-                .depth = 1,
-                .mipCount = 1,
-                .layerCount = 1,
-                .memoryLocation = MemoryLocation::Device,
-            },
-            imageTexture_);
-        if (!result || imageTexture_ == nullptr) {
-            log += resultMessage("createTexture(ImageSamplePass image)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        result = context.device->createTextureView(
-            *imageTexture_,
-            TextureViewDesc{
-                .format = Format::Rgba8Unorm,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            },
-            imageView_);
-        if (!result || imageView_ == nullptr) {
-            log += resultMessage("createTextureView(ImageSamplePass image)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
+        Result result;
         result = context.device->createBindlessHeap(
             BindlessHeapDesc{
                 .maxSampledImages = 1,
@@ -132,7 +59,7 @@ public:
 
         result = bindlessHeap_->writeSampledImage(
             imageHandle_,
-            *imageView_,
+            *context.preparedScene->imageView,
             ResourceState::ShaderRead);
         if (!result) {
             log += resultMessage("writeSampledImage(ImageSamplePass)", result);
@@ -169,54 +96,9 @@ public:
     {
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() ||
-            uploadBuffer_ == nullptr ||
-            imageTexture_ == nullptr ||
             bindlessHeap_ == nullptr ||
             pipeline_ == nullptr) {
             return makeError(Error::InvalidArgument);
-        }
-
-        if (!uploaded_) {
-            TextureBarrierDesc toTransfer{
-                .texture = imageTexture_.get(),
-                .before = imageState_,
-                .after = ResourceState::TransferDestination,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            };
-            context.commandBuffer().barrier(BarrierDesc{
-                .textures = &toTransfer,
-                .textureCount = 1,
-            });
-            imageState_ = ResourceState::TransferDestination;
-
-            context.commandBuffer().copyBufferToTexture(BufferTextureCopyDesc{
-                .buffer = uploadBuffer_.get(),
-                .texture = imageTexture_.get(),
-                .width = imageWidth_,
-                .height = imageHeight_,
-                .depth = 1,
-                .mipLevel = 0,
-                .baseLayer = 0,
-            });
-
-            TextureBarrierDesc toShaderRead{
-                .texture = imageTexture_.get(),
-                .before = imageState_,
-                .after = ResourceState::ShaderRead,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            };
-            context.commandBuffer().barrier(BarrierDesc{
-                .textures = &toShaderRead,
-                .textureCount = 1,
-            });
-            imageState_ = ResourceState::ShaderRead;
-            uploaded_ = true;
         }
 
         const Rect renderArea{
@@ -297,31 +179,12 @@ private:
         return result;
     }
 
-    std::string imagePathFromProperties() const
-    {
-        const RenderGraphProperties& props = properties();
-        if (props.contains("path") && props["path"].is_string()) {
-            std::filesystem::path path = props["path"].get<std::string>();
-            if (path.is_relative()) {
-                path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
-            }
-            return path.string();
-        }
-        return kDefaultImageSamplePath;
-    }
-
-    std::unique_ptr<Buffer> uploadBuffer_;
-    std::unique_ptr<Texture> imageTexture_;
-    std::unique_ptr<TextureView> imageView_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     BindlessHandle imageHandle_;
     std::unique_ptr<ShaderModule> vertexShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
-    uint32_t imageWidth_ = 0;
-    uint32_t imageHeight_ = 0;
-    ResourceState imageState_ = ResourceState::Undefined;
-    bool uploaded_ = false;
+
 };
 
 } // namespace

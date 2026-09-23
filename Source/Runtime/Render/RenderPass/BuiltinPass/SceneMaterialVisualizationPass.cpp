@@ -1,6 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/Streamer/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 
 #ifndef METALLIC_HAS_NTC
 #define METALLIC_HAS_NTC 0
@@ -15,6 +15,12 @@ namespace {
 
 class SceneMaterialVisualizationPass final : public ComputePass {
 public:
+    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
+    {
+        return {.features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
+            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure};
+    }
+
     RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
 
     bool supportsFrameOverlap() const override { return true; }
@@ -74,36 +80,13 @@ public:
         }
         device_ = context.device;
         graphicsQueue_ = context.graphicsQueue;
-        sceneResourceManager_ = context.sceneResourceManager;
-
+        if (!context.preparedScene || !context.preparedScene->snapshot ||
+            !context.preparedScene->snapshot->pathTraceResources) {
+            log = "Scene resources were not prepared by StreamerSubsystem";
+            return makeError(Error::InvalidArgument);
+        }
+        sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
         Result result;
-        if (context.sceneResourceManager != nullptr) {
-            std::shared_ptr<SceneResourceSnapshot> snapshot;
-            result = context.sceneResourceManager->acquire(
-                *context.device,
-                *context.graphicsQueue,
-                properties(),
-                context.runtimeScene,
-                SceneResourceFeatureBits::Geometry |
-                    SceneResourceFeatureBits::Materials |
-                    SceneResourceFeatureBits::MaterialTextures |
-                    SceneResourceFeatureBits::StandardAccelerationStructure,
-                snapshot,
-                log);
-            if (result && snapshot != nullptr) {
-                sceneResources_ = *snapshot->pathTraceResources;
-            }
-        } else {
-            result = sceneResources_.prepare(
-                *context.device,
-                *context.graphicsQueue,
-                properties(),
-                context.runtimeScene,
-                log);
-        }
-        if (!result) {
-            return result;
-        }
         const bool ntcActive = sceneResources_.neuralTextures().active();
         const bool positionFetch = context.device->capabilities().rayTracingPositionFetch;
         const bool ntcCooperativeVector =
@@ -264,32 +247,6 @@ public:
     Result execute(RenderGraphExecutionContext& context) override
     {
         std::string syncLog;
-        if (sceneResourceManager_ != nullptr && device_ != nullptr && graphicsQueue_ != nullptr) {
-            std::shared_ptr<SceneResourceSnapshot> snapshot;
-            Result acquireResult = sceneResourceManager_->acquire(
-                *device_,
-                *graphicsQueue_,
-                context.properties(),
-                context.runtimeScene(),
-                SceneResourceFeatureBits::Geometry |
-                    SceneResourceFeatureBits::Materials |
-                    SceneResourceFeatureBits::MaterialTextures |
-                    SceneResourceFeatureBits::StandardAccelerationStructure,
-                snapshot,
-                syncLog);
-            if (!acquireResult || snapshot == nullptr) {
-                return acquireResult ? makeError(Error::Failure) : acquireResult;
-            }
-            sceneResources_ = *snapshot->pathTraceResources;
-        }
-        Result syncResult = sceneResources_.syncRuntimeScene(context.runtimeScene(), syncLog);
-        if (!syncResult) {
-            spdlog::warn("[SceneMaterialVisualizationPass] Runtime scene sync failed: {}", syncLog);
-            return syncResult;
-        }
-        if (!sceneResources_.textureUploadsReady()) {
-            return {};
-        }
         TextureHandle color = context.outputTexture("color");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         if (!color.valid() ||
@@ -305,10 +262,7 @@ public:
         push.materialTextureCount = sceneResources_.materialTextureCount();
         push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
 
-        Result result = sceneResources_.uploadMaterialTextures(context.commandBuffer());
-        if (!result) {
-            return result;
-        }
+        Result result;
 
         std::vector<ComputeDispatchBinding> bindings{
             ComputeDispatchBinding{
@@ -573,7 +527,6 @@ private:
     }
 
     ScenePathTraceResources sceneResources_;
-    SceneResourceManager* sceneResourceManager_ = nullptr;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     ComputeProgram rayQueryProgram_;

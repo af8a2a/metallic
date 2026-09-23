@@ -3,7 +3,7 @@
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
-#include "Runtime/Render/Streamer/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/RenderFrameContext.h"
 
 namespace metallic::render::builtin_pass {
@@ -11,6 +11,15 @@ namespace {
 
 class RayTracedShadowPass final : public UnsafePass {
 public:
+    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext& context) const override
+    {
+        if (context.runtimeScene && context.runtimeScene->hasStreamGeometry()) {
+            return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures};
+        }
+        return {.features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
+            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure};
+    }
+
     bool supportsFrameOverlap() const override { return !METALLIC_HAS_NRD; }
 
     std::span<const RenderSubsystemId> requiredSubsystems() const override
@@ -52,22 +61,13 @@ public:
             log = "RayTracedShadowPass requires ray queries and a scene acceleration structure";
             return makeError(Error::Unsupported);
         }
-        // Prepare the same shared geometry snapshot as Deferred, outside execute().
-        {
-            if (context.graphicsQueue == nullptr) { return makeError(Error::InvalidArgument); }
-            auto* manager = context.sceneResourceManager != nullptr
-                ? context.sceneResourceManager : &fallbackSceneResourceManager_;
-            std::shared_ptr<SceneResourceSnapshot> snapshot;
-            const auto result = manager->acquire(*device_, *context.graphicsQueue, properties(), context.runtimeScene,
-                context.runtimeScene != nullptr && context.runtimeScene->hasStreamGeometry()
-                    ? SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures
-                    : SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
-                        SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure,
-                snapshot, log);
-            if (!result) { return result; }
-            if (snapshot == nullptr || snapshot->pathTraceResources == nullptr) { return makeError(Error::Failure); }
-            geometry_ = *snapshot->pathTraceResources;
+        if (!context.preparedScene || !context.preparedScene->snapshot ||
+            !context.preparedScene->snapshot->pathTraceResources) {
+            log = "Scene resources were not prepared by StreamerSubsystem";
+            return makeError(Error::InvalidArgument);
         }
+        geometry_ = *context.preparedScene->snapshot->pathTraceResources;
+        Result result;
         history_ = std::make_shared<History>();
         shadows_.clear();
         return {};
@@ -189,7 +189,6 @@ private:
     Device* device_ = nullptr;
     ScreenSpaceShadows shadows_;
     ScenePathTraceResources geometry_;
-    SceneResourceManager fallbackSceneResourceManager_;
     std::shared_ptr<History> history_;
 };
 

@@ -19,6 +19,15 @@ public:
     void endFrame(const RenderSubsystemFrameContext& context) override;
     void shutdown() override;
 
+    Result prepareScene(const SceneStreamingRequirements& requirements,
+        const RenderGraphProperties& properties, const scene::Scene* scene,
+        std::shared_ptr<PreparedSceneResources>& prepared, std::string& log, bool debugReadback = false);
+    Result recordSceneBegin(PreparedSceneResources& prepared, const SceneStreamingRequirements& requirements,
+        RenderGraphExecutionContext& context, const MeshletStreamFrameDesc& view, std::string& log);
+    Result recordSceneTraversal(PreparedSceneResources& prepared, RenderGraphExecutionContext& context,
+        const MeshletStreamFrameDesc& view, const MeshletStreamRuntime::TraversalCheckpoint& checkpoint);
+    Result recordSceneEnd(PreparedSceneResources& prepared, RenderGraphExecutionContext& context);
+
     Result acquireStream(const MeshletStreamRuntimeDesc& desc, bool debugReadback,
         std::shared_ptr<MeshletStreamRuntime>& outSession, std::string& log, PipelineCache* cache = nullptr);
     size_t streamCount() const { return streams_.size(); }
@@ -31,6 +40,7 @@ public:
     const SceneResourceManager& manager() const { return resources_; }
 
 private:
+    std::unordered_map<const ScenePathTraceResources*, Buffer*> textureFrames_;
     Device* device_ = nullptr;
     StreamingUploads uploads_;
     SceneResourceManager resources_;

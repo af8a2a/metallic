@@ -315,7 +315,6 @@ METALLIC_REGISTER_RHI_TEST(RealtimePipelineTest);
 METALLIC_REGISTER_RHI_TEST(GpuDrivenSponzaRealtimePipelineTest);
 METALLIC_REGISTER_RHI_TEST(EnvironmentPrefilterTest);
 
-
 class RealtimeShadowTest final : public RhiTest {
 public:
     RealtimeShadowTest() { type = RhiTestType::Rendering; name = "realtime_ray_traced_sigma_shadows"; }
@@ -679,6 +678,16 @@ public:
             guides->unmap(); require(covered > 100 && moved > 100, "Camera change did not reach streamed geometry/upscaler guides");
             require(streamer->sceneReadiness().ready, "Fallback coverage never became presentable");
             rebuildAndDraw(321, 217);
+            if (!miniZorah_) {
+                require(bool(executor.reloadShaders(log)), "Streamed shader reload: " + log);
+                for (uint32_t frame = 0; frame < 32; ++frame) { draw(); }
+                streamer->collectReleasedStreams();
+                require(streamer->streamCount() == 1, "Shader reload leaked the previous streaming session");
+                require(streamer->sceneReadiness().ready, "Reloaded streaming shaders lost fallback coverage");
+                const auto reloaded = pixels();
+                require(std::count_if(reloaded.begin(), reloaded.end(), [&](uint32_t p) { return p != reloaded[0]; }) > 100,
+                    "Reloaded streaming session produced an empty image");
+            }
             RenderGraph empty; empty.addNode("FinalBlitPass", "Empty"); empty.markOutput("Empty.color");
             require(bool(executor.compile(context.device, empty, width, height, log)), log);
             for (uint32_t frame = 0; frame <= executor.subsystemHost()->frameSlotCount(); ++frame) { draw(); }

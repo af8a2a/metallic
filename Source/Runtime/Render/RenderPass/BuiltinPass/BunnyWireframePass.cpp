@@ -1,6 +1,5 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/Streamer/SceneResourceManager.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -32,13 +31,7 @@ public:
         const scene::Scene* runtimeScene = runtimeSceneForPath(
             context.runtimeScene,
             scenePathFromProperties(properties()));
-        if (runtimeScene == nullptr && context.sceneResourceManager != nullptr) {
-            Result sceneResult = context.sceneResourceManager->resolveScene(
-                properties(), context.runtimeScene, runtimeScene, log);
-            if (!sceneResult) {
-                return sceneResult;
-            }
-        }
+
         const uint64_t resourceIdentity = runtimeScene != nullptr ? runtimeScene->resourceIdentity() : 0;
         const uint64_t structuralRevision = runtimeScene != nullptr
             ? runtimeScene->sceneGraph().structuralRevision()
@@ -56,7 +49,7 @@ public:
         std::vector<BunnyWireframeGpuPosition> positions;
         std::vector<SceneGpuTransform> transforms;
         BunnyWireframeGpuParams params;
-        if (!loadBunnyGeometry(properties(), runtimeScene, positions, transforms, drawBounds_, log)) {
+        if (!buildBunnyGeometry(properties(), runtimeScene, positions, transforms, drawBounds_, log)) {
             return makeError(Error::Failure);
         }
         if (positions.size() > std::numeric_limits<uint32_t>::max()) {
@@ -361,7 +354,7 @@ private:
         std::vector<SceneGpuTransform> transforms;
         scene::Bounds bounds;
         std::string log;
-        if (!loadBunnyGeometry(properties(), &runtimeScene, positions, transforms, bounds, log)) {
+        if (!buildBunnyGeometry(properties(), &runtimeScene, positions, transforms, bounds, log)) {
             spdlog::warn("[BunnyWireframePass] Runtime geometry rebuild failed: {}", log);
             return makeError(Error::Failure);
         }
@@ -529,7 +522,7 @@ private:
         out[3] = w;
     }
 
-    static bool loadBunnyGeometry(
+    static bool buildBunnyGeometry(
         const RenderGraphProperties& properties,
         const scene::Scene* runtimeScene,
         std::vector<BunnyWireframeGpuPosition>& outPositions,

@@ -1,12 +1,22 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/Streamer/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
 
 class SceneRayQueryVisualizationPass final : public ComputePass {
 public:
+    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext& context) const override
+    {
+        auto features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::StandardAccelerationStructure;
+        if (context.device && context.device->capabilities().clusterAccelerationStructure) {
+            features = features | SceneResourceFeatureBits::ClusterAccelerationStructure;
+        }
+        return {.features = features, .optionalClusterAccelerationStructure =
+            visualizationModeFromProperties(properties()) != kRayQueryVisualizationGranularityClusterId};
+    }
+
     RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
 
     bool supportsFrameOverlap() const override { return true; }
@@ -58,16 +68,9 @@ public:
         }
         device_ = context.device;
         graphicsQueue_ = context.graphicsQueue;
-        sceneResourceManager_ = context.sceneResourceManager;
         const std::filesystem::path path = scenePathFromProperties(properties());
         const scene::Scene* runtimeScene = runtimeSceneForPath(context.runtimeScene, path);
-        if (runtimeScene == nullptr && context.sceneResourceManager != nullptr) {
-            Result sceneResult = context.sceneResourceManager->resolveScene(
-                properties(), context.runtimeScene, runtimeScene, log);
-            if (!sceneResult) {
-                return sceneResult;
-            }
-        }
+
         const uint64_t resourceIdentity = runtimeScene != nullptr ? runtimeScene->resourceIdentity() : 0;
         const uint64_t structuralRevision = runtimeScene != nullptr
             ? runtimeScene->sceneGraph().structuralRevision()
@@ -81,7 +84,7 @@ public:
             transformRevision_ == transformRevision &&
             visibilityRevision_ == visibilityRevision &&
             clusterIdShaderEnabled_ == clusterIdSupported &&
-            (!clusterIdRequested || clusterAccelerationStructureBuilder_.valid())) {
+            (!clusterIdRequested || (clusterAccelerationStructure_ && clusterAccelerationStructure_->valid()))) {
             return {};
         }
 
@@ -96,46 +99,16 @@ public:
         }
 
         drawBounds_ = loadedScene.bounds();
-        clusterAccelerationStructureBuilder_.clear();
         rayQueryProgram_.clear();
 
-        if (context.sceneResourceManager == nullptr) {
-            log = "SceneRayQueryVisualizationPass requires a scene resource provider";
+        if (!context.preparedScene || !context.preparedScene->snapshot ||
+            !context.preparedScene->snapshot->pathTraceResources) {
+            log = "Scene resources were not prepared by StreamerSubsystem";
             return makeError(Error::InvalidArgument);
         }
-        std::shared_ptr<SceneResourceSnapshot> snapshot;
-        Result result = context.sceneResourceManager->acquire(
-            *context.device,
-            *context.graphicsQueue,
-            properties(),
-            context.runtimeScene,
-            SceneResourceFeatureBits::Geometry |
-                SceneResourceFeatureBits::StandardAccelerationStructure,
-            snapshot,
-            log);
-        if (!result) {
-            return result;
-        }
-        sceneResources_ = *snapshot->pathTraceResources;
-        const std::string rtxBuildLog = log;
-        if (clusterIdSupported) {
-            Queue* accelerationQueue = context.device->getQueue(QueueType::Compute);
-            if (accelerationQueue == nullptr) {
-                accelerationQueue = context.graphicsQueue;
-            }
-            result = clusterAccelerationStructureBuilder_.build(
-                *context.device,
-                *accelerationQueue,
-                loadedScene,
-                log);
-            if (!result) {
-                if (clusterIdRequested) {
-                    return result;
-                }
-                clusterAccelerationStructureBuilder_.clear();
-                log = rtxBuildLog;
-            }
-        }
+        sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
+        Result result;
+        clusterAccelerationStructure_ = context.preparedScene->clusterAccelerationStructure;
 
         ShaderCompileResult computeCompile;
         const char* rayQueryCapabilities[] = {"spvRayQueryKHR"};
@@ -213,27 +186,6 @@ public:
 
     Result execute(RenderGraphExecutionContext& context) override
     {
-        if (sceneResourceManager_ != nullptr && device_ != nullptr && graphicsQueue_ != nullptr) {
-            std::shared_ptr<SceneResourceSnapshot> snapshot;
-            std::string log;
-            Result result = sceneResourceManager_->acquire(
-                *device_,
-                *graphicsQueue_,
-                context.properties(),
-                context.runtimeScene(),
-                SceneResourceFeatureBits::Geometry |
-                    SceneResourceFeatureBits::StandardAccelerationStructure,
-                snapshot,
-                log);
-            if (!result || snapshot == nullptr) {
-                return result ? makeError(Error::Failure) : result;
-            }
-            sceneResources_ = *snapshot->pathTraceResources;
-        }
-        Result syncResult = syncRuntimeScene(context.runtimeScene());
-        if (!syncResult) {
-            return syncResult;
-        }
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() ||
             color.view() == nullptr ||
@@ -248,7 +200,7 @@ public:
         SceneRayQueryVisualizationPush push;
         buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
         const bool useClusterId = push.mode == kRayQueryVisualizationGranularityClusterId;
-        if (useClusterId && !clusterAccelerationStructureBuilder_.valid()) {
+        if (useClusterId && !(clusterAccelerationStructure_ && clusterAccelerationStructure_->valid())) {
             return makeError(Error::Unsupported);
         }
 
@@ -256,7 +208,7 @@ public:
             ComputeDispatchBinding{
                 .binding = 0,
                 .accelerationStructure = useClusterId
-                    ? clusterAccelerationStructureBuilder_.accelerationStructure()
+                    ? clusterAccelerationStructure_->accelerationStructure()
                     : sceneResources_.accelerationStructure().accelerationStructure(),
             },
             ComputeDispatchBinding{
@@ -277,64 +229,6 @@ public:
     }
 
 private:
-    Result syncRuntimeScene(const scene::Scene* runtimeScene)
-    {
-        runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
-        if (runtimeScene == nullptr) {
-            return {};
-        }
-        const bool sceneResourcesChanged =
-            runtimeScene->resourceIdentity() != resourceIdentity_ ||
-            runtimeScene->sceneGraph().structuralRevision() != structuralRevision_ ||
-            runtimeScene->visibilityRevision() != visibilityRevision_;
-        const bool transformsChanged =
-            runtimeScene->transformRevision() != transformRevision_;
-        if (!sceneResourcesChanged && !transformsChanged) {
-            return {};
-        }
-        if (device_ == nullptr || graphicsQueue_ == nullptr) {
-            return makeError(Error::InvalidArgument);
-        }
-        std::string log;
-        if (!sceneResourcesChanged) {
-            Result result = sceneResources_.syncRuntimeScene(runtimeScene, log);
-            if (!result) {
-                spdlog::warn("[SceneRayQueryVisualizationPass] Runtime TLAS refit failed: {}", log);
-                return result;
-            }
-        }
-
-        if (clusterIdShaderEnabled_ &&
-            (sceneResourcesChanged || clusterAccelerationStructureBuilder_.valid())) {
-            Queue* accelerationQueue = device_->getQueue(QueueType::Compute);
-            if (accelerationQueue == nullptr) {
-                accelerationQueue = graphicsQueue_;
-            }
-            Result result = clusterAccelerationStructureBuilder_.build(
-                *device_,
-                *accelerationQueue,
-                *runtimeScene,
-                log);
-            if (!result) {
-                clusterAccelerationStructureBuilder_.clear();
-                drawBounds_ = runtimeScene->bounds();
-                stampSceneState(*runtimeScene);
-                spdlog::warn(
-                    "[SceneRayQueryVisualizationPass] Runtime cluster acceleration structure rebuild failed: {}",
-                    log);
-                if (visualizationModeFromProperties(properties()) ==
-                    kRayQueryVisualizationGranularityClusterId) {
-                    return hasError(result, Error::Unsupported)
-                        ? makeError(Error::Unsupported)
-                        : result;
-                }
-            }
-        }
-        drawBounds_ = runtimeScene->bounds();
-        stampSceneState(*runtimeScene);
-        return {};
-    }
-
     void stampSceneState(const scene::Scene& runtimeScene)
     {
         resourceIdentity_ = runtimeScene.resourceIdentity();
@@ -507,7 +401,7 @@ private:
     }
 
     ScenePathTraceResources sceneResources_;
-    SceneClusterAccelerationStructureBuilder clusterAccelerationStructureBuilder_;
+    std::shared_ptr<SceneClusterAccelerationStructureBuilder> clusterAccelerationStructure_;
     ComputeProgram rayQueryProgram_;
     scene::Bounds drawBounds_;
     uint64_t resourceIdentity_ = 0;
@@ -516,7 +410,6 @@ private:
     uint64_t visibilityRevision_ = 0;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
-    SceneResourceManager* sceneResourceManager_ = nullptr;
     bool clusterIdShaderEnabled_ = false;
 };
 

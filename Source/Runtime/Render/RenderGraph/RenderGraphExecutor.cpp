@@ -271,6 +271,8 @@ struct RenderGraphExecutor::Impl {
         std::unique_ptr<RenderGraphPass> pass;
         RenderPassReflection reflection;
         RenderGraphSceneDependency sceneDependency;
+        std::shared_ptr<PreparedSceneResources> preparedScene;
+        SceneStreamingRequirements sceneRequirements;
         SceneBinding sceneBinding;
         uint32_t executionWidth = 0;
         uint32_t executionHeight = 0;
@@ -609,11 +611,22 @@ struct RenderGraphExecutor::Impl {
     }
 
     RenderGraphCompileContext contextForScene(
-        const RenderGraphCompileContext& context, const SceneBinding& binding) const
+        const RenderGraphCompileContext& context, const SceneBinding& binding,
+        const std::shared_ptr<PreparedSceneResources>& prepared = {}) const
     {
         auto result = context;
+        result.preparedScene = prepared;
         if (binding.source != nullptr) { result.runtimeScene = binding.source; }
         if (binding.localView) { result.renderView = nullptr; }
+        return result;
+    }
+
+    Result prepareNodeScene(CompiledNode& node, RenderGraphCompileContext& context, std::string& log)
+    {
+        node.sceneRequirements = node.pass->sceneResourcesRequired(context);
+        auto result = streamerSubsystem()->prepareScene(node.sceneRequirements, node.effectiveProperties,
+            context.runtimeScene, node.preparedScene, log, context.debugReadback);
+        context.preparedScene = node.preparedScene;
         return result;
     }
 
@@ -702,7 +715,7 @@ struct RenderGraphExecutor::Impl {
         if (history != nullptr) { history->invalidateAll(); }
         const RenderGraphCompileContext context{
             .device = device, .graphicsQueue = device->getQueue(QueueType::Graphics),
-            .runtimeScene = runtimeScene, .sceneResourceManager = &streamerSubsystem()->manager(),
+            .runtimeScene = runtimeScene,
             .renderWorld = world, .subsystemHost = subsystemHost, .width = width, .height = height,
             .defaultFormat = defaultFormat, .debugReadback = debugObserver != nullptr,
             .renderView = renderView(),
@@ -712,7 +725,9 @@ struct RenderGraphExecutor::Impl {
             auto& node = executionList[index];
             if (node.sceneDependency.source == RenderGraphSceneSource::None || (!forceRefresh && bindings[index] == node.sceneBinding)) { continue; }
             applySceneProperties(node, bindings[index]);
-            const auto nodeContext = contextForScene(context, bindings[index]);
+            auto nodeContext = contextForScene(context, bindings[index]);
+            result = prepareNodeScene(node, nodeContext, log);
+            if (!result) { return result; }
             result = node.pass->prepare(nodeContext, log);
             if (result) { result = node.pass->compile(nodeContext, log); }
             if (!result) { log = "Scene refresh failed for pass '" + node.name + "': " + log; return result; }
@@ -768,9 +783,11 @@ struct RenderGraphExecutor::Impl {
             }
 
             applySceneProperties(compiledNode, sceneBindings[index]);
-            const auto nodeContext = contextForScene(compileContext, sceneBindings[index]);
+            auto nodeContext = contextForScene(compileContext, sceneBindings[index]);
             std::string prepareLog;
-            Result prepareResult = compiledNode.pass->prepare(nodeContext, prepareLog);
+            Result prepareResult = prepareNodeScene(compiledNode, nodeContext, prepareLog);
+            if (!prepareResult) { log = prepareLog; return prepareResult; }
+            prepareResult = compiledNode.pass->prepare(nodeContext, prepareLog);
             if (prepareResult && sceneBindings[index] != compiledNode.sceneBinding) {
                 prepareResult = compiledNode.pass->compile(nodeContext, prepareLog);
             }
@@ -1759,6 +1776,7 @@ struct RenderGraphExecutor::Impl {
             node.sceneBinding.source != nullptr ? node.sceneBinding.source : runtimeScene,
             world,
             subsystemHost);
+        context.preparedScene_ = node.preparedScene;
         context.viewConstants_ = usesView ? &frameView : nullptr;
         context.viewConstantsBuffer_ = usesView ? frameViewBuffer : nullptr;
         context.debugObserver_ = debugObserver;
@@ -1837,7 +1855,26 @@ struct RenderGraphExecutor::Impl {
         const auto featureReservation = firstFeatureReservations.find(node.name);
         const bool firstFeature = featureReservation != firstFeatureReservations.end() && bool(featureReservation->second);
         if (firstFeature) { device->logMemoryBudget("before first external feature"); }
-        Result result = node.pass->execute(context);
+        std::string streamingLog;
+        Result result;
+        if (upload && node.preparedScene) {
+            auto scope = context.profileScope("Streamer prepare");
+            MeshletStreamFrameDesc view;
+            view.freezeRasterSnapshot = context.properties().value("benchmarkFreezeStreaming", false);
+            result = upload->recordSceneBegin(*node.preparedScene, node.sceneRequirements, context, view, streamingLog);
+        }
+        const bool sceneReady = !node.preparedScene || node.preparedScene->ready;
+        if (result && sceneReady) { result = node.pass->prepareExecution(context); }
+        if (result && sceneReady && upload && node.preparedScene && node.preparedScene->geometry) {
+            MeshletStreamFrameDesc view;
+            node.pass->describeSceneView(context, view);
+            result = upload->recordSceneTraversal(*node.preparedScene, context, view,
+                [&](std::string_view point) { node.pass->sceneTraversalCheckpoint(context, point); });
+        }
+        if (result && sceneReady) { result = node.pass->execute(context); }
+        if (result && sceneReady && upload && node.preparedScene) {
+            result = upload->recordSceneEnd(*node.preparedScene, context);
+        }
         if (firstFeature) {
             firstFeatureReservations.erase(featureReservation);
             device->logMemoryBudget("after first external feature");
@@ -1846,6 +1883,7 @@ struct RenderGraphExecutor::Impl {
             const auto& sections = lastExecutionStats.nodes[nodeIndex].sections;
             spdlog::error("[RenderGraph] Pass '{}' ({}) failed in '{}': {}", node.name, node.type,
                 sections.empty() ? std::string_view("execute") : std::string_view(sections.back().name), resultToString(result));
+            if (!streamingLog.empty()) { spdlog::error("[Streamer] {}", streamingLog); }
         }
         if (result && upload != nullptr) { upload->flush(context.commandBuffer()); }
         lastExecutionStats.nodes[nodeIndex].cpuMilliseconds = std::chrono::duration<double, std::milli>(
@@ -2078,7 +2116,6 @@ Result RenderGraphExecutor::compile(
         .device = &device,
         .graphicsQueue = device.getQueue(QueueType::Graphics),
         .runtimeScene = impl_->runtimeScene,
-        .sceneResourceManager = &sceneResources->manager(),
         .renderWorld = impl_->world,
         .subsystemHost = impl_->subsystemHost,
         .width = width,
@@ -2161,8 +2198,10 @@ Result RenderGraphExecutor::compile(
         auto& node = impl_->executionList[index];
         node.sceneBinding = sceneBindings[index];
         impl_->applySceneProperties(node, node.sceneBinding);
-        const auto nodeContext = impl_->contextForScene(compileContext, node.sceneBinding);
-        Result result = node.pass->prepare(nodeContext, log);
+        auto nodeContext = impl_->contextForScene(compileContext, node.sceneBinding);
+        Result result = impl_->prepareNodeScene(node, nodeContext, log);
+        if (!result) { return result; }
+        result = node.pass->prepare(nodeContext, log);
         if (!result) { log = "RenderGraph prepare failed for pass '" + node.name + "': " + log; return result; }
         node.kind = node.pass->kind();
         node.queueType = node.pass->queueType();
@@ -2181,7 +2220,7 @@ Result RenderGraphExecutor::compile(
         {
             RenderGraphLogScope scope(
                 "compile pass '" + node.name + "' (" + node.type + ")");
-            result = node.pass->compile(impl_->contextForScene(compileContext, node.sceneBinding), log);
+            result = node.pass->compile(impl_->contextForScene(compileContext, node.sceneBinding, node.preparedScene), log);
         }
         if (!result) {
             impl_->isCompiled = false;
@@ -2246,7 +2285,6 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
         .device = impl_->device,
         .graphicsQueue = impl_->device->getQueue(QueueType::Graphics),
         .runtimeScene = impl_->runtimeScene,
-        .sceneResourceManager = &sceneResources->manager(),
         .renderWorld = impl_->world,
         .subsystemHost = impl_->subsystemHost,
         .width = impl_->width,
@@ -2270,7 +2308,19 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
                 "' of type '" + compiledNode.type + "'";
             return makeError(Error::InvalidArgument);
         }
-        const auto nodeContext = impl_->contextForScene(compileContext, compiledNode.sceneBinding);
+        auto preparedScene = compiledNode.preparedScene;
+        if (preparedScene && preparedScene->geometry) {
+            // Reload internal traversal/streaming shaders transactionally as well.
+            // A failed replacement must leave the active session and its heap intact.
+            preparedScene = std::make_shared<PreparedSceneResources>(*preparedScene);
+            preparedScene->state.reset();
+            preparedScene->geometry.reset();
+            result = impl_->streamerSubsystem()->prepareScene(compiledNode.sceneRequirements,
+                compiledNode.effectiveProperties, compiledNode.sceneBinding.source,
+                preparedScene, log, compileContext.debugReadback);
+            if (!result) { return result; }
+        }
+        const auto nodeContext = impl_->contextForScene(compileContext, compiledNode.sceneBinding, preparedScene);
         pass->setProperties(compiledNode.effectiveProperties);
         std::string prepareLog;
         result = pass->prepare(nodeContext, prepareLog);
@@ -2294,7 +2344,8 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
         if (kind != compiledNode.kind ||
             queueType != compiledNode.queueType ||
             reflection != compiledNode.reflection ||
-            !subsystemRequirementsMatch || pass->sceneDependency() != compiledNode.sceneDependency) {
+            !subsystemRequirementsMatch || pass->sceneDependency() != compiledNode.sceneDependency ||
+            pass->sceneResourcesRequired(nodeContext) != compiledNode.sceneRequirements) {
             log = "Shader reload rejected pass '" + compiledNode.name +
                 "' because its render-graph contract changed; rebuild the graph instead";
             return makeError(Error::InvalidArgument);
@@ -2334,6 +2385,8 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
             .pass = std::move(pass),
             .reflection = std::move(reflection),
             .sceneDependency = compiledNode.sceneDependency,
+            .preparedScene = std::move(preparedScene),
+            .sceneRequirements = compiledNode.sceneRequirements,
             .sceneBinding = compiledNode.sceneBinding,
             .executionWidth = compiledNode.executionWidth,
             .executionHeight = compiledNode.executionHeight,

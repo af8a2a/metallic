@@ -6,8 +6,7 @@
 #include "Runtime/Render/RenderView.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
-#include "Runtime/Render/Streamer/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
@@ -46,16 +45,6 @@ std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props
     return pathFromProperties(props, "path", kDefaultGPUDrivenScenePath);
 }
 
-std::filesystem::path streamAssetPathFromProperties(
-    const RenderGraphProperties& props,
-    const std::filesystem::path& scenePath)
-{
-    return pathFromProperties(
-        props,
-        "streamAssetPath",
-        scene::meshletStreamAssetPathFor(scenePath));
-}
-
 bool boolProperty(const RenderGraphProperties& props, const char* key, bool fallback)
 {
     auto iter = props.find(key);
@@ -72,16 +61,6 @@ uint32_t uintProperty(const RenderGraphProperties& props, const char* key, uint3
     return value < 0 || value > std::numeric_limits<uint32_t>::max()
         ? fallback
         : static_cast<uint32_t>(value);
-}
-
-uint64_t uint64Property(const RenderGraphProperties& props, const char* key, uint64_t fallback)
-{
-    auto iter = props.find(key);
-    if (iter == props.end() || !iter->is_number_integer()) {
-        return fallback;
-    }
-    const int64_t value = iter->get<int64_t>();
-    return value < 0 ? fallback : static_cast<uint64_t>(value);
 }
 
 uint32_t selectedLodProperty(const RenderGraphProperties& props)
@@ -204,70 +183,6 @@ float3 cameraVec3(const RenderGraphProperties* camera, const char* key, const fl
     return float3(values[0], values[1], values[2]);
 }
 
-MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& properties)
-{
-    const std::filesystem::path scenePath = scenePathFromProperties(properties);
-    const uint32_t maxGpuPageRequests = std::max<uint32_t>(
-        uintProperty(properties, "maxGpuPageRequests", kMeshletStreamDefaultMaxGpuPageRequests),
-        1u);
-    return MeshletStreamRuntimeDesc{
-        .sourcePath = scenePath,
-        .streamAssetPath = streamAssetPathFromProperties(properties, scenePath),
-        .autoBuildStreamAsset = boolProperty(properties, "autoBuildStreamAsset", false),
-        .maxResidentBytes = uint64Property(properties, "maxResidentBytes", 0),
-        .maxResidentPages = uintProperty(properties, "maxResidentPages", 4096),
-        .maxLockedFallbackPages = uintProperty(properties, "maxLockedFallbackPages", 1024),
-        .maxPageUploadsPerFrame = uintProperty(properties, "maxPageUploadsPerFrame", 64),
-        .maxUploadBytesPerFrame = uint64Property(properties, "maxUploadBytesPerFrame", 8ull * 1024ull * 1024ull),
-        .maxGpuPageRequests = maxGpuPageRequests,
-        .maxGpuPageUnloadRequests = std::max<uint32_t>(
-            uintProperty(properties, "maxGpuPageUnloadRequests", maxGpuPageRequests),
-            1u),
-        .maxActiveGroups = std::max<uint32_t>(
-            uintProperty(properties, "maxActiveGroups", kMeshletStreamDefaultMaxActiveGroups),
-            1u),
-        .maxTraversalWorkers = std::max<uint32_t>(
-            uintProperty(properties, "maxTraversalWorkers", kMeshletStreamDefaultTraversalWorkers),
-            1u),
-        .maxTraversalWorkItems = std::min(
-            std::max<uint32_t>(
-                uintProperty(properties, "maxTraversalWorkItems", kMeshletStreamDefaultTraversalWorkItems),
-                1u),
-            kMeshletStreamMaxTraversalWorkItems),
-        .pageLoadConcurrency = pageLoadConcurrencyFromProperties(properties),
-        .maxPageLoadsInFlight = std::max<uint32_t>(
-            uintProperty(properties, "maxPageLoadsInFlight", 128),
-            1u),
-        .queuedFrameCount = 3,
-        .enableClusterRtx = boolProperty(properties, "enableClusterRtx", false),
-        .enableClas = boolProperty(properties, "enableClas", false),
-        .compactClas = boolProperty(properties, "compactClas", false),
-        .coldPageRetentionFrames = uintProperty(properties, "coldPageRetentionFrames", 0),
-        .maxClasBytes = uint64Property(properties, "maxClasBytes", 512ull * 1024ull * 1024ull),
-        .maxClasBuildClusters = uintProperty(properties, "maxClasBuildClusters", 0),
-        .maxBlasClusterReferences = uintProperty(properties, "maxBlasClusterReferences", 0),
-        .maxBlasBytes = uint64Property(properties, "maxBlasBytes", 512ull * 1024ull * 1024ull),
-        .maxBlasBuilds = std::max<uint32_t>(
-            uintProperty(properties, "maxBlasBuilds", kMeshletStreamDefaultMaxBlasBuilds),
-            1u),
-        .maxFallbackBlasBytes = uint64Property(
-            properties,
-            "maxFallbackBlasBytes",
-            512ull * 1024ull * 1024ull),
-        .screenSpacePagePriority = boolProperty(properties, "screenSpacePagePriority", true),
-        .viewDrivenPageDemand = boolProperty(properties, "viewDrivenPageDemand", true),
-        .distributedPageDemand = boolProperty(properties, "distributedPageDemand", true),
-        .distributedDemandMinGroups = uintProperty(properties, "distributedDemandMinGroups", 65536u),
-        .measurePageLatency = boolProperty(properties, "measurePageLatency", true),
-        .lowLatencyRequests = boolProperty(properties, "lowLatencyRequests", true),
-        .completionDrivenUploads = boolProperty(properties, "completionDrivenUploads", true),
-        .enableGpuDecompression = boolProperty(properties, "enableGpuDecompression", false),
-        .gpuDecompressionMinBatchBytes = uint64Property(properties, "gpuDecompressionMinBatchBytes", 1024 * 1024),
-        .prefetchPages = boolProperty(properties, "prefetchPages", true),
-        .compactShadingAttributes = boolProperty(properties, "compactShadingAttributes", false),
-    };
-}
-
 Result createMeshShader(Device& device, std::unique_ptr<ShaderModule>& outShader, std::string& log)
 {
     ShaderCompileResult meshCompile;
@@ -349,6 +264,15 @@ struct GPUDrivenStreamAssetRetiredFrameResources {
 
 class GPUDrivenStreamAssetPass final : public UnsafePass {
 public:
+    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
+    {
+        return {.geometry = SceneStreamKind::Asset};
+    }
+    void describeSceneView(const RenderGraphExecutionContext& context, MeshletStreamFrameDesc& view) const override
+    {
+        view = frameDescFromContext(context);
+    }
+
     RenderGraphSceneDependency sceneDependency() const override
     {
         return {boolProperty(properties(), "streamAssetOnly", false)
@@ -357,6 +281,7 @@ public:
 
     ~GPUDrivenStreamAssetPass() override
     {
+        releaseRasterHandles();
         releaseGPUSceneSourceLease();
         if (gpuSceneSubsystem_ != nullptr && gpuSceneView_.valid()) {
             gpuSceneSubsystem_->destroyView(gpuSceneView_);
@@ -470,16 +395,7 @@ public:
         const bool streamAssetOnly = boolProperty(properties(), "streamAssetOnly", false);
         const scene::Scene* runtimeScene = streamAssetOnly ? nullptr : runtimeSceneForPath(
             context.runtimeScene, scenePathFromProperties(properties()));
-        if (!streamAssetOnly && runtimeScene == nullptr && context.sceneResourceManager != nullptr) {
-            Result sceneResult = context.sceneResourceManager->resolveScene(
-                properties(),
-                context.runtimeScene,
-                runtimeScene,
-                log);
-            if (!sceneResult) {
-                return sceneResult;
-            }
-        }
+
         if (gpuSceneSource_ != runtimeScene) {
             releaseGPUSceneSourceLease();
             gpuSceneSource_ = runtimeScene;
@@ -495,12 +411,13 @@ public:
             }
         }
 
-        const MeshletStreamRuntimeDesc runtimeDesc = runtimeDescFromProperties(properties());
+        if (!context.preparedScene || !context.preparedScene->geometry) { return makeError(Error::InvalidArgument); }
+        const auto preparedStream = context.preparedScene->geometry;
         const uint64_t sourceIdentity = runtimeScene != nullptr ? runtimeScene->resourceIdentity() : 0;
         const uint64_t sourceContentRevision = runtimeScene != nullptr ? runtimeScene->contentRevision() : 0;
         const bool rtasVisualization = boolProperty(properties(), "rtasVisualization", false);
         if (rtasVisualization) {
-            if (!runtimeDesc.enableClusterRtx) {
+            if (!boolProperty(properties(), "enableClusterRtx", false)) {
                 log = "GPUDrivenStreamAssetPass RTAS visualization requires enableClusterRtx=true";
                 return makeError(Error::InvalidArgument);
             }
@@ -516,7 +433,7 @@ public:
         // restart page uploads, or allocate another set of bindless handles.
         if (compiled_ && device_ == context.device && gpuSceneView_.valid() &&
             frameSlotCount_ == std::max(gpuSceneSubsystem_->frameSlotCount(), 1u) &&
-            (streamRuntime_ && streamRuntime_->ready()) && compiledRuntimeDesc_ == runtimeDesc &&
+            (streamRuntime_ && streamRuntime_->ready()) && streamRuntime_ == preparedStream &&
             compiledSourceIdentity_ == sourceIdentity &&
             compiledSourceContentRevision_ == sourceContentRevision &&
             compiledStreamAssetOnly_ == streamAssetOnly &&
@@ -524,10 +441,7 @@ public:
             compiledColorFormat_ == context.defaultFormat &&
             rtasVisualization_ == rtasVisualization) {
             Result result;
-            if (runtimeScene != nullptr) {
-                result = streamRuntime_->syncRuntimeScene(*runtimeScene, log);
-                if (!result) { return result; }
-            }
+
             result = ensureFrameResources(context.width, context.height, context.subsystems());
             if (!result) { return result; }
             rtasVisualization_ = rtasVisualization;
@@ -546,21 +460,8 @@ public:
             log += resultMessage("createPipelineCache(GPUDrivenStreamAssetPass)", result);
             return result ? makeError(Error::Failure) : result;
         }
-        result = context.subsystem<StreamerSubsystem>()->acquireStream(runtimeDesc, context.debugReadback, streamRuntime_, log, pipelineCache_.get());
-        if (!result) {
-            return result;
-        }
-        if (streamAssetOnly) {
-            gpuSceneSubsystem_->scene().ensureDrawSet();
-            // This pass owns its visibility-state slots. Cache instance IDs are
-            // stable within the asset; no resident GPUScene geometry is needed.
-            std::vector<uint32_t> mapping(streamRuntime_->asset().instanceCount());
-            std::iota(mapping.begin(), mapping.end(), 0u);
-            result = streamRuntime_->syncGPUSceneInstanceMapping(mapping);
-            if (!result) { return result; }
-            spdlog::info("[GPUDrivenStreamAssetPass] Cache-only scene: {} geometries, {} instances; ordinary Scene/RTAS import bypassed",
-                streamRuntime_->asset().primitiveCount(), streamRuntime_->asset().instanceCount());
-        }
+        releaseRasterHandles();
+        streamRuntime_ = preparedStream;
         rtasVisualization_ = rtasVisualization;
 
         result = createMeshShader(*context.device, meshShader_, log);
@@ -875,7 +776,6 @@ public:
         }
 
         device_ = context.device;
-        compiledRuntimeDesc_ = runtimeDesc;
         compiledSourceIdentity_ = sourceIdentity;
         compiledSourceContentRevision_ = sourceContentRevision;
         compiledStreamAssetOnly_ = streamAssetOnly;
@@ -890,7 +790,7 @@ public:
         return {};
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result prepareExecution(RenderGraphExecutionContext& context) override
     {
         if (streamRuntime_) {
             if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(streamRuntime_); }
@@ -901,44 +801,7 @@ public:
             !gpuSceneView_.valid()) {
             return makeError(Error::InvalidArgument);
         }
-        const scene::Scene* runtimeScene = compiledStreamAssetOnly_ ? nullptr : runtimeSceneForPath(
-            context.runtimeScene(), scenePathFromProperties(context.properties()));
-        if (runtimeScene != nullptr) {
-            std::string syncLog;
-            Result syncResult = streamRuntime_->syncRuntimeScene(*runtimeScene, syncLog);
-            if (!syncResult) {
-                spdlog::warn("[GPUDrivenStreamAssetPass] Runtime scene sync failed: {}", syncLog);
-                return syncResult;
-            }
-        }
-
         Result result;
-        if (!compiledStreamAssetOnly_) {
-            std::vector<uint32_t> gpuSceneInstanceMapping(
-                streamRuntime_->asset().instances().size(),
-                std::numeric_limits<uint32_t>::max());
-            uint32_t mappedInstanceCount = 0;
-            for (size_t instanceIndex = 0;
-                 instanceIndex < streamRuntime_->asset().instances().size();
-                 ++instanceIndex) {
-                const GPUSceneInstanceId gpuSceneInstance =
-                    gpuSceneSubsystem->instanceForRenderNode(
-                        streamRuntime_->asset().instances()[instanceIndex].renderNodeIndex);
-                if (gpuSceneInstance.valid()) {
-                    gpuSceneInstanceMapping[instanceIndex] = gpuSceneInstance.index;
-                    ++mappedInstanceCount;
-                }
-            }
-            if (!gpuSceneInstanceMapping.empty() && mappedInstanceCount == 0) {
-                spdlog::warn(
-                    "[GPUDrivenStreamAssetPass] GPUScene mapping is empty for {} stream instances (GPUScene instances={})",
-                    gpuSceneInstanceMapping.size(),
-                    gpuSceneSubsystem->instances().size());
-            }
-            result = streamRuntime_->syncGPUSceneInstanceMapping(gpuSceneInstanceMapping);
-            if (!result) { return result; }
-        }
-
         TextureHandle color = context.outputTexture("color");
         TextureHandle visibility = context.outputTexture("visibility");
         TextureHandle depth = context.outputTexture("depth");
@@ -981,32 +844,7 @@ public:
         if (!result) {
             return result;
         }
-        {
-            auto profile = context.profileScope("Stream Begin");
-            result = streamRuntime_->cmdBeginFrame(context.commandBuffer(), *context.streamer(), frame, [&] {
-                auto uploadProfile = context.profileScope("Upload preflight");
-                context.subsystem<StreamerSubsystem>()->flush(context.commandBuffer(),
-                    [&](const char* name) { uploadProfile.next(name); });
-            });
-            context.publishCpuProfile(streamRuntime_->beginFrameCpuProfile().sections);
-        }
-        if (!result) {
-            return result;
-        }
-        if (rtasVisualization_) {
-            {
-                auto profile = context.profileScope("Stream traversal / RTAS");
-                result = streamRuntime_->cmdPreTraversal(context.commandBuffer(), frame);
-            }
-            if (!result) {
-                return result;
-            }
-            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), UINT32_MAX);
-            {
-                auto profile = context.profileScope("Ray query");
-                result = drawRayQuery(context, color, frame);
-            }
-        } else {
+        if (!rtasVisualization_) {
             bool cameraCut = false;
             if (HistoryResourceManager* historyResources = context.historyResources()) {
                 const uint64_t invalidationRevision =
@@ -1047,17 +885,32 @@ public:
                 return result;
             }
 
-            // Stream traversal currently also publishes the per-frame camera and
-            // scene params consumed by the cull kernels. P2 can split that upload
-            // from traversal so the early instance state also prunes page demand.
+        }
+        return {};
+    }
+
+    void sceneTraversalCheckpoint(RenderGraphExecutionContext& context, std::string_view point) const override
+    {
+        if (point == "AfterTraversal") {
+            gpuDrivenDebugCheckpoint(context, point, gpuSceneSubsystem_, gpuSceneView_, activeFrameSlot_,
+                streamRuntime_.get(), UINT32_MAX);
+        }
+    }
+
+    Result execute(RenderGraphExecutionContext& context) override
+    {
+        auto* gpuSceneSubsystem = context.subsystem<GPUSceneSubsystem>();
+        const auto color = context.outputTexture("color");
+        const auto visibility = context.outputTexture("visibility");
+        const auto depth = context.outputTexture("depth");
+        const auto frame = frameDescFromContext(context);
+        Result result;
+        if (rtasVisualization_) {
             {
-                auto profile = context.profileScope("Stream traversal / RTAS");
-                result = streamRuntime_->cmdPreTraversal(context.commandBuffer(), frame);
+                auto profile = context.profileScope("Ray query");
+                result = drawRayQuery(context, color, frame);
             }
-            if (!result) {
-                return result;
-            }
-            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), UINT32_MAX);
+        } else {
             {
                 auto profile = context.profileScope("Early Instance cull");
                 result = dispatchInstanceCull(
@@ -1162,23 +1015,30 @@ public:
         if (!result) {
             return result;
         }
-        {
-            auto profile = context.profileScope("Stream feedback");
-            result = streamRuntime_->cmdPostTraversal(context.commandBuffer());
-        }
-        if (!result) {
-            return result;
-        }
-        {
-            auto profile = context.profileScope("Stream End");
-            result = streamRuntime_->cmdEndFrame(context.commandBuffer());
-        }
-        if (result) { context.publishStreamingProfile(streamRuntime_->profilingStats()); }
         if (result) { gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), rtasVisualization_ ? UINT32_MAX : 1); }
         return result;
     }
 
 private:
+    void releaseRasterHandles()
+    {
+        if (streamRuntime_ && streamRuntime_->bindlessHeap()) {
+            auto& heap = *streamRuntime_->bindlessHeap();
+            for (const auto handle : {visibilityImageHandle_, depthImageHandle_, deferredColorHandle_,
+                    instanceVisibilityHandle_, visibleInstanceIdsHandle_, visibleInstanceCounterHandle_}) {
+                if (handle.valid()) { heap.release(handle); }
+            }
+            for (const auto handle : hzbHandles_) { if (handle.valid()) { heap.release(handle); } }
+        }
+        visibilityImageHandle_ = {};
+        depthImageHandle_ = {};
+        deferredColorHandle_ = {};
+        instanceVisibilityHandle_ = {};
+        visibleInstanceIdsHandle_ = {};
+        visibleInstanceCounterHandle_ = {};
+        hzbHandles_ = {};
+    }
+
     void releaseGPUSceneSourceLease()
     {
         if (gpuSceneSubsystem_ != nullptr && gpuSceneSourceToken_.valid()) {
@@ -1892,7 +1752,6 @@ private:
     bool hzbValid_ = false;
     ComputeProgram rayQueryProgram_;
     bool rtasVisualization_ = false;
-    MeshletStreamRuntimeDesc compiledRuntimeDesc_;
     uint64_t compiledSourceIdentity_ = 0;
     uint64_t compiledSourceContentRevision_ = 0;
     Format compiledColorFormat_ = Format::Rgba8Unorm;

@@ -2,7 +2,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderGraph/NrdRuntime.h"
 #include "Runtime/Render/SceneLightResources.h"
-#include "Runtime/Render/Streamer/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
 #ifndef METALLIC_HAS_NTC
@@ -32,6 +32,12 @@ struct SceneRtxdiHistoryViews {
 
 class SceneRtxdiPass final : public ComputePass {
 public:
+    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
+    {
+        return {.features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
+            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure};
+    }
+
     RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
 
     ~SceneRtxdiPass() override = default;
@@ -188,36 +194,13 @@ public:
         }
         device_ = context.device;
         graphicsQueue_ = context.graphicsQueue;
-        sceneResourceManager_ = context.sceneResourceManager;
-
+        if (!context.preparedScene || !context.preparedScene->snapshot ||
+            !context.preparedScene->snapshot->pathTraceResources) {
+            log = "Scene resources were not prepared by StreamerSubsystem";
+            return makeError(Error::InvalidArgument);
+        }
+        sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
         Result result;
-        if (context.sceneResourceManager != nullptr) {
-            std::shared_ptr<SceneResourceSnapshot> snapshot;
-            result = context.sceneResourceManager->acquire(
-                *context.device,
-                *context.graphicsQueue,
-                properties(),
-                context.runtimeScene,
-                SceneResourceFeatureBits::Geometry |
-                    SceneResourceFeatureBits::Materials |
-                    SceneResourceFeatureBits::MaterialTextures |
-                    SceneResourceFeatureBits::StandardAccelerationStructure,
-                snapshot,
-                log);
-            if (result && snapshot != nullptr) {
-                sceneResources_ = *snapshot->pathTraceResources;
-            }
-        } else {
-            result = sceneResources_.prepare(
-                *context.device,
-                *context.graphicsQueue,
-                properties(),
-                context.runtimeScene,
-                log);
-        }
-        if (!result) {
-            return result;
-        }
         const uint64_t resourceRevision = sceneResources_.revision();
         if (resourceRevision != sceneResourceRevision_) {
             sceneResourceRevision_ = resourceRevision;
@@ -377,32 +360,6 @@ public:
     Result execute(RenderGraphExecutionContext& context) override
     {
         std::string syncLog;
-        if (sceneResourceManager_ != nullptr && device_ != nullptr && graphicsQueue_ != nullptr) {
-            std::shared_ptr<SceneResourceSnapshot> snapshot;
-            Result acquireResult = sceneResourceManager_->acquire(
-                *device_,
-                *graphicsQueue_,
-                context.properties(),
-                context.runtimeScene(),
-                SceneResourceFeatureBits::Geometry |
-                    SceneResourceFeatureBits::Materials |
-                    SceneResourceFeatureBits::MaterialTextures |
-                    SceneResourceFeatureBits::StandardAccelerationStructure,
-                snapshot,
-                syncLog);
-            if (!acquireResult || snapshot == nullptr) {
-                return acquireResult ? makeError(Error::Failure) : acquireResult;
-            }
-            sceneResources_ = *snapshot->pathTraceResources;
-        }
-        Result syncResult = sceneResources_.syncRuntimeScene(context.runtimeScene(), syncLog);
-        if (!syncResult) {
-            spdlog::warn("[SceneRtxdiPass] Runtime scene sync failed: {}", syncLog);
-            return syncResult;
-        }
-        if (!sceneResources_.textureUploadsReady()) {
-            return {};
-        }
         if (sceneResources_.revision() != sceneResourceRevision_) {
             sceneResourceRevision_ = sceneResources_.revision();
             resetHistory_ = true;
@@ -420,13 +377,9 @@ public:
         if (!environment.valid()) {
             return {};
         }
-        const scene::Scene* lightScene = nullptr;
-        if (sceneResourceManager_ == nullptr || context.subsystems() == nullptr) {
-            return makeError(Error::InvalidArgument);
-        }
-        Result lightResult = sceneResourceManager_->resolveScene(
-            context.properties(), context.runtimeScene(), lightScene, syncLog);
-        if (!lightResult) { return lightResult; }
+        const scene::Scene* lightScene = context.runtimeScene();
+        if (!lightScene || !context.subsystems()) { return makeError(Error::InvalidArgument); }
+        Result lightResult;
         auto lighting = resolveSceneLighting(lightScene, context.world());
         const bool benchmark = context.properties().value("lightSource", std::string("scene")) == "bench";
         if (benchmark) {
@@ -540,10 +493,6 @@ public:
         applyPreviousCameraSnapshot(historyValid ? previousCamera_ : currentCamera, push);
         push.hasHistory = historyValid ? 1u : 0u;
 
-        result = sceneResources_.uploadMaterialTextures(context.commandBuffer());
-        if (!result) {
-            return result;
-        }
         {
             ReGIRBuildParameters reGIRBuild;
             reGIRBuild.lightCount = push.lightCount;
@@ -1047,7 +996,6 @@ private:
     bool compiledNtcCooperativeVector_ = false;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
-    SceneResourceManager* sceneResourceManager_ = nullptr;
     SceneLightResources lights_;
     bool wasBenchmark_ = false;
     bool previousBenchmarkAnimated_ = false;

@@ -1,6 +1,5 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
 #include "Runtime/Render/ResidentMeshletLod.h"
@@ -9,7 +8,7 @@
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
-#include "Runtime/Render/Streamer/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
@@ -47,7 +46,6 @@ const char* pipelineCacheLoadStatusName(PipelineCacheLoadStatus status)
     return "unknown";
 }
 
-
 constexpr uint32_t kVisibilityModeTriangle = 3;
 constexpr uint32_t kVisibilityModeDepth = 4;
 constexpr uint32_t kVisibilityModeCoverage = 5;
@@ -57,254 +55,6 @@ constexpr uint32_t kGPUDrivenInvalidBindlessIndex =
     std::numeric_limits<uint32_t>::max();
 constexpr const char* kGPUDrivenPipelineCachePath =
     PROJECT_SOURCE_DIR "/.cache/pso/VisibilityBufferPass.pso";
-
-bool previewStreamEnabled(const RenderGraphProperties& properties)
-{
-    const auto enabled = properties.find("enableMeshletStreaming");
-    if (enabled != properties.end() && enabled->is_boolean()) {
-        return enabled->get<bool>();
-    }
-    const auto assetPath = properties.find("streamAssetPath");
-    return assetPath != properties.end() && assetPath->is_string();
-}
-
-uint32_t previewStreamUintProperty(
-    const RenderGraphProperties& properties,
-    const char* key,
-    uint32_t fallback)
-{
-    const auto iter = properties.find(key);
-    if (iter == properties.end() || !iter->is_number_integer()) {
-        return fallback;
-    }
-    const int64_t value = iter->get<int64_t>();
-    return value < 0 || value > std::numeric_limits<uint32_t>::max()
-        ? fallback
-        : static_cast<uint32_t>(value);
-}
-
-uint64_t previewStreamUint64Property(
-    const RenderGraphProperties& properties,
-    const char* key,
-    uint64_t fallback)
-{
-    const auto iter = properties.find(key);
-    if (iter == properties.end() || !iter->is_number_integer()) {
-        return fallback;
-    }
-    const int64_t value = iter->get<int64_t>();
-    return value < 0 ? fallback : static_cast<uint64_t>(value);
-}
-
-std::filesystem::path previewStreamAssetPath(
-    const RenderGraphProperties& properties,
-    const std::filesystem::path& sourcePath)
-{
-    const auto iter = properties.find("streamAssetPath");
-    if (iter == properties.end() || !iter->is_string()) {
-        return scene::meshletStreamAssetPathFor(sourcePath);
-    }
-    std::filesystem::path path = iter->get<std::string>();
-    return path.is_relative()
-        ? std::filesystem::path(PROJECT_SOURCE_DIR) / path
-        : path;
-}
-
-struct PreviewStreamSourceSelection {
-    std::string sourceId;
-    std::filesystem::path sourcePath;
-};
-
-bool resolvePreviewStreamSource(
-    const RenderGraphProperties& properties,
-    const scene::Scene* runtimeScene,
-    const std::filesystem::path& scenePath,
-    PreviewStreamSourceSelection& outSelection,
-    std::string& log)
-{
-    outSelection = {};
-    if (runtimeScene == nullptr) {
-        log = "VisibilityBufferPass stream integration requires a runtime scene";
-        return false;
-    }
-
-    std::string requestedSourceId;
-    const auto sourceIdProperty = properties.find("streamSourceId");
-    if (sourceIdProperty != properties.end()) {
-        if (!sourceIdProperty->is_string() ||
-            sourceIdProperty->get_ref<const std::string&>().empty()) {
-            log = "VisibilityBufferPass streamSourceId must be a non-empty string";
-            return false;
-        }
-        requestedSourceId = sourceIdProperty->get<std::string>();
-    }
-
-    const std::vector<scene::SceneSourceDesc>& sources = runtimeScene->sources();
-    if (sources.empty()) {
-        if (!requestedSourceId.empty()) {
-            log = "VisibilityBufferPass streamSourceId was provided for a non-composed scene";
-            return false;
-        }
-        outSelection.sourcePath = scenePath;
-        return true;
-    }
-
-    const auto selectSource = [&](const scene::SceneSourceDesc& source) {
-        outSelection.sourceId = source.id;
-        outSelection.sourcePath = source.path;
-    };
-    if (!requestedSourceId.empty()) {
-        const auto source = std::find_if(
-            sources.begin(),
-            sources.end(),
-            [&](const scene::SceneSourceDesc& candidate) {
-                return candidate.id == requestedSourceId;
-            });
-        if (source == sources.end()) {
-            log = "VisibilityBufferPass streamSourceId '" + requestedSourceId +
-                "' does not name a composed scene source";
-            return false;
-        }
-        selectSource(*source);
-        return true;
-    }
-
-    if (sources.size() == 1) {
-        selectSource(sources.front());
-        return true;
-    }
-
-    std::vector<const scene::SceneSourceDesc*> matches;
-    const std::filesystem::path normalizedRequestedPath = normalizedScenePath(scenePath);
-    for (const scene::SceneSourceDesc& source : sources) {
-        if (normalizedScenePath(source.path) == normalizedRequestedPath) {
-            matches.push_back(&source);
-        }
-    }
-    if (matches.size() == 1) {
-        selectSource(*matches.front());
-        return true;
-    }
-
-    matches.clear();
-    const auto assetPathProperty = properties.find("streamAssetPath");
-    if (assetPathProperty != properties.end() && assetPathProperty->is_string()) {
-        scene::MeshletStreamAsset candidateAsset;
-        std::string reason;
-        const std::filesystem::path assetPath =
-            previewStreamAssetPath(properties, scenePath);
-        if (!candidateAsset.open(assetPath, reason)) {
-            log = "VisibilityBufferPass cannot inspect streamAssetPath '" +
-                assetPath.string() + "': " + reason;
-            return false;
-        }
-        for (const scene::SceneSourceDesc& source : sources) {
-            if (candidateAsset.isRuntimeCompatibleForSource(source.path, reason)) {
-                matches.push_back(&source);
-            }
-        }
-    }
-    if (matches.size() == 1) {
-        selectSource(*matches.front());
-        return true;
-    }
-
-    log = matches.empty()
-        ? "VisibilityBufferPass could not uniquely match the stream asset to a composed scene source; set streamSourceId"
-        : "VisibilityBufferPass stream asset matches multiple composed scene sources; set streamSourceId to disambiguate the owner";
-    return false;
-}
-
-MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
-    const RenderGraphProperties& properties,
-    const std::filesystem::path& sourcePath, uint32_t textureCapacity)
-{
-    const uint32_t maxGpuPageRequests = std::max(
-        previewStreamUintProperty(
-            properties,
-            "maxGpuPageRequests",
-            kMeshletStreamDefaultMaxGpuPageRequests),
-        1u);
-    return MeshletStreamRuntimeDesc{
-        .sourcePath = sourcePath,
-        .streamAssetPath = previewStreamAssetPath(properties, sourcePath),
-        .autoBuildStreamAsset = false,
-        .maxResidentBytes = previewStreamUint64Property(
-            properties,
-            "maxResidentBytes",
-            0),
-        .maxResidentPages = previewStreamUintProperty(
-            properties,
-            "maxResidentPages",
-            4096),
-        .maxLockedFallbackPages = previewStreamUintProperty(
-            properties,
-            "maxLockedFallbackPages",
-            1024),
-        .maxPageUploadsPerFrame = previewStreamUintProperty(
-            properties,
-            "maxPageUploadsPerFrame",
-            64),
-        .maxUploadBytesPerFrame = previewStreamUint64Property(properties, "maxUploadBytesPerFrame", 8ull * 1024ull * 1024ull),
-        .maxGpuPageRequests = maxGpuPageRequests,
-        .maxGpuPageUnloadRequests = std::max(
-            previewStreamUintProperty(
-                properties,
-                "maxGpuPageUnloadRequests",
-                maxGpuPageRequests),
-            1u),
-        .maxActiveGroups = std::max(
-            previewStreamUintProperty(
-                properties,
-                "maxActiveGroups",
-                kMeshletStreamDefaultMaxActiveGroups),
-            1u),
-        .maxTraversalWorkers = std::max(
-            previewStreamUintProperty(
-                properties,
-                "maxTraversalWorkers",
-                kMeshletStreamDefaultTraversalWorkers),
-            1u),
-        .maxTraversalWorkItems = std::min(
-            std::max(
-                previewStreamUintProperty(
-                    properties,
-                    "maxTraversalWorkItems",
-                    kMeshletStreamDefaultTraversalWorkItems),
-                1u),
-            kMeshletStreamMaxTraversalWorkItems),
-        .pageLoadConcurrency = pageLoadConcurrencyFromProperties(properties),
-        .maxPageLoadsInFlight = std::max(
-            previewStreamUintProperty(
-                properties,
-                "maxPageLoadsInFlight",
-                128),
-            1u),
-        .queuedFrameCount = 3,
-        .enableClusterRtx = boolProperty(&properties, "enableClusterRtx", false),
-        .enableClas = boolProperty(&properties, "enableClas", false),
-        .compactClas = boolProperty(&properties, "compactClas", false),
-        .coldPageRetentionFrames = previewStreamUintProperty(properties, "coldPageRetentionFrames", 0),
-        .maxClasBytes = previewStreamUint64Property(properties, "maxClasBytes", 512ull * 1024ull * 1024ull),
-        .maxClasBuildClusters = previewStreamUintProperty(properties, "maxClasBuildClusters", 0),
-        .maxBlasClusterReferences = previewStreamUintProperty(properties, "maxBlasClusterReferences", 0),
-        .maxBlasBytes = previewStreamUint64Property(properties, "maxBlasBytes", 512ull * 1024ull * 1024ull),
-        .maxBlasBuilds = previewStreamUintProperty(properties, "maxBlasBuilds", kMeshletStreamDefaultMaxBlasBuilds),
-        .maxFallbackBlasBytes = previewStreamUint64Property(properties, "maxFallbackBlasBytes", 512ull * 1024ull * 1024ull),
-        .screenSpacePagePriority = boolProperty(&properties, "screenSpacePagePriority", true),
-        .viewDrivenPageDemand = boolProperty(&properties, "viewDrivenPageDemand", true),
-        .distributedPageDemand = boolProperty(&properties, "distributedPageDemand", true),
-        .distributedDemandMinGroups = previewStreamUintProperty(properties, "distributedDemandMinGroups", 65536u),
-        .measurePageLatency = boolProperty(&properties, "measurePageLatency", true),
-        .lowLatencyRequests = boolProperty(&properties, "lowLatencyRequests", true),
-        .completionDrivenUploads = boolProperty(&properties, "completionDrivenUploads", true),
-        .enableGpuDecompression = boolProperty(&properties, "enableGpuDecompression", false),
-        .gpuDecompressionMinBatchBytes = previewStreamUint64Property(properties, "gpuDecompressionMinBatchBytes", 1024 * 1024),
-        .prefetchPages = boolProperty(&properties, "prefetchPages", true),
-        .rasterMaterialTextureCapacity = textureCapacity,
-        .compactShadingAttributes = boolProperty(&properties, "compactShadingAttributes", false),
-    };
-}
 
 struct GPUDrivenPreviewMeshletRange {
     uint32_t offset = 0;
@@ -394,6 +144,12 @@ struct GPUDrivenPreviewRetiredViewResources {
 
 class VisibilityBufferPass final : public UnsafePass {
 public:
+    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
+    {
+        return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures,
+            .geometry = SceneStreamKind::Visibility};
+    }
+
     bool supportsFrameOverlap() const override
     {
         return streamEnabled_ && properties().value("compactClas", true) && streamRuntime_ &&
@@ -403,6 +159,7 @@ public:
 
     ~VisibilityBufferPass() override
     {
+        resetStreamIntegration();
         releaseGPUSceneSourceLease();
         if (gpuSceneSubsystem_ != nullptr && gpuSceneView_.valid()) {
             gpuSceneSubsystem_->destroyView(gpuSceneView_);
@@ -594,29 +351,11 @@ public:
             log = "VisibilityBufferPass streamAssetOnly requires a metadata scene; select sceneBinding=asset to load it";
             return makeError(Error::InvalidArgument);
         }
-        if (runtimeScene == nullptr && context.sceneResourceManager != nullptr) {
-            Result sceneResult = context.sceneResourceManager->resolveScene(
-                properties(), context.runtimeScene, runtimeScene, log);
-            if (!sceneResult) {
-                return sceneResult;
-            }
-        }
-        const bool requestedStreamEnabled = previewStreamEnabled(properties());
-        PreviewStreamSourceSelection requestedStreamSource;
-        std::filesystem::path requestedStreamAssetPath;
-        if (requestedStreamEnabled) {
-            if (!resolvePreviewStreamSource(
-                    properties(),
-                    runtimeScene,
-                    scenePathFromProperties(properties()),
-                    requestedStreamSource,
-                    log)) {
-                return makeError(Error::InvalidArgument);
-            }
-            requestedStreamAssetPath = previewStreamAssetPath(
-                properties(),
-                requestedStreamSource.sourcePath);
-        }
+
+        preparedScene_ = context.preparedScene;
+        if (!preparedScene_) { return makeError(Error::InvalidArgument); }
+        const bool requestedStreamEnabled = bool(preparedScene_->geometry);
+        const auto& requestedStreamAssetPath = preparedScene_->streamAssetPath;
         if (gpuSceneSource_ != runtimeScene) {
             releaseGPUSceneSourceLease();
             gpuSceneSource_ = runtimeScene;
@@ -666,10 +405,11 @@ public:
             sceneContentRevision_ == runtimeContentRevision &&
             frameSlotResources_.size() == requestedFrameSlotCount &&
             streamEnabled_ == requestedStreamEnabled &&
+            streamRuntime_ == preparedScene_->geometry &&
             (!requestedStreamEnabled ||
                 (compiledStreamAssetPath_ == requestedStreamAssetPath &&
-                    compiledStreamSourceId_ == requestedStreamSource.sourceId &&
-                    compiledStreamSourcePath_ == requestedStreamSource.sourcePath))) {
+                    compiledStreamSourceId_ == preparedScene_->streamSourceId &&
+                    compiledStreamSourcePath_ == preparedScene_->streamSourcePath))) {
             return {};
         }
 
@@ -693,7 +433,7 @@ public:
         std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges;
         GPUDrivenPreviewMeshletRange baseMeshletRange;
         auto compileStageBegin = GPUDrivenCompileClock::now();
-        if (!loadMeshletScene(
+        if (!buildMeshletScene(
                 properties(),
                 runtimeScene,
                 vertices,
@@ -723,19 +463,12 @@ public:
         }
         if (requestedStreamEnabled) {
             resetStreamIntegration();
-            Result streamResult = context.subsystem<StreamerSubsystem>()->acquireStream(
-                previewStreamRuntimeDesc(
-                    properties(),
-                    requestedStreamSource.sourcePath, uint32_t(runtimeScene->textures().size()) + 1),
-                context.debugReadback, streamRuntime_, log, pipelineCache_.get());
-            if (!streamResult) {
-                log = "VisibilityBufferPass stream integration failed: " + log;
-                return streamResult;
-            }
+            streamRuntime_ = preparedScene_->geometry;
+            Result streamResult;
             streamEnabled_ = true;
             compiledStreamAssetPath_ = requestedStreamAssetPath;
-            compiledStreamSourceId_ = requestedStreamSource.sourceId;
-            compiledStreamSourcePath_ = requestedStreamSource.sourcePath;
+            compiledStreamSourceId_ = preparedScene_->streamSourceId;
+            compiledStreamSourcePath_ = preparedScene_->streamSourcePath;
             streamResult = allocateStreamRasterBindings(log);
             if (!streamResult) {
                 return streamResult;
@@ -744,8 +477,8 @@ public:
             resetStreamIntegration();
         }
         compileStageBegin = GPUDrivenCompileClock::now();
-        textureResourceManager_ = context.sceneResourceManager ? context.sceneResourceManager : &fallbackTextureResourceManager_;
-        textureGraphicsQueue_ = context.graphicsQueue;
+        if (!preparedScene_->snapshot) { return makeError(Error::InvalidArgument); }
+        sharedTextureResources_ = preparedScene_->snapshot->pathTraceResources;
         Result result = prepareAlphaTestResources(
             *context.device,
             *runtimeScene,
@@ -957,7 +690,7 @@ public:
         return {};
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result prepareExecution(RenderGraphExecutionContext& context) override
     {
         if (streamRuntime_) {
             if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(streamRuntime_); }
@@ -1014,33 +747,11 @@ public:
             return makeError(Error::InvalidArgument);
         }
         activeFrameSlot_ = frameSlot;
-        MeshletStreamFrameDesc streamFrame;
-        streamFrame.freezeRasterSnapshot = boolProperty(&context.properties(), "benchmarkFreezeStreaming", false);
         if (streamEnabled_) {
-            gpuSceneLog.clear();
-            result = syncStreamRuntimeScene(
-                context.runtimeScene(),
-                *gpuSceneSubsystem,
-                gpuSceneLog);
-            if (!result) {
-                spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
-                return result;
-            }
-            {
-                auto profile = context.profileScope("Stream Begin");
-                result = streamRuntime_->cmdBeginFrame(
-                    context.commandBuffer(),
-                    *context.streamer(),
-                    streamFrame, [&] {
-                        auto uploadProfile = context.profileScope("Upload preflight");
-                        context.subsystem<StreamerSubsystem>()->flush(context.commandBuffer(),
-                            [&](const char* name) { uploadProfile.next(name); });
-                    });
-                context.publishCpuProfile(streamRuntime_->beginFrameCpuProfile().sections);
-            }
-            if (!result) {
-                return result;
-            }
+            const auto* prepared = context.preparedScene();
+            if (!prepared) { return makeError(Error::InvalidArgument); }
+            streamOwnerMask_ = prepared->geometryOwnerMask;
+            streamMappedInstanceCount_ = prepared->mappedInstanceCount;
             // Both producer families must select the same HZB history index.
             frameIndex_ = streamRuntime_->frameIndex();
         }
@@ -1126,54 +837,28 @@ public:
             if (!result) {
                 return result;
             }
-            // LOD selection and resident culling share the camera just uploaded
-            // by updateParamsBuffer, including a frozen camera and its projection.
-            streamFrame = streamFrameDesc(context);
-            auto traversalProfile = context.profileScope("Stream traversal");
-            auto phaseProfile = context.profileScope("Traversal setup");
-            result = streamRuntime_->cmdPreTraversal(
-                context.commandBuffer(),
-                streamFrame, [&](std::string_view checkpoint) {
-                    if (checkpoint == "BeforeStreamUpdates") { phaseProfile.next("Page updates"); }
-                    else if (checkpoint == "AfterStreamUpdates") { phaseProfile.next("Priority clear"); }
-                    else if (checkpoint == "AfterStreamPriorityClear") { phaseProfile.next("LOD clear / demand seed"); }
-                    else if (checkpoint == "AfterStreamStateClear") { phaseProfile.next("Detail demand"); }
-                    else if (checkpoint == "AfterStreamDemand") { phaseProfile.next("LOD frontier"); }
-                    else if (checkpoint == "AfterStreamFrontier") { phaseProfile.next("LOD mask"); }
-                    else if (checkpoint == "AfterStreamMask") { phaseProfile.next("LOD prefix"); }
-                    else if (checkpoint == "AfterStreamPrefix") { phaseProfile.next("LOD emit"); }
-                    else if (checkpoint == "AfterStreamEmit") { phaseProfile.next("Prefetch"); }
-                    else if (checkpoint == "AfterStreamPrefetch") { phaseProfile.next("Traversal finalize"); }
-                    else if (checkpoint == "BeforeStreamClasBuild") { phaseProfile.next("CLAS build"); }
-                    else if (checkpoint == "AfterStreamClasBuild") { phaseProfile.end(); }
-                    else if (checkpoint == "BeforeFallbackBlas") { phaseProfile.next("Fallback BLAS"); }
-                    else if (checkpoint == "BeforeBlasReset") { phaseProfile.next("BLAS reset"); }
-                    else if (checkpoint == "BeforeBlasCompare") { phaseProfile.next("BLAS cut compare"); }
-                    else if (checkpoint == "BeforeBlasCount") { phaseProfile.next("BLAS count"); }
-                    else if (checkpoint == "BeforeBlasSetup") { phaseProfile.next("BLAS setup"); }
-                    else if (checkpoint == "BeforeBlasInsert") { phaseProfile.next("BLAS insert"); }
-                    else if (checkpoint == "BeforeBlasBuild") { phaseProfile.next("BLAS build"); }
-                    else if (checkpoint == "BeforeTlasInput") { phaseProfile.next("TLAS input"); }
-                    else if (checkpoint == "BeforeTlasBuild") { phaseProfile.next("TLAS build"); }
-                    else if (checkpoint == "AfterTlasBuild") { phaseProfile.end(); }
-                    gpuDrivenDebugCheckpoint(context, checkpoint, gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_,
-                        streamRuntime_.get(), UINT32_MAX, residentRecordCapacity_);
-                });
-            if (!result) {
-                return result;
-            }
         }
+        return {};
+    }
 
-        if (streamEnabled_) {
-            gpuDrivenDebugCheckpoint(context, "AfterTraversal", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), UINT32_MAX, residentRecordCapacity_);
-        }
-        {
-            auto profile = context.profileScope("Alpha texture upload");
-            result = uploadAlphaTestTextures(context.commandBuffer());
-        }
-        if (!result) {
-            return result;
-        }
+    void describeSceneView(const RenderGraphExecutionContext& context, MeshletStreamFrameDesc& view) const override
+    {
+        view = streamFrameDesc(context);
+    }
+
+    void sceneTraversalCheckpoint(RenderGraphExecutionContext& context, std::string_view checkpoint) const override
+    {
+        gpuDrivenDebugCheckpoint(context, checkpoint, gpuSceneSubsystem_, gpuSceneView_, activeFrameSlot_,
+            streamRuntime_.get(), UINT32_MAX, residentRecordCapacity_);
+    }
+
+    Result execute(RenderGraphExecutionContext& context) override
+    {
+        auto* gpuSceneSubsystem = context.subsystem<GPUSceneSubsystem>();
+        const auto color = context.outputTexture("color");
+        const auto visibility = context.outputTexture("visibility");
+        const auto depth = context.outputTexture("depth");
+        Result result;
         context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
         {
             auto profile = context.profileScope("Initialize / light grid");
@@ -1378,39 +1063,7 @@ public:
             return makeError(Error::Failure);
         }
         if (streamEnabled_) {
-            {
-                auto profile = context.profileScope("Stream feedback");
-                result = streamRuntime_->cmdPostTraversal(context.commandBuffer());
-            }
-            if (!result) {
-                return result;
-            }
-            {
-                auto profile = context.profileScope("Stream End");
-                result = streamRuntime_->cmdEndFrame(context.commandBuffer());
-            }
-            if (!result) {
-                return result;
-            }
-        }
-        if (streamEnabled_) {
-            auto profile = streamRuntime_->profilingStats();
-            profile.softwareRasterIdentity = softwareRasterIdentity().dump();
-            if (sharedTextureResources_) {
-                const auto textures = sharedTextureResources_->textureStats();
-                profile.textureUpload = textures.lastUpload;
-                profile.textureStreaming = textures.streamingEnabled;
-                profile.textureResidentBytes = textures.residentAllocationBytes;
-                profile.textureBudgetBytes = textures.budgetBytes;
-                profile.texturePendingBytes = textures.pendingAllocationBytes;
-                profile.textureRetiredBytes = textures.retiredAllocationBytes;
-                profile.textureUpgrades = textures.upgrades; profile.textureDowngrades = textures.downgrades;
-                profile.textureBudgetDeferrals = textures.budgetDeferrals; profile.textureFeedbackFrames = textures.feedbackFrames;
-                profile.textureUploadBytes = textures.streamingUploadBytes; profile.textureMaxRequestFrames = textures.maxRequestLatencyFrames;
-                profile.textureRefinedImages = textures.refinedImages; profile.textureRequestedImages = textures.requestedImages;
-                profile.texturePendingImages = textures.pendingImages;
-            }
-            context.publishStreamingProfile(std::move(profile));
+            preparedScene_->softwareRasterIdentity = softwareRasterIdentity().dump();
         }
         gpuSceneSubsystem->publishVisibilityStream(gpuSceneView_, context.frameIndex(), sceneResourceIdentity_,
             streamEnabled_ ? streamRuntime_->deferredGpuResources() : MeshletStreamDeferredGpuResourcesView{});
@@ -1512,6 +1165,12 @@ private:
 
     void resetStreamIntegration()
     {
+        if (streamRuntime_ && streamRuntime_->bindlessHeap()) {
+            auto& heap = *streamRuntime_->bindlessHeap();
+            for (const auto handle : streamRasterHandles_) { heap.release(handle); }
+            for (const auto handle : streamMaterialTextureHandles_) { heap.release(handle); }
+        }
+        streamRasterHandles_.clear();
         streamRuntime_.reset();
         streamMeshShader_.reset();
         streamFragmentShader_.reset();
@@ -1578,6 +1237,7 @@ private:
                 log += '\n';
                 return result ? makeError(Error::Failure) : result;
             }
+            streamRasterHandles_.push_back(handle);
             return {};
         };
         auto allocateImage = [&](BindlessHandle& handle,
@@ -1591,6 +1251,7 @@ private:
                 log += '\n';
                 return result ? makeError(Error::Failure) : result;
             }
+            streamRasterHandles_.push_back(handle);
             return {};
         };
 
@@ -2972,90 +2633,6 @@ private:
         return {};
     }
 
-    Result syncStreamRuntimeScene(
-        const scene::Scene* runtimeScene,
-        GPUSceneSubsystem& subsystem,
-        std::string& log)
-    {
-        if (!streamEnabled_) {
-            return {};
-        }
-        if (compiledScene_ != nullptr && compiledScene_->hasStreamGeometry()) {
-            runtimeScene = compiledScene_;
-        }
-        runtimeScene = runtimeSceneForPath(
-            runtimeScene,
-            scenePathFromProperties(properties()));
-        if (runtimeScene == nullptr || !(streamRuntime_ && streamRuntime_->ready())) {
-            log = "VisibilityBufferPass stream integration requires its runtime scene";
-            return makeError(Error::InvalidArgument);
-        }
-        std::vector<uint32_t> runtimeRenderNodeIndices(
-            streamRuntime_->asset().instances().size(),
-            std::numeric_limits<uint32_t>::max());
-        for (size_t streamInstanceIndex = 0;
-             streamInstanceIndex < streamRuntime_->asset().instances().size();
-             ++streamInstanceIndex) {
-            const uint32_t localRenderNodeIndex =
-                streamRuntime_->asset().instances()[streamInstanceIndex].renderNodeIndex;
-            if (compiledStreamSourceId_.empty()) {
-                runtimeRenderNodeIndices[streamInstanceIndex] = localRenderNodeIndex;
-                continue;
-            }
-            const int32_t runtimeRenderNodeIndex = runtimeScene->renderNodeIndexForSource(
-                compiledStreamSourceId_,
-                localRenderNodeIndex <=
-                        static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
-                    ? static_cast<int32_t>(localRenderNodeIndex)
-                    : scene::kInvalidSceneIndex);
-            if (runtimeRenderNodeIndex == scene::kInvalidSceneIndex) {
-                log = "VisibilityBufferPass stream source '" +
-                    compiledStreamSourceId_ + "' has no render node " +
-                    std::to_string(localRenderNodeIndex);
-                return makeError(Error::InvalidArgument);
-            }
-            runtimeRenderNodeIndices[streamInstanceIndex] =
-                static_cast<uint32_t>(runtimeRenderNodeIndex);
-        }
-
-        Result result = streamRuntime_->syncRuntimeScene(
-            *runtimeScene,
-            runtimeRenderNodeIndices,
-            log);
-        if (!result) {
-            return result;
-        }
-
-        std::vector<uint32_t> mapping(
-            streamRuntime_->asset().instances().size(),
-            std::numeric_limits<uint32_t>::max());
-        streamOwnerMask_.assign(std::max(instanceCount_, 1u), 0u);
-        uint32_t mappedCount = 0;
-        for (size_t streamInstanceIndex = 0;
-             streamInstanceIndex < streamRuntime_->asset().instances().size();
-             ++streamInstanceIndex) {
-            const GPUSceneInstanceId instance = subsystem.instanceForRenderNode(
-                runtimeRenderNodeIndices[streamInstanceIndex]);
-            if (!instance.valid() || instance.index >= streamOwnerMask_.size()) {
-                continue;
-            }
-            mapping[streamInstanceIndex] = instance.index;
-            streamOwnerMask_[instance.index] = 1u;
-            ++mappedCount;
-        }
-        if (runtimeScene->hasStreamGeometry() && mappedCount != subsystem.instances().size()) {
-            log = "VisibilityBufferPass stream metadata contains instances without cooked geometry";
-            return makeError(Error::InvalidArgument);
-        }
-        result = streamRuntime_->syncGPUSceneInstanceMapping(mapping);
-        if (!result) {
-            log = "VisibilityBufferPass failed to upload the stream GPUScene mapping";
-            return result;
-        }
-        streamMappedInstanceCount_ = mappedCount;
-        return {};
-    }
-
     uint32_t streamCullingFlags() const
     {
         uint32_t flags = 0;
@@ -3525,18 +3102,10 @@ private:
         std::string& log)
     {
         materialViews_.clear();
-        sharedTextureResources_.reset();
         materialTextureHandles_.clear();
         logicalTextureToMaterialTexture_.clear();
 
-        if (!textureResourceManager_ || !textureGraphicsQueue_) { return makeError(Error::InvalidArgument); }
-        auto settings = properties();
-        settings["path"] = loadedScene.filename().string();
-        std::shared_ptr<SceneResourceSnapshot> snapshot;
-        auto result = textureResourceManager_->acquire(device, *textureGraphicsQueue_, settings, &loadedScene,
-            SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures, snapshot, log);
-        if (!result) { return result; }
-        sharedTextureResources_ = snapshot->pathTraceResources;
+        if (!sharedTextureResources_) { return makeError(Error::InvalidArgument); }
         materialViews_ = sharedTextureResources_->materialTextureViews();
         const auto indices = sharedTextureResources_->logicalTextureIndices();
         logicalTextureToMaterialTexture_.assign(indices.begin(), indices.end());
@@ -3558,15 +3127,6 @@ private:
             for (size_t i = 1; i < materialViews_.size(); ++i) {
                 if (!pinned[i]) { materialViews_[i] = materialViews_[0]; }
             }
-        }
-        return {};
-    }
-
-    Result uploadAlphaTestTextures(CommandBuffer& commandBuffer)
-    {
-        if (sharedTextureResources_) {
-            if (auto* frame = commandBuffer.frameContext()) { frame->retain(sharedTextureResources_); }
-            return sharedTextureResources_->uploadMaterialTextures(commandBuffer);
         }
         return {};
     }
@@ -4508,7 +4068,7 @@ private:
         return true;
     }
 
-    static bool loadMeshletScene(
+    static bool buildMeshletScene(
         const RenderGraphProperties& properties,
         const scene::Scene* runtimeScene,
         std::vector<GPUDrivenPreviewGpuVertex>& outVertices,
@@ -4547,7 +4107,7 @@ private:
         outBounds = loadedScene.bounds();
         outTransforms = buildSceneGpuTransforms(loadedScene);
         if (loadedScene.hasStreamGeometry()) {
-            if (!previewStreamEnabled(properties)) {
+            if (!properties.value("enableMeshletStreaming", properties.contains("streamAssetPath"))) {
                 log = "VisibilityBufferPass stream metadata requires a cooked StreamAsset";
                 return false;
             }
@@ -5056,12 +4616,10 @@ private:
     std::unique_ptr<Buffer> hzbSpdResetBuffer_;
     BindlessHandle hzbSpdCounterHandle_;
     GPUDrivenPreviewCullingTargets cullingTargets_;
+    std::shared_ptr<PreparedSceneResources> preparedScene_;
     std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
     std::vector<TextureView*> materialViews_;
     std::shared_ptr<ScenePathTraceResources> sharedTextureResources_;
-    SceneResourceManager fallbackTextureResourceManager_;
-    SceneResourceManager* textureResourceManager_ = nullptr;
-    Queue* textureGraphicsQueue_ = nullptr;
     Device* device_ = nullptr;
     GPUSceneSubsystem* gpuSceneSubsystem_ = nullptr;
     const scene::Scene* gpuSceneSource_ = nullptr;
@@ -5139,6 +4697,7 @@ private:
     std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges_;
     std::vector<uint32_t> logicalTextureToMaterialTexture_;
     std::vector<uint32_t> alphaTestTextureIndices_;
+    std::vector<BindlessHandle> streamRasterHandles_;
     std::vector<uint32_t> streamOwnerMask_;
     std::filesystem::path compiledStreamAssetPath_;
     std::string compiledStreamSourceId_;

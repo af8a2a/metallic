@@ -13,6 +13,7 @@ struct SceneProbeState {
     bool failConsumer = false;
     std::unordered_map<std::string, uint64_t> identities;
     std::unordered_map<std::string, bool> views;
+    std::unordered_map<std::string, const render::SceneResourceSnapshot*> resources;
     std::unordered_map<std::string, render::RenderGraphProperties> cameras;
 };
 SceneProbeState probe;
@@ -20,6 +21,11 @@ SceneProbeState probe;
 class SceneBindingProbePass final : public render::ComputePass {
 public:
     explicit SceneBindingProbePass(bool consumer) : consumer_(consumer) {}
+    render::SceneStreamingRequirements sceneResourcesRequired(const render::RenderGraphCompileContext&) const override
+    {
+        return {.features = render::SceneResourceFeatureBits::Materials | render::SceneResourceFeatureBits::MaterialTextures};
+    }
+
     render::RenderGraphSceneDependency sceneDependency() const override
     {
         return consumer_
@@ -44,6 +50,12 @@ public:
             log = "Probe received an unresolved scene";
             return render::makeError(render::Error::InvalidArgument);
         }
+        if (!context.preparedScene || !context.preparedScene->snapshot ||
+            context.preparedScene->snapshot->sourceResourceIdentity != context.runtimeScene->resourceIdentity() ||
+            context.preparedScene->snapshot->sourceMaterialRevision != context.runtimeScene->materialRevision()) {
+            log = "Streamer did not publish the matching scene generation before compile";
+            return render::makeError(render::Error::Failure);
+        }
         identity_ = context.runtimeScene->resourceIdentity();
         materialRevision_ = context.runtimeScene->materialRevision();
         hasView_ = context.renderView != nullptr;
@@ -64,6 +76,13 @@ public:
             render::runtimeSceneForPath(context.runtimeScene(), context.properties().value("path", "")) == nullptr) {
             return render::makeError(render::Error::InvalidArgument);
         }
+        const auto* prepared = context.preparedScene();
+        if (!prepared || !prepared->ready || !prepared->snapshot ||
+            prepared->snapshot->sourceResourceIdentity != identity_ ||
+            prepared->snapshot->sourceMaterialRevision != materialRevision_) {
+            return render::makeError(render::Error::Failure);
+        }
+        probe.resources[context.passName()] = prepared->snapshot.get();
         probe.identities[context.passName()] = identity_;
         return {};
     }
@@ -146,6 +165,8 @@ public:
             const auto matches = [&](uint64_t identity) {
                 return probe.identities["Root"] == identity && probe.identities["Consumer"] == identity &&
                     probe.identities["Independent"] != identity &&
+                    probe.resources["Root"] == probe.resources["Consumer"] &&
+                    probe.resources["Root"] != probe.resources["Independent"] &&
                     executor.outputResource("Consumer.value") == originalOutput && originalOutput->buffer == originalBuffer;
             };
             if (!renderFrame() || !matches(first.resourceIdentity())) { return RhiTestResult::fail("Initial frame binding mismatch"); }
