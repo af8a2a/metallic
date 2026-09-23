@@ -1,0 +1,1613 @@
+{
+  "date": "2026-09-23",
+  "outputExtent": [
+    1797,
+    660
+  ],
+  "renderExtent": [
+    1198,
+    440
+  ],
+  "config": {
+    "distance": 6.0,
+    "durationSeconds": 30.0,
+    "keyframes": [
+      {
+        "forward": 0.0,
+        "stage": "static",
+        "t": 0.0,
+        "yaw": 0.0
+      },
+      {
+        "forward": 0.0,
+        "stage": "first-visit",
+        "t": 0.08333333333333333,
+        "yaw": 0.0
+      },
+      {
+        "forward": 1.0,
+        "stage": "near-wall",
+        "t": 0.3333333333333333,
+        "yaw": 0.0
+      },
+      {
+        "forward": 1.0,
+        "stage": "turn",
+        "t": 0.4444444444444444,
+        "yaw": 65.0
+      },
+      {
+        "forward": 1.0,
+        "stage": "return",
+        "t": 0.6666666666666666,
+        "yaw": -65.0
+      },
+      {
+        "forward": 0.0,
+        "stage": "settle",
+        "t": 0.8888888888888888,
+        "yaw": 0.0
+      },
+      {
+        "forward": 0.0,
+        "stage": "end",
+        "t": 1.0,
+        "yaw": 0.0
+      }
+    ],
+    "warmupSeconds": 10.0
+  },
+  "runs": [
+    {
+      "source": "build-release/full-deferred-dispatch-profile-0923/run1/Summary.json",
+      "timingHierarchyValidatedFrames": 1248,
+      "frameMs": {
+        "count": 1248,
+        "mean": 24.054318830128206,
+        "p50": 22.8852,
+        "p95": 34.1732,
+        "p99": 38.3494,
+        "max": 45.5111
+      },
+      "overBudget": 88,
+      "scopes": [
+        {
+          "cpuOnly": false,
+          "id": 158,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 5.29189391025641,
+            "p50": 5.2042,
+            "p95": 8.0607,
+            "p99": 9.377,
+            "max": 12.8081
+          },
+          "gpuMs": {
+            "count": 1248,
+            "mean": 5.711973358974359,
+            "p50": 5.579552,
+            "p95": 6.919264,
+            "p99": 7.916288,
+            "max": 9.606016
+          }
+        },
+        {
+          "cpuOnly": true,
+          "id": 159,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Validate scene and environment",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.0008704326923076924,
+            "p50": 0.0008,
+            "p95": 0.0014,
+            "p99": 0.0019,
+            "max": 0.0173
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 160,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare lights and sampling",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.04152027243589744,
+            "p50": 0.0356,
+            "p95": 0.0638,
+            "p99": 0.079,
+            "max": 0.1216
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 161,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 1.3591070512820513,
+            "p50": 1.0793,
+            "p95": 3.5291,
+            "p99": 5.0092,
+            "max": 7.5111
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 162,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Consume texture feedback",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.024132051282051283,
+            "p50": 0.0217,
+            "p95": 0.0418,
+            "p99": 0.0609,
+            "max": 0.116
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 163,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 1.2741485576923077,
+            "p50": 0.9731,
+            "p95": 3.415,
+            "p99": 4.9463,
+            "max": 7.3708
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 164,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Poll migration completion",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.0002460737179487179,
+            "p50": 0.0002,
+            "p95": 0.0007,
+            "p99": 0.001,
+            "max": 0.0019
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 165,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Retire texture generations",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.0012064102564102565,
+            "p50": 0.0002,
+            "p95": 0.001,
+            "p99": 0.0364,
+            "max": 0.0675
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 166,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.03464455128205129,
+            "p50": 0.0187,
+            "p95": 0.1217,
+            "p99": 0.1408,
+            "max": 0.231
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 167,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration/Candidates and allocation queries",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 699,
+            "mean": 0.024558082975679543,
+            "p50": 0.0229,
+            "p95": 0.0401,
+            "p99": 0.0486,
+            "max": 0.0698
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 168,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration/Sort and admit candidates",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 699,
+            "mean": 0.004412303290414878,
+            "p50": 0.0039,
+            "p95": 0.008,
+            "p99": 0.0129,
+            "max": 0.0224
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 169,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Prepare texture feedback",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.02239014423076923,
+            "p50": 0.0212,
+            "p95": 0.0339,
+            "p99": 0.0558,
+            "max": 0.2726
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 170,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare output and shading parameters",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.00601025641025641,
+            "p50": 0.0058,
+            "p95": 0.0081,
+            "p99": 0.0103,
+            "max": 0.0222
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 171,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare visibility resources",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.03728902243589744,
+            "p50": 0.0077,
+            "p95": 0.1642,
+            "p99": 0.1928,
+            "max": 0.4025
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 172,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare camera and history",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.007011217948717949,
+            "p50": 0.0068,
+            "p95": 0.011,
+            "p99": 0.0137,
+            "max": 0.038
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 173,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare material textures and LUTs",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.005755608974358974,
+            "p50": 0.0051,
+            "p95": 0.0091,
+            "p99": 0.0161,
+            "max": 0.0444
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 174,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare dispatch bindings",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.04035761217948718,
+            "p50": 0.0392,
+            "p95": 0.0568,
+            "p99": 0.0776,
+            "max": 0.1014
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 175,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare dispatch bindings/Record material binning",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.03383365384615385,
+            "p50": 0.0328,
+            "p95": 0.0482,
+            "p99": 0.0664,
+            "max": 0.0933
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 176,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare radiance cache parameters",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 3.950320512820513e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0002,
+            "max": 0.0004
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 177,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 3.785532451923077,
+            "p50": 3.5416,
+            "p95": 5.3295,
+            "p99": 5.9507,
+            "max": 6.7835
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 178,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Acquire dispatch tables",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.022790384615384615,
+            "p50": 0.0201,
+            "p95": 0.0298,
+            "p99": 0.0395,
+            "max": 1.837
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 179,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Update dispatch descriptors",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 3.7361511217948715,
+            "p50": 3.4956,
+            "p95": 5.2571,
+            "p99": 5.8848,
+            "max": 6.7475
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 180,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Prepare dispatch constants",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.0023215544871794873,
+            "p50": 0.0021,
+            "p95": 0.003,
+            "p99": 0.0038,
+            "max": 0.1497
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 181,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Record dispatch commands",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.023244711538461537,
+            "p50": 0.0214,
+            "p95": 0.0333,
+            "p99": 0.0412,
+            "max": 0.0859
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 182,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Publish shading history",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1248,
+            "mean": 0.0003217948717948718,
+            "p50": 0.0003,
+            "p95": 0.0006,
+            "p99": 0.0007,
+            "max": 0.0011
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 191,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration/Start decode workers",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 341,
+            "mean": 0.06577448680351905,
+            "p50": 0.0659,
+            "p95": 0.0877,
+            "p99": 0.1022,
+            "max": 0.2045
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 192,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Prepare images and staging",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 549,
+            "mean": 1.6195043715846995,
+            "p50": 2.387,
+            "p95": 2.6393,
+            "p99": 2.8868,
+            "max": 4.8147
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 193,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Release decode workers",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 341,
+            "mean": 0.009223753665689149,
+            "p50": 0.009,
+            "p95": 0.014,
+            "p99": 0.0173,
+            "max": 0.0497
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 194,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Upload command setup",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 341,
+            "mean": 0.045583870967741934,
+            "p50": 0.0385,
+            "p95": 0.0644,
+            "p99": 0.1259,
+            "max": 0.8393
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 195,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Record texture copies",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 341,
+            "mean": 0.04484868035190616,
+            "p50": 0.0337,
+            "p95": 0.0995,
+            "p99": 0.1443,
+            "max": 0.2738
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 196,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Submit texture upload",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 341,
+            "mean": 0.09253137829912024,
+            "p50": 0.0554,
+            "p95": 0.3306,
+            "p99": 0.8003,
+            "max": 1.0281
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 197,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Resolve upload timestamps",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 341,
+            "mean": 0.0009868035190615837,
+            "p50": 0.0009,
+            "p95": 0.0015,
+            "p99": 0.0018,
+            "max": 0.0142
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 198,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Publish texture generation",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 341,
+            "mean": 1.8585797653958944,
+            "p50": 1.215,
+            "p95": 4.6386,
+            "p99": 5.1581,
+            "max": 7.3675
+          },
+          "gpuMs": null
+        }
+      ]
+    },
+    {
+      "source": "build-release/full-deferred-dispatch-profile-0923/run2/Summary.json",
+      "timingHierarchyValidatedFrames": 1242,
+      "frameMs": {
+        "count": 1242,
+        "mean": 24.162023510466987,
+        "p50": 23.2713,
+        "p95": 33.8904,
+        "p99": 36.71,
+        "max": 43.9786
+      },
+      "overBudget": 82,
+      "scopes": [
+        {
+          "cpuOnly": false,
+          "id": 158,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 5.650651449275362,
+            "p50": 5.5113,
+            "p95": 8.7229,
+            "p99": 10.1238,
+            "max": 12.0735
+          },
+          "gpuMs": {
+            "count": 1242,
+            "mean": 5.830996895330112,
+            "p50": 5.707136,
+            "p95": 7.048864,
+            "p99": 8.03568,
+            "max": 11.114464
+          }
+        },
+        {
+          "cpuOnly": true,
+          "id": 159,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Validate scene and environment",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.0009730273752012881,
+            "p50": 0.0008,
+            "p95": 0.0016,
+            "p99": 0.0022,
+            "max": 0.0397
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 160,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare lights and sampling",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.04279098228663446,
+            "p50": 0.0366,
+            "p95": 0.0641,
+            "p99": 0.0879,
+            "max": 0.2743
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 161,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 1.4208602254428342,
+            "p50": 1.0714,
+            "p95": 3.845,
+            "p99": 4.9996,
+            "max": 5.8049
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 162,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Consume texture feedback",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.025474074074074073,
+            "p50": 0.0231,
+            "p95": 0.0439,
+            "p99": 0.0588,
+            "max": 0.1771
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 163,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 1.3332181964573269,
+            "p50": 0.9387,
+            "p95": 3.7281,
+            "p99": 4.8862,
+            "max": 5.6479
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 164,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Poll migration completion",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.0002587761674718197,
+            "p50": 0.0002,
+            "p95": 0.0007,
+            "p99": 0.001,
+            "max": 0.0017
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 165,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Retire texture generations",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.0015906602254428341,
+            "p50": 0.0004,
+            "p95": 0.0011,
+            "p99": 0.0329,
+            "max": 0.169
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 166,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.03514154589371981,
+            "p50": 0.0191,
+            "p95": 0.1233,
+            "p99": 0.1503,
+            "max": 0.2938
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 167,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration/Candidates and allocation queries",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 683,
+            "mean": 0.025816837481698388,
+            "p50": 0.0236,
+            "p95": 0.0425,
+            "p99": 0.06,
+            "max": 0.2262
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 168,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration/Sort and admit candidates",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 683,
+            "mean": 0.004603367496339677,
+            "p50": 0.0042,
+            "p95": 0.0079,
+            "p99": 0.0116,
+            "max": 0.0135
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 169,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Prepare texture feedback",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.022745571658615137,
+            "p50": 0.0217,
+            "p95": 0.0362,
+            "p99": 0.0566,
+            "max": 0.1282
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 170,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare output and shading parameters",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.006300966183574879,
+            "p50": 0.0058,
+            "p95": 0.0083,
+            "p99": 0.0127,
+            "max": 0.1614
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 171,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare visibility resources",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.04245619967793881,
+            "p50": 0.0078,
+            "p95": 0.1678,
+            "p99": 0.1927,
+            "max": 0.3362
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 172,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare camera and history",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.007296135265700483,
+            "p50": 0.007,
+            "p95": 0.0113,
+            "p99": 0.0157,
+            "max": 0.0426
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 173,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare material textures and LUTs",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.0060280193236714975,
+            "p50": 0.0052,
+            "p95": 0.0092,
+            "p99": 0.0242,
+            "max": 0.0683
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 174,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare dispatch bindings",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.04248566827697263,
+            "p50": 0.0417,
+            "p95": 0.0608,
+            "p99": 0.0837,
+            "max": 0.268
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 175,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare dispatch bindings/Record material binning",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.035498148148148154,
+            "p50": 0.035,
+            "p95": 0.0525,
+            "p99": 0.0719,
+            "max": 0.2447
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 176,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare radiance cache parameters",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 3.91304347826087e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0002,
+            "max": 0.0008
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 177,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 4.07271497584541,
+            "p50": 3.9085,
+            "p95": 5.513,
+            "p99": 6.2026,
+            "max": 8.661
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 178,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Acquire dispatch tables",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.022664170692431564,
+            "p50": 0.021,
+            "p95": 0.0329,
+            "p99": 0.0489,
+            "max": 0.1628
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 179,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Update dispatch descriptors",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 4.022594363929147,
+            "p50": 3.8625,
+            "p95": 5.4614,
+            "p99": 6.1478,
+            "max": 8.5978
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 180,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Prepare dispatch constants",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.0022933977455716586,
+            "p50": 0.0021,
+            "p95": 0.0032,
+            "p99": 0.0043,
+            "max": 0.0158
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 181,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Record dispatch commands",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.024107729468599036,
+            "p50": 0.0218,
+            "p95": 0.0349,
+            "p99": 0.0445,
+            "max": 0.1602
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 182,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Publish shading history",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1242,
+            "mean": 0.0003571658615136876,
+            "p50": 0.0003,
+            "p95": 0.0006,
+            "p99": 0.001,
+            "max": 0.0017
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 191,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration/Start decode workers",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 340,
+            "mean": 0.06543205882352941,
+            "p50": 0.066,
+            "p95": 0.0894,
+            "p99": 0.1005,
+            "max": 0.1228
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 192,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Prepare images and staging",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 559,
+            "mean": 1.6336846153846154,
+            "p50": 2.3927,
+            "p95": 2.7977,
+            "p99": 3.5898,
+            "max": 5.6468
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 193,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Release decode workers",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 340,
+            "mean": 0.009213823529411764,
+            "p50": 0.0092,
+            "p95": 0.0137,
+            "p99": 0.0181,
+            "max": 0.0497
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 194,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Upload command setup",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 340,
+            "mean": 0.04896,
+            "p50": 0.0392,
+            "p95": 0.0689,
+            "p99": 0.2666,
+            "max": 0.9758
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 195,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Record texture copies",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 340,
+            "mean": 0.046860294117647056,
+            "p50": 0.0359,
+            "p95": 0.098,
+            "p99": 0.1721,
+            "max": 0.3054
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 196,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Submit texture upload",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 340,
+            "mean": 0.13443764705882355,
+            "p50": 0.0602,
+            "p95": 0.6492,
+            "p99": 1.2793,
+            "max": 1.9752
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 197,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Resolve upload timestamps",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 340,
+            "mean": 0.0010720588235294116,
+            "p50": 0.0009,
+            "p95": 0.0016,
+            "p99": 0.0024,
+            "max": 0.0254
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 198,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Publish texture generation",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 340,
+            "mean": 1.9396923529411765,
+            "p50": 1.1785,
+            "p95": 4.6988,
+            "p99": 5.0997,
+            "max": 5.5994
+          },
+          "gpuMs": null
+        }
+      ]
+    },
+    {
+      "source": "build-release/full-deferred-dispatch-profile-0923/run3/Summary.json",
+      "timingHierarchyValidatedFrames": 1316,
+      "frameMs": {
+        "count": 1316,
+        "mean": 22.807330775075986,
+        "p50": 21.3362,
+        "p95": 33.9366,
+        "p99": 38.0632,
+        "max": 65.9516
+      },
+      "overBudget": 80,
+      "scopes": [
+        {
+          "cpuOnly": false,
+          "id": 158,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)",
+          "queue": "graphics",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 5.715513829787234,
+            "p50": 5.5209,
+            "p95": 8.2056,
+            "p99": 9.6206,
+            "max": 14.1186
+          },
+          "gpuMs": {
+            "count": 1316,
+            "mean": 5.805622127659575,
+            "p50": 5.697984,
+            "p95": 7.040288,
+            "p99": 7.692608,
+            "max": 9.622592
+          }
+        },
+        {
+          "cpuOnly": true,
+          "id": 159,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Validate scene and environment",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.0010096504559270517,
+            "p50": 0.0009,
+            "p95": 0.0016,
+            "p99": 0.0021,
+            "max": 0.0177
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 160,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare lights and sampling",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.04434080547112462,
+            "p50": 0.0411,
+            "p95": 0.0636,
+            "p99": 0.0894,
+            "max": 0.2303
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 161,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 1.3872675531914893,
+            "p50": 1.1265,
+            "p95": 3.7045,
+            "p99": 4.9437,
+            "max": 8.9654
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 162,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Consume texture feedback",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.026165045592705168,
+            "p50": 0.0244,
+            "p95": 0.0429,
+            "p99": 0.0653,
+            "max": 0.298
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 163,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 1.2973810790273557,
+            "p50": 0.9915,
+            "p95": 3.6037,
+            "p99": 4.7779,
+            "max": 8.7894
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 164,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Poll migration completion",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.00023457446808510635,
+            "p50": 0.0002,
+            "p95": 0.0007,
+            "p99": 0.001,
+            "max": 0.0014
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 165,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Retire texture generations",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.0010979483282674773,
+            "p50": 0.0004,
+            "p95": 0.0011,
+            "p99": 0.0286,
+            "max": 0.0503
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 166,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.03643617021276596,
+            "p50": 0.0217,
+            "p95": 0.1193,
+            "p99": 0.1503,
+            "max": 0.2267
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 167,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration/Candidates and allocation queries",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 754,
+            "mean": 0.02744575596816976,
+            "p50": 0.0253,
+            "p95": 0.0439,
+            "p99": 0.0656,
+            "max": 0.1495
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 168,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration/Sort and admit candidates",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 754,
+            "mean": 0.004716710875331565,
+            "p50": 0.0043,
+            "p95": 0.008,
+            "p99": 0.0111,
+            "max": 0.0207
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 169,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Prepare texture feedback",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.02357940729483283,
+            "p50": 0.0232,
+            "p95": 0.0338,
+            "p99": 0.0531,
+            "max": 0.1114
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 170,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare output and shading parameters",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.006082294832826748,
+            "p50": 0.0059,
+            "p95": 0.0078,
+            "p99": 0.0101,
+            "max": 0.0345
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 171,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare visibility resources",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.04071519756838906,
+            "p50": 0.0079,
+            "p95": 0.1652,
+            "p99": 0.2019,
+            "max": 0.3999
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 172,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare camera and history",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.007185638297872341,
+            "p50": 0.007,
+            "p95": 0.0107,
+            "p99": 0.0151,
+            "max": 0.0536
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 173,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare material textures and LUTs",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.006455775075987841,
+            "p50": 0.0056,
+            "p95": 0.0102,
+            "p99": 0.0198,
+            "max": 0.0584
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 174,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare dispatch bindings",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.04292743161094225,
+            "p50": 0.0423,
+            "p95": 0.0564,
+            "p99": 0.0708,
+            "max": 0.2064
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 175,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare dispatch bindings/Record material binning",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.035898024316109424,
+            "p50": 0.0354,
+            "p95": 0.048,
+            "p99": 0.0612,
+            "max": 0.1961
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 176,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare radiance cache parameters",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 4.2021276595744684e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0002,
+            "max": 0.0004
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 177,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 4.1705636778115505,
+            "p50": 4.0466,
+            "p95": 5.488,
+            "p99": 5.9669,
+            "max": 7.6819
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 178,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Acquire dispatch tables",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.02452803951367781,
+            "p50": 0.0231,
+            "p95": 0.0334,
+            "p99": 0.0656,
+            "max": 0.3824
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 179,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Update dispatch descriptors",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 4.11805782674772,
+            "p50": 3.9931,
+            "p95": 5.428,
+            "p99": 5.8965,
+            "max": 7.5983
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 180,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Prepare dispatch constants",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.0024678571428571427,
+            "p50": 0.0024,
+            "p95": 0.0033,
+            "p99": 0.0038,
+            "max": 0.0063
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 181,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Record dispatch commands",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.024493920972644377,
+            "p50": 0.0227,
+            "p95": 0.0324,
+            "p99": 0.0396,
+            "max": 0.0745
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 182,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Publish shading history",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 1316,
+            "mean": 0.0004023556231003039,
+            "p50": 0.0004,
+            "p95": 0.0007,
+            "p99": 0.001,
+            "max": 0.0046
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 191,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Schedule texture migration/Start decode workers",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 355,
+            "mean": 0.06480169014084507,
+            "p50": 0.0658,
+            "p95": 0.0896,
+            "p99": 0.109,
+            "max": 0.1877
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 192,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Prepare images and staging",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 561,
+            "mean": 1.6606317290552586,
+            "p50": 2.3889,
+            "p95": 2.6702,
+            "p99": 4.0009,
+            "max": 5.5548
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 193,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Release decode workers",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 355,
+            "mean": 0.008951830985915494,
+            "p50": 0.0086,
+            "p95": 0.0126,
+            "p99": 0.0396,
+            "max": 0.0526
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 194,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Upload command setup",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 355,
+            "mean": 0.0422656338028169,
+            "p50": 0.0387,
+            "p95": 0.0662,
+            "p99": 0.1136,
+            "max": 0.2428
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 195,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Record texture copies",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 355,
+            "mean": 0.042894647887323945,
+            "p50": 0.0339,
+            "p95": 0.0922,
+            "p99": 0.1152,
+            "max": 0.1645
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 196,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Submit texture upload",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 355,
+            "mean": 0.10649887323943662,
+            "p50": 0.0562,
+            "p95": 0.513,
+            "p99": 0.8057,
+            "max": 1.1634
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 197,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Resolve upload timestamps",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 355,
+            "mean": 0.0009214084507042253,
+            "p50": 0.0009,
+            "p95": 0.0014,
+            "p99": 0.0019,
+            "max": 0.0021
+          },
+          "gpuMs": null
+        },
+        {
+          "cpuOnly": true,
+          "id": 198,
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming/Texture migration/Publish texture generation",
+          "queue": "cpu",
+          "cpuMs": {
+            "count": 355,
+            "mean": 1.9794191549295774,
+            "p50": 1.2449,
+            "p95": 4.5383,
+            "p99": 5.1648,
+            "max": 8.7872
+          },
+          "gpuMs": null
+        }
+      ]
+    }
+  ]
+}

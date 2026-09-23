@@ -4,6 +4,7 @@
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/MaterialBinning.h"
+#include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/RenderFrameContext.h"
@@ -1584,6 +1585,15 @@ public:
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        CpuProfileRecorder profiler;
+        const auto result = executeProfiled(context, visibilityDeferred_ ? &profiler : nullptr);
+        context.publishCpuProfile(profiler.sections);
+        return result;
+    }
+
+    Result executeProfiled(RenderGraphExecutionContext& context, CpuProfileRecorder* profiler)
+    {
+        CpuProfileScope profile(profiler, "Validate scene and environment");
         std::string syncLog;
         // RenderGraph prepares a single scene generation before recording any pass.
         // Geometry, material tables and RTAS are acquired by compile(), never by
@@ -1613,6 +1623,7 @@ public:
         if (lightScene == nullptr || context.subsystems() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
+        profile.next("Prepare lights and sampling");
         const uint64_t previousLightRevision = lights_.revision();
         const auto resolvedLighting = resolveSceneLighting(lightScene, context.world());
         Result lightResult = lights_.update(*device_, context.commandBuffer(), *context.subsystems(),
@@ -1653,15 +1664,12 @@ public:
         TextureHandle color = context.outputTexture("color");
         Buffer* textureFeedback = nullptr;
         if (visibilityDeferred_) {
-            CpuProfileRecorder textureProfile;
-            Result streamingResult;
-            {
-                CpuProfileScope profile(&textureProfile, "Texture streaming");
-                streamingResult = sceneResources_.beginTextureStreaming(context.commandBuffer(), context.frameIndex(), textureFeedback, &textureProfile, properties().value("benchmarkFreezeStreaming", false));
-            }
-            context.publishCpuProfile(textureProfile.sections);
+            profile.next("Texture streaming");
+            const auto streamingResult = sceneResources_.beginTextureStreaming(context.commandBuffer(),
+                context.frameIndex(), textureFeedback, profiler, properties().value("benchmarkFreezeStreaming", false));
             if (!streamingResult) { return streamingResult; }
         }
+        profile.next("Prepare output and shading parameters");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         TextureView* environmentTextureView = environment.radianceView;
         TextureView* environmentImportancePdfView = environment.pdfView;
@@ -1747,6 +1755,7 @@ public:
         const MeshletStreamDeferredGpuResourcesView* deferredStream = nullptr;
         Buffer* deferredFrameInfo = nullptr;
         VisibilityBufferFrameInfo info;
+        profile.next("Prepare visibility resources");
         if (visibilityDeferred_) {
             const auto visibility = context.inputTexture("visibility");
             const auto visibilityDepth = context.inputTexture("depth");
@@ -1822,6 +1831,7 @@ public:
             visibilityView = visibility.view();
             visibilityDepthView = visibilityDepth.view();
         }
+        profile.next("Prepare camera and history");
         push.sampleFrame = static_cast<uint32_t>(context.frameIndex());
         push.temporalJitter = exportGuides ? 1u : 0u;
         if (exportGuides) {
@@ -1875,6 +1885,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
 
+        profile.next("Prepare material textures and LUTs");
         result = sceneResources_.uploadMaterialTextures(context.commandBuffer());
         if (!result) {
             return result;
@@ -1886,6 +1897,7 @@ public:
             }
         }
 
+        profile.next("Prepare dispatch bindings");
         std::vector<ComputeDispatchBinding> bindings{
             ComputeDispatchBinding{.binding = 50, .buffer = lights_.buffer()},
             ComputeDispatchBinding{
@@ -1929,6 +1941,9 @@ public:
                 .binding = 9,
                 .textureViews = materialTextureViews.data(),
                 .textureViewCount = static_cast<uint32_t>(materialTextureViews.size()),
+                // Streaming publishes a new immutable snapshot after mip changes;
+                // completed descriptor tables reuse unchanged image bindings.
+                .sampledImages = visibilityDeferred_ ? sceneResources_.materialTextureSnapshot() : nullptr,
             },
             ComputeDispatchBinding{
                 .binding = 10,
@@ -1985,6 +2000,7 @@ public:
                     shadow = {.texture = externalShadow.texture(), .shadow = externalShadow.view(),
                         .parameters = externalParameters.buffer()};
                 } else {
+                    CpuProfileScope shadowProfile(profiler, "Record inline shadows");
                     // Preserve realtime graphs authored before the explicit shadow stage.
                     if (context.streamer() == nullptr) { return makeError(Error::InvalidArgument); }
                     ViewConstants shadowView{};
@@ -2007,7 +2023,7 @@ public:
                     result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(),
                         *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(),
                         lightScene->transformRevision(), settings, shadow, shadowLog, &sceneResources_,
-                        streamMaterials_ ? deferredStream : nullptr);
+                        streamMaterials_ ? deferredStream : nullptr, profiler);
                     if (!result) { spdlog::error("Ray-traced shadows: {} ({})", shadowLog, resultToString(result)); return result; }
                     previousShadowJitter_ = {shadowView.jitter[0], shadowView.jitter[1]};
                 }
@@ -2054,6 +2070,7 @@ public:
                 bindings.push_back({.binding = 83 + i, .buffer = streamBuffers[i]});
             }
             if (boolProperty(context.properties(), "materialBinning", true)) {
+                CpuProfileScope binningProfile(profiler, "Record material binning");
                 std::string binningLog;
                 result = materialBinning_.record(*device_, context.commandBuffer(), {
                     .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer
@@ -2139,6 +2156,7 @@ public:
             });
         }
 
+        profile.next("Prepare radiance cache parameters");
         if (cacheMode != kScenePathTraceCacheModeOff) {
             result = ensureCacheParamsBuffer(*device_);
             if (!result) {
@@ -2146,6 +2164,7 @@ public:
             }
         }
 
+        profile.next("Record shading dispatch");
         if (cacheMode == kScenePathTraceCacheModeSharc) {
             result = executeSharcFrame(
                 context,
@@ -2183,7 +2202,8 @@ public:
             }
             result = renderProgram->dispatchIndirectBatch({.commandBuffer = &context.commandBuffer(),
                 .bindings = bindings.data(), .bindingCount = static_cast<uint32_t>(bindings.size()),
-                .pushDataSize = sizeof(push), .indirectArguments = materialBins.arguments}, dispatches);
+                .pushDataSize = sizeof(push), .indirectArguments = materialBins.arguments,
+                .profiler = profiler}, dispatches);
             if (!result) { return result; }
         } else {
             result = renderProgram->dispatch(ComputeDispatchDesc{
@@ -2195,12 +2215,14 @@ public:
                 .groupCountX = (context.width() + 7) / 8,
                 .groupCountY = (context.height() + 7) / 8,
                 .groupCountZ = 1,
+                .profiler = profiler,
             });
             if (!result) {
                 return result;
             }
         }
 
+        profile.next("Publish shading history");
         if (push.enableAccumulation != 0 && context.historyResources() != nullptr) {
             context.historyResources()->markWritten(historyNameForContext(context, push.cacheMode));
         }
