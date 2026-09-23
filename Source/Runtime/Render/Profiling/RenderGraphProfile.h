@@ -22,6 +22,11 @@ struct RenderGraphProfileSection {
 struct StreamCpuWorkCounters {
     uint32_t allocationAttempts = 0;
     uint32_t budgetRetrySuppressed = 0;
+    uint32_t requestDuplicatesMerged = 0;
+    uint32_t admissionCandidates = 0;
+    uint32_t admissionPriorityPops = 0;
+    uint32_t admissionCalls = 0;
+    uint32_t admissionBypassed = 0;
     uint32_t demandVisited = 0;
     uint32_t demandNewerThanFeedback = 0;
     uint32_t demandUnused = 0;

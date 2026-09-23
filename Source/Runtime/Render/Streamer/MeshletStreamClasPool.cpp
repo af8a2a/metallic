@@ -431,6 +431,7 @@ Result MeshletStreamClasPool::initialize(
 
 void MeshletStreamClasPool::clear()
 {
+    if (invalidationObserver_) { invalidationObserver_({}); }
     compact_.reset();
     impl_ = std::make_unique<Impl>();
 }
@@ -674,6 +675,7 @@ Result MeshletStreamClasPool::cmdBuildPages(
 
 void MeshletStreamClasPool::retirePages(std::span<const uint32_t> pageIndices)
 {
+    if (!pageIndices.empty() && invalidationObserver_) { invalidationObserver_(pageIndices); }
     if (compact_) { compact_->retirePages(pageIndices); return; }
     if (!ready()) {
         return;

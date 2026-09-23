@@ -281,6 +281,7 @@ bool MeshletStreamResidencyManager::initialize(
     evictionAgeThresholdFrames_ = desc.evictionAgeThresholdFrames;
     pageCount_ = asset_->pageCount();
     unloadRequestBits_.assign((uint64_t(pageCount_) + 63) / 64, 0);
+    requestIndexBlocks_.resize((uint64_t(pageCount_) + kRequestIndexBlockSize - 1) / kRequestIndexBlockSize);
     if (maxResidentPages_ != 0) {
         const uint32_t residentReserve = std::min(maxResidentPages_, pageCount_);
         pages_.reserve(residentReserve);
@@ -360,7 +361,8 @@ void MeshletStreamResidencyManager::reset()
     evictionAgeRejected_ = false;
     budgetAdmissionExhausted_ = false;
     frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
-    requestMarks_.clear();
+    requestIndexBlocks_.clear();
+    requestScratch_.clear();
     unloadRequestBits_.clear();
     unloadRequestTouchedWords_.clear();
     patches_.clear();
@@ -575,39 +577,47 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder*
             }
             auto& taskPages = requestTaskPages_[latestTaskIndex];
             profile.next("Refresh request priorities");
-            // Refresh the complete batch before reclaiming stale, unissued I/O.
-            // Already submitted loads/uploads retain their completion lifetime.
+            // Refresh ALL demand before cancelling queued I/O or choosing victims.
+            // Allocated/in-flight requests need no sorting or repeated admission.
             const bool prioritized = std::any_of(taskPages.begin(), taskPages.end(),
                 [](const PageRequest& request) { return request.screenBenefit >= 0.0f || request.prefetch; });
-            for (auto& request : taskPages) {
+            size_t candidateCount = 0;
+            for (auto request : taskPages) {
+                requestedPages_.push_back(request.pageIndex);
                 const auto found = pages_.find(request.pageIndex);
                 if (found != pages_.end()) {
-                    found->second.lastUsedFrame = frameIndex_;
-                    found->second.screenBenefit = request.screenBenefit;
-                    if (!request.prefetch && found->second.prefetch) {
+                    auto& page = found->second;
+                    page.lastUsedFrame = frameIndex_;
+                    page.screenBenefit = request.screenBenefit;
+                    if (!request.prefetch && page.prefetch) {
                         ++stats_.totalPrefetchUsed;
-                        found->second.prefetch = false;
+                        page.prefetch = false;
+                    }
+                    request.needsAllocation = page.deviceOffsetBytes == kInvalidStreamDeviceOffsetBytes;
+                    if (residentState(page.state) || page.state == MeshletStreamPageResidencyState::PendingUpload ||
+                        page.state == MeshletStreamPageResidencyState::PendingUnload ||
+                        (!request.needsAllocation && page.queued)) {
+                        if (page.state == MeshletStreamPageResidencyState::PendingUnload) {
+                            ++stats_.frameResidentBudgetFailureCount;
+                            ++stats_.totalResidentBudgetFailureCount;
+                        }
+                        ++stats_.cpuWork.admissionBypassed;
+                        ++consumed;
+                        continue;
                     }
                 }
+                request.payloadBytes = scene::meshletStreamDevicePayloadSize(asset_->pages()[request.pageIndex]);
                 if (prioritized) {
                     const uint64_t age = found == pages_.end() ? 0u : frameIndex_ - found->second.firstRequestFrame;
-                    request.schedulingPriority = pageBenefitPerByte(request.screenBenefit,
-                        scene::meshletStreamDevicePayloadSize(asset_->pages()[request.pageIndex]), age);
-                }
-            }
-            profile.next("Sort admission priority");
-            if (prioritized) {
-                std::stable_sort(taskPages.begin(), taskPages.end(), [this](const PageRequest& a, const PageRequest& b) {
-                    if (a.prefetch != b.prefetch) { return !a.prefetch; }
-                    if (a.prefetch) {
-                        const uint32_t la = asset_->groups()[asset_->pages()[a.pageIndex].lodGroupIndex].lodLevel;
-                        const uint32_t lb = asset_->groups()[asset_->pages()[b.pageIndex].lodGroupIndex].lodLevel;
-                        if (la != lb) { return la > lb; }
+                    request.schedulingPriority = pageBenefitPerByte(request.screenBenefit, request.payloadBytes, age);
+                    if (request.prefetch) {
+                        request.prefetchLod = asset_->groups()[asset_->pages()[request.pageIndex].lodGroupIndex].lodLevel;
                     }
-                    const double left = a.schedulingPriority, right = b.schedulingPriority;
-                    return left != right ? left > right : a.pageIndex < b.pageIndex;
-                });
-            } else { std::reverse(taskPages.begin(), taskPages.end()); }
+                }
+                taskPages[candidateCount++] = request;
+            }
+            taskPages.resize(candidateCount);
+            stats_.cpuWork.admissionCandidates += static_cast<uint32_t>(candidateCount);
             profile.next("Cancel stale queued loads");
             std::erase_if(uploadQueue_, [this](uint32_t pageIndex) {
                 const auto found = pages_.find(pageIndex);
@@ -621,30 +631,76 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder*
                 }
                 return false;
             });
+            // The heap produces exactly the old total priority order, but only
+            // selects entries that can execute. No full N log N sort each frame.
+            const auto lowerPriority = [](const PageRequest& a, const PageRequest& b) {
+                if (a.prefetch != b.prefetch) { return a.prefetch; }
+                if (a.prefetch && a.prefetchLod != b.prefetchLod) { return a.prefetchLod < b.prefetchLod; }
+                return a.schedulingPriority != b.schedulingPriority
+                    ? a.schedulingPriority < b.schedulingPriority : a.pageIndex > b.pageIndex;
+            };
+            enum class DeferredReason { None, Prefetch, Io, Budget };
+            const auto deferredReason = [&](const PageRequest& request) {
+                if (!request.needsAllocation) { return DeferredReason::None; }
+                if (request.prefetch &&
+                    (storage_.usedBytes() + storage_.allocationSize(request.payloadBytes) > storage_.capacityBytes() * 3u / 4u ||
+                        !storage_.canAllocate(request.payloadBytes) ||
+                        (pageLoader_.ready() && queuedUploadCount() >= std::max(maxPageLoadsInFlight_ / 4u, 1u)) ||
+                        (maxResidentPages_ != 0 && activePages_.size() + 1 > uint64_t(maxResidentPages_) * 3u / 4u))) {
+                    return DeferredReason::Prefetch;
+                }
+                if (pageLoader_.ready() && queuedUploadCount() >= uint64_t(maxPageLoadsInFlight_) * 2u) {
+                    return DeferredReason::Io;
+                }
+                if (budgetAdmissionExhausted_ &&
+                    ((maxResidentPages_ != 0 && activePages_.size() >= maxResidentPages_) ||
+                        !storage_.canAllocate(request.payloadBytes))) { return DeferredReason::Budget; }
+                return DeferredReason::None;
+            };
+            const auto filterBlocked = [&] {
+                std::erase_if(taskPages, [&](const PageRequest& request) {
+                    const auto reason = deferredReason(request);
+                    if (reason == DeferredReason::None) { return false; }
+                    ++stats_.cpuWork.admissionBypassed;
+                    if (reason == DeferredReason::Prefetch) { ++stats_.totalPrefetchDeferred; }
+                    else {
+                        ++consumed;
+                        if (reason == DeferredReason::Io) { ++stats_.frameAdmissionDeferredCount; }
+                        else {
+                            ++stats_.cpuWork.budgetRetrySuppressed;
+                            ++stats_.frameAllocationDeferredCount;
+                        }
+                    }
+                    return true;
+                });
+            };
+            profile.next("Filter blocked admission");
+            filterBlocked();
+            profile.next("Prepare admission heap");
+            if (prioritized) { std::make_heap(taskPages.begin(), taskPages.end(), lowerPriority); }
             profile.next("Admit demand / prefetch");
-            for (const auto& request : taskPages) {
-                const uint32_t pageIndex = request.pageIndex;
-                if (pageIndex >= pageCount_) {
+            while (!taskPages.empty()) {
+                const auto& next = prioritized ? taskPages.front() : taskPages.back();
+                if (deferredReason(next) != DeferredReason::None) {
+                    // Eligibility can only tighten in this loop: frees/publication
+                    // run outside it. Remove the blocked remainder in one linear
+                    // pass; retain smaller fits and their deterministic priority.
+                    filterBlocked();
+                    if (prioritized) { std::make_heap(taskPages.begin(), taskPages.end(), lowerPriority); }
                     continue;
                 }
-                requestedPages_.push_back(pageIndex);
-                const bool alreadyAllocated = pageAllocated(pageIndex);
-                if (request.prefetch && !alreadyAllocated) {
-                    const uint64_t bytes = storage_.allocationSize(scene::meshletStreamDevicePayloadSize(asset_->pages()[pageIndex]));
-                    // Speculation uses spare capacity only and never triggers
-                    // eviction. Keep one quarter available for actual demand.
-                    if (storage_.usedBytes() + bytes > storage_.capacityBytes() * 3u / 4u || !storage_.canAllocate(bytes) ||
-                        (pageLoader_.ready() && queuedUploadCount() >= std::max(maxPageLoadsInFlight_ / 4u, 1u)) ||
-                        (maxResidentPages_ != 0 && activePages_.size() + 1 > uint64_t(maxResidentPages_) * 3u / 4u)) {
-                        ++stats_.totalPrefetchDeferred;
-                        continue;
-                    }
+                if (prioritized) {
+                    std::pop_heap(taskPages.begin(), taskPages.end(), lowerPriority);
+                    ++stats_.cpuWork.admissionPriorityPops;
                 }
-                (void)requestPage(pageIndex);
-                const auto admitted = pages_.find(pageIndex);
+                const auto request = taskPages.back();
+                taskPages.pop_back();
+                ++stats_.cpuWork.admissionCalls;
+                (void)requestPage(request.pageIndex);
+                const auto admitted = pages_.find(request.pageIndex);
                 if (admitted != pages_.end()) {
                     admitted->second.screenBenefit = request.screenBenefit;
-                    if (!alreadyAllocated) {
+                    if (request.needsAllocation) {
                         admitted->second.prefetch = request.prefetch;
                         stats_.totalPrefetchAdmitted += request.prefetch;
                     }
@@ -844,11 +900,10 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     stats_.frameGpuInvalidRequestCount += requests.invalidPageCounter;
     stats_.totalGpuInvalidRequestCount += requests.invalidPageCounter;
 
-    std::vector<PageRequest> uniqueRequests;
+    auto& uniqueRequests = requestScratch_;
     CpuProfileScope detail(profiler, "Prepare load containers");
+    uniqueRequests.clear();
     uniqueRequests.reserve(requests.loadPageIds.size());
-    requestMarks_.clear();
-    requestMarks_.reserve(requests.loadPageIds.size());
     detail.next("Validate / merge loads");
     for (size_t index = 0; index < requests.loadPageIds.size(); ++index) {
         const uint32_t encodedPage = requests.loadPageIds[index];
@@ -862,23 +917,33 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
         float benefit = index < requests.loadPriorities.size() ? requests.loadPriorities[index] : -1.0f;
         if (!std::isfinite(benefit)) { benefit = 0.0f; }
         benefit = std::clamp(benefit, -1.0f, 1e9f);
-        const auto [slot, inserted] = requestMarks_.emplace(pageIndex, uniqueRequests.size());
-        if (!inserted) {
-            uniqueRequests[slot->second].screenBenefit = std::max(uniqueRequests[slot->second].screenBenefit, benefit);
-            uniqueRequests[slot->second].prefetch = uniqueRequests[slot->second].prefetch && prefetch;
-            if (latency_ && !prefetch && latency_->pending.contains(pageIndex)) {
-                latency_->request(pageIndex, requests.frameIndex, frameIndex_, false);
-            }
+        auto& block = requestIndexBlocks_[pageIndex / kRequestIndexBlockSize];
+        if (!block) {
+            block = std::make_unique<RequestIndexBlock>();
+            block->fill(UINT32_MAX);
+        }
+        uint32_t& slot = (*block)[pageIndex % kRequestIndexBlockSize];
+        if (slot < uniqueRequests.size() && uniqueRequests[slot].pageIndex == pageIndex) {
+            auto& merged = uniqueRequests[slot];
+            merged.screenBenefit = std::max(merged.screenBenefit, benefit);
+            merged.prefetch = merged.prefetch && prefetch;
+            ++stats_.cpuWork.requestDuplicatesMerged;
             continue;
         }
+        slot = static_cast<uint32_t>(uniqueRequests.size());
         uniqueRequests.push_back({.pageIndex = pageIndex, .screenBenefit = benefit, .prefetch = prefetch});
-        if (latency_ && !pageResident(pageIndex)) {
-            const auto tracked = pages_.find(pageIndex);
-            if (tracked == pages_.end() || !tracked->second.lockedFallback) {
-                latency_->request(pageIndex, requests.frameIndex, frameIndex_, prefetch);
+        requestedPages_.push_back(pageIndex);
+    }
+    // Track the final merged demand once, including prefetch -> demand promotion.
+    // Resident checks and latency map/clock work do not run for each duplicate.
+    detail.next("Track merged demand");
+    if (latency_) {
+        for (const auto& request : uniqueRequests) {
+            const auto tracked = pages_.find(request.pageIndex);
+            if (tracked == pages_.end() || (!residentState(tracked->second.state) && !tracked->second.lockedFallback)) {
+                latency_->request(request.pageIndex, requests.frameIndex, frameIndex_, request.prefetch);
             }
         }
-        requestedPages_.push_back(pageIndex);
     }
     stats_.frameUniqueGpuRequestCount += static_cast<uint32_t>(uniqueRequests.size());
     stats_.totalUniqueGpuRequestCount += uniqueRequests.size();
@@ -969,7 +1034,8 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     }
 
     auto& taskPages = requestTaskPages_[taskIndex];
-    taskPages = std::move(uniqueRequests);
+    taskPages.swap(uniqueRequests);
+    uniqueRequests.clear();
     std::vector<uint32_t>& taskUnloadPages = requestTaskUnloadPages_[taskIndex];
     taskUnloadPages = std::move(uniqueUnloadRequests);
     requestTaskQueue_.push(taskIndex, frameIndex_ + (immediateGpuRequests_ ? 0u : 1u));

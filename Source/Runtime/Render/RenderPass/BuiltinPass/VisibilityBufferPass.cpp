@@ -397,7 +397,7 @@ public:
     bool supportsFrameOverlap() const override
     {
         return streamEnabled_ && properties().value("compactClas", true) && streamRuntime_ &&
-            streamRuntime_->sceneReadiness().ready;
+            streamRuntime_->sceneReady();
     }
     RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
 

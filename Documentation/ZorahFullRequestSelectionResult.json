@@ -1,0 +1,1541 @@
+{
+  "baseline": "build-release\\full-readiness-cache-0923",
+  "current": "build-release\\full-request-selection-0923",
+  "runs": [
+    {
+      "run": 1,
+      "conditionsMatch": {
+        "absoluteKeyframes": true,
+        "config": true,
+        "outputExtent": true,
+        "renderExtent": true,
+        "graph": true,
+        "hidden": true,
+        "vsync": true,
+        "validationRequested": true
+      },
+      "baselineFrameMs": {
+        "count": 1414,
+        "mean": 21.222851555869873,
+        "p50": 20.8878,
+        "p95": 28.2173,
+        "p99": 31.0616,
+        "max": 34.3027
+      },
+      "frameMs": {
+        "count": 1283,
+        "mean": 23.401392439594698,
+        "p50": 22.1556,
+        "p95": 33.8736,
+        "p99": 37.9772,
+        "max": 51.0731
+      },
+      "slowFrames": 83,
+      "timingsMs": {
+        "baseline": {
+          "Frame": {
+            "count": 1414,
+            "mean": 21.14170021216407,
+            "p50": 20.7994,
+            "p95": 28.1338,
+            "p99": 30.9495,
+            "max": 34.1831
+          },
+          "Frame/Wait Frame Slot Before Input": {
+            "count": 1414,
+            "mean": 1.516984370579915,
+            "p50": 0.0893,
+            "p95": 5.501,
+            "p99": 6.9465,
+            "max": 8.2406
+          },
+          "Frame/Poll Events": {
+            "count": 1414,
+            "mean": 0.007894271570014145,
+            "p50": 0.0069,
+            "p95": 0.0109,
+            "p99": 0.0143,
+            "max": 0.1851
+          },
+          "Frame/Render Frame": {
+            "count": 1414,
+            "mean": 18.423262659123054,
+            "p50": 17.6998,
+            "p95": 26.2139,
+            "p99": 29.7764,
+            "max": 34.1168
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests": {
+            "count": 1414,
+            "mean": 5.654001343705799,
+            "p50": 5.3409,
+            "p95": 8.4782,
+            "p99": 10.3689,
+            "max": 12.3541
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+            "count": 1414,
+            "mean": 2.340967468175389,
+            "p50": 2.17,
+            "p95": 3.7673,
+            "p99": 4.83,
+            "max": 7.1124
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Prepare load containers": {
+            "count": 1414,
+            "mean": 0.36597560113154176,
+            "p50": 0.3311,
+            "p95": 0.6596,
+            "p99": 0.798,
+            "max": 1.171
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads": {
+            "count": 1414,
+            "mean": 1.9745983026874114,
+            "p50": 1.8382,
+            "p95": 3.1286,
+            "p99": 4.1596,
+            "max": 6.1486
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+            "count": 1414,
+            "mean": 0.0012941301272984442,
+            "p50": 0.0012,
+            "p95": 0.0027,
+            "p99": 0.0038,
+            "max": 0.0317
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Prepare unused-page set": {
+            "count": 1414,
+            "mean": 0.00037284299858557287,
+            "p50": 0.0003,
+            "p95": 0.0008,
+            "p99": 0.0012,
+            "max": 0.0026
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Validate / insert unused pages": {
+            "count": 1414,
+            "mean": 0.0006838755304101839,
+            "p50": 0.0006,
+            "p95": 0.0017,
+            "p99": 0.0022,
+            "max": 0.0037
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+            "count": 1414,
+            "mean": 0.878295756718529,
+            "p50": 0.85,
+            "p95": 1.2493,
+            "p99": 1.4832,
+            "max": 1.9016
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+            "count": 1414,
+            "mean": 2.4326780763790663,
+            "p50": 2.2897,
+            "p95": 3.5527,
+            "p99": 4.6112,
+            "max": 7.3556
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Queue request task": {
+            "count": 1414,
+            "mean": 0.0049874115983026875,
+            "p50": 0.0048,
+            "p95": 0.0073,
+            "p99": 0.012,
+            "max": 0.0325
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks": {
+            "count": 1414,
+            "mean": 2.42745,
+            "p50": 2.2852,
+            "p95": 3.541,
+            "p99": 4.6058,
+            "max": 7.3489
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Select latest request task": {
+            "count": 1414,
+            "mean": 2.7722772277227722e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0003
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Apply explicit unloads": {
+            "count": 1414,
+            "mean": 2.4115983026874113e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0003
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Refresh request priorities": {
+            "count": 1414,
+            "mean": 0.3849373408769448,
+            "p50": 0.3545,
+            "p95": 0.6431,
+            "p99": 0.7913,
+            "max": 1.6506
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Sort admission priority": {
+            "count": 1414,
+            "mean": 0.7902260254596888,
+            "p50": 0.7845,
+            "p95": 1.0334,
+            "p99": 1.1837,
+            "max": 3.1894
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Cancel stale queued loads": {
+            "count": 1414,
+            "mean": 0.0001661244695898161,
+            "p50": 0.0002,
+            "p95": 0.0004,
+            "p99": 0.0005,
+            "max": 0.0007
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch": {
+            "count": 1414,
+            "mean": 1.250682178217822,
+            "p50": 1.1307,
+            "p95": 2.0378,
+            "p99": 2.905,
+            "max": 5.4752
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Release request task": {
+            "count": 1414,
+            "mean": 3.606789250353607e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0003
+          }
+        },
+        "current": {
+          "Frame": {
+            "count": 1283,
+            "mean": 23.31567700701481,
+            "p50": 22.0714,
+            "p95": 33.8051,
+            "p99": 37.9015,
+            "max": 50.9681
+          },
+          "Frame/Wait Frame Slot Before Input": {
+            "count": 1283,
+            "mean": 1.093474824629774,
+            "p50": 0.0153,
+            "p95": 5.6619,
+            "p99": 8.4159,
+            "max": 27.9832
+          },
+          "Frame/Poll Events": {
+            "count": 1283,
+            "mean": 0.008468978955572876,
+            "p50": 0.0069,
+            "p95": 0.0129,
+            "p99": 0.0361,
+            "max": 0.1878
+          },
+          "Frame/Render Frame": {
+            "count": 1283,
+            "mean": 18.436935463756818,
+            "p50": 18.2231,
+            "p95": 25.5339,
+            "p99": 28.936,
+            "max": 33.2597
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests": {
+            "count": 1283,
+            "mean": 4.693771395167576,
+            "p50": 4.5621,
+            "p95": 6.7721,
+            "p99": 8.0741,
+            "max": 9.9484
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+            "count": 1283,
+            "mean": 1.412689945440374,
+            "p50": 1.3755,
+            "p95": 2.0006,
+            "p99": 2.4611,
+            "max": 3.9851
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Prepare load containers": {
+            "count": 1283,
+            "mean": 4.863600935307872e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0002,
+            "max": 0.0004
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads": {
+            "count": 1283,
+            "mean": 0.2571265783320343,
+            "p50": 0.2556,
+            "p95": 0.3592,
+            "p99": 0.3972,
+            "max": 0.7485
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Track merged demand": {
+            "count": 1283,
+            "mean": 1.155038113795791,
+            "p50": 1.1163,
+            "p95": 1.6515,
+            "p99": 2.1537,
+            "max": 3.5101
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+            "count": 1283,
+            "mean": 0.001478721745908028,
+            "p50": 0.0014,
+            "p95": 0.0032,
+            "p99": 0.004,
+            "max": 0.0087
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Prepare unused-page set": {
+            "count": 1283,
+            "mean": 0.0004924395946999221,
+            "p50": 0.0005,
+            "p95": 0.001,
+            "p99": 0.0014,
+            "max": 0.0073
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Validate / insert unused pages": {
+            "count": 1283,
+            "mean": 0.0007537022603273577,
+            "p50": 0.0006,
+            "p95": 0.0019,
+            "p99": 0.0026,
+            "max": 0.0049
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+            "count": 1283,
+            "mean": 0.9393294621979734,
+            "p50": 0.9116,
+            "p95": 1.3466,
+            "p99": 1.5559,
+            "max": 2.7124
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+            "count": 1283,
+            "mean": 2.339266017147311,
+            "p50": 2.2082,
+            "p95": 3.8576,
+            "p99": 4.9958,
+            "max": 6.2386
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Queue request task": {
+            "count": 1283,
+            "mean": 0.00040327357755261104,
+            "p50": 0.0004,
+            "p95": 0.0008,
+            "p99": 0.001,
+            "max": 0.0017
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks": {
+            "count": 1283,
+            "mean": 2.3386602494154327,
+            "p50": 2.2075,
+            "p95": 3.8572,
+            "p99": 4.9952,
+            "max": 6.2382
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Select latest request task": {
+            "count": 1283,
+            "mean": 3.180046765393609e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0007
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Apply explicit unloads": {
+            "count": 1283,
+            "mean": 3.351519875292284e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0002,
+            "max": 0.0003
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Refresh request priorities": {
+            "count": 1283,
+            "mean": 0.8449281371784879,
+            "p50": 0.8537,
+            "p95": 1.123,
+            "p99": 1.2237,
+            "max": 1.8784
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Cancel stale queued loads": {
+            "count": 1283,
+            "mean": 0.0002171473109898675,
+            "p50": 0.0002,
+            "p95": 0.0004,
+            "p99": 0.0005,
+            "max": 0.0009
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Filter blocked admission": {
+            "count": 1283,
+            "mean": 0.31436983632112236,
+            "p50": 0.2738,
+            "p95": 0.4946,
+            "p99": 0.5266,
+            "max": 0.6822
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Prepare admission heap": {
+            "count": 1283,
+            "mean": 0.1197091971940764,
+            "p50": 0.1177,
+            "p95": 0.153,
+            "p99": 0.167,
+            "max": 0.6071
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch": {
+            "count": 1283,
+            "mean": 1.0579290724863601,
+            "p50": 0.8932,
+            "p95": 2.4134,
+            "p99": 3.5129,
+            "max": 4.7113
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Release request task": {
+            "count": 1283,
+            "mean": 3.351519875292284e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0003
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "mean": 13568.127825409198,
+          "max": 16388
+        },
+        "uploads": {
+          "mean": 23.127045985970383,
+          "max": 159
+        },
+        "evictions": {
+          "mean": 22.425565081839437,
+          "max": 256
+        },
+        "budgetRetrySuppressed": {
+          "mean": 13477.942322681216,
+          "max": 16220
+        },
+        "admissionCandidates": {
+          "mean": 13524.494933749025,
+          "max": 16299
+        },
+        "admissionCalls": {
+          "mean": 46.55261106780982,
+          "max": 482
+        },
+        "admissionPriorityPops": {
+          "mean": 46.55261106780982,
+          "max": 482
+        },
+        "admissionBypassed": {
+          "mean": 13521.575214341387,
+          "max": 16309
+        },
+        "requestDuplicatesMerged": {
+          "mean": 0,
+          "max": 0
+        },
+        "geometryBytes": {
+          "mean": 3744874338.968044,
+          "max": 3758094592
+        },
+        "clasBytes": {
+          "mean": 1818385775.6383476,
+          "max": 1831399552
+        },
+        "textureResidentBytes": {
+          "mean": 256305170.75604054,
+          "max": 282587648
+        },
+        "allocationFailures": {
+          "mean": 1,
+          "max": 1
+        },
+        "loadFailures": {
+          "mean": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "mean": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "mean": 8870.339049103663,
+          "max": 12425
+        }
+      },
+      "uploadsPerSecond": 988.2764901989282,
+      "drainReasons": [
+        0
+      ],
+      "missingGpuFrames": 0
+    },
+    {
+      "run": 2,
+      "conditionsMatch": {
+        "absoluteKeyframes": true,
+        "config": true,
+        "outputExtent": true,
+        "renderExtent": true,
+        "graph": true,
+        "hidden": true,
+        "vsync": true,
+        "validationRequested": true
+      },
+      "baselineFrameMs": {
+        "count": 1427,
+        "mean": 21.033197266993692,
+        "p50": 20.9423,
+        "p95": 27.2554,
+        "p99": 31.0429,
+        "max": 44.9803
+      },
+      "frameMs": {
+        "count": 1349,
+        "mean": 22.24949562638992,
+        "p50": 21.4292,
+        "p95": 32.902,
+        "p99": 36.6763,
+        "max": 51.1607
+      },
+      "slowFrames": 58,
+      "timingsMs": {
+        "baseline": {
+          "Frame": {
+            "count": 1427,
+            "mean": 20.953664540995096,
+            "p50": 20.8589,
+            "p95": 27.1702,
+            "p99": 30.952,
+            "max": 44.9114
+          },
+          "Frame/Wait Frame Slot Before Input": {
+            "count": 1427,
+            "mean": 1.6428667133847232,
+            "p50": 0.4063,
+            "p95": 5.9767,
+            "p99": 7.7401,
+            "max": 11.9755
+          },
+          "Frame/Poll Events": {
+            "count": 1427,
+            "mean": 0.006822564821303433,
+            "p50": 0.0064,
+            "p95": 0.0102,
+            "p99": 0.0122,
+            "max": 0.0636
+          },
+          "Frame/Render Frame": {
+            "count": 1427,
+            "mean": 17.99248962859145,
+            "p50": 17.5095,
+            "p95": 24.3828,
+            "p99": 27.4625,
+            "max": 36.6535
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests": {
+            "count": 1427,
+            "mean": 5.583541906096706,
+            "p50": 5.3139,
+            "p95": 7.7517,
+            "p99": 9.3511,
+            "max": 14.9972
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+            "count": 1427,
+            "mean": 2.3230598458304135,
+            "p50": 2.2152,
+            "p95": 3.4061,
+            "p99": 4.4008,
+            "max": 5.4895
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Prepare load containers": {
+            "count": 1427,
+            "mean": 0.35678185003503854,
+            "p50": 0.3295,
+            "p95": 0.6117,
+            "p99": 0.7316,
+            "max": 0.8991
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads": {
+            "count": 1427,
+            "mean": 1.96585935529082,
+            "p50": 1.8785,
+            "p95": 2.8466,
+            "p99": 3.8428,
+            "max": 4.637
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+            "count": 1427,
+            "mean": 0.0012463910301331465,
+            "p50": 0.0011,
+            "p95": 0.0027,
+            "p99": 0.0033,
+            "max": 0.005
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Prepare unused-page set": {
+            "count": 1427,
+            "mean": 0.00036103714085494043,
+            "p50": 0.0003,
+            "p95": 0.0008,
+            "p99": 0.001,
+            "max": 0.0022
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Validate / insert unused pages": {
+            "count": 1427,
+            "mean": 0.0006783461807988787,
+            "p50": 0.0006,
+            "p95": 0.0017,
+            "p99": 0.0023,
+            "max": 0.0039
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+            "count": 1427,
+            "mean": 0.8343852838121933,
+            "p50": 0.7954,
+            "p95": 1.1802,
+            "p99": 1.3791,
+            "max": 4.3727
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+            "count": 1427,
+            "mean": 2.4240266292922215,
+            "p50": 2.3018,
+            "p95": 3.3933,
+            "p99": 4.0872,
+            "max": 6.4808
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Queue request task": {
+            "count": 1427,
+            "mean": 0.006244008409250175,
+            "p50": 0.006,
+            "p95": 0.0095,
+            "p99": 0.0114,
+            "max": 0.0392
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks": {
+            "count": 1427,
+            "mean": 2.4175473020322356,
+            "p50": 2.2959,
+            "p95": 3.3866,
+            "p99": 4.0796,
+            "max": 6.475
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Select latest request task": {
+            "count": 1427,
+            "mean": 3.0273300630693763e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0003
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Apply explicit unloads": {
+            "count": 1427,
+            "mean": 2.8170988086895584e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0002
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Refresh request priorities": {
+            "count": 1427,
+            "mean": 0.3909464611072179,
+            "p50": 0.3626,
+            "p95": 0.6062,
+            "p99": 0.7302,
+            "max": 2.526
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Sort admission priority": {
+            "count": 1427,
+            "mean": 0.8253994393833217,
+            "p50": 0.8121,
+            "p95": 1.0998,
+            "p99": 1.2198,
+            "max": 2.2298
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Cancel stale queued loads": {
+            "count": 1427,
+            "mean": 0.00014555010511562718,
+            "p50": 0.0001,
+            "p95": 0.0003,
+            "p99": 0.0005,
+            "max": 0.0008
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch": {
+            "count": 1427,
+            "mean": 1.199606447091801,
+            "p50": 1.0937,
+            "p95": 1.9145,
+            "p99": 2.5684,
+            "max": 5.1132
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Release request task": {
+            "count": 1427,
+            "mean": 3.952347582340575e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0003
+          }
+        },
+        "current": {
+          "Frame": {
+            "count": 1349,
+            "mean": 22.165707635285397,
+            "p50": 21.3504,
+            "p95": 32.8001,
+            "p99": 36.5907,
+            "max": 51.0665
+          },
+          "Frame/Wait Frame Slot Before Input": {
+            "count": 1349,
+            "mean": 1.9396728687916975,
+            "p50": 0.4602,
+            "p95": 6.9886,
+            "p99": 9.2247,
+            "max": 25.7756
+          },
+          "Frame/Poll Events": {
+            "count": 1349,
+            "mean": 0.008471312083024462,
+            "p50": 0.0071,
+            "p95": 0.0128,
+            "p99": 0.0336,
+            "max": 0.2532
+          },
+          "Frame/Render Frame": {
+            "count": 1349,
+            "mean": 17.063937583395106,
+            "p50": 16.2729,
+            "p95": 24.8964,
+            "p99": 28.5689,
+            "max": 34.6997
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests": {
+            "count": 1349,
+            "mean": 4.567586879169755,
+            "p50": 4.3289,
+            "p95": 6.887,
+            "p99": 8.2733,
+            "max": 11.0234
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+            "count": 1349,
+            "mean": 1.4018737583395107,
+            "p50": 1.3178,
+            "p95": 2.1123,
+            "p99": 3.01,
+            "max": 3.6485
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Prepare load containers": {
+            "count": 1349,
+            "mean": 5.767234988880653e-05,
+            "p50": 0.0001,
+            "p95": 0.0001,
+            "p99": 0.0002,
+            "max": 0.0004
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads": {
+            "count": 1349,
+            "mean": 0.2593492957746479,
+            "p50": 0.2524,
+            "p95": 0.3712,
+            "p99": 0.4442,
+            "max": 0.8584
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Track merged demand": {
+            "count": 1349,
+            "mean": 1.142026686434396,
+            "p50": 1.0566,
+            "p95": 1.7652,
+            "p99": 2.6577,
+            "max": 3.2031
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+            "count": 1349,
+            "mean": 0.0013411415863602669,
+            "p50": 0.0013,
+            "p95": 0.0027,
+            "p99": 0.0038,
+            "max": 0.0113
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Prepare unused-page set": {
+            "count": 1349,
+            "mean": 0.00037546330615270565,
+            "p50": 0.0003,
+            "p95": 0.0008,
+            "p99": 0.0012,
+            "max": 0.0097
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Validate / insert unused pages": {
+            "count": 1349,
+            "mean": 0.0007415122312824314,
+            "p50": 0.0007,
+            "p95": 0.0018,
+            "p99": 0.0024,
+            "max": 0.004
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+            "count": 1349,
+            "mean": 0.9050404744255004,
+            "p50": 0.8741,
+            "p95": 1.3205,
+            "p99": 1.6142,
+            "max": 2.5561
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+            "count": 1349,
+            "mean": 2.2585088213491473,
+            "p50": 2.0606,
+            "p95": 3.7921,
+            "p99": 4.7779,
+            "max": 6.5097
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Queue request task": {
+            "count": 1349,
+            "mean": 0.0004847294292068199,
+            "p50": 0.0004,
+            "p95": 0.0008,
+            "p99": 0.001,
+            "max": 0.0254
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks": {
+            "count": 1349,
+            "mean": 2.257798295033358,
+            "p50": 2.0601,
+            "p95": 3.7914,
+            "p99": 4.7515,
+            "max": 6.5087
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Select latest request task": {
+            "count": 1349,
+            "mean": 2.8243143068939956e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0001
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Apply explicit unloads": {
+            "count": 1349,
+            "mean": 2.6612305411415866e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0002
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Refresh request priorities": {
+            "count": 1349,
+            "mean": 0.8563452186805042,
+            "p50": 0.8491,
+            "p95": 1.1583,
+            "p99": 1.3391,
+            "max": 2.1645
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Cancel stale queued loads": {
+            "count": 1349,
+            "mean": 0.0001535952557449963,
+            "p50": 0.0001,
+            "p95": 0.0003,
+            "p99": 0.0005,
+            "max": 0.0017
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Filter blocked admission": {
+            "count": 1349,
+            "mean": 0.2898936249073388,
+            "p50": 0.2696,
+            "p95": 0.4504,
+            "p99": 0.5132,
+            "max": 0.7962
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Prepare admission heap": {
+            "count": 1349,
+            "mean": 0.1145312824314307,
+            "p50": 0.1135,
+            "p95": 0.1439,
+            "p99": 0.173,
+            "max": 0.2811
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch": {
+            "count": 1349,
+            "mean": 0.9955057079318014,
+            "p50": 0.806,
+            "p95": 2.2609,
+            "p99": 3.1845,
+            "max": 4.6853
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Release request task": {
+            "count": 1349,
+            "mean": 3.246849518161601e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0003
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "mean": 13585.959229058562,
+          "max": 16397
+        },
+        "uploads": {
+          "mean": 21.883617494440326,
+          "max": 172
+        },
+        "evictions": {
+          "mean": 21.22461082283173,
+          "max": 256
+        },
+        "budgetRetrySuppressed": {
+          "mean": 13499.796886582653,
+          "max": 16216
+        },
+        "admissionCandidates": {
+          "mean": 13543.905114899926,
+          "max": 16289
+        },
+        "admissionCalls": {
+          "mean": 44.10822831727205,
+          "max": 417
+        },
+        "admissionPriorityPops": {
+          "mean": 44.10822831727205,
+          "max": 417
+        },
+        "admissionBypassed": {
+          "mean": 13540.845070422536,
+          "max": 16305
+        },
+        "requestDuplicatesMerged": {
+          "mean": 1.0059303187546331,
+          "max": 534
+        },
+        "geometryBytes": {
+          "mean": 3744804113.4588585,
+          "max": 3758094592
+        },
+        "clasBytes": {
+          "mean": 1818627369.654559,
+          "max": 1831180416
+        },
+        "textureResidentBytes": {
+          "mean": 259404397.30763528,
+          "max": 288059904
+        },
+        "allocationFailures": {
+          "mean": 1,
+          "max": 1
+        },
+        "loadFailures": {
+          "mean": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "mean": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "mean": 8449.97924388436,
+          "max": 12425
+        }
+      },
+      "uploadsPerSecond": 983.5556662455024,
+      "drainReasons": [
+        0
+      ],
+      "missingGpuFrames": 0
+    },
+    {
+      "run": 3,
+      "conditionsMatch": {
+        "absoluteKeyframes": true,
+        "config": true,
+        "outputExtent": true,
+        "renderExtent": true,
+        "graph": true,
+        "hidden": true,
+        "vsync": true,
+        "validationRequested": true
+      },
+      "baselineFrameMs": {
+        "count": 1363,
+        "mean": 22.022739251650773,
+        "p50": 21.4646,
+        "p95": 30.1179,
+        "p99": 33.6471,
+        "max": 60.6888
+      },
+      "frameMs": {
+        "count": 1342,
+        "mean": 22.356977123695977,
+        "p50": 22.0028,
+        "p95": 29.1057,
+        "p99": 31.7204,
+        "max": 36.8508
+      },
+      "slowFrames": 8,
+      "timingsMs": {
+        "baseline": {
+          "Frame": {
+            "count": 1363,
+            "mean": 21.94285509904622,
+            "p50": 21.3885,
+            "p95": 30.0293,
+            "p99": 33.5404,
+            "max": 60.6044
+          },
+          "Frame/Wait Frame Slot Before Input": {
+            "count": 1363,
+            "mean": 1.5999969919295671,
+            "p50": 0.0282,
+            "p95": 6.0745,
+            "p99": 7.761,
+            "max": 30.4802
+          },
+          "Frame/Poll Events": {
+            "count": 1363,
+            "mean": 0.008138884812912693,
+            "p50": 0.0071,
+            "p95": 0.0121,
+            "p99": 0.0184,
+            "max": 0.3061
+          },
+          "Frame/Render Frame": {
+            "count": 1363,
+            "mean": 18.946997872340425,
+            "p50": 17.8503,
+            "p95": 28.7413,
+            "p99": 32.2896,
+            "max": 37.7925
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests": {
+            "count": 1363,
+            "mean": 5.9835267791636095,
+            "p50": 5.4632,
+            "p95": 9.5782,
+            "p99": 11.5579,
+            "max": 13.1684
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+            "count": 1363,
+            "mean": 2.509638517975055,
+            "p50": 2.2349,
+            "p95": 4.4253,
+            "p99": 5.4519,
+            "max": 7.8236
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Prepare load containers": {
+            "count": 1363,
+            "mean": 0.3980355099046221,
+            "p50": 0.3621,
+            "p95": 0.702,
+            "p99": 0.8368,
+            "max": 0.9985
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads": {
+            "count": 1363,
+            "mean": 2.111178283198826,
+            "p50": 1.8618,
+            "p95": 3.8214,
+            "p99": 4.8396,
+            "max": 7.1244
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+            "count": 1363,
+            "mean": 0.0014378576669112253,
+            "p50": 0.0013,
+            "p95": 0.0032,
+            "p99": 0.0046,
+            "max": 0.0095
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Prepare unused-page set": {
+            "count": 1363,
+            "mean": 0.00041878209831254585,
+            "p50": 0.0004,
+            "p95": 0.0009,
+            "p99": 0.0014,
+            "max": 0.0031
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Validate / insert unused pages": {
+            "count": 1363,
+            "mean": 0.0007872340425531915,
+            "p50": 0.0006,
+            "p95": 0.002,
+            "p99": 0.003,
+            "max": 0.0085
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+            "count": 1363,
+            "mean": 0.918013206162876,
+            "p50": 0.8719,
+            "p95": 1.3433,
+            "p99": 1.7065,
+            "max": 2.4449
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+            "count": 1363,
+            "mean": 2.5536272927366106,
+            "p50": 2.363,
+            "p95": 3.9365,
+            "p99": 4.9874,
+            "max": 7.5234
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Queue request task": {
+            "count": 1363,
+            "mean": 0.00620366837857667,
+            "p50": 0.0059,
+            "p95": 0.0096,
+            "p99": 0.0148,
+            "max": 0.0462
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks": {
+            "count": 1363,
+            "mean": 2.5471135730007335,
+            "p50": 2.3569,
+            "p95": 3.9285,
+            "p99": 4.9745,
+            "max": 7.516
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Select latest request task": {
+            "count": 1363,
+            "mean": 3.162142333088775e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0004
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Apply explicit unloads": {
+            "count": 1363,
+            "mean": 2.648569332355099e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0003
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Refresh request priorities": {
+            "count": 1363,
+            "mean": 0.4131870873074101,
+            "p50": 0.3726,
+            "p95": 0.7056,
+            "p99": 0.944,
+            "max": 1.9749
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Sort admission priority": {
+            "count": 1363,
+            "mean": 0.8017151137197358,
+            "p50": 0.7823,
+            "p95": 1.0208,
+            "p99": 1.217,
+            "max": 3.1253
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Cancel stale queued loads": {
+            "count": 1363,
+            "mean": 0.00017006603081438004,
+            "p50": 0.0001,
+            "p95": 0.0004,
+            "p99": 0.0006,
+            "max": 0.0009
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch": {
+            "count": 1363,
+            "mean": 1.3305906089508437,
+            "p50": 1.1839,
+            "p95": 2.3522,
+            "p99": 3.2123,
+            "max": 6.271
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Release request task": {
+            "count": 1363,
+            "mean": 4.027879677182686e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0003
+          }
+        },
+        "current": {
+          "Frame": {
+            "count": 1342,
+            "mean": 22.26963830104322,
+            "p50": 21.9136,
+            "p95": 29.0197,
+            "p99": 31.5826,
+            "max": 36.7621
+          },
+          "Frame/Wait Frame Slot Before Input": {
+            "count": 1342,
+            "mean": 1.8268671385991058,
+            "p50": 0.8252,
+            "p95": 6.1987,
+            "p99": 7.7986,
+            "max": 16.1756
+          },
+          "Frame/Poll Events": {
+            "count": 1342,
+            "mean": 0.007905514157973173,
+            "p50": 0.0074,
+            "p95": 0.0114,
+            "p99": 0.0157,
+            "max": 0.0516
+          },
+          "Frame/Render Frame": {
+            "count": 1342,
+            "mean": 18.243671087928465,
+            "p50": 17.7647,
+            "p95": 25.4623,
+            "p99": 30.1332,
+            "max": 35.3503
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests": {
+            "count": 1342,
+            "mean": 4.738796646795827,
+            "p50": 4.536,
+            "p95": 6.6897,
+            "p99": 8.2372,
+            "max": 11.3519
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads": {
+            "count": 1342,
+            "mean": 1.4741435916542474,
+            "p50": 1.3824,
+            "p95": 2.1875,
+            "p99": 2.9714,
+            "max": 4.2106
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Prepare load containers": {
+            "count": 1342,
+            "mean": 4.500745156482862e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0002,
+            "max": 0.0004
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads": {
+            "count": 1342,
+            "mean": 0.26789761549925484,
+            "p50": 0.2604,
+            "p95": 0.3805,
+            "p99": 0.4866,
+            "max": 0.6977
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Track merged demand": {
+            "count": 1342,
+            "mean": 1.205729433681073,
+            "p50": 1.1185,
+            "p95": 1.8419,
+            "p99": 2.6316,
+            "max": 3.8588
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads": {
+            "count": 1342,
+            "mean": 0.0014581967213114755,
+            "p50": 0.0014,
+            "p95": 0.0028,
+            "p99": 0.0035,
+            "max": 0.022
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Prepare unused-page set": {
+            "count": 1342,
+            "mean": 0.0004094634873323398,
+            "p50": 0.0004,
+            "p95": 0.0008,
+            "p99": 0.0012,
+            "max": 0.0028
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate unloads/Validate / insert unused pages": {
+            "count": 1342,
+            "mean": 0.000807973174366617,
+            "p50": 0.0007,
+            "p95": 0.0018,
+            "p99": 0.0024,
+            "max": 0.0215
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Update resident demand": {
+            "count": 1342,
+            "mean": 0.9602449329359165,
+            "p50": 0.9068,
+            "p95": 1.3985,
+            "p99": 1.8325,
+            "max": 2.3637
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch": {
+            "count": 1342,
+            "mean": 2.301912220566319,
+            "p50": 2.1871,
+            "p95": 3.3466,
+            "p99": 4.1745,
+            "max": 6.572
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Queue request task": {
+            "count": 1342,
+            "mean": 0.0004190760059612519,
+            "p50": 0.0004,
+            "p95": 0.0008,
+            "p99": 0.0011,
+            "max": 0.0025
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks": {
+            "count": 1342,
+            "mean": 2.301238822652757,
+            "p50": 2.1865,
+            "p95": 3.3462,
+            "p99": 4.1737,
+            "max": 6.5712
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Select latest request task": {
+            "count": 1342,
+            "mean": 2.8241430700447095e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0009
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Apply explicit unloads": {
+            "count": 1342,
+            "mean": 2.8539493293591656e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0002
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Refresh request priorities": {
+            "count": 1342,
+            "mean": 0.909766169895678,
+            "p50": 0.907,
+            "p95": 1.1972,
+            "p99": 1.4889,
+            "max": 2.6018
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Cancel stale queued loads": {
+            "count": 1342,
+            "mean": 0.0001652757078986587,
+            "p50": 0.0001,
+            "p95": 0.0004,
+            "p99": 0.0005,
+            "max": 0.0012
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Filter blocked admission": {
+            "count": 1342,
+            "mean": 0.28646460506706406,
+            "p50": 0.2605,
+            "p95": 0.4652,
+            "p99": 0.5348,
+            "max": 0.7304
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Prepare admission heap": {
+            "count": 1342,
+            "mean": 0.1168022354694486,
+            "p50": 0.1152,
+            "p95": 0.1484,
+            "p99": 0.224,
+            "max": 0.3434
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch": {
+            "count": 1342,
+            "mean": 0.9864785394932936,
+            "p50": 0.8814,
+            "p95": 1.8961,
+            "p99": 2.7414,
+            "max": 5.4133
+          },
+          "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Release request task": {
+            "count": 1342,
+            "mean": 2.9731743666169898e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0001
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "mean": 13553.757078986588,
+          "max": 16369
+        },
+        "uploads": {
+          "mean": 22.13189269746647,
+          "max": 149
+        },
+        "evictions": {
+          "mean": 21.45827123695976,
+          "max": 256
+        },
+        "budgetRetrySuppressed": {
+          "mean": 13465.322652757079,
+          "max": 16210
+        },
+        "admissionCandidates": {
+          "mean": 13509.912816691505,
+          "max": 16275
+        },
+        "admissionCalls": {
+          "mean": 44.59016393442623,
+          "max": 449
+        },
+        "admissionPriorityPops": {
+          "mean": 44.59016393442623,
+          "max": 449
+        },
+        "admissionBypassed": {
+          "mean": 13509.166915052161,
+          "max": 16304
+        },
+        "requestDuplicatesMerged": {
+          "mean": 0,
+          "max": 0
+        },
+        "geometryBytes": {
+          "mean": 3745053055.80924,
+          "max": 3758094592
+        },
+        "clasBytes": {
+          "mean": 1818652646.819672,
+          "max": 1831198592
+        },
+        "textureResidentBytes": {
+          "mean": 254981010.8852459,
+          "max": 281539072
+        },
+        "allocationFailures": {
+          "mean": 1,
+          "max": 1
+        },
+        "loadFailures": {
+          "mean": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "mean": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "mean": 8639.577496274218,
+          "max": 12425
+        }
+      },
+      "uploadsPerSecond": 989.9322513511478,
+      "drainReasons": [
+        0
+      ],
+      "missingGpuFrames": 0
+    }
+  ],
+  "manifest": {
+    "protocol": "zorah-full-editor-roam-v1",
+    "executableSha256": "596538F1624201BA59C817996A91CE4BB3B3D889D1188CE4E71DC796A5C2D281",
+    "started": "2026-09-23T20:33:08.7322718+08:00",
+    "hidden": true,
+    "gitHead": "be8e49cb9c08726ef60ff8c1d7fade194779c6a2",
+    "shaderSha256": "4414EAF63FA53AC7EDB7C9B977983FD508C5B107ACA7B18ACB9DE6449CBAAA38",
+    "dirty": [
+      " ? External/microprofile",
+      " M Source/Editor/EditorFullRoamBenchmark.cpp",
+      " M Source/Runtime/Render/Profiling/RenderGraphProfile.h",
+      " M Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp",
+      " M Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp",
+      " M Source/Runtime/Render/Streamer/MeshletStreamClas.h",
+      " M Source/Runtime/Render/Streamer/MeshletStreamClasPool.cpp",
+      " M Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp",
+      " M Source/Runtime/Render/Streamer/MeshletStreamResidency.h",
+      " M Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp",
+      " M Source/Runtime/Render/Streamer/MeshletStreamRuntime.h",
+      " M tests/rhi/FrameContextTests.cpp",
+      " M tests/rhi/StreamerTests.cpp",
+      "?? Documentation/ZorahFullReadinessCache.md",
+      "?? Documentation/ZorahFullReadinessCacheResult.json",
+      "?? Documentation/ZorahFullReferenceProfileNextSteps.md"
+    ],
+    "asset": {
+      "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+      "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+      "bytes": 205327470912
+    },
+    "runs": 3,
+    "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+    "config": {
+      "width": 1797,
+      "warmupSeconds": 10.0,
+      "height": 660,
+      "durationSeconds": 30.0
+    },
+    "validation": false
+  },
+  "pacingFollowup": {
+    "frameMs": {
+      "count": 1295,
+      "mean": 23.179637142857143,
+      "p50": 21.7464,
+      "p95": 34.3578,
+      "p99": 39.042,
+      "max": 53.2961
+    },
+    "slowFrames": 96,
+    "scope": {
+      "cpuOnly": false,
+      "id": 2,
+      "path": "Frame/Streamline frame begin / Reflex pacing",
+      "queue": "cpu",
+      "cpuMs": {
+        "count": 1295,
+        "mean": 3.8560398455598457,
+        "p50": 0.0709,
+        "p95": 18.0661,
+        "p99": 19.859,
+        "max": 21.1955
+      },
+      "gpuMs": null
+    },
+    "slowWithPacingOver10Ms": 89,
+    "slowMeanPacingMs": 15.196308333333333,
+    "normalMeanPacingMs": 2.9480617180984154
+  },
+  "pacingManifest": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+    "hidden": true,
+    "config": {
+      "durationSeconds": 30.0,
+      "height": 660,
+      "warmupSeconds": 10.0,
+      "width": 1797
+    },
+    "dirty": [
+      " ? External/microprofile",
+      " M Source/Editor/EditorFullRoamBenchmark.cpp",
+      " M Source/Runtime/Render/Profiling/RenderGraphProfile.h",
+      " M Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp",
+      " M Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp",
+      " M Source/Runtime/Render/Streamer/MeshletStreamClas.h",
+      " M Source/Runtime/Render/Streamer/MeshletStreamClasPool.cpp",
+      " M Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp",
+      " M Source/Runtime/Render/Streamer/MeshletStreamResidency.h",
+      " M Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp",
+      " M Source/Runtime/Render/Streamer/MeshletStreamRuntime.h",
+      " M tests/rhi/FrameContextTests.cpp",
+      " M tests/rhi/StreamerTests.cpp",
+      "?? Documentation/ZorahFullReadinessCache.md",
+      "?? Documentation/ZorahFullReadinessCacheResult.json",
+      "?? Documentation/ZorahFullReferenceProfileNextSteps.md",
+      "?? Documentation/ZorahFullRequestSelection.md"
+    ],
+    "validation": false,
+    "shaderSha256": "4414EAF63FA53AC7EDB7C9B977983FD508C5B107ACA7B18ACB9DE6449CBAAA38",
+    "executableSha256": "BD0BF3AA0FF91A0FCC9D0A80CD98B31A4F7C0086EC6D05B7FDAE1E2DA1DBB94D",
+    "protocol": "zorah-full-editor-roam-v1",
+    "started": "2026-09-23T20:39:38.1749253+08:00",
+    "asset": {
+      "bytes": 205327470912,
+      "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+      "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin"
+    },
+    "gitHead": "be8e49cb9c08726ef60ff8c1d7fade194779c6a2",
+    "runs": 1
+  }
+}

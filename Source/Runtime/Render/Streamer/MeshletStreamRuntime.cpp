@@ -1038,6 +1038,21 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             log = "MeshletStreamRuntime CLAS pool initialization failed: " + log;
             return result;
         }
+        if (clusterRtxEnabled_) {
+            clasPool_->setInvalidationObserver([cache = sceneReadinessCache_, roots = lockedFallbackPages_](
+                std::span<const uint32_t> pages) {
+                if (pages.empty() || std::any_of(pages.begin(), pages.end(), [&](uint32_t page) {
+                        return std::binary_search(roots.begin(), roots.end(), page);
+                    })) {
+                    // Root references in fallback BLAS cannot survive a destructive
+                    // pool edit. Require a runtime rebuild, even if CLAS reappears.
+                    cache->rootsInvalidated = true;
+                    cache->value.ready = false;
+                    cache->value.completedPages = 0;
+                    cache->valid = true;
+                }
+            });
+        }
     }
     if (maxActiveGroups_ == 0 ||
         maxActiveGroupClusters_ == 0 ||
@@ -2142,6 +2157,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
 
 void MeshletStreamRuntime::reset()
 {
+    sceneReadinessCache_ = std::make_shared<SceneReadinessCache>();
     rasterSnapshotFrozen_ = false;
     ++debugGeneration_;
     debugRequestSourceKnown_ = false;
@@ -2354,6 +2370,9 @@ bool MeshletStreamRuntime::ready() const
 
 StreamSceneReadiness MeshletStreamRuntime::sceneReadiness() const
 {
+    auto& cache = *sceneReadinessCache_;
+    if (cache.valid || cache.rootsInvalidated) { return cache.value; }
+    ++cache.scans;
     StreamSceneReadiness result;
     const bool needsClas = clusterRtxEnabled_ && clasPool_;
     result.requiredPages = static_cast<uint32_t>(lockedFallbackPages_.size()) * (needsClas ? 2u : 1u);
@@ -2361,9 +2380,12 @@ StreamSceneReadiness MeshletStreamRuntime::sceneReadiness() const
         result.completedPages += residency_.pageResident(page) ? 1u : 0u;
         if (needsClas) { result.completedPages += clasPool_->pageHasClas(page) ? 1u : 0u; }
     }
-    result.ready = ready() && result.requiredPages != 0 && result.completedPages == result.requiredPages &&
+    result.ready = ready() && *pageTableInitialized_ && result.requiredPages != 0 &&
+        result.completedPages == result.requiredPages &&
         (!clusterRtxEnabled_ || std::all_of(fallbackBlasPrimitives_.begin(), fallbackBlasPrimitives_.end(),
-            [](const auto& fallback) { return fallback.built; }));
+            [](const auto& fallback) { return fallback.submitted(); }));
+    cache.value = result;
+    cache.valid = true;
     return result;
 }
 
@@ -2378,6 +2400,10 @@ Result MeshletStreamRuntime::cmdBeginFrame(
     const MeshletStreamFrameDesc& frame,
     const std::function<void()>& flushUploads)
 {
+    // Geometry roots are locked; completed root CLAS / accepted fallback BLAS
+    // remain valid until reset or an explicit root invalidation. While loading,
+    // completion polling below can advance progress, so refresh once per frame.
+    if (!sceneReadinessCache_->value.ready) { sceneReadinessCache_->valid = false; }
     rasterSnapshotFrozen_ = frame.freezeRasterSnapshot;
     if (!ready()) {
         return makeError(Error::InvalidArgument);
@@ -3257,10 +3283,15 @@ Result MeshletStreamRuntime::initializePageTableIfNeeded(CommandBuffer& commandB
     // Reconstruct CPU-confirmed state after an abandoned recording as well as
     // on first use. Capture only the shared validity flag, never a runtime pointer.
     result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(nullptr,
-        [valid = pageTableInitialized_] { *valid = false; }));
+        [valid = pageTableInitialized_, cache = sceneReadinessCache_] {
+            *valid = false;
+            cache->valid = false;
+            cache->value.ready = false;
+        }));
     if (!result) { return result; }
     residency_.rebuildPendingPatches();
     *pageTableInitialized_ = true;
+    sceneReadinessCache_->valid = false;
     return {};
 }
 
@@ -3270,7 +3301,11 @@ Result MeshletStreamRuntime::applyPageTablePatches(CommandBuffer& commandBuffer)
     currentFrameOrderedUploadCount_ = residency_.buildOrderedUploadPatches(commandBuffer, patches);
     if (!patches.empty()) {
         const auto tracked = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(nullptr,
-            [valid = pageTableInitialized_] { *valid = false; }));
+            [valid = pageTableInitialized_, cache = sceneReadinessCache_] {
+                *valid = false;
+                cache->valid = false;
+                cache->value.ready = false;
+            }));
         if (!tracked) { return tracked; }
     }
     Result result = updatePass_->apply(
@@ -3691,7 +3726,7 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
          fallbackIndex < fallbackBlasPrimitives_.size();
          ++fallbackIndex) {
         const FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
-        if (fallback.built) {
+        if (fallback.recorded()) {
             continue;
         }
         const uint32_t primitiveIndex = fallback.primitiveIndex;
@@ -3760,6 +3795,12 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
         return makeError(Error::InvalidArgument);
     }
 
+    auto publication = std::make_shared<SubmissionTransaction>(
+        [cache = sceneReadinessCache_] { cache->valid = false; },
+        [cache = sceneReadinessCache_] { cache->valid = false; cache->value.ready = false; });
+    const auto tracked = commandBuffer.addSubmissionTransaction(publication);
+    if (!tracked) { return tracked; }
+    sceneReadinessCache_->valid = false;
     for (uint32_t fallbackIndex : readyFallbackIndices) {
         FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
         const uint32_t clusterCount = fallback.referenceCount;
@@ -3786,6 +3827,7 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
             return result;
         }
         fallback.built = true;
+        fallback.buildTransaction = publication;
     }
     return {};
 }
@@ -4030,6 +4072,12 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
     return {{"generation", debugGeneration_}, {"frame", frameIndex_},
         {"orderedUploadPages", currentFrameOrderedUploadCount_},
         {"sceneReady", readiness.ready}, {"scenePreparationFraction", readiness.fraction()},
+        {"sceneReadinessScans", sceneReadinessCache_->scans},
+        {"sceneRootsInvalidated", sceneReadinessCache_->rootsInvalidated},
+        {"fallbackBlasRecorded", std::count_if(fallbackBlasPrimitives_.begin(), fallbackBlasPrimitives_.end(),
+            [](const auto& fallback) { return fallback.recorded(); })},
+        {"fallbackBlasSubmitted", std::count_if(fallbackBlasPrimitives_.begin(), fallbackBlasPrimitives_.end(),
+            [](const auto& fallback) { return fallback.submitted(); })},
         {"primitiveCount", asset_.primitiveCount()}, {"instanceCount", asset_.instanceCount()},
         {"terminalPageCount", lockedFallbackPages_.size()}, {"terminalResidentPageCount", terminalResidentPages},
         {"terminalReady", !lockedFallbackPages_.empty() && terminalResidentPages == lockedFallbackPages_.size()},

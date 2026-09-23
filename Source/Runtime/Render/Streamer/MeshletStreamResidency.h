@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -414,6 +415,9 @@ private:
         float screenBenefit = -1.0f;
         double schedulingPriority = 0.0;
         bool prefetch = false;
+        bool needsAllocation = true;
+        uint64_t payloadBytes = 0;
+        uint32_t prefetchLod = 0;
     };
 
     struct PageEntry {
@@ -498,7 +502,13 @@ private:
     bool geometryReclaimPressure_ = false;
     bool clasReclaimPressure_ = false;
     uint32_t frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
-    std::unordered_map<uint32_t, size_t> requestMarks_;
+    // Lazily allocate 4 KiB index blocks. A slot is valid only if the current
+    // scratch vector still has that page at the stored index; no epoch wrap or
+    // full-table clear is needed between batches or dropped request tasks.
+    static constexpr uint32_t kRequestIndexBlockSize = 1024;
+    using RequestIndexBlock = std::array<uint32_t, kRequestIndexBlockSize>;
+    std::vector<std::unique_ptr<RequestIndexBlock>> requestIndexBlocks_;
+    std::vector<PageRequest> requestScratch_;
     // One bit per logical page; clear only words touched by the previous batch.
     std::vector<uint64_t> unloadRequestBits_;
     std::vector<uint32_t> unloadRequestTouchedWords_;

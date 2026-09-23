@@ -1,0 +1,905 @@
+{
+  "manifest": {
+    "executableSha256": "98705963748FB9A558036F6B41B45F708A3E6C85A2CEAFF62846DA8E1BAC4958",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+    "started": "2026-09-23T19:40:01.9795120+08:00",
+    "config": {
+      "durationSeconds": 30.0,
+      "width": 1797,
+      "warmupSeconds": 10.0,
+      "height": 660
+    },
+    "dirty": [
+      " ? External/microprofile",
+      " M Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp",
+      " M Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp",
+      " M Source/Runtime/Render/Streamer/MeshletStreamClas.h",
+      " M Source/Runtime/Render/Streamer/MeshletStreamClasPool.cpp",
+      " M Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp",
+      " M Source/Runtime/Render/Streamer/MeshletStreamRuntime.h",
+      " M tests/rhi/FrameContextTests.cpp",
+      " M tests/rhi/StreamerTests.cpp"
+    ],
+    "runs": 3,
+    "validation": false,
+    "protocol": "zorah-full-editor-roam-v1",
+    "asset": {
+      "bytes": 205327470912,
+      "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+      "modifiedUtc": "2026-09-19T16:20:31.9397327Z"
+    },
+    "shaderSha256": "4414EAF63FA53AC7EDB7C9B977983FD508C5B107ACA7B18ACB9DE6449CBAAA38",
+    "hidden": true,
+    "gitHead": "be8e49cb9c08726ef60ff8c1d7fade194779c6a2"
+  },
+  "conditions": {
+    "config": {
+      "distance": 6.0,
+      "durationSeconds": 30.0,
+      "keyframes": [
+        {
+          "forward": 0.0,
+          "stage": "static",
+          "t": 0.0,
+          "yaw": 0.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "first-visit",
+          "t": 0.08333333333333333,
+          "yaw": 0.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "near-wall",
+          "t": 0.3333333333333333,
+          "yaw": 0.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "turn",
+          "t": 0.4444444444444444,
+          "yaw": 65.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "return",
+          "t": 0.6666666666666666,
+          "yaw": -65.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "settle",
+          "t": 0.8888888888888888,
+          "yaw": 0.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "end",
+          "t": 1.0,
+          "yaw": 0.0
+        }
+      ],
+      "warmupSeconds": 10.0
+    },
+    "absoluteKeyframes": [
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 0.0,
+        "stage": "static"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 2.5,
+        "stage": "first-visit"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -6.0921256404618,
+              4.163491249084473,
+              -5.886143707625141
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 10.0,
+        "stage": "near-wall"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              1.4835184214141535,
+              4.163491249084473,
+              -0.24667183495550882
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 13.333333333333332,
+        "stage": "turn"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -4.1826338924834205,
+              4.163491249084473,
+              -15.135352712684481
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 20.0,
+        "stage": "return"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 26.666666666666664,
+        "stage": "settle"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 30.0,
+        "stage": "end"
+      }
+    ],
+    "outputExtent": [
+      1797,
+      660
+    ],
+    "renderExtent": [
+      1198,
+      440
+    ],
+    "graph": [
+      {
+        "name": "VBuffer",
+        "properties": {
+          "asyncSoftwareRaster": false,
+          "autoBuildStreamAsset": false,
+          "autoLod": true,
+          "coldPageRetentionFrames": 120,
+          "compactClas": true,
+          "compactShadingAttributes": true,
+          "distributedDemandMinGroups": 65536,
+          "distributedPageDemand": true,
+          "enableClas": true,
+          "enableClusterRtx": true,
+          "enableMeshletStreaming": true,
+          "hybridRaster": true,
+          "instanceFrustumCull": true,
+          "instanceHzbCull": true,
+          "lodPixelError": 1.5,
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "maxActiveGroups": 1048575,
+          "maxBlasBytes": 536870912,
+          "maxClasBuildClusters": 8192,
+          "maxClasBytes": 2147483648,
+          "maxGpuPageRequests": 65536,
+          "maxGpuPageUnloadRequests": 65536,
+          "maxLockedFallbackPages": 65536,
+          "maxPageLoadsInFlight": 1024,
+          "maxPageUploadsPerFrame": 256,
+          "maxResidentBytes": 3758096384,
+          "maxResidentPages": 0,
+          "maxTraversalWorkItems": 1048576,
+          "maxTraversalWorkers": 4096,
+          "maxUploadBytesPerFrame": 8388608,
+          "meshletFrustumCull": true,
+          "meshletNormalConeCull": false,
+          "pageLoadConcurrency": 4,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+          "sceneBinding": "asset",
+          "streamAssetOnly": true,
+          "streamAssetPath": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+          "viewBinding": "global",
+          "visualization": "none"
+        },
+        "type": "VisibilityBufferPass"
+      },
+      {
+        "name": "Shadows",
+        "properties": {
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+          "rayTracedShadows": true,
+          "shadowAngularRadius": 0.266,
+          "shadowBias": 0.01,
+          "shadowLightIndex": -1,
+          "shadowLightRadius": 0.05,
+          "shadowRayLength": 100000.0,
+          "sigmaDenoise": true,
+          "sigmaHistoryLength": 5
+        },
+        "type": "RayTracedShadowPass"
+      },
+      {
+        "name": "Deferred",
+        "properties": {
+          "accumulate": false,
+          "exportUpscalerGuides": true,
+          "lightingMode": "realtime",
+          "materialBinning": true,
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "outputLinear": true,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf"
+        },
+        "type": "VisibilityBufferDeferredPass"
+      },
+      {
+        "name": "DlssSr",
+        "properties": {
+          "exportOutputGuides": true,
+          "mode": "Quality"
+        },
+        "type": "StreamlineDlssSrPass"
+      },
+      {
+        "name": "AutoExposure",
+        "properties": {},
+        "type": "AutoExposurePass"
+      },
+      {
+        "name": "DlssNr",
+        "properties": {
+          "depthInverted": false,
+          "enabled": false,
+          "fallbackToInput": true,
+          "intensity": 1.0,
+          "preset": 0,
+          "style": 0
+        },
+        "type": "DlssNrPass"
+      },
+      {
+        "name": "FinalBlit",
+        "properties": {},
+        "type": "FinalBlitPass"
+      }
+    ],
+    "hidden": true,
+    "vsync": true,
+    "validationRequested": false
+  },
+  "runs": [
+    {
+      "run": 1,
+      "frameMs": {
+        "count": 1414,
+        "mean": 21.222851555869873,
+        "p95": 28.2173,
+        "p99": 31.0616,
+        "max": 34.3027
+      },
+      "slowFrames": 6,
+      "timingsMs": {
+        "Frame/Render Frame/Panels/Viewport Panel": {
+          "count": 1414,
+          "mean": 0.01563967468175389,
+          "p95": 0.0217,
+          "p99": 0.0248,
+          "max": 0.1435
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight": {
+          "count": 1414,
+          "mean": 0.004219589816124469,
+          "p95": 0.0056,
+          "p99": 0.007,
+          "max": 0.1238
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Validate queue contracts": {
+          "count": 1414,
+          "mean": 0.0005698019801980199,
+          "p95": 0.0007,
+          "p99": 0.0009,
+          "max": 0.1201
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Append incoming waits": {
+          "count": 1414,
+          "mean": 4.9717114568599716e-05,
+          "p95": 0.0001,
+          "p99": 0.0001,
+          "max": 0.0001
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Poll / retire external completions": {
+          "count": 1414,
+          "mean": 0.0007808345120226308,
+          "p95": 0.0011,
+          "p99": 0.0013,
+          "max": 0.0016
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Copy external dependencies": {
+          "count": 1414,
+          "mean": 0.0001714992927864215,
+          "p95": 0.0004,
+          "p99": 0.0005,
+          "max": 0.0038
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Read scene revisions": {
+          "count": 1414,
+          "mean": 7.14992927864215e-05,
+          "p95": 0.0001,
+          "p99": 0.0002,
+          "max": 0.0005
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Check frame overlap contracts": {
+          "count": 1414,
+          "mean": 0.001250990099009901,
+          "p95": 0.0018,
+          "p99": 0.0023,
+          "max": 0.0061
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope": {
+          "count": 1414,
+          "mean": 17.351359759547382,
+          "p95": 24.7753,
+          "p99": 28.0629,
+          "max": 32.3197
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests": {
+          "count": 1414,
+          "mean": 5.654001343705799,
+          "p95": 8.4782,
+          "p99": 10.3689,
+          "max": 12.3541
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)": {
+          "count": 1414,
+          "mean": 3.0941304809052332,
+          "p95": 4.9433,
+          "p99": 6.0662,
+          "max": 9.087
+        }
+      },
+      "streaming": {
+        "uploads": {
+          "count": 1414,
+          "mean": 21.084158415841586,
+          "p95": 65,
+          "p99": 96,
+          "max": 158
+        },
+        "evictions": {
+          "count": 1414,
+          "mean": 20.44271570014144,
+          "p95": 64,
+          "p99": 106,
+          "max": 256
+        },
+        "allocationAttempts": {
+          "count": 1414,
+          "mean": 42.52687411598303,
+          "p95": 122,
+          "p99": 173,
+          "max": 449
+        },
+        "budgetRetrySuppressed": {
+          "count": 1414,
+          "mean": 13452.26449787836,
+          "p95": 15694,
+          "p99": 16001,
+          "max": 16206
+        },
+        "geometryBytes": {
+          "count": 1414,
+          "mean": 3744727290.5685997,
+          "p95": 3758094592,
+          "p99": 3758094592,
+          "max": 3758094592
+        },
+        "geometryCapacity": {
+          "count": 1414,
+          "mean": 3758096384,
+          "p95": 3758096384,
+          "p99": 3758096384,
+          "max": 3758096384
+        },
+        "loadFailures": {
+          "count": 1414,
+          "mean": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1414,
+          "mean": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1414,
+          "mean": 8519.594766619519,
+          "p95": 12064,
+          "p99": 12401,
+          "max": 12425
+        }
+      },
+      "uploadsPerSecond": 993.464914944951,
+      "drainReasons": [
+        0
+      ],
+      "hzbValidFrames": 1414
+    },
+    {
+      "run": 2,
+      "frameMs": {
+        "count": 1427,
+        "mean": 21.033197266993692,
+        "p95": 27.2554,
+        "p99": 31.0429,
+        "max": 44.9803
+      },
+      "slowFrames": 5,
+      "timingsMs": {
+        "Frame/Render Frame/Panels/Viewport Panel": {
+          "count": 1427,
+          "mean": 0.015836720392431676,
+          "p95": 0.0216,
+          "p99": 0.0271,
+          "max": 0.085
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight": {
+          "count": 1427,
+          "mean": 0.003881499649614576,
+          "p95": 0.0053,
+          "p99": 0.0062,
+          "max": 0.0144
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Validate queue contracts": {
+          "count": 1427,
+          "mean": 0.0004562018220042046,
+          "p95": 0.0007,
+          "p99": 0.0008,
+          "max": 0.0011
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Append incoming waits": {
+          "count": 1427,
+          "mean": 5.0245269796776456e-05,
+          "p95": 0.0001,
+          "p99": 0.0001,
+          "max": 0.0001
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Poll / retire external completions": {
+          "count": 1427,
+          "mean": 0.0008140854940434478,
+          "p95": 0.0011,
+          "p99": 0.0013,
+          "max": 0.0109
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Copy external dependencies": {
+          "count": 1427,
+          "mean": 0.0001314646110721794,
+          "p95": 0.0003,
+          "p99": 0.0004,
+          "max": 0.0008
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Read scene revisions": {
+          "count": 1427,
+          "mean": 6.264891380518571e-05,
+          "p95": 0.0001,
+          "p99": 0.0002,
+          "max": 0.0004
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Check frame overlap contracts": {
+          "count": 1427,
+          "mean": 0.0010405045550105115,
+          "p95": 0.0015,
+          "p99": 0.002,
+          "max": 0.0049
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope": {
+          "count": 1427,
+          "mean": 16.942274491941134,
+          "p95": 23.0601,
+          "p99": 26.1324,
+          "max": 35.5252
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests": {
+          "count": 1427,
+          "mean": 5.583541906096706,
+          "p95": 7.7517,
+          "p99": 9.3511,
+          "max": 14.9972
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)": {
+          "count": 1427,
+          "mean": 3.0660096005606166,
+          "p95": 4.6598,
+          "p99": 5.7812,
+          "max": 19.481
+        }
+      },
+      "streaming": {
+        "uploads": {
+          "count": 1427,
+          "mean": 20.870357393132444,
+          "p95": 63,
+          "p99": 97,
+          "max": 177
+        },
+        "evictions": {
+          "count": 1427,
+          "mean": 20.22845129642607,
+          "p95": 60,
+          "p99": 107,
+          "max": 256
+        },
+        "allocationAttempts": {
+          "count": 1427,
+          "mean": 42.09880868955852,
+          "p95": 118,
+          "p99": 183,
+          "max": 470
+        },
+        "budgetRetrySuppressed": {
+          "count": 1427,
+          "mean": 13459.47442186405,
+          "p95": 15744,
+          "p99": 16020,
+          "max": 16208
+        },
+        "geometryBytes": {
+          "count": 1427,
+          "mean": 3744969839.4057465,
+          "p95": 3758094592,
+          "p99": 3758094592,
+          "max": 3758094592
+        },
+        "geometryCapacity": {
+          "count": 1427,
+          "mean": 3758096384,
+          "p95": 3758096384,
+          "p99": 3758096384,
+          "max": 3758096384
+        },
+        "loadFailures": {
+          "count": 1427,
+          "mean": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1427,
+          "mean": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1427,
+          "mean": 8573.399439383322,
+          "p95": 12061,
+          "p99": 12381,
+          "max": 12425
+        }
+      },
+      "uploadsPerSecond": 992.2579590827694,
+      "drainReasons": [
+        0
+      ],
+      "hzbValidFrames": 1427
+    },
+    {
+      "run": 3,
+      "frameMs": {
+        "count": 1363,
+        "mean": 22.02273925165077,
+        "p95": 30.1179,
+        "p99": 33.6471,
+        "max": 60.6888
+      },
+      "slowFrames": 15,
+      "timingsMs": {
+        "Frame/Render Frame/Panels/Viewport Panel": {
+          "count": 1363,
+          "mean": 0.0162520909757887,
+          "p95": 0.0227,
+          "p99": 0.0289,
+          "max": 0.089
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight": {
+          "count": 1363,
+          "mean": 0.004345487894350697,
+          "p95": 0.0059,
+          "p99": 0.0075,
+          "max": 0.044
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Validate queue contracts": {
+          "count": 1363,
+          "mean": 0.000510564930300807,
+          "p95": 0.0008,
+          "p99": 0.001,
+          "max": 0.002
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Append incoming waits": {
+          "count": 1363,
+          "mean": 4.4900953778429933e-05,
+          "p95": 0.0001,
+          "p99": 0.0001,
+          "max": 0.001
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Poll / retire external completions": {
+          "count": 1363,
+          "mean": 0.0008606749816581071,
+          "p95": 0.0012,
+          "p99": 0.0014,
+          "max": 0.0042
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Copy external dependencies": {
+          "count": 1363,
+          "mean": 0.0001781364636830521,
+          "p95": 0.0004,
+          "p99": 0.0005,
+          "max": 0.0006
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Read scene revisions": {
+          "count": 1363,
+          "mean": 8.980190755685987e-05,
+          "p95": 0.0002,
+          "p99": 0.0003,
+          "max": 0.0005
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Check frame overlap contracts": {
+          "count": 1363,
+          "mean": 0.0012118121790168745,
+          "p95": 0.0018,
+          "p99": 0.0024,
+          "max": 0.0397
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope": {
+          "count": 1363,
+          "mean": 17.814636170212765,
+          "p95": 27.3424,
+          "p99": 30.8515,
+          "max": 35.6238
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests": {
+          "count": 1363,
+          "mean": 5.9835267791636095,
+          "p95": 9.5782,
+          "p99": 11.5579,
+          "max": 13.1684
+        },
+        "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)": {
+          "count": 1363,
+          "mean": 3.1459663242846663,
+          "p95": 5.0251,
+          "p99": 6.2655,
+          "max": 8.3135
+        }
+      },
+      "streaming": {
+        "uploads": {
+          "count": 1363,
+          "mean": 21.703595011005135,
+          "p95": 69,
+          "p99": 101,
+          "max": 155
+        },
+        "evictions": {
+          "count": 1363,
+          "mean": 21.03815113719736,
+          "p95": 65,
+          "p99": 112,
+          "max": 256
+        },
+        "allocationAttempts": {
+          "count": 1363,
+          "mean": 43.741746148202495,
+          "p95": 128,
+          "p99": 187,
+          "max": 439
+        },
+        "budgetRetrySuppressed": {
+          "count": 1363,
+          "mean": 13468.071166544387,
+          "p95": 15736,
+          "p99": 16021,
+          "max": 16227
+        },
+        "geometryBytes": {
+          "count": 1363,
+          "mean": 3744989677.4057226,
+          "p95": 3758094592,
+          "p99": 3758094592,
+          "max": 3758094592
+        },
+        "geometryCapacity": {
+          "count": 1363,
+          "mean": 3758096384,
+          "p95": 3758096384,
+          "p99": 3758096384,
+          "max": 3758096384
+        },
+        "loadFailures": {
+          "count": 1363,
+          "mean": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1363,
+          "mean": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1363,
+          "mean": 8473.283932501834,
+          "p95": 12076,
+          "p99": 12401,
+          "max": 12425
+        }
+      },
+      "uploadsPerSecond": 985.5084221359197,
+      "drainReasons": [
+        0
+      ],
+      "hzbValidFrames": 1363
+    }
+  ]
+}

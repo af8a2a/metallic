@@ -753,6 +753,7 @@ public:
             MeshletStreamFrameDesc view{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
             view.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f}, .znear = .001f, .zfar = 10.f};
             uint64_t frameId = 0;
+            bool cancelledInitialFallback = false;
             MeshletStreamGpuBlasHeader header;
             const auto record = [&](bool cancel = false) {
                 require(bool(frame.begin(++frameId)) && bool(pool->reset()) && bool(commands->begin(&frame)) &&
@@ -771,7 +772,19 @@ public:
                 std::swap(barrier.before, barrier.after);
                 commands->barrier({.buffers = &barrier, .bufferCount = 1});
                 require(bool(commands->end()), "Frame end failed");
-                if (cancel) { frame.cancel(); streamer->endFrame(); return; }
+                const auto readiness = runtime.debugSnapshot(false);
+                if (!cancelledInitialFallback && readiness.at("fallbackBlasRecorded") > readiness.at("fallbackBlasSubmitted")) {
+                    require(!runtime.sceneReady(), "Unsubmitted fallback build made the scene ready");
+                    cancelledInitialFallback = true;
+                    cancel = true;
+                }
+                if (cancel) {
+                    frame.cancel(); streamer->endFrame();
+                    if (readiness.at("fallbackBlasRecorded") > readiness.at("fallbackBlasSubmitted")) {
+                        require(!runtime.sceneReady(), "Cancelled fallback build poisoned readiness");
+                    }
+                    return;
+                }
                 CommandBuffer* list[] = {commands.get()};
                 require(bool(tracker.submit({.commandBuffers = list, .commandBufferCount = 1}, frame)) &&
                     bool(frame.wait(5000000000ull)), "Frame submit failed");
@@ -789,6 +802,14 @@ public:
                 reused += i >= 90 && header.padding0 == 0 && header.blasBuildCount == 0;
             }
             require(builds > 0 && reused == 10 && header.padding1 > 0 && runtime.tlasReady(), "Stable geometry did not reuse a built BLAS");
+            require(cancelledInitialFallback && runtime.sceneReady(), "Cancelled initial fallback did not rebuild and become ready");
+            const auto scans = runtime.debugSnapshot(false).at("sceneReadinessScans");
+            for (uint32_t query = 0; query < 1000; ++query) {
+                require(runtime.sceneReady() && runtime.sceneReadiness().ready, "Stable root readiness changed");
+            }
+            record();
+            require(runtime.sceneReady() && runtime.debugSnapshot(false).at("sceneReadinessScans") == scans,
+                "Steady queries / frame advance rescanned all roots");
             view.selectedLodLevel = 2;
             record();
             require(header.padding0 != 0, "Changed cut reused stale BLAS");
@@ -802,10 +823,27 @@ public:
             require(header.padding0 != 0 && header.blasBuildCount > 0, "Cancelled recording poisoned BLAS cache");
             record();
             require(header.padding0 == 0, "Retry did not restore reuse");
-            const uint32_t page = runtime.residency().residentPages().front();
+            const auto residents = runtime.residency().residentPages();
+            const auto nonRoot = std::find_if(residents.begin(), residents.end(), [&](uint32_t page) {
+                return runtime.residency().pageState(page) == MeshletStreamPageResidencyState::Resident;
+            });
+            require(nonRoot != residents.end(), "Need a non-root CLAS retirement");
+            const uint32_t page = *nonRoot;
             runtime.clasPool()->retirePages(std::span(&page, 1));
+            require(runtime.sceneReady(), "Non-root retirement invalidated root readiness");
             record();
             require(header.padding0 != 0, "Retired CLAS did not invalidate cached references");
+            const auto currentResidents = runtime.residency().residentPages();
+            const auto root = std::find_if(currentResidents.begin(), currentResidents.end(), [&](uint32_t id) {
+                return runtime.residency().pageState(id) == MeshletStreamPageResidencyState::LockedFallback;
+            });
+            require(root != currentResidents.end(), "Need root CLAS invalidation");
+            runtime.clasPool()->retirePages(std::span(&*root, 1));
+            require(!runtime.sceneReady() && runtime.debugSnapshot(false).at("sceneRootsInvalidated").get<bool>(),
+                "Explicit root retirement retained stale readiness");
+            runtime.reset();
+            require(!runtime.sceneReady() && runtime.sceneReadiness().requiredPages == 0,
+                "Reset retained the previous scene readiness");
             return RhiTestResult::pass("Stable cut reuse, changed LOD, cancellation and CLAS retirement invalidation");
         } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
     }
@@ -2491,6 +2529,91 @@ public:
     }
 };
 
+class StreamerMeshletRequestSelectionTest final : public RhiTest {
+public:
+    StreamerMeshletRequestSelectionTest()
+    {
+        type = RhiTestType::Command;
+        name = "streamer_meshlet_request_selection";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "RequestSelection.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        auto pages = nonFallbackPagesFor(asset, fallbackPagesFor(asset));
+        if (pages.size() < 5) { return RhiTestResult::fail("Need five request candidates"); }
+        pages.resize(std::min<size_t>(pages.size(), 64));
+        const uint32_t count = static_cast<uint32_t>(pages.size());
+        MeshletStreamResidencyManager residency;
+        std::string reason;
+        const MeshletStreamResidencyDesc desc{.asset = &asset,
+            .maxResidentBytes = pageStorageBytes(asset, pages), .maxResidentPages = 3,
+            .measurePageLatency = true, .immediateGpuRequests = true};
+        // Reinitialize and permute across batches: old lookup slots must not
+        // alias a different current scratch vector, or a previous scene lifetime.
+        for (uint32_t round = 0; round < 5; ++round) {
+            if (!residency.initialize(desc, reason)) { return RhiTestResult::fail(reason); }
+            residency.beginFrame();
+            std::rotate(pages.begin(), pages.begin() + 1, pages.end());
+            std::vector<uint32_t> ids;
+            std::vector<float> benefits;
+            std::vector<std::pair<double, uint32_t>> expected;
+            for (uint32_t i = 0; i < count; ++i) {
+                const uint32_t page = pages[i];
+                const auto bytes = scene::meshletStreamDevicePayloadSize(asset.pages()[page]);
+                const float benefit = float((i + 1) * 1000);
+                ids.push_back(page | kStreamPrefetchPageTag);
+                benefits.push_back(0.0f);
+                expected.emplace_back(double(benefit) / double(std::max<uint64_t>(bytes, 1024)), page);
+            }
+            for (uint32_t i = count; i-- > 0;) {
+                ids.push_back(pages[i]);
+                benefits.push_back(float((i + 1) * 1000));
+            }
+            ids.push_back(UINT32_MAX); benefits.push_back(1.0f);
+            std::sort(expected.begin(), expected.end(), [](const auto& a, const auto& b) {
+                return a.first != b.first ? a.first > b.first : a.second < b.second;
+            });
+            const auto batch = StreamGpuRequestBatch{.loadPageIds = ids, .frameIndex = 1,
+                .loadPriorities = benefits, .taggedPrefetchRequests = true};
+            if (residency.consumeGpuRequests(batch) != count) {
+                return RhiTestResult::fail("Request selection lost unique candidates");
+            }
+            for (size_t i = 0; i < expected.size(); ++i) {
+                if (residency.pageAllocated(expected[i].second) != (i < 3)) {
+                    return RhiTestResult::fail("Heap selection differs from full priority sort");
+                }
+            }
+            auto stats = residency.stats();
+            if (stats.cpuWork.admissionCalls != 4 || stats.cpuWork.admissionPriorityPops != 4 ||
+                stats.cpuWork.requestDuplicatesMerged != count || stats.frameGpuInvalidRequestCount != 1 ||
+                stats.totalPrefetchAdmitted != 0 || residency.latencySnapshot().pendingPrefetch != 0) {
+                return RhiTestResult::fail("Demand merge or bounded priority selection did not hold");
+            }
+            // Repeat while capacity is blocked: allocated work stays alive,
+            // missing work remains demanded, neither requires a heap pop/call.
+            std::reverse(ids.begin(), ids.end());
+            std::reverse(benefits.begin(), benefits.end());
+            (void)residency.consumeGpuRequests(batch);
+            stats = residency.stats();
+            if (stats.cpuWork.admissionCalls != 4 || stats.cpuWork.admissionPriorityPops != 4 ||
+                stats.frameUniqueGpuRequestCount != count * 2 || residency.latencySnapshot().pendingDemand != count) {
+                return RhiTestResult::fail("Repeated batch re-admitted blocked or queued pages, or lost latency demand");
+            }
+            residency.beginFrame();
+            (void)residency.consumeGpuRequests(batch);
+            if (residency.stats().cpuWork.admissionCalls != 1 || residency.queuedUploadCount() != 3) {
+                return RhiTestResult::fail("Next frame lost queued demand or failed to refresh capacity eligibility");
+            }
+        }
+        return RhiTestResult::pass("Priority oracle, duplicate promotion, blocked tails, queued keepalive and lookup lifetime");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletRequestSelectionTest);
+
 class StreamerMeshletBudgetAdmissionTest final : public RhiTest {
 public:
     StreamerMeshletBudgetAdmissionTest()
@@ -3139,6 +3262,20 @@ public:
             ORDERED_REQUIRE(readBufferBytes(*readback, &result, sizeof(result)));
             ORDERED_REQUIRE(result.activeGroupCount != 0 && result.overflowCount == 0);
         }
+        ORDERED_REQUIRE(runtime.sceneReady());
+        const auto stableScans = runtime.debugSnapshot(false).at("sceneReadinessScans");
+        for (uint32_t query = 0; query < 1000; ++query) { ORDERED_REQUIRE(runtime.sceneReady()); }
+        ORDERED_REQUIRE(runtime.debugSnapshot(false).at("sceneReadinessScans") == stableScans);
+        runtime.reset();
+        ORDERED_REQUIRE(!runtime.sceneReady() && runtime.sceneReadiness().requiredPages == 0);
+        ORDERED_REQUIRE(runtime.initialize(device, {
+            .sourcePath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf",
+            .streamAssetPath = asset.path(), .maxResidentPages = 64, .maxLockedFallbackPages = 64,
+            .maxPageUploadsPerFrame = 64, .maxGpuPageRequests = 256, .maxGpuPageUnloadRequests = 256,
+            .maxActiveGroups = 4096, .maxTraversalWorkers = 64, .maxTraversalWorkItems = 4096,
+            .pageLoadConcurrency = 0, .queuedFrameCount = 2}, log));
+        ORDERED_REQUIRE(!runtime.sceneReady() && runtime.sceneReadiness().requiredPages != 0);
+        ORDERED_REQUIRE(runtime.sceneReadiness().completedPages == 0);
         ORDERED_REQUIRE(validationMessages == 0);
 #undef ORDERED_REQUIRE
         return RhiTestResult::pass("Cancelled initial publication retries; GPU selects uploaded roots before CPU confirmation across frame slots");

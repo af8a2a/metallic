@@ -534,6 +534,8 @@ public:
     // Complete fallback coverage, including RT fallback resources when used.
     // Resource initialization alone does not make a scene presentable.
     StreamSceneReadiness sceneReadiness() const;
+    // Cached for the root resource lifetime; loading progress refreshes per frame.
+    bool sceneReady() const { return sceneReadiness().ready; }
     bool tlasReady() const { return tlasBuilt_; }
     RayTracingAccelerationStructure* accelerationStructure() const;
 
@@ -566,6 +568,14 @@ public:
     MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }
 
 private:
+    struct SceneReadinessCache {
+        StreamSceneReadiness value{.ready = false};
+        bool valid = false;
+        bool rootsInvalidated = false;
+        uint64_t scans = 0;
+    };
+    // Callbacks retain only this generation's state, never the runtime itself.
+    std::shared_ptr<SceneReadinessCache> sceneReadinessCache_ = std::make_shared<SceneReadinessCache>();
     CpuProfileRecorder beginFrameCpuProfile_;
     bool rasterSnapshotFrozen_ = false;
     std::shared_ptr<bool> blasCacheInitialized_ = std::make_shared<bool>(false);
@@ -582,6 +592,9 @@ private:
         uint64_t referenceOffset = 0;
         uint64_t storageOffset = 0;
         bool built = false;
+        std::shared_ptr<SubmissionTransaction> buildTransaction;
+        bool recorded() const { return built && buildTransaction && !buildTransaction->cancelled(); }
+        bool submitted() const { return recorded() && buildTransaction->resolved(); }
     };
 
     struct ResidentPageFrame {

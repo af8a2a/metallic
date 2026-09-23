@@ -2670,15 +2670,13 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             scene->sceneGraph().structuralRevision(), scene->transformRevision(), scene->visibilityRevision()}
         : std::array<uint64_t, 5>{};
     preflightDetail.next("Check frame overlap contracts");
-    const bool requiresCompletedFrame = std::any_of(impl_->executionList.begin(), impl_->executionList.end(),
-        [](const auto& node) { return !node.pass->supportsFrameOverlap(); });
-    const uint32_t drainReasonMask = (requiresCompletedFrame ? 1u : 0u) |
-        (sceneStamp != impl_->recordedSceneStamp ? 2u : 0u);
-    preflightDetail.next("Collect overlap blockers");
+    // Evaluate each dynamic contract once; diagnostics use the same result.
     std::vector<std::string> overlapBlockingPasses;
     for (const auto& node : impl_->executionList) {
         if (!node.pass->supportsFrameOverlap()) { overlapBlockingPasses.push_back(node.name); }
     }
+    const uint32_t drainReasonMask = (!overlapBlockingPasses.empty() ? 1u : 0u) |
+        (sceneStamp != impl_->recordedSceneStamp ? 2u : 0u);
     preflightDetail.end();
     if (drainReasonMask != 0) {
         phase.next("graph.priorFrameDrain");

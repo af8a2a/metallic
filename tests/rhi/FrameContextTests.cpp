@@ -880,7 +880,8 @@ METALLIC_REGISTER_RHI_TEST(FrameParallelBranchTest);
 
 class FrameGraphTransferPass final : public render::RenderGraphPass {
 public:
-    bool supportsFrameOverlap() const override { return true; }
+    static inline uint32_t overlapQueryCount = 0;
+    bool supportsFrameOverlap() const override { ++overlapQueryCount; return true; }
     bool supportsAsyncQueue() const override { return true; }
     render::QueueType queueType() const override
     {
@@ -1010,7 +1011,11 @@ public:
                 reader.buffer->copyBuffer({.source = executor.outputResource("Output.data")->buffer,
                     .destination = readback.get(), .size = 16});
                 FRAME_REQUIRE(reader.submit(readerTracker, gate.get()));
+                const uint32_t queries = FrameGraphTransferPass::overlapQueryCount;
                 FRAME_REQUIRE(executor.execute(submit));
+                if (FrameGraphTransferPass::overlapQueryCount != queries + 1) {
+                    return RhiTestResult::fail("Preflight evaluated the same overlap contract more than once");
+                }
                 if (executor.executionStats().drainReasonMask != 0 || executor.executionStats().externalCompletionCount != 1 ||
                     gate->currentValue() != 0 || reader.frame.completion().isComplete()) {
                     return RhiTestResult::fail("External consumer blocked CPU recording or dependency generations accumulated");

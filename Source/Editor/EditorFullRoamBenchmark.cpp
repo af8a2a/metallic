@@ -32,6 +32,9 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"requests",s.requests},{"uploads",s.uploads},{"evictions",s.evictions},{"uploadBytes",s.uploadBytes},
         {"requestOverflows",s.requestOverflows},{"allocationFailures",s.allocationFailures},{"loadFailures",s.loadFailures},
         {"allocationAttempts",s.cpuWork.allocationAttempts},{"budgetRetrySuppressed",s.cpuWork.budgetRetrySuppressed},
+        {"requestDuplicatesMerged",s.cpuWork.requestDuplicatesMerged},{"admissionCandidates",s.cpuWork.admissionCandidates},
+        {"admissionPriorityPops",s.cpuWork.admissionPriorityPops},{"admissionCalls",s.cpuWork.admissionCalls},
+        {"admissionBypassed",s.cpuWork.admissionBypassed},
         {"blasFeedbackAvailable",s.blasFeedbackAvailable},{"blasFeedbackFrame",s.blasFeedbackFrame},
         {"blasBuildCount",s.blasBuildCount},{"blasClusterReferences",s.blasClusterReferences},{"blasOverflowCount",s.blasOverflowCount},
         {"textureResidentBytes",s.textureResidentBytes},{"textureRetiredBytes",s.textureRetiredBytes},
@@ -124,8 +127,11 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const auto draw = [&]() {
             auto frame = profiler_.beginFrame();
             if (!waitForFrameSlotBeforeInput()) { return false; }
-            const render::vulkan::StreamlineFrameScope streamlineFrame(
-                (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED)==0 && ImGui::GetPlatformIO().Viewports.Size<=1);
+            const auto streamlineFrame = [&] {
+                auto scope = profiler_.scope("Streamline frame begin / Reflex pacing");
+                return render::vulkan::StreamlineFrameScope(
+                    (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED)==0 && ImGui::GetPlatformIO().Viewports.Size<=1);
+            }();
             { auto scope = profiler_.scope("Poll Events"); pollEvents(); }
             if (!running_ || SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_ESCAPE]) { return false; }
             auto scope = profiler_.scope("Render Frame");

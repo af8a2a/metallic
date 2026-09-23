@@ -5,6 +5,7 @@
 #include "Runtime/Scene/MeshletStreamGpuCodec.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -145,6 +146,11 @@ public:
         std::string& log,
         Buffer* sizeOutput = nullptr);
     void retirePages(std::span<const uint32_t> pageIndices);
+    // Empty span denotes a whole-pool clear. Called before destructive changes.
+    void setInvalidationObserver(std::function<void(std::span<const uint32_t>)> observer)
+    {
+        invalidationObserver_ = std::move(observer);
+    }
 
     bool ready() const;
     bool pageHasClas(uint32_t pageIndex) const;
@@ -161,6 +167,7 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::unique_ptr<MeshletStreamCompactClasPool> compact_;
+    std::function<void(std::span<const uint32_t>)> invalidationObserver_;
 };
 
 bool buildMeshletStreamPageClusterOffsets(
