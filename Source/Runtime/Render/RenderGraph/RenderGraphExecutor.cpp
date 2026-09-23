@@ -2626,6 +2626,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 
     phase.next("graph.preflight");
     preparationPhase.next("Preflight");
+    CpuProfileScope preflightDetail(&preparation, "Validate queue contracts");
     // Preflight before beginning a slot or mutating subsystem/resource state.
     // Unreviewed passes retain the universal-queue execution contract.
     const auto selectedType = [](const Impl::CompiledNode& node) {
@@ -2648,6 +2649,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             return makeError(Error::InvalidArgument);
         }
     }
+    preflightDetail.next("Append incoming waits");
     std::vector<SemaphoreSubmitDesc> initialWaits;
     for (const auto& point : desc.waitCompletions) {
         Result result = point.appendWaits(initialWaits);
@@ -2657,21 +2659,27 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     // Output consumers are GPU dependencies, not a reason to drain the CPU.
     // Keep unfinished points for rebuild/shutdown and prune completed generations
     // so a continuously presented viewport does not accumulate old frame states.
+    preflightDetail.next("Poll / retire external completions");
     std::erase_if(impl_->externalCompletions, [](const auto& point) { return point.isComplete(); });
+    preflightDetail.next("Copy external dependencies");
     const auto externalDependencies = impl_->externalCompletions;
+    preflightDetail.next("Read scene revisions");
     const scene::Scene* scene = impl_->runtimeScene;
     const std::array<uint64_t, 5> sceneStamp = scene != nullptr
         ? std::array<uint64_t, 5>{scene->resourceIdentity(), scene->contentRevision(),
             scene->sceneGraph().structuralRevision(), scene->transformRevision(), scene->visibilityRevision()}
         : std::array<uint64_t, 5>{};
+    preflightDetail.next("Check frame overlap contracts");
     const bool requiresCompletedFrame = std::any_of(impl_->executionList.begin(), impl_->executionList.end(),
         [](const auto& node) { return !node.pass->supportsFrameOverlap(); });
     const uint32_t drainReasonMask = (requiresCompletedFrame ? 1u : 0u) |
         (sceneStamp != impl_->recordedSceneStamp ? 2u : 0u);
+    preflightDetail.next("Collect overlap blockers");
     std::vector<std::string> overlapBlockingPasses;
     for (const auto& node : impl_->executionList) {
         if (!node.pass->supportsFrameOverlap()) { overlapBlockingPasses.push_back(node.name); }
     }
+    preflightDetail.end();
     if (drainReasonMask != 0) {
         phase.next("graph.priorFrameDrain");
         preparationPhase.next("Prior frame drain");

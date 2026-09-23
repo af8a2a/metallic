@@ -29,6 +29,11 @@ public:
             EditorProfiler profiler;
             RenderGraphExecutionStats stats{.executionId = 10, .graphGeneration = 1, .cpuMilliseconds = 2};
             stats.nodes.push_back({.id = 7, .name = "Visibility", .type = "VisibilityBufferPass", .cpuMilliseconds = 1});
+            stats.preparation = {
+                {.name = "Preflight", .cpuMilliseconds = 4, .cpuOnly = true},
+                {.name = "Poll completions", .parent = 0, .cpuMilliseconds = 3, .cpuOnly = true},
+                {.name = "Scene revisions", .parent = 0, .cpuMilliseconds = .1, .cpuOnly = true},
+                {.name = "Submission slot wait", .cpuMilliseconds = .2, .cpuOnly = true}};
             stats.nodes[0].sections.push_back({.name = "Software", .queue = QueueType::Compute, .cpuMilliseconds = .1});
             stats.streaming.push_back({.passName = "Visibility", .assetPath = "scene-a", .generation = 1, .frameIndex = 10,
                 .geometryUsedBytes = 1024, .geometryBudgetBytes = 4096, .totalPages = 100, .residentPages = 4});
@@ -40,6 +45,21 @@ public:
             completed.nodes[0].sections[0].gpuTimingAvailable = true; // Valid zero duration remains available.
             profiler.updateRenderGraphGpuStats(completed);
             const auto& displayed = profiler.displayFrame();
+            const auto findPreparation = [&](const char* name) {
+                const auto found = std::find_if(displayed.nodes.begin(), displayed.nodes.end(),
+                    [&](const auto& node) { return node.name == name; });
+                checkProfile(found != displayed.nodes.end(), std::string("Missing preparation scope: ") + name);
+                return static_cast<size_t>(found - displayed.nodes.begin());
+            };
+            const size_t preflight = findPreparation("Graph preparation / Preflight");
+            const size_t poll = findPreparation("Poll completions");
+            const size_t revisions = findPreparation("Scene revisions");
+            const size_t slot = findPreparation("Graph preparation / Submission slot wait");
+            checkProfile(displayed.nodes[poll].parent == preflight && displayed.nodes[revisions].parent == preflight &&
+                displayed.nodes[slot].parent == displayed.nodes[preflight].parent &&
+                displayed.nodes[poll].cpuOnly && !displayed.nodes[poll].gpuTimingAvailable &&
+                displayed.nodes[poll].cpuMilliseconds == 3,
+                "Preparation hierarchy/timing was flattened or contaminated by delayed GPU results");
             checkProfile(displayed.index == 0 && displayed.nodes.back().gpuTimingAvailable && displayed.nodes.back().gpuMilliseconds == 0,
                 "delayed nested/zero GPU result not backfilled into completed frame");
             checkProfile(!profiler.history().back().nodes.back().gpuTimingAvailable, "GPU result incorrectly attached to current frame");

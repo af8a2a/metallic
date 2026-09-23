@@ -738,10 +738,16 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
     currentStreaming_.insert(currentStreaming_.end(), stats.streaming.begin(), stats.streaming.end());
     currentOverflow_ |= stats.profilingOverflow;
     const size_t parent = stack_.empty() ? 0 : stack_.back();
+    std::vector<size_t> preparationNodes;
+    preparationNodes.reserve(stats.preparation.size());
     for (const auto& section : stats.preparation) {
-        const auto index = addFinishedSection(parent, "Graph preparation / " + section.name,
+        const bool nested = section.parent < preparationNodes.size();
+        const size_t sectionParent = nested ? preparationNodes[section.parent] : parent;
+        const auto index = addFinishedSection(sectionParent,
+            nested ? section.name : "Graph preparation / " + section.name,
             colorFromName(section.name), section.cpuMilliseconds);
         currentNodes_[index].cpuOnly = true;
+        preparationNodes.push_back(index);
     }
     const size_t group = addFinishedSection(
         parent,

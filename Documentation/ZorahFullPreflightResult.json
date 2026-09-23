@@ -1,0 +1,213 @@
+{
+  "manifest": {
+    "executableSha256": "8ACB28E19269D4FB1C96F1E5CF0645D49E8CAB245F83857F73AD0BF4C511DDDF",
+    "hidden": true,
+    "dirty": [
+      " ? External/microprofile",
+      " M Source/Editor/EditorProfiler.cpp",
+      " M Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp",
+      " M tests/rhi/EditorProfilerTests.cpp"
+    ],
+    "started": "2026-09-23T19:18:46.1367903+08:00",
+    "protocol": "zorah-full-editor-roam-v1",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+    "validation": false,
+    "gitHead": "8b05815807967e61524401d174d3b74b274fa3da",
+    "asset": {
+      "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+      "bytes": 205327470912,
+      "modifiedUtc": "2026-09-19T16:20:31.9397327Z"
+    },
+    "config": {
+      "warmupSeconds": 10.0,
+      "durationSeconds": 30.0,
+      "height": 660,
+      "width": 1797
+    },
+    "runs": 3,
+    "shaderSha256": "4414EAF63FA53AC7EDB7C9B977983FD508C5B107ACA7B18ACB9DE6449CBAAA38"
+  },
+  "runs": [
+    {
+      "run": 1,
+      "frames": 477,
+      "timingsMs": {
+        "Preflight": {
+          "mean": 8.926277777777777,
+          "p95": 18.9241,
+          "max": 67.1156
+        },
+        "Validate queue contracts": {
+          "mean": 0.0010972746331236896,
+          "p95": 0.0017,
+          "max": 0.0155
+        },
+        "Append incoming waits": {
+          "mean": 5.870020964360587e-05,
+          "p95": 0.0001,
+          "max": 0.0003
+        },
+        "Poll / retire external completions": {
+          "mean": 0.0018176100628930817,
+          "p95": 0.0031,
+          "max": 0.017
+        },
+        "Copy external dependencies": {
+          "mean": 0.0002486373165618449,
+          "p95": 0.0005,
+          "max": 0.003
+        },
+        "Read scene revisions": {
+          "mean": 0.00019748427672955975,
+          "p95": 0.0004,
+          "max": 0.0094
+        },
+        "Check frame overlap contracts": {
+          "mean": 5.082225786163522,
+          "p95": 11.3333,
+          "max": 45.1594
+        },
+        "Collect overlap blockers": {
+          "mean": 3.830642557651992,
+          "p95": 8.9563,
+          "max": 21.9448
+        }
+      },
+      "unattributedMs": {
+        "mean": 0.009989727463312349,
+        "p95": 0.006000000000000227,
+        "max": 1.5315000000000012
+      },
+      "overlapSharePercent": 99.84977574868165,
+      "frameMs": {
+        "mean": 62.97731174004193,
+        "p95": 119.4831,
+        "max": 291.8772
+      },
+      "drainReasons": [
+        0
+      ]
+    },
+    {
+      "run": 2,
+      "frames": 556,
+      "timingsMs": {
+        "Preflight": {
+          "mean": 8.44052392086331,
+          "p95": 17.9363,
+          "max": 48.5017
+        },
+        "Validate queue contracts": {
+          "mean": 0.000925,
+          "p95": 0.0015,
+          "max": 0.0028
+        },
+        "Append incoming waits": {
+          "mean": 5.7913669064748204e-05,
+          "p95": 0.0001,
+          "max": 0.0002
+        },
+        "Poll / retire external completions": {
+          "mean": 0.001618345323741007,
+          "p95": 0.0027,
+          "max": 0.012
+        },
+        "Copy external dependencies": {
+          "mean": 0.0002447841726618705,
+          "p95": 0.0005,
+          "max": 0.0007
+        },
+        "Read scene revisions": {
+          "mean": 0.00014784172661870505,
+          "p95": 0.0003,
+          "max": 0.0009
+        },
+        "Check frame overlap contracts": {
+          "mean": 4.733091366906475,
+          "p95": 10.5243,
+          "max": 31.1964
+        },
+        "Collect overlap blockers": {
+          "mean": 3.6999458633093525,
+          "p95": 8.249,
+          "max": 20.7143
+        }
+      },
+      "unattributedMs": {
+        "mean": 0.004492805755395723,
+        "p95": 0.0057000000000009265,
+        "max": 0.4034000000000013
+      },
+      "overlapSharePercent": 99.91130064060387,
+      "frameMs": {
+        "mean": 54.05577176258993,
+        "p95": 94.9288,
+        "max": 243.058
+      },
+      "drainReasons": [
+        0
+      ]
+    },
+    {
+      "run": 3,
+      "frames": 575,
+      "timingsMs": {
+        "Preflight": {
+          "mean": 7.035129739130435,
+          "p95": 15.5773,
+          "max": 67.6511
+        },
+        "Validate queue contracts": {
+          "mean": 0.0017010434782608697,
+          "p95": 0.0014,
+          "max": 0.4082
+        },
+        "Append incoming waits": {
+          "mean": 6.695652173913044e-05,
+          "p95": 0.0001,
+          "max": 0.0004
+        },
+        "Poll / retire external completions": {
+          "mean": 0.0016838260869565217,
+          "p95": 0.0027,
+          "max": 0.0294
+        },
+        "Copy external dependencies": {
+          "mean": 0.00030921739130434784,
+          "p95": 0.0005,
+          "max": 0.0339
+        },
+        "Read scene revisions": {
+          "mean": 0.00024382608695652176,
+          "p95": 0.0004,
+          "max": 0.033
+        },
+        "Check frame overlap contracts": {
+          "mean": 3.9263147826086957,
+          "p95": 8.4745,
+          "max": 41.1767
+        },
+        "Collect overlap blockers": {
+          "mean": 3.100953565217391,
+          "p95": 6.6304,
+          "max": 64.9139
+        }
+      },
+      "unattributedMs": {
+        "mean": 0.003856521739130439,
+        "p95": 0.006000000000000227,
+        "max": 0.033700000000001396
+      },
+      "overlapSharePercent": 99.88825520500893,
+      "frameMs": {
+        "mean": 52.265676695652175,
+        "p95": 117.1564,
+        "max": 423.7977
+      },
+      "drainReasons": [
+        0
+      ]
+    }
+  ],
+  "limitation": "High background CPU load observed after capture (7zFM ~1207% multi-core); not a controlled before/after FPS comparison."
+}
