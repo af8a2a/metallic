@@ -492,6 +492,8 @@ private:
     uint64_t evictionSortedMinimumAge_ = UINT64_MAX;
     bool evictionCandidatesBuilt_ = false;
     bool evictionAgeRejected_ = false;
+    // Capacity gate only; smaller pages and completed frees still pass.
+    bool budgetAdmissionExhausted_ = false;
     bool residentDemandFeedback_ = false;
     bool geometryReclaimPressure_ = false;
     bool clasReclaimPressure_ = false;

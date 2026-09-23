@@ -31,6 +31,7 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"ioQueued",s.ioQueued},{"ioActive",s.ioActive},{"uploadQueued",s.uploadQueued},
         {"requests",s.requests},{"uploads",s.uploads},{"evictions",s.evictions},{"uploadBytes",s.uploadBytes},
         {"requestOverflows",s.requestOverflows},{"allocationFailures",s.allocationFailures},{"loadFailures",s.loadFailures},
+        {"allocationAttempts",s.cpuWork.allocationAttempts},{"budgetRetrySuppressed",s.cpuWork.budgetRetrySuppressed},
         {"blasFeedbackAvailable",s.blasFeedbackAvailable},{"blasFeedbackFrame",s.blasFeedbackFrame},
         {"blasBuildCount",s.blasBuildCount},{"blasClusterReferences",s.blasClusterReferences},{"blasOverflowCount",s.blasOverflowCount},
         {"textureResidentBytes",s.textureResidentBytes},{"textureRetiredBytes",s.textureRetiredBytes},

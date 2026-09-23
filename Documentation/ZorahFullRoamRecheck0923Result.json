@@ -1,0 +1,2573 @@
+{
+  "date": "2026-09-23",
+  "manifest": {
+    "asset": {
+      "bytes": 205327470912,
+      "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+      "modifiedUtc": "2026-09-19T16:20:31.9397327Z"
+    },
+    "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+    "config": {
+      "height": 660,
+      "warmupSeconds": 10.0,
+      "durationSeconds": 30.0,
+      "width": 1797
+    },
+    "started": "2026-09-23T18:36:28.3730614+08:00",
+    "runs": 3,
+    "hidden": true,
+    "executableSha256": "220AF8B0168850B7CEBE19F5B04E77250B5B62CB0AEA91512A4F4D82C2ED1D9F",
+    "dirty": null,
+    "shaderSha256": "4414EAF63FA53AC7EDB7C9B977983FD508C5B107ACA7B18ACB9DE6449CBAAA38",
+    "gitHead": "c4f78f70e57f85854fc8e750b68562bf7744bb95",
+    "protocol": "zorah-full-editor-roam-v1",
+    "validation": false
+  },
+  "conditions": {
+    "config": {
+      "distance": 6.0,
+      "durationSeconds": 30.0,
+      "keyframes": [
+        {
+          "forward": 0.0,
+          "stage": "static",
+          "t": 0.0,
+          "yaw": 0.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "first-visit",
+          "t": 0.08333333333333333,
+          "yaw": 0.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "near-wall",
+          "t": 0.3333333333333333,
+          "yaw": 0.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "turn",
+          "t": 0.4444444444444444,
+          "yaw": 65.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "return",
+          "t": 0.6666666666666666,
+          "yaw": -65.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "settle",
+          "t": 0.8888888888888888,
+          "yaw": 0.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "end",
+          "t": 1.0,
+          "yaw": 0.0
+        }
+      ],
+      "warmupSeconds": 10.0
+    },
+    "absoluteKeyframes": [
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 0.0,
+        "stage": "static"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 2.5,
+        "stage": "first-visit"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -6.0921256404618,
+              4.163491249084473,
+              -5.886143707625141
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 10.0,
+        "stage": "near-wall"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              1.4835184214141535,
+              4.163491249084473,
+              -0.24667183495550882
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 13.333333333333332,
+        "stage": "turn"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -4.1826338924834205,
+              4.163491249084473,
+              -15.135352712684481
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 20.0,
+        "stage": "return"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 26.666666666666664,
+        "stage": "settle"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 30.0,
+        "stage": "end"
+      }
+    ],
+    "outputExtent": [
+      1797,
+      660
+    ],
+    "renderExtent": [
+      1198,
+      440
+    ],
+    "graph": [
+      {
+        "name": "VBuffer",
+        "properties": {
+          "asyncSoftwareRaster": false,
+          "autoBuildStreamAsset": false,
+          "autoLod": true,
+          "coldPageRetentionFrames": 120,
+          "compactClas": true,
+          "compactShadingAttributes": true,
+          "distributedDemandMinGroups": 65536,
+          "distributedPageDemand": true,
+          "enableClas": true,
+          "enableClusterRtx": true,
+          "enableMeshletStreaming": true,
+          "hybridRaster": true,
+          "instanceFrustumCull": true,
+          "instanceHzbCull": true,
+          "lodPixelError": 1.5,
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "maxActiveGroups": 1048575,
+          "maxBlasBytes": 536870912,
+          "maxClasBuildClusters": 8192,
+          "maxClasBytes": 2147483648,
+          "maxGpuPageRequests": 65536,
+          "maxGpuPageUnloadRequests": 65536,
+          "maxLockedFallbackPages": 65536,
+          "maxPageLoadsInFlight": 1024,
+          "maxPageUploadsPerFrame": 256,
+          "maxResidentBytes": 3758096384,
+          "maxResidentPages": 0,
+          "maxTraversalWorkItems": 1048576,
+          "maxTraversalWorkers": 4096,
+          "maxUploadBytesPerFrame": 8388608,
+          "meshletFrustumCull": true,
+          "meshletNormalConeCull": false,
+          "pageLoadConcurrency": 4,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+          "sceneBinding": "asset",
+          "streamAssetOnly": true,
+          "streamAssetPath": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+          "viewBinding": "global",
+          "visualization": "none"
+        },
+        "type": "VisibilityBufferPass"
+      },
+      {
+        "name": "Shadows",
+        "properties": {
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+          "rayTracedShadows": true,
+          "shadowAngularRadius": 0.266,
+          "shadowBias": 0.01,
+          "shadowLightIndex": -1,
+          "shadowLightRadius": 0.05,
+          "shadowRayLength": 100000.0,
+          "sigmaDenoise": true,
+          "sigmaHistoryLength": 5
+        },
+        "type": "RayTracedShadowPass"
+      },
+      {
+        "name": "Deferred",
+        "properties": {
+          "accumulate": false,
+          "exportUpscalerGuides": true,
+          "lightingMode": "realtime",
+          "materialBinning": true,
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "outputLinear": true,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf"
+        },
+        "type": "VisibilityBufferDeferredPass"
+      },
+      {
+        "name": "DlssSr",
+        "properties": {
+          "exportOutputGuides": true,
+          "mode": "Quality"
+        },
+        "type": "StreamlineDlssSrPass"
+      },
+      {
+        "name": "AutoExposure",
+        "properties": {},
+        "type": "AutoExposurePass"
+      },
+      {
+        "name": "DlssNr",
+        "properties": {
+          "depthInverted": false,
+          "enabled": false,
+          "fallbackToInput": true,
+          "intensity": 1.0,
+          "preset": 0,
+          "style": 0
+        },
+        "type": "DlssNrPass"
+      },
+      {
+        "name": "FinalBlit",
+        "properties": {},
+        "type": "FinalBlitPass"
+      }
+    ],
+    "hidden": true,
+    "vsync": true,
+    "validationRequested": false
+  },
+  "runs": [
+    {
+      "run": "run1",
+      "frames": {
+        "count": 842,
+        "mean": 35.64086365795724,
+        "p50": 35.2661,
+        "p95": 47.0224,
+        "p99": 51.8265,
+        "max": 85.1282
+      },
+      "slowFrames": 500,
+      "stages": {
+        "static": {
+          "frameMs": {
+            "count": 93,
+            "mean": 27.158451612903225,
+            "p50": 26.572,
+            "p95": 32.9889,
+            "p99": 35.1745,
+            "max": 35.1745
+          },
+          "slowFrames": 4
+        },
+        "first-visit": {
+          "frameMs": {
+            "count": 224,
+            "mean": 33.45742321428572,
+            "p50": 32.2199,
+            "p95": 43.4355,
+            "p99": 48.9944,
+            "max": 56.8813
+          },
+          "slowFrames": 98
+        },
+        "near-wall": {
+          "frameMs": {
+            "count": 85,
+            "mean": 39.188891764705886,
+            "p50": 38.7862,
+            "p95": 48.4112,
+            "p99": 50.2297,
+            "max": 50.2297
+          },
+          "slowFrames": 76
+        },
+        "turn": {
+          "frameMs": {
+            "count": 168,
+            "mean": 39.658258333333336,
+            "p50": 38.684,
+            "p95": 50.6861,
+            "p99": 65.3372,
+            "max": 85.1282
+          },
+          "slowFrames": 139
+        },
+        "return": {
+          "frameMs": {
+            "count": 174,
+            "mean": 38.376333333333335,
+            "p50": 38.0446,
+            "p95": 47.6878,
+            "p99": 53.0474,
+            "max": 62.2793
+          },
+          "slowFrames": 134
+        },
+        "settle": {
+          "frameMs": {
+            "count": 98,
+            "mean": 33.860032653061225,
+            "p50": 33.0761,
+            "p95": 46.461,
+            "p99": 50.8456,
+            "max": 50.8456
+          },
+          "slowFrames": 49
+        }
+      },
+      "drainReasons": {
+        "0": 842
+      },
+      "externalCompletions": {
+        "1": 842
+      },
+      "hzbValidFrames": 842,
+      "maxCounters": {
+        "allocationFailures": 16245,
+        "loadFailures": 0,
+        "requestOverflows": 0,
+        "blasOverflowCount": 12425
+      },
+      "streaming": {
+        "requests": {
+          "count": 842,
+          "mean": 13616.003562945369,
+          "p50": 13729,
+          "p95": 15886,
+          "p99": 16254,
+          "max": 16460
+        },
+        "allocationFailures": {
+          "count": 842,
+          "mean": 13370.532066508313,
+          "p50": 13616,
+          "p95": 15423,
+          "p99": 15961,
+          "max": 16245
+        },
+        "uploads": {
+          "count": 842,
+          "mean": 34.10926365795724,
+          "p50": 25,
+          "p95": 107,
+          "p99": 167,
+          "max": 232
+        },
+        "evictions": {
+          "count": 842,
+          "mean": 33.065320665083135,
+          "p50": 23,
+          "p95": 108,
+          "p99": 195,
+          "max": 256
+        },
+        "geometryBytes": {
+          "count": 842,
+          "mean": 3746260491.5534444,
+          "p50": 3746664192,
+          "p95": 3758096128,
+          "p99": 3758096128,
+          "max": 3758096128
+        },
+        "geometryCapacity": {
+          "count": 842,
+          "mean": 3758096384.0,
+          "p50": 3758096384,
+          "p95": 3758096384,
+          "p99": 3758096384,
+          "max": 3758096384
+        },
+        "clasBytes": {
+          "count": 842,
+          "mean": 1818573413.2446556,
+          "p50": 1815966592,
+          "p95": 1828967552,
+          "p99": 1830145792,
+          "max": 1831014272
+        },
+        "clasCapacity": {
+          "count": 842,
+          "mean": 2147483648.0,
+          "p50": 2147483648,
+          "p95": 2147483648,
+          "p99": 2147483648,
+          "max": 2147483648
+        },
+        "blasOverflowCount": {
+          "count": 842,
+          "mean": 8347.209026128266,
+          "p50": 10739,
+          "p95": 12052,
+          "p99": 12400,
+          "max": 12425
+        }
+      },
+      "selectedScopes": [
+        {
+          "path": "Frame/Wait Frame Slot Before Input",
+          "leaf": true,
+          "allCpu": {
+            "count": 842,
+            "mean": 0.040072327790973875,
+            "p50": 0.0156,
+            "p95": 0.0227,
+            "p99": 0.0296,
+            "max": 16.6876
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 0.015394736842105261,
+            "p50": 0.0146,
+            "p95": 0.0206,
+            "p99": 0.0296,
+            "max": 0.0463
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 0.0569518,
+            "p50": 0.0164,
+            "p95": 0.0231,
+            "p99": 0.0268,
+            "max": 16.6876
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Panels/Viewport Panel",
+          "leaf": true,
+          "allCpu": {
+            "count": 842,
+            "mean": 4.183420190023753,
+            "p50": 4.0511,
+            "p95": 5.7815,
+            "p99": 6.4543,
+            "max": 12.548
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 3.5579774853801167,
+            "p50": 3.5064,
+            "p95": 4.5379,
+            "p99": 5.1767,
+            "max": 5.4327
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 4.611223,
+            "p50": 4.5077,
+            "p95": 6.0042,
+            "p99": 6.6618,
+            "max": 12.548
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight",
+          "leaf": true,
+          "allCpu": {
+            "count": 842,
+            "mean": 4.839833847980998,
+            "p50": 4.6344,
+            "p95": 7.3715,
+            "p99": 8.4855,
+            "max": 16.077
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 3.8227263157894735,
+            "p50": 3.8317,
+            "p95": 5.1891,
+            "p99": 6.0117,
+            "max": 6.8363
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 5.5355354,
+            "p50": 5.3619,
+            "p95": 7.747,
+            "p99": 8.6075,
+            "max": 16.077
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Submission slot wait",
+          "leaf": true,
+          "allCpu": {
+            "count": 842,
+            "mean": 0.024978859857482185,
+            "p50": 0.0222,
+            "p95": 0.035,
+            "p99": 0.0654,
+            "max": 0.2808
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 0.022257894736842105,
+            "p50": 0.0205,
+            "p95": 0.0295,
+            "p99": 0.0576,
+            "max": 0.1139
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 0.02684,
+            "p50": 0.0245,
+            "p95": 0.0369,
+            "p99": 0.0683,
+            "max": 0.2808
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope",
+          "leaf": false,
+          "allCpu": {
+            "count": 842,
+            "mean": 24.955187292161522,
+            "p50": 24.668,
+            "p95": 33.6884,
+            "p99": 36.3983,
+            "max": 50.4706
+          },
+          "allGpu": {
+            "count": 842,
+            "mean": 20.438106071258904,
+            "p50": 20.832192,
+            "p95": 25.197952,
+            "p99": 26.010208,
+            "max": 26.367808
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 20.269540643274855,
+            "p50": 20.3561,
+            "p95": 23.4669,
+            "p99": 24.5017,
+            "max": 24.8777
+          },
+          "withinBudgetGpu": {
+            "count": 342,
+            "mean": 20.659445333333334,
+            "p50": 21.065344,
+            "p95": 22.435744,
+            "p99": 25.291008,
+            "max": 25.991424
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 28.1601696,
+            "p50": 27.5406,
+            "p95": 34.852,
+            "p99": 37.1353,
+            "max": 50.4706
+          },
+          "slowGpu": {
+            "count": 500,
+            "mean": 20.286710016,
+            "p50": 20.479104,
+            "p95": 25.592256,
+            "p99": 26.105088,
+            "max": 26.367808
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests",
+          "leaf": false,
+          "allCpu": {
+            "count": 842,
+            "mean": 9.126250118764846,
+            "p50": 8.6759,
+            "p95": 13.5801,
+            "p99": 15.2621,
+            "max": 22.6196
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 7.50815730994152,
+            "p50": 7.4924,
+            "p95": 9.3877,
+            "p99": 10.0961,
+            "max": 11.0697
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 10.233025600000001,
+            "p50": 10.0345,
+            "p95": 14.2211,
+            "p99": 15.3839,
+            "max": 22.6196
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads",
+          "leaf": true,
+          "allCpu": {
+            "count": 842,
+            "mean": 3.1381859857482186,
+            "p50": 2.9666,
+            "p95": 4.6841,
+            "p99": 5.6664,
+            "max": 8.9494
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 2.6233219298245616,
+            "p50": 2.6359,
+            "p95": 3.5554,
+            "p99": 3.9569,
+            "max": 4.8373
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 3.4903530000000003,
+            "p50": 3.449,
+            "p95": 5.0099,
+            "p99": 5.8467,
+            "max": 8.9494
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Update resident demand",
+          "leaf": true,
+          "allCpu": {
+            "count": 842,
+            "mean": 0.8339612826603325,
+            "p50": 0.7949,
+            "p95": 1.2245,
+            "p99": 1.4867,
+            "max": 2.2829
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 0.6806961988304093,
+            "p50": 0.6751,
+            "p95": 0.8781,
+            "p99": 1.0865,
+            "max": 1.3029
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 0.9387945999999999,
+            "p50": 0.9043,
+            "p95": 1.3113,
+            "p99": 1.5605,
+            "max": 2.2829
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Sort admission priority",
+          "leaf": true,
+          "allCpu": {
+            "count": 842,
+            "mean": 0.8523850356294537,
+            "p50": 0.8331,
+            "p95": 1.0879,
+            "p99": 1.1792,
+            "max": 1.4537
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 0.8015441520467836,
+            "p50": 0.8012,
+            "p95": 0.9574,
+            "p99": 1.063,
+            "max": 1.4218
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 0.8871602000000001,
+            "p50": 0.8932,
+            "p95": 1.1329,
+            "p99": 1.1882,
+            "max": 1.4537
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch",
+          "leaf": true,
+          "allCpu": {
+            "count": 842,
+            "mean": 3.0730115201900237,
+            "p50": 2.8407,
+            "p95": 5.1529,
+            "p99": 6.0067,
+            "max": 7.6022
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 2.362542397660819,
+            "p50": 2.3414,
+            "p95": 3.2852,
+            "p99": 3.704,
+            "max": 3.8404
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 3.5589724,
+            "p50": 3.3302,
+            "p95": 5.5716,
+            "p99": 6.2504,
+            "max": 7.6022
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/Joint cold page reclaim",
+          "leaf": false,
+          "allCpu": {
+            "count": 842,
+            "mean": 0.006135748218527316,
+            "p50": 0.0045,
+            "p95": 0.0172,
+            "p99": 0.0376,
+            "max": 0.0566
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 0.003097368421052631,
+            "p50": 0.0024,
+            "p95": 0.0076,
+            "p99": 0.012,
+            "max": 0.0189
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 0.008214,
+            "p50": 0.0063,
+            "p95": 0.0209,
+            "p99": 0.0414,
+            "max": 0.0566
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+          "leaf": true,
+          "allCpu": {
+            "count": 842,
+            "mean": 0.005227197149643706,
+            "p50": 0.0048,
+            "p95": 0.008,
+            "p99": 0.0094,
+            "max": 0.0115
+          },
+          "allGpu": {
+            "count": 842,
+            "mean": 6.804034888361046,
+            "p50": 7.233056,
+            "p95": 10.26096,
+            "p99": 10.85504,
+            "max": 11.109152
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 0.004610233918128655,
+            "p50": 0.0042,
+            "p95": 0.0069,
+            "p99": 0.0091,
+            "max": 0.0106
+          },
+          "withinBudgetGpu": {
+            "count": 342,
+            "mean": 7.135895953216374,
+            "p50": 7.386592,
+            "p95": 8.122176,
+            "p99": 10.699904,
+            "max": 10.763648
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 0.0056492,
+            "p50": 0.0056,
+            "p95": 0.0084,
+            "p99": 0.0094,
+            "max": 0.0115
+          },
+          "slowGpu": {
+            "count": 500,
+            "mean": 6.57704192,
+            "p50": 6.963168,
+            "p95": 10.49648,
+            "p99": 10.895296,
+            "max": 11.109152
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream late/Software raster",
+          "leaf": true,
+          "allCpu": {
+            "count": 842,
+            "mean": 0.004126128266033254,
+            "p50": 0.0035,
+            "p95": 0.0069,
+            "p99": 0.009,
+            "max": 0.0117
+          },
+          "allGpu": {
+            "count": 842,
+            "mean": 0.5017596959619953,
+            "p50": 0.413344,
+            "p95": 1.03008,
+            "p99": 1.307904,
+            "max": 1.697216
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 0.0035464912280701757,
+            "p50": 0.003,
+            "p95": 0.006,
+            "p99": 0.0082,
+            "max": 0.009
+          },
+          "withinBudgetGpu": {
+            "count": 342,
+            "mean": 0.44853155555555557,
+            "p50": 0.370784,
+            "p95": 0.875712,
+            "p99": 1.276704,
+            "max": 1.364416
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 0.0045226,
+            "p50": 0.0043,
+            "p95": 0.0072,
+            "p99": 0.0094,
+            "max": 0.0117
+          },
+          "slowGpu": {
+            "count": 500,
+            "mean": 0.538167744,
+            "p50": 0.472128,
+            "p95": 1.090368,
+            "p99": 1.318656,
+            "max": 1.697216
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)",
+          "leaf": true,
+          "allCpu": {
+            "count": 842,
+            "mean": 4.250472565320665,
+            "p50": 3.8699,
+            "p95": 6.3973,
+            "p99": 6.7863,
+            "max": 7.2167
+          },
+          "allGpu": {
+            "count": 842,
+            "mean": 0.04453126840855107,
+            "p50": 0.039456,
+            "p95": 0.047776,
+            "p99": 0.218816,
+            "max": 0.474976
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 3.5432637426900584,
+            "p50": 3.3913,
+            "p95": 4.6886,
+            "p99": 5.8451,
+            "max": 6.3659
+          },
+          "withinBudgetGpu": {
+            "count": 342,
+            "mean": 0.04339976608187134,
+            "p50": 0.039136,
+            "p95": 0.047616,
+            "p99": 0.218496,
+            "max": 0.301184
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 4.7342034,
+            "p50": 4.644,
+            "p95": 6.5261,
+            "p99": 6.8449,
+            "max": 7.2167
+          },
+          "slowGpu": {
+            "count": 500,
+            "mean": 0.045305216,
+            "p50": 0.039648,
+            "p95": 0.047904,
+            "p99": 0.218816,
+            "max": 0.474976
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming",
+          "leaf": false,
+          "allCpu": {
+            "count": 842,
+            "mean": 1.1466214964370547,
+            "p50": 1.0048,
+            "p95": 2.8815,
+            "p99": 3.2843,
+            "max": 3.6524
+          },
+          "withinBudgetCpu": {
+            "count": 342,
+            "mean": 0.7903005847953216,
+            "p50": 0.3884,
+            "p95": 2.5965,
+            "p99": 2.789,
+            "max": 3.0588
+          },
+          "slowCpu": {
+            "count": 500,
+            "mean": 1.390345,
+            "p50": 1.1417,
+            "p95": 3.0908,
+            "p99": 3.3337,
+            "max": 3.6524
+          }
+        }
+      ],
+      "source": "build-release\\full-roam-recheck-0923\\run1",
+      "slowestFrames": [
+        {
+          "frame": 1254,
+          "seconds": 19.6825149,
+          "stage": "turn",
+          "frameMs": 85.1282
+        },
+        {
+          "frame": 1253,
+          "seconds": 19.6171777,
+          "stage": "turn",
+          "frameMs": 65.3372
+        },
+        {
+          "frame": 1325,
+          "seconds": 22.6330146,
+          "stage": "return",
+          "frameMs": 62.2793
+        },
+        {
+          "frame": 915,
+          "seconds": 6.6810318,
+          "stage": "first-visit",
+          "frameMs": 56.8813
+        },
+        {
+          "frame": 1252,
+          "seconds": 19.5629972,
+          "stage": "turn",
+          "frameMs": 54.1805
+        }
+      ]
+    },
+    {
+      "run": "run2",
+      "frames": {
+        "count": 793,
+        "mean": 37.83288991172762,
+        "p50": 38.7841,
+        "p95": 48.3699,
+        "p99": 55.59,
+        "max": 79.3468
+      },
+      "slowFrames": 597,
+      "stages": {
+        "static": {
+          "frameMs": {
+            "count": 71,
+            "mean": 35.53186901408451,
+            "p50": 35.8632,
+            "p95": 42.2854,
+            "p99": 44.0232,
+            "max": 44.0232
+          },
+          "slowFrames": 52
+        },
+        "first-visit": {
+          "frameMs": {
+            "count": 189,
+            "mean": 39.77398941798942,
+            "p50": 39.628,
+            "p95": 46.6039,
+            "p99": 54.2969,
+            "max": 72.0454
+          },
+          "slowFrames": 179
+        },
+        "near-wall": {
+          "frameMs": {
+            "count": 75,
+            "mean": 44.07144666666667,
+            "p50": 43.3115,
+            "p95": 52.0461,
+            "p99": 79.3468,
+            "max": 79.3468
+          },
+          "slowFrames": 74
+        },
+        "turn": {
+          "frameMs": {
+            "count": 157,
+            "mean": 42.57424649681529,
+            "p50": 42.3161,
+            "p95": 51.2995,
+            "p99": 55.7492,
+            "max": 59.8649
+          },
+          "slowFrames": 152
+        },
+        "return": {
+          "frameMs": {
+            "count": 180,
+            "mean": 37.098708333333335,
+            "p50": 38.0234,
+            "p95": 47.6548,
+            "p99": 52.6324,
+            "max": 55.59
+          },
+          "slowFrames": 132
+        },
+        "settle": {
+          "frameMs": {
+            "count": 121,
+            "mean": 27.22439917355372,
+            "p50": 25.8709,
+            "p95": 34.8917,
+            "p99": 45.0907,
+            "max": 69.9865
+          },
+          "slowFrames": 8
+        }
+      },
+      "drainReasons": {
+        "0": 793
+      },
+      "externalCompletions": {
+        "1": 793
+      },
+      "hzbValidFrames": 793,
+      "maxCounters": {
+        "allocationFailures": 16208,
+        "loadFailures": 0,
+        "requestOverflows": 0,
+        "blasOverflowCount": 12425
+      },
+      "streaming": {
+        "requests": {
+          "count": 793,
+          "mean": 13566.450189155108,
+          "p50": 13714,
+          "p95": 15890,
+          "p99": 16243,
+          "max": 16471
+        },
+        "allocationFailures": {
+          "count": 793,
+          "mean": 13360.39974779319,
+          "p50": 13601,
+          "p95": 15528,
+          "p99": 16008,
+          "max": 16208
+        },
+        "uploads": {
+          "count": 793,
+          "mean": 36.14627994955864,
+          "p50": 26,
+          "p95": 112,
+          "p99": 189,
+          "max": 337
+        },
+        "evictions": {
+          "count": 793,
+          "mean": 35.01765447667087,
+          "p50": 23,
+          "p95": 110,
+          "p99": 198,
+          "max": 256
+        },
+        "geometryBytes": {
+          "count": 793,
+          "mean": 3745437785.745271,
+          "p50": 3743635200,
+          "p95": 3758094592,
+          "p99": 3758094592,
+          "max": 3758094592
+        },
+        "geometryCapacity": {
+          "count": 793,
+          "mean": 3758096384.0,
+          "p50": 3758096384,
+          "p95": 3758096384,
+          "p99": 3758096384,
+          "max": 3758096384
+        },
+        "clasBytes": {
+          "count": 793,
+          "mean": 1818155516.1261034,
+          "p50": 1816327808,
+          "p95": 1829085824,
+          "p99": 1829643008,
+          "max": 1830448256
+        },
+        "clasCapacity": {
+          "count": 793,
+          "mean": 2147483648.0,
+          "p50": 2147483648,
+          "p95": 2147483648,
+          "p99": 2147483648,
+          "max": 2147483648
+        },
+        "blasOverflowCount": {
+          "count": 793,
+          "mean": 8172.796973518285,
+          "p50": 10611,
+          "p95": 12054,
+          "p99": 12405,
+          "max": 12425
+        }
+      },
+      "selectedScopes": [
+        {
+          "path": "Frame/Wait Frame Slot Before Input",
+          "leaf": true,
+          "allCpu": {
+            "count": 793,
+            "mean": 0.06907036569987389,
+            "p50": 0.0178,
+            "p95": 0.0252,
+            "p99": 0.0499,
+            "max": 39.9995
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 0.08604020100502513,
+            "p50": 0.0182,
+            "p95": 0.0255,
+            "p99": 0.064,
+            "max": 39.9995
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 0.017381632653061224,
+            "p50": 0.0167,
+            "p95": 0.0246,
+            "p99": 0.0477,
+            "max": 0.0499
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Panels/Viewport Panel",
+          "leaf": true,
+          "allCpu": {
+            "count": 793,
+            "mean": 4.558110592686003,
+            "p50": 4.5841,
+            "p95": 5.855,
+            "p99": 6.7893,
+            "max": 13.0088
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 4.863802680067002,
+            "p50": 4.8687,
+            "p95": 5.9782,
+            "p99": 7.4819,
+            "max": 13.0088
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 3.6269974489795915,
+            "p50": 3.614,
+            "p95": 4.883,
+            "p99": 5.4195,
+            "max": 5.6404
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight",
+          "leaf": true,
+          "allCpu": {
+            "count": 793,
+            "mean": 4.628696343001261,
+            "p50": 4.4723,
+            "p95": 7.054,
+            "p99": 10.1634,
+            "max": 19.0708
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 5.10863567839196,
+            "p50": 4.8898,
+            "p95": 7.2739,
+            "p99": 11.6901,
+            "max": 19.0708
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 3.166840306122449,
+            "p50": 2.9516,
+            "p95": 4.4996,
+            "p99": 5.0236,
+            "max": 5.1408
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Submission slot wait",
+          "leaf": true,
+          "allCpu": {
+            "count": 793,
+            "mean": 0.02749293820933165,
+            "p50": 0.0251,
+            "p95": 0.0382,
+            "p99": 0.0998,
+            "max": 0.2282
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 0.02914891122278057,
+            "p50": 0.0267,
+            "p95": 0.0396,
+            "p99": 0.1081,
+            "max": 0.2282
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 0.022448979591836737,
+            "p50": 0.0204,
+            "p95": 0.028,
+            "p99": 0.0849,
+            "max": 0.0904
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope",
+          "leaf": false,
+          "allCpu": {
+            "count": 793,
+            "mean": 26.815744136191675,
+            "p50": 27.4533,
+            "p95": 35.2952,
+            "p99": 41.1262,
+            "max": 48.0072
+          },
+          "allGpu": {
+            "count": 793,
+            "mean": 19.87843385624212,
+            "p50": 19.76352,
+            "p95": 24.108288,
+            "p99": 27.769504,
+            "max": 31.158816
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 29.32346432160804,
+            "p50": 28.9959,
+            "p95": 35.9214,
+            "p99": 42.139,
+            "max": 48.0072
+          },
+          "slowGpu": {
+            "count": 597,
+            "mean": 19.933227363484086,
+            "p50": 19.764096,
+            "p95": 24.490208,
+            "p99": 28.577568,
+            "max": 31.158816
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 19.177433163265306,
+            "p50": 18.9367,
+            "p95": 23.8425,
+            "p99": 24.995,
+            "max": 25.0072
+          },
+          "withinBudgetGpu": {
+            "count": 196,
+            "mean": 19.711537306122448,
+            "p50": 19.750816,
+            "p95": 20.917248,
+            "p99": 23.031072,
+            "max": 24.523296
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests",
+          "leaf": false,
+          "allCpu": {
+            "count": 793,
+            "mean": 9.327333795712484,
+            "p50": 9.3962,
+            "p95": 13.2633,
+            "p99": 15.2734,
+            "max": 19.9343
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 10.217611557788945,
+            "p50": 10.2749,
+            "p95": 13.5718,
+            "p99": 15.376,
+            "max": 19.9343
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 6.615620408163265,
+            "p50": 6.2252,
+            "p95": 8.706,
+            "p99": 11.115,
+            "max": 11.7963
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads",
+          "leaf": true,
+          "allCpu": {
+            "count": 793,
+            "mean": 3.0077764186633043,
+            "p50": 2.9419,
+            "p95": 4.564,
+            "p99": 5.4402,
+            "max": 6.8343
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 3.265839195979899,
+            "p50": 3.2175,
+            "p95": 4.6936,
+            "p99": 5.6925,
+            "max": 6.8343
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 2.221738265306122,
+            "p50": 2.0703,
+            "p95": 3.2896,
+            "p99": 3.9993,
+            "max": 4.202
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Update resident demand",
+          "leaf": true,
+          "allCpu": {
+            "count": 793,
+            "mean": 0.8385751576292559,
+            "p50": 0.8145,
+            "p95": 1.3255,
+            "p99": 1.7481,
+            "max": 2.2561
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 0.9246261306532664,
+            "p50": 0.8896,
+            "p95": 1.3775,
+            "p99": 1.9311,
+            "max": 2.2561
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 0.5764709183673469,
+            "p50": 0.5334,
+            "p95": 0.9283,
+            "p99": 1.4611,
+            "max": 1.5751
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Sort admission priority",
+          "leaf": true,
+          "allCpu": {
+            "count": 793,
+            "mean": 0.9136988650693569,
+            "p50": 0.929,
+            "p95": 1.1567,
+            "p99": 1.2394,
+            "max": 3.3807
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 0.9529006700167505,
+            "p50": 0.9832,
+            "p95": 1.1754,
+            "p99": 1.2494,
+            "max": 3.3807
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 0.7942933673469388,
+            "p50": 0.7835,
+            "p95": 1.0021,
+            "p99": 1.1016,
+            "max": 1.1088
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch",
+          "leaf": true,
+          "allCpu": {
+            "count": 793,
+            "mean": 3.2076240857503153,
+            "p50": 3.0875,
+            "p95": 5.0983,
+            "p99": 6.0342,
+            "max": 12.8873
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 3.6080716917922944,
+            "p50": 3.5944,
+            "p95": 5.2762,
+            "p99": 6.3957,
+            "max": 12.8873
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 1.9878933673469388,
+            "p50": 1.8292,
+            "p95": 2.8751,
+            "p99": 4.3068,
+            "max": 4.5313
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/Joint cold page reclaim",
+          "leaf": false,
+          "allCpu": {
+            "count": 793,
+            "mean": 0.006933669609079446,
+            "p50": 0.005,
+            "p95": 0.0193,
+            "p99": 0.0341,
+            "max": 0.0517
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 0.008559798994974874,
+            "p50": 0.0065,
+            "p95": 0.0216,
+            "p99": 0.037,
+            "max": 0.0517
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 0.001980612244897959,
+            "p50": 0.0011,
+            "p95": 0.0058,
+            "p99": 0.0144,
+            "max": 0.0147
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+          "leaf": true,
+          "allCpu": {
+            "count": 793,
+            "mean": 0.005556998738965952,
+            "p50": 0.0053,
+            "p95": 0.0082,
+            "p99": 0.0105,
+            "max": 0.0781
+          },
+          "allGpu": {
+            "count": 793,
+            "mean": 6.595291278688524,
+            "p50": 6.983456,
+            "p95": 9.868352,
+            "p99": 10.977984,
+            "max": 12.324672
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 0.005874371859296483,
+            "p50": 0.0056,
+            "p95": 0.0084,
+            "p99": 0.011,
+            "max": 0.0781
+          },
+          "slowGpu": {
+            "count": 597,
+            "mean": 6.4854051591289785,
+            "p50": 6.878144,
+            "p95": 10.059552,
+            "p99": 11.5896,
+            "max": 12.324672
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 0.0045903061224489795,
+            "p50": 0.0042,
+            "p95": 0.0068,
+            "p99": 0.0089,
+            "max": 0.0104
+          },
+          "withinBudgetGpu": {
+            "count": 196,
+            "mean": 6.929995428571428,
+            "p50": 7.08704,
+            "p95": 7.616288,
+            "p99": 8.290848,
+            "max": 9.628864
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream late/Software raster",
+          "leaf": true,
+          "allCpu": {
+            "count": 793,
+            "mean": 0.004285876418663304,
+            "p50": 0.0041,
+            "p95": 0.0069,
+            "p99": 0.0081,
+            "max": 0.022
+          },
+          "allGpu": {
+            "count": 793,
+            "mean": 0.4909946431273644,
+            "p50": 0.413728,
+            "p95": 1.006656,
+            "p99": 1.243296,
+            "max": 1.816352
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 0.004530820770519263,
+            "p50": 0.0044,
+            "p95": 0.0071,
+            "p99": 0.0087,
+            "max": 0.022
+          },
+          "slowGpu": {
+            "count": 597,
+            "mean": 0.5036501976549413,
+            "p50": 0.417824,
+            "p95": 1.04352,
+            "p99": 1.248832,
+            "max": 1.816352
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 0.0035397959183673467,
+            "p50": 0.0031,
+            "p95": 0.0059,
+            "p99": 0.0071,
+            "max": 0.0076
+          },
+          "withinBudgetGpu": {
+            "count": 196,
+            "mean": 0.45244685714285715,
+            "p50": 0.392256,
+            "p95": 0.782112,
+            "p99": 0.95888,
+            "max": 1.29328
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)",
+          "leaf": true,
+          "allCpu": {
+            "count": 793,
+            "mean": 4.678691551071879,
+            "p50": 4.5604,
+            "p95": 6.4329,
+            "p99": 6.8415,
+            "max": 13.5214
+          },
+          "allGpu": {
+            "count": 793,
+            "mean": 0.04335636822194199,
+            "p50": 0.039488,
+            "p95": 0.047872,
+            "p99": 0.050016,
+            "max": 0.585184
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 4.944353601340034,
+            "p50": 4.8846,
+            "p95": 6.5008,
+            "p99": 6.8971,
+            "max": 13.5214
+          },
+          "slowGpu": {
+            "count": 597,
+            "mean": 0.043524395309882745,
+            "p50": 0.039584,
+            "p95": 0.047968,
+            "p99": 0.050016,
+            "max": 0.585184
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 3.8695066326530614,
+            "p50": 3.7195,
+            "p95": 5.157,
+            "p99": 5.9351,
+            "max": 6.0259
+          },
+          "withinBudgetGpu": {
+            "count": 196,
+            "mean": 0.04284457142857143,
+            "p50": 0.03936,
+            "p95": 0.047712,
+            "p99": 0.223552,
+            "max": 0.256416
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming",
+          "leaf": false,
+          "allCpu": {
+            "count": 793,
+            "mean": 1.2007566204287516,
+            "p50": 1.0259,
+            "p95": 3.0989,
+            "p99": 3.3338,
+            "max": 3.3949
+          },
+          "slowCpu": {
+            "count": 597,
+            "mean": 1.3936541038525962,
+            "p50": 1.2103,
+            "p95": 3.1419,
+            "p99": 3.3409,
+            "max": 3.3949
+          },
+          "withinBudgetCpu": {
+            "count": 196,
+            "mean": 0.6132066326530613,
+            "p50": 0.1082,
+            "p95": 2.744,
+            "p99": 2.8189,
+            "max": 2.9208
+          }
+        }
+      ],
+      "source": "build-release\\full-roam-recheck-0923\\run2",
+      "slowestFrames": [
+        {
+          "frame": 976,
+          "seconds": 13.1718496,
+          "stage": "near-wall",
+          "frameMs": 79.3468
+        },
+        {
+          "frame": 874,
+          "seconds": 8.853233,
+          "stage": "first-visit",
+          "frameMs": 72.0454
+        },
+        {
+          "frame": 1316,
+          "seconds": 26.7073295,
+          "stage": "settle",
+          "frameMs": 69.9865
+        },
+        {
+          "frame": 971,
+          "seconds": 12.9077687,
+          "stage": "near-wall",
+          "frameMs": 65.5516
+        },
+        {
+          "frame": 1062,
+          "seconds": 16.8429134,
+          "stage": "turn",
+          "frameMs": 59.8649
+        }
+      ]
+    },
+    {
+      "run": "run3",
+      "frames": {
+        "count": 980,
+        "mean": 30.63483775510204,
+        "p50": 29.6506,
+        "p95": 40.5781,
+        "p99": 48.9834,
+        "max": 66.4608
+      },
+      "slowFrames": 230,
+      "stages": {
+        "static": {
+          "frameMs": {
+            "count": 86,
+            "mean": 29.424787209302327,
+            "p50": 29.0139,
+            "p95": 37.0282,
+            "p99": 47.7757,
+            "max": 47.7757
+          },
+          "slowFrames": 16
+        },
+        "first-visit": {
+          "frameMs": {
+            "count": 222,
+            "mean": 33.777158108108104,
+            "p50": 32.8112,
+            "p95": 45.4419,
+            "p99": 52.3233,
+            "max": 66.4608
+          },
+          "slowFrames": 107
+        },
+        "near-wall": {
+          "frameMs": {
+            "count": 102,
+            "mean": 32.40084019607843,
+            "p50": 31.367,
+            "p95": 39.072,
+            "p99": 42.022,
+            "max": 43.0884
+          },
+          "slowFrames": 40
+        },
+        "turn": {
+          "frameMs": {
+            "count": 220,
+            "mean": 30.304956363636364,
+            "p50": 29.6435,
+            "p95": 36.8481,
+            "p99": 46.6907,
+            "max": 48.5863
+          },
+          "slowFrames": 35
+        },
+        "return": {
+          "frameMs": {
+            "count": 233,
+            "mean": 28.608824463519312,
+            "p50": 28.0555,
+            "p95": 36.0422,
+            "p99": 39.2254,
+            "max": 42.5042
+          },
+          "slowFrames": 23
+        },
+        "settle": {
+          "frameMs": {
+            "count": 117,
+            "mean": 28.677333333333333,
+            "p50": 27.4831,
+            "p95": 41.6627,
+            "p99": 56.3161,
+            "max": 56.9839
+          },
+          "slowFrames": 9
+        }
+      },
+      "drainReasons": {
+        "0": 980
+      },
+      "externalCompletions": {
+        "1": 980
+      },
+      "hzbValidFrames": 980,
+      "maxCounters": {
+        "allocationFailures": 16224,
+        "loadFailures": 0,
+        "requestOverflows": 0,
+        "blasOverflowCount": 12425
+      },
+      "streaming": {
+        "requests": {
+          "count": 980,
+          "mean": 13545.855102040816,
+          "p50": 13719,
+          "p95": 15868,
+          "p99": 16222,
+          "max": 16456
+        },
+        "allocationFailures": {
+          "count": 980,
+          "mean": 13312.597959183673,
+          "p50": 13594,
+          "p95": 15474,
+          "p99": 15962,
+          "max": 16224
+        },
+        "uploads": {
+          "count": 980,
+          "mean": 29.852040816326532,
+          "p50": 23,
+          "p95": 89,
+          "p99": 124,
+          "max": 236
+        },
+        "evictions": {
+          "count": 980,
+          "mean": 28.93673469387755,
+          "p50": 20,
+          "p95": 91,
+          "p99": 173,
+          "max": 256
+        },
+        "geometryBytes": {
+          "count": 980,
+          "mean": 3745013919.0857143,
+          "p50": 3743127808,
+          "p95": 3758095360,
+          "p99": 3758095360,
+          "max": 3758095360
+        },
+        "geometryCapacity": {
+          "count": 980,
+          "mean": 3758096384.0,
+          "p50": 3758096384,
+          "p95": 3758096384,
+          "p99": 3758096384,
+          "max": 3758096384
+        },
+        "clasBytes": {
+          "count": 980,
+          "mean": 1817729659.0367346,
+          "p50": 1815976192,
+          "p95": 1828677760,
+          "p99": 1829293184,
+          "max": 1830606976
+        },
+        "clasCapacity": {
+          "count": 980,
+          "mean": 2147483648.0,
+          "p50": 2147483648,
+          "p95": 2147483648,
+          "p99": 2147483648,
+          "max": 2147483648
+        },
+        "blasOverflowCount": {
+          "count": 980,
+          "mean": 8480.278571428571,
+          "p50": 10680,
+          "p95": 12017,
+          "p99": 12398,
+          "max": 12425
+        }
+      },
+      "selectedScopes": [
+        {
+          "path": "Frame/Wait Frame Slot Before Input",
+          "leaf": true,
+          "allCpu": {
+            "count": 980,
+            "mean": 0.0364804081632653,
+            "p50": 0.014,
+            "p95": 0.0197,
+            "p99": 0.0356,
+            "max": 20.0519
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 0.0158296,
+            "p50": 0.0137,
+            "p95": 0.0188,
+            "p99": 0.0301,
+            "max": 1.0154
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 0.10382,
+            "p50": 0.0153,
+            "p95": 0.0211,
+            "p99": 0.0465,
+            "max": 20.0519
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Panels/Viewport Panel",
+          "leaf": true,
+          "allCpu": {
+            "count": 980,
+            "mean": 3.7578141836734695,
+            "p50": 3.6226,
+            "p95": 5.2812,
+            "p99": 6.2989,
+            "max": 8.9303
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 3.4997605333333333,
+            "p50": 3.4397,
+            "p95": 4.4411,
+            "p99": 5.016,
+            "max": 5.8251
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 4.59929347826087,
+            "p50": 4.4385,
+            "p95": 6.1801,
+            "p99": 7.9235,
+            "max": 8.9303
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight",
+          "leaf": true,
+          "allCpu": {
+            "count": 980,
+            "mean": 3.5781667346938777,
+            "p50": 3.2162,
+            "p95": 5.5226,
+            "p99": 8.3255,
+            "max": 15.4746
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 3.2393568000000004,
+            "p50": 3.0483,
+            "p95": 4.6024,
+            "p99": 5.1849,
+            "max": 8.0479
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 4.682981739130435,
+            "p50": 4.3836,
+            "p95": 7.7158,
+            "p99": 10.463,
+            "max": 15.4746
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Submission slot wait",
+          "leaf": true,
+          "allCpu": {
+            "count": 980,
+            "mean": 0.024827244897959184,
+            "p50": 0.0203,
+            "p95": 0.0341,
+            "p99": 0.0771,
+            "max": 1.9257
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 0.021511866666666667,
+            "p50": 0.02,
+            "p95": 0.0293,
+            "p99": 0.0583,
+            "max": 0.0852
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 0.035638260869565216,
+            "p50": 0.0229,
+            "p95": 0.0569,
+            "p99": 0.1201,
+            "max": 1.9257
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope",
+          "leaf": false,
+          "allCpu": {
+            "count": 980,
+            "mean": 21.789335306122446,
+            "p50": 21.177,
+            "p95": 28.8136,
+            "p99": 34.1273,
+            "max": 44.6986
+          },
+          "allGpu": {
+            "count": 980,
+            "mean": 21.02468009795918,
+            "p50": 21.28016,
+            "p95": 25.426464,
+            "p99": 26.23168,
+            "max": 27.31776
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 20.211506666666665,
+            "p50": 20.2855,
+            "p95": 23.808,
+            "p99": 24.9464,
+            "max": 25.825
+          },
+          "withinBudgetGpu": {
+            "count": 750,
+            "mean": 20.883788501333335,
+            "p50": 21.217408,
+            "p95": 25.517824,
+            "p99": 26.23168,
+            "max": 27.31776
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 26.934428695652173,
+            "p50": 26.1296,
+            "p95": 33.9041,
+            "p99": 38.935,
+            "max": 44.6986
+          },
+          "slowGpu": {
+            "count": 230,
+            "mean": 21.484109217391303,
+            "p50": 21.69216,
+            "p95": 25.198816,
+            "p99": 26.151488,
+            "max": 26.756288
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests",
+          "leaf": false,
+          "allCpu": {
+            "count": 980,
+            "mean": 7.812100510204082,
+            "p50": 7.407,
+            "p95": 11.5367,
+            "p99": 14.3552,
+            "max": 20.5005
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 7.144404,
+            "p50": 6.9847,
+            "p95": 9.7099,
+            "p99": 11.3632,
+            "max": 13.0894
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 9.989371739130435,
+            "p50": 9.625,
+            "p95": 13.9398,
+            "p99": 16.7172,
+            "max": 20.5005
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads",
+          "leaf": true,
+          "allCpu": {
+            "count": 980,
+            "mean": 2.712811224489796,
+            "p50": 2.495,
+            "p95": 4.452,
+            "p99": 6.5132,
+            "max": 8.8314
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 2.439102533333333,
+            "p50": 2.3521,
+            "p95": 3.4024,
+            "p99": 4.3609,
+            "max": 6.9784
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 3.6053395652173914,
+            "p50": 3.2775,
+            "p95": 6.1972,
+            "p99": 7.7864,
+            "max": 8.8314
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Update resident demand",
+          "leaf": true,
+          "allCpu": {
+            "count": 980,
+            "mean": 0.7125047959183674,
+            "p50": 0.6388,
+            "p95": 1.1975,
+            "p99": 1.9615,
+            "max": 3.8165
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 0.6299712000000001,
+            "p50": 0.593,
+            "p95": 0.9151,
+            "p99": 1.3573,
+            "max": 3.7907
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 0.9816360869565217,
+            "p50": 0.9196,
+            "p95": 1.6458,
+            "p99": 2.1599,
+            "max": 3.8165
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Sort admission priority",
+          "leaf": true,
+          "allCpu": {
+            "count": 980,
+            "mean": 0.8690808163265307,
+            "p50": 0.8277,
+            "p95": 1.1461,
+            "p99": 2.6144,
+            "max": 4.9493
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 0.8314764,
+            "p50": 0.8041,
+            "p95": 1.0528,
+            "p99": 2.1513,
+            "max": 4.9493
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 0.9917039130434783,
+            "p50": 0.9176,
+            "p95": 1.4036,
+            "p99": 3.289,
+            "max": 3.6719
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/GPU request feedback/Consume requests/Admit request batch/Consume ready request tasks/Admit demand / prefetch",
+          "leaf": true,
+          "allCpu": {
+            "count": 980,
+            "mean": 2.3899445918367346,
+            "p50": 2.1863,
+            "p95": 3.9256,
+            "p99": 5.152,
+            "max": 8.2737
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 2.1915426666666664,
+            "p50": 2.0321,
+            "p95": 3.3284,
+            "p99": 4.8085,
+            "max": 8.2737
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 3.036907391304348,
+            "p50": 2.8083,
+            "p95": 4.8014,
+            "p99": 7.2048,
+            "max": 7.944
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream Begin/Joint cold page reclaim",
+          "leaf": false,
+          "allCpu": {
+            "count": 980,
+            "mean": 0.0047944897959183675,
+            "p50": 0.0039,
+            "p95": 0.0116,
+            "p99": 0.0204,
+            "max": 0.0682
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 0.004048133333333333,
+            "p50": 0.0034,
+            "p95": 0.0101,
+            "p99": 0.015,
+            "max": 0.0269
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 0.007228260869565218,
+            "p50": 0.0056,
+            "p95": 0.0182,
+            "p99": 0.0252,
+            "max": 0.0682
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream early/Software raster",
+          "leaf": true,
+          "allCpu": {
+            "count": 980,
+            "mean": 0.004926428571428571,
+            "p50": 0.0042,
+            "p95": 0.0067,
+            "p99": 0.0115,
+            "max": 0.213
+          },
+          "allGpu": {
+            "count": 980,
+            "mean": 6.898339853061225,
+            "p50": 7.320832,
+            "p95": 10.515168,
+            "p99": 10.925888,
+            "max": 11.176448
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 0.004874666666666667,
+            "p50": 0.0042,
+            "p95": 0.0064,
+            "p99": 0.0104,
+            "max": 0.213
+          },
+          "withinBudgetGpu": {
+            "count": 750,
+            "mean": 6.849206741333333,
+            "p50": 7.276704,
+            "p95": 10.553056,
+            "p99": 10.983104,
+            "max": 11.176448
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 0.005095217391304347,
+            "p50": 0.0045,
+            "p95": 0.0075,
+            "p99": 0.012,
+            "max": 0.0237
+          },
+          "slowGpu": {
+            "count": 230,
+            "mean": 7.05855652173913,
+            "p50": 7.418624,
+            "p95": 9.937248,
+            "p99": 10.820224,
+            "max": 10.885792
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream late/Software raster",
+          "leaf": true,
+          "allCpu": {
+            "count": 980,
+            "mean": 0.0034814285714285715,
+            "p50": 0.003,
+            "p95": 0.0053,
+            "p99": 0.0086,
+            "max": 0.0413
+          },
+          "allGpu": {
+            "count": 980,
+            "mean": 0.5249001795918368,
+            "p50": 0.468032,
+            "p95": 1.03232,
+            "p99": 1.291392,
+            "max": 1.512288
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 0.003373866666666667,
+            "p50": 0.003,
+            "p95": 0.005,
+            "p99": 0.0087,
+            "max": 0.0413
+          },
+          "withinBudgetGpu": {
+            "count": 750,
+            "mean": 0.5254644906666667,
+            "p50": 0.464928,
+            "p95": 1.041216,
+            "p99": 1.283104,
+            "max": 1.512288
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 0.003832173913043478,
+            "p50": 0.0033,
+            "p95": 0.006,
+            "p99": 0.008,
+            "max": 0.0144
+          },
+          "slowGpu": {
+            "count": 230,
+            "mean": 0.5230600347826088,
+            "p50": 0.474144,
+            "p95": 0.996256,
+            "p99": 1.306464,
+            "max": 1.378368
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)",
+          "leaf": true,
+          "allCpu": {
+            "count": 980,
+            "mean": 3.7071366326530613,
+            "p50": 3.5716,
+            "p95": 4.8944,
+            "p99": 5.6601,
+            "max": 7.3365
+          },
+          "allGpu": {
+            "count": 980,
+            "mean": 0.045399608163265305,
+            "p50": 0.039328,
+            "p95": 0.047712,
+            "p99": 0.286752,
+            "max": 0.412032
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 3.5458056000000004,
+            "p50": 3.4613,
+            "p95": 4.3741,
+            "p99": 4.9129,
+            "max": 5.8663
+          },
+          "withinBudgetGpu": {
+            "count": 750,
+            "mean": 0.04538658133333333,
+            "p50": 0.039232,
+            "p95": 0.047616,
+            "p99": 0.288,
+            "max": 0.412032
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 4.233216086956522,
+            "p50": 4.0946,
+            "p95": 5.4332,
+            "p99": 6.3516,
+            "max": 7.3365
+          },
+          "slowGpu": {
+            "count": 230,
+            "mean": 0.045442086956521736,
+            "p50": 0.03968,
+            "p95": 0.047904,
+            "p99": 0.222752,
+            "max": 0.293824
+          }
+        },
+        {
+          "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Texture streaming",
+          "leaf": false,
+          "allCpu": {
+            "count": 980,
+            "mean": 1.1369804081632653,
+            "p50": 0.9917,
+            "p95": 2.808,
+            "p99": 3.2618,
+            "max": 3.4667
+          },
+          "withinBudgetCpu": {
+            "count": 750,
+            "mean": 0.9984664,
+            "p50": 0.7428,
+            "p95": 2.7217,
+            "p99": 3.1215,
+            "max": 3.385
+          },
+          "slowCpu": {
+            "count": 230,
+            "mean": 1.5886565217391304,
+            "p50": 1.3525,
+            "p95": 3.0125,
+            "p99": 3.3298,
+            "max": 3.4667
+          }
+        }
+      ],
+      "source": "build-release\\full-roam-recheck-0923\\run3",
+      "slowestFrames": [
+        {
+          "frame": 852,
+          "seconds": 4.6650995,
+          "stage": "first-visit",
+          "frameMs": 66.4608
+        },
+        {
+          "frame": 915,
+          "seconds": 6.9124294,
+          "stage": "first-visit",
+          "frameMs": 64.71
+        },
+        {
+          "frame": 1600,
+          "seconds": 27.4790799,
+          "stage": "settle",
+          "frameMs": 56.9839
+        },
+        {
+          "frame": 1598,
+          "seconds": 27.3846196,
+          "stage": "settle",
+          "frameMs": 56.3161
+        },
+        {
+          "frame": 1597,
+          "seconds": 27.3288646,
+          "stage": "settle",
+          "frameMs": 55.755
+        }
+      ]
+    }
+  ],
+  "interpretation": "CPU scopes are inclusive; no parent/child or CPU/GPU sum. Correlation does not prove GPU critical path.",
+  "totalFrames": 2615,
+  "slowFrames": 1327
+}

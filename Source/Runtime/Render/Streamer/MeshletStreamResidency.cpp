@@ -358,6 +358,7 @@ void MeshletStreamResidencyManager::reset()
     evictionCandidateCursor_ = 0;
     evictionCandidatesBuilt_ = false;
     evictionAgeRejected_ = false;
+    budgetAdmissionExhausted_ = false;
     frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
     requestMarks_.clear();
     unloadRequestBits_.clear();
@@ -400,6 +401,7 @@ void MeshletStreamResidencyManager::beginFrame(CpuProfileRecorder* profiler)
     evictionCandidateCursor_ = 0;
     evictionCandidatesBuilt_ = false;
     evictionAgeRejected_ = false;
+    budgetAdmissionExhausted_ = false;
     frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
 
     profile.next("Complete update tasks");
@@ -729,7 +731,27 @@ bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
         return false;
     }
 
-    auto [pageIter, inserted] = pages_.try_emplace(pageIndex);
+    auto pageIter = pages_.find(pageIndex);
+    const bool allocated = pageIter != pages_.end() &&
+        pageIter->second.deviceOffsetBytes != kInvalidStreamDeviceOffsetBytes;
+    if (!allocated) {
+        // Do not create and erase a hash node for every over-budget request.
+        // This is a capacity gate, not a per-ID cooldown: new priorities are
+        // honored immediately and a large rejection cannot block smaller pages.
+        if (pageLoader_.ready() && queuedUploadCount() >= uint64_t(maxPageLoadsInFlight_) * 2u) {
+            ++stats_.frameAdmissionDeferredCount;
+            return false;
+        }
+        if (budgetAdmissionExhausted_ &&
+            ((maxResidentPages_ != 0 && activePages_.size() >= maxResidentPages_) ||
+                !storage_.canAllocate(scene::meshletStreamDevicePayloadSize(asset_->pages()[pageIndex])))) {
+            ++stats_.cpuWork.budgetRetrySuppressed;
+            ++stats_.frameAllocationDeferredCount;
+            return false;
+        }
+    }
+    const bool inserted = pageIter == pages_.end();
+    if (inserted) { pageIter = pages_.try_emplace(pageIndex).first; }
     PageEntry& page = pageIter->second;
     page.lastUsedFrame = frameIndex_;
     if (page.state == MeshletStreamPageResidencyState::Resident ||
@@ -743,15 +765,7 @@ bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
         return false;
     }
 
-    // Reserve memory only for a bounded window of upcoming I/O. Terminal
-    // allocations are admitted by lockFallbackPages independently of this cap.
-    if (!pageAllocated(pageIndex) && pageLoader_.ready() &&
-        queuedUploadCount() >= uint64_t(maxPageLoadsInFlight_) * 2u) {
-        ++stats_.frameAdmissionDeferredCount;
-        if (inserted) { pages_.erase(pageIter); }
-        return false;
-    }
-    if (!pageAllocated(pageIndex) && !allocatePageStorage(pageIndex)) {
+    if (!allocated && !allocatePageStorage(pageIndex)) {
         if (inserted) {
             pages_.erase(pageIter);
         }
@@ -900,6 +914,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     profile.next("Update resident demand");
     if (requests.residentDemandFeedback) {
         residentDemandFeedback_ = true;
+        bool newColdPage = false;
         const bool complete = requests.unloadOverflowCounter == 0 && requests.invalidPageCounter == 0 &&
             requests.unloadRequestCounter <= requests.unloadPageIds.size();
         for (size_t i = 0; i < residentPages_.size(); ++i) {
@@ -914,7 +929,9 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
             }
             // Only explicitly unused pages may be budget victims. Truncated
             // feedback must not infer that an omitted page is cold.
-            page.gpuUnused = (unloadRequestBits_[pageIndex / 64] & (uint64_t(1) << (pageIndex % 64))) != 0;
+            const bool unused = (unloadRequestBits_[pageIndex / 64] & (uint64_t(1) << (pageIndex % 64))) != 0;
+            newColdPage |= unused && !page.gpuUnused;
+            page.gpuUnused = unused;
             if (page.gpuUnused) {
                 ++stats_.cpuWork.demandUnused;
                 ++stats_.frameCachedUnusedPageCount;
@@ -926,6 +943,14 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
             } else {
                 ++stats_.cpuWork.demandIncompleteProtected;
             }
+        }
+        // New feedback can expose victims after admission exhausted the snapshot.
+        if (newColdPage && evictionCandidatesBuilt_) {
+            evictionCandidates_.clear();
+            evictionCandidateCursor_ = 0;
+            evictionCandidatesBuilt_ = false;
+            evictionAgeRejected_ = false;
+            budgetAdmissionExhausted_ = false;
         }
         uniqueUnloadRequests.clear();
     }
@@ -1607,6 +1632,7 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
     }
 
     const scene::MeshletStreamPageInfo& assetPage = asset_->pages()[pageIndex];
+    ++stats_.cpuWork.allocationAttempts;
     const bool pageBudgetReached = maxResidentPages_ != 0 && activePages_.size() >= maxResidentPages_;
     const bool storageBudgetReached = !storage_.canAllocate(scene::meshletStreamDevicePayloadSize(assetPage));
     if (pageBudgetReached || storageBudgetReached) {
@@ -1635,6 +1661,7 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
             break;
         }
         if (evictPage == UINT32_MAX) {
+            budgetAdmissionExhausted_ = true;
             ++stats_.frameAllocationDeferredCount;
             if (evictionAgeRejected_) {
                 ++stats_.frameEvictionAgeRejectedCount;
@@ -1647,6 +1674,7 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
             return false;
         }
         if (!scheduleUnload(evictPage, true)) {
+            budgetAdmissionExhausted_ = true;
             evictionCandidateCursor_ = evictionCandidates_.size();
             ++stats_.frameResidentBudgetFailureCount;
             ++stats_.totalResidentBudgetFailureCount;

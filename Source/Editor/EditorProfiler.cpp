@@ -448,6 +448,8 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
     ImGui::TextDisabled("CPU-visible counters; requests refer to completed GPU feedback. Upload pipeline includes I/O.");
     if (ImGui::CollapsingHeader("CPU Request / Reclaim Work")) {
         const auto& work = last.cpuWork;
+        ImGui::Text("Allocation attempts %u | Budget retries suppressed %u",
+            work.allocationAttempts, work.budgetRetrySuppressed);
         ImGui::Text("Resident visits %u | Newer than feedback %u", work.demandVisited, work.demandNewerThanFeedback);
         ImGui::Text("Unused %u | Refreshed %u | Incomplete feedback protected %u",
             work.demandUnused, work.demandRefreshed, work.demandIncompleteProtected);

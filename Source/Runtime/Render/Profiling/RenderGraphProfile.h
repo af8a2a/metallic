@@ -20,6 +20,8 @@ struct RenderGraphProfileSection {
 
 // Per-frame work counts for aggregate CPU timings; no per-page clock reads.
 struct StreamCpuWorkCounters {
+    uint32_t allocationAttempts = 0;
+    uint32_t budgetRetrySuppressed = 0;
     uint32_t demandVisited = 0;
     uint32_t demandNewerThanFeedback = 0;
     uint32_t demandUnused = 0;

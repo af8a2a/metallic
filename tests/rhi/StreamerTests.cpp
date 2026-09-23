@@ -2448,7 +2448,9 @@ public:
         for (uint32_t retry = 0; retry < 10000; ++retry) { (void)residency.requestPage(requestedPage); }
         stats = residency.stats();
         if (stats.frameEvictionScanCount != 1 || stats.frameEvictionCandidateTests != stats.residentPageCount ||
-            stats.frameAllocationDeferredCount != 10001 || residency.pageAllocated(requestedPage)) {
+            stats.frameAllocationDeferredCount != 10001 || stats.frameAllocationFailureCount != 1 ||
+            stats.cpuWork.allocationAttempts != 1 || stats.cpuWork.budgetRetrySuppressed != 10000 ||
+            stats.trackedPageCount != fallbackPages.size() + 1 || residency.pageAllocated(requestedPage)) {
             return RhiTestResult::fail("budget pressure repeated an eviction scan or lost age protection");
         }
 
@@ -2488,6 +2490,73 @@ public:
         return RhiTestResult::pass();
     }
 };
+
+class StreamerMeshletBudgetAdmissionTest final : public RhiTest {
+public:
+    StreamerMeshletBudgetAdmissionTest()
+    {
+        type = RhiTestType::Command;
+        name = "streamer_meshlet_budget_admission";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "BudgetAdmission.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        auto roots = fallbackPagesFor(asset);
+        auto pages = nonFallbackPagesFor(asset, roots);
+        if (roots.empty() || pages.size() < 2) { return RhiTestResult::fail("Need variable-sized pages"); }
+        std::sort(pages.begin(), pages.end(), [&](uint32_t a, uint32_t b) {
+            return pageStorageBytes(asset, a) < pageStorageBytes(asset, b);
+        });
+        const uint32_t small = pages.front(), large = pages.back();
+        if (pageStorageBytes(asset, small) == pageStorageBytes(asset, large)) {
+            return RhiTestResult::fail("Need unequal page allocation sizes");
+        }
+        MeshletStreamResidencyManager residency;
+        std::string reason;
+        const MeshletStreamResidencyDesc desc{.asset = &asset,
+            .maxResidentBytes = pageStorageBytes(asset, roots) + pageStorageBytes(asset, small),
+            .immediateGpuRequests = true};
+        if (!residency.initialize(desc, reason) || !residency.lockFallbackPages(roots, reason)) {
+            return RhiTestResult::fail(reason);
+        }
+        residency.beginFrame();
+        // A higher-priority oversized page must not block a lower-priority fit.
+        const std::array<uint32_t, 2> requests{large, small};
+        const std::array<float, 2> priorities{1e9f, 1.0f};
+        (void)residency.consumeGpuRequests({.loadPageIds = requests, .loadPriorities = priorities});
+        for (uint32_t retry = 0; retry < 100; ++retry) { (void)residency.requestPage(large); }
+        const auto stats = residency.stats();
+        if (!residency.pageAllocated(small) || residency.pageAllocated(large) ||
+            stats.cpuWork.allocationAttempts != 2 || stats.cpuWork.budgetRetrySuppressed != 100 ||
+            stats.frameAllocationFailureCount != 1 || stats.usedResidentBytes > stats.maxResidentBytes) {
+            return RhiTestResult::fail("Budget gate blocked a smaller fit or repeated impossible allocations");
+        }
+        for (uint32_t root : roots) {
+            if (!residency.pageAllocated(root) || residency.unloadPage(root)) {
+                return RhiTestResult::fail("Budget gate lost fallback protection");
+            }
+        }
+        residency.beginFrame();
+        (void)residency.requestPage(large);
+        if (residency.stats().cpuWork.allocationAttempts != 1) {
+            return RhiTestResult::fail("New frame did not refresh admission eligibility");
+        }
+        // Reset/reinitialize must clear both the exhausted gate and its counters.
+        if (!residency.initialize({.asset = &asset, .maxResidentBytes = pageStorageBytes(asset, large)}, reason)) {
+            return RhiTestResult::fail(reason);
+        }
+        (void)residency.requestPage(large);
+        if (!residency.pageAllocated(large) || residency.stats().cpuWork.budgetRetrySuppressed != 0) {
+            return RhiTestResult::fail("Reinitialization retained stale budget pressure");
+        }
+        return RhiTestResult::pass("Bounded retries, smaller fit, priority order, locked roots and reset");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletBudgetAdmissionTest);
 
 class StreamerMeshletBatchedUnloadTest final : public RhiTest {
 public:
@@ -2592,7 +2661,8 @@ public:
         if (residency.stats().frameEvictedPageCount != 0 || residency.pageAllocated(pages[2])) {
             return RhiTestResult::fail("Budget pressure evicted demanded geometry");
         }
-        residency.beginFrame();
+        // Refresh in the SAME frame after exhausting admission: new explicit
+        // cold feedback must reopen the gate without waiting for beginFrame.
         // Even when feedback is truncated, only the explicitly cold page may
         // be reclaimed; omission cannot make the returning page a victim.
         const std::array<uint32_t, 1> secondUnused{pages[1]};
