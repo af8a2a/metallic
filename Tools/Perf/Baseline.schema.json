@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://metallic.local/schemas/perf-baseline-v1.json",
+  "title": "Metallic performance capability and evidence baseline",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "created_utc",
+    "environment",
+    "tool_version",
+    "commands",
+    "artifacts",
+    "capabilities",
+    "gaps",
+    "m0"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "metallic.perf.baseline"
+    },
+    "created_utc": {
+      "type": "string"
+    },
+    "environment": {
+      "type": "object",
+      "required": [
+        "os",
+        "python",
+        "repository",
+        "git_head",
+        "gpus"
+      ]
+    },
+    "tool_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "commands": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "argv",
+          "cwd",
+          "exit_code",
+          "timed_out",
+          "stdout",
+          "stderr"
+        ],
+        "properties": {
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "timed_out": {
+            "type": "boolean"
+          },
+          "stdout": {
+            "$ref": "#/$defs/raw"
+          },
+          "stderr": {
+            "$ref": "#/$defs/raw"
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "path",
+          "role",
+          "state",
+          "bytes",
+          "sha256",
+          "expected_sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "missing",
+              "empty",
+              "present",
+              "hash-mismatch",
+              "unreadable"
+            ]
+          },
+          "bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/sha256"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/sha256"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archive": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "status",
+          "verified_scope",
+          "reason",
+          "evidence",
+          "declaration"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "verified",
+              "supported-unverified",
+              "unsupported",
+              "blocked"
+            ]
+          },
+          "verified_scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "declaration": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "verified"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "verified_scope": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "evidence": {
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "next_action"
+        ]
+      }
+    },
+    "m0": {
+      "type": "object",
+      "required": [
+        "status",
+        "source_fixture",
+        "runtime_capture_verified"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "partial",
+            "evidence-ready"
+          ]
+        },
+        "runtime_capture_verified": {
+          "const": false
+        }
+      }
+    },
+    "searches": {
+      "type": "array"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "raw": {
+      "type": "object",
+      "required": [
+        "path",
+        "sha256",
+        "bytes"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

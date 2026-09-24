@@ -1,0 +1,2190 @@
+{
+  "commit": "e84464e01",
+  "sources": [
+    "build-release/full-marker-recheck-0924/run1",
+    "build-release/full-marker-recheck-0924/run2",
+    "build-release/full-marker-recheck-0924/run3",
+    "build-release/full-marker-recheck-repeat-0924/run1",
+    "build-release/full-marker-recheck-off-0924/run1"
+  ],
+  "runs": [
+    {
+      "source": "build-release/full-marker-recheck-0924/run1",
+      "manifest": {
+        "runs": 3,
+        "gitHead": "e84464e01ce230f70dc5674cca984c488d21b258",
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "protocol": "zorah-full-editor-roam-v1",
+        "started": "2026-09-24T18:48:55.3591456+08:00",
+        "dirty": " ? External/microprofile",
+        "asset": {
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin"
+        },
+        "config": {
+          "width": 1797,
+          "warmupSeconds": 10.0,
+          "height": 660,
+          "durationSeconds": 30.0
+        },
+        "executableSha256": "A840E4D822B8575D41BC0CCD07468EE89AF76A4D08E1845C67FDECE408C808A7",
+        "hidden": true,
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "validation": false
+      },
+      "config": {
+        "cullHardwareClassification": false,
+        "distance": 6.0,
+        "durationSeconds": 30.0,
+        "keyframes": [
+          {
+            "forward": 0.0,
+            "stage": "static",
+            "t": 0.0,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "first-visit",
+            "t": 0.08333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "near-wall",
+            "t": 0.3333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "turn",
+            "t": 0.4444444444444444,
+            "yaw": 65.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "return",
+            "t": 0.6666666666666666,
+            "yaw": -65.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "settle",
+            "t": 0.8888888888888888,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "end",
+            "t": 1.0,
+            "yaw": 0.0
+          }
+        ],
+        "metadataFastClassification": true,
+        "routeFrames": 0,
+        "sample": "gpu-driven-zorah-full",
+        "temporalJitter": true,
+        "warmupSeconds": 10.0
+      },
+      "frameMs": {
+        "count": 1098,
+        "mean": 27.32872422586521,
+        "p50": 29.6547,
+        "p95": 34.4898,
+        "p99": 37.2251,
+        "max": 41.3719
+      },
+      "overBudget": 112,
+      "metrics": {
+        "Stream Begin": {
+          "cpuMs": {
+            "mean": 6.431689162112932,
+            "p95": 8.9091,
+            "max": 13.0981
+          },
+          "gpuMs": {
+            "mean": 0.03423624043715847,
+            "p95": 0.102752,
+            "max": 0.360736
+          }
+        },
+        "Consume requests": {
+          "cpuMs": {
+            "mean": 5.047835519125683,
+            "p95": 7.0849,
+            "max": 10.6336
+          }
+        },
+        "Reset / latency tracking": {
+          "cpuMs": {
+            "mean": 0.8951590163934426,
+            "p95": 1.3876,
+            "max": 1.9425
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "mean": 1.3543456284153006,
+            "p95": 2.2366,
+            "max": 4.1818
+          }
+        },
+        "Update resident demand": {
+          "cpuMs": {
+            "mean": 0.9940367030965391,
+            "p95": 1.3799,
+            "max": 2.5283
+          }
+        },
+        "Refresh request priorities": {
+          "cpuMs": {
+            "mean": 0.9798370673952641,
+            "p95": 1.2315,
+            "max": 1.9334
+          }
+        },
+        "Texture streaming": {
+          "cpuMs": {
+            "mean": 1.2062285063752276,
+            "p95": 2.7815,
+            "max": 5.0299
+          }
+        },
+        "Visibility prepare": {
+          "cpuMs": {
+            "mean": 1.1612966302367942,
+            "p95": 1.7003,
+            "max": 4.27
+          },
+          "gpuMs": {
+            "mean": 2.6958105646630236e-05,
+            "p95": 6.4e-05,
+            "max": 6.4e-05
+          }
+        },
+        "Visibility raster": {
+          "cpuMs": {
+            "mean": 0.2631648451730419,
+            "p95": 0.3855,
+            "max": 0.6809
+          },
+          "gpuMs": {
+            "mean": 10.21441643715847,
+            "p95": 14.685152,
+            "max": 15.428032
+          }
+        },
+        "Stream traversal": {
+          "cpuMs": {
+            "mean": 0.7177876138433515,
+            "p95": 1.79,
+            "max": 4.507
+          },
+          "gpuMs": {
+            "mean": 2.4801878615664843,
+            "p95": 2.902688,
+            "max": 3.371008
+          }
+        },
+        "Software raster": {
+          "cpuMs": {
+            "mean": 0.008154280510018215,
+            "p95": 0.011300000000000001,
+            "max": 0.42160000000000003
+          },
+          "gpuMs": {
+            "mean": 6.767114171220401,
+            "p95": 10.883872,
+            "max": 11.71456
+          }
+        },
+        "Hardware raster": {
+          "cpuMs": {
+            "mean": 0.013087431693989071,
+            "p95": 0.0207,
+            "max": 0.049
+          },
+          "gpuMs": {
+            "mean": 0.6502893114754098,
+            "p95": 0.943968,
+            "max": 1.424128
+          }
+        },
+        "Soft/hard classification": {
+          "cpuMs": {
+            "mean": 0.005593897996357013,
+            "p95": 0.0084,
+            "max": 0.0217
+          },
+          "gpuMs": {
+            "mean": 0.6765789726775956,
+            "p95": 0.998816,
+            "max": 1.478208
+          }
+        },
+        "Stable bins": {
+          "cpuMs": {
+            "mean": 0.021733060109289618,
+            "p95": 0.0329,
+            "max": 0.053599999999999995
+          },
+          "gpuMs": {
+            "mean": 0.23334161020036429,
+            "p95": 0.44041600000000003,
+            "max": 1.118816
+          }
+        },
+        "Deferred (VisibilityBufferDeferredPass)": {
+          "cpuMs": {
+            "mean": 1.415736612021858,
+            "p95": 3.0774,
+            "max": 5.3617
+          },
+          "gpuMs": {
+            "mean": 5.479900123861566,
+            "p95": 6.501728,
+            "max": 9.890976
+          }
+        },
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "mean": 0.7341209471766849,
+            "p95": 5.3424,
+            "max": 27.9388
+          }
+        },
+        "Streamline frame begin / Reflex pacing": {
+          "cpuMs": {
+            "mean": 13.2882043715847,
+            "p95": 21.0152,
+            "max": 22.2681
+          }
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "mean": 11.644435883424409,
+            "p95": 16.1284,
+            "max": 19.5449
+          },
+          "gpuMs": {
+            "mean": 19.340545806921675,
+            "p95": 23.727392,
+            "max": 28.362752
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "all": {
+          "count": 1098,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1098,
+              "mean": 8.342440801457195e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0009
+            },
+            "tokenMs": {
+              "count": 1098,
+              "mean": 0.0005163934426229507,
+              "p50": 0.0005,
+              "p95": 0.0008,
+              "p99": 0.0013,
+              "max": 0.0031
+            },
+            "optionsMs": {
+              "count": 1098,
+              "mean": 5.974499089253188e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0003,
+              "max": 0.0037
+            },
+            "sleepMs": {
+              "count": 1098,
+              "mean": 13.281792349726775,
+              "p50": 16.133,
+              "p95": 20.9969,
+              "p99": 21.843,
+              "max": 22.2637
+            },
+            "statusMs": {
+              "count": 1098,
+              "mean": 0.0001592896174863388,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0036,
+              "max": 0.0119
+            },
+            "markerMs": {
+              "count": 1098,
+              "mean": 0.003807832422586521,
+              "p50": 0.0027,
+              "p95": 0.0089,
+              "p99": 0.0207,
+              "max": 0.287
+            },
+            "totalMs": {
+              "count": 1098,
+              "mean": 13.286620218579236,
+              "p50": 16.1364,
+              "p95": 21.0144,
+              "p99": 21.8465,
+              "max": 22.2671
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1098,
+            "mean": 14.015913296903461,
+            "p50": 16.334400000000002,
+            "p95": 21.1594,
+            "p99": 21.9906,
+            "max": 28.015800000000002
+          },
+          "sleepShare": 0.9996366367990477,
+          "nonSleepMs": {
+            "count": 1098,
+            "mean": 0.0048278688524590165,
+            "p50": 0.003499999999999996,
+            "p95": 0.011099999999999,
+            "p99": 0.021699999999999164,
+            "max": 0.2879000000000005
+          },
+          "frameMs": {
+            "count": 1098,
+            "mean": 27.32872422586521,
+            "p50": 29.6547,
+            "p95": 34.4898,
+            "p99": 37.2251,
+            "max": 41.3719
+          },
+          "overBudget": 112,
+          "longestOverBudgetRun": 2,
+          "sampledRouteMeets30Fps": false
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 19,
+          "renderLatencyMs": {
+            "count": 19,
+            "mean": 32.83442105263158,
+            "p50": 31.689,
+            "p95": 42.467,
+            "p99": 42.467,
+            "max": 42.467
+          },
+          "gpuRenderMs": {
+            "count": 19,
+            "mean": 20.222631578947368,
+            "p50": 20.04,
+            "p95": 25.534,
+            "p99": 25.534,
+            "max": 25.534
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "mean": 13573.968123861567,
+          "p95": 15823,
+          "max": 16393
+        },
+        "residentPages": {
+          "mean": 62086.92987249545,
+          "p95": 62440,
+          "max": 62583
+        },
+        "admissionCalls": {
+          "mean": 53.80601092896175,
+          "p95": 152,
+          "max": 505
+        },
+        "uploads": {
+          "mean": 26.817850637522767,
+          "p95": 89,
+          "max": 226
+        },
+        "evictions": {
+          "mean": 25.98816029143898,
+          "p95": 86,
+          "max": 256
+        },
+        "loadFailures": {
+          "mean": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "mean": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "mean": 8627.260473588343,
+          "p95": 12060,
+          "max": 12425
+        }
+      },
+      "uploadsPerSecond": 981.3063506323897,
+      "backgroundPerEngineMaximum": {},
+      "backgroundTelemetryMissing": true,
+      "invariantsPassed": true
+    },
+    {
+      "source": "build-release/full-marker-recheck-0924/run2",
+      "manifest": {
+        "runs": 3,
+        "gitHead": "e84464e01ce230f70dc5674cca984c488d21b258",
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "protocol": "zorah-full-editor-roam-v1",
+        "started": "2026-09-24T18:48:55.3591456+08:00",
+        "dirty": " ? External/microprofile",
+        "asset": {
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin"
+        },
+        "config": {
+          "width": 1797,
+          "warmupSeconds": 10.0,
+          "height": 660,
+          "durationSeconds": 30.0
+        },
+        "executableSha256": "A840E4D822B8575D41BC0CCD07468EE89AF76A4D08E1845C67FDECE408C808A7",
+        "hidden": true,
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "validation": false
+      },
+      "config": {
+        "cullHardwareClassification": false,
+        "distance": 6.0,
+        "durationSeconds": 30.0,
+        "keyframes": [
+          {
+            "forward": 0.0,
+            "stage": "static",
+            "t": 0.0,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "first-visit",
+            "t": 0.08333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "near-wall",
+            "t": 0.3333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "turn",
+            "t": 0.4444444444444444,
+            "yaw": 65.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "return",
+            "t": 0.6666666666666666,
+            "yaw": -65.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "settle",
+            "t": 0.8888888888888888,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "end",
+            "t": 1.0,
+            "yaw": 0.0
+          }
+        ],
+        "metadataFastClassification": true,
+        "routeFrames": 0,
+        "sample": "gpu-driven-zorah-full",
+        "temporalJitter": true,
+        "warmupSeconds": 10.0
+      },
+      "frameMs": {
+        "count": 1323,
+        "mean": 22.681127891156464,
+        "p50": 22.5699,
+        "p95": 29.1249,
+        "p99": 31.6446,
+        "max": 52.7676
+      },
+      "overBudget": 8,
+      "metrics": {
+        "Stream Begin": {
+          "cpuMs": {
+            "mean": 7.836984504913076,
+            "p95": 11.1054,
+            "max": 19.0856
+          },
+          "gpuMs": {
+            "mean": 0.028996885865457293,
+            "p95": 0.084864,
+            "max": 0.307328
+          }
+        },
+        "Consume requests": {
+          "cpuMs": {
+            "mean": 6.19178276643991,
+            "p95": 8.7233,
+            "max": 14.7684
+          }
+        },
+        "Reset / latency tracking": {
+          "cpuMs": {
+            "mean": 1.0786198790627362,
+            "p95": 1.5267,
+            "max": 3.5113
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "mean": 1.722013529856387,
+            "p95": 2.6698,
+            "max": 7.2845
+          }
+        },
+        "Update resident demand": {
+          "cpuMs": {
+            "mean": 1.1914192743764171,
+            "p95": 1.6891,
+            "max": 5.1827
+          }
+        },
+        "Refresh request priorities": {
+          "cpuMs": {
+            "mean": 1.1389145124716553,
+            "p95": 1.5208,
+            "max": 4.3253
+          }
+        },
+        "Texture streaming": {
+          "cpuMs": {
+            "mean": 1.5035907785336358,
+            "p95": 3.7648,
+            "max": 6.7861
+          }
+        },
+        "Visibility prepare": {
+          "cpuMs": {
+            "mean": 1.5187458049886622,
+            "p95": 2.3133,
+            "max": 5.6598
+          },
+          "gpuMs": {
+            "mean": 2.6848072562358277e-05,
+            "p95": 6.4e-05,
+            "max": 6.4e-05
+          }
+        },
+        "Visibility raster": {
+          "cpuMs": {
+            "mean": 0.33005366591080876,
+            "p95": 0.4898,
+            "max": 2.1894
+          },
+          "gpuMs": {
+            "mean": 11.353993650793651,
+            "p95": 16.171776,
+            "max": 19.487296
+          }
+        },
+        "Stream traversal": {
+          "cpuMs": {
+            "mean": 0.780739455782313,
+            "p95": 1.8652,
+            "max": 5.0327
+          },
+          "gpuMs": {
+            "mean": 2.7105058926681784,
+            "p95": 3.253728,
+            "max": 3.908224
+          }
+        },
+        "Software raster": {
+          "cpuMs": {
+            "mean": 0.01024474678760393,
+            "p95": 0.0138,
+            "max": 1.2017
+          },
+          "gpuMs": {
+            "mean": 7.473794007558579,
+            "p95": 11.841664000000002,
+            "max": 13.232287999999999
+          }
+        },
+        "Hardware raster": {
+          "cpuMs": {
+            "mean": 0.016466137566137566,
+            "p95": 0.024999999999999998,
+            "max": 0.2418
+          },
+          "gpuMs": {
+            "mean": 0.7284175721844294,
+            "p95": 1.1792960000000001,
+            "max": 1.856448
+          }
+        },
+        "Soft/hard classification": {
+          "cpuMs": {
+            "mean": 0.007368178382464096,
+            "p95": 0.0094,
+            "max": 0.9456
+          },
+          "gpuMs": {
+            "mean": 0.7989021315192744,
+            "p95": 1.279008,
+            "max": 2.4909120000000002
+          }
+        },
+        "Stable bins": {
+          "cpuMs": {
+            "mean": 0.03092524565381708,
+            "p95": 0.042300000000000004,
+            "max": 1.9034
+          },
+          "gpuMs": {
+            "mean": 0.2688852365835223,
+            "p95": 0.578304,
+            "max": 1.3968
+          }
+        },
+        "Deferred (VisibilityBufferDeferredPass)": {
+          "cpuMs": {
+            "mean": 1.809112925170068,
+            "p95": 4.1189,
+            "max": 7.5739
+          },
+          "gpuMs": {
+            "mean": 6.55997431292517,
+            "p95": 7.99408,
+            "max": 11.869792
+          }
+        },
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "mean": 1.951384731670446,
+            "p95": 6.0941,
+            "max": 33.7073
+          }
+        },
+        "Streamline frame begin / Reflex pacing": {
+          "cpuMs": {
+            "mean": 4.700204686318972,
+            "p95": 10.6583,
+            "max": 13.0649
+          }
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "mean": 14.376890249433107,
+            "p95": 19.9656,
+            "max": 43.4477
+          },
+          "gpuMs": {
+            "mean": 22.103986188964473,
+            "p95": 26.899872,
+            "max": 31.441664
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "all": {
+          "count": 1323,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1323,
+              "mean": 0.00014089191232048376,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0061
+            },
+            "tokenMs": {
+              "count": 1323,
+              "mean": 0.0006717309145880574,
+              "p50": 0.0006,
+              "p95": 0.001,
+              "p99": 0.0014,
+              "max": 0.0029
+            },
+            "optionsMs": {
+              "count": 1323,
+              "mean": 6.749811035525321e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1323,
+              "mean": 4.693887301587301,
+              "p50": 4.799,
+              "p95": 10.6519,
+              "p99": 12.0004,
+              "max": 13.0598
+            },
+            "statusMs": {
+              "count": 1323,
+              "mean": 0.00012622826908541195,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0033,
+              "max": 0.0102
+            },
+            "markerMs": {
+              "count": 1323,
+              "mean": 0.002542554799697657,
+              "p50": 0.0024,
+              "p95": 0.0036,
+              "p99": 0.0044,
+              "max": 0.016
+            },
+            "totalMs": {
+              "count": 1323,
+              "mean": 4.697535903250189,
+              "p50": 4.8023,
+              "p95": 10.6561,
+              "p99": 12.0041,
+              "max": 13.0638
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1323,
+            "mean": 6.645272033257748,
+            "p50": 6.8633,
+            "p95": 12.6201,
+            "p99": 14.131499999999999,
+            "max": 33.845299999999995
+          },
+          "sleepShare": 0.99922329456591,
+          "nonSleepMs": {
+            "count": 1323,
+            "mean": 0.003648601662887377,
+            "p50": 0.0034999999999998366,
+            "p95": 0.0052000000000003155,
+            "p99": 0.006600000000000605,
+            "max": 0.016899999999999693
+          },
+          "frameMs": {
+            "count": 1323,
+            "mean": 22.681127891156464,
+            "p50": 22.5699,
+            "p95": 29.1249,
+            "p99": 31.6446,
+            "max": 52.7676
+          },
+          "overBudget": 8,
+          "longestOverBudgetRun": 2,
+          "sampledRouteMeets30Fps": false
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 23,
+          "renderLatencyMs": {
+            "count": 23,
+            "mean": 39.84356521739131,
+            "p50": 38.418,
+            "p95": 48.531,
+            "p99": 55.55,
+            "max": 55.55
+          },
+          "gpuRenderMs": {
+            "count": 23,
+            "mean": 25.069521739130437,
+            "p50": 23.902,
+            "p95": 38.359,
+            "p99": 39.39,
+            "max": 39.39
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "mean": 13595.537414965986,
+          "p95": 15835,
+          "max": 16367
+        },
+        "residentPages": {
+          "mean": 62083.58201058201,
+          "p95": 62447,
+          "max": 62616
+        },
+        "admissionCalls": {
+          "mean": 45.204081632653065,
+          "p95": 122,
+          "max": 452
+        },
+        "uploads": {
+          "mean": 22.445956160241874,
+          "p95": 68,
+          "max": 158
+        },
+        "evictions": {
+          "mean": 21.758125472411187,
+          "p95": 66,
+          "max": 256
+        },
+        "loadFailures": {
+          "mean": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "mean": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "mean": 8570.375661375661,
+          "p95": 12066,
+          "max": 12425
+        }
+      },
+      "uploadsPerSecond": 989.631391699604,
+      "backgroundPerEngineMaximum": {
+        "dwm": 4.8396201571146,
+        "msedge": 5.72212045088223,
+        "msedgewebview2": 0.319829384902264,
+        "System": 12.564915709392,
+        "NVIDIA Overlay": 0.75285180120757,
+        "wallpaper64": 2.51482428530446,
+        "ChatGPT": 2.99211976104873,
+        "QQ": 1.23715350738587
+      },
+      "backgroundTelemetryMissing": false,
+      "invariantsPassed": true
+    },
+    {
+      "source": "build-release/full-marker-recheck-0924/run3",
+      "manifest": {
+        "runs": 3,
+        "gitHead": "e84464e01ce230f70dc5674cca984c488d21b258",
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "protocol": "zorah-full-editor-roam-v1",
+        "started": "2026-09-24T18:48:55.3591456+08:00",
+        "dirty": " ? External/microprofile",
+        "asset": {
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin"
+        },
+        "config": {
+          "width": 1797,
+          "warmupSeconds": 10.0,
+          "height": 660,
+          "durationSeconds": 30.0
+        },
+        "executableSha256": "A840E4D822B8575D41BC0CCD07468EE89AF76A4D08E1845C67FDECE408C808A7",
+        "hidden": true,
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "validation": false
+      },
+      "config": {
+        "cullHardwareClassification": false,
+        "distance": 6.0,
+        "durationSeconds": 30.0,
+        "keyframes": [
+          {
+            "forward": 0.0,
+            "stage": "static",
+            "t": 0.0,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "first-visit",
+            "t": 0.08333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "near-wall",
+            "t": 0.3333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "turn",
+            "t": 0.4444444444444444,
+            "yaw": 65.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "return",
+            "t": 0.6666666666666666,
+            "yaw": -65.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "settle",
+            "t": 0.8888888888888888,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "end",
+            "t": 1.0,
+            "yaw": 0.0
+          }
+        ],
+        "metadataFastClassification": true,
+        "routeFrames": 0,
+        "sample": "gpu-driven-zorah-full",
+        "temporalJitter": true,
+        "warmupSeconds": 10.0
+      },
+      "frameMs": {
+        "count": 1378,
+        "mean": 21.77232960812772,
+        "p50": 21.7105,
+        "p95": 28.3967,
+        "p99": 32.5932,
+        "max": 70.0856
+      },
+      "overBudget": 10,
+      "metrics": {
+        "Stream Begin": {
+          "cpuMs": {
+            "mean": 7.415911683599419,
+            "p95": 11.088,
+            "max": 20.3764
+          },
+          "gpuMs": {
+            "mean": 0.027466542815674892,
+            "p95": 0.082176,
+            "max": 0.249984
+          }
+        },
+        "Consume requests": {
+          "cpuMs": {
+            "mean": 5.886809579100145,
+            "p95": 8.7355,
+            "max": 16.6886
+          }
+        },
+        "Reset / latency tracking": {
+          "cpuMs": {
+            "mean": 0.9884413642960813,
+            "p95": 1.5156,
+            "max": 2.7456
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "mean": 1.6092721335268505,
+            "p95": 2.6939,
+            "max": 5.4839
+          }
+        },
+        "Update resident demand": {
+          "cpuMs": {
+            "mean": 1.1391134252539914,
+            "p95": 1.5198,
+            "max": 4.1523
+          }
+        },
+        "Refresh request priorities": {
+          "cpuMs": {
+            "mean": 1.0488434687953556,
+            "p95": 1.3752,
+            "max": 7.0471
+          }
+        },
+        "Texture streaming": {
+          "cpuMs": {
+            "mean": 1.5252150943396225,
+            "p95": 3.8491,
+            "max": 6.5784
+          }
+        },
+        "Visibility prepare": {
+          "cpuMs": {
+            "mean": 1.7086672714078375,
+            "p95": 2.4287,
+            "max": 6.8185
+          },
+          "gpuMs": {
+            "mean": 2.6240928882438316e-05,
+            "p95": 3.2e-05,
+            "max": 6.4e-05
+          }
+        },
+        "Visibility raster": {
+          "cpuMs": {
+            "mean": 0.3320251814223512,
+            "p95": 0.4787,
+            "max": 2.2383
+          },
+          "gpuMs": {
+            "mean": 10.919148656023221,
+            "p95": 15.79248,
+            "max": 17.22048
+          }
+        },
+        "Stream traversal": {
+          "cpuMs": {
+            "mean": 0.7822341799709724,
+            "p95": 1.9144,
+            "max": 4.668
+          },
+          "gpuMs": {
+            "mean": 2.6690607373004354,
+            "p95": 3.168608,
+            "max": 3.915712
+          }
+        },
+        "Software raster": {
+          "cpuMs": {
+            "mean": 0.009555007256894048,
+            "p95": 0.0138,
+            "max": 0.07669999999999999
+          },
+          "gpuMs": {
+            "mean": 7.204473869375907,
+            "p95": 11.575712,
+            "max": 13.353632000000001
+          }
+        },
+        "Hardware raster": {
+          "cpuMs": {
+            "mean": 0.01818976777939042,
+            "p95": 0.026099999999999998,
+            "max": 1.8261
+          },
+          "gpuMs": {
+            "mean": 0.6872824847605224,
+            "p95": 1.059712,
+            "max": 1.56848
+          }
+        },
+        "Soft/hard classification": {
+          "cpuMs": {
+            "mean": 0.0070822206095791,
+            "p95": 0.0104,
+            "max": 0.0641
+          },
+          "gpuMs": {
+            "mean": 0.7708573352685051,
+            "p95": 1.1753600000000002,
+            "max": 2.19408
+          }
+        },
+        "Stable bins": {
+          "cpuMs": {
+            "mean": 0.029701814223512337,
+            "p95": 0.0448,
+            "max": 1.6479000000000001
+          },
+          "gpuMs": {
+            "mean": 0.25324196226415097,
+            "p95": 0.51552,
+            "max": 1.022432
+          }
+        },
+        "Deferred (VisibilityBufferDeferredPass)": {
+          "cpuMs": {
+            "mean": 1.8354361393323657,
+            "p95": 4.2576,
+            "max": 6.9576
+          },
+          "gpuMs": {
+            "mean": 6.235988551523948,
+            "p95": 7.431136,
+            "max": 10.513344
+          }
+        },
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "mean": 2.023261175616836,
+            "p95": 6.0032,
+            "max": 48.3319
+          }
+        },
+        "Streamline frame begin / Reflex pacing": {
+          "cpuMs": {
+            "mean": 3.8985335994194483,
+            "p95": 9.0652,
+            "max": 12.4328
+          }
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "mean": 14.206777648766328,
+            "p95": 20.078,
+            "max": 26.7647
+          },
+          "gpuMs": {
+            "mean": 21.19066491727141,
+            "p95": 26.555392,
+            "max": 30.37104
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "all": {
+          "count": 1378,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1378,
+              "mean": 0.0001390420899854862,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.001
+            },
+            "tokenMs": {
+              "count": 1378,
+              "mean": 0.0005876632801161103,
+              "p50": 0.0006,
+              "p95": 0.0009,
+              "p99": 0.001,
+              "max": 0.0023
+            },
+            "optionsMs": {
+              "count": 1378,
+              "mean": 5.914368650217707e-05,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0003,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1378,
+              "mean": 3.8926678519593616,
+              "p50": 3.7283,
+              "p95": 9.0591,
+              "p99": 10.457,
+              "max": 12.4269
+            },
+            "statusMs": {
+              "count": 1378,
+              "mean": 0.00012329462989840349,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0031,
+              "max": 0.0077
+            },
+            "markerMs": {
+              "count": 1378,
+              "mean": 0.0026142960812772136,
+              "p50": 0.0026,
+              "p95": 0.0034,
+              "p99": 0.0039,
+              "max": 0.0091
+            },
+            "totalMs": {
+              "count": 1378,
+              "mean": 3.896285123367199,
+              "p50": 3.7321,
+              "p95": 9.0632,
+              "p99": 10.4603,
+              "max": 12.4312
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1378,
+            "mean": 5.9159290275761975,
+            "p50": 5.9672,
+            "p95": 11.3469,
+            "p99": 12.6354,
+            "max": 48.4371
+          },
+          "sleepShare": 0.9990716101893715,
+          "nonSleepMs": {
+            "count": 1378,
+            "mean": 0.003617271407837447,
+            "p50": 0.003500000000000003,
+            "p95": 0.0045999999999999375,
+            "p99": 0.006600000000000009,
+            "max": 0.014900000000000801
+          },
+          "frameMs": {
+            "count": 1378,
+            "mean": 21.77232960812772,
+            "p50": 21.7105,
+            "p95": 28.3967,
+            "p99": 32.5932,
+            "max": 70.0856
+          },
+          "overBudget": 10,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 24,
+          "renderLatencyMs": {
+            "count": 24,
+            "mean": 40.58595833333333,
+            "p50": 37.637,
+            "p95": 49.828,
+            "p99": 85.384,
+            "max": 85.384
+          },
+          "gpuRenderMs": {
+            "count": 24,
+            "mean": 23.280833333333334,
+            "p50": 21.913,
+            "p95": 32.094,
+            "p99": 33.828,
+            "max": 33.828
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "mean": 13568.350507982583,
+          "p95": 15850,
+          "max": 16367
+        },
+        "residentPages": {
+          "mean": 62077.77576197388,
+          "p95": 62431,
+          "max": 62621
+        },
+        "admissionCalls": {
+          "mean": 43.26923076923077,
+          "p95": 125,
+          "max": 456
+        },
+        "uploads": {
+          "mean": 21.455732946298983,
+          "p95": 65,
+          "max": 159
+        },
+        "evictions": {
+          "mean": 20.813497822931787,
+          "p95": 63,
+          "max": 256
+        },
+        "loadFailures": {
+          "mean": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "mean": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "mean": 8528.074020319304,
+          "p95": 12068,
+          "max": 12425
+        }
+      },
+      "uploadsPerSecond": 985.4587603840725,
+      "backgroundPerEngineMaximum": {
+        "QQ": 1.07819869984936,
+        "ChatGPT": 3.07608910826977,
+        "dwm": 5.76895062262519,
+        "msedge": 5.26678109284713,
+        "msedgewebview2": 0.301621780409637,
+        "System": 9.16354785949937,
+        "NVIDIA Overlay": 0.942259073020236,
+        "csrss": 0.819293872945615
+      },
+      "backgroundTelemetryMissing": false,
+      "invariantsPassed": true
+    },
+    {
+      "source": "build-release/full-marker-recheck-repeat-0924/run1",
+      "manifest": {
+        "validation": false,
+        "gitHead": "e84464e01ce230f70dc5674cca984c488d21b258",
+        "started": "2026-09-24T18:58:11.6614115+08:00",
+        "protocol": "zorah-full-editor-roam-v1",
+        "asset": {
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin"
+        },
+        "runs": 1,
+        "config": {
+          "durationSeconds": 30.0,
+          "width": 1797,
+          "warmupSeconds": 10.0,
+          "height": 660
+        },
+        "hidden": true,
+        "executableSha256": "A840E4D822B8575D41BC0CCD07468EE89AF76A4D08E1845C67FDECE408C808A7",
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "dirty": " ? External/microprofile"
+      },
+      "config": {
+        "cullHardwareClassification": false,
+        "distance": 6.0,
+        "durationSeconds": 30.0,
+        "keyframes": [
+          {
+            "forward": 0.0,
+            "stage": "static",
+            "t": 0.0,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "first-visit",
+            "t": 0.08333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "near-wall",
+            "t": 0.3333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "turn",
+            "t": 0.4444444444444444,
+            "yaw": 65.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "return",
+            "t": 0.6666666666666666,
+            "yaw": -65.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "settle",
+            "t": 0.8888888888888888,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "end",
+            "t": 1.0,
+            "yaw": 0.0
+          }
+        ],
+        "metadataFastClassification": true,
+        "routeFrames": 0,
+        "sample": "gpu-driven-zorah-full",
+        "temporalJitter": true,
+        "warmupSeconds": 10.0
+      },
+      "frameMs": {
+        "count": 1105,
+        "mean": 27.167568325791855,
+        "p50": 29.7249,
+        "p95": 34.5174,
+        "p99": 36.8578,
+        "max": 44.7904
+      },
+      "overBudget": 123,
+      "metrics": {
+        "Stream Begin": {
+          "cpuMs": {
+            "mean": 6.249861628959276,
+            "p95": 8.7536,
+            "max": 13.9076
+          },
+          "gpuMs": {
+            "mean": 0.03358042352941176,
+            "p95": 0.102656,
+            "max": 0.236032
+          }
+        },
+        "Consume requests": {
+          "cpuMs": {
+            "mean": 4.956432126696833,
+            "p95": 6.7909,
+            "max": 11.3924
+          }
+        },
+        "Reset / latency tracking": {
+          "cpuMs": {
+            "mean": 0.8099147511312217,
+            "p95": 1.2943,
+            "max": 2.1165
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "mean": 1.3524353846153847,
+            "p95": 1.9962,
+            "max": 4.0142
+          }
+        },
+        "Update resident demand": {
+          "cpuMs": {
+            "mean": 0.9329761085972851,
+            "p95": 1.2646,
+            "max": 2.894
+          }
+        },
+        "Refresh request priorities": {
+          "cpuMs": {
+            "mean": 0.9397329411764705,
+            "p95": 1.1277,
+            "max": 2.1436
+          }
+        },
+        "Texture streaming": {
+          "cpuMs": {
+            "mean": 1.1382752036199095,
+            "p95": 2.7117,
+            "max": 7.2576
+          }
+        },
+        "Visibility prepare": {
+          "cpuMs": {
+            "mean": 1.1578990950226244,
+            "p95": 1.5885,
+            "max": 4.164
+          },
+          "gpuMs": {
+            "mean": 2.7105882352941175e-05,
+            "p95": 6.4e-05,
+            "max": 6.4e-05
+          }
+        },
+        "Visibility raster": {
+          "cpuMs": {
+            "mean": 0.2521681447963801,
+            "p95": 0.3581,
+            "max": 0.6715
+          },
+          "gpuMs": {
+            "mean": 10.123692452488688,
+            "p95": 14.631008,
+            "max": 15.46928
+          }
+        },
+        "Stream traversal": {
+          "cpuMs": {
+            "mean": 0.693873484162896,
+            "p95": 1.6799,
+            "max": 3.6097
+          },
+          "gpuMs": {
+            "mean": 2.4687496687782806,
+            "p95": 2.877792,
+            "max": 3.3584
+          }
+        },
+        "Software raster": {
+          "cpuMs": {
+            "mean": 0.007277013574660633,
+            "p95": 0.010700000000000001,
+            "max": 0.0264
+          },
+          "gpuMs": {
+            "mean": 6.7076871239819,
+            "p95": 10.81504,
+            "max": 11.821856
+          }
+        },
+        "Hardware raster": {
+          "cpuMs": {
+            "mean": 0.012551493212669683,
+            "p95": 0.0195,
+            "max": 0.0406
+          },
+          "gpuMs": {
+            "mean": 0.6482788488687783,
+            "p95": 0.9322239999999999,
+            "max": 1.189312
+          }
+        },
+        "Soft/hard classification": {
+          "cpuMs": {
+            "mean": 0.005355294117647059,
+            "p95": 0.008,
+            "max": 0.0247
+          },
+          "gpuMs": {
+            "mean": 0.6589196742081448,
+            "p95": 0.9436800000000001,
+            "max": 1.26224
+          }
+        },
+        "Stable bins": {
+          "cpuMs": {
+            "mean": 0.021275384615384616,
+            "p95": 0.0313,
+            "max": 0.0897
+          },
+          "gpuMs": {
+            "mean": 0.2305624036199095,
+            "p95": 0.432608,
+            "max": 0.627616
+          }
+        },
+        "Deferred (VisibilityBufferDeferredPass)": {
+          "cpuMs": {
+            "mean": 1.3363365610859728,
+            "p95": 3.0069,
+            "max": 7.9925
+          },
+          "gpuMs": {
+            "mean": 5.494164039819005,
+            "p95": 6.370464,
+            "max": 10.561824
+          }
+        },
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "mean": 0.8994123981900453,
+            "p95": 6.0098,
+            "max": 28.9345
+          }
+        },
+        "Streamline frame begin / Reflex pacing": {
+          "cpuMs": {
+            "mean": 13.431136742081447,
+            "p95": 21.8054,
+            "max": 23.4691
+          }
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "mean": 11.267206877828054,
+            "p95": 15.7047,
+            "max": 21.3489
+          },
+          "gpuMs": {
+            "mean": 19.236889136651584,
+            "p95": 23.736384,
+            "max": 25.943872
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "all": {
+          "count": 1105,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1105,
+              "mean": 9.30316742081448e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0004,
+              "max": 0.0038
+            },
+            "tokenMs": {
+              "count": 1105,
+              "mean": 0.00048506787330316746,
+              "p50": 0.0005,
+              "p95": 0.0007,
+              "p99": 0.0008,
+              "max": 0.0021
+            },
+            "optionsMs": {
+              "count": 1105,
+              "mean": 5.0316742081447965e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0003,
+              "max": 0.0014
+            },
+            "sleepMs": {
+              "count": 1105,
+              "mean": 13.424878823529411,
+              "p50": 16.4929,
+              "p95": 21.8008,
+              "p99": 22.6189,
+              "max": 23.464
+            },
+            "statusMs": {
+              "count": 1105,
+              "mean": 0.00015131221719457015,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0034,
+              "max": 0.0189
+            },
+            "markerMs": {
+              "count": 1105,
+              "mean": 0.004046696832579185,
+              "p50": 0.0027,
+              "p95": 0.0092,
+              "p99": 0.0266,
+              "max": 0.1573
+            },
+            "totalMs": {
+              "count": 1105,
+              "mean": 13.42985004524887,
+              "p50": 16.4963,
+              "p95": 21.8043,
+              "p99": 22.626,
+              "max": 23.4683
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1105,
+            "mean": 14.324291221719458,
+            "p50": 16.706699999999998,
+            "p95": 21.866999999999997,
+            "p99": 22.7103,
+            "max": 29.0788
+          },
+          "sleepShare": 0.999629837883319,
+          "nonSleepMs": {
+            "count": 1105,
+            "mean": 0.004971221719456955,
+            "p50": 0.003500000000000003,
+            "p95": 0.010799999999999699,
+            "p99": 0.027499999999999858,
+            "max": 0.158199999999999
+          },
+          "frameMs": {
+            "count": 1105,
+            "mean": 27.167568325791855,
+            "p50": 29.7249,
+            "p95": 34.5174,
+            "p99": 36.8578,
+            "max": 44.7904
+          },
+          "overBudget": 123,
+          "longestOverBudgetRun": 3,
+          "sampledRouteMeets30Fps": false
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 19,
+          "renderLatencyMs": {
+            "count": 19,
+            "mean": 31.98205263157895,
+            "p50": 31.946,
+            "p95": 38.291,
+            "p99": 38.291,
+            "max": 38.291
+          },
+          "gpuRenderMs": {
+            "count": 19,
+            "mean": 19.47821052631579,
+            "p50": 19.933,
+            "p95": 25.696,
+            "p99": 25.696,
+            "max": 25.696
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "mean": 13554.696832579186,
+          "p95": 15835,
+          "max": 16406
+        },
+        "residentPages": {
+          "mean": 62085.7520361991,
+          "p95": 62440,
+          "max": 62553
+        },
+        "admissionCalls": {
+          "mean": 53.47692307692308,
+          "p95": 151,
+          "max": 464
+        },
+        "uploads": {
+          "mean": 26.654298642533938,
+          "p95": 92,
+          "max": 197
+        },
+        "evictions": {
+          "mean": 25.82262443438914,
+          "p95": 82,
+          "max": 256
+        },
+        "loadFailures": {
+          "mean": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "mean": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "mean": 8643.237104072397,
+          "p95": 12055,
+          "max": 12425
+        }
+      },
+      "uploadsPerSecond": 981.1072644742136,
+      "backgroundPerEngineMaximum": {
+        "ChatGPT": 1.34920914818084,
+        "dwm": 4.06563909368612,
+        "msedge": 6.31287569584636,
+        "msedgewebview2": 0.284672256918387,
+        "System": 12.573074144707,
+        "NVIDIA Overlay": 0.709762858129068
+      },
+      "backgroundTelemetryMissing": false,
+      "invariantsPassed": true
+    },
+    {
+      "source": "build-release/full-marker-recheck-off-0924/run1",
+      "manifest": {
+        "validation": false,
+        "dirty": " ? External/microprofile",
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "config": {
+          "warmupSeconds": 10.0,
+          "height": 660,
+          "durationSeconds": 30.0,
+          "width": 1797
+        },
+        "executableSha256": "A840E4D822B8575D41BC0CCD07468EE89AF76A4D08E1845C67FDECE408C808A7",
+        "gitHead": "e84464e01ce230f70dc5674cca984c488d21b258",
+        "started": "2026-09-24T19:04:54.6146285+08:00",
+        "asset": {
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "bytes": 205327470912
+        },
+        "runs": 1,
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "protocol": "zorah-full-editor-roam-v1",
+        "hidden": true
+      },
+      "config": {
+        "cullHardwareClassification": false,
+        "distance": 6.0,
+        "durationSeconds": 30.0,
+        "keyframes": [
+          {
+            "forward": 0.0,
+            "stage": "static",
+            "t": 0.0,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "first-visit",
+            "t": 0.08333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "near-wall",
+            "t": 0.3333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "turn",
+            "t": 0.4444444444444444,
+            "yaw": 65.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "return",
+            "t": 0.6666666666666666,
+            "yaw": -65.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "settle",
+            "t": 0.8888888888888888,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "end",
+            "t": 1.0,
+            "yaw": 0.0
+          }
+        ],
+        "metadataFastClassification": true,
+        "routeFrames": 0,
+        "sample": "gpu-driven-zorah-full",
+        "temporalJitter": true,
+        "warmupSeconds": 10.0
+      },
+      "frameMs": {
+        "count": 1393,
+        "mean": 21.539620028715003,
+        "p50": 21.5876,
+        "p95": 27.5841,
+        "p99": 30.7345,
+        "max": 40.735
+      },
+      "overBudget": 4,
+      "metrics": {
+        "Stream Begin": {
+          "cpuMs": {
+            "mean": 7.400007609475951,
+            "p95": 10.9119,
+            "max": 18.2741
+          },
+          "gpuMs": {
+            "mean": 0.027194900215362527,
+            "p95": 0.079904,
+            "max": 0.196576
+          }
+        },
+        "Consume requests": {
+          "cpuMs": {
+            "mean": 5.967540416367552,
+            "p95": 8.6874,
+            "max": 14.1241
+          }
+        },
+        "Reset / latency tracking": {
+          "cpuMs": {
+            "mean": 0.9542727207465901,
+            "p95": 1.4976,
+            "max": 3.0023
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "mean": 1.6366714285714286,
+            "p95": 2.6423,
+            "max": 4.8366
+          }
+        },
+        "Update resident demand": {
+          "cpuMs": {
+            "mean": 1.1271452261306532,
+            "p95": 1.5128,
+            "max": 3.4955
+          }
+        },
+        "Refresh request priorities": {
+          "cpuMs": {
+            "mean": 1.076153697056712,
+            "p95": 1.4232,
+            "max": 2.5721
+          }
+        },
+        "Texture streaming": {
+          "cpuMs": {
+            "mean": 1.360913137114142,
+            "p95": 3.5584,
+            "max": 7.0161
+          }
+        },
+        "Visibility prepare": {
+          "cpuMs": {
+            "mean": 1.3835944005743002,
+            "p95": 2.0123,
+            "max": 4.4428
+          },
+          "gpuMs": {
+            "mean": 2.706101938262742e-05,
+            "p95": 6.4e-05,
+            "max": 6.4e-05
+          }
+        },
+        "Visibility raster": {
+          "cpuMs": {
+            "mean": 0.3298893754486719,
+            "p95": 0.4673,
+            "max": 2.3083
+          },
+          "gpuMs": {
+            "mean": 11.010799850681982,
+            "p95": 15.641088,
+            "max": 17.062368
+          }
+        },
+        "Stream traversal": {
+          "cpuMs": {
+            "mean": 0.7387748025843504,
+            "p95": 1.7901,
+            "max": 3.9956
+          },
+          "gpuMs": {
+            "mean": 2.7228001263460158,
+            "p95": 3.161536,
+            "max": 3.769568
+          }
+        },
+        "Software raster": {
+          "cpuMs": {
+            "mean": 0.009337114142139268,
+            "p95": 0.0135,
+            "max": 0.079
+          },
+          "gpuMs": {
+            "mean": 7.258836031586504,
+            "p95": 11.462336,
+            "max": 12.838816
+          }
+        },
+        "Hardware raster": {
+          "cpuMs": {
+            "mean": 0.015946231155778895,
+            "p95": 0.0238,
+            "max": 0.19190000000000002
+          },
+          "gpuMs": {
+            "mean": 0.7038325800430725,
+            "p95": 1.063744,
+            "max": 1.600128
+          }
+        },
+        "Soft/hard classification": {
+          "cpuMs": {
+            "mean": 0.006671931083991386,
+            "p95": 0.0095,
+            "max": 0.13949999999999999
+          },
+          "gpuMs": {
+            "mean": 0.8029862914572864,
+            "p95": 1.265504,
+            "max": 1.6816
+          }
+        },
+        "Stable bins": {
+          "cpuMs": {
+            "mean": 0.029118305814788227,
+            "p95": 0.0432,
+            "max": 0.17409999999999998
+          },
+          "gpuMs": {
+            "mean": 0.26573215793251975,
+            "p95": 0.548992,
+            "max": 1.1175680000000001
+          }
+        },
+        "Deferred (VisibilityBufferDeferredPass)": {
+          "cpuMs": {
+            "mean": 1.6359085427135678,
+            "p95": 3.9236,
+            "max": 7.4264
+          },
+          "gpuMs": {
+            "mean": 6.218115974156497,
+            "p95": 7.631744,
+            "max": 12.045568
+          }
+        },
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "mean": 6.359532735104092,
+            "p95": 11.3618,
+            "max": 14.6119
+          }
+        },
+        "Streamline frame begin / Reflex pacing": {
+          "cpuMs": {
+            "mean": 0.05323991385498923,
+            "p95": 0.0946,
+            "max": 0.2633
+          }
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "mean": 13.503179325197415,
+            "p95": 20.3583,
+            "max": 30.4053
+          },
+          "gpuMs": {
+            "mean": 21.341915015075376,
+            "p95": 25.879104,
+            "max": 29.556544
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          0
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "all": {
+          "count": 1393,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1393,
+              "mean": 0.00017027997128499643,
+              "p50": 0.0002,
+              "p95": 0.0003,
+              "p99": 0.0004,
+              "max": 0.0012
+            },
+            "tokenMs": {
+              "count": 1393,
+              "mean": 0.00066597272074659,
+              "p50": 0.0006,
+              "p95": 0.0011,
+              "p99": 0.0015,
+              "max": 0.0021
+            },
+            "optionsMs": {
+              "count": 1393,
+              "mean": 5.7860732232591535e-05,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0003,
+              "max": 0.0007
+            },
+            "sleepMs": {
+              "count": 1393,
+              "mean": 0.04787178750897344,
+              "p50": 0.047,
+              "p95": 0.0879,
+              "p99": 0.1264,
+              "max": 0.2584
+            },
+            "statusMs": {
+              "count": 1393,
+              "mean": 7.82483847810481e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0026,
+              "max": 0.0033
+            },
+            "markerMs": {
+              "count": 1393,
+              "mean": 0.0017088298636037328,
+              "p50": 0.0016,
+              "p95": 0.0024,
+              "p99": 0.003,
+              "max": 0.0103
+            },
+            "totalMs": {
+              "count": 1393,
+              "mean": 0.05062282842785355,
+              "p50": 0.0499,
+              "p95": 0.0903,
+              "p99": 0.1297,
+              "max": 0.2611
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1393,
+            "mean": 6.4074045226130645,
+            "p50": 6.918,
+            "p95": 11.4329,
+            "p99": 12.4497,
+            "max": 14.6293
+          },
+          "sleepShare": 0.9456561198906372,
+          "nonSleepMs": {
+            "count": 1393,
+            "mean": 0.0027510409188801145,
+            "p50": 0.0026000000000000016,
+            "p95": 0.0039000000000000007,
+            "p99": 0.005099999999999993,
+            "max": 0.011599999999999992
+          },
+          "frameMs": {
+            "count": 1393,
+            "mean": 21.539620028715003,
+            "p50": 21.5876,
+            "p95": 27.5841,
+            "p99": 30.7345,
+            "max": 40.735
+          },
+          "overBudget": 4,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 24,
+          "renderLatencyMs": {
+            "count": 24,
+            "mean": 42.550916666666666,
+            "p50": 43.387,
+            "p95": 50.467,
+            "p99": 51.864,
+            "max": 51.864
+          },
+          "gpuRenderMs": {
+            "count": 24,
+            "mean": 26.40433333333333,
+            "p50": 26.307,
+            "p95": 33.55,
+            "p99": 35.03,
+            "max": 35.03
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "mean": 13555.408470926059,
+          "p95": 15842,
+          "max": 16381
+        },
+        "residentPages": {
+          "mean": 62080.632447954056,
+          "p95": 62442,
+          "max": 62634
+        },
+        "admissionCalls": {
+          "mean": 43.073223259152904,
+          "p95": 122,
+          "max": 427
+        },
+        "uploads": {
+          "mean": 21.357501794687725,
+          "p95": 65,
+          "max": 144
+        },
+        "evictions": {
+          "mean": 20.715721464465183,
+          "p95": 64,
+          "max": 256
+        },
+        "loadFailures": {
+          "mean": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "mean": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "mean": 8562.348169418521,
+          "p95": 12056,
+          "max": 12425
+        }
+      },
+      "uploadsPerSecond": 991.5449653343703,
+      "backgroundPerEngineMaximum": {
+        "QQ": 1.07925665290721,
+        "ChatGPT": 1.70434367374089,
+        "dwm": 4.71395137167205,
+        "msedge": 5.14515209533403,
+        "msedgewebview2": 0.309580412588733,
+        "System": 10.6345433278242,
+        "NVIDIA Overlay": 0.671197351311318
+      },
+      "backgroundTelemetryMissing": false,
+      "invariantsPassed": true
+    }
+  ]
+}

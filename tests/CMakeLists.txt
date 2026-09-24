@@ -1,5 +1,7 @@
 include(GoogleTest)
 
+add_subdirectory(perf)
+
 if(METALLIC_ENABLE_NRD)
     add_executable(MetallicNrdTests rhi/NrdTests.cpp)
     target_link_libraries(MetallicNrdTests PRIVATE MetallicRuntimeRender MathLib GTest::gtest_main)

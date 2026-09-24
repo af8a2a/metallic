@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "origin": "historical-real-gpu-trace-export",
+  "format": "tab-separated-text-despite-original-xls-extension",
+  "captureDate": "2026-09-20",
+  "gpu": "RTX 5070 Ti / GB203",
+  "driver": "616.64",
+  "nsight": "2026.3.1",
+  "captureGitHead": "f734cac1e41c0f02a4e600ded63743cd6f6856cd",
+  "requestedScope": "software-dispatch",
+  "achievedScope": "marker-range-hw-sw-merged",
+  "shaderSourceFixture": false,
+  "limitations": [
+    "Not a Shader Profiler source/IL CSV.",
+    "Not current GPU/driver performance evidence.",
+    "Repeated metric columns must remain distinct.",
+    "Sampled marker includes neighboring raster work."
+  ],
+  "artifacts": [
+    {
+      "file": "GpuTraceEvents.tsv",
+      "sha256": "2722733f8ff2e0ba822de408d8ba61fb613601baa3c115d53b1391afd0cc6dc0",
+      "bytes": 2042,
+      "source": "build-release\\full-sw-nsight-profile4\\trace\\BASE_UNLOCKED\\D3DPERF_EVENTS.xls",
+      "sourceSha256": "2722733f8ff2e0ba822de408d8ba61fb613601baa3c115d53b1391afd0cc6dc0",
+      "sourceLines": {
+        "first": 1,
+        "last": 35
+      },
+      "transformation": "byte-preserving whole file"
+    },
+    {
+      "file": "GpuTraceRegimes.sample.tsv",
+      "sha256": "69caf26473d9e145c773aadb7825fec2306d9fe7c48215c5f5e662ca99cbf491",
+      "bytes": 176638,
+      "source": "build-release\\full-sw-nsight-profile4\\trace\\BASE_UNLOCKED\\GPUTRACE_REGIMES.xls",
+      "sourceSha256": "bbe763161490546c140ca92499ad5d471fba171ec6f1748c8bec2e58009363bd",
+      "sourceLines": [
+        1,
+        34
+      ],
+      "transformation": "byte-preserving selected physical lines, including header"
+    }
+  ]
+}

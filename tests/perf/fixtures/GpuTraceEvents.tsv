@@ -1,0 +1,35 @@
+event_text	time_ms	time_ms	time_ms
+Submit	0.012288	0.012288	0.012288
+Submit	18.6674	18.6674	18.6674
+Submit	0.042464	0.042464	0.042464
+Submit	1.64992	1.64992	1.64992
+Submit	0.539936	0.539936	0.539936
+Submit	0.675584	0.675584	0.675584
+Submit	0.027808	0.027808	0.027808
+Submit	0.08208	0.08208	0.08208
+Submit	0.130208	0.130208	0.130208
+RenderGraphPass: VBuffer (VisibilityBufferPass)	18.6653	18.6653	18.6653
+        Resident adaptive meshlet LOD	0.020319	0.020319	0.020319
+        Hybrid raster: clear queue and depth	0.019232	0.019232	0.019232
+        Hybrid raster: compact stream candidates	1.05715	1.05715	1.05715
+        Hybrid raster: cull stream clusters	0.575742	0.575742	0.575742
+        Hybrid raster: stable cluster bins	16.0647	16.0647	16.0647
+        Hybrid raster: software triangles	0.005695	0.005695	0.005695
+        Hybrid raster: merge visibility and depth	0.011647	0.011647	0.011647
+        Hybrid raster: clear queue and depth	0.009984	0.009984	0.009984
+        Hybrid raster: compact stream candidates	0.649631	0.649631	0.649631
+        Hybrid raster: cull stream clusters	0.008446	0.008446	0.008446
+        Hybrid raster: stable cluster bins	0.081949	0.081949	0.081949
+        Hybrid raster: software triangles	0.003135	0.003135	0.003135
+        Hybrid raster: merge visibility and depth	0.008352	0.008352	0.008352
+RenderGraphPass: Shadows (RayTracedShadowPass)	0.040255	0.040255	0.040255
+        Ray-traced shadows	0.022656	0.022656	0.022656
+RenderGraphPass: Deferred (VisibilityBufferDeferredPass)	1.64186	1.64186	1.64186
+RenderGraphPass: DlssSr (StreamlineDlssSrPass)	0.525663	0.525663	0.525663
+        nv.ngx.dlss.Evaluate	0.46064	0.46064	0.46064
+RenderGraphPass: AutoExposure (AutoExposurePass)	0.665856	0.665856	0.665856
+RenderGraphPass: DlssNr (DlssNrPass)	0.017727	0.017727	0.017727
+Metallic Editor Frame	0.124032	0.124032	0.124032
+        Editor ImGui	0.116318	0.116318	0.116318
+Submit	21.5803	21.5803	21.5803
+RenderGraphPass: FinalBlit (FinalBlitPass)	0.013632	0.013632	0.013632

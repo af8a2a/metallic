@@ -269,7 +269,6 @@ bool MeshletStreamResidencyManager::initialize(
     }
 
     asset_ = desc.asset;
-    if (desc.measurePageLatency) { latency_ = std::make_unique<MeshletStreamLatencyTracker>(); }
     immediateGpuRequests_ = desc.immediateGpuRequests;
     completionDrivenUploads_ = desc.completionDrivenUploads;
     gpuDecompression_ = desc.gpuDecompression && completionDrivenUploads_;
@@ -277,6 +276,7 @@ bool MeshletStreamResidencyManager::initialize(
     throughput_.sample(meshletStreamTimeMicroseconds(), traffic_);
     maxResidentPages_ = desc.maxResidentPages;
     queuedFrameCount_ = std::max(desc.queuedFrameCount, 1u);
+    if (desc.measurePageLatency) { latency_ = std::make_unique<MeshletStreamLatencyTracker>(uint64_t(queuedFrameCount_) * 2u + 2u); }
     unloadDelayFrames_ = std::max(desc.unloadDelayFrames, 1u);
     evictionAgeThresholdFrames_ = desc.evictionAgeThresholdFrames;
     pageCount_ = asset_->pageCount();
@@ -383,16 +383,11 @@ void MeshletStreamResidencyManager::beginFrame(CpuProfileRecorder* profiler)
     throughput_.sample(meshletStreamTimeMicroseconds(), traffic_);
     if (latency_) {
         latency_->frameTimes[frameIndex_ % latency_->frameTimes.size()] = {frameIndex_, meshletStreamTimeMicroseconds()};
-        for (auto it = latency_->pending.begin(); it != latency_->pending.end();) {
-            const auto page = pages_.find(it->first);
-            const bool inFlight = page != pages_.end() && (page->second.queued ||
+        latency_->expire(frameIndex_, [this](uint32_t id) {
+            const auto page = pages_.find(id);
+            return page != pages_.end() && (page->second.queued ||
                 page->second.state == MeshletStreamPageResidencyState::PendingUpload);
-            if (!inFlight && frameIndex_ - it->second.lastSeenFrame > uint64_t(queuedFrameCount_) * 2u + 2u) {
-                const uint32_t id = it->first;
-                ++it;
-                latency_->abandon(id);
-            } else { ++it; }
-        }
+        });
     }
     requestedPages_.clear();
     unloadRequestedPages_.clear();
@@ -830,10 +825,10 @@ bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
     if (!page.queued) {
         page.firstRequestFrame = frameIndex_;
         if (latency_) {
-            const auto sample = latency_->pending.find(pageIndex);
-            if (sample != latency_->pending.end() && sample->second.admissionTime == 0) {
-                sample->second.admissionTime = meshletStreamTimeMicroseconds();
-                latency_->observe(MeshletStreamLatencyStage::Admission, sample->second.feedbackTime, sample->second.admissionTime);
+            const auto sample = latency_->find(pageIndex);
+            if (sample != nullptr && sample->admissionTime == 0) {
+                sample->admissionTime = meshletStreamTimeMicroseconds();
+                latency_->observe(MeshletStreamLatencyStage::Admission, sample->feedbackTime, sample->admissionTime);
             }
         }
         queueUpload(pageIndex);
@@ -935,13 +930,14 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
         requestedPages_.push_back(pageIndex);
     }
     // Track the final merged demand once, including prefetch -> demand promotion.
-    // Resident checks and latency map/clock work do not run for each duplicate.
+    // Resident checks and latency tracking do not run for each duplicate.
     detail.next("Track merged demand");
     if (latency_) {
+        const uint64_t feedbackTime = meshletStreamTimeMicroseconds();
         for (const auto& request : uniqueRequests) {
             const auto tracked = pages_.find(request.pageIndex);
             if (tracked == pages_.end() || (!residentState(tracked->second.state) && !tracked->second.lockedFallback)) {
-                latency_->request(request.pageIndex, requests.frameIndex, frameIndex_, request.prefetch);
+                latency_->request(request.pageIndex, requests.frameIndex, frameIndex_, request.prefetch, feedbackTime);
             }
         }
     }
@@ -1146,8 +1142,8 @@ uint32_t MeshletStreamResidencyManager::processUploads(
                 break;
             }
             if (latency_) {
-                const auto sample = latency_->pending.find(pageIndex);
-                if (sample != latency_->pending.end()) { sample->second.enqueueTime = enqueueTime; }
+                const auto sample = latency_->find(pageIndex);
+                if (sample != nullptr) { sample->enqueueTime = enqueueTime; }
             }
             ++stats_.frameScheduledPageLoadCount;
             ++stats_.totalScheduledPageLoadCount;
@@ -1170,9 +1166,9 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             }
             PageEntry& page = pageIter->second;
             if (latency_) {
-                const auto sample = latency_->pending.find(loadedPage.pageIndex);
-                if (sample != latency_->pending.end()) {
-                    latency_->observe(MeshletStreamLatencyStage::IoQueue, sample->second.enqueueTime, loadedPage.startedMicroseconds);
+                const auto sample = latency_->find(loadedPage.pageIndex);
+                if (sample != nullptr) {
+                    latency_->observe(MeshletStreamLatencyStage::IoQueue, sample->enqueueTime, loadedPage.startedMicroseconds);
                     latency_->observe(MeshletStreamLatencyStage::Decode, loadedPage.startedMicroseconds, loadedPage.completedMicroseconds);
                 }
             }
@@ -1363,12 +1359,12 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             if (observer) { observer(pageIndex, devicePayload); }
         }
         if (latency_) {
-            const auto sample = latency_->pending.find(pageIndex);
-            if (sample != latency_->pending.end()) {
-                sample->second.uploadTime = meshletStreamTimeMicroseconds();
+            const auto sample = latency_->find(pageIndex);
+            if (sample != nullptr) {
+                sample->uploadTime = meshletStreamTimeMicroseconds();
                 if (asynchronousLoads) {
                     latency_->observe(MeshletStreamLatencyStage::ReadyToUpload,
-                        preparedPageLoads_.front().completedMicroseconds, sample->second.uploadTime);
+                        preparedPageLoads_.front().completedMicroseconds, sample->uploadTime);
                 }
             }
         }

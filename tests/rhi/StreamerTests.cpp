@@ -27,6 +27,7 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace metallic::tests {
@@ -2209,6 +2210,112 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletLatencyTest);
+
+// Compare against the former full-scan semantics using deterministic timestamps.
+// Exercise sparse IDs, wheel wrap, frame gaps, slot reuse, promotion and in-flight expiry.
+class StreamerMeshletLatencyLifecycleTest final : public RhiTest {
+public:
+    StreamerMeshletLatencyLifecycleTest() { type = RhiTestType::Validation; name = "streamer_meshlet_latency_lifecycle"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        using namespace render;
+        for (const uint64_t grace : {2u, 8u, 300u}) {
+            MeshletStreamLatencyTracker tracker(grace);
+            std::unordered_map<uint32_t, MeshletStreamLatencyTracker::Request> reference;
+            std::array<MeshletStreamLatencyHistogram, size_t(MeshletStreamLatencyStage::Count)> histograms{};
+            MeshletStreamLatencyHistogram demandFrames;
+            uint64_t abandonedDemand = 0, abandonedPrefetch = 0;
+            uint64_t frame = 0;
+            for (uint32_t iteration = 1; iteration <= 1200; ++iteration) {
+                frame += iteration % 199 == 0 ? 513 : 1;
+                const uint64_t now = (frame + 1000) * 1000;
+                tracker.frameTimes[frame % 256] = {frame, now};
+                const auto inFlight = [frame](uint32_t id) { return ((frame / 7 + id) % 11) < 3; };
+                tracker.expire(frame, inFlight);
+                for (auto it = reference.begin(); it != reference.end();) {
+                    if (!inFlight(it->first) && frame - it->second.lastSeenFrame > grace) {
+                        if (it->second.demandTime) { ++abandonedDemand; } else { ++abandonedPrefetch; }
+                        it = reference.erase(it);
+                    } else { ++it; }
+                }
+                for (uint32_t n = 0; n < 80; ++n) {
+                    const uint32_t page = ((iteration * 17 + n * 7) % 193) * 1027;
+                    const uint64_t source = frame > (n % 5) ? frame - n % 5 : 0;
+                    const bool prefetch = (iteration + n) % 3 == 0;
+                    const auto& stamp = tracker.frameTimes[source % 256];
+                    const uint64_t start = stamp[0] == source && stamp[1] ? stamp[1] : now;
+                    auto& expected = reference[page];
+                    if (!expected.firstTime) {
+                        expected.firstTime = start; expected.feedbackTime = now;
+                        histograms[size_t(MeshletStreamLatencyStage::Feedback)].observe(now - start);
+                    }
+                    expected.lastSeenFrame = frame;
+                    if (!prefetch && !expected.demandTime) { expected.demandTime = start; expected.demandFrame = source; }
+                    tracker.request(page, source, frame, prefetch, now);
+                    if (n % 9 == 0) { tracker.request(page, source, frame, prefetch, now); }
+                }
+                for (uint32_t n = 0; n < 15; ++n) {
+                    const uint32_t page = ((iteration * 13 + n * 11) % 193) * 1027;
+                    const auto it = reference.find(page);
+                    if (n % 2) {
+                        tracker.complete(page, frame, now);
+                        if (it != reference.end()) {
+                            const auto& request = it->second;
+                            if (request.demandTime) {
+                                histograms[size_t(MeshletStreamLatencyStage::DemandToDrawable)].observe(now - request.demandTime);
+                                demandFrames.observe((frame - request.demandFrame) * 1000);
+                            } else { histograms[size_t(MeshletStreamLatencyStage::PrefetchToDrawable)].observe(now - request.firstTime); }
+                        }
+                    } else {
+                        tracker.abandon(page);
+                        if (it != reference.end()) {
+                            if (it->second.demandTime) { ++abandonedDemand; } else { ++abandonedPrefetch; }
+                        }
+                    }
+                    if (it != reference.end()) { reference.erase(it); }
+                }
+                uint32_t pendingDemand = 0;
+                double oldest = 0;
+                for (uint32_t id = 0; id < 193; ++id) {
+                    const uint32_t page = id * 1027;
+                    const auto found = reference.find(page);
+                    const auto actual = tracker.find(page);
+                    if ((actual == nullptr) != (found == reference.end())) { return RhiTestResult::fail("Expiry/slot reuse differs from full scan"); }
+                    if (!actual) { continue; }
+                    const auto& expected = found->second;
+                    if (actual->firstTime != expected.firstTime || actual->feedbackTime != expected.feedbackTime ||
+                        actual->lastSeenFrame != expected.lastSeenFrame || actual->demandTime != expected.demandTime ||
+                        actual->demandFrame != expected.demandFrame) { return RhiTestResult::fail("Request timestamp/promotion changed"); }
+                    if (expected.demandTime) { ++pendingDemand; oldest = std::max(oldest, double(now - expected.demandTime) / 1000); }
+                }
+                const auto snapshot = tracker.snapshot(now);
+                if (snapshot.pendingDemand != pendingDemand || snapshot.pendingPrefetch != reference.size() - pendingDemand ||
+                    snapshot.abandonedDemand != abandonedDemand || snapshot.abandonedPrefetch != abandonedPrefetch ||
+                    snapshot.oldestPendingDemandMilliseconds != oldest || tracker.demandFrames.bins != demandFrames.bins) {
+                    return RhiTestResult::fail("Pending, abandoned or latency frame statistics changed");
+                }
+                for (size_t stage = 0; stage < histograms.size(); ++stage) {
+                    const auto& a = tracker.stages[stage]; const auto& b = histograms[stage];
+                    if (a.bins != b.bins || a.count != b.count || a.totalMicroseconds != b.totalMicroseconds ||
+                        a.maximumMicroseconds != b.maximumMicroseconds) { return RhiTestResult::fail("Latency histogram differs from reference"); }
+                }
+            }
+        }
+        // Continuously demanded, budget-blocked requests must not probe residency
+        // for expiry or be forgotten. Once overdue, every item is checked exactly once.
+        MeshletStreamLatencyTracker blocked(8);
+        uint32_t queries = 0;
+        for (uint64_t frame = 1; frame <= 300; ++frame) {
+            blocked.expire(frame, [&](uint32_t) { ++queries; return false; });
+            for (uint32_t page = 0; page < 14000; ++page) { blocked.request(page, frame, frame, false, frame * 1000); }
+        }
+        if (queries || blocked.snapshot(300000).pendingDemand != 14000) { return RhiTestResult::fail("Hot blocked demand was scanned or discarded"); }
+        blocked.expire(309, [&](uint32_t) { ++queries; return false; });
+        if (queries != 14000 || blocked.snapshot(309000).abandonedDemand != 14000) { return RhiTestResult::fail("Due requests were not retired exactly once"); }
+        return RhiTestResult::pass("Full-scan reference equivalence, sparse IDs, expiry wraps/gaps, in-flight protection and bounded expiry work");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletLatencyLifecycleTest);
 
 class StreamerMeshletResidencyGpuRequestUnloadOverflowTest : public RhiTest {
 public:

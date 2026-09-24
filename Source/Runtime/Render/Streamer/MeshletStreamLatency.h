@@ -4,7 +4,8 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <unordered_map>
+#include <memory>
+#include <vector>
 
 namespace metallic::render {
 
@@ -76,7 +77,6 @@ public:
         uint64_t demandTime = 0, demandFrame = 0;
         uint64_t admissionTime = 0, enqueueTime = 0, uploadTime = 0;
     };
-    std::unordered_map<uint32_t, Request> pending;
     std::array<MeshletStreamLatencyHistogram, size_t(MeshletStreamLatencyStage::Count)> stages{};
     MeshletStreamLatencyHistogram demandFrames;
     std::array<std::array<uint64_t, 2>, 256> frameTimes{};
@@ -87,12 +87,46 @@ public:
         if (start != 0 && end >= start) { stages[size_t(stage)].observe(end - start); }
     }
 
-    void request(uint32_t page, uint64_t sourceFrame, uint64_t cpuFrame, bool prefetch)
+    explicit MeshletStreamLatencyTracker(uint64_t maxAgeFrames = 8) : maxAgeFrames_(maxAgeFrames)
     {
-        const uint64_t now = meshletStreamTimeMicroseconds();
+        expiryHeads_.fill(kInvalid);
+        expiryTails_.fill(kInvalid);
+    }
+
+    Request* find(uint32_t page)
+    {
+        const uint32_t slot = findSlot(page);
+        return slot == kInvalid ? nullptr : &entries_[slot].request;
+    }
+
+    // One timestamp per feedback batch. Callers without a batch retain the old API.
+    void request(uint32_t page, uint64_t sourceFrame, uint64_t cpuFrame, bool prefetch,
+        uint64_t now = meshletStreamTimeMicroseconds())
+    {
         const auto& stamp = frameTimes[sourceFrame % frameTimes.size()];
         const uint64_t sourceTime = stamp[0] == sourceFrame && stamp[1] != 0 ? stamp[1] : now;
-        auto& request = pending[page];
+        uint32_t slot = findSlot(page);
+        if (slot == kInvalid) {
+            const size_t block = page / kIndexBlockSize;
+            if (block >= indexBlocks_.size()) { indexBlocks_.resize(block + 1); }
+            if (!indexBlocks_[block]) {
+                indexBlocks_[block] = std::make_unique<IndexBlock>();
+                indexBlocks_[block]->fill(kInvalid);
+            }
+            if (freeSlots_.empty()) {
+                slot = static_cast<uint32_t>(entries_.size());
+                entries_.emplace_back();
+            } else {
+                slot = freeSlots_.back();
+                freeSlots_.pop_back();
+                entries_[slot] = {};
+            }
+            entries_[slot].active = true;
+            entries_[slot].page = page;
+            (*indexBlocks_[block])[page % kIndexBlockSize] = slot;
+        }
+        auto& entry = entries_[slot];
+        auto& request = entry.request;
         if (request.firstTime == 0) {
             request.firstTime = sourceTime; request.feedbackTime = now;
             observe(MeshletStreamLatencyStage::Feedback, sourceTime, now);
@@ -101,22 +135,51 @@ public:
         if (!prefetch && request.demandTime == 0) {
             request.demandTime = sourceTime; request.demandFrame = std::min(sourceFrame, cpuFrame);
         }
+        const uint64_t due = cpuFrame + maxAgeFrames_ + 1;
+        // Renew lazily when the existing event becomes due; repeated demand only
+        // updates lastSeenFrame instead of relinking thousands of entries per frame.
+        if (!entry.scheduled) { schedule(slot, due); }
+    }
+
+    // Visit only due buckets. A protected overdue request is checked next frame,
+    // preserving cancellation/expiry behavior without scanning every pending ID.
+    // The predicate must not mutate this tracker.
+    template<class IsInFlight>
+    void expire(uint64_t frame, IsInFlight&& isInFlight)
+    {
+        if (frame <= expiryFrame_) { return; }
+        const uint64_t steps = std::min<uint64_t>(frame - expiryFrame_, kExpiryBuckets);
+        for (uint64_t step = 0; step < steps; ++step) {
+            const uint32_t bucket = static_cast<uint32_t>((frame - steps + 1 + step) % kExpiryBuckets);
+            // Requeued entries may land in this same bucket after a wheel wrap.
+            // Only process its original members, once each.
+            uint32_t count = expiryCounts_[bucket];
+            while (count-- != 0) {
+                const uint32_t slot = expiryHeads_[bucket];
+                auto& entry = entries_[slot];
+                const uint64_t due = std::max(entry.dueFrame, entry.request.lastSeenFrame + maxAgeFrames_ + 1);
+                unlink(slot);
+                if (due > frame) { schedule(slot, due); }
+                else if (isInFlight(entry.page)) { schedule(slot, frame + 1); }
+                else { abandon(entry.page); }
+            }
+        }
+        expiryFrame_ = frame;
     }
 
     void abandon(uint32_t page)
     {
-        const auto found = pending.find(page);
-        if (found == pending.end()) { return; }
-        if (found->second.demandTime != 0) { ++abandonedDemand; } else { ++abandonedPrefetch; }
-        pending.erase(found);
+        const uint32_t slot = findSlot(page);
+        if (slot == kInvalid) { return; }
+        if (entries_[slot].request.demandTime != 0) { ++abandonedDemand; } else { ++abandonedPrefetch; }
+        retire(slot);
     }
 
-    void complete(uint32_t page, uint64_t frame)
+    void complete(uint32_t page, uint64_t frame, uint64_t now = meshletStreamTimeMicroseconds())
     {
-        const auto found = pending.find(page);
-        if (found == pending.end()) { return; }
-        const auto& request = found->second;
-        const uint64_t now = meshletStreamTimeMicroseconds();
+        const uint32_t slot = findSlot(page);
+        if (slot == kInvalid) { return; }
+        const auto& request = entries_[slot].request;
         observe(MeshletStreamLatencyStage::UploadToDrawable, request.uploadTime, now);
         if (request.demandTime != 0) {
             observe(MeshletStreamLatencyStage::DemandToDrawable, request.demandTime, now);
@@ -124,17 +187,18 @@ public:
         } else {
             observe(MeshletStreamLatencyStage::PrefetchToDrawable, request.firstTime, now);
         }
-        pending.erase(found);
+        retire(slot);
     }
 
-    MeshletStreamLatencySnapshot snapshot() const
+    MeshletStreamLatencySnapshot snapshot(uint64_t now = meshletStreamTimeMicroseconds()) const
     {
         MeshletStreamLatencySnapshot result{.enabled = true};
         for (size_t i = 0; i < stages.size(); ++i) { result.milliseconds[i] = stages[i].summary(); }
         result.demandFrames = demandFrames.summary();
         result.abandonedDemand = abandonedDemand; result.abandonedPrefetch = abandonedPrefetch;
-        const uint64_t now = meshletStreamTimeMicroseconds();
-        for (const auto& [page, request] : pending) {
+        for (const auto& entry : entries_) {
+            if (!entry.active) { continue; }
+            const auto& request = entry.request;
             if (request.demandTime != 0) {
                 ++result.pendingDemand;
                 result.oldestPendingDemandMilliseconds = std::max(result.oldestPendingDemandMilliseconds,
@@ -143,6 +207,70 @@ public:
         }
         return result;
     }
+
+private:
+    static constexpr uint32_t kInvalid = UINT32_MAX;
+    static constexpr uint32_t kIndexBlockSize = 1024;
+    static constexpr uint32_t kExpiryBuckets = 256;
+    using IndexBlock = std::array<uint32_t, kIndexBlockSize>;
+    struct Entry {
+        Request request;
+        uint64_t dueFrame = 0;
+        uint32_t page = kInvalid, previous = kInvalid, next = kInvalid;
+        bool active = false, scheduled = false;
+    };
+    std::vector<std::unique_ptr<IndexBlock>> indexBlocks_;
+    std::vector<Entry> entries_;
+    std::vector<uint32_t> freeSlots_;
+    std::array<uint32_t, kExpiryBuckets> expiryHeads_, expiryTails_, expiryCounts_{};
+    uint64_t expiryFrame_ = 0, maxAgeFrames_ = 8;
+
+    uint32_t findSlot(uint32_t page) const
+    {
+        const size_t block = page / kIndexBlockSize;
+        if (block >= indexBlocks_.size() || !indexBlocks_[block]) { return kInvalid; }
+        return (*indexBlocks_[block])[page % kIndexBlockSize];
+    }
+
+    void unlink(uint32_t slot)
+    {
+        auto& entry = entries_[slot];
+        if (!entry.scheduled) { return; }
+        const uint32_t bucket = static_cast<uint32_t>(entry.dueFrame % kExpiryBuckets);
+        if (entry.previous != kInvalid) { entries_[entry.previous].next = entry.next; }
+        else { expiryHeads_[bucket] = entry.next; }
+        if (entry.next != kInvalid) { entries_[entry.next].previous = entry.previous; }
+        else { expiryTails_[bucket] = entry.previous; }
+        --expiryCounts_[bucket];
+        entry.previous = entry.next = kInvalid;
+        entry.scheduled = false;
+    }
+
+    void schedule(uint32_t slot, uint64_t due)
+    {
+        unlink(slot);
+        auto& entry = entries_[slot];
+        const uint32_t bucket = static_cast<uint32_t>(due % kExpiryBuckets);
+        entry.dueFrame = due;
+        entry.previous = expiryTails_[bucket];
+        if (entry.previous != kInvalid) { entries_[entry.previous].next = slot; }
+        else { expiryHeads_[bucket] = slot; }
+        expiryTails_[bucket] = slot;
+        ++expiryCounts_[bucket];
+        entry.scheduled = true;
+    }
+
+    void retire(uint32_t slot)
+    {
+        auto& entry = entries_[slot];
+        // Intrusive removal cancels the only expiry event before slot reuse.
+        // No stale event can address a subsequent request at this slot/page ID.
+        unlink(slot);
+        (*indexBlocks_[entry.page / kIndexBlockSize])[entry.page % kIndexBlockSize] = kInvalid;
+        entry.active = false;
+        freeSlots_.push_back(slot);
+    }
+
 };
 
 } // namespace metallic::render

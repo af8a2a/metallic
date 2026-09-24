@@ -1,0 +1,218 @@
+{
+  "schema_version": 1,
+  "kind": "metallic.perf.baseline.summary",
+  "created_utc": "2026-09-24T12:20:43.504215+00:00",
+  "environment": {
+    "os": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.4 (tags/v3.12.4:8e8a4ba, Jun  6 2024, 19:30:16) [MSC v.1940 64 bit (AMD64)]",
+    "repository": "E:\\metallic",
+    "git_head": "e84464e01ce230f70dc5674cca984c488d21b258",
+    "gpus": [
+      {
+        "name": "NVIDIA GeForce RTX 5070 Ti",
+        "uuid": "GPU-864725dc-8de5-5018-485e-e3a9465f4083",
+        "driver": "616.92"
+      }
+    ]
+  },
+  "tool_version": "2026.3.1",
+  "wrapper_version": "0.2.0",
+  "m0": {
+    "status": "partial",
+    "source_fixture": "missing",
+    "runtime_capture_verified": false,
+    "source_csv_new_export": false
+  },
+  "baseline": {
+    "path": "build/perf-m0-20260924-01/baseline-final/Baseline.json",
+    "sha256": "6220a5a6320eae37342e01d29163a2354f360edf850bd91d0fe3127714aacdc7",
+    "artifact_count": 39
+  },
+  "capabilities": {
+    "cli_discovery": {
+      "status": "verified",
+      "verified_scope": "installed CLI discovery only",
+      "reason": "Discovery does not verify injection, counters, or export.",
+      "evidence": [
+        "doctor-info",
+        "doctor-versions"
+      ],
+      "declaration": null
+    },
+    "graphics_capture": {
+      "status": "supported-unverified",
+      "verified_scope": null,
+      "reason": "No fresh capture attempted in M0.",
+      "evidence": [
+        "doctor-info",
+        "doctor-versions"
+      ],
+      "declaration": null
+    },
+    "gpu_trace_metrics_export": {
+      "status": "supported-unverified",
+      "verified_scope": null,
+      "reason": "Historical exports are archived; current GPU/driver capture is not verified.",
+      "evidence": [
+        "doctor-info",
+        "doctor-versions"
+      ],
+      "declaration": null
+    },
+    "shader_summary_export": {
+      "status": "supported-unverified",
+      "verified_scope": null,
+      "reason": "Documented CSV export; current UI export not exercised.",
+      "evidence": [
+        "doctor-info",
+        "doctor-versions"
+      ],
+      "declaration": "https://docs.nvidia.com/nsight-graphics/UserGuide/shader-profiler.html"
+    },
+    "source_hotspots": {
+      "status": "supported-unverified",
+      "verified_scope": null,
+      "reason": "Source/function symbols in code are not proof of current Nsight correlation.",
+      "evidence": [
+        "source-0",
+        "source-profile-report"
+      ],
+      "declaration": "https://docs.nvidia.com/nsight-graphics/UserGuide/shader-profiler.html"
+    },
+    "dependencies": {
+      "status": "supported-unverified",
+      "verified_scope": null,
+      "reason": "Instruction dependency view/export has not been exercised.",
+      "evidence": [
+        "doctor-info",
+        "doctor-versions"
+      ],
+      "declaration": "https://docs.nvidia.com/nsight-graphics/UserGuide/shader-profiler.html"
+    },
+    "full_disassembly": {
+      "status": "supported-unverified",
+      "verified_scope": null,
+      "reason": "Edition-specific availability not established.",
+      "evidence": [
+        "doctor-info",
+        "doctor-versions"
+      ],
+      "declaration": "https://docs.nvidia.com/nsight-graphics/UserGuide/shader-profiler.html"
+    },
+    "source_export_automation": {
+      "status": "blocked",
+      "verified_scope": null,
+      "reason": "A ready child worker still requires Nsight export validation; no main-desktop fallback.",
+      "evidence": [
+        "child-status",
+        "child-initialize-stdout",
+        "child-initialize-stderr"
+      ],
+      "declaration": null
+    }
+  },
+  "gaps": [
+    {
+      "code": "SourceCsvUnavailable",
+      "artifact": "shader-source-csv",
+      "state": "missing",
+      "next_action": "Recover the original matching its recorded SHA256, or produce a fresh Nsight source/IL export with its own manifest."
+    },
+    {
+      "code": "ChildWorkerUnavailable",
+      "next_action": "Restore cua-child session readiness; do not control the main desktop or change login/security settings automatically."
+    }
+  ],
+  "source_csv": {
+    "path": "E:\\metallic\\Captures\\NsightGraphics\\streamClusterBinMain.csv",
+    "role": "shader-profiler-original",
+    "state": "missing",
+    "bytes": null,
+    "sha256": null,
+    "expected_sha256": "13222ffc71e5172a028a0b33e2cce19562d7bf185d500fcf642a914bf6cedf02",
+    "reported_location": "remote-only",
+    "location_basis": "user-provided"
+  },
+  "tool_pins": {
+    "wrapper": {
+      "path": "D:\\Scoop\\persist\\python\\Scripts\\cli-anything-nsight-graphics.exe",
+      "role": "tool-binary",
+      "state": "present",
+      "bytes": 108424,
+      "sha256": "1fb21bafba03b01e0d444a12e862e8e2e9cfdf005863885acb3c05359bba5d7d",
+      "expected_sha256": null
+    },
+    "ngfx": {
+      "path": "C:\\Program Files\\NVIDIA Corporation\\Nsight Graphics 2026.3.1\\host\\windows-desktop-nomad-x64\\ngfx.exe",
+      "role": "tool-binary",
+      "state": "present",
+      "bytes": 1127584,
+      "sha256": "77c93a24ebdbfea07cfe86f28b62c71090d54c961d8efe05f118335a928a49df",
+      "expected_sha256": null
+    },
+    "ngfx_ui": {
+      "path": "C:\\Program Files\\NVIDIA Corporation\\Nsight Graphics 2026.3.1\\host\\windows-desktop-nomad-x64\\ngfx-ui.exe",
+      "role": "tool-binary",
+      "state": "present",
+      "bytes": 1355416,
+      "sha256": "d741e530f466ee87deaa764705fbb7cd588e390ae4a2fc2938e6e6a695bfa6dc",
+      "expected_sha256": null
+    },
+    "ngfx_capture": {
+      "path": "C:\\Program Files\\NVIDIA Corporation\\Nsight Graphics 2026.3.1\\host\\windows-desktop-nomad-x64\\ngfx-capture.exe",
+      "role": "tool-binary",
+      "state": "present",
+      "bytes": 4503720,
+      "sha256": "e352dc0db4d4269d1d92a2a74b1676a5242698e5c2b90d2e94b5f3584c93dfbb",
+      "expected_sha256": null
+    },
+    "ngfx_replay": {
+      "path": "C:\\Program Files\\NVIDIA Corporation\\Nsight Graphics 2026.3.1\\host\\windows-desktop-nomad-x64\\ngfx-replay.exe",
+      "role": "tool-binary",
+      "state": "present",
+      "bytes": 16072360,
+      "sha256": "19794fa39c6f592f293a34b891ab4fee611d1355099ddb8858b48a38585136d6",
+      "expected_sha256": null
+    },
+    "cua-child": {
+      "path": "C:\\Users\\11252\\Documents\\Codex\\tools\\cua-child-mcp\\cua-child.exe",
+      "role": "tool-binary",
+      "state": "present",
+      "bytes": 113328031,
+      "sha256": "b67988558a4a9cbd06da2265cbe601d16f23cf3fd72bb0f350dcb4450c5daa67",
+      "expected_sha256": null
+    }
+  },
+  "invalid_captures": [
+    {
+      "path": "E:\\metallic\\Captures\\NsightGraphics\\MetallicGPUDrivenSample_2026_09_21_23_29_42.ngfx-capture",
+      "role": "historical-graphics-capture",
+      "state": "empty",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expected_sha256": null
+    },
+    {
+      "path": "E:\\metallic\\Captures\\NsightGraphics\\MetallicGPUDrivenSample_2026_09_21_23_30_25.ngfx-capture",
+      "role": "historical-graphics-capture",
+      "state": "empty",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expected_sha256": null
+    }
+  ],
+  "fixture_manifest": "tests/perf/fixtures/Provenance.json",
+  "case_manifest": "build/perf-m0-20260924-01/baseline-final/case.json",
+  "validation": {
+    "schema": "passed",
+    "integrity": "passed",
+    "tests": 9
+  },
+  "notes": [
+    "ngfx --help-all emitted help with exit code 1; raw exit is preserved.",
+    "rg returned 1 for no matching original CSV/parser in repository.",
+    "Original Shader Profiler CSV confirmed remote-only by user.",
+    "No fresh capture, replay, counters or source UI export was performed.",
+    "GPU Trace fixtures are historical TSV, not Shader Profiler source/IL CSV."
+  ]
+}
