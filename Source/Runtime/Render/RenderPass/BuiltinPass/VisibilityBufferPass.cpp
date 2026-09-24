@@ -3046,6 +3046,19 @@ private:
             const size_t rasterMode = softwareRasterMode();
             commands.bindComputePipeline(*streamClusterRasterPipelines_[rasterMode]);
 
+            if (context.debugEnabled()) {
+                auto identity = softwareRasterIdentity();
+                identity["phase"] = phase == GPUSceneCullPhase::Early ? "early" : "late";
+                identity["queue"] = async ? "compute" : "graphics";
+                identity["dispatch"] = "indirect";
+                identity["argumentOffsetBytes"] = VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t);
+                identity["scope"] = "production-dispatch";
+                // Metadata only: resources on the parallel branch must not be
+                // copied through the context's graphics command buffer.
+                context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "BeforeStreamEarlySoftware" : "BeforeStreamLateSoftware",
+                    {}, identity);
+            }
+
             commands.pushBindlessData(&push, sizeof(push));
             const Result result = commands.dispatchIndirect(hybridRasterizer_->clusterArguments(),
                 VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));

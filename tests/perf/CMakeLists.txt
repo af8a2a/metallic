@@ -8,6 +8,9 @@ endif()
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicWorkloadCaseTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestWorkloadCase.py")
+    set_tests_properties(MetallicWorkloadCaseTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
     add_test(NAME MetallicPerfEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestBaseline.py")
     set_tests_properties(MetallicPerfEvidenceTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)

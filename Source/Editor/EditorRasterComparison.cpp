@@ -39,6 +39,7 @@ public:
     RasterWorkloadObserver workload;
     Device* device = nullptr;
     std::map<std::string, std::unique_ptr<Buffer>> copies;
+    Json dispatches = Json::array();
     void compiled(Json) override {}
     void beginExecution(Device& d, debug::DebugEvidenceStamp stamp, RenderSubsystemHost* host) override { device = &d; workload.beginExecution(d, stamp, host); }
     void endExecution(bool) override {}
@@ -46,6 +47,9 @@ public:
         std::string_view pass, std::span<const DebugResourceBinding> resources, const Json& values) override
     {
         if (!capture || pass != "VBuffer") { return; }
+        if (checkpoint == "BeforeStreamEarlySoftware" || checkpoint == "BeforeStreamLateSoftware") {
+            dispatches.push_back(values);
+        }
         workload.capture = true;
         workload.boundary(commands, checkpoint, 0, pass, resources, values);
         for (const auto& resource : resources) {
@@ -55,7 +59,11 @@ public:
             if (checkpoint == "AfterTraversal" && resource.id == "streaming.VBuffer.activeGroups") { key = "groups"; }
             if (checkpoint == "AfterTraversal" && resource.id == "streaming.VBuffer.pageTable") { key = "pages"; }
             if ((checkpoint == "AfterStreamEarlyBins" || checkpoint == "AfterStreamLateBins" || checkpoint == "AfterStreamEarlyClusterCull" || checkpoint == "AfterStreamLateClusterCull") && resource.id == "hybrid.VBuffer.clusters") {
-                key = checkpoint; bytes = 64;
+                key = checkpoint;
+                bytes = checkpoint.ends_with("Bins") ? resource.size : 64;
+            }
+            if ((checkpoint == "AfterStreamEarlyBins" || checkpoint == "AfterStreamLateBins") && resource.id == "hybrid.VBuffer.arguments") {
+                key = std::string(checkpoint) + ".arguments"; bytes = resource.size;
             }
             if (checkpoint == "AfterPass" && (resource.id == "VBuffer.visibility" || resource.id == "VBuffer.depth")) { key = resource.id; }
             if (key.empty()) { continue; }
@@ -112,8 +120,14 @@ public:
             {"hashAlgorithm","FNV1a64; page mappings exclude mutable lastRequestFrame"}};
         for (const auto* phase : {"AfterStreamEarlyBins","AfterStreamLateBins"}) {
             const auto bins = read<uint32_t>(phase);
+            const size_t first = 16ull + 4ull * bins[5];
+            checkRaster(bins[4] <= bins[5] && first + bins[4] <= bins.size(), "Software bin list overflow");
+            const auto arguments = read<uint32_t>(std::string(phase) + ".arguments");
+            checkRaster(arguments.size() >= 15, "Missing software indirect arguments");
             result[phase] = {{"hardwareClusters",bins[0]+bins[1]+bins[2]+bins[3]},
-                {"softwareClusters",bins[4]},{"candidates",bins[12]},{"capacity",bins[5]}};
+                {"softwareClusters",bins[4]},{"candidates",bins[12]},{"capacity",bins[5]},
+                {"softwareListHash",rasterHash(bins.data()+first, size_t(bins[4])*4)},
+                {"softwareDispatch",{arguments[12],arguments[13],arguments[14]}}};
         }
         for (const auto* phase : {"AfterStreamEarlyClusterCull","AfterStreamLateClusterCull"}) {
             const auto counters = read<uint32_t>(phase);
@@ -130,6 +144,8 @@ public:
             result[resource] = {{"file",file},{"hash",rasterHash(data.data(),data.size()*4)},{"pixels",data.size()}};
         }
         result["workloads"] = workload.takeAfterDrain();
+        result["productionDispatches"] = std::move(dispatches);
+        dispatches = Json::array();
         return result;
     }
 };
@@ -141,6 +157,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         {"scope","Frozen geometry/CLAS/cut/TLAS and texture publication; hidden full editor graph; jitter disabled for exact camera samples"}};
     RasterComparisonObserver observer;
     bool passed = false;
+    bool traceActive = false;
     const auto drain = [&]() {
         checkRaster(bool(frameSubmissions_.wait()) && bool(graphExecutor_->waitForSubmittedWork()), "Raster benchmark GPU drain failed");
         std::vector<RenderGraphExecutionStats> completed;
@@ -151,7 +168,25 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         const uint32_t samples = config.value("sampleFrames",64u);
         const uint32_t settle = config.value("settleFrames",8u);
         const uint32_t rounds = config.value("rounds",3u);
+        const bool workloadCase = config.contains("workloadCase");
+        const std::map<std::string, uint32_t> registeredVariants{{"swLegacy",10},{"swPrepared",11},
+            {"swPlane",12},{"swCooperative",13},{"swWorkBins",14},{"swWorkControl",15}};
+        uint32_t selectedMode = 0;
+        if (workloadCase) {
+            const auto& selection = config.at("workloadCase");
+            checkRaster(selection.is_object() && selection.contains("id") && selection.at("id").is_string() &&
+                !selection.at("id").get<std::string>().empty(), "Workload case needs a nonempty id");
+            const std::string variant = selection.at("variant").get<std::string>();
+            checkRaster(registeredVariants.contains(variant), "Unregistered workload variant");
+            checkRaster(selection.value("scope", std::string{}) == "in-frame-early-late", "Unsupported workload scope");
+            selectedMode = registeredVariants.at(variant);
+            report["protocol"] = "metallic-workload-case-v1";
+            report["workloadCase"] = selection;
+        }
         const double profileHoldSeconds = config.value("profileHoldSeconds", 0.0);
+        const uint32_t traceFrames = config.value("nsightTraceFrames", 0u);
+        checkRaster(traceFrames <= 3 && (!traceFrames || (workloadCase && rounds == 1 && profileHoldSeconds == 0)),
+            "SDK trace needs one workload round, 1-3 frames and no timed hold");
         checkRaster(std::isfinite(profileHoldSeconds) && profileHoldSeconds >= 0 && profileHoldSeconds <= 300,
             "Invalid SW profiler hold duration");
         const uint32_t width = config.value("width",1797u), height = config.value("height",660u);
@@ -161,7 +196,10 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         fullRoamWidth_ = width; fullRoamHeight_ = height; fullRoamActive_ = true;
         drain();
         graphExecutor_->setDebugObserver(&observer);
-        loadBuiltInSample(kGPUDrivenZorahFullSampleId);
+        const std::string sampleId = config.value("sampleId", std::string(kGPUDrivenZorahFullSampleId));
+        checkRaster(sampleId == kGPUDrivenZorahFullSampleId || sampleId == kDefaultGPUDrivenSampleId,
+            "Unregistered workload sample");
+        loadBuiltInSample(sampleId.c_str());
         auto view = viewportCameraProperties();
         view["temporalJitter"] = false;
         applyViewportCameraProperties(view,nullptr);
@@ -211,6 +249,8 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         report["historyInvalidationPolicy"] = "reprojection-v1";
         report["validationRequested"] = debugRuntime_ && std::getenv("METALLIC_DEBUG_VALIDATION");
         report["hidden"] = std::getenv("METALLIC_FULL_ROAM_HIDDEN") != nullptr;
+        report["graphicsCaptureInjected"] = profiling::NsightGraphicsCapture::vulkanInjectionActive();
+        report["measurementKind"] = profileHoldSeconds > 0 || traceFrames ? "diagnostic" : "normal-timing";
         report["camera"] = viewportCameraProperties();
         report["outputExtent"] = {width,height};
         const auto* depth = graphExecutor_->outputResource("VBuffer.depth");
@@ -225,7 +265,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         }
         // Reverse and rotate order to expose warm-cache/clock/order effects.
         const bool historyComparison = config.value("historyComparison", false);
-        const bool swWorkComparison = historyComparison || config.value("swWorkComparison", false);
+        const bool swWorkComparison = workloadCase || historyComparison || config.value("swWorkComparison", false);
         const bool swLoadComparison = config.value("swLoadComparison", false);
         const bool swComparison = swWorkComparison || swLoadComparison || config.value("swComparison", false);
         constexpr uint32_t historyOrders[3][3] = {{0,15,16},{16,15,0},{15,0,16}};
@@ -252,7 +292,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             return snap;
         };
         for (uint32_t round=0; round<rounds; ++round) {
-            const auto sequence = historyComparison ? std::span<const uint32_t>(historyOrders[round]) : swWorkComparison ? std::span<const uint32_t>(workOrders[round]) : swLoadComparison ? std::span<const uint32_t>(loadOrders[round]) : swComparison ? std::span<const uint32_t>(swOrders[round]) : metadataComparison ? std::span<const uint32_t>(metadataOrders[round]) : std::span<const uint32_t>(orders[round]);
+            const auto sequence = workloadCase ? std::span<const uint32_t>(&selectedMode, 1) : historyComparison ? std::span<const uint32_t>(historyOrders[round]) : swWorkComparison ? std::span<const uint32_t>(workOrders[round]) : swLoadComparison ? std::span<const uint32_t>(loadOrders[round]) : swComparison ? std::span<const uint32_t>(swOrders[round]) : metadataComparison ? std::span<const uint32_t>(metadataOrders[round]) : std::span<const uint32_t>(orders[round]);
             for (uint32_t mode : sequence) {
                 const std::string variant = !mode ? "0" : swComparison ? (mode == 16 ? "swCameraReapply" : mode == 10 ? "swLegacy" : mode == 15 ? "swWorkControl" : mode == 14 ? "swWorkBins" : mode == 13 ? "swCooperative" : mode == 11 ? "swPrepared" : "swPlane") : metadataComparison ? (mode == 8 ? "exact8" : "fast8") : std::to_string(mode);
                 reapplyCamera = historyComparison && mode == 16;
@@ -270,8 +310,26 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                 // Readback/copy cache effects are outside measurement, followed
                 // by the same unmeasured recovery frames in every variant.
                 for (uint32_t i=0; i<settle; ++i) { draw(); }
-                if (swComparison && mode == 10 && round == 0 && profileHoldSeconds > 0) {
+                if (traceFrames) {
+                    drain();
+                    std::string error;
+                    const bool started = profiling::beginExternalNsightGpuTrace(error);
+                    checkRaster(started, error.c_str());
+                    traceActive = true;
+                    report["sdkTrace"] = {{"startFrame",profiler_.nextFrameIndex()}, {"frames",traceFrames},
+                        {"workloadCase",report["workloadCase"]}, {"snapshot",before}, {"complete",false}};
+                    for (uint32_t i=0; i<traceFrames; ++i) { draw(); }
+                    drain();
+                    const bool stopped = profiling::endExternalNsightGpuTrace(error);
+                    checkRaster(stopped, error.c_str());
+                    traceActive = false;
+                    report["sdkTrace"]["complete"] = true;
+                    // SDK boundary success does not prove artifact/export success.
+                    report["sdkTrace"]["artifactVerified"] = false;
+                }
+                if (((workloadCase && mode == selectedMode) || (!workloadCase && swComparison && mode == 10)) && round == 0 && profileHoldSeconds > 0) {
                     std::ofstream(output / "ProfileReady.json") << Json({{"case", name}, {"snapshot", before},
+                        {"workloadCase", report.value("workloadCase", Json(nullptr))},
                         {"holdSeconds", profileHoldSeconds}, {"camera", report["camera"]}}).dump(2) << '\n';
                     spdlog::info("[Raster Comparison] SW profiler hold begin: {} seconds", profileHoldSeconds);
                     const auto holdStart = Clock::now();
@@ -355,6 +413,10 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
     // including an exception in a diagnostic draw.
     const auto frameDrain = frameSubmissions_.wait();
     const auto graphDrain = graphExecutor_->waitForSubmittedWork();
+    if (traceActive) {
+        std::string error;
+        if (!profiling::endExternalNsightGpuTrace(error)) { report["traceCleanupError"] = error; }
+    }
     if (!frameDrain || !graphDrain) { report["status"]="failed"; report["error"]="Final GPU drain failed"; passed=false; }
     graphExecutor_->setDebugObserver(debugRuntime_.get());
     profiler_.beginCapture(); profiler_.endCapture();

@@ -1,9 +1,14 @@
-# Performance evidence tools (M0 / M1)
+# Performance evidence tools (M0 / M1 / M2)
+
+M2 fixed in-frame workloads and independent-process A/A are implemented in
+[WorkloadCase.py](WorkloadCase.py). See [the contract](WorkloadCase.md) and
+[M2 validation status](../../Documentation/AgenticShaderOptimizationM2.md).
 
 M1 offline source queries are implemented in [NsightSource.py](NsightSource.py).
 See [its contract and commands](NsightSource.md). Native Nsight export format and
 UI automation have separate validation states: the supplied Source/IL dialect
-has real-byte fixture coverage; UI exports remain blocked by the desktop runtime.
+has real-byte fixture coverage; three saves of one fixed UI report passed, while
+the reusable reopen/select/export adapter remains incomplete.
 See [M0 closeout](../../Documentation/AgenticShaderOptimizationM0Closeout.md).
 
 

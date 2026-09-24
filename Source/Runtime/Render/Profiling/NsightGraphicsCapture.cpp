@@ -18,6 +18,10 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include <NGFX_GraphicsCapture_Vulkan.h>
 #include <NGFX_Vulkan.h>
+#if __has_include(<NGFX_GPUTrace_Vulkan.h>)
+#include <NGFX_GPUTrace_Vulkan.h>
+#define METALLIC_HAS_NSIGHT_GPU_TRACE 1
+#endif
 
 #include <cwchar>
 #endif
@@ -30,6 +34,9 @@ namespace metallic::render::profiling {
 namespace {
 
 std::atomic_bool gVulkanCaptureInjected{false};
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+bool gExternalGpuTraceActive = false;
+#endif
 
 #if METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE
 
@@ -134,6 +141,62 @@ const char* stateName(NsightGraphicsCaptureState state)
 }
 
 } // namespace
+
+bool beginExternalNsightGpuTrace(std::string& error)
+{
+    error.clear();
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    if (gExternalGpuTraceActive) {
+        error = "An external GPU Trace is already active";
+        return false;
+    }
+    if (NsightGraphicsCapture::vulkanInjectionActive()) {
+        error = "GPU Trace cannot share a process with Graphics Capture";
+        return false;
+    }
+    NGFX_GPUTrace_InitializeActivity_Vulkan_Params initialize{};
+    initialize.version = NGFX_GPUTrace_InitializeActivity_Vulkan_Params_VER;
+    auto result = NGFX_GPUTrace_InitializeActivity_Vulkan(&initialize);
+    if (result == NGFX_Result_Success) {
+        NGFX_GPUTrace_StartTrace_Vulkan_Params start{};
+        start.version = NGFX_GPUTrace_StartTrace_Vulkan_Params_VER;
+        result = NGFX_GPUTrace_StartTrace_Vulkan(&start);
+    }
+    if (result != NGFX_Result_Success) {
+        error = ngfxError("Initialize/start externally injected GPU Trace", result);
+        return false;
+    }
+    gExternalGpuTraceActive = true;
+    return true;
+#else
+    error = "Nsight GPU Trace SDK support was not compiled";
+    return false;
+#endif
+}
+
+bool endExternalNsightGpuTrace(std::string& error)
+{
+    error.clear();
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    if (!gExternalGpuTraceActive) {
+        error = "No external GPU Trace was started";
+        return false;
+    }
+    NGFX_GPUTrace_StopTrace_Vulkan_Params stop{};
+    stop.version = NGFX_GPUTrace_StopTrace_Vulkan_Params_VER;
+    // No queue is needed: the workload owner has drained all submissions.
+    const auto result = NGFX_GPUTrace_StopTrace_Vulkan(&stop);
+    if (result != NGFX_Result_Success) {
+        error = ngfxError("Stop externally injected GPU Trace", result);
+        return false;
+    }
+    gExternalGpuTraceActive = false;
+    return true;
+#else
+    error = "Nsight GPU Trace SDK support was not compiled";
+    return false;
+#endif
+}
 
 NsightGraphicsCapture::NsightGraphicsCapture()
     : state_(compiledAvailable()

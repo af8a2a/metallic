@@ -1,12 +1,35 @@
 #include "RhiTest.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderGraph/RenderGraphGpuLabels.h"
+#include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 
 #include <cmath>
 #include <stdexcept>
 
 namespace metallic::tests {
 namespace {
+
+class NsightGpuTraceStateTest final : public RhiTest {
+public:
+    NsightGpuTraceStateTest() { type = RhiTestType::Command; name = "nsight_gpu_trace_requires_injection"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        std::string error;
+        if (render::profiling::endExternalNsightGpuTrace(error) || error.empty()) {
+            return RhiTestResult::fail("Stop before start must fail without calling an uninitialized SDK function");
+        }
+        if (render::profiling::beginExternalNsightGpuTrace(error) || error.empty()) {
+            std::string cleanup;
+            render::profiling::endExternalNsightGpuTrace(cleanup);
+            return RhiTestResult::fail("An ordinary test process must not start GPU Trace without injection");
+        }
+        if (render::profiling::endExternalNsightGpuTrace(error) || error.empty()) {
+            return RhiTestResult::fail("Failed start must not leave an active trace");
+        }
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(NsightGpuTraceStateTest);
 
 // Check the native label protocol, including balanced recordings and inherited
 // pass names on both queues. GPU fork/join tests separately exercise submission.

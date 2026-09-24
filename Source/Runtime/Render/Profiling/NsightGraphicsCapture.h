@@ -11,6 +11,13 @@ class Texture;
 
 namespace metallic::render::profiling {
 
+// For a process launched by ngfx GPU Trace with SDK start/stop triggers.
+// The caller drains all submitted GPU work before either boundary. These do
+// not self-inject, and cannot coexist with Graphics Capture in one process.
+// Call both functions on the same owner thread.
+bool beginExternalNsightGpuTrace(std::string& error);
+bool endExternalNsightGpuTrace(std::string& error);
+
 enum class NsightGraphicsCaptureState : uint8_t {
     Unavailable,
     Uninitialized,
