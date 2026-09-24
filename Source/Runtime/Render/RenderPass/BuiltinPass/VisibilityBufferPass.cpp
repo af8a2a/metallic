@@ -692,6 +692,7 @@ public:
 
     Result prepareExecution(RenderGraphExecutionContext& context) override
     {
+        auto profile = context.profileScope("Visibility prepare");
         if (streamRuntime_) {
             if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(streamRuntime_); }
         }
@@ -854,6 +855,9 @@ public:
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        // The graph node also owns streaming/traversal work. Keep the actual
+        // visibility rendering separately identifiable in GPU traces.
+        auto visibilityProfile = context.profileScope("Visibility raster");
         auto* gpuSceneSubsystem = context.subsystem<GPUSceneSubsystem>();
         const auto color = context.outputTexture("color");
         const auto visibility = context.outputTexture("visibility");

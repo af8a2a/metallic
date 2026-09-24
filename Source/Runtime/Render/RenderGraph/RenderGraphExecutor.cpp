@@ -4,6 +4,7 @@
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
+#include "Runtime/Render/RenderGraph/RenderGraphGpuLabels.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
@@ -1790,31 +1791,38 @@ struct RenderGraphExecutor::Impl {
             profiling::NsightCategory::RenderPass,
             node.id,
             markerColor);
-        commandBuffer.beginDebugLabel(DebugLabelDesc{
-            .name = markerName.c_str(),
-            .color = debugLabelColorFromArgb(markerColor),
-        });
-        bool labelOpen = true;
+        const size_t nodeIndex = lastExecutionStats.nodes.size();
+        lastExecutionStats.nodes.push_back({.id = node.id, .name = node.name, .type = node.type,
+            .queue = recordingQueue ? recordingQueue->type() : QueueType::Graphics});
+        // Timestamp scopes may span the graphics producer/join. Recreate balanced
+        // label ranges on each branch so Nsight sees the work and its ancestry
+        // on the queue that executes it.
+        RenderGraphGpuLabels<CommandBuffer> labels(markerName, debugLabelColorFromArgb(markerColor));
+        labels.resume(commandBuffer);
         if (parallel) {
             context.parallelRecorder_ = [&](RenderGraphExecutionContext& current,
                 const RenderGraphExecutionContext::CommandRecorder& compute,
                 const RenderGraphExecutionContext::CommandRecorder& graphics) -> Result {
-                current.commandBuffer().endDebugLabel();
-                labelOpen = false;
-                const Result result = parallel(current, compute, graphics);
+                labels.suspend();
+                const auto branch = [&](CommandBuffer& commands,
+                    const RenderGraphExecutionContext::CommandRecorder& record) {
+                    labels.resume(commands);
+                    const Result result = record(commands);
+                    labels.suspend();
+                    return result;
+                };
+                const Result result = parallel(current,
+                    [&](CommandBuffer& commands) { return branch(commands, compute); },
+                    [&](CommandBuffer& commands) { return branch(commands, graphics); });
                 // A failed fork may leave current pointing at an ended producer.
                 // Outer RAII scopes must not emit timestamps into that recording.
                 if (!result) { activeGpuTimingValid = false; }
                 if (result) {
-                    current.commandBuffer().beginDebugLabel({.name = markerName.c_str(), .color = debugLabelColorFromArgb(markerColor)});
-                    labelOpen = true;
+                    labels.resume(current.commandBuffer());
                 }
                 return result;
             };
         }
-        const size_t nodeIndex = lastExecutionStats.nodes.size();
-        lastExecutionStats.nodes.push_back({.id = node.id, .name = node.name, .type = node.type,
-            .queue = recordingQueue ? recordingQueue->type() : QueueType::Graphics});
         const TimerRef passTimer = beginInterval(commandBuffer);
         if (activeGpuTimingSlot) {
             activeGpuTimingSlot->nodeTimers.push_back(passTimer);
@@ -1827,6 +1835,7 @@ struct RenderGraphExecutor::Impl {
             const uint32_t index = uint32_t(sections.size());
             sections.push_back({.name = std::string(name), .parent = parent,
                 .queue = recordingQueue ? recordingQueue->type() : QueueType::Graphics});
+            labels.begin(name, debugLabelColorFromArgb(profiling::nsightColorFromName(name)));
             const TimerRef timer = beginInterval(commands);
             if (activeGpuTimingSlot) { activeGpuTimingSlot->sectionTimers[nodeIndex].push_back(timer); }
             return index;
@@ -1834,6 +1843,9 @@ struct RenderGraphExecutor::Impl {
         context.endProfile_ = [&, nodeIndex](CommandBuffer& commands, uint32_t index, double cpuMs) {
             lastExecutionStats.nodes[nodeIndex].sections[index].cpuMilliseconds = cpuMs;
             if (activeGpuTimingSlot) { endInterval(commands, activeGpuTimingSlot->sectionTimers[nodeIndex][index]); }
+            // On fork failure the producer has ended and its labels are already
+            // closed; only unwind logical scopes while the pass returns its error.
+            labels.end();
         };
         context.cpuProfile_ = [&, nodeIndex](std::span<const RenderGraphProfileSection> samples, uint32_t parent) {
             auto& sections = lastExecutionStats.nodes[nodeIndex].sections;
@@ -1885,12 +1897,15 @@ struct RenderGraphExecutor::Impl {
                 sections.empty() ? std::string_view("execute") : std::string_view(sections.back().name), resultToString(result));
             if (!streamingLog.empty()) { spdlog::error("[Streamer] {}", streamingLog); }
         }
-        if (result && upload != nullptr) { upload->flush(context.commandBuffer()); }
+        if (result && upload != nullptr) {
+            auto scope = context.profileScope("Upload flush");
+            upload->flush(context.commandBuffer());
+        }
         lastExecutionStats.nodes[nodeIndex].cpuMilliseconds = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - cpuBegin).count();
         if (activeGpuTimingSlot) { tracyGpuProfiler.endZone(activeGpuTimingSlot->profile); }
         if (result) { endInterval(context.commandBuffer(), passTimer); }
-        if (labelOpen) { context.commandBuffer().endDebugLabel(); }
+        labels.suspend();
         if (result && debugObserver && !context.debugAfterPassPublished_) { context.debugCheckpoint("AfterPass"); }
         return result;
     }

@@ -288,6 +288,8 @@ public:
     Result parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics);
     // GPU intervals use the command buffer's actual queue. Outer scopes follow
     // commandBuffer() across a fork/join; branch scopes bind their explicit buffer.
+    // GPU scopes also emit nested debug labels, balanced per recording across a
+    // fork/join. publishCpuProfile() contributes CPU metadata only, never labels.
     class ProfileScope {
     public:
         ProfileScope() = default;

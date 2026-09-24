@@ -347,6 +347,7 @@ public:
             graph.findNode("GPUDriven")->properties["coldPageRetentionFrames"] = std::getenv("METALLIC_TEST_CLAS_LEGACY") ? 0 : 120;
             const auto node = graph.findNode("GPUDriven")->id;
             graph.findNode(node)->properties["debugStreamingPages"] = false;
+            graph.findNode(node)->properties["asyncLateRaster"] = true;
             if (stress) {
                 // Force pending CLAS and geometry cache turnover without
                 // exhausting system VRAM or depending on interactive input.
@@ -362,6 +363,9 @@ public:
             EditorProfiler profiler;
             bool sawCompute = false, sawResident = false; uint64_t bytes = 0; uint32_t peakRequests = 0;
             for (uint32_t f = 0; f < frameCount; ++f) {
+                // Exercise both recording layouts regardless of sample defaults.
+                const bool asyncRaster = f >= frameCount / 2;
+                graph.setNodeRuntimeProperty(node, "asyncSoftwareRaster", asyncRaster);
                 Json camera = original;
                 // Finish with a stationary view so asynchronous build/move and
                 // cold retirement can converge independently of fresh demand.
@@ -403,23 +407,39 @@ public:
                 if (f > 2) { checkProfile(stream.feedbackFrame != UINT64_MAX, "feedback age unavailable when debug capture is disabled"); }
                 bytes += stream.uploadBytes; peakRequests = std::max(peakRequests, stream.requests);
                 Json nodes = Json::array();
-                bool sawCandidates = false, sawTraversal = false, sawClassify = false, sawHardware = false;
+                bool sawCandidates = false, sawTraversal = false, sawClassify = false, sawHardware = false, sawRaster = false;
                 for (const auto& pass : stats.nodes) {
                     checkProfile(pass.gpuTimingAvailable, "missing pass GPU timing: " + pass.name);
                     Json sections = Json::array();
                     for (const auto& section : pass.sections) {
-                        checkProfile(section.gpuTimingAvailable && std::isfinite(section.gpuMilliseconds) && section.gpuMilliseconds >= 0,
-                            "missing inner GPU timing: " + section.name);
+                        if (section.cpuOnly) {
+                            checkProfile(!section.gpuTimingAvailable, "CPU-only work acquired a GPU interval: " + section.name);
+                        } else {
+                            checkProfile(section.gpuTimingAvailable && std::isfinite(section.gpuMilliseconds) && section.gpuMilliseconds >= 0,
+                                "missing inner GPU timing: " + section.name);
+                        }
                         sawCandidates |= section.name == "Candidates"; sawTraversal |= section.name == "Stream traversal";
                         sawClassify |= section.name == "Soft/hard classification"; sawHardware |= section.name == "Hardware raster";
+                        sawRaster |= section.name == "Visibility raster";
+                        if (section.name == "Visibility raster" || section.name == "Stream traversal" || section.name == "Stream End") {
+                            checkProfile(section.parent == UINT32_MAX, "streaming and raster must be separate top-level scopes");
+                        }
+                        if (section.name == "Stream early" || section.name == "Stream late") {
+                            checkProfile(section.parent < pass.sections.size() && pass.sections[section.parent].name == "Visibility raster",
+                                "raster phases missing their visibility-only parent");
+                        }
                         sawCompute |= section.name == "Software raster" && section.queue == QueueType::Compute;
-                        sections.push_back({{"name",section.name},{"parent",section.parent},{"queue",section.queue == QueueType::Compute ? "compute" : "graphics"},
+                        if (section.name == "Software raster") {
+                            checkProfile(section.queue == (asyncRaster ? QueueType::Compute : QueueType::Graphics),
+                                "software raster scope attributed to the wrong queue");
+                        }
+                        sections.push_back({{"name",section.name},{"parent",section.parent},{"cpuOnly",section.cpuOnly},{"queue",section.queue == QueueType::Compute ? "compute" : "graphics"},
                             {"gpuMs",section.gpuMilliseconds},{"cpuMs",section.cpuMilliseconds}});
                     }
                     nodes.push_back({{"name",pass.name},{"gpuMs",pass.gpuMilliseconds},{"cpuMs",pass.cpuMilliseconds},{"sections",sections}});
                 }
-                checkProfile(sawCandidates && sawTraversal && sawClassify && sawHardware, "missing GPUDriven stage instrumentation");
-                report["frames"].push_back({{"frame",f},{"gpuMs",stats.gpuMilliseconds},{"cpuMs",stats.cpuMilliseconds},{"nodes",nodes},
+                checkProfile(sawCandidates && sawTraversal && sawClassify && sawHardware && sawRaster, "missing GPUDriven stage instrumentation");
+                report["frames"].push_back({{"frame",f},{"asyncRaster",asyncRaster},{"gpuMs",stats.gpuMilliseconds},{"cpuMs",stats.cpuMilliseconds},{"nodes",nodes},
                     {"streamFrame",stream.frameIndex},{"residentPages",stream.residentPages},{"pendingPages",stream.pendingPages},
                     {"clasBytes", stream.clasUsedBytes}, {"clasEncodedBytes", stream.clasEncodedBytes},
                     {"clasWorstCaseBytes", stream.clasWorstCaseBytes}, {"clasScratchBytes", stream.clasScratchBytes}, {"clasMovedClusters", stream.clasMovedClusters}, {"clasPages", stream.clasResidentPages}, {"clasClusters", stream.clasResidentClusters},

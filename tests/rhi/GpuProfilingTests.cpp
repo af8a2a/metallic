@@ -1,10 +1,93 @@
 #include "RhiTest.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
+#include "Runtime/Render/RenderGraph/RenderGraphGpuLabels.h"
 
 #include <cmath>
+#include <stdexcept>
 
 namespace metallic::tests {
 namespace {
+
+// Check the native label protocol, including balanced recordings and inherited
+// pass names on both queues. GPU fork/join tests separately exercise submission.
+struct LabelRecording {
+    std::vector<std::string> stack;
+    std::vector<std::vector<std::string>> paths;
+    bool ended = false;
+    void beginDebugLabel(const render::DebugLabelDesc& desc)
+    {
+        if (ended) { throw std::runtime_error("label emitted after command buffer end"); }
+        stack.emplace_back(desc.name);
+        paths.push_back(stack);
+    }
+    void endDebugLabel()
+    {
+        if (ended || stack.empty()) { throw std::runtime_error("unbalanced native label end"); }
+        stack.pop_back();
+    }
+    void finish()
+    {
+        if (!stack.empty()) { throw std::runtime_error("scope crossed a command buffer boundary"); }
+        ended = true;
+    }
+};
+
+class GpuProfileLabelsTest final : public RhiTest {
+public:
+    GpuProfileLabelsTest() { type = RhiTestType::Command; name = "gpu_profiling_label_recordings"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        try {
+            for (int fail : {0, 1, 2}) {
+                LabelRecording producer, compute, graphics, join;
+                render::detail::RenderGraphGpuLabels<LabelRecording> labels("VBuffer", {});
+                labels.resume(producer);
+                labels.begin("Stream traversal", {});
+                labels.begin("LOD frontier", {});
+                labels.end(); labels.end();
+                labels.begin("Visibility raster", {});
+                labels.begin("Stream early", {});
+                labels.suspend(); producer.finish();
+                labels.resume(compute);
+                labels.begin("Software raster", {});
+                labels.end(); labels.suspend(); compute.finish();
+                const std::vector<std::string> softwarePath{"VBuffer", "Visibility raster", "Stream early", "Software raster"};
+                if (compute.paths.back() != softwarePath) { throw std::runtime_error("compute lost inherited scope names"); }
+                if (fail != 1) {
+                    labels.resume(graphics);
+                    labels.begin("Hardware raster", {});
+                    labels.end(); labels.suspend(); graphics.finish();
+                    const std::vector<std::string> hardwarePath{"VBuffer", "Visibility raster", "Stream early", "Hardware raster"};
+                    if (graphics.paths.back() != hardwarePath) { throw std::runtime_error("graphics lost inherited scope names"); }
+                }
+                if (fail == 0) {
+                    labels.resume(join);
+                    labels.begin("Raster merge", {});
+                    labels.end();
+                    const std::vector<std::string> mergePath{"VBuffer", "Visibility raster", "Stream early", "Raster merge"};
+                    if (join.paths.back() != mergePath) { throw std::runtime_error("join lost inherited scope names"); }
+                }
+                // Failed branches have no join recording: logical RAII unwind
+                // must not issue label commands to the ended producer/branch.
+                labels.end(); labels.end();
+                if (fail == 0) {
+                    labels.begin("Stream End", {}); labels.end();
+                    if (join.paths.back() != std::vector<std::string>{"VBuffer", "Stream End"}) {
+                        throw std::runtime_error("stream cleanup incorrectly nested under raster");
+                    }
+                    labels.suspend(); join.finish();
+                }
+                if (producer.paths[2] != std::vector<std::string>{"VBuffer", "Stream traversal", "LOD frontier"}) {
+                    throw std::runtime_error("traversal labels missing before raster");
+                }
+            }
+        } catch (const std::exception& error) {
+            return RhiTestResult::fail(error.what());
+        }
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(GpuProfileLabelsTest);
 
 class GpuClockCalibrationTest : public RhiTest {
 public:
@@ -135,7 +218,8 @@ public:
                 return RhiTestResult::fail("scope overflow lost frame timing or contaminated a later ring slot");
             }
             const auto& frame = completed[0];
-            if (frame.nodes[0].sections.size() != (overflow ? 256u : 3u)) { return RhiTestResult::fail("scope metadata did not respect budget"); }
+            // The executor contributes the final Upload flush scope as well.
+            if (frame.nodes[0].sections.size() != (overflow ? 256u : 4u)) { return RhiTestResult::fail("scope metadata did not respect budget"); }
             for (const auto& node : frame.nodes) {
                 if (!node.gpuTimingAvailable) { return RhiTestResult::fail("scope budget lost pass timing"); }
                 for (const auto& section : node.sections) {

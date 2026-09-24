@@ -946,13 +946,14 @@ public:
                 FRAME_REQUIRE(executor.collectCompletedGpuExecutionStats(timings));
                 if (device->capabilities().timestampQueries) {
                     if (timings.size() != 1 || !timings[0].gpuTimingAvailable || timings[0].nodes.size() != 1 ||
-                        timings[0].nodes[0].sections.size() != 3) {
+                        timings[0].nodes[0].sections.size() != 4) {
                         return RhiTestResult::fail("fork/join timings missing or cancelled recording leaked a sample");
                     }
                     const auto& sections = timings[0].nodes[0].sections;
                     const auto expectedQueue = parallel ? compute->type() : graphics->type();
                     if (sections[1].queue != expectedQueue || sections[2].queue != graphics->type() ||
-                        sections[0].parent != UINT32_MAX || sections[1].parent != 0 || sections[2].parent != 0) {
+                        sections[0].parent != UINT32_MAX || sections[1].parent != 0 || sections[2].parent != 0 ||
+                        sections[3].name != "Upload flush" || sections[3].parent != UINT32_MAX) {
                         return RhiTestResult::fail("fork/join profiling lost queue or parent identity");
                     }
                     for (const auto& section : sections) {
