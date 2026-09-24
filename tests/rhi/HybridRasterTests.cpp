@@ -212,7 +212,18 @@ public:
                 for (uint32_t configuration = 0; configuration < 5; ++configuration) {
                     VisibilityHybridRasterizer rasterizer;
                     const uint32_t capacity = configuration == 4 ? 1u : 262144u;
-                    HYBRID_REQUIRE(rasterizer.initialize(*device, width, height, log, capacity));
+                    // Simulate output-size allocation followed by DLSS render-size selection.
+                    HYBRID_REQUIRE(rasterizer.initialize(*device, width * 2, height * 2, log, capacity));
+                    auto* pixelAllocation = &rasterizer.pixelBuffer();
+                    auto* clusters = &rasterizer.clusterBuffer();
+                    HYBRID_REQUIRE(rasterizer.setRenderExtent(width, height));
+                    HYBRID_REQUIRE(rasterizer.setRenderExtent(width * 2, height * 2));
+                    HYBRID_REQUIRE(rasterizer.setRenderExtent(width, height));
+                    if (rasterizer.setRenderExtent(0, height) || rasterizer.setRenderExtent(width * 3, height * 3) ||
+                        rasterizer.width() != width || rasterizer.height() != height ||
+                        &rasterizer.pixelBuffer() != pixelAllocation || &rasterizer.clusterBuffer() != clusters) {
+                        return RhiTestResult::fail("Hybrid extent reuse changed resources or accepted an invalid extent");
+                    }
                     HYBRID_REQUIRE(heap->writeStorageBuffer(queueHandle, rasterizer.queueBuffer()));
                     if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
                     HYBRID_REQUIRE(commands->begin());

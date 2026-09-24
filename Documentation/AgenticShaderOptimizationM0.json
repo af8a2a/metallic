@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "kind": "metallic.perf.baseline.summary",
-  "created_utc": "2026-09-24T12:20:43.504215+00:00",
+  "created_utc": "2026-09-24T13:36:37.882451+00:00",
   "environment": {
     "os": "Windows-11-10.0.26200-SP0",
     "python": "3.12.4 (tags/v3.12.4:8e8a4ba, Jun  6 2024, 19:30:16) [MSC v.1940 64 bit (AMD64)]",
     "repository": "E:\\metallic",
-    "git_head": "e84464e01ce230f70dc5674cca984c488d21b258",
+    "git_head": "215e592449499163e55d2d5fc4151c9d232be763",
     "gpus": [
       {
         "name": "NVIDIA GeForce RTX 5070 Ti",
@@ -18,15 +18,18 @@
   "tool_version": "2026.3.1",
   "wrapper_version": "0.2.0",
   "m0": {
-    "status": "partial",
-    "source_fixture": "missing",
+    "status": "complete",
+    "source_fixture": "available-native-parsed",
     "runtime_capture_verified": false,
-    "source_csv_new_export": false
+    "source_csv_new_export": true,
+    "completion_scope": "Capability and evidence baseline; three exports from one frozen report",
+    "integrated_gpu_trace_collection_verified": true
   },
   "baseline": {
-    "path": "build/perf-m0-20260924-01/baseline-final/Baseline.json",
-    "sha256": "6220a5a6320eae37342e01d29163a2354f360edf850bd91d0fe3127714aacdc7",
-    "artifact_count": 39
+    "path": "build\\perf-m0-closeout-20260924\\baseline\\Baseline.Closeout.json",
+    "sha256": "c63359b4dfdf9b7fe11ec12dd4bd968f6732882556c0d2452421e6c624ec2a7a",
+    "integrity": "passed",
+    "artifact_count": 42
   },
   "capabilities": {
     "cli_discovery": {
@@ -70,12 +73,11 @@
       "declaration": "https://docs.nvidia.com/nsight-graphics/UserGuide/shader-profiler.html"
     },
     "source_hotspots": {
-      "status": "supported-unverified",
-      "verified_scope": null,
-      "reason": "Source/function symbols in code are not proof of current Nsight correlation.",
+      "status": "verified",
+      "verified_scope": "WorkControl Source/IL CSV for module 4d0378657da7b7d1/main; Aggregate over Entire Trace",
+      "reason": "Exact shader identity and source file observed in UI and CSV. No performance validity or dispatch isolation claim.",
       "evidence": [
-        "source-0",
-        "source-profile-report"
+        "build/nsight-ui-exports-20260924-01/Validation.json"
       ],
       "declaration": "https://docs.nvidia.com/nsight-graphics/UserGuide/shader-profiler.html"
     },
@@ -100,38 +102,63 @@
       "declaration": "https://docs.nvidia.com/nsight-graphics/UserGuide/shader-profiler.html"
     },
     "source_export_automation": {
-      "status": "blocked",
-      "verified_scope": null,
-      "reason": "A ready child worker still requires Nsight export validation; no main-desktop fallback.",
+      "status": "verified",
+      "verified_scope": "Three distinct Source/IL Export/Save operations from one unchanged WorkControl report selection",
+      "reason": "Three fresh files, UI selection/save screenshots, byte equality and structured comparison; no reopen or unattended adapter claim.",
       "evidence": [
-        "child-status",
-        "child-initialize-stdout",
-        "child-initialize-stderr"
+        "build/nsight-ui-exports-20260924-01/Validation.json"
+      ],
+      "declaration": null
+    },
+    "native_source_csv_parse": {
+      "status": "verified",
+      "verified_scope": "Supplied CSV and three fresh UI Source/IL exports, same exact native dialect",
+      "reason": "Original bytes and fixture validated; new exports additionally have UI selection evidence.",
+      "evidence": [
+        "native-analysis",
+        "native-raw",
+        "native-parser",
+        "native-fixture",
+        "native-fixture-provenance",
+        "ctest",
+        "build/nsight-ui-exports-20260924-01/Validation.json"
+      ],
+      "declaration": null
+    },
+    "capture_metadata_read": {
+      "status": "verified",
+      "verified_scope": "Metadata extraction only; not performance replay or source-export provenance",
+      "reason": "Official metadata extraction succeeded. Version compatibility warning retained.",
+      "evidence": [
+        "capture-metadata",
+        "capture-functions",
+        "capture-objects"
       ],
       "declaration": null
     }
   },
   "gaps": [
     {
-      "code": "SourceCsvUnavailable",
-      "artifact": "shader-source-csv",
-      "state": "missing",
-      "next_action": "Recover the original matching its recorded SHA256, or produce a fresh Nsight source/IL export with its own manifest."
+      "code": "ReplayAccessViolationAndDisconnection",
+      "scope": "M1 robustness/performance validation",
+      "next_action": "Diagnose Live Replay failure; validate replay output before performance acceptance."
     },
     {
-      "code": "ChildWorkerUnavailable",
-      "next_action": "Restore cua-child session readiness; do not control the main desktop or change login/security settings automatically."
+      "code": "ReopenReselectNotVerified",
+      "scope": "M1 automation",
+      "next_action": "Implement reusable adapter and validate reopening/reselecting with state guards."
     }
   ],
   "source_csv": {
-    "path": "E:\\metallic\\Captures\\NsightGraphics\\streamClusterBinMain.csv",
+    "path": "E:\\metallic\\Captures\\NsightGraphics\\profiledata.csv",
     "role": "shader-profiler-original",
-    "state": "missing",
-    "bytes": null,
-    "sha256": null,
-    "expected_sha256": "13222ffc71e5172a028a0b33e2cce19562d7bf185d500fcf642a914bf6cedf02",
-    "reported_location": "remote-only",
-    "location_basis": "user-provided"
+    "state": "present",
+    "bytes": 1785487,
+    "sha256": "c14f9367f825029169ecabc115cdf8356a0ceee0d505278df01c2014056869bc",
+    "expected_sha256": null,
+    "archive": "archive/shader-source-csv.csv",
+    "reported_location": "local-or-unknown",
+    "location_basis": "local-file-probe"
   },
   "tool_pins": {
     "wrapper": {
@@ -173,17 +200,31 @@
       "bytes": 16072360,
       "sha256": "19794fa39c6f592f293a34b891ab4fee611d1355099ddb8858b48a38585136d6",
       "expected_sha256": null
-    },
-    "cua-child": {
-      "path": "C:\\Users\\11252\\Documents\\Codex\\tools\\cua-child-mcp\\cua-child.exe",
-      "role": "tool-binary",
-      "state": "present",
-      "bytes": 113328031,
-      "sha256": "b67988558a4a9cbd06da2265cbe601d16f23cf3fd72bb0f350dcb4450c5daa67",
-      "expected_sha256": null
     }
   },
-  "invalid_captures": [
+  "fixture_manifest": "tests/perf/fixtures/NsightSourceReal.provenance.json",
+  "case_manifest": "build/perf-m0-20260924-01/baseline-final/case.json",
+  "validation": {
+    "integrity": "passed",
+    "tests": 38,
+    "ctest_suites": 3,
+    "native_csv": "passed",
+    "automatic_ui_exports": 3,
+    "ui_export_evidence": "build/nsight-ui-exports-20260924-01/Validation.json"
+  },
+  "notes": [
+    "Historical classification CSV is still remote; new WorkControl exports establish a separate baseline.",
+    "Three UI Source/IL saves passed; no new standalone Graphics Capture generation or GPU Trace metrics table export was validated.",
+    "Original profiledata.csv historical range remains unknown. New report scope is recorded in UI export validation.",
+    "Historical case manifest and baseline archives are preserved; they do not describe the new report."
+  ],
+  "initial_baseline": {
+    "path": "build/perf-m0-20260924-01/baseline-final/Baseline.json",
+    "sha256": "6220a5a6320eae37342e01d29163a2354f360edf850bd91d0fe3127714aacdc7",
+    "artifact_count": 39
+  },
+  "latest_closeout": "Documentation/AgenticShaderOptimizationM0Closeout.json",
+  "historical_invalid_captures": [
     {
       "path": "E:\\metallic\\Captures\\NsightGraphics\\MetallicGPUDrivenSample_2026_09_21_23_29_42.ngfx-capture",
       "role": "historical-graphics-capture",
@@ -201,18 +242,5 @@
       "expected_sha256": null
     }
   ],
-  "fixture_manifest": "tests/perf/fixtures/Provenance.json",
-  "case_manifest": "build/perf-m0-20260924-01/baseline-final/case.json",
-  "validation": {
-    "schema": "passed",
-    "integrity": "passed",
-    "tests": 9
-  },
-  "notes": [
-    "ngfx --help-all emitted help with exit code 1; raw exit is preserved.",
-    "rg returned 1 for no matching original CSV/parser in repository.",
-    "Original Shader Profiler CSV confirmed remote-only by user.",
-    "No fresh capture, replay, counters or source UI export was performed.",
-    "GPU Trace fixtures are historical TSV, not Shader Profiler source/IL CSV."
-  ]
+  "latest_ui_validation": "build/nsight-ui-exports-20260924-01/Validation.json"
 }

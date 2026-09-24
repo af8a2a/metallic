@@ -105,6 +105,20 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
     return {};
 }
 
+bool VisibilityHybridRasterizer::supportsRenderExtent(uint32_t width, uint32_t height) const
+{
+    return width != 0 && height != 0 && width <= 32768 && height <= 32768 && buffers_[1] &&
+        uint64_t(width) * height * sizeof(uint64_t) <= buffers_[1]->desc().size;
+}
+
+Result VisibilityHybridRasterizer::setRenderExtent(uint32_t width, uint32_t height)
+{
+    if (!supportsRenderExtent(width, height)) { return makeError(Error::InvalidArgument); }
+    push_.width = width;
+    push_.height = height;
+    return {};
+}
+
 void VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPixels, bool reversedZ)
 {
     commands.beginDebugLabel({.name = "Hybrid raster: clear queue and depth"});

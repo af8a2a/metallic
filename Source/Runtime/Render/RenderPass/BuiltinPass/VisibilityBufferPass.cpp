@@ -3256,7 +3256,7 @@ private:
         if (device_->capabilities().shaderBufferInt64Atomics &&
             device_->capabilities().subPixelPrecisionBits >= 1 &&
             device_->capabilities().subPixelPrecisionBits <= 8) {
-            if (includeGPUSceneBindings && hybridRasterizer_ && hybridRasterizer_->width() == width && hybridRasterizer_->height() == height &&
+            if (includeGPUSceneBindings && hybridRasterizer_ && hybridRasterizer_->supportsRenderExtent(width, height) &&
                 hybridRasterizer_->clusterCapacity() >= clusterCapacity) {
                 bundle.hybridRasterizer = hybridRasterizer_;
             } else {
@@ -3576,6 +3576,12 @@ private:
         }
         if (tessellationEnabled()) {
             result = createTessellationBuffers(bundle, log);
+            if (!result) { return result; }
+        }
+        // Commit the logical extent only after all fallible bundle preparation.
+        // DLSS downsizing must not duplicate the resolution-independent cluster pool.
+        if (bundle.hybridRasterizer) {
+            result = bundle.hybridRasterizer->setRenderExtent(width, height);
             if (!result) { return result; }
         }
         outBundle = std::move(bundle);

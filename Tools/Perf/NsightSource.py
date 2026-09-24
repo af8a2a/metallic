@@ -1,4 +1,4 @@
-"""Mapping-driven Shader Profiler evidence queries (not a validated Nsight dialect).
+"""Shader Profiler evidence queries: explicit mappings and one observed native CSV dialect.
 
 Only stdlib is required. Layouts are tied to exact export bytes. All capture,
 scope and symbol metadata is declared evidence, never inferred from filenames.
@@ -7,6 +7,7 @@ import argparse
 import csv
 import hashlib
 import io
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -98,6 +99,13 @@ def validate_context(context):
 
 
 def normalize(data, layout, context):
+    if isinstance(layout, dict) and layout.get("dialect") == "nsight-source-il-observed-v1":
+        if layout.get("version") != VERSION or layout.get("raw_sha256") != sha(data):
+            fail("Native layout version or raw SHA256 mismatch")
+        spec = importlib.util.spec_from_file_location("nsight_native", Path(__file__).with_name("NsightShaderCsv.py"))
+        native = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(native)
+        return native.parse(records(data), sha(data), context, number)
     validate_context(context)
     if not isinstance(layout, dict):
         fail("Layout must be an object")
@@ -188,9 +196,12 @@ def normalize(data, layout, context):
             "rows": list(unique.values())}
 
 
-def import_bundle(raw_path, layout_path, context_path, output):
+def import_bundle(raw_path, layout_path, context_path, output, native=False):
     data = Path(raw_path).read_bytes()
-    layout_data, context_data = Path(layout_path).read_bytes(), Path(context_path).read_bytes()
+    layout_data = (json.dumps({"version": VERSION, "raw_sha256": sha(data),
+                               "dialect": "nsight-source-il-observed-v1"}).encode("utf-8")
+                   if native else Path(layout_path).read_bytes())
+    context_data = Path(context_path).read_bytes() if context_path else b"{}"
     result = normalize(data, json.loads(layout_data.decode("utf-8-sig")),
                        json.loads(context_data.decode("utf-8-sig")))
     output = Path(output)
@@ -203,9 +214,10 @@ def import_bundle(raw_path, layout_path, context_path, output):
         "version": VERSION, "kind": "metallic.nsight.source.bundle",
         "files": {name: sha((output / name).read_bytes())
                   for name in ("raw.csv", "layout.json", "context.json", "analysis.json")},
-        "parser_sha256": sha(Path(__file__).read_bytes())})
+        "parser_sha256": sha(Path(__file__).read_bytes()),
+        "native_parser_sha256": sha(Path(__file__).with_name("NsightShaderCsv.py").read_bytes()) if result["native_dialect_validated"] else None})
     return {"bundle": str(output.resolve()), "rows": len(result["rows"]),
-            "native_dialect_validated": False}
+            "native_dialect_validated": result["native_dialect_validated"]}
 
 
 def load_bundle(directory):
@@ -222,6 +234,10 @@ def load_bundle(directory):
             fail("Bundle file changed: " + name)
     if manifest.get("parser_sha256") != sha(Path(__file__).read_bytes()):
         fail("Parser changed; re-import original evidence to a new bundle")
+    if read_json(directory / "layout.json").get("dialect") == "nsight-source-il-observed-v1" and not manifest.get("native_parser_sha256"):
+        fail("Native parser hash is missing")
+    if manifest.get("native_parser_sha256") and manifest["native_parser_sha256"] != sha(Path(__file__).with_name("NsightShaderCsv.py").read_bytes()):
+        fail("Native parser changed; re-import original evidence")
     analysis = read_json(directory / "analysis.json")
     regenerated = normalize((directory / "raw.csv").read_bytes(), read_json(directory / "layout.json"),
                             read_json(directory / "context.json"))
@@ -296,6 +312,8 @@ def source_context(result, module, entry, record, radius):
 def compare_repeats(results):
     if len(results) < 3:
         fail("At least three independently declared exports are required")
+    for result in results:
+        validate_context(result["context"])
     ids = [r["context"]["export_id"] for r in results]
     if len(ids) != len(set(ids)):
         fail("Repeated export_id; re-importing one export is not three exports")
@@ -324,6 +342,10 @@ def main():
     ingest = commands.add_parser("import")
     for name in ("raw", "layout", "context", "output"):
         ingest.add_argument("--" + name, required=True)
+    native = commands.add_parser("native-import", help="Import the observed real Nsight Source/IL CSV dialect")
+    for name in ("raw", "output"):
+        native.add_argument("--" + name, required=True)
+    native.add_argument("--context", help="Optional declared capture context; missing fields remain unknown")
     for command in ("verify", "shaders", "hotspots", "source"):
         sub = commands.add_parser(command)
         sub.add_argument("bundle")
@@ -345,6 +367,8 @@ def main():
             value = inspect_export(Path(args.raw).read_bytes(),
                                    {"comma": ",", "tab": "\t", "semicolon": ";"}[args.delimiter],
                                    args.encoding, args.start, args.count)
+        elif args.command == "native-import":
+            value = import_bundle(args.raw, None, args.context, args.output, native=True)
         elif args.command == "import":
             value = import_bundle(args.raw, args.layout, args.context, args.output)
         elif args.command == "compare-repeats":

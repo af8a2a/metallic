@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "kind": "metallic.perf.m0.closeout",
+  "status": "complete",
+  "csv_check": "passed",
+  "native_dialect_validation": "passed-for-supplied-source-il-dialect",
+  "source_csv": {
+    "path": "Captures/NsightGraphics/profiledata.csv",
+    "bytes": 1785487,
+    "sha256": "c14f9367f825029169ecabc115cdf8356a0ceee0d505278df01c2014056869bc",
+    "records": 26518,
+    "numeric_rows": {
+      "source": 65,
+      "il": 26413
+    },
+    "source_mirrors": 35,
+    "source_references": 1
+  },
+  "shader": {
+    "module": "comp.10000.spv (4d0378657da7b7d1)",
+    "spirv_entry": "main",
+    "symbol": "%streamClusterRasterWorkControlMain",
+    "il_reported_samples": 614,
+    "source_reported_samples": 614,
+    "top_il_line": 24316,
+    "top_il_samples": 502,
+    "barrier_samples_lower_bound": 517,
+    "all_top3_samples_lower_bound": 604,
+    "max_live_registers": 34
+  },
+  "capture": {
+    "path": "E:\\metallic\\Captures\\NsightGraphics\\MetallicGPUDrivenSample_2026_09_24_21_22_39.ngfx-capture",
+    "sha256": "a04d1365bac634bfb5686e79d6fd7abbec8fedbcee9ad925205bb8fbf667d219",
+    "bytes": 3135729096,
+    "nsight_version": "2026.3.1",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "driver": "616.92",
+    "metadata_read": "passed",
+    "replay_verified": false,
+    "warnings": [
+      "\nWARNING: Capture version 2026.3.1 (build 38722833) is newer than replayer version 2026.3 (build 38722833). Replay may not work as expected.\nPlease upgrade to the latest replayer version. To continue using this version, either recapture or use --bundle-replayer."
+    ],
+    "csv_module_binding_verified": false,
+    "selection_scope": null,
+    "integrated_gpu_trace_report_loaded": true,
+    "replay_correctness_validation": "not performed; access violation and later disconnection recorded",
+    "new_ui_export_binding_verified": true
+  },
+  "automatic_ui_exports": {
+    "completed": 3,
+    "required": 3,
+    "status": "passed",
+    "evidence": "build/nsight-ui-exports-20260924-01/Validation.json",
+    "historical_probe": "build/perf-m0-closeout-20260924/ui-probe.json",
+    "same_report": true,
+    "reopen_reselect_runs": 0,
+    "structured_results_equal": true,
+    "byte_identical": true
+  },
+  "baseline": {
+    "path": "build\\perf-m0-closeout-20260924\\baseline\\Baseline.Closeout.json",
+    "sha256": "c63359b4dfdf9b7fe11ec12dd4bd968f6732882556c0d2452421e6c624ec2a7a",
+    "integrity": "passed"
+  },
+  "source_bundle": "build\\perf-m0-closeout-20260924\\source-final",
+  "tests": {
+    "total": 38,
+    "ctest_suites": 3,
+    "status": "passed"
+  },
+  "remaining": [],
+  "completion_scope": "M0 capability/evidence baseline; native CSV validation and three UI saves of one fixed report. Not performance acceptance or unattended M1 completion.",
+  "new_ui_export_validation": {
+    "report": "Documentation/NsightUIExportValidation.md",
+    "manifest": "build/nsight-ui-exports-20260924-01/Validation.json",
+    "raw_sha256": "f09f29110217236cdb60027572ca27c133cfb8d4465aa204972f65dbe3d2b1f2",
+    "reported_il_samples": 4290,
+    "source_csv_original_selection_verified": false,
+    "capture_shader_binding_verified_for_new_exports": true,
+    "selection": {
+      "id": "integrated-trace-20260924-220742-workcontrol-aggregate",
+      "requested_scope": "shader-in-window",
+      "achieved_scope": "shader-in-window",
+      "module": "comp.10000.spv (4d0378657da7b7d1)",
+      "entry": "main",
+      "symbol": "%streamClusterRasterWorkControlMain",
+      "source_file": "GPUDrivenStreamWorkRaster.slang",
+      "source_view_selection_mode": "source-file",
+      "region": "Aggregate",
+      "languages": "Slang and SPIRV",
+      "range": "Entire Trace",
+      "displayed_start_ms": "0.00",
+      "displayed_end_ms": "11.44",
+      "bounds_precision": "UI rounded display; exact timestamps not exported here",
+      "device": "Vulkan - 181789 Samples",
+      "queue_filter": "No queue-specific filter applied; aggregate report scope",
+      "visible_queue_track": "Vulkan Graphics Q:0",
+      "dispatch_isolated": false,
+      "ui_evidence": [
+        "trace-range.png",
+        "selection-01.png",
+        "selection-02.png",
+        "selection-03.png"
+      ]
+    }
+  },
+  "follow_up_m1": [
+    "Reusable UI adapter with selection mismatch detection",
+    "Reopen/reselect validation",
+    "Diagnose Live Replay access violation/disconnection and validate rendered output before performance acceptance"
+  ]
+}

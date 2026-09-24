@@ -10,36 +10,44 @@
     "hotspots",
     "exported-source-context",
     "bundle-integrity",
-    "offline-repeat-comparison"
+    "offline-repeat-comparison",
+    "native-source-il-dialect",
+    "real-byte-fixture"
   ],
-  "native_nsight_dialect_validated": false,
+  "native_nsight_dialect_validated": true,
   "ui_adapter_implemented": false,
-  "ui_export_verified": false,
+  "ui_export_verified": true,
   "test_evidence": {
     "source_contract_tests": 17,
+    "native_source_tests": 11,
     "baseline_tests": 10,
-    "source_fixtures": "synthetic-contract-only"
+    "source_fixtures": "real-export-extract and synthetic-contract"
   },
   "blockers": [
     {
-      "code": "RemoteSourceCsvUnavailable",
-      "basis": "user-confirmed-remote-only",
-      "expected_sha256": "13222ffc71e5172a028a0b33e2cce19562d7bf185d500fcf642a914bf6cedf02"
+      "code": "ReusableUIAdapterNotImplemented",
+      "reason": "Observed tool-driven UI workflow is not yet a reusable adapter."
     },
     {
-      "code": "NativeDesktopRuntimeStartupFailed",
-      "basis": "tool-result-transcription-not-a-raw-process-log",
-      "tool": "mcp__node_repl__js",
-      "attempts": 3,
-      "explicit_resets": 1,
-      "error": "windows sandbox failed: helper_unknown_error: apply deny-read ACLs",
-      "ui_input_performed": false
+      "code": "ReopenReselectNotVerified",
+      "reason": "All three exports used the same unchanged report selection."
+    },
+    {
+      "code": "ReplayAccessViolationAndDisconnection",
+      "reason": "Report loaded and exports passed; reliable replay and output correctness remain unverified.",
+      "evidence": "build/nsight-ui-exports-20260924-01/Validation.json"
     }
   ],
   "acceptance": {
     "raw_historical_samples_reproduced": false,
-    "actual_shader_selection_verified": false,
-    "three_actual_exports": false,
-    "timing_measurements": false
-  }
+    "actual_shader_selection_verified": true,
+    "three_actual_exports": true,
+    "timing_measurements": false,
+    "three_exports_structured_equal": true,
+    "reopen_reselect_verified": false
+  },
+  "native_validation_scope": "Supplied profiledata.csv plus three actual UI Source/IL exports of module 4d0378657da7b7d1/main",
+  "latest_closeout": "Documentation/AgenticShaderOptimizationM0Closeout.json",
+  "ui_export_scope": "Three distinct saves from one fixed integrated report; reopening and unattended recovery unverified",
+  "latest_ui_validation": "build/nsight-ui-exports-20260924-01/Validation.json"
 }

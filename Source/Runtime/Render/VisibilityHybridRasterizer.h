@@ -14,6 +14,10 @@ class VisibilityHybridRasterizer {
 public:
     Result initialize(Device& device, uint32_t width, uint32_t height, std::string& log,
         uint32_t capacity = 262144, uint32_t clusterCapacity = 1);
+    // Extent changes within the pixel allocation preserve buffers, bindings and GPU states.
+    // Previously recorded commands already contain their own push-constant extent.
+    bool supportsRenderExtent(uint32_t width, uint32_t height) const;
+    Result setRenderExtent(uint32_t width, uint32_t height);
     void begin(CommandBuffer& commands, float maxPixels, bool reversedZ);
     Result resolve(CommandBuffer& commands, Texture& visibilityTexture, TextureView& visibility,
         Texture& depthTexture, TextureView& depth, bool softwareRasterized = false);

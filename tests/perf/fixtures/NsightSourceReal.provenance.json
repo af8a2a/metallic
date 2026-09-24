@@ -1,0 +1,1726 @@
+{
+  "kind": "real-export-extract",
+  "synthetic": false,
+  "source_path": "Captures\\NsightGraphics\\profiledata.csv",
+  "source_sha256": "c14f9367f825029169ecabc115cdf8356a0ceee0d505278df01c2014056869bc",
+  "fixture_sha256": "80cd2b66b282bc3dcbfe13a5a8c0740ca4f1be7c70823cfedc7e957121dbc979",
+  "selection": "Exact raw records: complete source table, IL headers/markers, SPIR-V identity and entry, quoted debug-string examples, every sampled IL row and every unnumbered annotation. No cells edited.",
+  "records": [
+    {
+      "fixture_record": 1,
+      "original_record": 1,
+      "original_physical_lines": [
+        1,
+        1
+      ],
+      "fixture_physical_lines": [
+        1,
+        1
+      ]
+    },
+    {
+      "fixture_record": 2,
+      "original_record": 2,
+      "original_physical_lines": [
+        2,
+        2
+      ],
+      "fixture_physical_lines": [
+        2,
+        2
+      ]
+    },
+    {
+      "fixture_record": 3,
+      "original_record": 3,
+      "original_physical_lines": [
+        3,
+        3
+      ],
+      "fixture_physical_lines": [
+        3,
+        3
+      ]
+    },
+    {
+      "fixture_record": 4,
+      "original_record": 4,
+      "original_physical_lines": [
+        4,
+        4
+      ],
+      "fixture_physical_lines": [
+        4,
+        4
+      ]
+    },
+    {
+      "fixture_record": 5,
+      "original_record": 5,
+      "original_physical_lines": [
+        5,
+        5
+      ],
+      "fixture_physical_lines": [
+        5,
+        5
+      ]
+    },
+    {
+      "fixture_record": 6,
+      "original_record": 6,
+      "original_physical_lines": [
+        6,
+        6
+      ],
+      "fixture_physical_lines": [
+        6,
+        6
+      ]
+    },
+    {
+      "fixture_record": 7,
+      "original_record": 7,
+      "original_physical_lines": [
+        7,
+        7
+      ],
+      "fixture_physical_lines": [
+        7,
+        7
+      ]
+    },
+    {
+      "fixture_record": 8,
+      "original_record": 8,
+      "original_physical_lines": [
+        8,
+        8
+      ],
+      "fixture_physical_lines": [
+        8,
+        8
+      ]
+    },
+    {
+      "fixture_record": 9,
+      "original_record": 9,
+      "original_physical_lines": [
+        9,
+        9
+      ],
+      "fixture_physical_lines": [
+        9,
+        9
+      ]
+    },
+    {
+      "fixture_record": 10,
+      "original_record": 10,
+      "original_physical_lines": [
+        10,
+        10
+      ],
+      "fixture_physical_lines": [
+        10,
+        10
+      ]
+    },
+    {
+      "fixture_record": 11,
+      "original_record": 11,
+      "original_physical_lines": [
+        11,
+        11
+      ],
+      "fixture_physical_lines": [
+        11,
+        11
+      ]
+    },
+    {
+      "fixture_record": 12,
+      "original_record": 12,
+      "original_physical_lines": [
+        12,
+        12
+      ],
+      "fixture_physical_lines": [
+        12,
+        12
+      ]
+    },
+    {
+      "fixture_record": 13,
+      "original_record": 13,
+      "original_physical_lines": [
+        13,
+        13
+      ],
+      "fixture_physical_lines": [
+        13,
+        13
+      ]
+    },
+    {
+      "fixture_record": 14,
+      "original_record": 14,
+      "original_physical_lines": [
+        14,
+        14
+      ],
+      "fixture_physical_lines": [
+        14,
+        14
+      ]
+    },
+    {
+      "fixture_record": 15,
+      "original_record": 15,
+      "original_physical_lines": [
+        15,
+        15
+      ],
+      "fixture_physical_lines": [
+        15,
+        15
+      ]
+    },
+    {
+      "fixture_record": 16,
+      "original_record": 16,
+      "original_physical_lines": [
+        16,
+        16
+      ],
+      "fixture_physical_lines": [
+        16,
+        16
+      ]
+    },
+    {
+      "fixture_record": 17,
+      "original_record": 17,
+      "original_physical_lines": [
+        17,
+        17
+      ],
+      "fixture_physical_lines": [
+        17,
+        17
+      ]
+    },
+    {
+      "fixture_record": 18,
+      "original_record": 18,
+      "original_physical_lines": [
+        18,
+        18
+      ],
+      "fixture_physical_lines": [
+        18,
+        18
+      ]
+    },
+    {
+      "fixture_record": 19,
+      "original_record": 19,
+      "original_physical_lines": [
+        19,
+        19
+      ],
+      "fixture_physical_lines": [
+        19,
+        19
+      ]
+    },
+    {
+      "fixture_record": 20,
+      "original_record": 20,
+      "original_physical_lines": [
+        20,
+        20
+      ],
+      "fixture_physical_lines": [
+        20,
+        20
+      ]
+    },
+    {
+      "fixture_record": 21,
+      "original_record": 21,
+      "original_physical_lines": [
+        21,
+        21
+      ],
+      "fixture_physical_lines": [
+        21,
+        21
+      ]
+    },
+    {
+      "fixture_record": 22,
+      "original_record": 22,
+      "original_physical_lines": [
+        22,
+        22
+      ],
+      "fixture_physical_lines": [
+        22,
+        22
+      ]
+    },
+    {
+      "fixture_record": 23,
+      "original_record": 23,
+      "original_physical_lines": [
+        23,
+        23
+      ],
+      "fixture_physical_lines": [
+        23,
+        23
+      ]
+    },
+    {
+      "fixture_record": 24,
+      "original_record": 24,
+      "original_physical_lines": [
+        24,
+        24
+      ],
+      "fixture_physical_lines": [
+        24,
+        24
+      ]
+    },
+    {
+      "fixture_record": 25,
+      "original_record": 25,
+      "original_physical_lines": [
+        25,
+        25
+      ],
+      "fixture_physical_lines": [
+        25,
+        25
+      ]
+    },
+    {
+      "fixture_record": 26,
+      "original_record": 26,
+      "original_physical_lines": [
+        26,
+        26
+      ],
+      "fixture_physical_lines": [
+        26,
+        26
+      ]
+    },
+    {
+      "fixture_record": 27,
+      "original_record": 27,
+      "original_physical_lines": [
+        27,
+        27
+      ],
+      "fixture_physical_lines": [
+        27,
+        27
+      ]
+    },
+    {
+      "fixture_record": 28,
+      "original_record": 28,
+      "original_physical_lines": [
+        28,
+        28
+      ],
+      "fixture_physical_lines": [
+        28,
+        28
+      ]
+    },
+    {
+      "fixture_record": 29,
+      "original_record": 29,
+      "original_physical_lines": [
+        29,
+        29
+      ],
+      "fixture_physical_lines": [
+        29,
+        29
+      ]
+    },
+    {
+      "fixture_record": 30,
+      "original_record": 30,
+      "original_physical_lines": [
+        30,
+        30
+      ],
+      "fixture_physical_lines": [
+        30,
+        30
+      ]
+    },
+    {
+      "fixture_record": 31,
+      "original_record": 31,
+      "original_physical_lines": [
+        31,
+        31
+      ],
+      "fixture_physical_lines": [
+        31,
+        31
+      ]
+    },
+    {
+      "fixture_record": 32,
+      "original_record": 32,
+      "original_physical_lines": [
+        32,
+        32
+      ],
+      "fixture_physical_lines": [
+        32,
+        32
+      ]
+    },
+    {
+      "fixture_record": 33,
+      "original_record": 33,
+      "original_physical_lines": [
+        33,
+        33
+      ],
+      "fixture_physical_lines": [
+        33,
+        33
+      ]
+    },
+    {
+      "fixture_record": 34,
+      "original_record": 34,
+      "original_physical_lines": [
+        34,
+        34
+      ],
+      "fixture_physical_lines": [
+        34,
+        34
+      ]
+    },
+    {
+      "fixture_record": 35,
+      "original_record": 35,
+      "original_physical_lines": [
+        35,
+        35
+      ],
+      "fixture_physical_lines": [
+        35,
+        35
+      ]
+    },
+    {
+      "fixture_record": 36,
+      "original_record": 36,
+      "original_physical_lines": [
+        36,
+        36
+      ],
+      "fixture_physical_lines": [
+        36,
+        36
+      ]
+    },
+    {
+      "fixture_record": 37,
+      "original_record": 37,
+      "original_physical_lines": [
+        37,
+        37
+      ],
+      "fixture_physical_lines": [
+        37,
+        37
+      ]
+    },
+    {
+      "fixture_record": 38,
+      "original_record": 38,
+      "original_physical_lines": [
+        38,
+        38
+      ],
+      "fixture_physical_lines": [
+        38,
+        38
+      ]
+    },
+    {
+      "fixture_record": 39,
+      "original_record": 39,
+      "original_physical_lines": [
+        39,
+        39
+      ],
+      "fixture_physical_lines": [
+        39,
+        39
+      ]
+    },
+    {
+      "fixture_record": 40,
+      "original_record": 40,
+      "original_physical_lines": [
+        40,
+        40
+      ],
+      "fixture_physical_lines": [
+        40,
+        40
+      ]
+    },
+    {
+      "fixture_record": 41,
+      "original_record": 41,
+      "original_physical_lines": [
+        41,
+        41
+      ],
+      "fixture_physical_lines": [
+        41,
+        41
+      ]
+    },
+    {
+      "fixture_record": 42,
+      "original_record": 42,
+      "original_physical_lines": [
+        42,
+        42
+      ],
+      "fixture_physical_lines": [
+        42,
+        42
+      ]
+    },
+    {
+      "fixture_record": 43,
+      "original_record": 43,
+      "original_physical_lines": [
+        43,
+        43
+      ],
+      "fixture_physical_lines": [
+        43,
+        43
+      ]
+    },
+    {
+      "fixture_record": 44,
+      "original_record": 44,
+      "original_physical_lines": [
+        44,
+        44
+      ],
+      "fixture_physical_lines": [
+        44,
+        44
+      ]
+    },
+    {
+      "fixture_record": 45,
+      "original_record": 45,
+      "original_physical_lines": [
+        45,
+        45
+      ],
+      "fixture_physical_lines": [
+        45,
+        45
+      ]
+    },
+    {
+      "fixture_record": 46,
+      "original_record": 46,
+      "original_physical_lines": [
+        46,
+        46
+      ],
+      "fixture_physical_lines": [
+        46,
+        46
+      ]
+    },
+    {
+      "fixture_record": 47,
+      "original_record": 47,
+      "original_physical_lines": [
+        47,
+        47
+      ],
+      "fixture_physical_lines": [
+        47,
+        47
+      ]
+    },
+    {
+      "fixture_record": 48,
+      "original_record": 48,
+      "original_physical_lines": [
+        48,
+        48
+      ],
+      "fixture_physical_lines": [
+        48,
+        48
+      ]
+    },
+    {
+      "fixture_record": 49,
+      "original_record": 49,
+      "original_physical_lines": [
+        49,
+        49
+      ],
+      "fixture_physical_lines": [
+        49,
+        49
+      ]
+    },
+    {
+      "fixture_record": 50,
+      "original_record": 50,
+      "original_physical_lines": [
+        50,
+        50
+      ],
+      "fixture_physical_lines": [
+        50,
+        50
+      ]
+    },
+    {
+      "fixture_record": 51,
+      "original_record": 51,
+      "original_physical_lines": [
+        51,
+        51
+      ],
+      "fixture_physical_lines": [
+        51,
+        51
+      ]
+    },
+    {
+      "fixture_record": 52,
+      "original_record": 52,
+      "original_physical_lines": [
+        52,
+        52
+      ],
+      "fixture_physical_lines": [
+        52,
+        52
+      ]
+    },
+    {
+      "fixture_record": 53,
+      "original_record": 53,
+      "original_physical_lines": [
+        53,
+        53
+      ],
+      "fixture_physical_lines": [
+        53,
+        53
+      ]
+    },
+    {
+      "fixture_record": 54,
+      "original_record": 54,
+      "original_physical_lines": [
+        54,
+        54
+      ],
+      "fixture_physical_lines": [
+        54,
+        54
+      ]
+    },
+    {
+      "fixture_record": 55,
+      "original_record": 55,
+      "original_physical_lines": [
+        55,
+        55
+      ],
+      "fixture_physical_lines": [
+        55,
+        55
+      ]
+    },
+    {
+      "fixture_record": 56,
+      "original_record": 56,
+      "original_physical_lines": [
+        56,
+        56
+      ],
+      "fixture_physical_lines": [
+        56,
+        56
+      ]
+    },
+    {
+      "fixture_record": 57,
+      "original_record": 57,
+      "original_physical_lines": [
+        57,
+        57
+      ],
+      "fixture_physical_lines": [
+        57,
+        57
+      ]
+    },
+    {
+      "fixture_record": 58,
+      "original_record": 58,
+      "original_physical_lines": [
+        58,
+        58
+      ],
+      "fixture_physical_lines": [
+        58,
+        58
+      ]
+    },
+    {
+      "fixture_record": 59,
+      "original_record": 59,
+      "original_physical_lines": [
+        59,
+        59
+      ],
+      "fixture_physical_lines": [
+        59,
+        59
+      ]
+    },
+    {
+      "fixture_record": 60,
+      "original_record": 60,
+      "original_physical_lines": [
+        60,
+        60
+      ],
+      "fixture_physical_lines": [
+        60,
+        60
+      ]
+    },
+    {
+      "fixture_record": 61,
+      "original_record": 61,
+      "original_physical_lines": [
+        61,
+        61
+      ],
+      "fixture_physical_lines": [
+        61,
+        61
+      ]
+    },
+    {
+      "fixture_record": 62,
+      "original_record": 62,
+      "original_physical_lines": [
+        62,
+        62
+      ],
+      "fixture_physical_lines": [
+        62,
+        62
+      ]
+    },
+    {
+      "fixture_record": 63,
+      "original_record": 63,
+      "original_physical_lines": [
+        63,
+        63
+      ],
+      "fixture_physical_lines": [
+        63,
+        63
+      ]
+    },
+    {
+      "fixture_record": 64,
+      "original_record": 64,
+      "original_physical_lines": [
+        64,
+        64
+      ],
+      "fixture_physical_lines": [
+        64,
+        64
+      ]
+    },
+    {
+      "fixture_record": 65,
+      "original_record": 65,
+      "original_physical_lines": [
+        65,
+        65
+      ],
+      "fixture_physical_lines": [
+        65,
+        65
+      ]
+    },
+    {
+      "fixture_record": 66,
+      "original_record": 66,
+      "original_physical_lines": [
+        66,
+        66
+      ],
+      "fixture_physical_lines": [
+        66,
+        66
+      ]
+    },
+    {
+      "fixture_record": 67,
+      "original_record": 67,
+      "original_physical_lines": [
+        67,
+        67
+      ],
+      "fixture_physical_lines": [
+        67,
+        67
+      ]
+    },
+    {
+      "fixture_record": 68,
+      "original_record": 68,
+      "original_physical_lines": [
+        68,
+        68
+      ],
+      "fixture_physical_lines": [
+        68,
+        68
+      ]
+    },
+    {
+      "fixture_record": 69,
+      "original_record": 69,
+      "original_physical_lines": [
+        69,
+        69
+      ],
+      "fixture_physical_lines": [
+        69,
+        69
+      ]
+    },
+    {
+      "fixture_record": 70,
+      "original_record": 70,
+      "original_physical_lines": [
+        70,
+        70
+      ],
+      "fixture_physical_lines": [
+        70,
+        70
+      ]
+    },
+    {
+      "fixture_record": 71,
+      "original_record": 71,
+      "original_physical_lines": [
+        71,
+        71
+      ],
+      "fixture_physical_lines": [
+        71,
+        71
+      ]
+    },
+    {
+      "fixture_record": 72,
+      "original_record": 72,
+      "original_physical_lines": [
+        72,
+        72
+      ],
+      "fixture_physical_lines": [
+        72,
+        72
+      ]
+    },
+    {
+      "fixture_record": 73,
+      "original_record": 73,
+      "original_physical_lines": [
+        73,
+        73
+      ],
+      "fixture_physical_lines": [
+        73,
+        73
+      ]
+    },
+    {
+      "fixture_record": 74,
+      "original_record": 74,
+      "original_physical_lines": [
+        74,
+        74
+      ],
+      "fixture_physical_lines": [
+        74,
+        74
+      ]
+    },
+    {
+      "fixture_record": 75,
+      "original_record": 87,
+      "original_physical_lines": [
+        87,
+        87
+      ],
+      "fixture_physical_lines": [
+        75,
+        75
+      ]
+    },
+    {
+      "fixture_record": 76,
+      "original_record": 89,
+      "original_physical_lines": [
+        89,
+        89
+      ],
+      "fixture_physical_lines": [
+        76,
+        76
+      ]
+    },
+    {
+      "fixture_record": 77,
+      "original_record": 90,
+      "original_physical_lines": [
+        90,
+        90
+      ],
+      "fixture_physical_lines": [
+        77,
+        77
+      ]
+    },
+    {
+      "fixture_record": 78,
+      "original_record": 91,
+      "original_physical_lines": [
+        91,
+        91
+      ],
+      "fixture_physical_lines": [
+        78,
+        78
+      ]
+    },
+    {
+      "fixture_record": 79,
+      "original_record": 92,
+      "original_physical_lines": [
+        92,
+        92
+      ],
+      "fixture_physical_lines": [
+        79,
+        79
+      ]
+    },
+    {
+      "fixture_record": 80,
+      "original_record": 93,
+      "original_physical_lines": [
+        93,
+        93
+      ],
+      "fixture_physical_lines": [
+        80,
+        80
+      ]
+    },
+    {
+      "fixture_record": 81,
+      "original_record": 94,
+      "original_physical_lines": [
+        94,
+        94
+      ],
+      "fixture_physical_lines": [
+        81,
+        81
+      ]
+    },
+    {
+      "fixture_record": 82,
+      "original_record": 14086,
+      "original_physical_lines": [
+        14086,
+        14086
+      ],
+      "fixture_physical_lines": [
+        82,
+        82
+      ]
+    },
+    {
+      "fixture_record": 83,
+      "original_record": 14087,
+      "original_physical_lines": [
+        14087,
+        14087
+      ],
+      "fixture_physical_lines": [
+        83,
+        83
+      ]
+    },
+    {
+      "fixture_record": 84,
+      "original_record": 14088,
+      "original_physical_lines": [
+        14088,
+        14088
+      ],
+      "fixture_physical_lines": [
+        84,
+        84
+      ]
+    },
+    {
+      "fixture_record": 85,
+      "original_record": 14093,
+      "original_physical_lines": [
+        14093,
+        14093
+      ],
+      "fixture_physical_lines": [
+        85,
+        85
+      ]
+    },
+    {
+      "fixture_record": 86,
+      "original_record": 22477,
+      "original_physical_lines": [
+        22477,
+        22477
+      ],
+      "fixture_physical_lines": [
+        86,
+        86
+      ]
+    },
+    {
+      "fixture_record": 87,
+      "original_record": 22487,
+      "original_physical_lines": [
+        22487,
+        22487
+      ],
+      "fixture_physical_lines": [
+        87,
+        87
+      ]
+    },
+    {
+      "fixture_record": 88,
+      "original_record": 22489,
+      "original_physical_lines": [
+        22489,
+        22489
+      ],
+      "fixture_physical_lines": [
+        88,
+        88
+      ]
+    },
+    {
+      "fixture_record": 89,
+      "original_record": 22500,
+      "original_physical_lines": [
+        22500,
+        22500
+      ],
+      "fixture_physical_lines": [
+        89,
+        89
+      ]
+    },
+    {
+      "fixture_record": 90,
+      "original_record": 22501,
+      "original_physical_lines": [
+        22501,
+        22501
+      ],
+      "fixture_physical_lines": [
+        90,
+        90
+      ]
+    },
+    {
+      "fixture_record": 91,
+      "original_record": 22554,
+      "original_physical_lines": [
+        22554,
+        22554
+      ],
+      "fixture_physical_lines": [
+        91,
+        91
+      ]
+    },
+    {
+      "fixture_record": 92,
+      "original_record": 22569,
+      "original_physical_lines": [
+        22569,
+        22569
+      ],
+      "fixture_physical_lines": [
+        92,
+        92
+      ]
+    },
+    {
+      "fixture_record": 93,
+      "original_record": 22571,
+      "original_physical_lines": [
+        22571,
+        22571
+      ],
+      "fixture_physical_lines": [
+        93,
+        93
+      ]
+    },
+    {
+      "fixture_record": 94,
+      "original_record": 22575,
+      "original_physical_lines": [
+        22575,
+        22575
+      ],
+      "fixture_physical_lines": [
+        94,
+        94
+      ]
+    },
+    {
+      "fixture_record": 95,
+      "original_record": 22580,
+      "original_physical_lines": [
+        22580,
+        22580
+      ],
+      "fixture_physical_lines": [
+        95,
+        95
+      ]
+    },
+    {
+      "fixture_record": 96,
+      "original_record": 24361,
+      "original_physical_lines": [
+        24361,
+        24361
+      ],
+      "fixture_physical_lines": [
+        96,
+        96
+      ]
+    },
+    {
+      "fixture_record": 97,
+      "original_record": 24362,
+      "original_physical_lines": [
+        24362,
+        24362
+      ],
+      "fixture_physical_lines": [
+        97,
+        97
+      ]
+    },
+    {
+      "fixture_record": 98,
+      "original_record": 24384,
+      "original_physical_lines": [
+        24384,
+        24384
+      ],
+      "fixture_physical_lines": [
+        98,
+        98
+      ]
+    },
+    {
+      "fixture_record": 99,
+      "original_record": 24389,
+      "original_physical_lines": [
+        24389,
+        24389
+      ],
+      "fixture_physical_lines": [
+        99,
+        99
+      ]
+    },
+    {
+      "fixture_record": 100,
+      "original_record": 24394,
+      "original_physical_lines": [
+        24394,
+        24394
+      ],
+      "fixture_physical_lines": [
+        100,
+        100
+      ]
+    },
+    {
+      "fixture_record": 101,
+      "original_record": 24395,
+      "original_physical_lines": [
+        24395,
+        24395
+      ],
+      "fixture_physical_lines": [
+        101,
+        101
+      ]
+    },
+    {
+      "fixture_record": 102,
+      "original_record": 24397,
+      "original_physical_lines": [
+        24397,
+        24397
+      ],
+      "fixture_physical_lines": [
+        102,
+        102
+      ]
+    },
+    {
+      "fixture_record": 103,
+      "original_record": 24398,
+      "original_physical_lines": [
+        24398,
+        24398
+      ],
+      "fixture_physical_lines": [
+        103,
+        103
+      ]
+    },
+    {
+      "fixture_record": 104,
+      "original_record": 24403,
+      "original_physical_lines": [
+        24403,
+        24403
+      ],
+      "fixture_physical_lines": [
+        104,
+        104
+      ]
+    },
+    {
+      "fixture_record": 105,
+      "original_record": 24411,
+      "original_physical_lines": [
+        24411,
+        24411
+      ],
+      "fixture_physical_lines": [
+        105,
+        105
+      ]
+    },
+    {
+      "fixture_record": 106,
+      "original_record": 24413,
+      "original_physical_lines": [
+        24413,
+        24413
+      ],
+      "fixture_physical_lines": [
+        106,
+        106
+      ]
+    },
+    {
+      "fixture_record": 107,
+      "original_record": 24857,
+      "original_physical_lines": [
+        24857,
+        24857
+      ],
+      "fixture_physical_lines": [
+        107,
+        107
+      ]
+    },
+    {
+      "fixture_record": 108,
+      "original_record": 24860,
+      "original_physical_lines": [
+        24860,
+        24860
+      ],
+      "fixture_physical_lines": [
+        108,
+        108
+      ]
+    },
+    {
+      "fixture_record": 109,
+      "original_record": 24864,
+      "original_physical_lines": [
+        24864,
+        24864
+      ],
+      "fixture_physical_lines": [
+        109,
+        109
+      ]
+    },
+    {
+      "fixture_record": 110,
+      "original_record": 24865,
+      "original_physical_lines": [
+        24865,
+        24865
+      ],
+      "fixture_physical_lines": [
+        110,
+        110
+      ]
+    },
+    {
+      "fixture_record": 111,
+      "original_record": 24869,
+      "original_physical_lines": [
+        24869,
+        24869
+      ],
+      "fixture_physical_lines": [
+        111,
+        111
+      ]
+    },
+    {
+      "fixture_record": 112,
+      "original_record": 24891,
+      "original_physical_lines": [
+        24891,
+        24891
+      ],
+      "fixture_physical_lines": [
+        112,
+        112
+      ]
+    },
+    {
+      "fixture_record": 113,
+      "original_record": 24896,
+      "original_physical_lines": [
+        24896,
+        24896
+      ],
+      "fixture_physical_lines": [
+        113,
+        113
+      ]
+    },
+    {
+      "fixture_record": 114,
+      "original_record": 24901,
+      "original_physical_lines": [
+        24901,
+        24901
+      ],
+      "fixture_physical_lines": [
+        114,
+        114
+      ]
+    },
+    {
+      "fixture_record": 115,
+      "original_record": 24902,
+      "original_physical_lines": [
+        24902,
+        24902
+      ],
+      "fixture_physical_lines": [
+        115,
+        115
+      ]
+    },
+    {
+      "fixture_record": 116,
+      "original_record": 24905,
+      "original_physical_lines": [
+        24905,
+        24905
+      ],
+      "fixture_physical_lines": [
+        116,
+        116
+      ]
+    },
+    {
+      "fixture_record": 117,
+      "original_record": 24910,
+      "original_physical_lines": [
+        24910,
+        24910
+      ],
+      "fixture_physical_lines": [
+        117,
+        117
+      ]
+    },
+    {
+      "fixture_record": 118,
+      "original_record": 24916,
+      "original_physical_lines": [
+        24916,
+        24916
+      ],
+      "fixture_physical_lines": [
+        118,
+        118
+      ]
+    },
+    {
+      "fixture_record": 119,
+      "original_record": 24923,
+      "original_physical_lines": [
+        24923,
+        24923
+      ],
+      "fixture_physical_lines": [
+        119,
+        119
+      ]
+    },
+    {
+      "fixture_record": 120,
+      "original_record": 24926,
+      "original_physical_lines": [
+        24926,
+        24926
+      ],
+      "fixture_physical_lines": [
+        120,
+        120
+      ]
+    },
+    {
+      "fixture_record": 121,
+      "original_record": 24937,
+      "original_physical_lines": [
+        24937,
+        24937
+      ],
+      "fixture_physical_lines": [
+        121,
+        121
+      ]
+    },
+    {
+      "fixture_record": 122,
+      "original_record": 25119,
+      "original_physical_lines": [
+        25119,
+        25119
+      ],
+      "fixture_physical_lines": [
+        122,
+        122
+      ]
+    },
+    {
+      "fixture_record": 123,
+      "original_record": 25122,
+      "original_physical_lines": [
+        25122,
+        25122
+      ],
+      "fixture_physical_lines": [
+        123,
+        123
+      ]
+    },
+    {
+      "fixture_record": 124,
+      "original_record": 25380,
+      "original_physical_lines": [
+        25380,
+        25380
+      ],
+      "fixture_physical_lines": [
+        124,
+        124
+      ]
+    },
+    {
+      "fixture_record": 125,
+      "original_record": 25574,
+      "original_physical_lines": [
+        25574,
+        25574
+      ],
+      "fixture_physical_lines": [
+        125,
+        125
+      ]
+    },
+    {
+      "fixture_record": 126,
+      "original_record": 25588,
+      "original_physical_lines": [
+        25588,
+        25588
+      ],
+      "fixture_physical_lines": [
+        126,
+        126
+      ]
+    },
+    {
+      "fixture_record": 127,
+      "original_record": 25596,
+      "original_physical_lines": [
+        25596,
+        25596
+      ],
+      "fixture_physical_lines": [
+        127,
+        127
+      ]
+    },
+    {
+      "fixture_record": 128,
+      "original_record": 25598,
+      "original_physical_lines": [
+        25598,
+        25598
+      ],
+      "fixture_physical_lines": [
+        128,
+        128
+      ]
+    },
+    {
+      "fixture_record": 129,
+      "original_record": 25600,
+      "original_physical_lines": [
+        25600,
+        25600
+      ],
+      "fixture_physical_lines": [
+        129,
+        129
+      ]
+    },
+    {
+      "fixture_record": 130,
+      "original_record": 25604,
+      "original_physical_lines": [
+        25604,
+        25604
+      ],
+      "fixture_physical_lines": [
+        130,
+        130
+      ]
+    },
+    {
+      "fixture_record": 131,
+      "original_record": 25609,
+      "original_physical_lines": [
+        25609,
+        25609
+      ],
+      "fixture_physical_lines": [
+        131,
+        131
+      ]
+    },
+    {
+      "fixture_record": 132,
+      "original_record": 25788,
+      "original_physical_lines": [
+        25788,
+        25788
+      ],
+      "fixture_physical_lines": [
+        132,
+        132
+      ]
+    },
+    {
+      "fixture_record": 133,
+      "original_record": 25799,
+      "original_physical_lines": [
+        25799,
+        25799
+      ],
+      "fixture_physical_lines": [
+        133,
+        133
+      ]
+    },
+    {
+      "fixture_record": 134,
+      "original_record": 25810,
+      "original_physical_lines": [
+        25810,
+        25810
+      ],
+      "fixture_physical_lines": [
+        134,
+        134
+      ]
+    },
+    {
+      "fixture_record": 135,
+      "original_record": 25821,
+      "original_physical_lines": [
+        25821,
+        25821
+      ],
+      "fixture_physical_lines": [
+        135,
+        135
+      ]
+    },
+    {
+      "fixture_record": 136,
+      "original_record": 25823,
+      "original_physical_lines": [
+        25823,
+        25823
+      ],
+      "fixture_physical_lines": [
+        136,
+        136
+      ]
+    },
+    {
+      "fixture_record": 137,
+      "original_record": 25835,
+      "original_physical_lines": [
+        25835,
+        25835
+      ],
+      "fixture_physical_lines": [
+        137,
+        137
+      ]
+    },
+    {
+      "fixture_record": 138,
+      "original_record": 25842,
+      "original_physical_lines": [
+        25842,
+        25842
+      ],
+      "fixture_physical_lines": [
+        138,
+        138
+      ]
+    },
+    {
+      "fixture_record": 139,
+      "original_record": 25848,
+      "original_physical_lines": [
+        25848,
+        25848
+      ],
+      "fixture_physical_lines": [
+        139,
+        139
+      ]
+    },
+    {
+      "fixture_record": 140,
+      "original_record": 25851,
+      "original_physical_lines": [
+        25851,
+        25851
+      ],
+      "fixture_physical_lines": [
+        140,
+        140
+      ]
+    },
+    {
+      "fixture_record": 141,
+      "original_record": 26508,
+      "original_physical_lines": [
+        26508,
+        26508
+      ],
+      "fixture_physical_lines": [
+        141,
+        141
+      ]
+    },
+    {
+      "fixture_record": 142,
+      "original_record": 26513,
+      "original_physical_lines": [
+        26513,
+        26513
+      ],
+      "fixture_physical_lines": [
+        142,
+        142
+      ]
+    },
+    {
+      "fixture_record": 143,
+      "original_record": 26516,
+      "original_physical_lines": [
+        26516,
+        26516
+      ],
+      "fixture_physical_lines": [
+        143,
+        143
+      ]
+    }
+  ]
+}

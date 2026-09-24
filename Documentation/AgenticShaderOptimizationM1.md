@@ -1,6 +1,8 @@
 # M1：Nsight 源码分析进度
 
-2026-09-24。状态：**partial（离线分析基础已实现，真实 Nsight 纵向切片尚未验收）**。
+2026-09-24 最新进展：真实 Source/IL parser 与夹具已验证；38 项测试通过。**同一固定报告的三次自动 UI 导出 3/3 通过，字节与结构化结果一致。** Capture、目标 module/entry 与 Aggregate/Entire Trace 范围已核对，见 [导出验收](NsightUIExportValidation.md)。M1 仍为 partial：可复用 UI adapter、重新打开/重新选择验证及回放异常恢复尚未完成。
+
+以下为新 CSV 到达前的首次 M1 历史记录；其中原生格式、运行时阻塞及 UI 尚未操作的描述已由上述验收更新，不代表当前状态。
 
 按用户最新要求，cua-child 不再是前置条件。后续可直接通过 computer-use 的窗口级接口操作 Nsight；当前没有控制过 Nsight UI，也没有产生新的 GPU 数据。
 

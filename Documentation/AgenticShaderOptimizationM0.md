@@ -1,6 +1,8 @@
 # Agentic Shader 优化 M0：能力与证据基线
 
-2026-09-24。**总体状态：partial。** 本机基线工具、版本固定、证据索引、最小历史 case 与真实小样本已经落地；源码 CSV 在远端尚未同步，cua-child 子会话 worker 未就绪。本轮没有新采集 GPU Trace、执行 capture replay 或读取 Nsight 源码视图。
+2026-09-24 最新收尾：**新 CSV 与真实 Source/IL 格式验证通过，三次实际自动 UI 导出 3/3 通过，M0 收尾完成。** 三次独立保存来自同一固定报告，字节和结构化结果一致。回放访问冲突与断连已记录，性能有效性和 M1 无人值守恢复不在本次通过范围。详见 [三次导出验收](NsightUIExportValidation.md)、[收尾报告](AgenticShaderOptimizationM0Closeout.md)与[最新机器摘要](AgenticShaderOptimizationM0Closeout.json)。
+
+以下保留首次 M0 的历史记录；其中“缺失 CSV / child worker”描述的是首次收集时的状态，不代表最新进展。
 
 **交付物**
 

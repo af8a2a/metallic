@@ -1,0 +1,143 @@
+#,Source,Total Samples,Samples,Top Stall #1 (Type),Top Stall #1 (Samples),Top Stall #2 (Type),Top Stall #2 (Samples),Top Stall #3 (Type),Top Stall #3 (Samples),Avg. Warp Latency,Instruction Mix,Dependency-Attributed Samples,Cooperative Vector Fusion,Live Registers
+,GPUDrivenStreamWorkRaster.slang,,,,,,,,,,
+1,// Separate module keeps the histogram/remap shared allocation out of the,,,,,,,,,0,,,,0
+2,// measured cooperative reference and other stream raster entrypoints.,,,,,,,,,0,,,,0
+3,"#include ""GPUDrivenStreamAsset.slang""",,,,,,,,,0,,,,0
+4,"#include ""StreamRasterWorkBins.slang""",,,,,,,,,0,,,,0
+5,,,,,,,,,,0,,,,0
+6,"void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool reorder)",1,1,No Instructions,1,,,,,8,2,2,,1
+7,{,,,,,,,,,0,,,,0
+8,DescriptorHandle<StructuredBuffer<uint>> bins =,1,1,Short Scoreboard,1,,,,,8,1,,,1
+9,"DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));",,,,,,,,,0,,,,0
+10,uint record;,,,,,,,,,0,,,,0
+11,"if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }",,,,,,,,,0,1,,,2
+12,if (lane < WaveGetLaneCount()) {,2,2,Wait,1,Short Scoreboard,1,,,14,4,,,4
+13,"bool valid = loadStreamSoftwareWave(record, push);",,,,,,,,,0,,,,0
+14,if (lane == 0u) { g_StreamSoftwareValid = valid ? 1u : 0u; },17,17,Branch Resolving,11,Selected,2,Wait,2,125,4,0,,3
+15,},,,,,,,,,0,,,,0
+16,GroupMemoryBarrierWithGroupSync();,1,1,Branch Resolving,1,,,,,8,3,,,1
+17,if (g_StreamSoftwareValid == 0u) { return; },503,503,Barrier,502,Wait,1,,,5343,3,0,,2
+18,if (lane < g_StreamSoftware.vertexCount) {,1,1,Wait,1,,,,,8,4,0,,2
+19,"HybridScreenVertex vertex = hybridPrepareVertex(streamSoftwareClip(lane, push), float2(bins[6], bins[7]), bins[10]);",380,8,Selected,2,Wait,2,Math Pipe Throttle,2,73,24,0,,14
+20,// Reuse the existing raw-word scratch. Do not store snapped signed,,,,,,,,,0,,,,0
+21,// coordinates as float bits: NaN canonicalization can change them.,,,,,,,,,0,,,,0
+22,"g_StreamRasterWords[lane] = uint4(uint2(vertex.position), asuint(vertex.depth), 0u);",1,1,Short Scoreboard,1,,,,,8,3,0,,10
+23,},,,,,,,,,0,,,,0
+24,GroupMemoryBarrierWithGroupSync();,2,2,Wait,1,No Instructions,1,,,14,3,0,,1
+25,uint triangle = lane;,,,,,,,,,0,,,,0
+26,if (reorder) {,,,,,,,,,0,,,,0
+27,uint bucket = 3u;,,,,,,,,,0,,,,0
+28,if (lane < g_StreamSoftware.triangleCount) {,,,,,,,,,0,,,,0
+29,"uint3 tri = streamSoftwareTriangle(lane, push);",,,,,,,,,0,,,,0
+30,"bucket = streamRasterWorkBucket(asint(g_StreamRasterWords[tri.x].xy), asint(g_StreamRasterWords[tri.y].xy),",,,,,,,,,0,,,,0
+31,"asint(g_StreamRasterWords[tri.z].xy), (g_StreamSoftware.instanceFlags & 2u) != 0u, bins[6], bins[7], bins[10]);",,,,,,,,,0,,,,0
+32,},,,,,,,,,0,,,,0
+33,"uint work = streamRasterReorderWork(bucket, lane);",,,,,,,,,0,,,,0
+34,if ((work >> 7u) == 3u) { return; },,,,,,,,,0,,,,0
+35,triangle = work & 127u;,,,,,,,,,0,,,,0
+36,},,,,,,,,,0,,,,0
+37,if (triangle < g_StreamSoftware.triangleCount) {,18,18,Barrier,15,Short Scoreboard,2,Wait,1,213,3,2,,2
+38,"uint3 tri = streamSoftwareTriangle(triangle, push);",,,,,,,,,0,,,,0
+39,"HybridScreenVertex a, b, c;",,,,,,,,,0,,,,0
+40,a.position = asint(g_StreamRasterWords[tri.x].xy); a.depth = asfloat(g_StreamRasterWords[tri.x].z);,,,,,,,,,0,1,2,,10
+41,b.position = asint(g_StreamRasterWords[tri.y].xy); b.depth = asfloat(g_StreamRasterWords[tri.y].z);,,,,,,,,,0,1,2,,12
+42,c.position = asint(g_StreamRasterWords[tri.z].xy); c.depth = asfloat(g_StreamRasterWords[tri.z].z);,,,,,,,,,0,1,0,,14
+43,"hybridRasterPreparedTriangle(a, b, c,",9,9,Selected,3,Wait,3,Short Scoreboard,2,73,43,6,,34
+44,"packVisibilityId(g_StreamSoftware.recordIndex, triangle), (g_StreamSoftware.instanceFlags & 2u) != 0u,",,,,,,,,,0,,,,0
+45,"bins[6], bins[7], bins[9], bins[10], bins[11], push.bufferShaderIndexBase, false);",,,,,,,,,0,,,,0
+46,},,,,,,,,,0,,,,0
+47,},,,,,,,,,0,,,,0
+48,,,,,,,,,,0,,,,0
+49,"[shader(""compute"")]",,,,,,,,,0,,,,0
+50,"[numthreads(128, 1, 1)]",,,,,,,,,0,,,,0
+51,"void streamClusterRasterWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)",,,,,,,,,0,,,,0
+52,{,,,,,,,,,0,,,,0
+53,"if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, push, false, false); return; }",,,,,,,,,0,,,,0
+54,"rasterStreamClusterWorkBins(group, lane, push, true);",,,,,,,,,0,,,,0
+55,},,,,,,,,,0,,,,0
+56,,,,,,,,,,0,,,,0
+57,// Measurement control: same vertex setup/raster arithmetic without reordering.,,,,,,,,,0,,,,0
+58,"[shader(""compute"")]",,,,,,,,,0,,,,0
+59,"[numthreads(128, 1, 1)]",,,,,,,,,0,,,,0
+60,"void streamClusterRasterWorkControlMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)",44,44,Branch Resolving,15,Long Scoreboard,12,Wait,8,365,105,16,,30
+61,{,,,,,,,,,0,,,,0
+62,"if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, push, false, false); return; }",,,,,,,,,0,,,,0
+63,"rasterStreamClusterWorkBins(group, lane, push, false);",5165,6,Wait,5,No Instructions,1,,,73,1,,,1
+64,},,,,,,,,,0,,,,0
+65,,,,,,,,,,0,,,,0
+#,Source,Samples,Top Stall #1 (Type),Top Stall #1 (Samples),Top Stall #2 (Type),Top Stall #2 (Samples),Top Stall #3 (Type),Top Stall #3 (Samples),Avg. Warp Latency,Instruction Mix,Dependency-Attributed Samples,Cooperative Vector Fusion,Live Registers
+,comp.10000.spv (4d0378657da7b7d1),,,,,,,,,
+1,; SPIR-V,,,,,,,,0,,,,0
+2,; Version: 1.6,,,,,,,,0,,,,0
+3,; Generator: Khronos Slang Compiler; 0,,,,,,,,0,,,,0
+4,; Bound: 66379,,,,,,,,0,,,,0
+5,; Schema: 0,,,,,,,,0,,,,0
+18,"OpEntryPoint GLCompute %streamClusterRasterWorkControlMain ""main"" %__slang_resource_heap_8 %__slang_resource_heap_5 %__slang_resource_heap_9 %__slang_resource_heap_6 %__slang_resource_heap_2 %__slang_resource_heap_4 %__slang_resource_heap_10 %__slang_resource_heap_1 %__slang_resource_heap_0 %__slang_resource_heap_3 %__slang_resource_heap_7 %__slang_resource_heap %SubgroupLocalInvocationId %SubgroupSize %g_StreamRasterCluster %g_StreamBinVisible %g_StreamRasterProjection %g_StreamRasterWords %g_StreamSoftware %g_StreamSoftwareValid %g_StreamRasterWorkCounts %g_StreamRasterWorkOrder %entryPointParams %gl_WorkGroupID %gl_LocalInvocationIndex",,,,,,,,0,,,,0
+20,"%1 = OpString ""#language slang 2026",,,,,,,,0,,,,0
+21,module Material;,,,,,,,,0,,,,0
+22,,,,,,,,,0,,,,0
+23,"__include \""Material/SceneMaterial.slang\"";",,,,,,,,0,,,,0
+24,"""",,,,,,,,0,,,,0
+25,"%5 = OpString ""E:\\metallic\\Shaders\\Modules\\Material.slang""",,,,,,,,0,,,,0
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:60,,,,,,,,,
+,"void streamClusterRasterWorkControlMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)",44,Branch Resolving,15,Long Scoreboard,12,Wait,8,,,,,30
+14017,%301 = OpLoad %v3uint %gl_WorkGroupID,44,Branch Resolving,15,Long Scoreboard,12,Wait,8,365,105,16,,30
+,"if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, push, false, false); return; }",,,,,,,,,,,,0
+,"rasterStreamClusterWorkBins(group, lane, push, false);",,,,,,,,,,,,0
+,"void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool reorder)",1,No Instructions,1,,,,,,,,,1
+22415,%35449 = OpLoad %GPUDrivenStreamAssetPush_std430 %35448,1,No Instructions,1,,,,,8,2,2,,1
+,DescriptorHandle<StructuredBuffer<uint>> bins =,1,Short Scoreboard,1,,,,,8,,,,1
+22426,%35530 = OpIAdd %uint %42590 %42680,1,Short Scoreboard,1,,,,,8,1,,,1
+,"if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }",,,,,,,,,,,,2
+,if (lane < WaveGetLaneCount()) {,2,Wait,1,Short Scoreboard,1,,,,,,,4
+22494,%35541 = OpULessThan %bool %9945 %35540,1,Short Scoreboard,1,,,,,8,1,,,3
+22498,OpBranchConditional %35541 %35542 %35553,1,Wait,1,,,,,8,3,,,4
+,"bool valid = loadStreamSoftwareWave(record, push);",,,,,,,,,,,,0
+,if (lane == 0u) { g_StreamSoftwareValid = valid ? 1u : 0u; },17,Branch Resolving,11,Selected,2,Wait,2,,,,,3
+24283,%35546 = OpIEqual %bool %9945 %uint_0,16,Branch Resolving,11,Selected,2,Wait,2,125,2,,,3
+24305,OpStore %g_StreamSoftwareValid %35551,1,Not Selected,1,,,,,8,1,0,,3
+,},,,,,,,,,,,,0
+,GroupMemoryBarrierWithGroupSync();,1,Branch Resolving,1,,,,,8,,,,1
+24314,OpControlBarrier %uint_2 %uint_2 %uint_264,1,Branch Resolving,1,,,,,8,3,,,1
+,if (g_StreamSoftwareValid == 0u) { return; },503,Barrier,502,Wait,1,,,,,,,2
+24316,%35554 = OpLoad %uint %g_StreamSoftwareValid,502,Barrier,502,,,,,5343,1,0,,2
+24321,OpBranchConditional %35555 %35556 %35557,1,Wait,1,,,,,8,1,,,2
+,if (lane < g_StreamSoftware.vertexCount) {,1,Wait,1,,,,,,,,,2
+24330,%35559 = OpLoad %uint %35558,1,Wait,1,,,,,8,1,0,,2
+,"HybridScreenVertex vertex = hybridPrepareVertex(streamSoftwareClip(lane, push), float2(bins[6], bins[7]), bins[10]);",8,Selected,2,Wait,2,Math Pipe Throttle,2,,,,,14
+24776,%35567 = OpLoad %uint %35566,2,Selected,1,Not Selected,1,,,14,8,0,,13
+24780,%35572 = OpLoad %uint %35571,2,No Instructions,1,Math Pipe Throttle,1,,,14,6,0,,14
+24781,%35573 = OpConvertUToF %float %35572,1,Selected,1,,,,,8,1,,,10
+24785,%35578 = OpLoad %uint %35577,3,Wait,2,Math Pipe Throttle,1,,,25,8,0,,14
+,"g_StreamRasterWords[lane] = uint4(uint2(vertex.position), asuint(vertex.depth), 0u);",1,Short Scoreboard,1,,,,,,,,,10
+24811,OpStore %35580 %35585,1,Short Scoreboard,1,,,,,8,1,0,,7
+,GroupMemoryBarrierWithGroupSync();,2,Wait,1,No Instructions,1,,,14,,,,1
+24816,OpControlBarrier %uint_2 %uint_2 %uint_264,2,Wait,1,No Instructions,1,,,14,3,0,,1
+,uint triangle = lane;,,,,,,,,0,,,,0
+,if (reorder) {,,,,,,,,,,,,0
+,if (triangle < g_StreamSoftware.triangleCount) {,,,,,,,,,,,,0
+,uint bucket = 3u;,,,,,,,,0,,,,0
+,if (lane < g_StreamSoftware.triangleCount) {,,,,,,,,,,,,0
+,"uint work = streamRasterReorderWork(bucket, lane);",,,,,,,,,,,,0
+,"uint3 tri = streamSoftwareTriangle(lane, push);",,,,,,,,0,,,,0
+,"bucket = streamRasterWorkBucket(asint(g_StreamRasterWords[tri.x].xy), asint(g_StreamRasterWords[tri.y].xy),",,,,,,,,,,,,0
+,"uint work = streamRasterReorderWork(bucket, lane);",,,,,,,,,,,,0
+,if ((work >> 7u) == 3u) { return; },,,,,,,,,,,,0
+,triangle = work & 127u;,,,,,,,,,,,,0
+,if (triangle < g_StreamSoftware.triangleCount) {,18,Barrier,15,Short Scoreboard,2,Wait,1,,,,,2
+25500,%35641 = OpLoad %uint %35640,15,Barrier,15,,,,,125,1,2,,2
+25502,%35643 = OpULessThan %bool %35642 %35641,2,Short Scoreboard,2,,,,,14,1,,,2
+25506,OpBranchConditional %35643 %35644 %35719,1,Wait,1,,,,,8,1,,,2
+,"uint3 tri = streamSoftwareTriangle(triangle, push);",,,,,,,,,,,,0
+,a.position = asint(g_StreamRasterWords[tri.x].xy); a.depth = asfloat(g_StreamRasterWords[tri.x].z);,,,,,,,,,,,,10
+,b.position = asint(g_StreamRasterWords[tri.y].xy); b.depth = asfloat(g_StreamRasterWords[tri.y].z);,,,,,,,,,,,,12
+,c.position = asint(g_StreamRasterWords[tri.z].xy); c.depth = asfloat(g_StreamRasterWords[tri.z].z);,,,,,,,,,,,,14
+,"hybridRasterPreparedTriangle(a, b, c,",9,Selected,3,Wait,3,Short Scoreboard,2,,,,,34
+25720,%35691 = OpLoad %uint %35690,1,Wait,1,,,,,8,1,0,,34
+25732,%35696 = OpBitwiseAnd %uint %35695 %uint_2,2,Short Scoreboard,2,,,,,14,1,,,13
+25739,%35705 = OpLoad %uint %35704,2,Selected,1,Wait,1,,,14,6,1,,12
+25745,%35713 = OpLoad %uint %35712,2,Selected,1,Wait,1,,,14,7,0,,12
+25748,%35717 = OpLoad %uint %35716,2,Selected,1,Not Selected,1,,,14,9,1,,10
+,},,,,,,,,,,,,0
+,"rasterStreamClusterWorkBins(group, lane, push, false);",6,Wait,5,No Instructions,1,,,,,,,1
+26411,OpReturn,6,Wait,5,No Instructions,1,,,73,1,,,1

@@ -2,7 +2,9 @@
 
 M1 offline source queries are implemented in [NsightSource.py](NsightSource.py).
 See [its contract and commands](NsightSource.md). Native Nsight export format and
-UI automation remain unvalidated; parser tests use synthetic contract data.
+UI automation have separate validation states: the supplied Source/IL dialect
+has real-byte fixture coverage; UI exports remain blocked by the desktop runtime.
+See [M0 closeout](../../Documentation/AgenticShaderOptimizationM0Closeout.md).
 
 
 `Baseline.py` discovers the installed Nsight CLI, pins tool binaries by SHA-256,
@@ -62,8 +64,10 @@ to these roots, not a claim that the file is absent from every machine.
 its queue/dispatch and captured source hash remain unknown, and it is ineligible
 for timing acceptance. It is not the current production WorkControl case.
 
-The M0 result stays `partial` while the original source fixture or required
-environment evidence is unavailable. Integrity passing means the evidence has
+The M0 result stays `partial` while required source/provenance or environment
+evidence is unavailable. A new export can establish a separate baseline without
+recovering the historical original; its actual capture/selection and requested
+UI export validation remain independent gates. Integrity passing means the evidence has
 not changed; it does not mean M0, shader correlation or profiling is complete.
 
 The checked-in samples under `tests/perf/fixtures/` are real historical GPU Trace

@@ -14,4 +14,7 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME MetallicNsightSourceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestNsightSource.py")
     set_tests_properties(MetallicNsightSourceTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
+    add_test(NAME MetallicNativeNsightSourceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestNativeNsightSource.py")
+    set_tests_properties(MetallicNativeNsightSourceTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
 endif()

@@ -2,7 +2,7 @@
 
 2026-09-24。设计依据：用户提供的 Pro 讨论、当前工作树与历史实验报告、已安装 Nsight Graphics 2026.3.1 的能力发现，以及 NVIDIA 官方文档。本轮只做设计和只读核对，没有采集新的 GPU 数据，也没有执行优化实验。
 
-M0 实施进度见 [能力与证据基线](AgenticShaderOptimizationM0.md)，M1 实施进度见 [Nsight 源码分析](AgenticShaderOptimizationM1.md)。原始源码 CSV 经用户确认在远端。按最新要求，cua-child 不再是前置条件；本轮原生桌面运行时在启动时失败，离线分析框架已落地，M1 当前为 partial。以下路线中的 UI 方案已同步更新。
+M0 实施进度见 [能力与证据基线](AgenticShaderOptimizationM0.md)，M1 实施进度见 [Nsight 源码分析](AgenticShaderOptimizationM1.md)。[M0 收尾](AgenticShaderOptimizationM0Closeout.md)已完成真实 Source/IL 格式验证；原生桌面运行时恢复后，[三次实际 UI 导出](NsightUIExportValidation.md) 3/3 通过。验收范围是同一固定报告的重复保存，M1 的可复用 adapter、重新打开/选择及回放异常恢复仍为 partial；cua-child 不再是前置条件。
 
 **建议将 Nsight 源码分析放到第一个可交付里程碑，将已有计时与正确性能力收敛为实验执行器；NvPerf 随后按实际计数器缺口接入。** 用户当前需要突破的是从 marker 到 shader、源码和依赖关系的分析过程。单纯扩大范围计数器采集，不能完成这个目标。
 

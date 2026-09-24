@@ -1,9 +1,16 @@
 # Shader Profiler source evidence queries
 
-M1 currently provides a **mapping-driven offline importer**, not a validated
-native Nsight CSV dialect or a working UI adapter. The historical raw CSV is
-remote-only. Tests use synthetic contract data, never regenerated historical
-measurements. GPU Trace metrics tables belong to a different importer.
+M1 provides both a mapping-driven importer and a native parser for the exact
+Source/IL CSV dialect validated against the user-supplied profiledata.csv.
+Use `native-import --raw <csv> --output <new-directory>` for that dialect; context
+is optional and unknown capture/selection fields remain unknown. Entry names
+come from OpEntryPoint declarations, not source function-name guesses.
+The Vulkan entry `main` and symbolic function identifier are distinct.
+Native output retains Total Samples separately from Samples; inclusive_samples
+is unknown. Native format validation does not establish UI export automation.
+Real fixture tests complement the synthetic mapping-contract tests. GPU Trace
+metrics tables belong to a different importer. See
+[the closeout report](../../Documentation/AgenticShaderOptimizationM0Closeout.md).
 
 Python standard library only; no renderer build, GPU or Nsight is needed:
 
@@ -91,7 +98,7 @@ A **synthetic example** (not an observed Nsight header) is:
 
 ## Context contract and trust boundary
 
-context.json requires artifact_sha256 (SHA256 of the capture/trace),
+For mapping-driven `import`, context.json requires artifact_sha256 (SHA256 of the capture/trace),
 nsight_version, export_id (different for each actual export), and selection:
 
 ```json
@@ -106,6 +113,10 @@ nsight_version, export_id (different for each actual export), and selection:
   }
 }
 ```
+
+For `native-import`, context is optional and unknown values are retained. The
+CSV content can be parsed without inventing a capture or timeline scope. Repeat
+comparison still requires complete context and therefore fails on unknown fields.
 
 Scope values are dispatch, shader-in-window, marker-range, whole-device.
 Requested and achieved scope must match for this analysis bundle. A mismatch
@@ -135,8 +146,10 @@ artifact hash, Nsight version, full selection, normalized rows and unmapped
 record counts, excluding CSV record positions and duplicate mirror locations.
 Equality is an offline consistency result only: it never sets
 automation_verified=true or proves that the exports were independently made.
-Native Nsight format support, source identity and three actual UI exports remain
-separate M1 acceptance gates.
+The observed native Source/IL format now has real-byte fixture coverage.
+Capture/selection identity and three actual UI exports remain separate acceptance
+gates. Native bundles also pin NsightShaderCsv.py; after either parser changes,
+re-import into a new output directory.
 
 Run validation with:
 
