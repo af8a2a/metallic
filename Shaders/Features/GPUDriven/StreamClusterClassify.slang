@@ -85,9 +85,7 @@ uint3 streamClassifyTriangle(StreamClassifyDesc c, uint triangle, GPUDrivenStrea
     return reflected ? indices.xzy : indices;
 }
 
-[shader("compute")]
-[numthreads(128, 1, 1)]
-void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+void classifyStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool checkHardware)
 {
     DescriptorHandle<RWStructuredBuffer<uint>> handle =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
@@ -97,16 +95,20 @@ void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, u
     uint item = hybridStreamClassifyBase(work);
     uint candidate = bins[item];
     uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> raster = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
-    bool needsCoverage = false;
-    if (raster[0].gpuSceneInstanceBuffer != 0xffffffffu) {
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.bufferShaderIndexBase + raster[0].gpuSceneInstanceBuffer, 0));
-        needsCoverage = (instances[groups[record / bins[13]].gpuSceneInstanceIndex].identity.w & 12u) != 0u;
-    }
-    if (raster[0].tessellationBuffer != 0xffffffffu || needsCoverage) {
-        if (lane == 0u) { hybridClassifyCluster(bins, 0u, record, candidate); }
-        return;
+    // P1 cull guarantees every queued item is eligible for exact classification.
+    // Only the P0 comparison entry retains the dependent bindings/instance loads.
+    if (checkHardware) {
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> raster = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
+        bool needsCoverage = false;
+        if (raster[0].gpuSceneInstanceBuffer != 0xffffffffu) {
+            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
+            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.bufferShaderIndexBase + raster[0].gpuSceneInstanceBuffer, 0));
+            needsCoverage = (instances[groups[record / bins[13]].gpuSceneInstanceIndex].identity.w & 12u) != 0u;
+        }
+        if (raster[0].tessellationBuffer != 0xffffffffu || needsCoverage) {
+            if (lane == 0u) { hybridClassifyCluster(bins, 0u, record, candidate); }
+            return;
+        }
     }
     // All fields have exactly one writer. The first subgroup spreads the
     // independent loads; the existing group barrier publishes them to all 128 lanes.
@@ -157,3 +159,17 @@ void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, u
     if (lane == 0u) { hybridClassifyCluster(bins, g_StreamBinHardware != 0u ? 0u : kHybridSoftwareBin, record, candidate); }
 }
 
+
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{
+    classifyStreamCluster(group, lane, push, false);
+}
+
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void streamClusterBinP0Main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{
+    classifyStreamCluster(group, lane, push, true);
+}

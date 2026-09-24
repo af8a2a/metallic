@@ -13,6 +13,7 @@ class RasterWorkloadObserver : public render::IRenderDebugObserver {
 public:
     using Json = nlohmann::json;
     bool capture = false;
+    bool captureCull = false;
     uint64_t editorFrame = 0;
     Json camera;
     void compiled(Json) override {}
@@ -22,12 +23,13 @@ public:
         std::string_view pass, std::span<const render::DebugResourceBinding> resources, const Json& values) override
     {
         const bool binHeader = checkpoint == "AfterStreamEarlyBins" || checkpoint == "AfterStreamLateBins";
-        if (!capture || pass != "VBuffer" || (!binHeader && checkpoint != "StreamEarlyWorkload" && checkpoint != "StreamLateWorkload")) { return; }
+        const bool cullHeader = captureCull && (checkpoint == "AfterStreamEarlyClusterCull" || checkpoint == "AfterStreamLateClusterCull");
+        if (!capture || pass != "VBuffer" || (!binHeader && !cullHeader && checkpoint != "StreamEarlyWorkload" && checkpoint != "StreamLateWorkload")) { return; }
         for (const auto& resource : resources) {
-            if (!(binHeader ? resource.id.ends_with(".clusters") : resource.id.ends_with(".workload"))) { continue; }
+            if (!((binHeader || cullHeader) ? resource.id.ends_with(".clusters") : resource.id.ends_with(".workload"))) { continue; }
             if (copies_.size() >= 4096) { throw std::runtime_error("SW workload snapshot limit exceeded"); }
             Copy copy;
-            copy.metadata = {{"frame", editorFrame}, {"phase", checkpoint}, {"camera", camera}, {"shader", values}, {"binHeader", binHeader}};
+            copy.metadata = {{"frame", editorFrame}, {"phase", checkpoint}, {"camera", camera}, {"shader", values}, {"binHeader", binHeader}, {"cullHeader", cullHeader}};
             if (!device_->createBuffer({.size = 128, .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback}, copy.buffer)) { throw std::runtime_error("SW workload readback allocation failed"); }
             render::BufferBarrierDesc barrier{.buffer = resource.buffer, .before = resource.state, .after = render::ResourceState::TransferSource};
@@ -52,7 +54,12 @@ public:
             std::memcpy(counters.data(), data, sizeof(counters));
             copy.buffer->unmap();
             auto row = std::move(copy.metadata);
-            if (row["binHeader"].get<bool>()) {
+            if (row["cullHeader"].get<bool>()) {
+                std::array<uint32_t, 32> words{};
+                std::memcpy(words.data(), counters.data(), sizeof(words));
+                row["counts"] = {{"exactClusters", words[0]}, {"fastSoftware", words[1]},
+                    {"fastHardware", words[2]}, {"candidateOverflow", words[14]}};
+            } else if (row["binHeader"].get<bool>()) {
                 std::array<uint32_t, 32> words{};
                 std::memcpy(words.data(), counters.data(), sizeof(words));
                 row["bins"] = {{"softwareClusters", words[4]}, {"hardwareClusters", uint64_t(words[0])+words[1]+words[2]+words[3]},

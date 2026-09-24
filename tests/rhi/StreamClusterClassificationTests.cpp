@@ -77,14 +77,14 @@ public:
             inputs[index]->flush(); inputs[index]->unmap();
             return {};
         };
-        std::array<std::unique_ptr<ShaderModule>, 8> shaders;
-        std::array<std::unique_ptr<ComputePipeline>, 8> pipelines;
-        const char* entries[] = {"streamClusterPrepareMain", "streamClusterCullMain", "streamClusterBinMain", "referenceStreamClusterBinMain", "verifyStreamSoftwareLoadMain", "streamWorkloadResetMain", "streamWorkloadMain", "legacyStreamClusterBinMain"};
+        std::array<std::unique_ptr<ShaderModule>, 9> shaders;
+        std::array<std::unique_ptr<ComputePipeline>, 9> pipelines;
+        const char* entries[] = {"streamClusterPrepareMain", "streamClusterCullMain", "streamClusterBinMain", "referenceStreamClusterBinMain", "verifyStreamSoftwareLoadMain", "streamWorkloadResetMain", "streamWorkloadMain", "streamClusterBinP0Main", "streamClusterCullP0Main"};
         for (size_t i = 0; i < pipelines.size(); ++i) {
             ShaderCompileResult compiled;
             const char* additional[] = {PROJECT_SOURCE_DIR "/Shaders"};
             const auto result = compileSlangShaderToSpirv({
-                .moduleName = (i == 5 || i == 6) ? "Features/GPUDriven/GPUDrivenStreamWorkload" : i >= 3 ? "StreamClusterClassificationProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
+                .moduleName = (i == 5 || i == 6) ? "Features/GPUDriven/GPUDrivenStreamWorkload" : (i == 3 || i == 4) ? "StreamClusterClassificationProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = entries[i],
                 .searchPath = i >= 3 ? PROJECT_SOURCE_DIR "/tests/rhi/shaders" : PROJECT_SOURCE_DIR "/Shaders",
                 .additionalSearchPaths = additional, .additionalSearchPathCount = 1}, compiled);
@@ -104,7 +104,7 @@ public:
             } restoreShaderMode;
             for (const auto mode : {SlangShaderDebugMode::Disabled, SlangShaderDebugMode::CaptureSymbols}) {
                 setSlangShaderDebugMode(mode);
-                for (const char* entry : {"streamClusterBinMain", "legacyStreamClusterBinMain", "streamClusterRasterLegacyMain", "streamClusterRasterMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"}) {
+                for (const char* entry : {"streamClusterBinMain", "streamClusterBinP0Main", "streamClusterCullMain", "streamClusterCullP0Main", "legacyStreamClusterBinMain", "streamClusterRasterLegacyMain", "streamClusterRasterMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"}) {
                     spdlog::info("[SW Pipeline Probe] entry={} debugMode={}", entry, int(mode));
                     const char* additionalStatsPaths[] = {PROJECT_SOURCE_DIR "/Shaders"};
                     ShaderCompileResult compiled;
@@ -126,6 +126,9 @@ public:
         std::unique_ptr<Buffer> readback;
         CLASSIFY_REQUIRE(device->createBuffer({.size = binBytes + recordBytes + 52 + 128,
             .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, readback));
+        std::unique_ptr<Buffer> exactQueueReadback;
+        CLASSIFY_REQUIRE(device->createBuffer({.size = uint64_t(capacity) * 16,
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, exactQueueReadback));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -133,8 +136,9 @@ public:
         CLASSIFY_REQUIRE(device->createCommandPool(*queue, pool));
         CLASSIFY_REQUIRE(pool->createCommandBuffer(commands));
         CLASSIFY_REQUIRE(device->createFence(false, fence));
-        // Optional same-input A/B timing. Both kernels only overwrite candidate
-        // tags, so the cull output can be reused without rebuilding the workload.
+        // Optional classifier-only A/B on the P1 exact queue. This isolates the
+        // removed guard; use sample profiles to include changed cull/queue work.
+        // Both kernels only overwrite tags, so the queue can be safely reused.
         const char* benchmarkPath = std::getenv("METALLIC_CLASSIFY_BENCHMARK");
         std::ofstream benchmark;
         std::unique_ptr<TimestampQueryPool> timing;
@@ -151,7 +155,7 @@ public:
         }
         bool sawFastSoftware = false, sawFastHardware = false;
         bool submitted = false, sawRetry = false, sawLate = false, sawSoftware = false, sawHardware = false, saw2D = false;
-        struct Case { uint32_t groups; float maxPixels; bool ortho; bool reversed; uint32_t culling; bool dense = false; bool jitter = false; bool tessellation = false; uint32_t payloadFault = 0; };
+        struct Case { uint32_t groups; float maxPixels; bool ortho; bool reversed; uint32_t culling; bool dense = false; bool jitter = false; bool tessellation = false; uint32_t payloadFault = 0; bool disableMetadata = false; };
         const Case cases[] = {{2305, 8, true, true, 0, true}, {0, 8, true, true, 28},
             {1, 1, false, true, 0}, {127, 8, false, false, 12}, {129, 32, true, false, 28},
             {2305, 8, false, true, 28}, {129, 1, true, true, 28, false, true}, {1, 32, false, false, 0},
@@ -160,7 +164,9 @@ public:
             {129, 8, false, true, 0, false, false, false, 1}, {129, 8, false, true, 0, false, false, false, 2},
             {129, 8, false, true, 0, false, false, false, 3}, {129, 8, false, true, 0, false, false, false, 4},
             {129, 8, false, true, 0, false, false, false, 5}, {129, 8, false, true, 0, false, false, false, 6},
-            {129, 8, false, true, 0, false, false, false, 7}, {129, 8, false, true, 0, false, true, false, 8}};
+            {129, 8, false, true, 0, false, false, false, 7}, {129, 8, false, true, 0, false, true, false, 8},
+            {129, 8, true, true, 0, true, false, true},
+            {129, 8, false, true, 0, false, true, false, 0, true}};
         size_t caseIndex = 0;
         for (const auto test : cases) {
             std::vector<uint8_t> page(pageBytes);
@@ -245,12 +251,12 @@ public:
                 .visibleRecordBase = 371, .visibleRecordCapacity = capacity, .hzbMipCount = 8, .hzbValid = 1,
                 .cullingFlags = test.culling, .width = 128, .height = 128, .gpuSceneInstanceBuffer = handles[Instances].index,
                 .tessellationBuffer = test.tessellation ? 0u : UINT32_MAX,
-                .classificationFlags = test.dense ? 1u : 0u};
+                .classificationFlags = (test.dense || test.disableMetadata) ? 1u : 0u};
             std::array<uint32_t, instanceCount> visibility;
             std::array<GPUSceneGpuInstanceRecord, instanceCount> instances;
             for (uint32_t i = 0; i < instanceCount; ++i) {
                 visibility[i] = test.dense ? 1 : i % 4;
-                instances[i].identity[3] = i % 3 == 1 ? 6 : 0;
+                instances[i].identity[3] = i % 3 == 1 ? 6 : i % 3 == 2 ? 8 : 0;
             }
             std::vector<float> hzb(hzbElements, test.reversed ? 0.f : 1.f);
             CLASSIFY_REQUIRE(upload(Hzb0, hzb.data(), hzb.size() * 4));
@@ -266,6 +272,7 @@ public:
             CLASSIFY_REQUIRE(upload(Instances, instances.data(), sizeof(instances)));
             for (uint32_t phase = 0; phase < 2; ++phase) {
                 std::vector<uint32_t> reference;
+                uint32_t p1Exact = 0, p1Hardware = 0, p1Software = 0;
                 for (uint32_t schedule = 0; schedule < 3; ++schedule) {
                     const uint32_t bufferSet = std::min(schedule, 1u);
                     auto& rasterizer = rasterizers[bufferSet];
@@ -292,7 +299,15 @@ public:
                         CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
                         BufferBarrierDesc verifyBarrier{.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General, .after = ResourceState::General};
                         commands->barrier({.buffers = &verifyBarrier, .bufferCount = 1});
-                        CLASSIFY_REQUIRE(rasterizer.cullStreamClusters(*commands, *pipelines[1], push));
+                        CLASSIFY_REQUIRE(rasterizer.cullStreamClusters(*commands, *pipelines[schedule == 1 ? 1 : 8], push));
+                        // Inspect the queue before stable bin scatter overwrites it.
+                        BufferBarrierDesc queueCopy{.buffer = &rasterizer.clusterBuffer(),
+                            .before = ResourceState::General, .after = ResourceState::TransferSource};
+                        commands->barrier({.buffers = &queueCopy, .bufferCount = 1});
+                        commands->copyBuffer({.source = &rasterizer.clusterBuffer(), .destination = exactQueueReadback.get(),
+                            .sourceOffset = 16 * sizeof(uint32_t), .size = uint64_t(capacity) * 16});
+                        std::swap(queueCopy.before, queueCopy.after);
+                        commands->barrier({.buffers = &queueCopy, .bufferCount = 1});
                     }
                     if (measure) {
                         CLASSIFY_REQUIRE(commands->resetTimestampQueries(*timing, 0, timedDispatches * 2));
@@ -377,6 +392,29 @@ public:
                     const uint32_t* args = actual.data() + (binBytes + recordBytes) / 4;
                     const uint32_t* counters = actual.data() + (binBytes + recordBytes + 36) / 4;
                     const uint32_t classifyCount = counters[0];
+                    if (schedule == 1 && test.maxPixels != 0) {
+                        p1Exact = classifyCount; p1Software = counters[1]; p1Hardware = counters[2];
+                        exactQueueReadback->invalidate();
+                        const auto* queued = static_cast<const uint32_t*>(exactQueueReadback->map());
+                        if (!queued) { return RhiTestResult::fail("Cannot map exact classification queue"); }
+                        bool validContract = classifyCount <= capacity;
+                        for (uint32_t i = 0; i < std::min(classifyCount, capacity); ++i) {
+                            const uint32_t candidate = queued[4 * i];
+                            if (candidate >= actual[12]) { validContract = false; break; }
+                            const uint32_t record = actual[candidateBase + 2 * candidate];
+                            if (record / 32 >= groups.size()) { validContract = false; break; }
+                            const uint32_t instance = groups[record / 32].gpuSceneInstanceIndex;
+                            validContract &= (instances[instance].identity[3] & 12u) == 0 && !test.tessellation;
+                        }
+                        exactQueueReadback->unmap();
+                        if (!validContract) { return RhiTestResult::fail("P1 queued a forced-HW cluster"); }
+                    }
+                    if (schedule == 2 && test.maxPixels != 0) {
+                        // Nothing was dropped or moved into SW: every removed exact
+                        // entry must appear in the new cull-stage HW count instead.
+                        equal &= p1Software == counters[1] && p1Hardware >= counters[2] &&
+                            uint64_t(classifyCount) == uint64_t(p1Exact) + p1Hardware - counters[2];
+                    }
                     if (measure) {
                         std::array<TimestampQueryResult, timedDispatches * 2> timestamps{};
                         CLASSIFY_REQUIRE(timing->readResults(0, uint32_t(timestamps.size()), timestamps.data()));
@@ -390,14 +428,14 @@ public:
                                 timestamps[dispatch * 2 + 1].value) * 1000.0;
                             times[legacy ? 0 : 1].push_back(us);
                             benchmark << caseIndex << ',' << phase << ',' << test.groups << ',' << classifyCount << ','
-                                << dispatch / 2 - warmupPairs << ',' << (legacy ? "legacy" : "p0") << ',' << us << ','
+                                << dispatch / 2 - warmupPairs << ',' << (legacy ? "p0" : "p1") << ',' << us << ','
                                 << int(slangShaderDebugMode()) << '\n';
                         }
                         for (auto& values : times) { std::sort(values.begin(), values.end()); }
                         constexpr uint32_t middle = measuredPairs / 2;
                         const double oldUs = (times[0][middle - 1] + times[0][middle]) * 0.5;
                         const double newUs = (times[1][middle - 1] + times[1][middle]) * 0.5;
-                        spdlog::info("[Classify P0] case={} workgroups={} legacy_us={:.3f} p0_us={:.3f} reduction={:.2f}%",
+                        spdlog::info("[Classify P1 exact queue] case={} workgroups={} p0_us={:.3f} p1_us={:.3f} reduction={:.2f}%",
                             caseIndex, classifyCount, oldUs, newUs, 100.0 * (oldUs - newUs) / oldUs);
                     }
                     std::array<uint64_t, 16> workload{};
@@ -424,7 +462,7 @@ public:
             ++caseIndex;
         }
         if (!sawFastSoftware || !sawFastHardware || !sawRetry || !sawLate || !sawSoftware || !sawHardware || !saw2D) { return RhiTestResult::fail("Missing paths fastSW/HW,retry,late,SW,HW,2D=" + std::to_string(sawFastSoftware)+std::to_string(sawFastHardware)+std::to_string(sawRetry)+std::to_string(sawLate)+std::to_string(sawSoftware)+std::to_string(sawHardware)+std::to_string(saw2D)); }
-        return RhiTestResult::pass("22 early/late GPU cases comparing P0 and legacy classifiers against the independent reference with cooperative raster decode, malformed headers/float3, metadata fast SW/HW and cull-only full HW: stable bins/IDs, HZB retry, clip boundaries, malformed payload, 1/8/32px, jitter, 2D survivors and empty reuse");
+        return RhiTestResult::pass(std::to_string(std::size(cases)) + " early/late GPU cases comparing P1 and P0 cull/classify pairs against the independent reference; forced-HW queue exclusion and exact-to-HW accounting with cooperative raster decode, malformed headers/float3, metadata fast SW/HW and cull-only full HW: stable bins/IDs, HZB retry, clip boundaries, malformed payload, 1/8/32px, jitter, 2D survivors and empty reuse");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamClusterClassificationTest);

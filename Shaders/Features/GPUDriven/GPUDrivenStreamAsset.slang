@@ -4033,9 +4033,7 @@ void streamClusterPrepareMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIn
 // decode fields needed by classification, in the still-unused bin list storage.
 // A wave reserves one range; its scheduling order is intentionally irrelevant:
 // classifiers write back to original candidate slots before stable binning.
-[shader("compute")]
-[numthreads(128, 1, 1)]
-void streamClusterCullMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+void cullStreamClusterCandidates(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool divertHardware)
 {
     DescriptorHandle<RWStructuredBuffer<uint>> handle =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
@@ -4068,7 +4066,10 @@ void streamClusterCullMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, 
         if (visible) { hybridClassifyCluster(bins, 0u, bins[hybridCandidateBase(bins[5]) + candidate * 2u], candidate); }
         return;
     }
-    bool fastHardware = visible && (cluster.classificationFlags & 1u) == 0u && cluster.forceHardware;
+    // Coverage/tessellation is a semantic HW requirement, independent of
+    // the optional sphere fast path and its malformed-sphere fallback.
+    bool fastHardware = visible && cluster.forceHardware &&
+        (divertHardware || (cluster.classificationFlags & 1u) == 0u);
     bool fastSoftware = visible && (cluster.classificationFlags & 1u) == 0u && !cluster.forceHardware &&
         streamSphereFitsSoftware(cluster, float2(bins[6], bins[7]), asfloat(bins[8]));
     if (fastHardware || fastSoftware) {
@@ -4094,6 +4095,21 @@ void streamClusterCullMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, 
         bins[item + 2u] = cluster.vertexCount | (cluster.triangleCount << 16u) | (cluster.positionStrideWords == 3u ? 0x80000000u : 0u);
         bins[item + 3u] = cluster.triangleBaseByte;
     }
+}
+
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void streamClusterCullMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{
+    cullStreamClusterCandidates(group, lane, push, true);
+}
+
+// P0 producer/consumer pair retained for integration and sample A/B profiling.
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void streamClusterCullP0Main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{
+    cullStreamClusterCandidates(group, lane, push, false);
 }
 
 #include "StreamClusterClassify.slang"

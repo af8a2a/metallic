@@ -1,0 +1,2374 @@
+{
+  "experiment": "stream-cluster-classify-p1",
+  "date": "2026-09-24",
+  "decision": {
+    "default": "p0",
+    "opt_in_property": "VBuffer.cullHardwareClassification=true",
+    "local_chain_improvement_observed": true,
+    "full_pass_gain_established": false,
+    "initial_depth_mismatch_root_cause_confirmed": false
+  },
+  "profile": {
+    "method": "Application GPU timestamps, not Nsight Shader Profiler",
+    "manifest": {
+      "width": 1280,
+      "sequence": [
+        "p0",
+        "p1",
+        "p1",
+        "p0"
+      ],
+      "height": 720,
+      "dirty": [
+        " M Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang",
+        " M Shaders/Features/GPUDriven/StreamClusterClassify.slang",
+        " M Source/Editor/EditorFullRoamBenchmark.cpp",
+        " M Source/Editor/EditorRasterWorkload.h",
+        " M Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp",
+        " M tests/rhi/MiniZorahStreamAssetTests.cpp",
+        " M tests/rhi/StreamClusterClassificationTests.cpp",
+        "?? Tools/RunMiniZorahClassifyComparison.ps1"
+      ],
+      "runs": [
+        {
+          "variant": "p0",
+          "frames": 360,
+          "directory": "run1-p0",
+          "diagnostic": false
+        },
+        {
+          "variant": "p1",
+          "frames": 360,
+          "directory": "run2-p1",
+          "diagnostic": false
+        },
+        {
+          "variant": "p1",
+          "frames": 360,
+          "directory": "run3-p1",
+          "diagnostic": false
+        },
+        {
+          "variant": "p0",
+          "frames": 360,
+          "directory": "run4-p0",
+          "diagnostic": false
+        },
+        {
+          "variant": "p0",
+          "frames": 360,
+          "directory": "run5-p0-diagnostic",
+          "diagnostic": true
+        },
+        {
+          "variant": "p1",
+          "frames": 360,
+          "directory": "run6-p1-diagnostic",
+          "diagnostic": true
+        }
+      ],
+      "executableSha256": "E6D3BCE020D8C446E92AF151DCEA4B3C9ED377D65D2A483BFED0742BED5ED784",
+      "protocol": "minizorah-classify-p1-roam-v1",
+      "distance": 6.0,
+      "started": "2026-09-24T16:08:14.3661313+08:00",
+      "shaders": {
+        "StreamClusterClassify.slang": "773D66A83B49779293E40CBF05045015C492C2AD67038E392AE00FD852F2BF49",
+        "GPUDrivenStreamAsset.slang": "F8A11F63ABF20004EA57161FA60E3DF8F7F25B0C11327E9255F10E02A228DFED"
+      },
+      "gpu": "NVIDIA GeForce RTX 5060, 616.92, 8151 MiB",
+      "gitHead": "8e2190d667d312377953a5ea5e9a2c15ce57a730",
+      "frames": 360
+    },
+    "conditions": {
+      "sample": "gpu-driven-sample",
+      "config": {
+        "distance": 6.0,
+        "durationSeconds": 30.0,
+        "keyframes": [
+          {
+            "forward": 0.0,
+            "stage": "static",
+            "t": 0.0,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "first-visit",
+            "t": 0.08333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "near-wall",
+            "t": 0.3333333333333333,
+            "yaw": 0.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "turn",
+            "t": 0.4444444444444444,
+            "yaw": 65.0
+          },
+          {
+            "forward": 1.0,
+            "stage": "return",
+            "t": 0.6666666666666666,
+            "yaw": -65.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "settle",
+            "t": 0.8888888888888888,
+            "yaw": 0.0
+          },
+          {
+            "forward": 0.0,
+            "stage": "end",
+            "t": 1.0,
+            "yaw": 0.0
+          }
+        ],
+        "metadataFastClassification": true,
+        "routeFrames": 360,
+        "sample": "gpu-driven-sample",
+        "temporalJitter": false,
+        "warmupSeconds": 5.0
+      },
+      "absoluteKeyframes": [
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                46.38050842285156,
+                5.799496650695801,
+                0.5308178067207336
+              ],
+              "eye": [
+                55.34291076660156,
+                6.452727317810059,
+                0.32432523369789124
+              ],
+              "fovDegrees": 60.0,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 0.0,
+          "stage": "static"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                46.38050842285156,
+                5.799496650695801,
+                0.5308178067207336
+              ],
+              "eye": [
+                55.34291076660156,
+                6.452727317810059,
+                0.32432523369789124
+              ],
+              "fovDegrees": 60.0,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 2.5,
+          "stage": "first-visit"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                40.38210029575839,
+                5.799496650695801,
+                0.6690203422349269
+              ],
+              "eye": [
+                49.34450263950839,
+                6.452727317810059,
+                0.4625277692120845
+              ],
+              "fovDegrees": 60.0,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 10.0,
+          "stage": "near-wall"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                45.74397356686783,
+                5.799496650695801,
+                8.672490336181509
+              ],
+              "eye": [
+                49.34450263950839,
+                6.452727317810059,
+                0.4625277692120845
+              ],
+              "fovDegrees": 60.0,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 13.333333333333332,
+          "stage": "turn"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                45.36968191307616,
+                5.799496650695801,
+                -7.572899733210784
+              ],
+              "eye": [
+                49.34450263950839,
+                6.452727317810059,
+                0.4625277692120845
+              ],
+              "fovDegrees": 60.0,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 20.0,
+          "stage": "return"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                46.38050842285156,
+                5.799496650695801,
+                0.5308178067207336
+              ],
+              "eye": [
+                55.34291076660156,
+                6.452727317810059,
+                0.32432523369789124
+              ],
+              "fovDegrees": 60.0,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 26.666666666666664,
+          "stage": "settle"
+        },
+        {
+          "camera": {
+            "camera": {
+              "center": [
+                46.38050842285156,
+                5.799496650695801,
+                0.5308178067207336
+              ],
+              "eye": [
+                55.34291076660156,
+                6.452727317810059,
+                0.32432523369789124
+              ],
+              "fovDegrees": 60.0,
+              "orthoHeight": 2.0,
+              "projection": "perspective",
+              "reversedZ": true,
+              "up": [
+                0.0,
+                1.0,
+                0.0
+              ],
+              "zfar": 29999.998046875,
+              "znear": 0.020000003278255463
+            }
+          },
+          "seconds": 30.0,
+          "stage": "end"
+        }
+      ],
+      "outputExtent": [
+        1280,
+        720
+      ],
+      "renderExtent": [
+        853,
+        480
+      ],
+      "graph": [
+        {
+          "name": "VBuffer",
+          "properties": {
+            "asyncSoftwareRaster": false,
+            "autoBuildStreamAsset": false,
+            "autoLod": true,
+            "coldPageRetentionFrames": 120,
+            "compactClas": true,
+            "distributedDemandMinGroups": 65536,
+            "distributedPageDemand": true,
+            "enableClas": true,
+            "enableClusterRtx": true,
+            "enableMeshletStreaming": true,
+            "hybridRaster": true,
+            "instanceFrustumCull": true,
+            "instanceHzbCull": true,
+            "lodPixelError": 1.5,
+            "maxActiveGroups": 65536,
+            "maxBlasBytes": 268435456,
+            "maxClasBuildClusters": 8192,
+            "maxClasBytes": 268435456,
+            "maxGpuPageRequests": 65536,
+            "maxGpuPageUnloadRequests": 65536,
+            "maxLockedFallbackPages": 4096,
+            "maxPageLoadsInFlight": 1024,
+            "maxPageUploadsPerFrame": 256,
+            "maxResidentBytes": 536870912,
+            "maxResidentPages": 0,
+            "maxTraversalWorkItems": 1048576,
+            "maxTraversalWorkers": 4096,
+            "maxUploadBytesPerFrame": 8388608,
+            "meshletFrustumCull": true,
+            "meshletNormalConeCull": false,
+            "metadataFastClassification": true,
+            "pageLoadConcurrency": 4,
+            "path": "Asset/MiniZorah/zorah_main_public.v2.gltf",
+            "sceneBinding": "asset",
+            "streamAssetOnly": true,
+            "streamAssetPath": "Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin",
+            "temporalJitter": false,
+            "viewBinding": "global",
+            "visualization": "none"
+          },
+          "type": "VisibilityBufferPass"
+        },
+        {
+          "name": "Shadows",
+          "properties": {
+            "path": "Asset/MiniZorah/zorah_main_public.v2.gltf",
+            "rayTracedShadows": true,
+            "shadowAngularRadius": 0.266,
+            "shadowBias": 0.01,
+            "shadowLightIndex": -1,
+            "shadowLightRadius": 0.05,
+            "shadowRayLength": 100000.0,
+            "sigmaDenoise": true,
+            "sigmaHistoryLength": 5
+          },
+          "type": "RayTracedShadowPass"
+        },
+        {
+          "name": "Deferred",
+          "properties": {
+            "accumulate": false,
+            "exportUpscalerGuides": true,
+            "lightingMode": "realtime",
+            "materialBinning": true,
+            "outputLinear": true,
+            "path": "Asset/MiniZorah/zorah_main_public.v2.gltf"
+          },
+          "type": "VisibilityBufferDeferredPass"
+        },
+        {
+          "name": "DlssSr",
+          "properties": {
+            "exportOutputGuides": true,
+            "mode": "Quality"
+          },
+          "type": "StreamlineDlssSrPass"
+        },
+        {
+          "name": "AutoExposure",
+          "properties": {},
+          "type": "AutoExposurePass"
+        },
+        {
+          "name": "DlssNr",
+          "properties": {
+            "depthInverted": false,
+            "enabled": false,
+            "fallbackToInput": true,
+            "intensity": 1.0,
+            "preset": 0,
+            "style": 0
+          },
+          "type": "DlssNrPass"
+        },
+        {
+          "name": "FinalBlit",
+          "properties": {},
+          "type": "FinalBlitPass"
+        }
+      ],
+      "hidden": true
+    },
+    "summary_ms": {
+      "classify": {
+        "p0_mean_ms": 0.3394383111111111,
+        "p1_mean_ms": 0.30393302222222224,
+        "saved_ms": 0.035505288888888875,
+        "reduction_percent": 10.460012239828353,
+        "p0_run_means": [
+          0.34081422222222224,
+          0.3380624
+        ],
+        "p1_run_means": [
+          0.30541324444444445,
+          0.3024528
+        ],
+        "run_mean_ranges_overlap": false
+      },
+      "cull": {
+        "p0_mean_ms": 0.078112,
+        "p1_mean_ms": 0.0808404888888889,
+        "saved_ms": -0.002728488888888894,
+        "reduction_percent": -3.4930470208020425,
+        "p0_run_means": [
+          0.0748912888888889,
+          0.08133271111111111
+        ],
+        "p1_run_means": [
+          0.07966088888888889,
+          0.08202008888888888
+        ],
+        "run_mean_ranges_overlap": true
+      },
+      "stable_bins": {
+        "p0_mean_ms": 0.04971417777777778,
+        "p1_mean_ms": 0.04912582222222222,
+        "saved_ms": 0.0005883555555555586,
+        "reduction_percent": 1.1834763881352073,
+        "p0_run_means": [
+          0.04939751111111111,
+          0.050030844444444444
+        ],
+        "p1_run_means": [
+          0.050576977777777775,
+          0.047674666666666664
+        ],
+        "run_mean_ranges_overlap": true
+      },
+      "cull_classify_bins": {
+        "p0_mean_ms": 0.4672644888888889,
+        "p1_mean_ms": 0.4338993333333333,
+        "saved_ms": 0.03336515555555558,
+        "reduction_percent": 7.1405288330159244,
+        "p0_run_means": [
+          0.4651030222222222,
+          0.46942595555555555
+        ],
+        "p1_run_means": [
+          0.4356511111111111,
+          0.43214755555555556
+        ],
+        "run_mean_ranges_overlap": false
+      },
+      "vbuffer": {
+        "p0_mean_ms": 3.907464222222222,
+        "p1_mean_ms": 3.9005139555555557,
+        "saved_ms": 0.006950266666666316,
+        "reduction_percent": 0.17787153692001567,
+        "p0_run_means": [
+          3.91888,
+          3.8960484444444443
+        ],
+        "p1_run_means": [
+          3.892656088888889,
+          3.908371822222222
+        ],
+        "run_mean_ranges_overlap": true
+      },
+      "graph": {
+        "p0_mean_ms": 9.199971555555557,
+        "p1_mean_ms": 9.217667244444444,
+        "saved_ms": -0.017695688888887062,
+        "reduction_percent": -0.1923450391344117,
+        "p0_run_means": [
+          9.254135377777779,
+          9.145807733333333
+        ],
+        "p1_run_means": [
+          9.202347022222222,
+          9.232987466666666
+        ],
+        "run_mean_ranges_overlap": true
+      },
+      "editor_loop": {
+        "p0_mean_ms": 16.765074722222224,
+        "p1_mean_ms": 16.679735555555556,
+        "saved_ms": 0.08533916666666741,
+        "reduction_percent": 0.5090294441309595,
+        "p0_run_means": [
+          16.782828055555555,
+          16.74732138888889
+        ],
+        "p1_run_means": [
+          16.67,
+          16.68947111111111
+        ],
+        "run_mean_ranges_overlap": false
+      }
+    },
+    "runs": [
+      {
+        "directory": "run1-p0",
+        "variant": "p0",
+        "frames": 360,
+        "metrics_ms": {
+          "classify": {
+            "count": 360,
+            "mean": 0.34081422222222224,
+            "p50": 0.300384,
+            "p95": 0.537856
+          },
+          "cull": {
+            "count": 360,
+            "mean": 0.0748912888888889,
+            "p50": 0.069344,
+            "p95": 0.075584
+          },
+          "stable_bins": {
+            "count": 360,
+            "mean": 0.04939751111111111,
+            "p50": 0.041824,
+            "p95": 0.045312000000000005
+          },
+          "cull_classify_bins": {
+            "count": 360,
+            "mean": 0.4651030222222222,
+            "p50": 0.416752,
+            "p95": 0.68656
+          },
+          "vbuffer": {
+            "count": 360,
+            "mean": 3.91888,
+            "p50": 3.80872,
+            "p95": 4.871104
+          },
+          "graph": {
+            "count": 360,
+            "mean": 9.254135377777779,
+            "p50": 9.25976,
+            "p95": 10.767456
+          },
+          "editor_loop": {
+            "count": 360,
+            "mean": 16.782828055555555,
+            "p50": 15.4742,
+            "p95": 35.8567
+          }
+        },
+        "stages_ms": {
+          "static": {
+            "classify": {
+              "count": 30,
+              "mean": 0.3651797333333333,
+              "p50": 0.287616,
+              "p95": 0.565632
+            },
+            "cull": {
+              "count": 30,
+              "mean": 0.077952,
+              "p50": 0.07134399999999999,
+              "p95": 0.07216
+            },
+            "stable_bins": {
+              "count": 30,
+              "mean": 0.08550506666666667,
+              "p50": 0.044288,
+              "p95": 0.295168
+            },
+            "cull_classify_bins": {
+              "count": 30,
+              "mean": 0.5286368,
+              "p50": 0.5738080000000001,
+              "p95": 0.682432
+            },
+            "vbuffer": {
+              "count": 30,
+              "mean": 3.3453034666666666,
+              "p50": 3.3784479999999997,
+              "p95": 3.43696
+            },
+            "graph": {
+              "count": 30,
+              "mean": 8.5699296,
+              "p50": 8.461776,
+              "p95": 9.610752
+            },
+            "editor_loop": {
+              "count": 30,
+              "mean": 15.846533333333333,
+              "p50": 15.70265,
+              "p95": 17.0144
+            }
+          },
+          "first-visit": {
+            "classify": {
+              "count": 90,
+              "mean": 0.36145493333333334,
+              "p50": 0.30897600000000003,
+              "p95": 0.528896
+            },
+            "cull": {
+              "count": 90,
+              "mean": 0.08548231111111111,
+              "p50": 0.071424,
+              "p95": 0.252512
+            },
+            "stable_bins": {
+              "count": 90,
+              "mean": 0.048450844444444446,
+              "p50": 0.042416,
+              "p95": 0.045248
+            },
+            "cull_classify_bins": {
+              "count": 90,
+              "mean": 0.4953880888888889,
+              "p50": 0.42787200000000003,
+              "p95": 0.682048
+            },
+            "vbuffer": {
+              "count": 90,
+              "mean": 4.042353777777778,
+              "p50": 4.070448,
+              "p95": 4.73232
+            },
+            "graph": {
+              "count": 90,
+              "mean": 9.192104888888888,
+              "p50": 9.3988,
+              "p95": 10.189088
+            },
+            "editor_loop": {
+              "count": 90,
+              "mean": 16.750806666666666,
+              "p50": 15.4849,
+              "p95": 25.218
+            }
+          },
+          "near-wall": {
+            "classify": {
+              "count": 40,
+              "mean": 0.3339456,
+              "p50": 0.255056,
+              "p95": 0.64544
+            },
+            "cull": {
+              "count": 40,
+              "mean": 0.06548,
+              "p50": 0.059856000000000006,
+              "p95": 0.06944
+            },
+            "stable_bins": {
+              "count": 40,
+              "mean": 0.0407216,
+              "p50": 0.040847999999999995,
+              "p95": 0.044288
+            },
+            "cull_classify_bins": {
+              "count": 40,
+              "mean": 0.4401472,
+              "p50": 0.349856,
+              "p95": 0.757088
+            },
+            "vbuffer": {
+              "count": 40,
+              "mean": 3.7957312,
+              "p50": 3.7744,
+              "p95": 4.335968
+            },
+            "graph": {
+              "count": 40,
+              "mean": 8.6317616,
+              "p50": 8.582816000000001,
+              "p95": 9.83776
+            },
+            "editor_loop": {
+              "count": 40,
+              "mean": 17.47392,
+              "p50": 12.69665,
+              "p95": 43.3451
+            }
+          },
+          "turn": {
+            "classify": {
+              "count": 80,
+              "mean": 0.3040632,
+              "p50": 0.26404800000000006,
+              "p95": 0.515008
+            },
+            "cull": {
+              "count": 80,
+              "mean": 0.0698236,
+              "p50": 0.059216,
+              "p95": 0.07248
+            },
+            "stable_bins": {
+              "count": 80,
+              "mean": 0.0451752,
+              "p50": 0.040175999999999996,
+              "p95": 0.043840000000000004
+            },
+            "cull_classify_bins": {
+              "count": 80,
+              "mean": 0.419062,
+              "p50": 0.390576,
+              "p95": 0.63616
+            },
+            "vbuffer": {
+              "count": 80,
+              "mean": 3.8014116000000002,
+              "p50": 3.6675519999999997,
+              "p95": 4.790976
+            },
+            "graph": {
+              "count": 80,
+              "mean": 9.1364548,
+              "p50": 8.99456,
+              "p95": 10.825088
+            },
+            "editor_loop": {
+              "count": 80,
+              "mean": 16.818538750000002,
+              "p50": 14.74655,
+              "p95": 33.9176
+            }
+          },
+          "return": {
+            "classify": {
+              "count": 80,
+              "mean": 0.2864696,
+              "p50": 0.27667200000000003,
+              "p95": 0.41132799999999997
+            },
+            "cull": {
+              "count": 80,
+              "mean": 0.0678428,
+              "p50": 0.060128,
+              "p95": 0.0736
+            },
+            "stable_bins": {
+              "count": 80,
+              "mean": 0.0485376,
+              "p50": 0.041152,
+              "p95": 0.043648
+            },
+            "cull_classify_bins": {
+              "count": 80,
+              "mean": 0.40285,
+              "p50": 0.38248,
+              "p95": 0.546048
+            },
+            "vbuffer": {
+              "count": 80,
+              "mean": 4.251404,
+              "p50": 4.071472,
+              "p95": 5.150464
+            },
+            "graph": {
+              "count": 80,
+              "mean": 10.194582,
+              "p50": 10.170511999999999,
+              "p95": 11.401952
+            },
+            "editor_loop": {
+              "count": 80,
+              "mean": 17.07654,
+              "p50": 15.5292,
+              "p95": 37.0156
+            }
+          },
+          "settle": {
+            "classify": {
+              "count": 40,
+              "mean": 0.46515839999999997,
+              "p50": 0.499296,
+              "p95": 0.660032
+            },
+            "cull": {
+              "count": 40,
+              "mean": 0.0824096,
+              "p50": 0.071296,
+              "p95": 0.07513600000000001
+            },
+            "stable_bins": {
+              "count": 40,
+              "mean": 0.0432872,
+              "p50": 0.043056,
+              "p95": 0.045216
+            },
+            "cull_classify_bins": {
+              "count": 40,
+              "mean": 0.5908552,
+              "p50": 0.6135519999999999,
+              "p95": 0.771712
+            },
+            "vbuffer": {
+              "count": 40,
+              "mean": 3.764284,
+              "p50": 3.628368,
+              "p95": 4.530368
+            },
+            "graph": {
+              "count": 40,
+              "mean": 8.8837,
+              "p50": 8.711312,
+              "p95": 9.694368
+            },
+            "editor_loop": {
+              "count": 40,
+              "mean": 16.207160000000002,
+              "p50": 15.61565,
+              "p95": 17.8252
+            }
+          }
+        },
+        "residency": {
+          "geometryBytes": {
+            "count": 360,
+            "mean": 159110505.24444443,
+            "p50": 163262208.0,
+            "p95": 188853504
+          },
+          "residentPages": {
+            "count": 360,
+            "mean": 9247.611111111111,
+            "p50": 9440.5,
+            "p95": 10199
+          },
+          "pendingPages": {
+            "count": 360,
+            "mean": 76.76666666666667,
+            "p50": 38.0,
+            "p95": 259
+          },
+          "requests": {
+            "count": 360,
+            "mean": 113.39166666666667,
+            "p50": 68.0,
+            "p95": 326
+          },
+          "uploads": {
+            "count": 360,
+            "mean": 53.68888888888889,
+            "p50": 28.0,
+            "p95": 216
+          }
+        }
+      },
+      {
+        "directory": "run2-p1",
+        "variant": "p1",
+        "frames": 360,
+        "metrics_ms": {
+          "classify": {
+            "count": 360,
+            "mean": 0.30541324444444445,
+            "p50": 0.27015999999999996,
+            "p95": 0.49408
+          },
+          "cull": {
+            "count": 360,
+            "mean": 0.07966088888888889,
+            "p50": 0.069408,
+            "p95": 0.222144
+          },
+          "stable_bins": {
+            "count": 360,
+            "mean": 0.050576977777777775,
+            "p50": 0.041792,
+            "p95": 0.045696
+          },
+          "cull_classify_bins": {
+            "count": 360,
+            "mean": 0.4356511111111111,
+            "p50": 0.387232,
+            "p95": 0.669952
+          },
+          "vbuffer": {
+            "count": 360,
+            "mean": 3.892656088888889,
+            "p50": 3.79648,
+            "p95": 4.84256
+          },
+          "graph": {
+            "count": 360,
+            "mean": 9.202347022222222,
+            "p50": 9.247983999999999,
+            "p95": 10.714336
+          },
+          "editor_loop": {
+            "count": 360,
+            "mean": 16.67,
+            "p50": 15.51145,
+            "p95": 36.4992
+          }
+        },
+        "stages_ms": {
+          "static": {
+            "classify": {
+              "count": 30,
+              "mean": 0.35595946666666667,
+              "p50": 0.259888,
+              "p95": 0.601504
+            },
+            "cull": {
+              "count": 30,
+              "mean": 0.07727573333333333,
+              "p50": 0.071248,
+              "p95": 0.07417599999999999
+            },
+            "stable_bins": {
+              "count": 30,
+              "mean": 0.0563136,
+              "p50": 0.043168,
+              "p95": 0.23696
+            },
+            "cull_classify_bins": {
+              "count": 30,
+              "mean": 0.4895488,
+              "p50": 0.374992,
+              "p95": 0.716032
+            },
+            "vbuffer": {
+              "count": 30,
+              "mean": 3.3062378666666667,
+              "p50": 3.355856,
+              "p95": 3.573472
+            },
+            "graph": {
+              "count": 30,
+              "mean": 8.368177066666666,
+              "p50": 8.257072,
+              "p95": 9.348768
+            },
+            "editor_loop": {
+              "count": 30,
+              "mean": 16.502963333333334,
+              "p50": 15.8058,
+              "p95": 22.5019
+            }
+          },
+          "first-visit": {
+            "classify": {
+              "count": 90,
+              "mean": 0.3387431111111111,
+              "p50": 0.27958400000000005,
+              "p95": 0.502752
+            },
+            "cull": {
+              "count": 90,
+              "mean": 0.08076053333333333,
+              "p50": 0.07145599999999999,
+              "p95": 0.075712
+            },
+            "stable_bins": {
+              "count": 90,
+              "mean": 0.050808177777777776,
+              "p50": 0.042688000000000004,
+              "p95": 0.045536
+            },
+            "cull_classify_bins": {
+              "count": 90,
+              "mean": 0.47031182222222223,
+              "p50": 0.39612800000000004,
+              "p95": 0.669952
+            },
+            "vbuffer": {
+              "count": 90,
+              "mean": 3.9907008,
+              "p50": 4.03856,
+              "p95": 4.553504
+            },
+            "graph": {
+              "count": 90,
+              "mean": 9.144802133333334,
+              "p50": 9.368511999999999,
+              "p95": 9.9696
+            },
+            "editor_loop": {
+              "count": 90,
+              "mean": 16.58012111111111,
+              "p50": 15.61815,
+              "p95": 23.1375
+            }
+          },
+          "near-wall": {
+            "classify": {
+              "count": 40,
+              "mean": 0.28895919999999997,
+              "p50": 0.22833599999999998,
+              "p95": 0.47888
+            },
+            "cull": {
+              "count": 40,
+              "mean": 0.069056,
+              "p50": 0.059136,
+              "p95": 0.069408
+            },
+            "stable_bins": {
+              "count": 40,
+              "mean": 0.0404064,
+              "p50": 0.040496000000000004,
+              "p95": 0.04288
+            },
+            "cull_classify_bins": {
+              "count": 40,
+              "mean": 0.3984216,
+              "p50": 0.327808,
+              "p95": 0.5964160000000001
+            },
+            "vbuffer": {
+              "count": 40,
+              "mean": 3.7072912000000002,
+              "p50": 3.667776,
+              "p95": 4.53584
+            },
+            "graph": {
+              "count": 40,
+              "mean": 8.510495200000001,
+              "p50": 8.528383999999999,
+              "p95": 9.472416
+            },
+            "editor_loop": {
+              "count": 40,
+              "mean": 16.3937175,
+              "p50": 10.2759,
+              "p95": 44.0415
+            }
+          },
+          "turn": {
+            "classify": {
+              "count": 80,
+              "mean": 0.2839432,
+              "p50": 0.250048,
+              "p95": 0.465952
+            },
+            "cull": {
+              "count": 80,
+              "mean": 0.0749852,
+              "p50": 0.061248,
+              "p95": 0.22192
+            },
+            "stable_bins": {
+              "count": 80,
+              "mean": 0.0508148,
+              "p50": 0.040112,
+              "p95": 0.043392
+            },
+            "cull_classify_bins": {
+              "count": 80,
+              "mean": 0.4097432,
+              "p50": 0.37827200000000005,
+              "p95": 0.5846079999999999
+            },
+            "vbuffer": {
+              "count": 80,
+              "mean": 3.8233688,
+              "p50": 3.711648,
+              "p95": 4.789568
+            },
+            "graph": {
+              "count": 80,
+              "mean": 9.146836,
+              "p50": 8.918224,
+              "p95": 11.080832
+            },
+            "editor_loop": {
+              "count": 80,
+              "mean": 16.68414375,
+              "p50": 14.5093,
+              "p95": 36.4992
+            }
+          },
+          "return": {
+            "classify": {
+              "count": 80,
+              "mean": 0.247716,
+              "p50": 0.238784,
+              "p95": 0.294464
+            },
+            "cull": {
+              "count": 80,
+              "mean": 0.0781548,
+              "p50": 0.061104,
+              "p95": 0.20736000000000002
+            },
+            "stable_bins": {
+              "count": 80,
+              "mean": 0.0541432,
+              "p50": 0.040656,
+              "p95": 0.215392
+            },
+            "cull_classify_bins": {
+              "count": 80,
+              "mean": 0.380014,
+              "p50": 0.355712,
+              "p95": 0.6076159999999999
+            },
+            "vbuffer": {
+              "count": 80,
+              "mean": 4.1983628,
+              "p50": 4.065568000000001,
+              "p95": 5.1072
+            },
+            "graph": {
+              "count": 80,
+              "mean": 10.0744064,
+              "p50": 10.098096,
+              "p95": 10.99248
+            },
+            "editor_loop": {
+              "count": 80,
+              "mean": 16.62219125,
+              "p50": 15.72205,
+              "p95": 23.9779
+            }
+          },
+          "settle": {
+            "classify": {
+              "count": 40,
+              "mean": 0.3673,
+              "p50": 0.26439999999999997,
+              "p95": 0.632192
+            },
+            "cull": {
+              "count": 40,
+              "mean": 0.10194399999999999,
+              "p50": 0.071344,
+              "p95": 0.228064
+            },
+            "stable_bins": {
+              "count": 40,
+              "mean": 0.0483168,
+              "p50": 0.043184,
+              "p95": 0.045696
+            },
+            "cull_classify_bins": {
+              "count": 40,
+              "mean": 0.5175608,
+              "p50": 0.532176,
+              "p95": 0.74768
+            },
+            "vbuffer": {
+              "count": 40,
+              "mean": 3.8243952,
+              "p50": 3.647488,
+              "p95": 4.507456
+            },
+            "graph": {
+              "count": 40,
+              "mean": 9.0162056,
+              "p50": 8.957488,
+              "p95": 9.916864
+            },
+            "editor_loop": {
+              "count": 40,
+              "mean": 17.3411175,
+              "p50": 15.52515,
+              "p95": 24.638
+            }
+          }
+        },
+        "residency": {
+          "geometryBytes": {
+            "count": 360,
+            "mean": 156948308.62222221,
+            "p50": 159628928.0,
+            "p95": 184677888
+          },
+          "residentPages": {
+            "count": 360,
+            "mean": 9177.030555555555,
+            "p50": 9261.5,
+            "p95": 10110
+          },
+          "pendingPages": {
+            "count": 360,
+            "mean": 74.86111111111111,
+            "p50": 36.5,
+            "p95": 260
+          },
+          "requests": {
+            "count": 360,
+            "mean": 112.72777777777777,
+            "p50": 69.0,
+            "p95": 357
+          },
+          "uploads": {
+            "count": 360,
+            "mean": 52.87777777777778,
+            "p50": 28.0,
+            "p95": 195
+          }
+        }
+      },
+      {
+        "directory": "run3-p1",
+        "variant": "p1",
+        "frames": 360,
+        "metrics_ms": {
+          "classify": {
+            "count": 360,
+            "mean": 0.3024528,
+            "p50": 0.26948799999999995,
+            "p95": 0.510976
+          },
+          "cull": {
+            "count": 360,
+            "mean": 0.08202008888888888,
+            "p50": 0.069344,
+            "p95": 0.251968
+          },
+          "stable_bins": {
+            "count": 360,
+            "mean": 0.047674666666666664,
+            "p50": 0.041567999999999994,
+            "p95": 0.045184
+          },
+          "cull_classify_bins": {
+            "count": 360,
+            "mean": 0.43214755555555556,
+            "p50": 0.387168,
+            "p95": 0.7016
+          },
+          "vbuffer": {
+            "count": 360,
+            "mean": 3.908371822222222,
+            "p50": 3.7963199999999997,
+            "p95": 4.841088
+          },
+          "graph": {
+            "count": 360,
+            "mean": 9.232987466666666,
+            "p50": 9.197984,
+            "p95": 10.809728
+          },
+          "editor_loop": {
+            "count": 360,
+            "mean": 16.68947111111111,
+            "p50": 15.507200000000001,
+            "p95": 34.0151
+          }
+        },
+        "stages_ms": {
+          "static": {
+            "classify": {
+              "count": 30,
+              "mean": 0.3364042666666667,
+              "p50": 0.260336,
+              "p95": 0.62912
+            },
+            "cull": {
+              "count": 30,
+              "mean": 0.0770944,
+              "p50": 0.069504,
+              "p95": 0.07164799999999999
+            },
+            "stable_bins": {
+              "count": 30,
+              "mean": 0.06934613333333334,
+              "p50": 0.043632000000000004,
+              "p95": 0.246144
+            },
+            "cull_classify_bins": {
+              "count": 30,
+              "mean": 0.4828448,
+              "p50": 0.37504000000000004,
+              "p95": 0.7867200000000001
+            },
+            "vbuffer": {
+              "count": 30,
+              "mean": 3.2958048,
+              "p50": 3.3344,
+              "p95": 3.484832
+            },
+            "graph": {
+              "count": 30,
+              "mean": 8.521265066666666,
+              "p50": 8.343824,
+              "p95": 9.509984
+            },
+            "editor_loop": {
+              "count": 30,
+              "mean": 16.479813333333333,
+              "p50": 15.5484,
+              "p95": 23.7859
+            }
+          },
+          "first-visit": {
+            "classify": {
+              "count": 90,
+              "mean": 0.33032284444444443,
+              "p50": 0.278912,
+              "p95": 0.510464
+            },
+            "cull": {
+              "count": 90,
+              "mean": 0.07912533333333334,
+              "p50": 0.071424,
+              "p95": 0.07574399999999999
+            },
+            "stable_bins": {
+              "count": 90,
+              "mean": 0.04576106666666667,
+              "p50": 0.042368,
+              "p95": 0.045024
+            },
+            "cull_classify_bins": {
+              "count": 90,
+              "mean": 0.45520924444444444,
+              "p50": 0.39408,
+              "p95": 0.625888
+            },
+            "vbuffer": {
+              "count": 90,
+              "mean": 4.012303288888889,
+              "p50": 4.0238879999999995,
+              "p95": 4.629056
+            },
+            "graph": {
+              "count": 90,
+              "mean": 9.162294755555555,
+              "p50": 9.359568,
+              "p95": 10.147328
+            },
+            "editor_loop": {
+              "count": 90,
+              "mean": 16.55406111111111,
+              "p50": 15.6101,
+              "p95": 23.6991
+            }
+          },
+          "near-wall": {
+            "classify": {
+              "count": 40,
+              "mean": 0.3009888,
+              "p50": 0.243072,
+              "p95": 0.544736
+            },
+            "cull": {
+              "count": 40,
+              "mean": 0.1020072,
+              "p50": 0.060224,
+              "p95": 0.272096
+            },
+            "stable_bins": {
+              "count": 40,
+              "mean": 0.0452584,
+              "p50": 0.040192000000000005,
+              "p95": 0.042848
+            },
+            "cull_classify_bins": {
+              "count": 40,
+              "mean": 0.4482544,
+              "p50": 0.386272,
+              "p95": 0.7424320000000001
+            },
+            "vbuffer": {
+              "count": 40,
+              "mean": 3.719044,
+              "p50": 3.709088,
+              "p95": 4.2936
+            },
+            "graph": {
+              "count": 40,
+              "mean": 8.4735712,
+              "p50": 8.389824,
+              "p95": 9.50384
+            },
+            "editor_loop": {
+              "count": 40,
+              "mean": 16.8317825,
+              "p50": 15.439350000000001,
+              "p95": 33.4129
+            }
+          },
+          "turn": {
+            "classify": {
+              "count": 80,
+              "mean": 0.2744176,
+              "p50": 0.23536,
+              "p95": 0.467232
+            },
+            "cull": {
+              "count": 80,
+              "mean": 0.0787288,
+              "p50": 0.060128,
+              "p95": 0.27305599999999997
+            },
+            "stable_bins": {
+              "count": 80,
+              "mean": 0.0423148,
+              "p50": 0.040256,
+              "p95": 0.04352
+            },
+            "cull_classify_bins": {
+              "count": 80,
+              "mean": 0.3954612,
+              "p50": 0.347216,
+              "p95": 0.631488
+            },
+            "vbuffer": {
+              "count": 80,
+              "mean": 3.75527,
+              "p50": 3.672832,
+              "p95": 4.706016
+            },
+            "graph": {
+              "count": 80,
+              "mean": 9.0878624,
+              "p50": 9.025296,
+              "p95": 10.476256
+            },
+            "editor_loop": {
+              "count": 80,
+              "mean": 16.516295,
+              "p50": 14.829799999999999,
+              "p95": 35.8303
+            }
+          },
+          "return": {
+            "classify": {
+              "count": 80,
+              "mean": 0.2534284,
+              "p50": 0.23971199999999998,
+              "p95": 0.368224
+            },
+            "cull": {
+              "count": 80,
+              "mean": 0.0654644,
+              "p50": 0.061184,
+              "p95": 0.073632
+            },
+            "stable_bins": {
+              "count": 80,
+              "mean": 0.0480064,
+              "p50": 0.04008,
+              "p95": 0.044384
+            },
+            "cull_classify_bins": {
+              "count": 80,
+              "mean": 0.3668992,
+              "p50": 0.349456,
+              "p95": 0.5296
+            },
+            "vbuffer": {
+              "count": 80,
+              "mean": 4.315148,
+              "p50": 4.26032,
+              "p95": 5.145024
+            },
+            "graph": {
+              "count": 80,
+              "mean": 10.2213368,
+              "p50": 10.309536000000001,
+              "p95": 11.539904
+            },
+            "editor_loop": {
+              "count": 80,
+              "mean": 16.8583275,
+              "p50": 15.4287,
+              "p95": 28.556
+            }
+          },
+          "settle": {
+            "classify": {
+              "count": 40,
+              "mean": 0.3698648,
+              "p50": 0.268016,
+              "p95": 0.58912
+            },
+            "cull": {
+              "count": 40,
+              "mean": 0.1119344,
+              "p50": 0.071392,
+              "p95": 0.278688
+            },
+            "stable_bins": {
+              "count": 40,
+              "mean": 0.0481992,
+              "p50": 0.043168,
+              "p95": 0.045056
+            },
+            "cull_classify_bins": {
+              "count": 40,
+              "mean": 0.5299984,
+              "p50": 0.579312,
+              "p95": 0.716448
+            },
+            "vbuffer": {
+              "count": 40,
+              "mean": 3.8159304,
+              "p50": 3.621056,
+              "p95": 4.526272
+            },
+            "graph": {
+              "count": 40,
+              "mean": 8.9988056,
+              "p50": 9.028752,
+              "p95": 9.795584
+            },
+            "editor_loop": {
+              "count": 40,
+              "mean": 17.017715,
+              "p50": 15.5571,
+              "p95": 25.6068
+            }
+          }
+        },
+        "residency": {
+          "geometryBytes": {
+            "count": 360,
+            "mean": 156786102.75555557,
+            "p50": 159868800.0,
+            "p95": 185162496
+          },
+          "residentPages": {
+            "count": 360,
+            "mean": 9183.636111111111,
+            "p50": 9254.0,
+            "p95": 10114
+          },
+          "pendingPages": {
+            "count": 360,
+            "mean": 71.54444444444445,
+            "p50": 36.5,
+            "p95": 256
+          },
+          "requests": {
+            "count": 360,
+            "mean": 111.4888888888889,
+            "p50": 70.0,
+            "p95": 335
+          },
+          "uploads": {
+            "count": 360,
+            "mean": 52.611111111111114,
+            "p50": 29.0,
+            "p95": 206
+          }
+        }
+      },
+      {
+        "directory": "run4-p0",
+        "variant": "p0",
+        "frames": 360,
+        "metrics_ms": {
+          "classify": {
+            "count": 360,
+            "mean": 0.3380624,
+            "p50": 0.30054400000000003,
+            "p95": 0.528352
+          },
+          "cull": {
+            "count": 360,
+            "mean": 0.08133271111111111,
+            "p50": 0.069376,
+            "p95": 0.224352
+          },
+          "stable_bins": {
+            "count": 360,
+            "mean": 0.050030844444444444,
+            "p50": 0.041872,
+            "p95": 0.0456
+          },
+          "cull_classify_bins": {
+            "count": 360,
+            "mean": 0.46942595555555555,
+            "p50": 0.418672,
+            "p95": 0.7506240000000001
+          },
+          "vbuffer": {
+            "count": 360,
+            "mean": 3.8960484444444443,
+            "p50": 3.7541919999999998,
+            "p95": 4.844512
+          },
+          "graph": {
+            "count": 360,
+            "mean": 9.145807733333333,
+            "p50": 9.086192,
+            "p95": 10.737184
+          },
+          "editor_loop": {
+            "count": 360,
+            "mean": 16.74732138888889,
+            "p50": 15.5085,
+            "p95": 33.5324
+          }
+        },
+        "stages_ms": {
+          "static": {
+            "classify": {
+              "count": 30,
+              "mean": 0.3958464,
+              "p50": 0.362096,
+              "p95": 0.614944
+            },
+            "cull": {
+              "count": 30,
+              "mean": 0.07747306666666667,
+              "p50": 0.070496,
+              "p95": 0.073152
+            },
+            "stable_bins": {
+              "count": 30,
+              "mean": 0.09202133333333333,
+              "p50": 0.044352,
+              "p95": 0.391296
+            },
+            "cull_classify_bins": {
+              "count": 30,
+              "mean": 0.5653408,
+              "p50": 0.5873759999999999,
+              "p95": 0.7591359999999999
+            },
+            "vbuffer": {
+              "count": 30,
+              "mean": 3.351706666666667,
+              "p50": 3.376464,
+              "p95": 3.473568
+            },
+            "graph": {
+              "count": 30,
+              "mean": 8.5734144,
+              "p50": 8.628032000000001,
+              "p95": 9.37136
+            },
+            "editor_loop": {
+              "count": 30,
+              "mean": 16.43292,
+              "p50": 15.47095,
+              "p95": 21.4004
+            }
+          },
+          "first-visit": {
+            "classify": {
+              "count": 90,
+              "mean": 0.3710464,
+              "p50": 0.31334399999999996,
+              "p95": 0.57872
+            },
+            "cull": {
+              "count": 90,
+              "mean": 0.0843712,
+              "p50": 0.071424,
+              "p95": 0.07536000000000001
+            },
+            "stable_bins": {
+              "count": 90,
+              "mean": 0.04661333333333333,
+              "p50": 0.042511999999999994,
+              "p95": 0.04496
+            },
+            "cull_classify_bins": {
+              "count": 90,
+              "mean": 0.5020309333333334,
+              "p50": 0.428656,
+              "p95": 0.7999679999999999
+            },
+            "vbuffer": {
+              "count": 90,
+              "mean": 3.9744885333333335,
+              "p50": 3.962128,
+              "p95": 4.566912
+            },
+            "graph": {
+              "count": 90,
+              "mean": 9.095434666666666,
+              "p50": 9.353408,
+              "p95": 10.041632
+            },
+            "editor_loop": {
+              "count": 90,
+              "mean": 16.60932111111111,
+              "p50": 15.6607,
+              "p95": 24.2772
+            }
+          },
+          "near-wall": {
+            "classify": {
+              "count": 40,
+              "mean": 0.3623832,
+              "p50": 0.28576,
+              "p95": 0.6584319999999999
+            },
+            "cull": {
+              "count": 40,
+              "mean": 0.08340159999999999,
+              "p50": 0.061072,
+              "p95": 0.28425599999999995
+            },
+            "stable_bins": {
+              "count": 40,
+              "mean": 0.0404032,
+              "p50": 0.04024,
+              "p95": 0.043008000000000005
+            },
+            "cull_classify_bins": {
+              "count": 40,
+              "mean": 0.486188,
+              "p50": 0.41244800000000004,
+              "p95": 0.7722879999999999
+            },
+            "vbuffer": {
+              "count": 40,
+              "mean": 3.7569736,
+              "p50": 3.6688799999999997,
+              "p95": 4.683008
+            },
+            "graph": {
+              "count": 40,
+              "mean": 8.5651816,
+              "p50": 8.585856,
+              "p95": 9.5376
+            },
+            "editor_loop": {
+              "count": 40,
+              "mean": 17.2546525,
+              "p50": 15.501999999999999,
+              "p95": 35.885
+            }
+          },
+          "turn": {
+            "classify": {
+              "count": 80,
+              "mean": 0.3101592,
+              "p50": 0.276144,
+              "p95": 0.5162880000000001
+            },
+            "cull": {
+              "count": 80,
+              "mean": 0.076696,
+              "p50": 0.060528,
+              "p95": 0.21868800000000002
+            },
+            "stable_bins": {
+              "count": 80,
+              "mean": 0.046006,
+              "p50": 0.040192000000000005,
+              "p95": 0.043136
+            },
+            "cull_classify_bins": {
+              "count": 80,
+              "mean": 0.4328612,
+              "p50": 0.41102400000000006,
+              "p95": 0.635392
+            },
+            "vbuffer": {
+              "count": 80,
+              "mean": 3.8234339999999998,
+              "p50": 3.7661439999999997,
+              "p95": 4.681056
+            },
+            "graph": {
+              "count": 80,
+              "mean": 9.2408392,
+              "p50": 9.135376,
+              "p95": 11.320512
+            },
+            "editor_loop": {
+              "count": 80,
+              "mean": 16.7672225,
+              "p50": 15.316749999999999,
+              "p95": 35.0946
+            }
+          },
+          "return": {
+            "classify": {
+              "count": 80,
+              "mean": 0.2705276,
+              "p50": 0.258656,
+              "p95": 0.323904
+            },
+            "cull": {
+              "count": 80,
+              "mean": 0.0714704,
+              "p50": 0.061216,
+              "p95": 0.07552
+            },
+            "stable_bins": {
+              "count": 80,
+              "mean": 0.0477732,
+              "p50": 0.04056,
+              "p95": 0.044927999999999996
+            },
+            "cull_classify_bins": {
+              "count": 80,
+              "mean": 0.3897712,
+              "p50": 0.360416,
+              "p95": 0.5201279999999999
+            },
+            "vbuffer": {
+              "count": 80,
+              "mean": 4.1607472,
+              "p50": 3.9600799999999996,
+              "p95": 5.107104
+            },
+            "graph": {
+              "count": 80,
+              "mean": 9.650826,
+              "p50": 9.806576,
+              "p95": 11.167104
+            },
+            "editor_loop": {
+              "count": 80,
+              "mean": 16.61577875,
+              "p50": 15.31605,
+              "p95": 32.9987
+            }
+          },
+          "settle": {
+            "classify": {
+              "count": 40,
+              "mean": 0.3870656,
+              "p50": 0.293376,
+              "p95": 0.5785279999999999
+            },
+            "cull": {
+              "count": 40,
+              "mean": 0.10432000000000001,
+              "p50": 0.071392,
+              "p95": 0.27846400000000004
+            },
+            "stable_bins": {
+              "count": 40,
+              "mean": 0.04842,
+              "p50": 0.0428,
+              "p95": 0.047136
+            },
+            "cull_classify_bins": {
+              "count": 40,
+              "mean": 0.5398056,
+              "p50": 0.584096,
+              "p95": 0.754048
+            },
+            "vbuffer": {
+              "count": 40,
+              "mean": 3.8827208,
+              "p50": 3.668336,
+              "p95": 4.733152
+            },
+            "graph": {
+              "count": 40,
+              "mean": 9.0689688,
+              "p50": 9.00424,
+              "p95": 9.758048
+            },
+            "editor_loop": {
+              "count": 40,
+              "mean": 17.009574999999998,
+              "p50": 15.543199999999999,
+              "p95": 24.2192
+            }
+          }
+        },
+        "residency": {
+          "geometryBytes": {
+            "count": 360,
+            "mean": 156000846.93333334,
+            "p50": 157588864.0,
+            "p95": 185269248
+          },
+          "residentPages": {
+            "count": 360,
+            "mean": 9135.222222222223,
+            "p50": 9170.5,
+            "p95": 10094
+          },
+          "pendingPages": {
+            "count": 360,
+            "mean": 73.49722222222222,
+            "p50": 40.5,
+            "p95": 236
+          },
+          "requests": {
+            "count": 360,
+            "mean": 113.85833333333333,
+            "p50": 73.0,
+            "p95": 358
+          },
+          "uploads": {
+            "count": 360,
+            "mean": 55.11666666666667,
+            "p50": 29.0,
+            "p95": 211
+          }
+        }
+      }
+    ],
+    "diagnostic_comparison": {
+      "culls": {
+        "samples": 24,
+        "exactly_matching_samples": 16,
+        "p0_totals": {
+          "candidateOverflow": 0,
+          "exactClusters": 328198,
+          "fastHardware": 0,
+          "fastSoftware": 34446
+        },
+        "p1_totals": {
+          "candidateOverflow": 0,
+          "exactClusters": 328168,
+          "fastHardware": 0,
+          "fastSoftware": 34452
+        }
+      },
+      "bins": {
+        "samples": 24,
+        "exactly_matching_samples": 11,
+        "p0_totals": {
+          "candidates": 1285868,
+          "capacity": 50331648,
+          "hardwareClusters": 183454,
+          "softwareClusters": 179190
+        },
+        "p1_totals": {
+          "candidates": 1285695,
+          "capacity": 50331648,
+          "hardwareClusters": 183387,
+          "softwareClusters": 179233
+        }
+      }
+    },
+    "raw_directory": "build/classify-p1-20260924/roam"
+  },
+  "validation": {
+    "build": "Release MetallicRhiTests and MetallicGPUDrivenSample passed",
+    "acceptance_repetitions": 2,
+    "tests_passed_per_repetition": 3,
+    "classification_cases": 24,
+    "image_comparison_reports": {
+      "MiniZorah": {
+        "source": "build\\classify-p1-20260924\\acceptance\\MiniZorahVBufferFirstFrameReport.json",
+        "comparisons": [
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": false,
+            "pixels": 2073600,
+            "pose": "terminal roots",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": true,
+            "pixels": 2073600,
+            "pose": "terminal roots",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": false,
+            "pixels": 2073600,
+            "pose": "original",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": true,
+            "pixels": 2073600,
+            "pose": "original",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": false,
+            "pixels": 2073600,
+            "pose": "far",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": true,
+            "pixels": 2073600,
+            "pose": "far",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": false,
+            "pixels": 2073600,
+            "pose": "near",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": true,
+            "pixels": 2073600,
+            "pose": "near",
+            "visibilityMismatch": 0
+          }
+        ],
+        "depth_stability": [
+          {
+            "metadataFastClassification": false,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "terminal roots"
+          },
+          {
+            "metadataFastClassification": true,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "terminal roots"
+          },
+          {
+            "metadataFastClassification": false,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "original"
+          },
+          {
+            "metadataFastClassification": true,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "original"
+          },
+          {
+            "metadataFastClassification": false,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "far"
+          },
+          {
+            "metadataFastClassification": true,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "far"
+          },
+          {
+            "metadataFastClassification": false,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "near"
+          },
+          {
+            "metadataFastClassification": true,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "near"
+          }
+        ]
+      },
+      "Bunny": {
+        "source": "build\\classify-p1-20260924\\acceptance\\StreamOnlyBunnyVBufferFirstFrameReport.json",
+        "comparisons": [
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": false,
+            "pixels": 49152,
+            "pose": "terminal roots",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": true,
+            "pixels": 49152,
+            "pose": "terminal roots",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": false,
+            "pixels": 49152,
+            "pose": "original",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": true,
+            "pixels": 49152,
+            "pose": "original",
+            "visibilityMismatch": 0
+          }
+        ],
+        "depth_stability": [
+          {
+            "metadataFastClassification": false,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "terminal roots"
+          },
+          {
+            "metadataFastClassification": true,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "terminal roots"
+          },
+          {
+            "metadataFastClassification": false,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "original"
+          },
+          {
+            "metadataFastClassification": true,
+            "p0Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p0p1": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "p1Repeat": {
+              "maxUintDelta": 0,
+              "pixels": 0
+            },
+            "pose": "original"
+          }
+        ]
+      }
+    },
+    "capture_symbols_classification": "passed",
+    "integration_validation_enabled": false,
+    "validation_limitation": "Old validation layer header 341 does not recognize VK_KHR_device_address_commands; standalone classification passed with device initialization warnings, full integration used no-validation. Not validation-clean.",
+    "initial_failure": "First expanded far/metadata-enabled comparison had differing depth and matching visibility. Adding strict self-repeat stability probes and extra frames led to passing probe and two full repeats; root cause remains unconfirmed. No tolerance was introduced.",
+    "logs": [
+      "build/classify-p1-20260924/acceptance.log",
+      "build/classify-p1-20260924/stats.log",
+      "build/classify-p1-20260924/integration-final.log"
+    ]
+  },
+  "pipeline_resources": [
+    {
+      "entry": "streamClusterBinMain",
+      "mode": 0,
+      "registers": 40,
+      "binary_bytes": 13824,
+      "shared_bytes": 2752
+    },
+    {
+      "entry": "streamClusterBinP0Main",
+      "mode": 0,
+      "registers": 40,
+      "binary_bytes": 15616,
+      "shared_bytes": 3264
+    },
+    {
+      "entry": "streamClusterCullMain",
+      "mode": 0,
+      "registers": 115,
+      "binary_bytes": 53120,
+      "shared_bytes": 0
+    },
+    {
+      "entry": "streamClusterCullP0Main",
+      "mode": 0,
+      "registers": 115,
+      "binary_bytes": 53248,
+      "shared_bytes": 0
+    },
+    {
+      "entry": "streamClusterBinMain",
+      "mode": 1,
+      "registers": 40,
+      "binary_bytes": 13824,
+      "shared_bytes": 2752
+    },
+    {
+      "entry": "streamClusterBinP0Main",
+      "mode": 1,
+      "registers": 40,
+      "binary_bytes": 15616,
+      "shared_bytes": 3264
+    },
+    {
+      "entry": "streamClusterCullMain",
+      "mode": 1,
+      "registers": 115,
+      "binary_bytes": 53248,
+      "shared_bytes": 0
+    },
+    {
+      "entry": "streamClusterCullP0Main",
+      "mode": 1,
+      "registers": 115,
+      "binary_bytes": 53248,
+      "shared_bytes": 0
+    }
+  ],
+  "source_sha256": {
+    "Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang": "f8a11f63abf20004ea57161fa60e3df8f7f25b0c11327e9255f10e02a228dfed",
+    "Shaders/Features/GPUDriven/StreamClusterClassify.slang": "773d66a83b49779293e40cbf05045015c492c2ad67038e392ae00fd852f2bf49",
+    "Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp": "b7aa6095fb035c1cf46c8755628149e0060036e2c451447de471bbcb0980a70e",
+    "Source/Editor/EditorFullRoamBenchmark.cpp": "7e63262d0f169950e2d4f449b1480e4afb11e405f40803503f6d3e0f753b538d",
+    "Source/Editor/EditorRasterWorkload.h": "122d9252699c98113d820eb045878b83df44ed7f9086fecbb6b80d5828f2d8a6",
+    "tests/rhi/MiniZorahStreamAssetTests.cpp": "f4a1c068c55bc06a3029de1ea5bc22792e8d706bfe94d70cdc768f6458428879",
+    "tests/rhi/StreamClusterClassificationTests.cpp": "8ad1e27bd07e0fa7b6035aff083800dc62dad208e10fa48a643a7fd24c8098b8",
+    "Tools/RunMiniZorahClassifyComparison.ps1": "9a4eb9b9fd0bddd3c05e285f52b3b366479c9fe951abe907fb718c94de62f711",
+    "Tools/AnalyzeMiniZorahClassifyComparison.py": "2084128f972214511bf305cff9bca78d7eee4f5e4d64b6d3dcbb429ea834aef0"
+  },
+  "final_executable_sha256": "1a7b8b407b582d88b50403f96df670b34bc706a38969eae98685a5f8b0e544ed",
+  "post_profile_change": "Only normal-run default selection changed to P0; explicit measured A/B paths and shader hashes unchanged.",
+  "limitations": [
+    "Only two timing runs per variant; full-pass run mean ranges overlap.",
+    "MiniZorah diagnostic fast HW counts are zero; this route verifies consumer simplification benefit, not forced HW diversion benefit.",
+    "Live streaming causes slight workload differences despite deterministic camera trajectory.",
+    "Clocks unlocked; editor loop present/Reflex bounded; no FPS improvement claim.",
+    "Nsight GPU Trace metric-set blocker unresolved; no new stall/occupancy measurements."
+  ]
+}

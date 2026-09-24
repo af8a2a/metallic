@@ -136,6 +136,7 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
             "Stream-only pass still declares a Scene dependency");
         graph.markOutput("GPUDriven.color");
         graph.markOutput("GPUDriven.visibility");
+        if (unified) { graph.markOutput("GPUDriven.depth"); }
 
         std::vector<scene::MeshletStreamInstanceInfo> instances;
         std::vector<uint32_t> rootPages;
@@ -198,6 +199,41 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
                 "Stream-only mode created resident GPUScene geometry or instances");
             require(gpuScene->materials().empty() && gpuScene->drawSet().generation != 0,
                 "Stream-only view must have an empty but valid DrawSet");
+        };
+        const auto compareClassification = [&](bool fastMetadata, const std::string& pose) {
+            graph.setNodeRuntimeProperty(node, "metadataFastClassification", fastMetadata);
+            graph.setNodeRuntimeProperty(node, "cullHardwareClassification", false);
+            for (uint32_t frame = 0; frame < 3; ++frame) { renderFrame(); }
+            const std::vector<uint32_t> p0Visibility(preview.pixels().begin(), preview.pixels().end());
+            renderFrame("GPUDriven.depth");
+            const std::vector<uint32_t> p0Depth(preview.pixels().begin(), preview.pixels().end());
+            renderFrame("GPUDriven.depth");
+            const std::vector<uint32_t> p0RepeatDepth(preview.pixels().begin(), preview.pixels().end());
+            graph.setNodeRuntimeProperty(node, "cullHardwareClassification", true);
+            for (uint32_t frame = 0; frame < 3; ++frame) { renderFrame(); }
+            require(std::equal(p0Visibility.begin(), p0Visibility.end(), preview.pixels().begin(), preview.pixels().end()),
+                "P1/P0 visibility differs");
+            renderFrame("GPUDriven.depth");
+            const std::vector<uint32_t> p1Depth(preview.pixels().begin(), preview.pixels().end());
+            renderFrame("GPUDriven.depth");
+            const auto difference = [](const auto& a, const auto& b) {
+                uint32_t count = 0, maxDelta = 0;
+                for (size_t i = 0; i < a.size(); ++i) {
+                    count += a[i] != b[i];
+                    maxDelta = std::max(maxDelta, std::max(a[i], b[i]) - std::min(a[i], b[i]));
+                }
+                return Json{{"pixels", count}, {"maxUintDelta", maxDelta}};
+            };
+            const auto depthDifference = difference(p0Depth, p1Depth);
+            const Json depthStability{{"pose", pose}, {"metadataFastClassification", fastMetadata},
+                {"p0Repeat", difference(p0Depth, p0RepeatDepth)},
+                {"p1Repeat", difference(p1Depth, preview.pixels())}, {"p0p1", depthDifference}};
+            report["p1DepthStability"].push_back(depthStability);
+            require(depthStability.at("p0Repeat").at("pixels") == 0 && depthStability.at("p1Repeat").at("pixels") == 0,
+                "Classifier image comparison has unstable depth history: " + depthStability.dump());
+            require(depthDifference.at("pixels") == 0, "P1/P0 depth differs: " + depthStability.dump());
+            report["p1ClassificationEquivalence"].push_back({{"metadataFastClassification", fastMetadata},
+                {"pose", pose}, {"pixels", p0Visibility.size()}, {"visibilityMismatch", 0}, {"depthMismatch", 0}});
         };
         const auto coveredPixels = [&]() {
             return std::count_if(preview.pixels().begin(), preview.pixels().end(), [](uint32_t value) { return value != 0u; });
@@ -335,6 +371,9 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
                 output.write(reinterpret_cast<const char*>(preview.pixels().data()), hardware.size() * sizeof(uint32_t));
             }
             require(mismatch <= std::max<size_t>(8, hardware.size() / 1000), "HW/async hybrid visibility mismatch");
+            report["p1ClassificationEquivalence"] = Json::array();
+            for (bool fastMetadata : {false, true}) { compareClassification(fastMetadata, "terminal roots"); }
+            graph.setNodeRuntimeProperty(node, "metadataFastClassification", true);
             graph.setNodeRuntimeProperty(node, "softwareRasterMaxPixels", 8.0f);
         }
         graph.setNodeRuntimeProperty(node, "instanceHzbCull", true);
@@ -370,6 +409,18 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
                 graph.setNodeRuntimeProperty(node, "camera", camera.at("camera"));
             }
             for (uint32_t frame = 0; frame < (miniZorah ? 48u : 16u); ++frame) { renderFrame(); }
+            if (unified) {
+                // Freeze this camera's settled live LOD cut while comparing both
+                // producer/consumer pairs with HZB enabled. Restore live streaming
+                // before advancing to the next pose.
+                graph.setNodeRuntimeProperty(node, "benchmarkFreezeStreaming", true);
+                for (bool fastMetadata : {false, true}) {
+                    compareClassification(fastMetadata, camera.at("name").get<std::string>());
+                }
+                graph.setNodeRuntimeProperty(node, "metadataFastClassification", true);
+                graph.setNodeRuntimeProperty(node, "benchmarkFreezeStreaming", false);
+                renderFrame();
+            }
             const auto job = captureHeader(false);
             const auto active = read(job, "streaming.GPUDriven.activeHeader").at(0);
             const uint64_t covered = coveredPixels();

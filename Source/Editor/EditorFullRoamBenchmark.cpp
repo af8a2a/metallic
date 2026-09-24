@@ -82,6 +82,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         }
         if (config.value("rasterComparison", false)) { return runZorahFullRasterComparison(config, output); }
         const uint32_t workloadEvery = config.value("workloadEvery", 0u);
+        workloadObserver.captureCull = config.value("classifyCounters", false);
         if (workloadEvery && workloadEvery < 10) { throw std::runtime_error("workloadEvery must be 0 or at least 10"); }
         report["workloadEvery"] = workloadEvery;
         report["diagnosticRun"] = workloadEvery != 0;
@@ -118,7 +119,25 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             lastT=t;
         }
         if (workloadEvery) { graphExecutor_->setDebugObserver(&workloadObserver); }
-        loadBuiltInSample(render::kGPUDrivenZorahFullSampleId);
+        const std::string sampleId = config.value("sample", std::string(render::kGPUDrivenZorahFullSampleId));
+        if (!render::isGPUDrivenSceneSample(sampleId)) { throw std::runtime_error("Roam requires MiniZorah or ZorahFull sample"); }
+        loadBuiltInSample(sampleId.c_str());
+        const auto* vbuffer = renderGraph_.findNode("VBuffer");
+        if (!vbuffer) { throw std::runtime_error("Missing VBuffer"); }
+        renderGraph_.setNodeRuntimeProperty(vbuffer->id, "cullHardwareClassification", config.value("cullHardwareClassification", false));
+        renderGraph_.setNodeRuntimeProperty(vbuffer->id, "metadataFastClassification", config.value("metadataFastClassification", true));
+        if (config.contains("temporalJitter")) {
+            auto view = viewportCameraProperties();
+            const bool jitter = config.at("temporalJitter").get<bool>();
+            view["temporalJitter"] = jitter;
+            applyViewportCameraProperties(view, nullptr);
+            viewportView_.setTemporalJitter(jitter);
+            renderGraph_.setNodeRuntimeProperty(vbuffer->id, "temporalJitter", jitter);
+        }
+        const uint32_t routeFrames = config.value("routeFrames", 0u);
+        if (routeFrames && (routeFrames < 8 || routeFrames > 10000)) { throw std::runtime_error("routeFrames must be 0 or [8,10000]"); }
+        report["sample"] = sampleId;
+        report["trajectoryClock"] = routeFrames ? "deterministic frame index" : "wall time";
         const auto workloadSetting = [&](bool enabled) {
             const auto* node = renderGraph_.findNode("VBuffer");
             if (!node) { throw std::runtime_error("Missing VBuffer"); }
@@ -169,7 +188,10 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             camera["camera"]["center"][2]=camera["camera"]["eye"][2].get<double>()-std::sin(angle)*dx+std::cos(angle)*dz;
             return camera;
         };
-        report["config"]={{"durationSeconds",duration},{"warmupSeconds",warmup},{"distance",distance},{"keyframes",points}};
+        report["config"]={{"durationSeconds",duration},{"warmupSeconds",warmup},{"distance",distance},{"keyframes",points},
+            {"routeFrames",routeFrames},{"sample",sampleId},{"cullHardwareClassification",config.value("cullHardwareClassification",false)},
+            {"metadataFastClassification",config.value("metadataFastClassification",true)},
+            {"temporalJitter",viewportView_.temporalJitter()}};
         report["absoluteKeyframes"]=Json::array();
         for (const auto& p : points) { report["absoluteKeyframes"].push_back({{"seconds",p.at("t").get<double>()*duration},
             {"stage",p.at("stage")},{"camera",cameraAt(p.at("forward"),p.at("yaw"))}}); }
@@ -195,9 +217,10 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         auto previous=start;
         while (true) {
             const auto now=Clock::now();
-            const double seconds=std::chrono::duration<double>(now-start).count();
+            const double seconds = routeFrames ? duration * double(samples.size()) / double(routeFrames - 1) :
+                std::chrono::duration<double>(now-start).count();
             if (!samples.empty()) { samples.back().ms=std::chrono::duration<double,std::milli>(now-previous).count(); }
-            if (seconds>=duration) { break; }
+            if (routeFrames ? samples.size() >= routeFrames : seconds >= duration) { break; }
             previous=now;
             size_t segment=0;
             while (segment+2<points.size() && seconds/duration >= points[segment+1]["t"].get<double>()) { ++segment; }
@@ -209,7 +232,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             const bool diagnostic = workloadEvery && (samples.size() - 1) % workloadEvery == 0;
             samples.back().diagnostic = diagnostic;
             if (workloadEvery) {
-                workloadSetting(diagnostic);
+                workloadSetting(diagnostic && config.value("softwareWorkloadCounters", true));
                 workloadObserver.capture = diagnostic;
                 workloadObserver.editorFrame = samples.back().frame;
                 workloadObserver.camera = viewportCameraProperties();
@@ -248,7 +271,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             const auto& f=frames[i]; const auto& sample=samples[i];
             if (f.index!=sample.frame || f.profilingOverflow) { throw std::runtime_error("Frame identity/section overflow"); }
             Json row{{"frame",f.index},{"seconds",sample.seconds},{"frameMs",sample.ms},
-                {"stage",points[sample.segment]["stage"]},{"availableBytes",sample.availableBytes},
+                {"routeSample",i},{"stage",points[sample.segment]["stage"]},{"availableBytes",sample.availableBytes},
                 {"graphPreparation",sample.graphPreparation},{"diagnostic",sample.diagnostic},
                 {"scopes",Json::array()},{"streaming",Json::array()}};
             const auto& begin = sample.frameBegin;

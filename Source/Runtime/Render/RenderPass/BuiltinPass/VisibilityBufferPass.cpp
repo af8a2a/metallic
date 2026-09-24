@@ -1118,6 +1118,7 @@ private:
         return {{"mode", mode}, {"module", module}, {"entryPoint", entries[mode]},
             {"spirvFnv1a64", hash == shaderHashes_.end() ? "" : hash->second},
             {"thresholdPixels", softwareRasterMaxPixels()}, {"prebin", clusterPrebinEnabled()},
+            {"cullHardwareClassification", boolProperty(&properties(), "cullHardwareClassification", false)},
             {"forceHardware", boolProperty(&properties(), "benchmarkForceHardwareRaster", false)},
             {"asyncRequested", boolProperty(&properties(), "asyncSoftwareRaster", true)},
             {"workloadEnabled", boolProperty(&properties(), "softwareRasterWorkload", false)},
@@ -1192,10 +1193,14 @@ private:
         streamClusterPrepareShader_.reset();
         streamClusterPreparePipeline_.reset();
         streamClusterBinShader_.reset();
+        streamClusterBinP0Shader_.reset();
         streamClusterCullShader_.reset();
+        streamClusterCullP0Shader_.reset();
         for (auto& shader : streamClusterRasterShaders_) { shader.reset(); }
         streamClusterBinPipeline_.reset();
+        streamClusterBinP0Pipeline_.reset();
         streamClusterCullPipeline_.reset();
+        streamClusterCullP0Pipeline_.reset();
         for (auto& pipeline : streamClusterRasterPipelines_) { pipeline.reset(); }
         streamVisibilityImageHandle_ = {};
         streamDepthImageHandle_ = {};
@@ -1686,6 +1691,12 @@ private:
             result = createShader(device, kMeshletStreamShaderModuleName,
                 "streamClusterBinMain", false, streamClusterBinShader_, log);
             if (result) { result = createStreamCompute(*streamClusterBinShader_, streamClusterBinPipeline_, "cluster bin"); }
+            if (result) { result = createShader(device, kMeshletStreamShaderModuleName,
+                "streamClusterCullP0Main", false, streamClusterCullP0Shader_, log); }
+            if (result) { result = createStreamCompute(*streamClusterCullP0Shader_, streamClusterCullP0Pipeline_, "P0 cluster cull"); }
+            if (result) { result = createShader(device, kMeshletStreamShaderModuleName,
+                "streamClusterBinP0Main", false, streamClusterBinP0Shader_, log); }
+            if (result) { result = createStreamCompute(*streamClusterBinP0Shader_, streamClusterBinP0Pipeline_, "P0 cluster bin"); }
             const char* rasterEntries[] = {"streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"};
             for (size_t i=0; result && i<streamClusterRasterShaders_.size(); ++i) {
                 result = createShader(device, i >= 4 ? "Features/GPUDriven/GPUDrivenStreamWorkRaster" : kMeshletStreamShaderModuleName, rasterEntries[i], false, streamClusterRasterShaders_[i], log);
@@ -2958,7 +2969,12 @@ private:
             context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyCandidates" : "AfterStreamLateCandidates");
             binProfile.next("Cluster cull");
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: cull stream clusters"});
-            result = hybridRasterizer_->cullStreamClusters(commandBuffer, *streamClusterCullPipeline_, push);
+            // Always select the matching producer and consumer; P1's classifier
+            // depends on the cull stage removing all semantically forced HW.
+            // Experimental until full-pass gains are established in scene profiles.
+            const bool divertHardware = boolProperty(&properties(), "cullHardwareClassification", false);
+            result = hybridRasterizer_->cullStreamClusters(commandBuffer,
+                divertHardware ? *streamClusterCullPipeline_ : *streamClusterCullP0Pipeline_, push);
             push.hybridQueueBuffer = UINT32_MAX;
             commandBuffer.endDebugLabel();
             if (!result) { return result; }
@@ -2966,7 +2982,7 @@ private:
             if (!forceHardware) {
                 binProfile.next("Soft/hard classification");
                 commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify stream clusters"});
-                commandBuffer.bindComputePipeline(*streamClusterBinPipeline_);
+                commandBuffer.bindComputePipeline(divertHardware ? *streamClusterBinPipeline_ : *streamClusterBinP0Pipeline_);
                 commandBuffer.pushBindlessData(&push, sizeof(push));
                 result = commandBuffer.dispatchIndirect(hybridRasterizer_->candidateArguments());
                 commandBuffer.endDebugLabel();
@@ -4586,13 +4602,17 @@ private:
     std::unique_ptr<ShaderModule> clusterCountShader_;
     std::unique_ptr<ShaderModule> clusterRasterShader_;
     std::unique_ptr<ShaderModule> streamClusterBinShader_;
+    std::unique_ptr<ShaderModule> streamClusterBinP0Shader_;
     std::unique_ptr<ShaderModule> streamClusterCullShader_;
+    std::unique_ptr<ShaderModule> streamClusterCullP0Shader_;
     std::array<std::unique_ptr<ShaderModule>, 6> streamClusterRasterShaders_;
     std::unique_ptr<ComputePipeline> clusterBinPipeline_;
     std::unique_ptr<ComputePipeline> clusterCountPipeline_;
     std::unique_ptr<ComputePipeline> clusterRasterPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterBinPipeline_;
+    std::unique_ptr<ComputePipeline> streamClusterBinP0Pipeline_;
     std::unique_ptr<ComputePipeline> streamClusterCullPipeline_;
+    std::unique_ptr<ComputePipeline> streamClusterCullP0Pipeline_;
     std::array<std::unique_ptr<ComputePipeline>, 6> streamClusterRasterPipelines_;
     BindlessHandle streamHybridQueueHandle_;
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
