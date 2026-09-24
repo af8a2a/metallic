@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "milestone": "M1",
+  "status": "partial",
+  "date": "2026-09-24",
+  "child_session_required": false,
+  "implemented": [
+    "mapping-driven-offline-import",
+    "exact-module-entry-selection",
+    "hotspots",
+    "exported-source-context",
+    "bundle-integrity",
+    "offline-repeat-comparison"
+  ],
+  "native_nsight_dialect_validated": false,
+  "ui_adapter_implemented": false,
+  "ui_export_verified": false,
+  "test_evidence": {
+    "source_contract_tests": 17,
+    "baseline_tests": 10,
+    "source_fixtures": "synthetic-contract-only"
+  },
+  "blockers": [
+    {
+      "code": "RemoteSourceCsvUnavailable",
+      "basis": "user-confirmed-remote-only",
+      "expected_sha256": "13222ffc71e5172a028a0b33e2cce19562d7bf185d500fcf642a914bf6cedf02"
+    },
+    {
+      "code": "NativeDesktopRuntimeStartupFailed",
+      "basis": "tool-result-transcription-not-a-raw-process-log",
+      "tool": "mcp__node_repl__js",
+      "attempts": 3,
+      "explicit_resets": 1,
+      "error": "windows sandbox failed: helper_unknown_error: apply deny-read ACLs",
+      "ui_input_performed": false
+    }
+  ],
+  "acceptance": {
+    "raw_historical_samples_reproduced": false,
+    "actual_shader_selection_verified": false,
+    "three_actual_exports": false,
+    "timing_measurements": false
+  }
+}

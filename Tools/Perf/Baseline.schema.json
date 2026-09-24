@@ -239,6 +239,13 @@
     },
     "searches": {
       "type": "array"
+    },
+    "ui_backend": {
+      "enum": [
+        "desktop",
+        "child",
+        "none"
+      ]
     }
   },
   "$defs": {

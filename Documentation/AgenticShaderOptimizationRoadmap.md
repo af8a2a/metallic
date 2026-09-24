@@ -2,7 +2,7 @@
 
 2026-09-24。设计依据：用户提供的 Pro 讨论、当前工作树与历史实验报告、已安装 Nsight Graphics 2026.3.1 的能力发现，以及 NVIDIA 官方文档。本轮只做设计和只读核对，没有采集新的 GPU 数据，也没有执行优化实验。
 
-M0 实施进度见 [能力与证据基线](AgenticShaderOptimizationM0.md)。本机工具、版本固定、历史证据和完整性测试已落地；原始源码 CSV 经用户确认在远端，cua-child 已找到但 worker 未就绪，M0 当前为 partial。以下保留原始路线设计。
+M0 实施进度见 [能力与证据基线](AgenticShaderOptimizationM0.md)，M1 实施进度见 [Nsight 源码分析](AgenticShaderOptimizationM1.md)。原始源码 CSV 经用户确认在远端。按最新要求，cua-child 不再是前置条件；本轮原生桌面运行时在启动时失败，离线分析框架已落地，M1 当前为 partial。以下路线中的 UI 方案已同步更新。
 
 **建议将 Nsight 源码分析放到第一个可交付里程碑，将已有计时与正确性能力收敛为实验执行器；NvPerf 随后按实际计数器缺口接入。** 用户当前需要突破的是从 marker 到 shader、源码和依赖关系的分析过程。单纯扩大范围计数器采集，不能完成这个目标。
 
@@ -25,7 +25,7 @@ M0 实施进度见 [能力与证据基线](AgenticShaderOptimizationM0.md)。本
 还应立即处理两项可复现性缺口：
 
 - [源码级分析报告](StreamClusterBinProfile20260924.md)及 [JSON](StreamClusterBinProfile20260924.json)保留了目标模块、原始 SHA256、10,310 个 IL self samples 等信息，但本机未找到它们引用的 `Captures/NsightGraphics/streamClusterBinMain.csv` 和 `build/nsight-visibility-20260924/AnalyzeBinProfile.py`。先找回原件或重新导出，再作为解析夹具；现有 JSON 只能提供历史预期，不能证明解析器现在可复现。
-- 当前机器查询到 RTX 5070 Ti、driver 616.92；[另一份 9 月 24 日 Capture 报告](VisibilityBufferNsight20260924.md)来自 RTX 5060，且 CLI 出现 `No single-pass metric set selected`。将它保留为独立环境的失败案例，不能推断本机也失败或套用另一张卡的性能。当前会话没有暴露 cua-child MCP，PATH 也未发现 `cua-child.exe`；这只说明本轮不能验证 UI 自动化，不证明其他位置没有安装。
+- 当前机器查询到 RTX 5070 Ti、driver 616.92；[另一份 9 月 24 日 Capture 报告](VisibilityBufferNsight20260924.md)来自 RTX 5060，且 CLI 出现 `No single-pass metric set selected`。将它保留为独立环境的失败案例，不能推断本机也失败或套用另一张卡的性能。最初路线设计时尚未发现 cua-child；后续 M0 找到它但 worker 未就绪。最新 M1 已取消 child 前置要求，原生桌面运行时的启动故障与 Nsight 自身能力分开记录。
 
 **2. 专用分析器应成为可查询的工具层**
 
@@ -39,7 +39,7 @@ M0 实施进度见 [能力与证据基线](AgenticShaderOptimizationM0.md)。本
 
 NVIDIA 文档确认 Shader Pipelines 可保存当前表为 CSV，Source 支持复制选中行；但官方 `--auto-export` 的承诺是 metrics 导出，不能据此承诺所有源码与依赖视图都有无头接口。完整低层反汇编还存在发行版能力差异。[Shader Profiler](https://docs.nvidia.com/nsight-graphics/UserGuide/shader-profiler.html)、[GPU Trace CLI](https://docs.nvidia.com/nsight-graphics/UserGuide/gpu-trace-overview.html)。
 
-因此，对外提供的是稳定的分析动作，内部按能力使用官方导出、经过验证的表格/剪贴板、cua-child UI；无法可靠读取则返回明确原因。截图可用于定位和人工复核，不能作为唯一的数值评分依据。首版不逆向 `.ngfx-gputrace` 私有格式，也不假设 UI 内部存在未公开 API。
+因此，对外提供的是稳定的分析动作，内部按能力使用官方导出、经过验证的表格/剪贴板、窗口级桌面 UI；无法可靠读取则返回明确原因。截图可用于定位和人工复核，不能作为唯一的数值评分依据。首版不逆向 `.ngfx-gputrace` 私有格式，也不假设 UI 内部存在未公开 API。
 
 | 拟议动作 | 必需输入 | 返回和检查 |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ NVIDIA 文档确认 Shader Pipelines 可保存当前表为 CSV，Source 支持�
 
 这些名字是设计接口，尚不是现有命令。UI adapter 必须保存当前 artifact、选中时间范围、queue、shader 和筛选条件；每次读取前核对实际状态。界面升级、列名变化、失焦、空表、超时和多模块混入都应返回可诊断状态，不能沿用上一轮结果。
 
-原生 Nsight 界面只通过 `cua-child.exe mcp` 的已验证 Child Session 操作。子会话不可用时，保留文件导入与 CLI 分析路径；不回退主桌面，不直接启动默认端点 cua-driver。离线分析 worker 可以与采集 worker 分离，但共享同一 GPU 时仍需纳入测量互斥与干扰检查。
+原生 Nsight 界面可通过 computer-use 提供的窗口级接口直接操作，cua-child 是可选隔离方式。按实际观察到的窗口和控件逐步操作，每步核验选择与导出结果。桌面运行时不可用时保留文件导入与 CLI 分析路径，并明确 source automation 未完成。离线分析 worker 可以与采集 worker 分离，但共享同一 GPU 时仍需纳入测量互斥与干扰检查。
 
 Nsight 2026.3 的 Graphics Capture Live Replay 支持在 UI 内采集 GPU Trace；官方说明该集成结果不生成独立 trace 文件。因此先以可归档的独立 GPU Trace/导出物作为流水线输入，再评估集成 UI 路径。[2026.3 发布说明](https://developer.nvidia.com/nsight-graphics/get-started)。
 
@@ -65,7 +65,7 @@ flowchart TD
     W --> T[NativeTiming：正常运行时间]
     W --> N[NsightBackend：Trace 与源码分析]
     W --> P[NvPerfBackend：按需增加硬件计数]
-    N --> U[Child Session 分析适配器]
+    N --> U[Nsight 桌面分析适配器]
     T --> E[EvidenceBundle：原始证据与结构化索引]
     N --> E
     P --> E
@@ -106,19 +106,19 @@ flowchart TD
 | 阶段 | 估计 | 核心交付 | 退出条件 |
 | --- | --- | --- | --- |
 | M0 能力与证据基线 | 1–2 天 | 固定本机版本，能力清单，原始 CSV 恢复/新导出，小型样本集，最小 case manifest | 能区分“官方支持、此环境已验证、未验证、不可用”；原始证据可定位且 hash 正确 |
-| M1 Nsight 源码分析纵向切片 | 3–5 天 | 专用 CSV importer、Child Session adapter、shader/hotspot/source 查询；最小目标选择与符号核对 | 从固定 artifact 自动选中唯一 shader，重复 3 次导出一致的结构化结果；混模块/缺符号/选错范围能被检出 |
+| M1 Nsight 源码分析纵向切片 | 3–5 天 | 专用 CSV importer、窗口级 UI adapter、shader/hotspot/source 查询；最小目标选择与符号核对 | 从固定 artifact 自动选中唯一 shader，重复 3 次导出一致的结构化结果；混模块/缺符号/选错范围能被检出 |
 | M2 可信 WorkloadCase 与采集 | 3–5 天 | 将现有冻结 harness 通用化，选择当前生产入口，SDK 边界，输入/输出验证，A/A | 新构建的 early/late、队列和 shader 身份可对齐；同 case 重复稳定；计时、诊断分离 |
 | M3 一个候选的自动实验闭环 | 4–6 天 | 外部 runner、候选 patch/build、正确性、交错 A/B、机器判定和证据归档 | 独立完成 accept/reject/inconclusive；无正确性结果、零工作量和身份变化无法被评为加速 |
 | M4 NvPerf 与深层分析扩展 | 3–5 天起 | 按需要接入计数器，恢复可写状态的生产内核隔离执行，依赖视图按能力开放 | 至少一个实际硬件指标集合可稳定复现；isolated 与 in-frame 分开验收 |
 | M5 多 case 持续优化 | 3–5 天起 | 静态视角/漫游/异步场景矩阵，预算、历史候选去重、保留验证集 | 新候选在未参与选择的 case/独立复测中仍有效；失败能干净结束并保留证据 |
 
-预期 4–7 个工作日取得“Agent 可以深入 Nsight 源码分析”的首个演示，约 2–4 周完成一次完整优化闭环。若 M0/M1 发现 Child Session 或 UI 导出不可行，明确记录 source automation 阻塞，继续用人工导出的文件验证 importer 与 M2/M3；不能把这个降级路径宣布为全自动 Nsight 已完成。
+预期 4–7 个工作日取得“Agent 可以深入 Nsight 源码分析”的首个演示，约 2–4 周完成一次完整优化闭环。若 M0/M1 发现桌面运行时或 UI 导出不可行，明确记录 source automation 阻塞，继续用人工导出的文件验证 importer 与 M2/M3；不能把这个降级路径宣布为全自动 Nsight 已完成。
 
 **M0/M1 的具体工作顺序**
 
 1. 为 Shader Profiler CSV 单独实现 importer。解析多段表头、多个模块、嵌入源码、多行字段和 self/inclusive/dependency-attributed 样本。按模块和表示层去重；原件恢复后，历史夹具应重现目标 10,310、非目标 28 个 IL self samples。若重新导出产生新内容，就建立新的预期，不能硬套旧数值。
 2. 将 `Live Registers`、驱动分配寄存器数和 occupancy 分开。CSV 每行只列前三种 stall 时，将累计原因标为下界，不能补零。旧截图分母和 CSV 分母不一致时，保留为两条证据。
-3. 使用一个小型已知 shader/capture 验证 Child Session：打开、选择、导出、读取、重新打开再重复。再在当前 Metallic shader 上验证函数/源码映射。完整 SASS、寄存器依赖图暂不作为 M1 门槛。
+3. 使用一个小型已知 shader/capture 验证窗口级 UI 流程：打开、选择、导出、读取、重新打开再重复。再在当前 Metallic shader 上验证函数/源码映射。完整 SASS、寄存器依赖图暂不作为 M1 门槛。
 4. 源码采集模板明确开启所需 shader profiling/符号收集；不能继承 top-level triage 模板中禁用 shader-pipeline collection 的选项。记录实际支持的 metric set，不硬编码跨 GPU 的数字 ID。
 5. 对新 label 构建做一个有界 Trace 验证，分别检查 UI 与 CLI 导出效果。若仍合并，记录真实范围，改用 shader 选择或后续隔离；不再反复尝试仅靠 `time-every-action` 解决所有归因问题。
 
@@ -160,7 +160,7 @@ NvPerf 支持 Vulkan 应用内指标采集与自定义触发/输出，适合后�
 | 提交建议 | 主要落点 | 完成标准 |
 | --- | --- | --- |
 | PR1：证据 schema 与 Nsight CSV importer | 新增 `Tools/Perf/`、小型夹具/解析测试、文档；找回或重采原件 | 能导入多模块 source/IL 并保留 provenance；缺列、下界和重复归因有明确处理 |
-| PR2：Nsight 分析 adapter | `Tools/Perf/` 内的工具编排与 Child Session 接口 | 指定 artifact/shader 可重复导出 summary/hotspots/source；失败不返回旧数据 |
+| PR2：Nsight 分析 adapter | `Tools/Perf/` 内的工具编排与窗口级 UI 接口 | 指定 artifact/shader 可重复导出 summary/hotspots/source；失败不返回旧数据 |
 | PR3：工作负载身份与精确采集目标 | `EditorRasterComparison.cpp`、`VisibilityBufferPass.cpp`、`Profiling/`、debug provider | 任意已注册变体可进入 hold/SDK 采集窗口，actual queue/dispatch 与输入可核验 |
 | PR4：实验 runner 与判定 | 复用 `RunZorahFullRoam.ps1` 和现有分析/正确性工具，扩展 CLI | 一个有限候选能完成构建、验证、A/B、独立确认和归档 |
 | PR5：可选 NvPerf backend | `Profiling/`、`cmake/`、backend contract tests | 无 SDK 构建仍正常；支持/缺失指标和多轮采集有明确语义 |

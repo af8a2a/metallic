@@ -14,6 +14,14 @@ spec.loader.exec_module(baseline)
 
 
 class BaselineTests(unittest.TestCase):
+    def test_desktop_does_not_require_child_and_never_implies_verified_export(self):
+        self.assertEqual(baseline.source_export_capability("desktop")["status"], "supported-unverified")
+        self.assertIsNone(baseline.source_export_capability("desktop")["verified_scope"])
+        self.assertEqual(baseline.source_export_capability("child")["status"], "blocked")
+        self.assertEqual(baseline.source_export_capability("child", {"workerReady": True})["status"],
+                         "supported-unverified")
+        self.assertEqual(baseline.source_export_capability("none")["status"], "blocked")
+
     def test_empty_manifest_is_not_a_valid_baseline(self):
         with tempfile.TemporaryDirectory() as directory:
             file = Path(directory) / "Baseline.json"

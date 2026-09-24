@@ -1,4 +1,9 @@
-# Performance evidence baseline (M0)
+# Performance evidence tools (M0 / M1)
+
+M1 offline source queries are implemented in [NsightSource.py](NsightSource.py).
+See [its contract and commands](NsightSource.md). Native Nsight export format and
+UI automation remain unvalidated; parser tests use synthetic contract data.
+
 
 `Baseline.py` discovers the installed Nsight CLI, pins tool binaries by SHA-256,
 records the current GPU/driver and source snapshot, indexes existing captures,
@@ -28,7 +33,13 @@ environmental or evidence dependency. Historical success never proves current
 runtime capture success. Missing, empty, unreadable and hash-mismatched files
 are separate states; none count as valid evidence.
 
-Use `--child <observed-cua-child.exe>` for its read-only status query. A separately
+Desktop automation is now permitted without cua-child. The collector defaults
+to `--ui-backend desktop` and records it as supported-unverified; it never operates
+the desktop or proves that its runtime is ready. The latest runtime probe failure
+is recorded in `Documentation/AgenticShaderOptimizationM1.md`.
+Use `--ui-backend none` to disable UI or the optional
+`--child <observed-cua-child.exe>` for its read-only status query. Legacy child
+arguments select the child backend unless `--ui-backend` is explicit. A separately
 authorized `cua-child.exe mcp --timeout 25` initialization probe can be recorded
 with `--child-probe-dir <dir>` containing `cua-child-initialize.stdout.txt` and
 `cua-child-initialize.stderr.txt`. The collector never starts or reconnects a

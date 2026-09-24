@@ -120,6 +120,18 @@ def capability(status, scope, reason, evidence, declaration=None):
             "evidence": evidence, "declaration": declaration}
 
 
+def source_export_capability(backend, child_status=None, evidence=None):
+    evidence = evidence or []
+    if backend == "desktop":
+        return capability("supported-unverified", None,
+                          "Window-scoped desktop automation is allowed; no UI export has been validated.",
+                          evidence)
+    if backend == "child":
+        return capability("supported-unverified" if child_status and child_status.get("workerReady") else "blocked",
+                          None, "Optional child backend; a ready worker does not verify Nsight export.", evidence)
+    return capability("blocked", None, "UI automation disabled by configuration.", evidence)
+
+
 def verify_bundle(path):
     path = Path(path).resolve()
     bundle = read_json(path)
@@ -227,6 +239,7 @@ def collect(args):
     for index, capture in enumerate(sorted((root / "Captures/NsightGraphics").glob("*.ngfx-capture"))):
         collector.artifact(f"capture-{index}", capture, "historical-graphics-capture")
 
+    ui_backend = args.ui_backend or ("child" if args.child or args.child_probe_dir else "desktop")
     child_status = None
     child_probe_evidence = []
     if args.child:
@@ -253,8 +266,7 @@ def collect(args):
         "source_hotspots": capability("supported-unverified", None, "Source/function symbols in code are not proof of current Nsight correlation.", ["source-0", "source-profile-report"], shader_doc),
         "dependencies": capability("supported-unverified", None, "Instruction dependency view/export has not been exercised.", cli, shader_doc),
         "full_disassembly": capability("supported-unverified", None, "Edition-specific availability not established.", cli, shader_doc),
-        "source_export_automation": capability("supported-unverified" if child_status and child_status.get("workerReady") else "blocked", None,
-            "A ready child worker still requires Nsight export validation; no main-desktop fallback.", child_probe_evidence),
+        "source_export_automation": source_export_capability(ui_backend, child_status, child_probe_evidence),
     }
     gaps = []
     if not gpus or collector.commands["gpu"]["exit_code"] != 0:
@@ -264,7 +276,8 @@ def collect(args):
         gaps.append({"code": "SourceCsvUnavailable", "artifact": "shader-source-csv", "state": source_csv["state"],
                      "next_action": "Recover the original matching its recorded SHA256, or produce a fresh Nsight source/IL export with its own manifest."})
     if capabilities["source_export_automation"]["status"] == "blocked":
-        gaps.append({"code": "ChildWorkerUnavailable", "next_action": "Restore cua-child session readiness; do not control the main desktop or change login/security settings automatically."})
+        gaps.append({"code": "UiBackendUnavailable", "backend": ui_backend,
+                     "next_action": "Validate a permitted desktop backend, or continue offline import; child is optional."})
     if not discovered:
         gaps.append({"code": "DiscoveryFailed", "next_action": "Inspect raw doctor outputs."})
 
@@ -286,7 +299,7 @@ def collect(args):
     collector.artifact("case", collector.output / "case.json", "minimal-historical-case", archive=True)
     bundle = {"schema_version": 1, "kind": "metallic.perf.baseline", "created_utc": datetime.now(timezone.utc).isoformat(),
               "environment": {"os": platform.platform(), "python": sys.version, "repository": str(root), "git_head": head, "gpus": gpus},
-              "tool_version": info.get("version"), "commands": collector.commands, "artifacts": collector.artifacts,
+              "tool_version": info.get("version"), "ui_backend": ui_backend, "commands": collector.commands, "artifacts": collector.artifacts,
               "searches": search_results, "capabilities": capabilities, "gaps": gaps,
               "m0": {"status": "partial" if gaps else "evidence-ready",
                      "source_fixture": "available-not-parsed" if source_csv["state"] == "present" else "missing",
@@ -305,6 +318,8 @@ def main():
     parser.add_argument("--output")
     parser.add_argument("--verify", help="Check hashes without running tools")
     parser.add_argument("--search-root", action="append", default=[])
+    parser.add_argument("--ui-backend", choices=("desktop", "child", "none"),
+                        help="Default desktop; legacy --child options select the optional child backend")
     parser.add_argument("--child", help="Observed cua-child.exe path; only status is queried")
     parser.add_argument("--child-probe-dir", help="Directory containing separately acquired MCP initialization logs")
     parser.add_argument("--shader-csv")
