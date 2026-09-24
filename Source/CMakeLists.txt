@@ -331,6 +331,7 @@ metallic_copy_spdlog_runtime(MetallicMeshletCook)
 # Apply the launch default to every executable that shares the editor shell.
 set_property(SOURCE Editor/EditorApplication.cpp APPEND PROPERTY COMPILE_DEFINITIONS
     METALLIC_DEFAULT_NSIGHT_CAPTURE=$<BOOL:${METALLIC_DEFAULT_NSIGHT_CAPTURE}>
+    METALLIC_DEFAULT_SHADER_CAPTURE_SYMBOLS=$<CONFIG:RelWithDebInfo>
 )
 
 set(METALLIC_EDITOR_SOURCES

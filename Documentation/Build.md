@@ -69,10 +69,19 @@ directory.
 
 The `metallic-relwithdebinfo` preset also enables Nsight Graphics capture by
 default in the editor and sample executables, equivalent to launching with
-`--nsight-capture`. Shaders include source paths and line information (`-g1`)
-while retaining optimization (`capture-symbols` mode). Full variable debug
-information can make optimized OpenPBR shader compilation take minutes; use
-`--nsight-shader-debug` for full, unoptimized shader debugging (`-g2 -O0`).
+`--nsight-capture`. Shaders embed source text and NonSemantic source/function/line
+debug information (`-g2`) while retaining optimization (`capture-symbols` mode).
+RelWithDebInfo also defaults to these symbols when internal capture injection is
+disabled (`METALLIC_NSIGHT_GRAPHICS_CAPTURE=0`), for external Nsight launches.
+`METALLIC_SHADER_CAPTURE_SYMBOLS=0` disables that independent default; requesting
+capture still enables symbols. Complete debug information can make optimized
+OpenPBR shader compilation take minutes on a cold cache. Use
+`--nsight-shader-debug` for unoptimized shader debugging (`-g2 -O0`), not profiling.
+The former `-g1` mode only emitted paths/lines and was insufficient for Nsight's
+high-level source and function views. The cache request version has been bumped
+so those old binaries are not reused. Restart the rebuilt executable and make a
+new capture; existing captures cannot acquire the missing information retroactively.
+See NVIDIA's [shader compilation requirements](https://docs.nvidia.com/nsight-graphics/UserGuide/configure-application.html#shader-compilation).
 Capture export requires an installed
 Nsight Graphics SDK and runtime.
 

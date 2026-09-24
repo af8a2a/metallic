@@ -1,0 +1,420 @@
+{
+  "gpu": "NVIDIA GeForce RTX 5060",
+  "driver": "616.92",
+  "method": "GPU timestamps, 8 warmup pairs, 40 measured AB/BA pairs, 3 process runs per optimized shader debug mode; median of per-run medians",
+  "summary": [
+    {
+      "mode": 0,
+      "case": 0,
+      "count": 73760,
+      "legacy_us": 674.16,
+      "p0_us": 588.3199999999999,
+      "reduction_percent": 12.732882401803735,
+      "run_reduction_range": [
+        12.491967919274616,
+        12.96072149044737
+      ]
+    },
+    {
+      "mode": 0,
+      "case": 4,
+      "count": 72,
+      "legacy_us": 4.288,
+      "p0_us": 4.704,
+      "reduction_percent": -9.701492537313428,
+      "run_reduction_range": [
+        -10.526315789473673,
+        -9.352517985611497
+      ]
+    },
+    {
+      "mode": 0,
+      "case": 5,
+      "count": 1284,
+      "legacy_us": 17.232,
+      "p0_us": 15.456,
+      "reduction_percent": 10.30640668523677,
+      "run_reduction_range": [
+        10.164835164835173,
+        10.354477611940304
+      ]
+    },
+    {
+      "mode": 0,
+      "case": 6,
+      "count": 72,
+      "legacy_us": 4.288,
+      "p0_us": 4.64,
+      "reduction_percent": -8.208955223880587,
+      "run_reduction_range": [
+        -8.614232209737803,
+        -7.462686567164156
+      ]
+    },
+    {
+      "mode": 0,
+      "case": 21,
+      "count": 264,
+      "legacy_us": 6.08,
+      "p0_us": 5.504,
+      "reduction_percent": 9.473684210526322,
+      "run_reduction_range": [
+        8.994708994709,
+        10.526315789473683
+      ]
+    },
+    {
+      "mode": 1,
+      "case": 0,
+      "count": 73760,
+      "legacy_us": 678.768,
+      "p0_us": 590.48,
+      "reduction_percent": 13.007095207788232,
+      "run_reduction_range": [
+        13.007095207788232,
+        13.64676464343847
+      ]
+    },
+    {
+      "mode": 1,
+      "case": 4,
+      "count": 72,
+      "legacy_us": 4.416,
+      "p0_us": 4.864,
+      "reduction_percent": -10.144927536231862,
+      "run_reduction_range": [
+        -10.526315789473673,
+        -9.154929577464799
+      ]
+    },
+    {
+      "mode": 1,
+      "case": 5,
+      "count": 1284,
+      "legacy_us": 17.344,
+      "p0_us": 15.52,
+      "reduction_percent": 10.516605166051674,
+      "run_reduction_range": [
+        10.386029411764719,
+        10.516605166051674
+      ]
+    },
+    {
+      "mode": 1,
+      "case": 6,
+      "count": 72,
+      "legacy_us": 4.288,
+      "p0_us": 4.64,
+      "reduction_percent": -8.208955223880587,
+      "run_reduction_range": [
+        -8.208955223880587,
+        -7.473309608540912
+      ]
+    },
+    {
+      "mode": 1,
+      "case": 21,
+      "count": 264,
+      "legacy_us": 6.08,
+      "p0_us": 5.44,
+      "reduction_percent": 10.526315789473683,
+      "run_reduction_range": [
+        9.999999999999998,
+        10.994764397905755
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "file": "build/classify-p0-20260924/timing-release-1.csv",
+      "case": 0,
+      "count": 73760,
+      "mode": 0,
+      "legacy_us": 682.592,
+      "p0_us": 596.3199999999999,
+      "reduction_percent": 12.638882377760075
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-1.csv",
+      "case": 4,
+      "count": 72,
+      "mode": 0,
+      "legacy_us": 4.288,
+      "p0_us": 4.704,
+      "reduction_percent": -9.701492537313428
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-1.csv",
+      "case": 5,
+      "count": 1284,
+      "mode": 0,
+      "legacy_us": 17.472,
+      "p0_us": 15.696,
+      "reduction_percent": 10.164835164835173
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-1.csv",
+      "case": 6,
+      "count": 72,
+      "mode": 0,
+      "legacy_us": 4.288,
+      "p0_us": 4.608,
+      "reduction_percent": -7.462686567164156
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-1.csv",
+      "case": 21,
+      "count": 264,
+      "mode": 0,
+      "legacy_us": 6.112,
+      "p0_us": 5.504,
+      "reduction_percent": 9.947643979057597
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-2.csv",
+      "case": 0,
+      "count": 73760,
+      "mode": 0,
+      "legacy_us": 674.16,
+      "p0_us": 586.784,
+      "reduction_percent": 12.96072149044737
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-2.csv",
+      "case": 4,
+      "count": 72,
+      "mode": 0,
+      "legacy_us": 4.256,
+      "p0_us": 4.704,
+      "reduction_percent": -10.526315789473673
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-2.csv",
+      "case": 5,
+      "count": 1284,
+      "mode": 0,
+      "legacy_us": 17.232,
+      "p0_us": 15.456,
+      "reduction_percent": 10.30640668523677
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-2.csv",
+      "case": 6,
+      "count": 72,
+      "mode": 0,
+      "legacy_us": 4.272,
+      "p0_us": 4.64,
+      "reduction_percent": -8.614232209737803
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-2.csv",
+      "case": 21,
+      "count": 264,
+      "mode": 0,
+      "legacy_us": 6.048,
+      "p0_us": 5.504,
+      "reduction_percent": 8.994708994709
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-3.csv",
+      "case": 0,
+      "count": 73760,
+      "mode": 0,
+      "legacy_us": 672.304,
+      "p0_us": 588.3199999999999,
+      "reduction_percent": 12.491967919274616
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-3.csv",
+      "case": 4,
+      "count": 72,
+      "mode": 0,
+      "legacy_us": 4.448,
+      "p0_us": 4.864,
+      "reduction_percent": -9.352517985611497
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-3.csv",
+      "case": 5,
+      "count": 1284,
+      "mode": 0,
+      "legacy_us": 17.152,
+      "p0_us": 15.376,
+      "reduction_percent": 10.354477611940304
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-3.csv",
+      "case": 6,
+      "count": 72,
+      "mode": 0,
+      "legacy_us": 4.448,
+      "p0_us": 4.8,
+      "reduction_percent": -7.913669064748197
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-release-3.csv",
+      "case": 21,
+      "count": 264,
+      "mode": 0,
+      "legacy_us": 6.08,
+      "p0_us": 5.44,
+      "reduction_percent": 10.526315789473683
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-1.csv",
+      "case": 0,
+      "count": 73760,
+      "mode": 1,
+      "legacy_us": 682.496,
+      "p0_us": 593.6479999999999,
+      "reduction_percent": 13.018098274568658
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-1.csv",
+      "case": 4,
+      "count": 72,
+      "mode": 1,
+      "legacy_us": 4.256,
+      "p0_us": 4.704,
+      "reduction_percent": -10.526315789473673
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-1.csv",
+      "case": 5,
+      "count": 1284,
+      "mode": 1,
+      "legacy_us": 17.152,
+      "p0_us": 15.36,
+      "reduction_percent": 10.447761194029859
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-1.csv",
+      "case": 6,
+      "count": 72,
+      "mode": 1,
+      "legacy_us": 4.288,
+      "p0_us": 4.64,
+      "reduction_percent": -8.208955223880587
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-1.csv",
+      "case": 21,
+      "count": 264,
+      "mode": 1,
+      "legacy_us": 6.08,
+      "p0_us": 5.472,
+      "reduction_percent": 9.999999999999998
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-2.csv",
+      "case": 0,
+      "count": 73760,
+      "mode": 1,
+      "legacy_us": 678.2560000000001,
+      "p0_us": 585.696,
+      "reduction_percent": 13.64676464343847
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-2.csv",
+      "case": 4,
+      "count": 72,
+      "mode": 1,
+      "legacy_us": 4.416,
+      "p0_us": 4.864,
+      "reduction_percent": -10.144927536231862
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-2.csv",
+      "case": 5,
+      "count": 1284,
+      "mode": 1,
+      "legacy_us": 17.344,
+      "p0_us": 15.52,
+      "reduction_percent": 10.516605166051674
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-2.csv",
+      "case": 6,
+      "count": 72,
+      "mode": 1,
+      "legacy_us": 4.208,
+      "p0_us": 4.544,
+      "reduction_percent": -7.984790874524705
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-2.csv",
+      "case": 21,
+      "count": 264,
+      "mode": 1,
+      "legacy_us": 6.08,
+      "p0_us": 5.44,
+      "reduction_percent": 10.526315789473683
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-3.csv",
+      "case": 0,
+      "count": 73760,
+      "mode": 1,
+      "legacy_us": 678.768,
+      "p0_us": 590.48,
+      "reduction_percent": 13.007095207788232
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-3.csv",
+      "case": 4,
+      "count": 72,
+      "mode": 1,
+      "legacy_us": 4.544,
+      "p0_us": 4.96,
+      "reduction_percent": -9.154929577464799
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-3.csv",
+      "case": 5,
+      "count": 1284,
+      "mode": 1,
+      "legacy_us": 17.408,
+      "p0_us": 15.6,
+      "reduction_percent": 10.386029411764719
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-3.csv",
+      "case": 6,
+      "count": 72,
+      "mode": 1,
+      "legacy_us": 4.496,
+      "p0_us": 4.832,
+      "reduction_percent": -7.473309608540912
+    },
+    {
+      "file": "build/classify-p0-20260924/timing-symbols-3.csv",
+      "case": 21,
+      "count": 264,
+      "mode": 1,
+      "legacy_us": 6.112,
+      "p0_us": 5.44,
+      "reduction_percent": 10.994764397905755
+    }
+  ],
+  "baseline_matches_head": true,
+  "source_hashes": {
+    "Shaders\\Features\\GPUDriven\\StreamClusterClassify.slang": "c2487d33f878ccc4cdb4c2eafdb085aec5119ae1497eb5314ccee79f407a01f8",
+    "Shaders\\Features\\GPUDriven\\GPUDrivenStreamAsset.slang": "7db0f7f4bf891d710abd6a5dc1dbead3bb209e6fe9fd6993884bb229e5117a38",
+    "tests\\rhi\\StreamClusterClassificationTests.cpp": "976248c8bcf3a2893effce68e4b53857d4152549e4b568dac7bafbd53d72120e",
+    "tests\\rhi\\shaders\\StreamClusterClassificationProbe.slang": "8c1323107cbfdba7aebef55f3fed36cc3183474b445d35b2e4ea4fb5d5e9de41"
+  },
+  "resources": {
+    "legacy": {
+      "registers": 40,
+      "shared_bytes": 3696,
+      "binary_bytes": 22656
+    },
+    "p0": {
+      "registers": 40,
+      "shared_bytes": 3264,
+      "binary_bytes": 15616
+    },
+    "subgroup": 32,
+    "both_debug_modes": true
+  }
+}

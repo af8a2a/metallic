@@ -41,7 +41,7 @@ namespace {
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 2;
-constexpr uint32_t kShaderCacheRequestVersion = 5;
+constexpr uint32_t kShaderCacheRequestVersion = 6;
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
@@ -941,11 +941,10 @@ Result compileSlangShaderToSpirv(
             .name = slang::CompilerOptionName::DebugInformation,
             .value = slang::CompilerOptionValue{
                 .kind = slang::CompilerOptionValueKind::Int,
-                // Capture needs source/line correlation. Full variable debug IR
-                // causes pathological optimized compile times for large OpenPBR
-                // kernels; reserve it for explicit unoptimized shader debugging.
-                .intValue0 = static_cast<int32_t>(debugMode == SlangShaderDebugMode::CaptureSymbols
-                    ? SLANG_DEBUG_INFO_LEVEL_MINIMAL : SLANG_DEBUG_INFO_LEVEL_STANDARD),
+                // Nsight's high-level source and flame graph need embedded source
+                // and NonSemantic function/call-site records. Minimal (-g1) only
+                // emits legacy paths/lines and cannot provide that correlation.
+                .intValue0 = static_cast<int32_t>(SLANG_DEBUG_INFO_LEVEL_STANDARD),
             },
         });
         if (debugMode == SlangShaderDebugMode::ShaderDebug) {

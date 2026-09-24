@@ -9,6 +9,8 @@
 #include <array>
 #include <cstring>
 #include <cstdlib>
+#include <fstream>
+#include <iomanip>
 #include <spdlog/spdlog.h>
 
 namespace metallic::tests {
@@ -23,6 +25,14 @@ public:
     StreamClusterClassificationTest() { type = RhiTestType::Rendering; name = "stream_cluster_cull_classify_equivalence"; }
     RhiTestResult run(RhiTestContext& context) override
     {
+        struct RestoreShaderMode {
+            SlangShaderDebugMode previous = slangShaderDebugMode();
+            ~RestoreShaderMode() { setSlangShaderDebugMode(previous); }
+        } restoreMode;
+        const char* captureSymbols = std::getenv("METALLIC_CLASSIFY_CAPTURE_SYMBOLS");
+        if (captureSymbols != nullptr && std::strcmp(captureSymbols, "1") == 0) {
+            setSlangShaderDebugMode(SlangShaderDebugMode::CaptureSymbols);
+        }
         std::string log;
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Stream classification regression",
@@ -67,14 +77,14 @@ public:
             inputs[index]->flush(); inputs[index]->unmap();
             return {};
         };
-        std::array<std::unique_ptr<ShaderModule>, 7> shaders;
-        std::array<std::unique_ptr<ComputePipeline>, 7> pipelines;
-        const char* entries[] = {"streamClusterPrepareMain", "streamClusterCullMain", "streamClusterBinMain", "referenceStreamClusterBinMain", "verifyStreamSoftwareLoadMain", "streamWorkloadResetMain", "streamWorkloadMain"};
+        std::array<std::unique_ptr<ShaderModule>, 8> shaders;
+        std::array<std::unique_ptr<ComputePipeline>, 8> pipelines;
+        const char* entries[] = {"streamClusterPrepareMain", "streamClusterCullMain", "streamClusterBinMain", "referenceStreamClusterBinMain", "verifyStreamSoftwareLoadMain", "streamWorkloadResetMain", "streamWorkloadMain", "legacyStreamClusterBinMain"};
         for (size_t i = 0; i < pipelines.size(); ++i) {
             ShaderCompileResult compiled;
             const char* additional[] = {PROJECT_SOURCE_DIR "/Shaders"};
             const auto result = compileSlangShaderToSpirv({
-                .moduleName = i >= 5 ? "Features/GPUDriven/GPUDrivenStreamWorkload" : i >= 3 ? "StreamClusterClassificationProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
+                .moduleName = (i == 5 || i == 6) ? "Features/GPUDriven/GPUDrivenStreamWorkload" : i >= 3 ? "StreamClusterClassificationProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = entries[i],
                 .searchPath = i >= 3 ? PROJECT_SOURCE_DIR "/tests/rhi/shaders" : PROJECT_SOURCE_DIR "/Shaders",
                 .additionalSearchPaths = additional, .additionalSearchPathCount = 1}, compiled);
@@ -84,7 +94,7 @@ public:
             CLASSIFY_REQUIRE(device->createComputePipeline({.computeShader = shaders[i].get(), .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, pipelines[i]));
         }
-        // Opt-in resource report for the actual production SW entrypoints,
+        // Opt-in resource report for classifier and production SW entrypoints,
         // alongside the validation-enabled classification regression below.
         const char* pipelineStats = std::getenv("METALLIC_VK_PIPELINE_STATISTICS");
         if (pipelineStats != nullptr && std::strcmp(pipelineStats, "1") == 0) {
@@ -94,12 +104,15 @@ public:
             } restoreShaderMode;
             for (const auto mode : {SlangShaderDebugMode::Disabled, SlangShaderDebugMode::CaptureSymbols}) {
                 setSlangShaderDebugMode(mode);
-                for (const char* entry : {"streamClusterRasterLegacyMain", "streamClusterRasterMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"}) {
+                for (const char* entry : {"streamClusterBinMain", "legacyStreamClusterBinMain", "streamClusterRasterLegacyMain", "streamClusterRasterMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"}) {
                     spdlog::info("[SW Pipeline Probe] entry={} debugMode={}", entry, int(mode));
+                    const char* additionalStatsPaths[] = {PROJECT_SOURCE_DIR "/Shaders"};
                     ShaderCompileResult compiled;
                     CLASSIFY_REQUIRE(compileSlangShaderToSpirv({.moduleName = std::strncmp(entry, "streamClusterRasterWork", 23) == 0 ?
-                        "Features/GPUDriven/GPUDrivenStreamWorkRaster" : "Features/GPUDriven/GPUDrivenStreamAsset",
-                        .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled));
+                        "Features/GPUDriven/GPUDrivenStreamWorkRaster" : std::strcmp(entry, "legacyStreamClusterBinMain") == 0 ?
+                        "StreamClusterClassificationProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
+                        .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                        .additionalSearchPaths = additionalStatsPaths, .additionalSearchPathCount = 1}, compiled));
                     std::unique_ptr<ShaderModule> shader;
                     std::unique_ptr<ComputePipeline> pipeline;
                     CLASSIFY_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}, shader));
@@ -120,6 +133,22 @@ public:
         CLASSIFY_REQUIRE(device->createCommandPool(*queue, pool));
         CLASSIFY_REQUIRE(pool->createCommandBuffer(commands));
         CLASSIFY_REQUIRE(device->createFence(false, fence));
+        // Optional same-input A/B timing. Both kernels only overwrite candidate
+        // tags, so the cull output can be reused without rebuilding the workload.
+        const char* benchmarkPath = std::getenv("METALLIC_CLASSIFY_BENCHMARK");
+        std::ofstream benchmark;
+        std::unique_ptr<TimestampQueryPool> timing;
+        constexpr uint32_t warmupPairs = 8, measuredPairs = 40;
+        constexpr uint32_t timedDispatches = (warmupPairs + measuredPairs) * 2;
+        if (benchmarkPath != nullptr) {
+            if (!device->capabilities().timestampQueries || queue->timestampValidBits() == 0) {
+                return RhiTestResult::skip("Classification benchmark requires GPU timestamps");
+            }
+            benchmark.open(benchmarkPath);
+            if (!benchmark) { return RhiTestResult::fail("Cannot open classification benchmark CSV"); }
+            benchmark << "case,phase,groups,classify_count,round,variant,gpu_us,debug_mode\n" << std::setprecision(10);
+            CLASSIFY_REQUIRE(device->createTimestampQueryPool(*queue, {.queryCount = timedDispatches * 2}, timing));
+        }
         bool sawFastSoftware = false, sawFastHardware = false;
         bool submitted = false, sawRetry = false, sawLate = false, sawSoftware = false, sawHardware = false, saw2D = false;
         struct Case { uint32_t groups; float maxPixels; bool ortho; bool reversed; uint32_t culling; bool dense = false; bool jitter = false; bool tessellation = false; uint32_t payloadFault = 0; };
@@ -237,8 +266,11 @@ public:
             CLASSIFY_REQUIRE(upload(Instances, instances.data(), sizeof(instances)));
             for (uint32_t phase = 0; phase < 2; ++phase) {
                 std::vector<uint32_t> reference;
-                for (uint32_t schedule = 0; schedule < 2; ++schedule) {
-                    auto& rasterizer = rasterizers[schedule];
+                for (uint32_t schedule = 0; schedule < 3; ++schedule) {
+                    const uint32_t bufferSet = std::min(schedule, 1u);
+                    auto& rasterizer = rasterizers[bufferSet];
+                    const bool measure = timing && schedule == 1 && phase == 0 &&
+                        (caseIndex == 0 || caseIndex == 4 || caseIndex == 5 || caseIndex == 6 || caseIndex == 21);
                     std::vector<VisibleClusterRecord> records(capacity);
                     std::array<uint32_t, 16> requests{};
                     CLASSIFY_REQUIRE(upload(Records, records.data(), recordBytes));
@@ -252,9 +284,9 @@ public:
                         .pageTableBuffer = handles[PageTable].index, .paramsBuffer = handles[Params].index,
                         .requestBuffer = handles[Requests].index, .activeHeaderBuffer = handles[Header].index,
                         .traversalPhase = phase, .rasterBindingsBuffer = handles[Bindings].index,
-                        .hybridQueueBuffer = handles[13 + schedule * 2].index, .hybridClusterBuffer = handles[12 + schedule * 2].index};
+                        .hybridQueueBuffer = handles[13 + bufferSet * 2].index, .hybridClusterBuffer = handles[12 + bufferSet * 2].index};
                     CLASSIFY_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, *pipelines[0], push));
-                    if (schedule == 1) {
+                    if (schedule != 0) {
                         commands->bindComputePipeline(*pipelines[4]);
                         commands->pushBindlessData(&push, sizeof(push));
                         CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
@@ -262,12 +294,28 @@ public:
                         commands->barrier({.buffers = &verifyBarrier, .bufferCount = 1});
                         CLASSIFY_REQUIRE(rasterizer.cullStreamClusters(*commands, *pipelines[1], push));
                     }
+                    if (measure) {
+                        CLASSIFY_REQUIRE(commands->resetTimestampQueries(*timing, 0, timedDispatches * 2));
+                        const BufferBarrierDesc tagsReady{.buffer = &rasterizer.clusterBuffer(),
+                            .before = ResourceState::General, .after = ResourceState::General};
+                        for (uint32_t dispatch = 0; dispatch < timedDispatches; ++dispatch) {
+                            // Swap AB/BA each pair to balance cache and clock drift.
+                            const bool legacy = ((dispatch / 2 + dispatch % 2) & 1u) == 0u;
+                            commands->barrier({.buffers = &tagsReady, .bufferCount = 1});
+                            commands->bindComputePipeline(*pipelines[legacy ? 7 : 2]);
+                            commands->pushBindlessData(&push, sizeof(push));
+                            CLASSIFY_REQUIRE(commands->writeTimestamp(*timing, dispatch * 2, PipelineStageBits::TopOfPipe));
+                            CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
+                            CLASSIFY_REQUIRE(commands->writeTimestamp(*timing, dispatch * 2 + 1, PipelineStageBits::BottomOfPipe));
+                        }
+                        commands->barrier({.buffers = &tagsReady, .bufferCount = 1});
+                    }
                     if (schedule == 0 || test.maxPixels != 0) {
-                        commands->bindComputePipeline(*pipelines[schedule == 1 ? 2 : 3]);
+                        commands->bindComputePipeline(*pipelines[schedule == 0 ? 3 : schedule == 1 ? 2 : 7]);
                         commands->pushBindlessData(&push, sizeof(push));
                         CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
                     }
-                    if (schedule == 1) {
+                    if (schedule != 0) {
                         BufferBarrierDesc counterCopy{.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General, .after = ResourceState::TransferSource};
                         commands->barrier({.buffers = &counterCopy, .bufferCount = 1});
                         commands->copyBuffer({.source = &rasterizer.clusterBuffer(), .destination = readback.get(),
@@ -276,10 +324,10 @@ public:
                         commands->barrier({.buffers = &counterCopy, .bufferCount = 1});
                     }
                     CLASSIFY_REQUIRE(rasterizer.finishClusterBins(*commands));
-                    if (schedule == 1) {
+                    if (schedule != 0) {
                         commands->bindBindlessHeap(*heap);
                         auto diagnosticPush = push;
-                        diagnosticPush.hybridQueueBuffer = handles[16 + schedule].index;
+                        diagnosticPush.hybridQueueBuffer = handles[16 + bufferSet].index;
                         BufferBarrierDesc ready{.buffer = &rasterizer.workloadBuffer(), .before = ResourceState::General, .after = ResourceState::General};
                         commands->barrier({.buffers = &ready, .bufferCount = 1});
                         commands->bindComputePipeline(*pipelines[5]);
@@ -329,6 +377,29 @@ public:
                     const uint32_t* args = actual.data() + (binBytes + recordBytes) / 4;
                     const uint32_t* counters = actual.data() + (binBytes + recordBytes + 36) / 4;
                     const uint32_t classifyCount = counters[0];
+                    if (measure) {
+                        std::array<TimestampQueryResult, timedDispatches * 2> timestamps{};
+                        CLASSIFY_REQUIRE(timing->readResults(0, uint32_t(timestamps.size()), timestamps.data()));
+                        std::array<std::vector<double>, 2> times;
+                        for (uint32_t dispatch = warmupPairs * 2; dispatch < timedDispatches; ++dispatch) {
+                            if (!timestamps[dispatch * 2].available || !timestamps[dispatch * 2 + 1].available) {
+                                return RhiTestResult::fail("Classification GPU timestamps unavailable");
+                            }
+                            const bool legacy = ((dispatch / 2 + dispatch % 2) & 1u) == 0u;
+                            const double us = timing->durationMilliseconds(timestamps[dispatch * 2].value,
+                                timestamps[dispatch * 2 + 1].value) * 1000.0;
+                            times[legacy ? 0 : 1].push_back(us);
+                            benchmark << caseIndex << ',' << phase << ',' << test.groups << ',' << classifyCount << ','
+                                << dispatch / 2 - warmupPairs << ',' << (legacy ? "legacy" : "p0") << ',' << us << ','
+                                << int(slangShaderDebugMode()) << '\n';
+                        }
+                        for (auto& values : times) { std::sort(values.begin(), values.end()); }
+                        constexpr uint32_t middle = measuredPairs / 2;
+                        const double oldUs = (times[0][middle - 1] + times[0][middle]) * 0.5;
+                        const double newUs = (times[1][middle - 1] + times[1][middle]) * 0.5;
+                        spdlog::info("[Classify P0] case={} workgroups={} legacy_us={:.3f} p0_us={:.3f} reduction={:.2f}%",
+                            caseIndex, classifyCount, oldUs, newUs, 100.0 * (oldUs - newUs) / oldUs);
+                    }
                     std::array<uint64_t, 16> workload{};
                     std::memcpy(workload.data(), reinterpret_cast<const uint8_t*>(actual.data()) + binBytes + recordBytes + 52, 128);
                     if (workload[0] + workload[15] != actual[4] || workload[1] != workload[3] + workload[8] ||
@@ -343,7 +414,7 @@ public:
                         std::string detail;
                         for (uint32_t i=0; i<16; ++i) { detail += " h"+std::to_string(i)+"="+std::to_string(reference[i])+"/"+std::to_string(actual[i]); }
                         detail += " args="+std::to_string(args[0])+","+std::to_string(args[1]);
-                        return RhiTestResult::fail("Classification mismatch in case " + std::to_string(caseIndex) + " phase " + std::to_string(phase)+detail);
+                        return RhiTestResult::fail("Classification mismatch in schedule " + std::to_string(schedule) + " case " + std::to_string(caseIndex) + " phase " + std::to_string(phase)+detail);
                     }
                     sawHardware |= actual[0] != 0; sawSoftware |= actual[4] != 0; saw2D |= args[1] > 1;
                     sawLate |= phase == 1 && visibleCount != 0;
@@ -353,7 +424,7 @@ public:
             ++caseIndex;
         }
         if (!sawFastSoftware || !sawFastHardware || !sawRetry || !sawLate || !sawSoftware || !sawHardware || !saw2D) { return RhiTestResult::fail("Missing paths fastSW/HW,retry,late,SW,HW,2D=" + std::to_string(sawFastSoftware)+std::to_string(sawFastHardware)+std::to_string(sawRetry)+std::to_string(sawLate)+std::to_string(sawSoftware)+std::to_string(sawHardware)+std::to_string(saw2D)); }
-        return RhiTestResult::pass("22 early/late GPU comparisons with cooperative raster decode, malformed headers/float3, metadata fast SW/HW and cull-only full HW: stable bins/IDs, HZB retry, clip boundaries, malformed payload, 1/8/32px, jitter, 2D survivors and empty reuse");
+        return RhiTestResult::pass("22 early/late GPU cases comparing P0 and legacy classifiers against the independent reference with cooperative raster decode, malformed headers/float3, metadata fast SW/HW and cull-only full HW: stable bins/IDs, HZB retry, clip boundaries, malformed payload, 1/8/32px, jitter, 2D survivors and empty reuse");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamClusterClassificationTest);

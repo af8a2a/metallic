@@ -11,7 +11,7 @@ inline constexpr const char* kDefaultSlangProfileName = "spirv_1_6";
 
 enum class SlangShaderDebugMode : uint8_t {
     Disabled,
-    CaptureSymbols, // Optimized code with source paths and line information (-g1).
+    CaptureSymbols, // Optimized code with embedded source and NonSemantic debug information (-g2).
     ShaderDebug, // Full variable debug information without optimization (-g2 -O0).
 };
 

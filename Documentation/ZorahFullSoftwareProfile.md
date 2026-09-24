@@ -61,7 +61,7 @@
 
 ## 本次代码与复现
 
-- `METALLIC_SHADER_CAPTURE_SYMBOLS=1`：只开启优化 shader 的路径/行号，不注入 Graphics Capture，也不启用 unoptimized ShaderDebug。
+- `METALLIC_SHADER_CAPTURE_SYMBOLS=1`：开启优化 shader 的内嵌源码和 NonSemantic 函数/行号调试信息（`-g2`），不注入 Graphics Capture，也不启用 unoptimized ShaderDebug。RelWithDebInfo 默认开启；完整符号会增加首次编译时间。
 - raster comparison 配置 `profileHoldSeconds`：0 默认；仅第一轮 legacy SW、冻结状态与读回恢复之后等待，范围 0–300 秒，输出 `ProfileReady.json`。
 - `METALLIC_VK_PIPELINE_STATISTICS=1`：可选 device feature 与 compute 创建统计 flag，默认关闭；不支持时报告 disabled，不阻止普通渲染。不修改公共 RHI 接口或生产 shader。
 - RHI 分类回归在统计模式下额外建立三种真实 SW pipeline，分别以 Disabled/CaptureSymbols 编译并报告；正常回归路径保持原行为。

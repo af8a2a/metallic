@@ -83,3 +83,57 @@ void verifyStreamSoftwareLoadMain(uint3 group : SV_GroupID, uint lane : SV_Group
     }
     if (!same) { InterlockedOr(bins[14], 0x20000000u); }
 }
+
+// Frozen pre-P0 classifier for same-input correctness and GPU timing.
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void legacyStreamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<RWStructuredBuffer<uint>> handle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+    RWStructuredBuffer<uint> bins = handle;
+    uint work = hybridFlatGroup(group);
+    if (work >= bins[0]) { return; }
+    uint item = hybridStreamClassifyBase(work);
+    uint candidate = bins[item];
+    uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> raster = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
+    bool needsCoverage = false;
+    if (raster[0].gpuSceneInstanceBuffer != 0xffffffffu) {
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.bufferShaderIndexBase + raster[0].gpuSceneInstanceBuffer, 0));
+        needsCoverage = (instances[groups[record / bins[13]].gpuSceneInstanceIndex].identity.w & 12u) != 0u;
+    }
+    if (raster[0].tessellationBuffer != 0xffffffffu || needsCoverage) {
+        if (lane == 0u) { hybridClassifyCluster(bins, 0u, record, candidate); }
+        return;
+    }
+    if (lane == 0u) {
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> params =
+            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups =
+            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
+        g_StreamRasterCluster = (StreamRasterCluster)0;
+        g_StreamRasterCluster.params = params[0];
+        g_StreamRasterCluster.group = groups[record / bins[13]];
+        g_StreamRasterCluster.pageWord = bins[item + 1u];
+        g_StreamRasterCluster.vertexCount = bins[item + 2u] & 0xffffu;
+        g_StreamRasterCluster.triangleCount = (bins[item + 2u] >> 16u) & 0x7fffu;
+        g_StreamRasterCluster.positionStrideWords = (bins[item + 2u] & 0x80000000u) != 0u ? 3u : 4u;
+        g_StreamRasterCluster.triangleBaseByte = bins[item + 3u];
+        g_StreamBinHardware = 0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane < g_StreamRasterCluster.vertexCount) { g_StreamRasterClip[lane] = streamClusterClip(g_StreamRasterCluster, lane, push); }
+    GroupMemoryBarrierWithGroupSync();
+    bool hardware = false;
+    if (lane < g_StreamRasterCluster.triangleCount) {
+        uint3 tri = streamClusterTriangle(g_StreamRasterCluster, lane, push);
+        hardware = !hybridTriangleFits(g_StreamRasterClip[tri.x], g_StreamRasterClip[tri.y], g_StreamRasterClip[tri.z],
+            float2(bins[6], bins[7]), asfloat(bins[8]));
+    }
+    bool waveHardware = WaveActiveAnyTrue(hardware);
+    if (WaveIsFirstLane() && waveHardware) { InterlockedOr(g_StreamBinHardware, 1u); }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane == 0u) { hybridClassifyCluster(bins, g_StreamBinHardware != 0u ? 0u : kHybridSoftwareBin, record, candidate); }
+}

@@ -1,0 +1,345 @@
+{
+  "capture": {
+    "uuid": "d9ecd06a-e50e-4516-898e-4c07312b20b4",
+    "captured_frame": "55",
+    "primary_api": "Vulkan",
+    "primary_gpu": "NVIDIA GeForce RTX 5060",
+    "driver_version": "616.92",
+    "resolution": "1600x900",
+    "nsight_version": "2026.3.1",
+    "nsight_version_build_id": "38722833",
+    "incompatibilities": [
+      "Vulkan extension version: VK_NV_low_latency (using: 2 > supported: 1)"
+    ]
+  },
+  "sourceHead": "19348327b072283bf819d2761285698f0a2c5376",
+  "sourceCorrelation": "Shader names match current source; captured SPIR-V and source HEAD identity were not verified.",
+  "replayImageHashes": {
+    "capture.png": "76d15ec503869e40b1140cf060ba64ce7d751c057cb067a5373c7d5ff7716272",
+    "replay_0.png": "76d15ec503869e40b1140cf060ba64ce7d751c057cb067a5373c7d5ff7716272",
+    "replay_2.png": "76d15ec503869e40b1140cf060ba64ce7d751c057cb067a5373c7d5ff7716272"
+  },
+  "replayImagesExactlyMatch": true,
+  "replayTimingCsv": "E:/metallic/build/nsight-visibility-20260924/replay/MetallicGPUDrivenSample__2026_09_24_06_45_47.9284639/iteration_times.csv",
+  "timingCaution": "msGpuTime is -1. msFrameTime includes CPU submission/wait and is not GPU pass time.",
+  "gpuTraceStatus": "Unavailable: No single-pass metric set selected. GPU Trace cannot proceed.",
+  "gpuPassTimesMs": null,
+  "hardwareCounters": null,
+  "traceAttempts": [
+    "trace-1: Blackwell GB20x, Top-Level Triage name, replay begin/end",
+    "trace-2: per-architecture metric JSON, replay begin/end",
+    "trace-3: metric set ID 0 and real-time shader profiler, replay begin/end",
+    "trace-4: saved project metric configuration, host executable working directory",
+    "trace-5: Top-Level Triage with present-count trigger, 30 frames then one frame"
+  ],
+  "functionCounts": {
+    "CaptureBegin": 1,
+    "vkSetLatencyMarkerNV": 6,
+    "vkWaitSemaphores": 7,
+    "vkLatencySleepNV": 1,
+    "vkGetSemaphoreCounterValue": 62,
+    "vkGetQueryPoolResults": 4,
+    "vkAcquireNextImageKHR": 1,
+    "vkResetCommandPool": 3,
+    "vkResetCommandBuffer": 9,
+    "CommandRecording": 10,
+    "vkWriteResourceDescriptorsEXT": 177,
+    "vkGetBufferDeviceAddress": 169,
+    "vkGetPhysicalDeviceProperties2KHR": 2,
+    "vkGetAccelerationStructureBuildSizesKHR": 1,
+    "vkGetAccelerationStructureDeviceAddressKHR": 2,
+    "NGX_Parameter_Set_pChar_pUint32": 19,
+    "vkGetPhysicalDeviceFormatProperties": 16,
+    "NGX_Parameter_Set_pChar_int32": 3,
+    "NGX_Parameter_Set_pChar_float": 7,
+    "NGX_Parameter_Set_pChar_pVoid": 11,
+    "MemoryUpdate": 95,
+    "vkQueueSubmit2": 10,
+    "vkBeginCommandBuffer": 10,
+    "vkCmdPipelineBarrier2": 285,
+    "vkCmdResetQueryPool": 3,
+    "vkCmdWriteTimestamp2": 118,
+    "vkEndCommandBuffer": 10,
+    "vkCmdBeginDebugUtilsLabelEXT": 30,
+    "vkCmdCopyMemoryKHR": 7,
+    "vkCmdBindResourceHeapEXT": 33,
+    "vkCmdBindPipeline": 77,
+    "vkCmdPushDataEXT": 184,
+    "vkCmdDispatch": 56,
+    "vkCmdBuildClusterAccelerationStructureIndirectNV": 1,
+    "vkCmdBuildAccelerationStructuresKHR": 1,
+    "vkCmdEndDebugUtilsLabelEXT": 30,
+    "vkCmdBeginRendering": 8,
+    "vkCmdEndRendering": 8,
+    "vkCmdDispatchIndirect2KHR": 19,
+    "vkCmdSetViewport": 7,
+    "vkCmdSetScissor": 17,
+    "vkCmdDrawMeshTasksIndirect2EXT": 2,
+    "vkCmdDraw": 3,
+    "vkCmdCopyImage": 2,
+    "vkCmdBindDescriptorSets": 5,
+    "vkCmdPipelineBarrier": 2,
+    "NVSDK_NGX_VULKAN_EvaluateFeature": 1,
+    "vkMapMemory": 2,
+    "vkFlushMappedMemoryRanges": 1,
+    "vkUnmapMemory": 2,
+    "vkCmdBindVertexBuffers": 1,
+    "vkCmdBindIndexBuffer": 1,
+    "vkCmdPushConstants": 1,
+    "vkCmdDrawIndexed": 10,
+    "IDXGIAdapter_QueryVideoMemoryInfo": 1,
+    "vkQueuePresentKHR": 1
+  },
+  "shaderObjects": [
+    {
+      "uid": 220,
+      "name": "ShaderModule_220"
+    },
+    {
+      "uid": 221,
+      "name": "ShaderModule_221"
+    },
+    {
+      "uid": 369,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.gpuDrivenStreamAssetTraversalMain"
+    },
+    {
+      "uid": 371,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.gpuDrivenStreamAssetBuildActiveMain"
+    },
+    {
+      "uid": 373,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.streamCooperativeLodMain"
+    },
+    {
+      "uid": 375,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.streamDistributedDemandMain"
+    },
+    {
+      "uid": 377,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.gpuDrivenStreamAssetBuildBlasInputMain"
+    },
+    {
+      "uid": 379,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.gpuDrivenStreamAssetBuildTlasInputMain"
+    },
+    {
+      "uid": 482,
+      "name": "residentLodResetMain"
+    },
+    {
+      "uid": 484,
+      "name": "residentLodSelectMain"
+    },
+    {
+      "uid": 486,
+      "name": "residentLodArgumentsMain"
+    },
+    {
+      "uid": 488,
+      "name": "residentLodScatterMain"
+    },
+    {
+      "uid": 501,
+      "name": "Features/GPUDriven/GPUDrivenCulling.gpuDrivenPreviewResetMain"
+    },
+    {
+      "uid": 502,
+      "name": "Features/GPUDriven/GPUDrivenCulling.gpuDrivenPreviewInstanceCullMain"
+    },
+    {
+      "uid": 505,
+      "name": "Features/VisibilityBuffer/VisibilityBufferComposite.visibilityBufferCompositeVertexMain"
+    },
+    {
+      "uid": 506,
+      "name": "Features/VisibilityBuffer/VisibilityBufferComposite.visibilityBufferCompositeFragmentMain"
+    },
+    {
+      "uid": 507,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.gpuDrivenStreamAssetMeshMain"
+    },
+    {
+      "uid": 508,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.gpuDrivenStreamAssetFragmentMain"
+    },
+    {
+      "uid": 509,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.gpuDrivenStreamAssetCullResetMain"
+    },
+    {
+      "uid": 510,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.gpuDrivenStreamAssetInstanceCullMain"
+    },
+    {
+      "uid": 511,
+      "name": "Features/GPUDriven/HzbSpd.hzbSpdMain"
+    },
+    {
+      "uid": 523,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.streamClusterPrepareMain"
+    },
+    {
+      "uid": 525,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.streamClusterCullMain"
+    },
+    {
+      "uid": 527,
+      "name": "Features/GPUDriven/GPUDrivenStreamAsset.streamClusterBinMain"
+    },
+    {
+      "uid": 539,
+      "name": "Features/GPUDriven/GPUDrivenStreamWorkRaster.streamClusterRasterWorkControlMain"
+    },
+    {
+      "uid": 592,
+      "name": "ScenePathTracePass.base"
+    },
+    {
+      "uid": 595,
+      "name": "ScenePathTracePass.base"
+    },
+    {
+      "uid": 598,
+      "name": "ScenePathTracePass.base"
+    },
+    {
+      "uid": 601,
+      "name": "ScenePathTracePass.base"
+    },
+    {
+      "uid": 604,
+      "name": "ScenePathTracePass.base"
+    },
+    {
+      "uid": 607,
+      "name": "UpscalerGuideResolve"
+    },
+    {
+      "uid": 610,
+      "name": "Features/PostProcess/StreamlineDlssSupport.streamlineDlssDepthVertexMain"
+    },
+    {
+      "uid": 611,
+      "name": "Features/PostProcess/StreamlineDlssSupport.streamlineDlssDepthFragmentMain"
+    },
+    {
+      "uid": 613,
+      "name": "Features/PostProcess/StreamlineDlssSupport.streamlineDlssAlphaMain"
+    },
+    {
+      "uid": 619,
+      "name": "autoExposureHistogramMain"
+    },
+    {
+      "uid": 622,
+      "name": "autoExposureReduceMain"
+    },
+    {
+      "uid": 625,
+      "name": "autoExposureApplyMain"
+    },
+    {
+      "uid": 633,
+      "name": "finalBlitMain"
+    },
+    {
+      "uid": 843,
+      "name": "Ray-traced shadows"
+    },
+    {
+      "uid": 869,
+      "name": "ImportancePdfCompute"
+    },
+    {
+      "uid": 872,
+      "name": "BuildReGIR"
+    },
+    {
+      "uid": 886,
+      "name": "materialBinningResetMain"
+    },
+    {
+      "uid": 889,
+      "name": "materialBinningClassifyMain"
+    },
+    {
+      "uid": 892,
+      "name": "materialBinningArgumentsMain"
+    },
+    {
+      "uid": 940,
+      "name": "Cluster light grid"
+    },
+    {
+      "uid": 1080,
+      "name": "hybridClusterResetMain"
+    },
+    {
+      "uid": 1082,
+      "name": "hybridClusterHistogramMain"
+    },
+    {
+      "uid": 1084,
+      "name": "hybridClusterArgumentsMain"
+    },
+    {
+      "uid": 1086,
+      "name": "hybridClusterScatterMain"
+    },
+    {
+      "uid": 1088,
+      "name": "hybridResetMain"
+    },
+    {
+      "uid": 1094,
+      "name": "hybridResolveVertexMain"
+    },
+    {
+      "uid": 1095,
+      "name": "hybridResolveFragmentMain"
+    }
+  ],
+  "objectCaution": "Object presence is not per-event pipeline binding or an execution count.",
+  "skillFollowup": {
+    "skill": "cli-anything-nsight-graphics",
+    "harnessVersion": "0.2.0",
+    "traceResult": {
+      "ok": false,
+      "returncode": 1,
+      "artifact_count": 0,
+      "command": "\"C:\\Program Files\\NVIDIA Corporation\\Nsight Graphics 2026.3.1\\host\\windows-desktop-nomad-x64\\ngfx.exe\" --output-dir E:\\metallic\\build\\nsight-visibility-20260924\\skill-trace-2 --activity \"GPU Trace Profiler\" --exe \"C:/Program Files/NVIDIA Corporation/Nsight Graphics 2026.3.1/host/windows-desktop-nomad-x64/ngfx-replay.exe\" --dir E:/metallic/build/nsight-visibility-20260924 --args \"--present-hidden --no-present-blit --no-block-on-incompatibility --no-crash-reporting --loop-count 1000 E:/metallic/Captures/NsightGraphics/MetallicGPUDrivenSample_2026_09_24_13_16_12.ngfx-capture\" --start-after-frames 30 --max-duration-ms 1000 --limit-to-frames 1 --auto-export --architecture \"Blackwell GB20x\" --metric-set-id 0"
+    },
+    "traceErrors": [
+      "ERROR: No single-pass metric set selected. GPU Trace can't proceed."
+    ],
+    "traceResultPath": "E:/metallic/build/nsight-visibility-20260924/skill-trace-2/result.json",
+    "replayResultPath": "E:/metallic/build/nsight-visibility-20260924/skill-replay-analysis-result.json",
+    "replayOk": true,
+    "replayAnalysis": {
+      "summary": {
+        "metadata_artifacts_present": {
+          "summary": true,
+          "functions": true,
+          "objects": true
+        },
+        "primary_api": "Vulkan",
+        "primary_gpu": "NVIDIA GeForce RTX 5060",
+        "object_count": 602,
+        "function_event_count": 1555,
+        "log_error_count": 0,
+        "screenshot_present": false,
+        "perf_report_present": false
+      },
+      "highlights": [
+        "Primary API: Vulkan.",
+        "Primary GPU: NVIDIA GeForce RTX 5060.",
+        "Metadata objects: 602.",
+        "Function events: 1555.",
+        "Captured replay logs reported no severity >= 2 errors."
+      ],
+      "warnings": []
+    },
+    "conclusion": "Official ngfx establishes the replay session, then fails metric initialization. No new GPU timing/counter evidence. Root cause (configuration, driver, permissions, etc.) is not established."
+  }
+}

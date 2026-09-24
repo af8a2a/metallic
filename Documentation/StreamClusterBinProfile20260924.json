@@ -1,0 +1,114 @@
+{
+  "input": "E:/metallic/Captures/NsightGraphics/streamClusterBinMain.csv",
+  "sha256": "13222ffc71e5172a028a0b33e2cce19562d7bf185d500fcf642a914bf6cedf02",
+  "targetModule": "comp.10000.spv (ef24b8b4bc22971f)",
+  "targetILSelfSamples": 10310,
+  "samplingScopeCaution": "Screenshot shows 9.59K and 87.60%; exact CSV target module has 10310. Do not merge denominators or interpret either as frame time.",
+  "sourceKernelMatchesCurrentLines4101To4150": true,
+  "sampledSections": {
+    "comp.10000.spv (865e464ee34ff150)": 28,
+    "comp.10000.spv (ef24b8b4bc22971f)": 10310
+  },
+  "top3StallSampleLowerBounds": {
+    "Wait": 1142,
+    "Not Selected": 1441,
+    "No Instructions": 125,
+    "MIO Throttle": 425,
+    "Selected": 427,
+    "Short Scoreboard": 779,
+    "Dispatch Stall": 11,
+    "Long Scoreboard": 1293,
+    "Math Pipe Throttle": 10,
+    "Branch Resolving": 36,
+    "Barrier": 3662,
+    "Miscellaneous": 29
+  },
+  "top3StallCaution": "CSV lists only top three reasons per instruction; unlisted reasons are not zero. Counts are sample attribution, not elapsed times.",
+  "barrierHotspots": [
+    {
+      "ilLine": 9834,
+      "csvLine": 177903,
+      "instruction": "%1653 = OpLoad %uint %1652",
+      "samples": 2795,
+      "barrierSamples": 2783
+    },
+    {
+      "ilLine": 10424,
+      "csvLine": 178551,
+      "instruction": "%2420 = OpLoad %uint %2419",
+      "samples": 538,
+      "barrierSamples": 523
+    },
+    {
+      "ilLine": 10918,
+      "csvLine": 179073,
+      "instruction": "OpBranchConditional %2997 %363 %371",
+      "samples": 364,
+      "barrierSamples": 356
+    }
+  ],
+  "firstBarrierPercentOfTargetSamples": 26.993210475266732,
+  "firstBarrierPercentOfListedBarrierSamples": 75.99672310212998,
+  "highLevelHotLines": [
+    {
+      "sourceLine": 4110,
+      "csvLine": 4112,
+      "source": "uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];",
+      "selfSamples": 441,
+      "percentOfTargetILSamples": 4.277400581959263
+    },
+    {
+      "sourceLine": 4116,
+      "csvLine": 4118,
+      "source": "needsCoverage = (instances[groups[record / bins[13]].gpuSceneInstanceIndex].identity.w & 12u) != 0u;",
+      "selfSamples": 1108,
+      "percentOfTargetILSamples": 10.746847720659554
+    },
+    {
+      "sourceLine": 4127,
+      "csvLine": 4129,
+      "source": "g_StreamRasterCluster = (StreamRasterCluster)0;",
+      "selfSamples": 235,
+      "percentOfTargetILSamples": 2.279340446168768
+    },
+    {
+      "sourceLine": 4128,
+      "csvLine": 4130,
+      "source": "g_StreamRasterCluster.params = params[0];",
+      "selfSamples": 415,
+      "percentOfTargetILSamples": 4.025218234723569
+    },
+    {
+      "sourceLine": 4129,
+      "csvLine": 4131,
+      "source": "g_StreamRasterCluster.group = groups[record / bins[13]];",
+      "selfSamples": 193,
+      "percentOfTargetILSamples": 1.871968962172648
+    },
+    {
+      "sourceLine": 4138,
+      "csvLine": 4140,
+      "source": "if (lane < g_StreamRasterCluster.vertexCount) { g_StreamRasterClip[lane] = streamClusterClip(g_StreamRasterCluster, lane, push); }",
+      "selfSamples": 3069,
+      "percentOfTargetILSamples": 29.76721629485936
+    },
+    {
+      "sourceLine": 4141,
+      "csvLine": 4143,
+      "source": "if (lane < g_StreamRasterCluster.triangleCount) {",
+      "selfSamples": 634,
+      "percentOfTargetILSamples": 6.149369544131911
+    },
+    {
+      "sourceLine": 4149,
+      "csvLine": 4151,
+      "source": "if (lane == 0u) { hybridClassifyCluster(bins, g_StreamBinHardware != 0u ? 0u : kHybridSoftwareBin, record, candidate); }",
+      "selfSamples": 391,
+      "percentOfTargetILSamples": 3.792434529582929
+    }
+  ],
+  "maximumLiveRegistersInTargetIL": 36,
+  "registerCaution": "Live registers are not allocated registers per thread, occupancy or spill measurements. High-level helper maxima can come from other modules.",
+  "sourceRowsAreMirrorsNotAdditionalSamples": true,
+  "gpuDurationMs": null
+}

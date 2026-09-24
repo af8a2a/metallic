@@ -214,9 +214,15 @@ bool spirvContainsExtendedInstructionSet(
     return false;
 }
 
-bool spirvContainsSourceLines(const std::vector<uint32_t>& spirv, std::string_view sourceName)
+bool spirvContainsCaptureDebugInfo(
+    const std::vector<uint32_t>& spirv,
+    std::string_view sourceName,
+    std::string_view entryPointName)
 {
+    std::unordered_map<uint32_t, std::string_view> strings;
     std::unordered_set<uint32_t> sourceIds;
+    uint32_t debugSet = 0;
+    bool hasFunction = false;
     bool hasLine = false;
     for (size_t wordIndex = 5; wordIndex < spirv.size();) {
         const uint32_t wordCount = spirv[wordIndex] >> 16u;
@@ -224,20 +230,42 @@ bool spirvContainsSourceLines(const std::vector<uint32_t>& spirv, std::string_vi
         if (wordCount == 0 || wordIndex + wordCount > spirv.size()) {
             return false;
         }
-        // OpString names the local source file; OpLine must refer to that file.
-        if (opcode == 7u && wordCount >= 3u) {
+        if ((opcode == 7u || opcode == 11u) && wordCount >= 3u) {
             const char* begin = reinterpret_cast<const char*>(spirv.data() + wordIndex + 2);
             const char* limit = begin + (wordCount - 2u) * sizeof(uint32_t);
             const char* end = std::find(begin, limit, '\0');
-            if (end != limit && std::string_view(begin, end - begin).ends_with(sourceName)) {
-                sourceIds.insert(spirv[wordIndex + 1]);
+            if (end != limit) {
+                const std::string_view text(begin, end - begin);
+                if (opcode == 7u) {
+                    strings.emplace(spirv[wordIndex + 1], text);
+                } else if (text == "NonSemantic.Shader.DebugInfo.100") {
+                    debugSet = spirv[wordIndex + 1];
+                }
             }
         }
-        hasLine |= opcode == 8u && wordCount == 4u && spirv[wordIndex + 2] > 0 &&
-            sourceIds.contains(spirv[wordIndex + 1]);
+        // OpExtInst: DebugSource must embed text, not just a filesystem path.
+        if (opcode == 12u && wordCount >= 7u && debugSet != 0 &&
+            spirv[wordIndex + 3] == debugSet && spirv[wordIndex + 4] == 35u &&
+            strings[spirv[wordIndex + 5]].ends_with(sourceName) &&
+            strings[spirv[wordIndex + 6]].find(entryPointName) != std::string_view::npos) {
+            sourceIds.insert(spirv[wordIndex + 2]);
+        }
         wordIndex += wordCount;
     }
-    return hasLine;
+    for (size_t wordIndex = 5; wordIndex < spirv.size();) {
+        const uint32_t wordCount = spirv[wordIndex] >> 16u;
+        const uint32_t opcode = spirv[wordIndex] & 0xffffu;
+        if (opcode == 12u && wordCount >= 5u && spirv[wordIndex + 3] == debugSet) {
+            // DebugFunction names the entry and ties it to the embedded source.
+            hasFunction |= wordCount >= 8u && spirv[wordIndex + 4] == 20u &&
+                strings[spirv[wordIndex + 5]] == entryPointName &&
+                sourceIds.contains(spirv[wordIndex + 7]);
+            hasLine |= wordCount >= 10u && spirv[wordIndex + 4] == 103u &&
+                sourceIds.contains(spirv[wordIndex + 5]);
+        }
+        wordIndex += wordCount;
+    }
+    return hasFunction && hasLine;
 }
 
 render::Result createSlangShaderModule(
@@ -3326,12 +3354,10 @@ public:
         render::ShaderCompileResult symbolCompile;
         result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, symbolCompile);
         if (!result || symbolCompile.spirv.empty() || cacheHit ||
-            !spirvContainsSourceLines(symbolCompile.spirv, "ShaderCacheTest.slang") ||
-            spirvContainsExtendedInstructionSet(
-                symbolCompile.spirv,
-                "NonSemantic.Shader.DebugInfo.100")) {
+            !spirvContainsCaptureDebugInfo(
+                symbolCompile.spirv, "ShaderCacheTest.slang", "shaderCacheMain")) {
             return RhiTestResult::fail(
-                "capture-symbol shader must retain source paths/lines without full variable debug information");
+                "capture-symbol shader must embed source, function and line debug information");
         }
         render::ShaderCompileResult cachedSymbolCompile;
         result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedSymbolCompile);
