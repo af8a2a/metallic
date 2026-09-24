@@ -3246,12 +3246,20 @@ struct GraphicsShaderObjectProgramImpl {
     bool usesBindlessHeap = false;
 };
 
+struct CaptureCommandPool {
+    VkCommandPool pool = VK_NULL_HANDLE;
+    uint32_t queueFamilyIndex = 0;
+    std::vector<VkCommandBuffer> availableBuffers;
+};
+
 struct CommandPoolImpl {
     std::shared_ptr<CommandSubmissionRegistry> submissions = std::make_shared<CommandSubmissionRegistry>();
     DeviceImpl* device = nullptr;
     VkCommandPool pool = VK_NULL_HANDLE;
     uint32_t queueFamilyIndex = 0;
     VkQueueFlags queueFlags = 0;
+    bool recycleForCapture = false;
+    std::vector<VkCommandBuffer> availableBuffers;
 };
 
 struct CommandBufferImpl {
@@ -3259,6 +3267,7 @@ struct CommandBufferImpl {
     DeviceImpl* device = nullptr;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    CommandPoolImpl* capturePool = nullptr;
     uint32_t queueFamilyIndex = 0;
     VkQueueFlags queueFlags = 0;
     VkPipelineLayout currentGraphicsPipelineLayout = VK_NULL_HANDLE;
@@ -3368,6 +3377,8 @@ struct DeviceImpl {
     PFN_vkGetCalibratedTimestampsEXT getCalibratedTimestamps = nullptr;
     VkTimeDomainEXT calibrationHostDomain = VK_TIME_DOMAIN_DEVICE_EXT;
     std::vector<std::unique_ptr<Queue>> queues;
+    std::mutex captureCommandPoolMutex;
+    std::vector<CaptureCommandPool> captureCommandPools;
 
     ~DeviceImpl();
     void addQueue(
@@ -3544,6 +3555,10 @@ DeviceImpl::~DeviceImpl()
 
     if (device != VK_NULL_HANDLE) {
         activateVolkDevice(device);
+        for (const auto& pool : captureCommandPools) {
+            vkDestroyCommandPool(device, pool.pool, nullptr);
+        }
+        captureCommandPools.clear();
         vkDestroyDevice(device, nullptr);
         clearActiveVolkDevice(device);
         device = VK_NULL_HANDLE;
@@ -5403,7 +5418,18 @@ CommandBuffer::CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl)
 CommandBuffer::~CommandBuffer()
 {
     if (impl_ != nullptr && impl_->commandBuffer != VK_NULL_HANDLE) {
-        vkFreeCommandBuffers(impl_->device->device, impl_->pool, 1, &impl_->commandBuffer);
+        if (impl_->capturePool != nullptr) {
+            // Nsight 2026.3.1 retains freed wrappers in its event polling list.
+            // Reset alone does not remove those references. Keep native handles
+            // alive and reuse them until device teardown, including across pool
+            // lifetimes. Callers must still complete work before destruction.
+            // TODO: Remove after an updated Nsight passes the full-size capture
+            // and resize regression without reuse; see the capture investigation.
+            (void)vkResetCommandBuffer(impl_->commandBuffer, 0);
+            impl_->capturePool->availableBuffers.push_back(impl_->commandBuffer);
+        } else {
+            vkFreeCommandBuffers(impl_->device->device, impl_->pool, 1, &impl_->commandBuffer);
+        }
         impl_->commandBuffer = VK_NULL_HANDLE;
     }
 }
@@ -7759,7 +7785,14 @@ CommandPool::CommandPool(std::unique_ptr<detail::CommandPoolImpl> impl)
 CommandPool::~CommandPool()
 {
     if (impl_ != nullptr && impl_->pool != VK_NULL_HANDLE) {
-        vkDestroyCommandPool(impl_->device->device, impl_->pool, nullptr);
+        if (impl_->recycleForCapture) {
+            (void)vkResetCommandPool(impl_->device->device, impl_->pool, 0);
+            std::lock_guard lock(impl_->device->captureCommandPoolMutex);
+            impl_->device->captureCommandPools.push_back({
+                impl_->pool, impl_->queueFamilyIndex, std::move(impl_->availableBuffers)});
+        } else {
+            vkDestroyCommandPool(impl_->device->device, impl_->pool, nullptr);
+        }
         impl_->pool = VK_NULL_HANDLE;
         impl_->submissions->cancel();
     }
@@ -7793,9 +7826,14 @@ Result CommandPool::createCommandBuffer(std::unique_ptr<CommandBuffer>& outComma
     };
 
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    const VkResult result = vkAllocateCommandBuffers(impl_->device->device, &allocateInfo, &commandBuffer);
-    if (result != VK_SUCCESS) {
-        return resultFromVk(result);
+    if (impl_->recycleForCapture && !impl_->availableBuffers.empty()) {
+        commandBuffer = impl_->availableBuffers.back();
+        impl_->availableBuffers.pop_back();
+    } else {
+        const VkResult result = vkAllocateCommandBuffers(impl_->device->device, &allocateInfo, &commandBuffer);
+        if (result != VK_SUCCESS) {
+            return resultFromVk(result);
+        }
     }
 
     auto commandBufferImpl = std::make_unique<detail::CommandBufferImpl>();
@@ -7803,6 +7841,7 @@ Result CommandPool::createCommandBuffer(std::unique_ptr<CommandBuffer>& outComma
     commandBufferImpl->device = impl_->device;
     commandBufferImpl->pool = impl_->pool;
     commandBufferImpl->commandBuffer = commandBuffer;
+    commandBufferImpl->capturePool = impl_->recycleForCapture ? impl_.get() : nullptr;
     commandBufferImpl->queueFamilyIndex = impl_->queueFamilyIndex;
     commandBufferImpl->queueFlags = impl_->queueFlags;
     outCommandBuffer.reset(new CommandBuffer(std::move(commandBufferImpl)));
@@ -8807,6 +8846,28 @@ Result Device::createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& out
     }
     activateVolkDevice(impl_->device);
 
+    auto poolImpl = std::make_unique<detail::CommandPoolImpl>();
+    poolImpl->device = impl_.get();
+    poolImpl->queueFamilyIndex = queue.impl_->familyIndex;
+    poolImpl->queueFlags = queue.impl_->queueFlags;
+    poolImpl->recycleForCapture = profiling::NsightGraphicsCapture::vulkanInjectionActive();
+    if (poolImpl->recycleForCapture) {
+        std::lock_guard lock(impl_->captureCommandPoolMutex);
+        auto& pools = impl_->captureCommandPools;
+        const auto found = std::find_if(pools.begin(), pools.end(), [&](const auto& pool) {
+            return pool.queueFamilyIndex == queue.impl_->familyIndex;
+        });
+        if (found != pools.end()) {
+            poolImpl->pool = found->pool;
+            poolImpl->availableBuffers = std::move(found->availableBuffers);
+            pools.erase(found);
+        }
+    }
+    if (poolImpl->pool != VK_NULL_HANDLE) {
+        outCommandPool.reset(new CommandPool(std::move(poolImpl)));
+        return {};
+    }
+
     VkCommandPoolCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -8819,11 +8880,7 @@ Result Device::createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& out
         return resultFromVk(result);
     }
 
-    auto poolImpl = std::make_unique<detail::CommandPoolImpl>();
-    poolImpl->device = impl_.get();
     poolImpl->pool = pool;
-    poolImpl->queueFamilyIndex = queue.impl_->familyIndex;
-    poolImpl->queueFlags = queue.impl_->queueFlags;
     outCommandPool.reset(new CommandPool(std::move(poolImpl)));
     return {};
 }

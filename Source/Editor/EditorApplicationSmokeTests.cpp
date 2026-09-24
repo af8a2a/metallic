@@ -15,8 +15,65 @@
 #include <cstring>
 #include <algorithm>
 #include <fstream>
+#include <chrono>
 
 namespace metallic {
+
+bool EditorApplication::runNsightCaptureSmokeTest()
+{
+    using render::profiling::NsightGraphicsCaptureState;
+    if (nsightGraphicsCapture_.state() != NsightGraphicsCaptureState::Ready) {
+        spdlog::error("[Smoke Nsight] Requires Nsight SDK injection before graphics initialization");
+        return false;
+    }
+    const auto renderCaptureFrame = [&]() {
+        auto profileFrame = profiler_.beginFrame();
+        if (!waitForFrameSlotBeforeInput()) { return false; }
+        const render::vulkan::StreamlineFrameScope streamlineFrame;
+        pollEvents();
+        return renderFrame() && viewportPreviewValid_;
+    };
+    // Settle streaming, the editor layout and DLSS before using the same request
+    // and Present boundaries as the capture button.
+    for (uint32_t frame = 0; frame < 90; ++frame) {
+        if (!renderCaptureFrame()) { return false; }
+    }
+    for (uint32_t capture = 0; capture < 3; ++capture) {
+        if (capture > 0) {
+            // Exercise DLSS/resource recreation as well as steady-state capture.
+            if (!SDL_SetWindowSize(window_, capture == 1 ? 1280 : 1600, capture == 1 ? 720 : 900)) {
+                return false;
+            }
+            for (uint32_t frame = 0; frame < 48; ++frame) {
+                if (!renderCaptureFrame()) { return false; }
+                SDL_Delay(10); // Allow the normal resize debounce to expire.
+            }
+        }
+        if (viewportTextureWidth_ <= 256) {
+            spdlog::error("[Smoke Nsight] Must exercise a full-size viewport, not the reduced smoke preview");
+            return false;
+        }
+        requestNsightGraphicsCapture();
+        if (!nsightGraphicsCapture_.hasOutstandingCapture()) { return false; }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+        while (nsightGraphicsCapture_.hasOutstandingCapture() &&
+            std::chrono::steady_clock::now() < deadline) {
+            if (!renderCaptureFrame()) { return false; }
+            pollNsightGraphicsCapture();
+        }
+        std::error_code error;
+        const auto& path = nsightGraphicsCapture_.capturePath();
+        const auto bytes = std::filesystem::file_size(path, error);
+        if (nsightGraphicsCapture_.state() != NsightGraphicsCaptureState::CaptureCompleted ||
+            error || bytes == 0) {
+            spdlog::error("[Smoke Nsight] Capture did not complete: {}", nsightGraphicsCapture_.statusText());
+            return false;
+        }
+        spdlog::info("[Smoke Nsight] Capture {} viewport {}x{}: '{}' ({} bytes)",
+            capture + 1, viewportTextureWidth_, viewportTextureHeight_, path.string(), bytes);
+    }
+    return true;
+}
 
 bool EditorApplication::runDlssCameraSmokeTest()
 {

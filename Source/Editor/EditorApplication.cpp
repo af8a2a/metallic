@@ -2076,6 +2076,11 @@ int EditorApplication::run(
             (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "maxDepth", 1);
             (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "accumulate", false);
         }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_NSIGHT_CAPTURE")) {
+            const bool passed = runNsightCaptureSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_MATERIAL_INSPECTOR")) {
             const bool passed = runMaterialInspectorSmokeTest();
             shutdown();
@@ -6212,7 +6217,8 @@ void EditorApplication::drawViewportPanel()
     auto [previewWidth, previewHeight] = constrainedPreviewExtent(
         panelWidth,
         panelHeight,
-        smokeTest_ && !environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH")
+        smokeTest_ && !environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH") &&
+            !environmentFlagEnabled("METALLIC_SMOKE_TEST_NSIGHT_CAPTURE")
             ? kSmokeTestPreviewSize : kMaxViewportPreviewSize);
     if (smokeTest_ && environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH")) {
         previewWidth = 1564;

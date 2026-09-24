@@ -19,4 +19,11 @@
 
 `--sample` 兼容两个 ID：`gpu-driven-sample`、`gpu-driven-zorah-full`。`--streamasset-path <file>` 仅覆盖所选启动场景的 cook，切换到另一个场景使用其自身的缓存。`--debug-control`、`--smoke-test` 与 `--wait-for-graphics-debugger` 保留。
 
+Nsight Graphics 2026.3.1 在 MiniZorah 开始捕获时可能崩溃于
+`ngfx-capture-interception.dll + 0xec137`。单独 reset 后释放仍可能崩溃。
+捕获注入期间，RHI 现会 reset 并复用原生命令缓冲和命令池，延迟到设备
+关闭时销毁，以处理捕获器的失效命令缓冲引用；保留 DLSS、
+Streamline 注释和异步计算。复现、回放验证和回归命令见
+[捕获崩溃调查](NsightCommandBufferCaptureInvestigation.md)。
+
 任意 `--scene` 覆盖、旧诊断 ID、`--streamasset` 和 `--minizorah-vbuffer` 不再作为本程序入口。其他诊断样例与自定义图仍在通用 `Metallic` 编辑器中使用；共享样例目录和渲染 Pass 保留。

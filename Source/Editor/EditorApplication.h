@@ -57,6 +57,7 @@ private:
     bool runZorahFullRoamBenchmark();
     bool runZorahFullRasterComparison(const render::RenderGraphProperties& config, const std::filesystem::path& output);
     bool runDlssCameraSmokeTest();
+    bool runNsightCaptureSmokeTest();
     bool runVisibilityPreviewSmokeTest();
     bool runMaterialInspectorSmokeTest();
     void drawDockspace();
