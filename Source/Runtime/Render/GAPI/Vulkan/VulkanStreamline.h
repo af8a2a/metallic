@@ -3,6 +3,7 @@
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -164,6 +165,49 @@ struct StreamlineDlssSrDesc {
     bool reset = false;
 };
 
+// Value-only snapshots: no SDK calls or retained GPU resource pointers in the UI.
+struct StreamlineDebugResource {
+    const char* name = "";
+    bool bound = false;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    Format format = Format::Unknown;
+};
+
+struct StreamlineDlssDebugStatus {
+    uint64_t attempts = 0;
+    uint64_t successes = 0;
+    uint32_t frameIndex = 0;
+    StreamlineDlssRrMode mode = StreamlineDlssRrMode::Off;
+    uint32_t renderWidth = 0;
+    uint32_t renderHeight = 0;
+    uint32_t outputWidth = 0;
+    uint32_t outputHeight = 0;
+    StreamlineDlssRrCamera camera;
+    bool reset = false;
+    bool succeeded = false;
+    double cpuMs = 0.0; // CPU evaluation wall time, not GPU execution time.
+    double ageSeconds = 0.0;
+    std::string message;
+    std::array<StreamlineDebugResource, 8> resources{};
+    uint32_t resourceCount = 0;
+};
+
+struct StreamlineDebugStatus {
+    bool sdkAvailable = false;
+    bool initialized = false;
+    bool deviceSet = false;
+    bool dlssSrSupported = false;
+    bool dlssRrSupported = false;
+    bool descriptorHeapWorkaround = false;
+    std::string sdkVersion;
+    uint32_t frameIndex = 0;
+    StreamlineReflexStatus reflex;
+    StreamlineDlssDebugStatus sr;
+    StreamlineDlssDebugStatus rr;
+};
+
+StreamlineDebugStatus streamlineDebugStatus();
 const char* streamlineVulkanLibraryName();
 bool streamlineSdkAvailable();
 bool streamlineInitialized();

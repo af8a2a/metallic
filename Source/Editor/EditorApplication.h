@@ -64,6 +64,7 @@ private:
     void drawScenePanel();
     void drawInspectorPanel();
     void drawStatisticsPanel();
+    void drawStreamlineDebugPanel();
     void drawCameraControls();
     void drawEnvironmentControls();
     void drawLightingControls();
@@ -321,6 +322,7 @@ private:
     bool renderGraphEditorOpen_ = false;
     bool profilerOpen_ = true;
     bool nvmlMonitorOpen_ = true;
+    bool streamlineDebugOpen_ = false;
     bool inspectorOpen_ = true;
     bool statisticsOpen_ = true;
     bool graphEditorPositionsInitialized_ = false;

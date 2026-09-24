@@ -1974,6 +1974,8 @@ int EditorApplication::run(
     } taskSystemShutdownGuard;
 
     smokeTest_ = smokeTest;
+    streamlineDebugOpen_ = environmentFlagEnabled("METALLIC_STREAMLINE_DEBUG") ||
+        (smokeTest && environmentFlagEnabled("METALLIC_SMOKE_TEST_STREAMLINE_DEBUG"));
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
     nsightGraphicsCaptureRequested_ =
         enableNsightGraphicsCapture ||
@@ -2135,6 +2137,22 @@ int EditorApplication::run(
                     return 1;
                 }
             }
+        }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_STREAMLINE_DEBUG")) {
+            const auto status = render::vulkan::streamlineDebugStatus();
+            const auto valid = [](const render::vulkan::StreamlineDlssDebugStatus& feature) {
+                if (!feature.attempts) { return true; }
+                return feature.succeeded && feature.successes <= feature.attempts &&
+                    feature.successes > 0 && feature.renderWidth > 0 && feature.outputWidth > 0 &&
+                    feature.resourceCount > 0 && feature.ageSeconds >= 0.0 && feature.cpuMs >= 0.0;
+            };
+            const auto* panel = ImGui::FindWindowByName("Streamline Debug");
+            const bool passed = panel != nullptr && panel->WasActive && valid(status.sr) && valid(status.rr) &&
+                (startupSampleId_ != "pathtracing-sample-dlss-sr" || status.sr.successes > 0) &&
+                (startupSampleId_ != "pathtracing-sample-dlss-rr" || status.rr.successes > 0);
+            spdlog::info("[Smoke Streamline Debug] passed={}, initialized={}, SR={}/{}, RR={}/{}",
+                passed, status.initialized, status.sr.successes, status.sr.attempts, status.rr.successes, status.rr.attempts);
+            if (!passed) { shutdown(); return 1; }
         }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_REFLEX")) {
             const auto status = render::vulkan::streamlineReflexStatus();
@@ -3198,6 +3216,7 @@ void EditorApplication::drawDockspace()
             ImGui::MenuItem("Console");
             ImGui::MenuItem("Profiler", nullptr, &profilerOpen_);
             ImGui::MenuItem("NVML Monitor", nullptr, &nvmlMonitorOpen_);
+            ImGui::MenuItem("Streamline Debug", nullptr, &streamlineDebugOpen_);
             ImGui::EndMenu();
         }
 
@@ -3229,6 +3248,7 @@ void EditorApplication::drawDockspace()
 
 void EditorApplication::drawPanels()
 {
+    drawStreamlineDebugPanel();
     {
         auto profileScope = profiler_.scope("Scene Panel");
         drawScenePanel();

@@ -46,6 +46,10 @@ struct DlssRrOptimalSettingsCacheEntry {
 };
 
 struct StreamlineState {
+    StreamlineDlssDebugStatus srDebug;
+    StreamlineDlssDebugStatus rrDebug;
+    std::chrono::steady_clock::time_point srDebugTime{};
+    std::chrono::steady_clock::time_point rrDebugTime{};
     bool initialized = false;
     bool vulkanDeviceSet = false;
     bool dlssSrSupported = false;
@@ -92,6 +96,53 @@ StreamlineState& streamlineState()
     return state;
 }
 
+// Created after acquiring streamlineMutex; all early returns publish diagnostics.
+struct DlssDebugCapture {
+    StreamlineDlssDebugStatus& status;
+    std::chrono::steady_clock::time_point& timestamp;
+    std::string& log;
+    size_t logStart;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+
+    template <typename Desc>
+    DlssDebugCapture(StreamlineDlssDebugStatus& value,
+        std::chrono::steady_clock::time_point& time, const Desc& desc, std::string& output)
+        : status(value), timestamp(time), log(output), logStart(output.size())
+    {
+        ++status.attempts;
+        status.succeeded = false;
+        status.mode = desc.mode;
+        status.renderWidth = desc.renderWidth;
+        status.renderHeight = desc.renderHeight;
+        status.outputWidth = desc.outputWidth;
+        status.outputHeight = desc.outputHeight;
+        status.camera = desc.camera;
+        status.reset = desc.reset || !desc.camera.previousValid;
+        status.resourceCount = 0;
+    }
+
+    void resource(const char* name, const StreamlineDlssRrTextureRef& ref)
+    {
+        auto& entry = status.resources[status.resourceCount++];
+        entry = {};
+        entry.name = name;
+        entry.bound = ref.texture != nullptr && ref.view != nullptr;
+        if (ref.texture) {
+            entry.width = ref.texture->desc().width;
+            entry.height = ref.texture->desc().height;
+            entry.format = ref.texture->desc().format;
+        }
+    }
+
+    ~DlssDebugCapture()
+    {
+        timestamp = std::chrono::steady_clock::now();
+        status.cpuMs = std::chrono::duration<double, std::milli>(timestamp - start).count();
+        status.frameIndex = streamlineState().frameIndex - 1;
+        status.message = status.succeeded ? "Success" : log.substr(logStart);
+        if (status.succeeded) { ++status.successes; }
+    }
+};
 template <typename Handle>
 void* nativeHandleToVoid(Handle handle)
 {
@@ -827,6 +878,36 @@ bool streamlineSdkAvailable()
 #endif
 }
 
+StreamlineDebugStatus streamlineDebugStatus()
+{
+    StreamlineDebugStatus snapshot;
+#if METALLIC_HAS_STREAMLINE
+    std::lock_guard lock(streamlineMutex());
+    const auto& state = streamlineState();
+    snapshot.sdkAvailable = true;
+    snapshot.sdkVersion = std::to_string(SL_VERSION_MAJOR) + "." +
+        std::to_string(SL_VERSION_MINOR) + "." + std::to_string(SL_VERSION_PATCH);
+    snapshot.initialized = state.initialized;
+    snapshot.deviceSet = state.vulkanDeviceSet;
+    snapshot.dlssSrSupported = state.dlssSrSupported;
+    snapshot.dlssRrSupported = state.dlssRrSupported;
+    snapshot.descriptorHeapWorkaround = state.descriptorHeapWorkaroundEnabled;
+    snapshot.frameIndex = state.frameIndex - 1;
+    snapshot.sr = state.srDebug;
+    snapshot.rr = state.rrDebug;
+    const auto now = std::chrono::steady_clock::now();
+    if (snapshot.sr.attempts) {
+        snapshot.sr.ageSeconds = std::chrono::duration<double>(now - state.srDebugTime).count();
+    }
+    if (snapshot.rr.attempts) {
+        snapshot.rr.ageSeconds = std::chrono::duration<double>(now - state.rrDebugTime).count();
+    }
+#if METALLIC_HAS_NV_LOW_LATENCY
+    snapshot.reflex = state.reflexStatus;
+#endif
+#endif
+    return snapshot;
+}
 bool streamlineInitialized()
 {
 #if METALLIC_HAS_STREAMLINE
@@ -1429,6 +1510,11 @@ Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDl
 #else
     std::lock_guard lock(streamlineMutex());
     StreamlineState& state = streamlineState();
+    DlssDebugCapture debug(state.srDebug, state.srDebugTime, desc, log);
+    debug.resource("Input color", desc.inputColor);
+    debug.resource("Output color", desc.outputColor);
+    debug.resource("Motion vectors", desc.motionVectors);
+    debug.resource("Depth", desc.depth);
     if (!state.initialized || !state.vulkanDeviceSet || !state.dlssSrSupported) {
         log = "DLSS-SR is not available on the current Vulkan device";
         return makeError(Error::Unsupported);
@@ -1555,7 +1641,7 @@ Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDl
 
     prepareDescriptorStateForStreamline(state, commandBuffer);
     const sl::BaseStructure* inputs[] = {&state.viewport};
-    return resultFromSl(
+    result = resultFromSl(
         slEvaluateFeature(
             sl::kFeatureDLSS,
             *frameToken,
@@ -1564,6 +1650,8 @@ Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDl
             nativeCommandBuffer),
         "slEvaluateFeature(kFeatureDLSS)",
         log);
+    debug.status.succeeded = static_cast<bool>(result);
+    return result;
 #endif
 }
 
@@ -1577,6 +1665,15 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
 #else
     std::lock_guard lock(streamlineMutex());
     StreamlineState& state = streamlineState();
+    DlssDebugCapture debug(state.rrDebug, state.rrDebugTime, desc, log);
+    debug.resource("Input color", desc.inputColor);
+    debug.resource("Output color", desc.outputColor);
+    debug.resource("Motion vectors", desc.motionVectors);
+    debug.resource("Linear depth", desc.linearDepth);
+    debug.resource("Diffuse albedo", desc.albedo);
+    debug.resource("Specular albedo", desc.specularAlbedo);
+    debug.resource("Normal / roughness", desc.normalRoughness);
+    debug.resource("Specular hit distance", desc.specularHitDistance);
     if (!state.initialized || !state.vulkanDeviceSet || !state.dlssRrSupported) {
         log = "DLSS-RR is not available on the current Vulkan device";
         return makeError(Error::Unsupported);
@@ -1702,7 +1799,7 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
 
     prepareDescriptorStateForStreamline(state, commandBuffer);
     const sl::BaseStructure* inputs[] = {&state.viewport};
-    return resultFromSl(
+    result = resultFromSl(
         slEvaluateFeature(
             sl::kFeatureDLSS_RR,
             *frameToken,
@@ -1711,6 +1808,8 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
             nativeCommandBuffer),
         "slEvaluateFeature(kFeatureDLSS_RR)",
         log);
+    debug.status.succeeded = static_cast<bool>(result);
+    return result;
 #endif
 }
 

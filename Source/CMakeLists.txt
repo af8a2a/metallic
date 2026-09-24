@@ -342,6 +342,7 @@ set(METALLIC_EDITOR_SOURCES
     Editor/EditorMaterialInspector.cpp
     Editor/EditorMaterialInspectorSmoke.cpp
     Editor/EditorSliderDebug.cpp
+    Editor/EditorStreamlineDebug.cpp
     Editor/EditorProfiler.cpp
     Editor/NvmlMonitor.cpp
 )
