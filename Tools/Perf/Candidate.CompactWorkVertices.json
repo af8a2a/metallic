@@ -1,0 +1,24 @@
+{
+  "protocol": "metallic-shader-experiment-v1",
+  "id": "workcontrol-compact-shared-vertices-v1",
+  "hypothesis": "The fourth shared vertex word is never read. A uint3 array reduces shared storage by 512 bytes; measure whether bank layout and occupancy improve without changing raster outputs.",
+  "path": "Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang",
+  "baseSha256": "153788a450366a61c63ae1f1623ac66a5175f87bbba288c1917b523752b2bbac",
+  "replacements": [
+    {
+      "before": "void rasterStreamClusterWorkBins",
+      "after": "groupshared uint3 g_WorkControlVertices[128];\n\nvoid rasterStreamClusterWorkBins",
+      "count": 1
+    },
+    {
+      "before": "g_StreamRasterWords",
+      "after": "g_WorkControlVertices",
+      "count": 10
+    },
+    {
+      "before": "uint4(uint2(vertex.position), asuint(vertex.depth), 0u)",
+      "after": "uint3(uint2(vertex.position), asuint(vertex.depth))",
+      "count": 1
+    }
+  ]
+}

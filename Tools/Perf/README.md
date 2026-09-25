@@ -1,4 +1,9 @@
-# Performance evidence tools (M0 / M1 / M2)
+# Performance evidence tools (M0 / M1 / M2 / M3)
+
+M3's bounded shader candidate loop is implemented in
+[ExperimentRunner.py](ExperimentRunner.py). See [commands, gates and recovery](ExperimentRunner.md):
+guarded patch/build, exact depth/visibility checks, independent-process ABBA,
+separate confirmation, accept/reject/inconclusive and automatic baseline restore.
 
 M2 fixed in-frame workloads and independent-process A/A are implemented in
 [WorkloadCase.py](WorkloadCase.py). See [the contract](WorkloadCase.md) and
