@@ -1,0 +1,559 @@
+{
+  "protocol": "metallic-m4-report-v1",
+  "date": "2026-09-25",
+  "status": "in-frame-minimum-slice-verified",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti, GPU-864725dc-8de5-5018-485e-e3a9465f4083, 616.92",
+  "resources": {
+    "protocol": "metallic-deep-profile-v1",
+    "mode": "resources",
+    "arms": {
+      "A": {
+        "repeatable": true,
+        "statistics": [
+          {
+            "entry": "main",
+            "cacheKey": "3771551338f43a35",
+            "inputSpirvFnv1a64": "14699073418322314354",
+            "deviceSpirvFnv1a64": "14699073418322314354",
+            "shader": "Features/GPUDriven/GPUDrivenStreamWorkRaster.streamClusterRasterWorkControlMain",
+            "executable": "CS",
+            "subgroup": 32,
+            "name": "Binary Size",
+            "value": "24064",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          {
+            "entry": "main",
+            "cacheKey": "3771551338f43a35",
+            "inputSpirvFnv1a64": "14699073418322314354",
+            "deviceSpirvFnv1a64": "14699073418322314354",
+            "shader": "Features/GPUDriven/GPUDrivenStreamWorkRaster.streamClusterRasterWorkControlMain",
+            "executable": "CS",
+            "subgroup": 32,
+            "name": "Local Memory Size",
+            "value": "68719476736",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          {
+            "entry": "main",
+            "cacheKey": "3771551338f43a35",
+            "inputSpirvFnv1a64": "14699073418322314354",
+            "deviceSpirvFnv1a64": "14699073418322314354",
+            "shader": "Features/GPUDriven/GPUDrivenStreamWorkRaster.streamClusterRasterWorkControlMain",
+            "executable": "CS",
+            "subgroup": 32,
+            "name": "Register Count",
+            "value": "37",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          {
+            "entry": "main",
+            "cacheKey": "3771551338f43a35",
+            "inputSpirvFnv1a64": "14699073418322314354",
+            "deviceSpirvFnv1a64": "14699073418322314354",
+            "shader": "Features/GPUDriven/GPUDrivenStreamWorkRaster.streamClusterRasterWorkControlMain",
+            "executable": "CS",
+            "subgroup": 32,
+            "name": "Shared Memory Size",
+            "value": "3512",
+            "description": "Size in bytes used for shared memory"
+          },
+          {
+            "entry": "main",
+            "cacheKey": "3771551338f43a35",
+            "inputSpirvFnv1a64": "14699073418322314354",
+            "deviceSpirvFnv1a64": "14699073418322314354",
+            "shader": "Features/GPUDriven/GPUDrivenStreamWorkRaster.streamClusterRasterWorkControlMain",
+            "executable": "CS",
+            "subgroup": 32,
+            "name": "Stack Size",
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          }
+        ]
+      },
+      "B": {
+        "repeatable": true,
+        "statistics": [
+          {
+            "entry": "main",
+            "cacheKey": "15bc675d21bb6926",
+            "inputSpirvFnv1a64": "5624891983249778816",
+            "deviceSpirvFnv1a64": "5624891983249778816",
+            "shader": "Features/GPUDriven/GPUDrivenStreamWorkRaster.streamClusterRasterWorkControlMain",
+            "executable": "CS",
+            "subgroup": 32,
+            "name": "Binary Size",
+            "value": "24064",
+            "description": "Size in bytes of the executable for this stage"
+          },
+          {
+            "entry": "main",
+            "cacheKey": "15bc675d21bb6926",
+            "inputSpirvFnv1a64": "5624891983249778816",
+            "deviceSpirvFnv1a64": "5624891983249778816",
+            "shader": "Features/GPUDriven/GPUDrivenStreamWorkRaster.streamClusterRasterWorkControlMain",
+            "executable": "CS",
+            "subgroup": 32,
+            "name": "Local Memory Size",
+            "value": "68719476736",
+            "description": "Size in bytes required per-thread for local memory"
+          },
+          {
+            "entry": "main",
+            "cacheKey": "15bc675d21bb6926",
+            "inputSpirvFnv1a64": "5624891983249778816",
+            "deviceSpirvFnv1a64": "5624891983249778816",
+            "shader": "Features/GPUDriven/GPUDrivenStreamWorkRaster.streamClusterRasterWorkControlMain",
+            "executable": "CS",
+            "subgroup": 32,
+            "name": "Register Count",
+            "value": "41",
+            "description": "Number of temporary registers used by this shader stage"
+          },
+          {
+            "entry": "main",
+            "cacheKey": "15bc675d21bb6926",
+            "inputSpirvFnv1a64": "5624891983249778816",
+            "deviceSpirvFnv1a64": "5624891983249778816",
+            "shader": "Features/GPUDriven/GPUDrivenStreamWorkRaster.streamClusterRasterWorkControlMain",
+            "executable": "CS",
+            "subgroup": 32,
+            "name": "Shared Memory Size",
+            "value": "5560",
+            "description": "Size in bytes used for shared memory"
+          },
+          {
+            "entry": "main",
+            "cacheKey": "15bc675d21bb6926",
+            "inputSpirvFnv1a64": "5624891983249778816",
+            "deviceSpirvFnv1a64": "5624891983249778816",
+            "shader": "Features/GPUDriven/GPUDrivenStreamWorkRaster.streamClusterRasterWorkControlMain",
+            "executable": "CS",
+            "subgroup": 32,
+            "name": "Stack Size",
+            "value": "0",
+            "description": "Size in bytes required for the shader stack"
+          }
+        ]
+      }
+    },
+    "normalTiming": false,
+    "relativeSpreadLimit": 0.1,
+    "optimizationDecision": "not-evaluated"
+  },
+  "triage": {
+    "protocol": "metallic-deep-profile-v1",
+    "mode": "triage",
+    "arms": {
+      "A": {
+        "metrics": [
+          {
+            "name": "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 38,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "early",
+            "values": [
+              39.3106,
+              38.8631,
+              38.8717
+            ],
+            "median": 38.8717,
+            "relativeSpread": 0.011512231263361213,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 39,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "early",
+            "values": [
+              39.3106,
+              38.8631,
+              38.8717
+            ],
+            "median": 38.8717,
+            "relativeSpread": 0.011512231263361213,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "GPUTrace.lts__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 36,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "early",
+            "values": [
+              23.177,
+              23.0051,
+              22.9627
+            ],
+            "median": 23.0051,
+            "relativeSpread": 0.00931532573212018,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "GPUTrace.lts__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 37,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "early",
+            "values": [
+              23.177,
+              23.0051,
+              22.9627
+            ],
+            "median": 23.0051,
+            "relativeSpread": 0.00931532573212018,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "GPUTrace.l1tex__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 40,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "early",
+            "values": [
+              27.0628,
+              26.7745,
+              26.7564
+            ],
+            "median": 26.7745,
+            "relativeSpread": 0.011443724439298586,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "GPUTrace.l1tex__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 41,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "early",
+            "values": [
+              27.0628,
+              26.7745,
+              26.7564
+            ],
+            "median": 26.7745,
+            "relativeSpread": 0.011443724439298586,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "dram__sectors.avg.pct_of_peak_sustained_elapsed",
+            "column": 28,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "early",
+            "values": [
+              8.39976,
+              8.68033,
+              9.04076
+            ],
+            "median": 8.68033,
+            "relativeSpread": 0.07384511879156669,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "dram__sectors.avg.pct_of_peak_sustained_elapsed",
+            "column": 29,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "early",
+            "values": [
+              8.39976,
+              8.68033,
+              9.04076
+            ],
+            "median": 8.68033,
+            "relativeSpread": 0.07384511879156669,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum",
+            "column": 1006,
+            "unit": "raw exported count",
+            "phase": "early",
+            "values": [
+              188161000.0,
+              188362000.0,
+              188142000.0
+            ],
+            "median": 188161000.0,
+            "relativeSpread": 0.0011692114731533102,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum",
+            "column": 1007,
+            "unit": "raw exported count",
+            "phase": "early",
+            "values": [
+              188161000.0,
+              188362000.0,
+              188142000.0
+            ],
+            "median": 188161000.0,
+            "relativeSpread": 0.0011692114731533102,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum",
+            "column": 1012,
+            "unit": "raw exported count",
+            "phase": "early",
+            "values": [
+              6181380.0,
+              6237570.0,
+              6228220.0
+            ],
+            "median": 6228220.0,
+            "relativeSpread": 0.009021839305612197,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum",
+            "column": 1013,
+            "unit": "raw exported count",
+            "phase": "early",
+            "values": [
+              6181380.0,
+              6237570.0,
+              6228220.0
+            ],
+            "median": 6228220.0,
+            "relativeSpread": 0.009021839305612197,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 38,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "late",
+            "values": [
+              22.2883,
+              21.9183,
+              23.4323
+            ],
+            "median": 22.2883,
+            "relativeSpread": 0.06792801604429242,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "GPUTrace.sm__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 39,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "late",
+            "values": [
+              22.2883,
+              21.9183,
+              23.4323
+            ],
+            "median": 22.2883,
+            "relativeSpread": 0.06792801604429242,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "GPUTrace.lts__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 36,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "late",
+            "values": [
+              13.8683,
+              13.737,
+              14.6266
+            ],
+            "median": 13.8683,
+            "relativeSpread": 0.06414629046097933,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "GPUTrace.lts__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 37,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "late",
+            "values": [
+              13.8683,
+              13.737,
+              14.6266
+            ],
+            "median": 13.8683,
+            "relativeSpread": 0.06414629046097933,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "GPUTrace.l1tex__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 40,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "late",
+            "values": [
+              15.061,
+              14.7648,
+              15.6259
+            ],
+            "median": 15.061,
+            "relativeSpread": 0.057174158422415536,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "GPUTrace.l1tex__throughput.avg.pct_of_peak_sustained_elapsed",
+            "column": 41,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "late",
+            "values": [
+              15.061,
+              14.7648,
+              15.6259
+            ],
+            "median": 15.061,
+            "relativeSpread": 0.057174158422415536,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "dram__sectors.avg.pct_of_peak_sustained_elapsed",
+            "column": 28,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "late",
+            "values": [
+              2.50016,
+              3.04881,
+              3.94335
+            ],
+            "median": 3.04881,
+            "relativeSpread": 0.47336173785837754,
+            "stable": false,
+            "nonzero": true
+          },
+          {
+            "name": "dram__sectors.avg.pct_of_peak_sustained_elapsed",
+            "column": 29,
+            "unit": "percent of peak sustained elapsed",
+            "phase": "late",
+            "values": [
+              2.50016,
+              3.04881,
+              3.94335
+            ],
+            "median": 3.04881,
+            "relativeSpread": 0.47336173785837754,
+            "stable": false,
+            "nonzero": true
+          },
+          {
+            "name": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum",
+            "column": 1006,
+            "unit": "raw exported count",
+            "phase": "late",
+            "values": [
+              31137200.0,
+              31116000.0,
+              31189600.0
+            ],
+            "median": 31137200.0,
+            "relativeSpread": 0.0023637321274873786,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum",
+            "column": 1007,
+            "unit": "raw exported count",
+            "phase": "late",
+            "values": [
+              31137200.0,
+              31116000.0,
+              31189600.0
+            ],
+            "median": 31137200.0,
+            "relativeSpread": 0.0023637321274873786,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum",
+            "column": 1012,
+            "unit": "raw exported count",
+            "phase": "late",
+            "values": [
+              1086210.0,
+              1096960.0,
+              1107200.0
+            ],
+            "median": 1096960.0,
+            "relativeSpread": 0.019134699533255542,
+            "stable": true,
+            "nonzero": true
+          },
+          {
+            "name": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum",
+            "column": 1013,
+            "unit": "raw exported count",
+            "phase": "late",
+            "values": [
+              1086210.0,
+              1096960.0,
+              1107200.0
+            ],
+            "median": 1096960.0,
+            "relativeSpread": 0.019134699533255542,
+            "stable": true,
+            "nonzero": true
+          }
+        ],
+        "repeatable": false,
+        "stableNonzeroMetrics": 22
+      }
+    },
+    "normalTiming": false,
+    "relativeSpreadLimit": 0.1,
+    "optimizationDecision": "not-evaluated"
+  },
+  "audits": {
+    "m4-resources-20260925-02": {
+      "verified": true,
+      "runs": 6,
+      "mode": "resources",
+      "verifierSha256": "3721ab7c6d741a62485a4748ba33f15f184b743575b7c6ead8c6cc7e27eee279"
+    },
+    "m4-triage-20260925-02": {
+      "verified": true,
+      "runs": 3,
+      "mode": "triage",
+      "verifierSha256": "3721ab7c6d741a62485a4748ba33f15f184b743575b7c6ead8c6cc7e27eee279"
+    },
+    "m4-triage-20260925-04": {
+      "verified": true,
+      "runs": 3,
+      "mode": "triage",
+      "verifierSha256": "3721ab7c6d741a62485a4748ba33f15f184b743575b7c6ead8c6cc7e27eee279"
+    }
+  },
+  "scope": "MiniZorah history; actual compute compiler statistics plus device counters over whole early/late marker intervals",
+  "limitations": [
+    "late DRAM repeatability failed; complete early+late set is not repeatable",
+    "duplicate metric columns are retained, not independent observations",
+    "no dispatch-exclusive hardware attribution, occupancy proof, or SASS dependency analysis",
+    "no NvPerf SDK backend or isolated production replay in this slice"
+  ],
+  "evidence": {
+    "m4-resources-20260925-02": {
+      "path": "build/m4-resources-20260925-02",
+      "manifestSha256": "9b493a87b384b1a3c6b48b3bc89ec9b09aaefd73d6508841391cbf77c11c21ce",
+      "summarySha256": "67c5517c319cdcea0ef4db5eb5cb1083af81858459054287a9d8239c9fa5fbe4"
+    },
+    "m4-triage-20260925-04": {
+      "path": "build/m4-triage-20260925-04",
+      "manifestSha256": "6d24ef970a8d3abf6250844abf5f727f31c17632c69b1108f0ecbc3ebc26756d",
+      "summarySha256": "ac508723c8b91b7971414a409a653271f33df28290a71a6302d200da34256245"
+    }
+  }
+}

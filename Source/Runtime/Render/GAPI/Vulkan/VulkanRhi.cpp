@@ -3198,6 +3198,9 @@ struct ShaderModuleImpl {
     DeviceImpl* device = nullptr;
     VkShaderModule module = VK_NULL_HANDLE;
     uint64_t contentHash = 0;
+    uint64_t inputSpirvFnv1a64 = 0;
+    uint64_t deviceSpirvFnv1a64 = 0;
+    std::string diagnosticName;
 };
 
 struct PipelineCacheImpl {
@@ -9435,6 +9438,17 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
     shaderImpl->device = impl_.get();
     shaderImpl->module = module;
     shaderImpl->contentHash = detail::shaderContentHash(deviceDesc);
+    if (impl_->pipelineExecutableStatistics) {
+        const auto fingerprint = [](const ShaderModuleDesc& source) {
+            uint64_t hash = 14695981039346656037ull;
+            const auto* bytes = reinterpret_cast<const uint8_t*>(source.code);
+            for (uint64_t i = 0; i < source.byteSize; ++i) { hash = (hash ^ bytes[i]) * 1099511628211ull; }
+            return hash;
+        };
+        shaderImpl->inputSpirvFnv1a64 = fingerprint(desc);
+        shaderImpl->deviceSpirvFnv1a64 = fingerprint(deviceDesc);
+        shaderImpl->diagnosticName = desc.debugName ? desc.debugName : "";
+    }
     outShaderModule.reset(new ShaderModule(std::move(shaderImpl)));
     return {};
 }
@@ -10089,6 +10103,11 @@ Result Device::createComputePipeline(
     }
 
     if (impl_->pipelineExecutableStatistics && vkGetPipelineExecutablePropertiesKHR && vkGetPipelineExecutableStatisticsKHR) {
+        // The cache key includes metadata and may hash rewritten OMM SPIR-V.
+        // Keep both byte fingerprints to join the caller's binding evidence.
+        const auto& shader = *desc.computeShader->impl_;
+        spdlog::info("[PipelineStatisticsBinding] cacheKey={:016x} inputSpirvFnv1a64={} deviceSpirvFnv1a64={} shader={} entry={}",
+            shader.contentHash, shader.inputSpirvFnv1a64, shader.deviceSpirvFnv1a64, shader.diagnosticName, stage.pName);
         VkPipelineInfoKHR info{.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = pipeline};
         uint32_t count = 0;
         VkResult query = vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, &count, nullptr);

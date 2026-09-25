@@ -118,6 +118,12 @@ flowchart TD
 | M4 NvPerf 与深层分析扩展 | 3–5 天起 | 按需要接入计数器，恢复可写状态的生产内核隔离执行，依赖视图按能力开放 | 至少一个实际硬件指标集合可稳定复现；isolated 与 in-frame 分开验收 |
 | M5 多 case 持续优化 | 3–5 天起 | 静态视角/漫游/异步场景矩阵，预算、历史候选去重、保留验证集 | 新候选在未参与选择的 case/独立复测中仍有效；失败能干净结束并保留证据 |
 
+2026-09-25：[M4 首个验收切片](AgenticShaderOptimizationM4.md)已完成实际生产 compute
+资源统计和官方 CLI 阶段级硬件采集。三组 A/B 证明 M3 候选的寄存器、共享内存实际
+增加；三次 base-clocks capture 的 early 六项硬件集合稳定，late DRAM 仍不稳定。
+完整 NvPerf backend、生产 isolated replay 与 SASS 依赖视图按归因需要继续推进，
+本次不将阶段计数器声称为 WorkControl dispatch 独占计数。
+
 预期 4–7 个工作日取得“Agent 可以深入 Nsight 源码分析”的首个演示，约 2–4 周完成一次完整优化闭环。若 M0/M1 发现桌面运行时或 UI 导出不可行，明确记录 source automation 阻塞，继续用人工导出的文件验证 importer 与 M2/M3；不能把这个降级路径宣布为全自动 Nsight 已完成。
 
 **M0/M1 的具体工作顺序**

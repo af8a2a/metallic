@@ -270,7 +270,11 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         report["gpuTraceInjected"] = GetModuleHandleW(L"WarpVizTarget.dll") != nullptr;
         report["renderDocInjected"] = GetModuleHandleW(L"renderdoc.dll") != nullptr;
 #endif
-        report["measurementKind"] = profileHoldSeconds > 0 || traceFrames ? "diagnostic" : "normal-timing";
+        const char* pipelineStatistics = std::getenv("METALLIC_VK_PIPELINE_STATISTICS");
+        const bool pipelineStatisticsRequested = pipelineStatistics && std::strcmp(pipelineStatistics, "1") == 0;
+        report["pipelineStatisticsRequested"] = pipelineStatisticsRequested;
+        report["measurementKind"] = profileHoldSeconds > 0 || traceFrames || pipelineStatisticsRequested
+            ? "diagnostic" : "normal-timing";
         report["camera"] = viewportCameraProperties();
         const auto targetCamera = viewportCameraProperties();
         auto primeCamera = targetCamera;

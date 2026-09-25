@@ -160,7 +160,9 @@ def analyze_run(directory, case):
     require(capture["outputExtent"] == [case["width"], case["height"]], "Output extent changed")
     require(capture["renderExtent"] == [case["renderWidth"], case["renderHeight"]], "Unexpected dynamic render extent")
     require(capture["hidden"] and not capture["validationRequested"], "Wrong timing environment")
-    normal = capture["measurementKind"] == "normal-timing" and not capture["graphicsCaptureInjected"] and not capture.get("gpuTraceInjected", False) and not capture.get("renderDocInjected", False)
+    normal = (capture["measurementKind"] == "normal-timing" and not capture["graphicsCaptureInjected"]
+              and not capture.get("gpuTraceInjected", False) and not capture.get("renderDocInjected", False)
+              and not capture.get("pipelineStatisticsRequested", False))
     require(len(capture["cases"]) == case["rounds"], "Missing workload rounds")
     reference, residency = None, None
     timings = {"graphGpuMs": [], "softwareEarlyMs": [], "softwareLateMs": []}
