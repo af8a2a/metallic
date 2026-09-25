@@ -6,7 +6,7 @@ M0 实施进度见 [能力与证据基线](AgenticShaderOptimizationM0.md)，M1 
 
 [无头导出调研](NsightHeadlessExportResearch.md)：2026.3.1 的公开 CLI 支持非交互采集与 metrics 自动导出，但尚未找到 Source/IL CSV 的公开无头导出接口。M1 应分别验收采集、导出、查询，并显式标记 UI 依赖；严格 headless 的源码导出仍缺已验证后端。下一步先验证开启 shader profiler 的 CLI 自动导出文件清单和进程依赖，不将 `--auto-export` 或三次 UI 保存等同于无头源码分析。
 
-[M2 可信工作负载](AgenticShaderOptimizationM2.md)已落地显式 WorkloadCase、生产 dispatch 身份、冻结输入/输出检查、三进程 A/A 与 SDK start/stop 边界。MiniZorah 三次身份/输出验证通过，但整图时间波动 12.42% 超过预设 10%，A/A 为 inconclusive；Full Zorah warmup 遇到 CLAS 显存不足。资产内容身份、有效 late case、退出清理和 Nsight trace 对齐仍待完成，M2 为 partial。
+[M2 补充跑测](AgenticShaderOptimizationM2Rerun.md)：MiniZorah 固定视角与非零 late 相机转换 case 均通过三进程 A/A（整图相对极差 0.604% / 2.263%，门槛仍为 10%）；资产 SHA-256、逐进程竞争记录、SDK trace，以及 Nsight early/late pipeline、模块和源码导出核验已补齐。本轮进程正常退出，Full 的 OOM 未复现，但 15 秒与 60 秒预热两批均有跨进程纹理驻留差异，M2 总体验收仍为 partial。
 
 **建议将 Nsight 源码分析放到第一个可交付里程碑，将已有计时与正确性能力收敛为实验执行器；NvPerf 随后按实际计数器缺口接入。** 用户当前需要突破的是从 marker 到 shader、源码和依赖关系的分析过程。单纯扩大范围计数器采集，不能完成这个目标。
 

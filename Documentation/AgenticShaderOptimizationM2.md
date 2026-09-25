@@ -1,5 +1,7 @@
 # M2：可信工作负载
 
+**2026-09-25 更新：**[补充跑测报告](AgenticShaderOptimizationM2Rerun.md)已完成 Mini 固定视角和非零 late case 的三进程 A/A，均通过；资产内容身份、逐进程 GPU 记录、SDK 实际产物及 Nsight early/late pipeline、模块与源码导出核验也已补齐。Full 两批复测均因跨进程纹理驻留差异失败，M2 仍为 partial。以下保留 09-24 首轮结果及当时的限制，最新状态以补测报告为准。
+
 2026-09-24。**已实现固定帧内 WorkloadCase、生产 shader/dispatch 身份、输入输出检查、独立进程 A/A runner 和 SDK 触发边界；M2 状态仍为 partial。** MiniZorah 的三次独立运行均通过身份与输出验证，但整图时间稳定性未过门槛。Full Zorah 在冻结前遇到 CLAS 显存预算不足。不能将这些结果用于自动接受优化候选。
 
 ## 本轮实现

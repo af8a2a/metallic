@@ -1969,7 +1969,10 @@ int EditorApplication::run(
     struct TaskSystemShutdownGuard {
         ~TaskSystemShutdownGuard()
         {
+            const bool trace = std::getenv("METALLIC_FULL_ROAM_OUTPUT") != nullptr;
+            if (trace) { spdlog::info("[Benchmark shutdown] task system begin"); }
             task::shutdownTaskSystem();
+            if (trace) { spdlog::info("[Benchmark shutdown] task system complete"); }
         }
     } taskSystemShutdownGuard;
 
@@ -2733,9 +2736,14 @@ bool EditorApplication::createViewportSampler()
 
 void EditorApplication::shutdown()
 {
+    const auto stage = [](const char* name) {
+        if (std::getenv("METALLIC_FULL_ROAM_OUTPUT")) { spdlog::info("[Benchmark shutdown] {}", name); }
+    };
+    stage("cancel scene load");
     if (debugRuntime_) { debugRuntime_->stop(); }
     cancelSceneLoad();
     if (device_ != nullptr) {
+        stage("device wait idle");
         (void)device_->waitIdle();
     }
     for (FrameSlot& frame : frameSlots_) {
@@ -2772,7 +2780,9 @@ void EditorApplication::shutdown()
         imguiContextCreated_ = false;
     }
 
+    stage("graph executor");
     graphExecutor_.reset();
+    stage("streamer subsystems");
     subsystemHost_.shutdown();
     sceneAccelerationStructure_.reset();
 
@@ -2791,6 +2801,7 @@ void EditorApplication::shutdown()
     }
     destroySwapchainResources();
     graphicsQueue_ = nullptr;
+    stage("device destroy");
     device_.reset();
     debugRuntime_.reset();
 
@@ -2799,7 +2810,9 @@ void EditorApplication::shutdown()
         window_ = nullptr;
     }
 
+    stage("SDL quit");
     SDL_Quit();
+    stage("complete");
 }
 
 void EditorApplication::pollEvents()

@@ -1,6 +1,6 @@
 {
   "protocol": "metallic-workload-case-v1",
-  "id": "minizorah-work-control-frozen-v2",
+  "id": "minizorah-work-control-history-v1",
   "sampleId": "gpu-driven-sample",
   "variant": "swWorkControl",
   "scope": "in-frame-early-late",
@@ -8,9 +8,10 @@
   "height": 660,
   "renderWidth": 1198,
   "renderHeight": 440,
-  "sampleFrames": 256,
+  "sampleFrames": 32,
   "settleFrames": 32,
   "warmupSeconds": 15,
   "rounds": 3,
-  "aaRelativeSpreadLimit": 0.1
+  "aaRelativeSpreadLimit": 0.1,
+  "primeCameraOffset": [0, 0, 3]
 }

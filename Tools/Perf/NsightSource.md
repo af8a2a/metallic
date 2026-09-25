@@ -2,6 +2,10 @@
 
 M1 provides both a mapping-driven importer and a native parser for the exact
 Source/IL CSV dialect validated against the user-supplied profiledata.csv.
+The M2 selected-range UI exports also validate the exact ordered headers
+without `Cooperative Vector Fusion`; unknown header variants still fail.
+Real byte-extract fixtures cover both forms. Exports can contain one source
+file or multiple referenced files: check file coverage before comparing sums.
 Use `native-import --raw <csv> --output <new-directory>` for that dialect; context
 is optional and unknown capture/selection fields remain unknown. Entry names
 come from OpEntryPoint declarations, not source function-name guesses.

@@ -1,0 +1,616 @@
+#,Source,Total Samples,Samples,Top Stall #1 (Type),Top Stall #1 (Samples),Top Stall #2 (Type),Top Stall #2 (Samples),Top Stall #3 (Type),Top Stall #3 (Samples),Avg. Warp Latency,Instruction Mix,Dependency-Attributed Samples,Live Registers
+,GPUDrivenStreamAsset.slang,,,,,,,,,
+488,"float lengthSquared = dot(value, value);",33,33,Not Selected,10,Short Scoreboard,10,Wait,8,42,12,,27
+489,return lengthSquared > 0.00000001 ? value * rsqrt(lengthSquared) : fallback;,92,92,Wait,30,Short Scoreboard,25,Not Selected,20,125,32,25,28
+497,return byteOffset <= payloadBytes && byteCount <= payloadBytes - byteOffset;,1,1,Wait,1,,,,,0,3,,22
+506,return elementStride != 0u &&,18,18,Short Scoreboard,8,Not Selected,3,Wait,3,25,21,8,27
+1021,uint word = pageWords[absoluteByteOffset / 4u];,30,30,Wait,13,Not Selected,8,Selected,4,42,23,52,11
+1022,uint shift = (absoluteByteOffset & 3u) * 8u;,6,6,Long Scoreboard,3,Selected,2,Dispatch Stall,1,8,5,,23
+1023,return (word >> shift) & 0xffu;,52,52,Long Scoreboard,46,Not Selected,2,Math Pipe Throttle,2,73,6,,18
+,GPUDrivenStreamWorkRaster.slang,,,,,,,,,
+6,"void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool reorder)",22,22,No Instructions,12,Not Selected,7,Selected,2,25,2,14,1
+8,DescriptorHandle<StructuredBuffer<uint>> bins =,11,11,Short Scoreboard,7,Not Selected,4,,,14,1,,1
+11,"if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }",1,1,Selected,1,,,,,0,1,,2
+12,if (lane < WaveGetLaneCount()) {,22,22,Short Scoreboard,15,Wait,5,Not Selected,2,25,4,,4
+14,if (lane == 0u) { g_StreamSoftwareValid = valid ? 1u : 0u; },73,73,Branch Resolving,40,No Instructions,15,Wait,11,73,4,0,3
+16,GroupMemoryBarrierWithGroupSync();,14,14,No Instructions,7,Not Selected,2,Wait,2,14,3,,1
+17,if (g_StreamSoftwareValid == 0u) { return; },3585,3585,Barrier,3557,Short Scoreboard,13,Wait,9,5343,3,13,2
+18,if (lane < g_StreamSoftware.vertexCount) {,51,51,Wait,23,Short Scoreboard,14,Selected,4,73,4,14,2
+19,"HybridScreenVertex vertex = hybridPrepareVertex(streamSoftwareClip(lane, push), float2(bins[6], bins[7]), bins[10]);",486,23,Wait,9,Selected,7,Not Selected,4,25,24,1,14
+22,"g_StreamRasterWords[lane] = uint4(uint2(vertex.position), asuint(vertex.depth), 0u);",12,12,Short Scoreboard,10,Selected,1,Wait,1,14,3,0,10
+24,GroupMemoryBarrierWithGroupSync();,16,16,No Instructions,9,Branch Resolving,5,Wait,2,25,3,0,1
+37,if (triangle < g_StreamSoftware.triangleCount) {,204,204,Barrier,186,Short Scoreboard,11,Wait,3,213,3,11,2
+40,a.position = asint(g_StreamRasterWords[tri.x].xy); a.depth = asfloat(g_StreamRasterWords[tri.x].z);,1,1,Selected,1,,,,,0,1,30,10
+41,b.position = asint(g_StreamRasterWords[tri.y].xy); b.depth = asfloat(g_StreamRasterWords[tri.y].z);,1,1,No Instructions,1,,,,,0,1,26,12
+42,c.position = asint(g_StreamRasterWords[tri.z].xy); c.depth = asfloat(g_StreamRasterWords[tri.z].z);,1,1,Wait,1,,,,,0,1,4,14
+43,"hybridRasterPreparedTriangle(a, b, c,",55,55,Wait,21,Selected,16,Short Scoreboard,8,73,43,18,34
+60,"void streamClusterRasterWorkControlMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)",288,288,Branch Resolving,99,Long Scoreboard,57,Wait,46,365,105,90,30
+63,"rasterStreamClusterWorkBins(group, lane, push, false);",6124,36,Wait,29,No Instructions,5,Miscellaneous,2,42,1,,1
+,StreamClusterClassify.slang,,,,,,,,,
+,StreamRasterCooperative.slang,,,,,,,,,
+15,"bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetPush push)",5,5,Branch Resolving,4,Wait,1,,,8,5,7,14
+17,uint lane = WaveGetLaneIndex();,3,3,Wait,3,,,,,0,1,0,5
+18,DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> params =,3,3,Short Scoreboard,2,Not Selected,1,,,0,2,,7
+20,DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> header =,1,1,Not Selected,1,,,,,0,2,,7
+25,switch (lane) {,54,54,Wait,30,Long Scoreboard,6,Selected,5,73,49,9,9
+27,case 1: field = params[0].pageBufferBytes; break;,29,29,Branch Resolving,15,Wait,5,Selected,4,42,8,3,8
+28,case 2: field = params[0].scenePageCount; break;,6,6,Wait,3,Short Scoreboard,2,Selected,1,8,9,2,8
+29,case 3: field = header[0].activeGroupCount; break;,10,10,Wait,7,No Instructions,1,Math Pipe Throttle,1,14,9,1,8
+30,case 4: field = header[0].activeGroupCapacity; break;,19,19,Wait,9,Short Scoreboard,5,No Instructions,3,25,9,6,8
+31,case 5: field = header[0].maxActiveGroupClusters; break;,7,7,Wait,3,Short Scoreboard,2,Selected,1,8,10,2,8
+32,case 6: field = bindings[0].visibleRecordBase; break;,9,9,Wait,6,Not Selected,1,No Instructions,1,14,10,1,8
+33,case 7: field = bindings[0].visibleRecordCapacity; break;,12,12,Not Selected,5,Wait,3,Selected,2,14,10,0,8
+34,case 8: field = bindings[0].gpuSceneInstanceBuffer; break;,6,6,Wait,3,No Instructions,2,Selected,1,8,9,0,8
+35,case 9: field = params[0].renderViewport.y > 0.0 ? 1u : 0u; break;,15,15,Wait,8,Short Scoreboard,3,Not Selected,2,14,10,3,8
+37,"uint tasks = WaveReadLaneAt(field, 0u) / kMeshletTriangleChunkCount;",1,1,Short Scoreboard,1,,,,,0,1,,9
+40,"if (record >= tasks || !resolveVisibilityRecordIndex(record, WaveReadLaneAt(field, 6u),",10,10,Branch Resolving,6,Wait,3,Selected,1,14,10,,10
+43,uint groupIndex = record / maxClusters;,14,14,Short Scoreboard,7,Not Selected,3,Selected,2,14,19,7,16
+44,uint clusterIndex = record - groupIndex * maxClusters;,2,2,Selected,1,Wait,1,,,0,2,,12
+45,"if (groupIndex >= min(WaveReadLaneAt(field, 3u), WaveReadLaneAt(field, 4u))) { return false; }",4,4,Selected,2,Wait,2,,,5,4,,13
+50,DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups =,3,3,Selected,1,Not Selected,1,Short Scoreboard,1,0,2,,15
+53,switch (lane) {,24,24,Wait,12,Selected,4,Not Selected,3,25,23,4,17
+55,case 1: field = groups[groupIndex].clusterCount; break;,5,5,Not Selected,2,Wait,2,Branch Resolving,1,8,7,4,17
+56,case 2: field = groups[groupIndex].clusterSelectionMask; break;,8,8,Wait,3,Selected,2,Not Selected,2,8,7,4,17
+57,case 3: field = groups[groupIndex].flags; break;,8,8,Selected,2,Branch Resolving,2,No Instructions,2,8,7,4,17
+58,case 4: field = groups[groupIndex].gpuSceneInstanceIndex; break;,7,7,Wait,3,Branch Resolving,2,No Instructions,1,8,7,4,17
+62,if (pageIndex >= pageCount || instanceIndex == kInvalidClusterIndex ||,13,13,Short Scoreboard,7,Wait,4,Selected,1,14,6,,18
+63,"clusterIndex >= WaveReadLaneAt(field, 1u) || clusterIndex >= 32u ||",34,34,Branch Resolving,14,Short Scoreboard,12,Wait,4,42,14,,19
+64,"(WaveReadLaneAt(field, 3u) & (kActiveGroupLoadRequest | kActiveGroupUnloadRequest)) != 0u ||",5,5,Branch Resolving,2,Wait,2,Not Selected,1,8,5,,18
+67,if (instanceBuffer != 0xffffffffu) {,2,2,Not Selected,1,Wait,1,,,0,4,,17
+71,"if (lane == 0u) { StructuredBuffer<GPUDrivenPreviewInstance> buffer = instances; buffer.GetDimensions(count, stride); }",11,11,Not Selected,3,Short Scoreboard,3,Wait,2,14,12,3,18
+72,if (instanceIndex >= WaveReadLaneFirst(count)) { return false; },25,25,Branch Resolving,10,Short Scoreboard,8,Wait,3,25,16,8,18
+73,if (lane == 0u) { instanceFlags = instances[instanceIndex].identity.w; },13,13,Wait,5,Not Selected,3,Branch Resolving,2,14,20,25,16
+74,instanceFlags = WaveReadLaneFirst(instanceFlags);,43,43,Long Scoreboard,23,Branch Resolving,7,No Instructions,6,42,8,4,14
+76,DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> table =,7,7,Branch Resolving,3,Wait,3,Short Scoreboard,1,8,5,,13
+78,field = lane == 0u ? table[pageIndex].deviceOffsetAndState : 0u;,17,17,Wait,13,Not Selected,3,Branch Resolving,1,25,17,20,14
+79,field = WaveReadLaneFirst(field);,31,31,Long Scoreboard,20,Branch Resolving,4,Selected,3,42,8,9,15
+80,uint state = field & kStreamPageStateMask;,7,7,Short Scoreboard,7,,,,,8,1,,14
+82,if ((state != kStreamStateResident && state != kStreamStateLockedFallback) ||,5,5,Wait,3,Not Selected,2,,,8,4,,14
+83,pageBufferBytes < kPayloadHeaderBytes || pageOffset > pageBufferBytes - kPayloadHeaderBytes) { return false; },2,2,Wait,2,,,,,0,2,,14
+84,DescriptorHandle<StructuredBuffer<uint>> pages =,5,5,Short Scoreboard,4,Not Selected,1,,,8,2,,16
+88,field = lane < kPayloadHeaderBytes / 4u ? pages[pageWord + lane] : 0u;,9,9,Wait,5,Selected,1,Not Selected,1,14,19,31,19
+94,if (bytes < kPayloadHeaderBytes || bytes > pageBufferBytes || pageOffset > pageBufferBytes - bytes ||,7,7,Selected,3,Not Selected,2,Short Scoreboard,2,8,9,,22
+95,"clusterIndex >= clusterCount || (WaveReadLaneAt(field, 14u) & kPayloadAttributePosition) == 0u ||",11,11,Wait,7,Branch Resolving,3,Short Scoreboard,1,14,8,,23
+96,(format != kPayloadFormatFloat32x4 && format != kPayloadFormatFloat32x3)) { return false; },1,1,Selected,1,,,,,0,1,,21
+100,uint positionStride = format == kPayloadFormatFloat32x3 ? 3u : 4u;,1,1,Selected,1,,,,,0,3,,24
+101,if ((clusterOffset & 3u) != 0u || (positionOffset & 3u) != 0u ||,28,7,Wait,4,Selected,1,Dispatch Stall,1,8,12,,25
+103,"!streamPayloadArrayRangeValid(positionOffset, vertexCount, positionStride * 4u, bytes) ||",7,7,Wait,5,Selected,1,Branch Resolving,1,8,4,,21
+105,field = lane < 4u ? pages[pageWord + clusterOffset / 4u + clusterIndex * kPayloadClusterWords + lane] : 0u;,12,12,Wait,6,Selected,2,Not Selected,2,14,22,23,20
+110,if (vertices == 0u || vertices > kMaxMeshletVertices || vertexOffset > vertexCount || vertices > vertexCount - vertexOffset ||,4,4,Selected,3,Not Selected,1,,,5,11,,21
+111,triangles > kMaxMeshletTriangles || triangleStart > indexCount || triangles > (indexCount - triangleStart) / 3u) { return false; },1,1,Wait,1,,,,,0,2,,20
+113,switch (lane) {,70,70,Wait,44,No Instructions,9,Branch Resolving,7,73,46,,17
+114,case 0: g_StreamSoftware.eye = renderCamera ? params[0].renderEye : params[0].eye; break;,14,14,Short Scoreboard,5,No Instructions,4,Not Selected,2,14,28,9,9
+115,case 1: g_StreamSoftware.center = renderCamera ? params[0].renderCenter : params[0].center; break;,17,17,Selected,4,Wait,4,Long Scoreboard,4,25,35,11,9
+116,case 2: g_StreamSoftware.upProjection = renderCamera ? params[0].renderUpProjection : params[0].upProjection; break;,26,26,Long Scoreboard,7,Not Selected,5,Wait,5,42,35,15,9
+117,case 3: g_StreamSoftware.viewport = renderCamera ? params[0].renderViewport : params[0].viewport; break;,18,18,Wait,9,Not Selected,4,Selected,2,25,18,1,7
+118,case 4: g_StreamSoftware.clipOrtho = renderCamera ? params[0].renderClipOrtho : params[0].clipOrtho; break;,24,24,Wait,9,Long Scoreboard,5,No Instructions,4,25,35,13,9
+119,case 5: g_StreamSoftware.world0 = groups[groupIndex].world0; break;,30,30,Long Scoreboard,22,Wait,3,Short Scoreboard,3,42,18,25,9
+120,case 6: g_StreamSoftware.world1 = groups[groupIndex].world1; break;,13,13,Wait,4,Short Scoreboard,4,Long Scoreboard,3,14,18,7,9
+121,case 7: g_StreamSoftware.world2 = groups[groupIndex].world2; break;,49,49,Long Scoreboard,41,Selected,3,Wait,3,73,18,42,9
+122,case 8: g_StreamSoftware.world3 = groups[groupIndex].world3; break;,39,39,Long Scoreboard,25,Wait,7,No Instructions,3,42,18,26,9
+123,case 9: g_StreamSoftware.positionWord = pageWord + positionOffset / 4u + vertexOffset * positionStride; break;,8,8,Wait,7,Not Selected,1,,,8,4,0,6
+124,case 10: g_StreamSoftware.positionStride = positionStride; break;,2,2,Branch Resolving,1,No Instructions,1,,,0,2,0,4
+125,case 11: g_StreamSoftware.vertexCount = vertices; break;,2,2,Not Selected,1,Wait,1,,,0,1,0,4
+126,case 12: g_StreamSoftware.triangleCount = triangles; break;,1,1,Branch Resolving,1,,,,,0,2,0,4
+127,case 13: g_StreamSoftware.triangleByte = pageOffset + triangleOffset + triangleStart; break;,5,5,Wait,3,Not Selected,2,,,8,2,0,6
+128,case 14: g_StreamSoftware.recordIndex = recordIndex; break;,1,1,Branch Resolving,1,,,,,0,2,0,4
+129,case 15: g_StreamSoftware.instanceFlags = instanceFlags; break;,2,2,Selected,1,No Instructions,1,,,0,2,0,4
+130,case 16: g_StreamSoftware.renderCamera = renderCamera ? 1u : 0u; break;,4,4,Wait,3,Dispatch Stall,1,,,5,2,0,3
+135,"float4 streamSoftwareClip(uint vertex, GPUDrivenStreamAssetPush push)",2,2,Not Selected,2,,,,,0,1,2,1
+137,DescriptorHandle<StructuredBuffer<uint>> pages =,4,4,Not Selected,2,Short Scoreboard,2,,,5,1,,3
+139,uint word = g_StreamSoftware.positionWord + vertex * g_StreamSoftware.positionStride;,3,3,Selected,2,MIO Throttle,1,,,0,2,0,4
+140,"float3 local = float3(asfloat(pages[word]), asfloat(pages[word + 1u]), asfloat(pages[word + 2u]));",50,50,Wait,19,Not Selected,16,Selected,6,73,23,59,6
+141,float3 worldPosition = g_StreamSoftware.world0.xyz * local.x + g_StreamSoftware.world1.xyz * local.y +,73,73,Long Scoreboard,51,Selected,8,Not Selected,6,73,16,0,27
+144,"float3 forward = safeNormalize(g_StreamSoftware.center.xyz - g_StreamSoftware.eye.xyz, float3(0, 0, -1));",49,10,Wait,4,Not Selected,2,Short Scoreboard,2,14,5,4,27
+145,"float3 cameraUp = safeNormalize(g_StreamSoftware.upProjection.xyz, float3(0, 1, 0));",52,4,Not Selected,2,Selected,1,No Instructions,1,5,1,10,19
+146,"float3 right = safeNormalize(cross(forward, cameraUp), float3(1, 0, 0));",28,2,Wait,2,,,,,0,6,,22
+147,"float3 up = safeNormalize(cross(right, forward), float3(0, 1, 0));",36,3,Selected,3,,,,,0,6,,20
+148,float3 delta = worldPosition - g_StreamSoftware.eye.xyz;,3,3,Selected,2,Dispatch Stall,1,,,0,3,,22
+149,"float3 view = float3(dot(delta, right), dot(delta, up), dot(delta, forward));",8,8,Selected,3,Not Selected,3,Wait,2,8,9,,22
+151,"float farZ = max(g_StreamSoftware.clipOrtho.y, nearZ + 0.0001);",3,3,Not Selected,2,Selected,1,,,0,2,,17
+152,"float depth = conservativeProjectDepth(view.z, nearZ, farZ, g_StreamSoftware.upProjection.w > 0.5, g_StreamSoftware.clipOrtho.w > 0.5);",1,1,Selected,1,,,,,0,2,,20
+153,"float aspect = max(g_StreamSoftware.viewport.x, 0.001);",11,11,Short Scoreboard,8,Not Selected,2,Selected,1,14,2,8,13
+155,if (g_StreamSoftware.upProjection.w > 0.5) {,4,4,Selected,4,,,,,5,1,,12
+156,"float h = max(g_StreamSoftware.clipOrtho.z * 0.5, 0.0001);",1,1,Wait,1,,,,,0,3,,11
+159,"float yScale = 1.0 / tan(clamp(g_StreamSoftware.viewport.w, 0.017453292, 3.12413936) * 0.5);",30,30,Short Scoreboard,9,Selected,6,Not Selected,5,42,9,17,13
+160,"clip = float4(view.x * yScale / aspect, view.y * yScale, depth * view.z, view.z);",10,10,Short Scoreboard,8,Selected,2,,,14,4,4,11
+162,if (g_StreamSoftware.renderCamera != 0u) {,12,12,Short Scoreboard,10,Wait,1,Dispatch Stall,1,14,2,10,15
+163,"clip.xy -= 2.0 * float2(g_StreamSoftware.eye.w, -g_StreamSoftware.center.w) / g_StreamSoftware.viewport.yz * clip.w;",20,20,Wait,9,Short Scoreboard,7,Not Selected,2,25,6,7,15
+169,"uint3 streamSoftwareTriangle(uint triangle, GPUDrivenStreamAssetPush push)",4,4,Wait,3,Branch Resolving,1,,,5,1,5,1
+171,DescriptorHandle<StructuredBuffer<uint>> pages =,7,7,Short Scoreboard,5,Not Selected,1,Dispatch Stall,1,8,1,,3
+173,uint address = g_StreamSoftware.triangleByte + triangle * 3u;,2,2,Selected,2,,,,,0,3,0,4
+174,"uint3 indices = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));",114,3,Not Selected,2,Wait,1,,,0,2,,5
+175,"indices = uint3(indices.x < g_StreamSoftware.vertexCount ? indices.x : 0u,",10,10,Wait,4,Selected,3,Not Selected,3,14,7,0,21
+177,"bool reflected = dot(cross(g_StreamSoftware.world0.xyz, g_StreamSoftware.world1.xyz), g_StreamSoftware.world2.xyz) < 0.0;",28,28,Short Scoreboard,13,Wait,5,Selected,4,42,15,26,23
+178,return reflected ? indices.xzy : indices;,7,7,Not Selected,3,Wait,3,Selected,1,8,4,,8
+,StreamRasterWorkBins.slang,,,,,,,,,
+,WaveWorkDistribution.slang,,,,,,,,,
+,StreamAttributeDecode.slang,,,,,,,,,
+,VisibilityTessellation.slang,,,,,,,,,
+,VisibilityTessellationSplit.slang,,,,,,,,,
+,VisibilityTessellationStream.slang,,,,,,,,,
+,AlphaCoverage.hlsli,,,,,,,,,
+,Core.slang,,,,,,,,,
+,ComputeResources.slang,,,,,,,,,
+,DisplayOutput.slang,,,,,,,,,
+,SceneShadingVertex.slang,,,,,,,,,
+,SphericalHarmonics.slang,,,,,,,,,
+,ViewConstants.slang,,,,,,,,,
+,GPUDriven.slang,,,,,,,,,
+,ConservativeOcclusion.slang,,,,,,,,,
+49,return reversedZ ? (zFar - viewZ) / (zFar - zNear) : (viewZ - zNear) / (zFar - zNear);,3,3,Selected,2,Wait,1,,,0,9,0,12
+51,float safeZ = abs(viewZ) > 0.000001 ? viewZ : (viewZ < 0.0 ? -0.000001 : 0.000001);,17,17,Wait,7,No Instructions,5,Selected,2,25,5,,15
+53,return reversedZ ? (zNear / safeZ) * ((zFar - viewZ) / (zFar - zNear)),28,28,Selected,10,Not Selected,8,Wait,5,42,14,4,15
+,GPUDrivenCullingCommon.slang,,,,,,,,,
+,GPUDrivenRasterCommon.slang,,,,,,,,,
+38,return recordIndex < recordCapacity && recordIndex < kVisibilityMaxRecordCount;,1,1,Wait,1,,,,,0,2,,9
+43,return recordBase <= kVisibilityMaxRecordCount &&,5,5,Short Scoreboard,4,Not Selected,1,,,8,3,,10
+54,"if (!visibilityRecordRangeValid(recordBase, recordCapacity) ||",1,1,Not Selected,1,,,,,0,2,,10
+58,recordIndex = recordBase + localRecordIndex;,6,6,Wait,6,,,,,8,2,,10
+66,return ((recordIndex + 1u) << kVisibilityTriangleBits) |,2,2,Wait,2,,,,,0,1,,26
+,GPUDrivenSceneCommon.slang,,,,,,,,,
+,HybridClusterBins.slang,,,,,,,,,
+17,return group.x + group.y * kHybridDispatchWidth;,15,15,Short Scoreboard,13,Selected,1,Not Selected,1,14,1,,5
+23,"if (item >= min(bins[bin], bins[5])) { return false; }",78,78,Wait,20,Not Selected,19,Short Scoreboard,13,125,24,29,5
+24,record = bins[kHybridBinHeaderWords + bin * bins[5] + item];,18,18,Wait,9,Not Selected,6,Math Pipe Throttle,2,25,10,1,4
+,HybridRasterCommon.slang,,,,,,,,,
+,HybridRasterTriangle.slang,,,,,,,,,
+8,int2 d = b - a;,28,28,Short Scoreboard,26,Not Selected,1,Wait,1,42,2,,14
+9,int2 q = p - a;,8,8,Short Scoreboard,4,Math Pipe Throttle,2,Selected,1,8,10,,33
+10,return d.x * q.y - d.y * q.x;,6,6,Selected,4,Wait,1,Math Pipe Throttle,1,8,11,0,32
+16,int2 d = b - a;,2,2,Selected,1,Not Selected,1,,,0,6,,34
+17,return d.y < 0 || (d.y == 0 && d.x > 0) ? 0 : -1;,5,5,Selected,4,Not Selected,1,,,8,17,,34
+84,float2 screen = (clip.xy / clip.w * 0.5 + 0.5) * viewport;,12,12,Selected,5,Not Selected,3,Wait,3,14,8,0,14
+86,result.position = int2(floor(screen * (1 << subpixelBits) + 0.5));,15,15,Selected,5,Not Selected,5,Wait,2,14,7,20,10
+87,result.depth = clip.z / clip.w;,1,1,Selected,1,,,,,0,2,,9
+97,if (area == 0 || (!doubleSided && area > 0)) { return; },12,12,Wait,12,,,,,14,4,,14
+98,if (area < 0) {,1,1,Selected,1,,,,,0,5,,18
+102,int scale = 1 << subpixelBits;,4,4,Wait,3,Dispatch Stall,1,,,5,2,,15
+103,"int2 lower = max(int2(0), int2(ceil(float2(min(p0, min(p1, p2))) / scale - 0.5)));",12,12,Wait,4,Selected,3,Not Selected,2,14,14,6,18
+104,"int2 upper = min(int2(width, height) - 1, int2(floor(float2(max(p0, max(p1, p2))) / scale - 0.5)));",21,21,Short Scoreboard,9,Selected,7,Not Selected,3,25,14,9,18
+105,if (any(lower > upper)) { return; },9,9,Wait,7,Selected,1,Not Selected,1,14,3,,15
+107,int2 point = lower * scale + scale / 2;,11,11,Selected,8,Wait,2,Not Selected,1,14,8,,28
+108,"int3 rowEdges = int3(hybridEdge(p1,p2,point), hybridEdge(p2,p0,point), hybridEdge(p0,p1,point)) + bias;",2,2,Selected,1,Not Selected,1,,,0,3,,31
+109,"int3 stepX = -int3(p2.y-p1.y, p0.y-p2.y, p1.y-p0.y) * scale;",4,4,Selected,1,Wait,1,No Instructions,1,5,6,,33
+110,"int3 stepY = int3(p2.x-p1.x, p0.x-p2.x, p1.x-p0.x) * scale;",3,3,Selected,1,Not Selected,1,Dispatch Stall,1,0,3,,31
+111,float2 s0 = float2(p0) / scale;,1,1,Selected,1,,,,,0,4,,30
+112,"float2 e1 = float2(p1) / scale - s0, e2 = float2(p2) / scale - s0;",6,6,Selected,4,Not Selected,1,Wait,1,8,8,,31
+113,float determinant = e1.x * e2.y - e1.y * e2.x;,1,1,Not Selected,1,,,,,0,2,,33
+114,if (abs(determinant) < 1e-12) { return; },3,3,Selected,1,Wait,1,Dispatch Stall,1,0,2,,33
+119,for (int y = lower.y; y <= upper.y; ++y) {,38,38,Wait,17,Branch Resolving,13,Not Selected,5,42,4,,24
+125,for (int x = lower.x; x <= upper.x; ++x) {,61,61,Wait,24,No Instructions,17,Selected,7,73,15,,30
+126,if (all(edges >= 0)) {,65,65,Wait,32,No Instructions,15,Not Selected,8,73,8,,31
+130,"float2 q = float2(x,y) + 0.5 - s0;",31,31,No Instructions,13,Wait,12,Selected,2,42,6,,32
+131,float b1 = (q.x * e2.y - q.y * e2.x) / determinant;,11,11,Wait,5,Not Selected,4,Selected,2,14,6,,33
+132,float b2 = (e1.x * q.y - e1.y * q.x) / determinant;,2,2,Selected,2,,,,,0,4,,33
+133,depth = saturate(z.x + b1 * (z.y-z.x) + b2 * (z.z-z.x));,5,5,Wait,2,Selected,1,Not Selected,1,8,4,,33
+136,if (reversedZ == 0u) { key = ~key; },8,8,Wait,3,Selected,2,Not Selected,2,8,2,,33
+137,"InterlockedMax(pixels[uint(y)*width+uint(x)], (uint64_t(key)<<32u) | uint64_t(visibilityId));",25,25,Wait,14,Selected,10,Not Selected,1,25,29,0,33
+139,edges += stepX;,77,77,Wait,37,Branch Resolving,24,Selected,13,125,11,,30
+142,rowEdges += stepY;,18,18,No Instructions,10,Selected,6,Branch Resolving,2,25,5,,24
+,MaterialBinningCommon.slang,,,,,,,,,
+,MeshletLod.slang,,,,,,,,,
+,MeshletLodMetric.slang,,,,,,,,,
+,Material.slang,,,,,,,,,
+,SceneMaterial.slang,,,,,,,,,
+#,Source,Samples,Top Stall #1 (Type),Top Stall #1 (Samples),Top Stall #2 (Type),Top Stall #2 (Samples),Top Stall #3 (Type),Top Stall #3 (Samples),Avg. Warp Latency,Instruction Mix,Dependency-Attributed Samples,Live Registers
+,comp.10000.spv (4d0378657da7b7d1),,,,,,,,
+18,"OpEntryPoint GLCompute %streamClusterRasterWorkControlMain ""main"" %__slang_resource_heap_8 %__slang_resource_heap_5 %__slang_resource_heap_9 %__slang_resource_heap_6 %__slang_resource_heap_2 %__slang_resource_heap_4 %__slang_resource_heap_10 %__slang_resource_heap_1 %__slang_resource_heap_0 %__slang_resource_heap_3 %__slang_resource_heap_7 %__slang_resource_heap %SubgroupLocalInvocationId %SubgroupSize %g_StreamRasterCluster %g_StreamBinVisible %g_StreamRasterProjection %g_StreamRasterWords %g_StreamSoftware %g_StreamSoftwareValid %g_StreamRasterWorkCounts %g_StreamRasterWorkOrder %entryPointParams %gl_WorkGroupID %gl_LocalInvocationIndex",,,,,,,,0,,,0
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:60,,,,,,,,
+14017,%301 = OpLoad %v3uint %gl_WorkGroupID,288,Branch Resolving,99,Long Scoreboard,57,Wait,46,365,105,90,30
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:4117,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/HybridClusterBins.slang:17,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:4122,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/GPUDrivenRasterCommon.slang:53,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:3509,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/ConservativeOcclusion.slang:9,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:3638,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/ConservativeOcclusion.slang:19,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:785,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/ConservativeOcclusion.slang:48,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:808,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/ConservativeOcclusion.slang:59,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:809,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/ConservativeOcclusion.slang:19,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:785,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/ConservativeOcclusion.slang:48,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:808,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/ConservativeOcclusion.slang:59,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:809,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/ConservativeOcclusion.slang:48,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:557,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/ConservativeOcclusion.slang:48,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:3780,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/HybridRasterTriangle.slang:84,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:4136,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/GPUDrivenRasterCommon.slang:66,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:4143,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/HybridRasterTriangle.slang:24,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:4153,,,,,,,,
+,// E:/metallic/Shaders/Modules/GPUDriven/HybridRasterTriangle.slang:95,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:4150,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:62,,,,,,,,
+22415,%35449 = OpLoad %GPUDrivenStreamAssetPush_std430 %35448,22,No Instructions,12,Not Selected,7,Selected,2,25,2,14,1
+22426,%35530 = OpIAdd %uint %42590 %42680,11,Short Scoreboard,7,Not Selected,4,,,14,1,,1
+,// E:/metallic/Shaders/Modules/GPUDriven/HybridClusterBins.slang:17,,,,,,,,
+22434,%36066 = OpIAdd %uint %36063 %36065,15,Short Scoreboard,13,Selected,1,Not Selected,1,14,1,,5
+22446,%36083 = OpLoad %uint %36082,41,Short Scoreboard,13,Not Selected,12,Wait,8,42,15,21,5
+22448,%36085 = OpLoad %uint %36084,11,Selected,3,Not Selected,3,Wait,3,14,6,8,4
+22449,%36086 = OpExtInst %uint %774 UMin %36083 %36085,10,Long Scoreboard,8,Selected,2,,,14,1,,5
+22450,%36087 = OpUGreaterThanEqual %bool %36066 %36086,16,Wait,9,Not Selected,4,Math Pipe Throttle,2,25,2,,5
+22468,%36096 = OpLoad %uint %36095,18,Wait,9,Not Selected,6,Math Pipe Throttle,2,25,9,1,4
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:11,,,,,,,,
+22485,OpBranchConditional %35537 %35538 %35539,1,Selected,1,,,,,0,1,,2
+22494,%35541 = OpULessThan %bool %9945 %35540,16,Short Scoreboard,15,Not Selected,1,,,25,1,,3
+22498,OpBranchConditional %35541 %35542 %35553,6,Wait,5,Not Selected,1,,,8,3,,4
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:15,,,,,,,,
+22512,%36189 = OpLoad %GPUDrivenStreamAssetPush_std430 %36188,5,Branch Resolving,4,Wait,1,,,8,5,7,14
+22528,%36267 = OpLoad %uint %SubgroupLocalInvocationId,3,Wait,3,,,,,0,1,0,5
+22531,%36270 = OpIAdd %uint %42150 %42162,3,Short Scoreboard,2,Not Selected,1,,,0,2,,7
+22533,%36273 = OpIAdd %uint %42150 %42174,1,Not Selected,1,,,,,0,2,,7
+22542,OpSwitch %36267 %36357 0 %36351 1 %36345 2 %36339 3 %36331 4 %36323 5 %36315 6 %36307 7 %36299 8 %36291 9 %36279,35,Wait,23,No Instructions,5,Selected,3,42,31,,8
+22548,%36284 = OpLoad %v4float %36283,11,Wait,7,Short Scoreboard,3,Selected,1,14,15,9,9
+22550,%36286 = OpFOrdGreaterThan %bool %36285 %float_0,8,Long Scoreboard,6,Selected,1,Not Selected,1,8,3,,7
+22572,%36295 = OpLoad %GPUDrivenStreamAssetRasterBindings_std430 %36294,15,Wait,8,Short Scoreboard,3,Not Selected,2,14,10,3,8
+22583,%36303 = OpLoad %GPUDrivenStreamAssetRasterBindings_std430 %36302,6,Wait,3,No Instructions,2,Selected,1,8,9,0,8
+22594,%36311 = OpLoad %GPUDrivenStreamAssetRasterBindings_std430 %36310,12,Not Selected,5,Wait,3,Selected,2,14,10,0,8
+22605,%36319 = OpLoad %GPUDrivenStreamAssetActiveHeader_std430 %36318,9,Wait,6,Not Selected,1,No Instructions,1,14,10,1,8
+22616,%36327 = OpLoad %GPUDrivenStreamAssetActiveHeader_std430 %36326,7,Wait,3,Short Scoreboard,2,Selected,1,8,10,2,8
+22627,%36335 = OpLoad %GPUDrivenStreamAssetActiveHeader_std430 %36334,19,Wait,9,Short Scoreboard,5,No Instructions,3,25,9,6,8
+22639,%36344 = OpLoad %uint %36343,10,Wait,7,No Instructions,1,Math Pipe Throttle,1,14,9,1,8
+22649,%36350 = OpLoad %uint %36349,6,Wait,3,Short Scoreboard,2,Selected,1,8,9,2,8
+22659,%36356 = OpLoad %uint %36355,29,Branch Resolving,15,Wait,5,Selected,4,42,8,3,8
+22679,%36362 = OpUDiv %uint %37629 %uint_2,1,Short Scoreboard,1,,,,,0,1,,9
+22692,%36367 = OpUGreaterThanEqual %bool %35544 %36362,1,Wait,1,,,,,0,1,,9
+22696,OpBranchConditional %36367 %36379 %36368,3,Wait,2,Selected,1,,,0,3,,10
+,// E:/metallic/Shaders/Modules/GPUDriven/GPUDrivenRasterCommon.slang:53,,,,,,,,
+22730,%37694 = OpULessThanEqual %bool %37641 %uint_33554431,5,Short Scoreboard,4,Not Selected,1,,,8,1,,9
+22770,OpBranchConditional %37657 %37658 %37659,1,Not Selected,1,,,,,0,1,,8
+22779,%37660 = OpIAdd %uint %37641 %35544,6,Wait,6,,,,,8,2,,10
+22785,%37717 = OpULessThan %bool %37660 %37662,1,Wait,1,,,,,0,1,,9
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:40,,,,,,,,
+22827,OpBranchConditional %36381 %36382 %36383,6,Branch Resolving,6,,,,,8,4,,9
+22848,%36389 = OpUDiv %uint %35544 %36387,14,Short Scoreboard,7,Not Selected,3,Selected,2,14,19,7,16
+22852,%36391 = OpIMul %uint %36389 %36387,1,Selected,1,,,,,0,1,,12
+22853,%36392 = OpISub %uint %35544 %36391,1,Wait,1,,,,,0,1,,12
+22863,%36398 = OpUGreaterThanEqual %bool %36389 %36397,2,Selected,1,Wait,1,,,0,1,,13
+22867,OpBranchConditional %36398 %36399 %36400,2,Selected,1,Wait,1,,,0,3,,13
+22912,%36415 = OpIAdd %uint %42150 %36414,3,Selected,1,Not Selected,1,Short Scoreboard,1,0,2,,15
+22918,OpSwitch %36267 %36457 0 %36449 1 %36441 2 %36433 3 %36425 4 %36417,17,Wait,8,Selected,3,Not Selected,2,25,17,,16
+22923,%36421 = OpLoad %GPUDrivenStreamAssetActiveGroup_std430 %36420,7,Wait,4,Selected,1,Not Selected,1,8,6,4,17
+22934,%36429 = OpLoad %GPUDrivenStreamAssetActiveGroup_std430 %36428,7,Wait,3,Branch Resolving,2,No Instructions,1,8,7,4,17
+22945,%36437 = OpLoad %GPUDrivenStreamAssetActiveGroup_std430 %36436,8,Selected,2,Branch Resolving,2,No Instructions,2,8,7,4,17
+22956,%36445 = OpLoad %GPUDrivenStreamAssetActiveGroup_std430 %36444,8,Wait,3,Selected,2,Not Selected,2,8,7,4,17
+22967,%36453 = OpLoad %GPUDrivenStreamAssetActiveGroup_std430 %36452,5,Not Selected,2,Wait,2,Branch Resolving,1,8,7,4,17
+22999,%36465 = OpUGreaterThanEqual %bool %37780 %37762,5,Short Scoreboard,4,Not Selected,1,,,8,1,,18
+23003,OpBranchConditional %36465 %36468 %36466,1,Wait,1,,,,,0,1,,18
+23022,OpBranchConditional %36470 %36475 %36471,1,Wait,1,,,,,0,2,,18
+23032,%36474 = OpUGreaterThanEqual %bool %36392 %37792,4,Short Scoreboard,3,Wait,1,,,5,1,,18
+23047,OpBranchConditional %36477 %36480 %36478,2,Selected,1,Wait,1,,,0,1,,17
+23066,OpBranchConditional %36482 %36488 %36483,7,Branch Resolving,6,Wait,1,,,8,5,,18
+23076,%36486 = OpBitwiseAnd %uint %37798 %uint_6,8,Short Scoreboard,6,Selected,1,Wait,1,8,1,,19
+23092,OpBranchConditional %36490 %36497 %36491,11,Branch Resolving,8,Wait,2,Not Selected,1,14,5,,18
+23102,%36494 = OpShiftRightLogical %uint %37804 %36392,2,Selected,2,,,,,0,1,,18
+23104,%36496 = OpIEqual %bool %36495 %uint_0,6,Short Scoreboard,6,,,,,8,2,,19
+23119,OpBranchConditional %36499 %36500 %36501,5,Branch Resolving,2,Wait,2,Not Selected,1,8,5,,18
+23136,OpBranchConditional %36503 %36505 %36504,2,Not Selected,1,Wait,1,,,0,3,,17
+23151,%36510 = OpIEqual %bool %36267 %uint_0,2,Branch Resolving,1,No Instructions,1,,,0,1,,17
+23166,%36515 = OpArrayLength %uint %36514 0,9,Not Selected,3,Short Scoreboard,3,Wait,2,14,11,3,18
+23175,%36521 = OpGroupNonUniformBroadcastFirst %uint %uint_3 %36520,17,Branch Resolving,10,Short Scoreboard,3,Selected,1,25,6,8,18
+23176,%36522 = OpUGreaterThanEqual %bool %37786 %36521,6,Short Scoreboard,5,Wait,1,,,8,1,,16
+23180,OpBranchConditional %36522 %36523 %36524,2,Wait,1,Math Pipe Throttle,1,,,0,3,,16
+23193,OpBranchConditional %36510 %36526 %36525,3,Wait,2,Branch Resolving,1,,,0,4,,15
+23205,%36531 = OpLoad %v4uint %36530,10,Not Selected,3,Wait,3,Short Scoreboard,2,14,16,25,16
+23214,%36535 = OpGroupNonUniformBroadcastFirst %uint %uint_3 %36534,43,Long Scoreboard,23,Branch Resolving,7,No Instructions,6,42,8,4,14
+23222,%36538 = OpIAdd %uint %42150 %36537,7,Branch Resolving,3,Wait,3,Short Scoreboard,1,8,5,,13
+23227,OpBranchConditional %36540 %36542 %36541,8,Wait,6,Not Selected,1,Branch Resolving,1,8,4,,13
+23236,%36546 = OpLoad %GPUDrivenStreamAssetPageTableEntry_std430 %36545,9,Wait,7,Not Selected,2,,,14,12,20,14
+23246,%36553 = OpGroupNonUniformBroadcastFirst %uint %uint_3 %36551,31,Long Scoreboard,20,Branch Resolving,4,Selected,3,42,8,9,15
+23250,%36555 = OpBitwiseAnd %uint %36553 %uint_7,7,Short Scoreboard,7,,,,,8,1,,14
+23280,OpBranchConditional %36563 %36566 %36564,3,Wait,2,Not Selected,1,,,0,1,,14
+23299,OpBranchConditional %36568 %36572 %36569,2,Not Selected,1,Wait,1,,,0,2,,14
+23319,OpBranchConditional %36574 %36575 %36576,2,Wait,2,,,,,0,2,,14
+23330,%36578 = OpIAdd %uint %42150 %36577,5,Short Scoreboard,4,Not Selected,1,,,8,2,,16
+23349,%36589 = OpLoad %uint %36588,9,Wait,5,Selected,1,Not Selected,1,14,13,31,19
+23397,%36607 = OpULessThan %bool %37810 %uint_112,3,Short Scoreboard,2,Selected,1,,,0,1,,21
+23401,OpBranchConditional %36607 %36610 %36608,2,Selected,1,Not Selected,1,,,0,1,,22
+23459,OpBranchConditional %36623 %36629 %36624,2,Selected,1,Not Selected,1,,,0,4,,22
+23485,OpBranchConditional %36631 %36638 %36632,1,Short Scoreboard,1,,,,,0,2,,22
+23489,%36633 = OpINotEqual %bool %37834 %uint_2,3,Wait,3,,,,,0,1,,21
+23493,OpBranchConditional %36633 %36635 %36634,1,Selected,1,,,,,0,1,,21
+23521,OpBranchConditional %36640 %36641 %36642,7,Wait,4,Branch Resolving,3,,,8,5,,23
+23557,%36653 = OpIEqual %bool %37834 %uint_4,1,Selected,1,,,,,0,3,,24
+23574,%36658 = OpBitwiseAnd %uint %37846 %uint_3,1,Short Scoreboard,1,,,,,0,1,,23
+23579,OpBranchConditional %36659 %36663 %36660,1,Selected,1,,,,,0,3,,24
+23599,OpBranchConditional %36665 %36669 %36666,5,Wait,4,Dispatch Stall,1,,,8,7,,25
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:500,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:101,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:500,,,,,,,,
+23717,%37939 = OpISub %uint %37810 %37852,1,Selected,1,,,,,0,1,,24
+23718,%37940 = OpUDiv %uint %37939 %36674,16,Short Scoreboard,8,Not Selected,3,Wait,2,25,19,8,27
+23719,%37941 = OpULessThanEqual %bool %37822 %37940,1,Wait,1,,,,,0,1,,23
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:101,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:492,,,,,,,,
+23754,%37986 = OpULessThanEqual %bool %37858 %37810,1,Wait,1,,,,,0,1,,22
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:102,,,,,,,,
+23792,OpBranchConditional %36685 %36686 %36687,7,Wait,5,Selected,1,Branch Resolving,1,8,4,,21
+23802,%36688 = OpULessThan %bool %36267 %uint_4,1,Wait,1,,,,,0,1,,19
+23814,%36694 = OpIAdd %uint %36581 %36693,2,Wait,2,,,,,0,1,,18
+23817,%36697 = OpIAdd %uint %36696 %36267,1,Not Selected,1,,,,,0,1,,18
+23819,%36699 = OpLoad %uint %36698,8,Wait,3,Selected,2,Not Selected,1,8,13,23,20
+23940,OpBranchConditional %36735 %36738 %36736,4,Selected,3,Not Selected,1,,,5,5,,21
+23959,OpBranchConditional %36740 %36745 %36741,1,Wait,1,,,,,0,2,,20
+23992,OpSwitch %36267 %36896 0 %36880 1 %36864 2 %36848 3 %36832 4 %36816 5 %36807 6 %36798 7 %36789 8 %36780 9 %36773 10 %36770 11 %36768 12 %36766 13 %36762 14 %36759 15 %36756 16 %36750,70,Wait,44,No Instructions,9,Branch Resolving,7,73,46,,17
+24011,OpStore %36751 %36755,4,Wait,3,Dispatch Stall,1,,,5,2,0,3
+24019,OpStore %36757 %36758,2,Selected,1,No Instructions,1,,,0,1,0,4
+24027,OpStore %36760 %36761,1,Branch Resolving,1,,,,,0,1,0,4
+24035,%36765 = OpIAdd %uint %36764 %38027,5,Wait,3,Not Selected,2,,,8,1,,6
+24043,OpStore %36767 %38033,1,Branch Resolving,1,,,,,0,1,0,4
+24050,OpStore %36769 %38021,2,Not Selected,1,Wait,1,,,0,1,0,4
+24058,OpStore %36771 %36772,2,Branch Resolving,1,No Instructions,1,,,0,1,0,4
+24065,%36775 = OpUDiv %uint %37852 %uint_4,5,Wait,4,Not Selected,1,,,8,1,,6
+24069,%36779 = OpIAdd %uint %36776 %36778,1,Wait,1,,,,,0,1,,5
+24070,OpStore %36774 %36779,2,Wait,2,,,,,0,1,0,3
+24079,%36785 = OpLoad %GPUDrivenStreamAssetActiveGroup_std430 %36784,12,Wait,5,No Instructions,3,Selected,2,14,16,26,9
+24082,OpStore %36781 %42548,27,Long Scoreboard,25,Wait,2,,,42,1,0,7
+24091,%36794 = OpLoad %GPUDrivenStreamAssetActiveGroup_std430 %36793,7,Wait,3,Selected,2,Not Selected,1,8,16,42,9
+24094,OpStore %36790 %42544,42,Long Scoreboard,41,Selected,1,,,42,1,0,7
+24103,%36803 = OpLoad %GPUDrivenStreamAssetActiveGroup_std430 %36802,8,Short Scoreboard,4,Wait,2,No Instructions,2,8,16,7,9
+24106,OpStore %36799 %42540,5,Long Scoreboard,3,Wait,2,,,8,1,0,7
+24115,%36812 = OpLoad %GPUDrivenStreamAssetActiveGroup_std430 %36811,8,Wait,3,Short Scoreboard,3,Not Selected,2,8,16,25,9
+24118,OpStore %36808 %42536,22,Long Scoreboard,22,,,,,25,1,0,7
+24127,OpBranchConditional %36413 %36824 %36818,2,Wait,1,No Instructions,1,,,0,1,,4
+24133,%36823 = OpLoad %v4float %36822,1,Wait,1,,,,,0,16,5,9
+24141,%36829 = OpLoad %v4float %36828,15,Wait,7,No Instructions,3,Short Scoreboard,3,14,15,8,9
+24147,OpStore %36817 %36831,6,Long Scoreboard,5,Branch Resolving,1,,,8,1,0,7
+24156,OpBranchConditional %36413 %36840 %36834,1,Wait,1,,,,,0,1,,4
+24162,%36839 = OpLoad %v4float %36838,2,Wait,2,,,,,0,7,0,4
+24170,%36845 = OpLoad %v4float %36844,13,Wait,6,Not Selected,4,Selected,2,14,8,1,4
+24176,OpStore %36833 %36847,2,Long Scoreboard,2,,,,,0,1,0,7
+24185,OpBranchConditional %36413 %36856 %36850,2,Wait,1,No Instructions,1,,,0,1,,4
+24191,%36855 = OpLoad %v4float %36854,1,Wait,1,,,,,0,16,7,9
+24199,%36861 = OpLoad %v4float %36860,14,Not Selected,4,No Instructions,4,Wait,3,14,15,8,9
+24205,OpStore %36849 %36863,9,Long Scoreboard,7,Not Selected,1,Branch Resolving,1,14,1,0,7
+24214,OpBranchConditional %36413 %36872 %36866,1,Wait,1,,,,,0,1,,4
+24228,%36877 = OpLoad %v4float %36876,11,Selected,4,Wait,3,Short Scoreboard,3,14,15,7,9
+24234,OpStore %36865 %36879,5,Long Scoreboard,4,No Instructions,1,,,8,1,0,7
+24243,OpBranchConditional %36413 %36888 %36882,2,No Instructions,2,,,,,0,1,,4
+24257,%36893 = OpLoad %v4float %36892,10,Short Scoreboard,5,Not Selected,2,No Instructions,2,14,15,7,9
+24263,OpStore %36881 %36895,2,Long Scoreboard,2,,,,,0,1,0,7
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:13,,,,,,,,
+24283,%35546 = OpIEqual %bool %9945 %uint_0,73,Branch Resolving,40,No Instructions,15,Wait,11,73,2,,3
+24314,OpControlBarrier %uint_2 %uint_2 %uint_264,14,No Instructions,7,Not Selected,2,Wait,2,14,3,,1
+24316,%35554 = OpLoad %uint %g_StreamSoftwareValid,3561,Barrier,3557,Wait,3,Not Selected,1,5343,1,13,2
+24317,%35555 = OpIEqual %bool %35554 %uint_0,14,Short Scoreboard,13,Not Selected,1,,,14,1,,2
+24321,OpBranchConditional %35555 %35556 %35557,10,Wait,6,Selected,2,Not Selected,2,14,1,,2
+24330,%35559 = OpLoad %uint %35558,18,Wait,13,Branch Resolving,3,Not Selected,1,25,1,14,2
+24331,%35560 = OpULessThan %bool %9945 %35559,19,Short Scoreboard,14,No Instructions,3,Selected,1,25,1,,2
+24335,OpBranchConditional %35560 %35561 %35586,14,Wait,10,Selected,3,Dispatch Stall,1,14,2,,2
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:135,,,,,,,,
+24340,%38061 = OpLoad %GPUDrivenStreamAssetPush_std430 %38060,2,Not Selected,2,,,,,0,1,2,1
+24347,%38140 = OpIAdd %uint %41753 %41756,4,Not Selected,2,Short Scoreboard,2,,,5,1,,3
+24351,%38144 = OpLoad %uint %38143,1,MIO Throttle,1,,,,,0,1,0,3
+24355,%38148 = OpIAdd %uint %38144 %38147,2,Selected,2,,,,,0,1,,4
+24361,%38153 = OpLoad %uint %38152,24,Wait,9,Not Selected,8,Selected,3,25,11,53,6
+24366,%38159 = OpLoad %uint %38158,15,Wait,6,Selected,3,Not Selected,3,14,6,4,6
+24371,%38165 = OpLoad %uint %38164,11,Not Selected,5,Wait,4,Long Scoreboard,2,14,6,2,6
+24378,%38170 = OpLoad %v4float %38169,5,Not Selected,3,Dispatch Stall,1,MIO Throttle,1,8,1,0,18
+24380,%38172 = OpVectorTimesScalar %v3float %38171 %38154,52,Long Scoreboard,48,Selected,4,,,73,3,,26
+24382,%38174 = OpLoad %v4float %38173,3,Wait,2,Selected,1,,,0,1,0,24
+24385,%38177 = OpFAdd %v3float %38172 %38176,3,Long Scoreboard,2,Selected,1,,,0,3,,25
+24387,%38179 = OpLoad %v4float %38178,2,Wait,1,MIO Throttle,1,,,0,1,0,27
+24390,%38182 = OpFAdd %v3float %38177 %38181,5,Selected,2,Not Selected,2,Long Scoreboard,1,8,3,,22
+24392,%38184 = OpLoad %v4float %38183,3,Not Selected,1,Wait,1,MIO Throttle,1,0,1,0,21
+24399,%38189 = OpLoad %v4float %38188,2,Wait,2,,,,,0,1,2,8
+24402,%38192 = OpLoad %v4float %38191,3,Wait,2,MIO Throttle,1,,,0,1,2,12
+24404,%38194 = OpFSub %v3float %38190 %38193,5,Not Selected,2,Short Scoreboard,2,Selected,1,8,3,,27
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:486,,,,,,,,
+24413,%38589 = OpDot %float %38194 %38194,7,Wait,5,Not Selected,2,,,8,3,,27
+24416,%38590 = OpFOrdGreaterThan %bool %38589 %float_9_99999994en09,7,Wait,5,Selected,1,Not Selected,1,8,1,,27
+24426,%38593 = OpExtInst %float %774 InverseSqrt %38589,8,Wait,5,Not Selected,2,Selected,1,8,1,5,27
+24427,%38594 = OpVectorTimesScalar %v3float %38194 %38593,10,Short Scoreboard,5,Selected,3,Not Selected,1,14,6,,28
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:144,,,,,,,,
+24439,%38198 = OpLoad %v4float %38197,4,Not Selected,2,Selected,1,No Instructions,1,5,1,10,19
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:486,,,,,,,,
+24449,%38621 = OpDot %float %38199 %38199,16,Short Scoreboard,10,Not Selected,4,Selected,1,25,3,,23
+24452,%38622 = OpFOrdGreaterThan %bool %38621 %float_9_99999994en09,3,Wait,2,Dispatch Stall,1,,,0,1,,23
+24462,%38625 = OpExtInst %float %774 InverseSqrt %38621,11,Wait,8,Not Selected,3,,,14,1,7,23
+24463,%38626 = OpVectorTimesScalar %v3float %38199 %38625,11,Short Scoreboard,7,Selected,2,Not Selected,2,14,6,,28
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:145,,,,,,,,
+24474,%38202 = OpExtInst %v3float %774 Cross %38596 %38628,2,Wait,2,,,,,0,6,,22
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:486,,,,,,,,
+24483,%38653 = OpDot %float %38202 %38202,8,Not Selected,4,Wait,2,Dispatch Stall,2,8,3,,18
+24486,%38654 = OpFOrdGreaterThan %bool %38653 %float_9_99999994en09,4,Not Selected,2,Selected,1,Wait,1,5,1,,18
+24496,%38657 = OpExtInst %float %774 InverseSqrt %38653,6,Wait,3,Not Selected,2,MIO Throttle,1,8,1,3,18
+24497,%38658 = OpVectorTimesScalar %v3float %38202 %38657,5,Short Scoreboard,3,Selected,1,Not Selected,1,8,6,,23
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:146,,,,,,,,
+24508,%38205 = OpExtInst %v3float %774 Cross %38660 %38596,3,Selected,3,,,,,0,6,,20
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:486,,,,,,,,
+24517,%38685 = OpDot %float %38205 %38205,2,Selected,2,,,,,0,3,,21
+24520,%38686 = OpFOrdGreaterThan %bool %38685 %float_9_99999994en09,1,Not Selected,1,,,,,0,1,,20
+24530,%38689 = OpExtInst %float %774 InverseSqrt %38685,9,Wait,6,Not Selected,2,Selected,1,14,1,10,20
+24531,%38690 = OpVectorTimesScalar %v3float %38205 %38689,17,Short Scoreboard,10,Not Selected,3,Selected,2,25,6,,22
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:147,,,,,,,,
+24544,%38210 = OpFSub %v3float %38186 %38209,3,Selected,2,Dispatch Stall,1,,,0,3,,22
+24548,%38212 = OpDot %float %38210 %38660,4,Not Selected,3,Selected,1,,,5,3,,22
+24549,%38213 = OpDot %float %38210 %38692,3,Wait,2,Selected,1,,,0,3,,17
+24550,%38214 = OpDot %float %38210 %38596,1,Selected,1,,,,,0,3,,22
+24564,%38224 = OpFAdd %float %38220 %float_9_99999975en05,1,Selected,1,,,,,0,1,,17
+24565,%38225 = OpExtInst %float %774 FMax %38223 %38224,2,Not Selected,2,,,,,0,1,,17
+24571,%38229 = OpFOrdGreaterThan %bool %38228 %float_0_5,1,Selected,1,,,,,0,1,,14
+,// E:/metallic/Shaders/Modules/GPUDriven/ConservativeOcclusion.slang:48,,,,,,,,
+24593,%38716 = OpFSub %float %38225 %38220,3,Selected,2,Wait,1,,,0,1,,12
+24613,%38726 = OpFOrdGreaterThan %bool %38725 %float_9_99999997en07,14,Wait,5,No Instructions,5,Selected,2,14,1,,13
+24615,OpBranchConditional %38726 %38732 %38727,3,Wait,2,Not Selected,1,,,0,4,,15
+24643,%38735 = OpFSub %float %38225 %38220,1,Selected,1,,,,,0,1,,15
+24644,%38736 = OpFDiv %float %38225 %38735,4,Selected,2,Not Selected,2,,,5,2,0,14
+24646,%38738 = OpFDiv %float %38220 %38737,9,Short Scoreboard,4,Wait,3,Selected,1,14,2,4,15
+24647,%38739 = OpFSub %float %float_1 %38738,3,Selected,3,,,,,0,1,,13
+24648,%38740 = OpFMul %float %38736 %38739,1,Wait,1,,,,,0,1,,10
+24654,%38743 = OpFDiv %float %38220 %38742,2,Wait,1,MIO Throttle,1,,,0,2,0,15
+24655,%38744 = OpFSub %float %38225 %38214,2,Selected,1,Not Selected,1,,,0,1,,15
+24657,%38746 = OpFDiv %float %38744 %38745,5,Not Selected,3,Selected,2,,,8,2,0,15
+24658,%38747 = OpFMul %float %38743 %38746,1,Not Selected,1,,,,,0,1,,13
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:152,,,,,,,,
+24675,%38236 = OpLoad %v4float %38235,1,Not Selected,1,,,,,0,1,8,12
+24677,%38238 = OpExtInst %float %774 FMax %38237 %float_0_00100000005,10,Short Scoreboard,8,Selected,1,Not Selected,1,14,1,,13
+24688,OpBranchConditional %38242 %38256 %38243,4,Selected,4,,,,,5,1,,12
+24695,%38247 = OpExtInst %float %774 FClamp %38246 %float_0_0174532924 %float_3_12413931,7,No Instructions,5,Not Selected,1,Wait,1,8,2,,12
+24696,%38248 = OpFMul %float %38247 %float_0_5,2,Not Selected,2,,,,,0,1,,11
+24697,%38249 = OpExtInst %float %774 Tan %38248,20,Short Scoreboard,9,Selected,6,Not Selected,2,25,5,9,13
+24698,%38250 = OpFDiv %float %float_1 %38249,1,Wait,1,,,,,0,1,8,11
+24701,%38251 = OpFMul %float %38212 %38250,8,Short Scoreboard,8,,,,,8,1,,11
+24704,%38254 = OpFMul %float %38751 %38214,2,Selected,2,,,,,0,1,,11
+24715,%38260 = OpFMul %float %38259 %float_0_5,1,Wait,1,,,,,0,1,,11
+24730,%38268 = OpLoad %uint %38267,1,Dispatch Stall,1,,,,,0,1,10,15
+24731,%38269 = OpINotEqual %bool %38268 %uint_0,11,Short Scoreboard,10,Wait,1,,,14,1,,15
+24750,%38282 = OpFDiv %v2float %38279 %38281,19,Wait,8,Short Scoreboard,7,Not Selected,2,25,4,7,15
+24753,%38286 = OpFSub %v2float %38272 %38285,1,Wait,1,,,,,0,2,,13
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:19,,,,,,,,
+24776,%35567 = OpLoad %uint %35566,4,Selected,3,Wait,1,,,5,8,0,13
+24780,%35572 = OpLoad %uint %35571,8,Selected,3,Not Selected,2,Wait,2,8,6,0,14
+24781,%35573 = OpConvertUToF %float %35572,1,Not Selected,1,,,,,0,1,,10
+24785,%35578 = OpLoad %uint %35577,10,Wait,6,Selected,1,Not Selected,1,14,8,1,14
+,// E:/metallic/Shaders/Modules/GPUDriven/HybridRasterTriangle.slang:84,,,,,,,,
+24791,%38775 = OpFDiv %v2float %38772 %38774,8,Selected,5,Wait,2,Not Selected,1,8,4,0,14
+24793,%38778 = OpFAdd %v2float %38776 %64433,3,Not Selected,2,Dispatch Stall,1,,,0,2,,10
+24794,%38779 = OpFMul %v2float %38778 %35574,1,Wait,1,,,,,0,2,,9
+24796,%38781 = OpShiftLeftLogical %int %int_1 %35578,7,Selected,3,Not Selected,2,Wait,1,8,2,,9
+24797,%38782 = OpConvertSToF %float %38781,1,Wait,1,,,,,0,1,,10
+24799,%38785 = OpFAdd %v2float %38783 %64433,2,Selected,1,Dispatch Stall,1,,,0,2,,7
+24801,%38787 = OpConvertFToS %v2int %38786,5,Not Selected,3,Selected,1,MIO Throttle,1,8,2,20,7
+24804,%38790 = OpFDiv %float %38789 %38773,1,Selected,1,,,,,0,2,,9
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:22,,,,,,,,
+24811,OpStore %35580 %35585,12,Short Scoreboard,10,Selected,1,Wait,1,14,1,0,7
+24816,OpControlBarrier %uint_2 %uint_2 %uint_264,16,No Instructions,9,Branch Resolving,5,Wait,2,25,3,0,1
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:169,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:1019,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:174,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:1019,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:174,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:1019,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:174,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:29,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterWorkBins.slang:6,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:30,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterWorkBins.slang:36,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:33,,,,,,,,
+25500,%35641 = OpLoad %uint %35640,190,Barrier,186,Selected,2,Wait,1,213,1,11,2
+25502,%35643 = OpULessThan %bool %35642 %35641,11,Short Scoreboard,11,,,,,14,1,,2
+25506,OpBranchConditional %35643 %35644 %35719,3,Wait,2,Not Selected,1,,,0,1,,2
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:169,,,,,,,,
+25515,%39669 = OpLoad %GPUDrivenStreamAssetPush_std430 %39668,4,Wait,3,Branch Resolving,1,,,5,1,5,1
+25522,%39748 = OpIAdd %uint %40936 %40939,7,Short Scoreboard,5,Not Selected,1,Dispatch Stall,1,8,1,,3
+25526,%39752 = OpLoad %uint %39751,1,Selected,1,,,,,0,1,0,2
+25528,%39754 = OpIAdd %uint %39752 %39753,1,Selected,1,,,,,0,1,,4
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:1019,,,,,,,,
+25541,%39944 = OpLoad %uint %39943,18,Wait,9,Not Selected,4,Selected,3,25,11,50,7
+25546,%39947 = OpIMul %uint %39946 %uint_8,6,Long Scoreboard,3,Selected,2,Dispatch Stall,1,8,2,,14
+25549,%39948 = OpShiftRightLogical %uint %39944 %39947,46,Long Scoreboard,45,Not Selected,1,,,73,1,,18
+25550,%39949 = OpBitwiseAnd %uint %39948 %uint_255,2,Wait,1,Math Pipe Throttle,1,,,0,1,,17
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:174,,,,,,,,
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:1019,,,,,,,,
+25563,%39980 = OpLoad %uint %39979,10,Wait,4,Not Selected,3,Long Scoreboard,3,14,6,1,8
+25571,%39984 = OpShiftRightLogical %uint %39980 %39983,1,Long Scoreboard,1,,,,,0,1,,18
+25572,%39985 = OpBitwiseAnd %uint %39984 %uint_255,1,Selected,1,,,,,0,1,,15
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:174,,,,,,,,
+25575,%39762 = OpIAdd %uint %39754 %uint_2,3,Not Selected,2,Wait,1,,,0,1,,5
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:1019,,,,,,,,
+25585,%40016 = OpLoad %uint %40015,2,Selected,1,Not Selected,1,,,0,6,1,11
+25594,%40021 = OpBitwiseAnd %uint %40020 %uint_255,2,Not Selected,1,Math Pipe Throttle,1,,,0,1,,11
+,// E:/metallic/Shaders/Features/GPUDriven/StreamRasterCooperative.slang:174,,,,,,,,
+25602,%39767 = OpULessThan %bool %39949 %39766,2,Not Selected,1,Wait,1,,,0,2,,17
+25617,%39772 = OpULessThan %bool %39985 %39771,3,Selected,1,Not Selected,1,Wait,1,0,1,,12
+25632,%39777 = OpULessThan %bool %40021 %39776,4,Selected,2,Not Selected,1,Wait,1,5,1,,10
+25635,OpBranchConditional %39777 %39779 %39778,1,Wait,1,,,,,0,1,,9
+25657,%39790 = OpLoad %v4float %39789,1,Selected,1,,,,,0,1,13,18
+25659,%39792 = OpExtInst %v3float %774 Cross %39788 %39791,16,Short Scoreboard,13,Not Selected,2,Long Scoreboard,1,25,6,,23
+25661,%39794 = OpLoad %v4float %39793,2,Selected,1,Not Selected,1,,,0,1,0,21
+25663,%39796 = OpDot %float %39792 %39795,6,Wait,4,Selected,1,Not Selected,1,8,3,,21
+25664,%39797 = OpFOrdLessThan %bool %39796 %float_0,3,Selected,1,Wait,1,Math Pipe Throttle,1,0,3,,12
+25669,OpBranchConditional %39797 %39799 %39798,7,Not Selected,3,Wait,3,Selected,1,8,4,,8
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:38,,,,,,,,
+25691,%35654 = OpLoad %v4uint %35653,1,Selected,1,,,,,0,1,30,10
+25701,%35666 = OpLoad %v4uint %35665,1,No Instructions,1,,,,,0,1,26,12
+25711,%35678 = OpLoad %v4uint %35677,1,Wait,1,,,,,0,1,4,14
+25720,%35691 = OpLoad %uint %35690,1,Wait,1,,,,,0,1,0,34
+,// E:/metallic/Shaders/Modules/GPUDriven/GPUDrivenRasterCommon.slang:66,,,,,,,,
+25727,%40045 = OpBitwiseOr %uint %40043 %40044,2,Wait,2,,,,,0,1,,26
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:43,,,,,,,,
+25731,%35695 = OpLoad %uint %35694,2,Wait,2,,,,,0,1,8,13
+25732,%35696 = OpBitwiseAnd %uint %35695 %uint_2,10,Short Scoreboard,8,Selected,1,Not Selected,1,14,1,,13
+25736,%35701 = OpLoad %uint %35700,5,Selected,3,Not Selected,1,Wait,1,8,9,1,12
+25739,%35705 = OpLoad %uint %35704,6,Not Selected,3,Selected,1,Wait,1,8,6,1,12
+25742,%35709 = OpLoad %uint %35708,2,Selected,1,Long Scoreboard,1,,,0,9,4,11
+25745,%35713 = OpLoad %uint %35712,11,Wait,7,Selected,2,Math Pipe Throttle,2,14,7,3,12
+25748,%35717 = OpLoad %uint %35716,18,Wait,9,Selected,8,Not Selected,1,25,9,1,10
+,// E:/metallic/Shaders/Modules/GPUDriven/HybridRasterTriangle.slang:95,,,,,,,,
+25771,%40662 = OpISub %v2int %43034 %40073,28,Short Scoreboard,26,Not Selected,1,Wait,1,42,2,,14
+25773,%40663 = OpISub %v2int %43045 %40073,5,Short Scoreboard,4,Selected,1,,,8,2,,15
+25777,%40666 = OpIMul %int %40664 %40665,1,Selected,1,,,,,0,1,,15
+25780,%40669 = OpIMul %int %40667 %40668,2,Selected,1,Wait,1,,,0,1,,15
+25787,OpBranchConditional %40079 %40086 %40080,4,Wait,4,,,,,5,1,,12
+25821,OpBranchConditional %40088 %40089 %40090,8,Wait,8,,,,,8,1,,12
+25829,%40091 = OpSLessThan %bool %40670 %int_0,1,Selected,1,,,,,0,5,,18
+25854,%40099 = OpShiftLeftLogical %int %int_1 %35713,4,Wait,3,Dispatch Stall,1,,,5,2,,15
+25859,%40103 = OpExtInst %v2int %774 SMin %40073 %40102,1,Not Selected,1,,,,,0,2,,17
+25860,%40104 = OpConvertSToF %v2float %40103,2,Wait,2,,,,,0,2,,17
+25861,%40105 = OpConvertSToF %float %40099,1,Selected,1,,,,,0,1,,15
+25864,%40109 = OpFSub %v2float %40107 %64433,1,Selected,1,,,,,0,3,2,17
+25866,%40111 = OpConvertFToS %v2int %40110,6,Wait,2,MIO Throttle,2,Selected,1,8,2,4,18
+25867,%40112 = OpExtInst %v2int %774 SMax %9129 %40111,1,Short Scoreboard,1,,,,,0,2,,18
+25872,%40117 = OpISub %v2int %40115 %64434,4,Selected,4,,,,,5,2,,16
+25874,%40121 = OpExtInst %v2int %774 SMax %40073 %40120,1,Selected,1,,,,,0,2,,15
+25875,%40122 = OpConvertSToF %v2float %40121,2,Selected,1,Dispatch Stall,1,,,0,2,,15
+25878,%40126 = OpFSub %v2float %40124 %64433,4,Not Selected,2,Short Scoreboard,2,,,5,2,,17
+25880,%40128 = OpConvertFToS %v2int %40127,1,Selected,1,,,,,0,2,9,17
+25881,%40129 = OpExtInst %v2int %774 SMin %40117 %40128,9,Short Scoreboard,7,Not Selected,1,Dispatch Stall,1,14,2,,18
+25883,%40130 = OpSGreaterThan %v2bool %40112 %40129,3,Selected,1,Not Selected,1,Wait,1,0,2,,15
+25887,OpBranchConditional %40131 %40132 %40133,6,Wait,6,,,,,8,1,,15
+25905,OpBranchConditional %40690 %40698 %40691,2,Selected,2,,,,,0,8,,34
+25947,%40732 = OpISub %v2int %40073 %40137,1,Selected,1,,,,,0,2,,34
+25953,OpBranchConditional %40734 %40742 %40735,1,Selected,1,,,,,0,3,,34
+25995,%40776 = OpISub %v2int %40139 %40073,1,Not Selected,1,,,,,0,2,,20
+26001,OpBranchConditional %40778 %40786 %40779,2,Selected,1,Not Selected,1,,,0,3,,31
+26044,%40144 = OpSDiv %int %40099 %int_2,7,Selected,4,Wait,2,Not Selected,1,8,4,,22
+26046,%40146 = OpIAdd %v2int %40143 %40145,4,Selected,4,,,,,5,2,,28
+26054,%40819 = OpISub %v2int %40146 %40147,3,Math Pipe Throttle,2,Not Selected,1,,,0,4,,33
+26061,%40825 = OpIMul %int %40823 %40824,1,Selected,1,,,,,0,2,0,28
+26073,%40849 = OpIMul %int %40847 %40848,1,Math Pipe Throttle,1,,,,,0,2,,32
+26082,%40870 = OpIMul %int %40868 %40869,1,Selected,1,,,,,0,1,,31
+26090,%40155 = OpIAdd %v3int %40154 %40141,2,Selected,1,Not Selected,1,,,0,3,,31
+26101,%40167 = OpIMul %v3int %40165 %40166,4,Selected,1,Wait,1,No Instructions,1,5,3,,33
+26111,%40178 = OpIMul %v3int %40176 %40177,3,Selected,1,Not Selected,1,Dispatch Stall,1,0,3,,31
+26115,%40181 = OpFDiv %v2float %40179 %40180,1,Selected,1,,,,,0,2,,30
+26117,%40183 = OpConvertSToF %v2float %40147,1,Selected,1,,,,,0,2,,26
+26121,%40188 = OpConvertSToF %v2float %40148,2,Selected,1,Not Selected,1,,,0,2,,28
+26124,%40191 = OpFSub %v2float %40190 %40181,3,Selected,2,Wait,1,,,0,2,,31
+26128,%40194 = OpFMul %float %40192 %40193,1,Not Selected,1,,,,,0,1,,31
+26135,%40200 = OpFOrdLessThan %bool %40199 %float_9_99999996en13,1,Selected,1,,,,,0,1,,33
+26138,OpBranchConditional %40200 %40201 %40202,2,Wait,1,Dispatch Stall,1,,,0,1,,33
+26189,%40232 = OpSLessThanEqual %bool %40231 %40230,4,Not Selected,2,Selected,1,Wait,1,5,1,,24
+26191,OpBranchConditional %40232 %40234 %40233,15,Wait,12,Selected,1,Not Selected,1,14,2,,24
+26238,%40258 = OpSLessThanEqual %bool %40257 %40256,22,No Instructions,17,Branch Resolving,3,Not Selected,1,25,2,,30
+26240,OpBranchConditional %40258 %40260 %40259,37,Wait,23,Selected,6,Branch Resolving,4,42,11,,30
+26249,%40264 = OpAll %bool %40263,35,No Instructions,15,Wait,10,Not Selected,4,42,4,,31
+26252,OpBranchConditional %40264 %40265 %40312,30,Wait,22,Selected,4,Not Selected,4,42,4,,31
+26264,%40268 = OpConvertSToF %float %40267,26,No Instructions,13,Wait,10,Branch Resolving,2,42,2,,31
+26266,%40271 = OpFAdd %v2float %40269 %64433,3,Selected,1,Not Selected,1,Wait,1,0,2,,32
+26267,%40272 = OpFSub %v2float %40271 %40181,2,Selected,1,Wait,1,,,0,2,,32
+26270,%40274 = OpFMul %float %40273 %40193,6,Not Selected,3,Wait,2,Selected,1,8,2,,33
+26273,%40277 = OpFSub %float %40274 %40276,2,Selected,1,Not Selected,1,,,0,2,,33
+26274,%40278 = OpFDiv %float %40277 %40198,3,Wait,3,,,,,0,2,,33
+26278,%40281 = OpFSub %float %40279 %40280,1,Selected,1,,,,,0,2,,33
+26279,%40282 = OpFDiv %float %40281 %40198,1,Selected,1,,,,,0,2,,33
+26282,%40284 = OpFAdd %float %40204 %40283,3,Selected,1,Not Selected,1,Wait,1,0,2,,33
+26284,%40286 = OpFAdd %float %40284 %40285,2,Wait,1,Dispatch Stall,1,,,0,2,,33
+26304,OpBranchConditional %40294 %40296 %40295,8,Wait,3,Selected,2,Not Selected,2,8,2,,33
+26324,%40304 = OpIAdd %uint %40301 %40303,1,Selected,1,,,,,0,2,,32
+26331,%40311 = OpAtomicUMax %ulong %40305 %uint_1 %uint_0 %40310,12,Selected,7,Wait,4,Not Selected,1,14,16,0,33
+26332,OpBranch %40312,12,Wait,10,Selected,2,,,14,11,,30
+26337,%40314 = OpIAdd %v3int %40313 %40167,77,Wait,37,Branch Resolving,24,Selected,13,125,11,,30
+26366,%40324 = OpIAdd %int %40323 %int_1,2,Selected,1,Math Pipe Throttle,1,,,0,2,,30
+26379,%40329 = OpIAdd %v3int %40328 %40178,18,No Instructions,10,Selected,6,Branch Resolving,2,25,5,,24
+26388,%40333 = OpIAdd %int %40332 %int_1,19,Branch Resolving,12,Wait,4,Not Selected,2,25,1,,24
+,// E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang:43,,,,,,,,
+26411,OpReturn,36,Wait,29,No Instructions,5,Miscellaneous,2,42,1,,1

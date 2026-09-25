@@ -10,6 +10,9 @@ IL_HEADER = ["#", "Source", "Samples", "Top Stall #1 (Type)", "Top Stall #1 (Sam
              "Top Stall #3 (Samples)", "Avg. Warp Latency", "Instruction Mix",
              "Dependency-Attributed Samples", "Cooperative Vector Fusion", "Live Registers"]
 SOURCE_HEADER = IL_HEADER[:2] + ["Total Samples"] + IL_HEADER[2:]
+# Nsight 2026.3.1 selected-range exports also omit this optional UI column.
+IL_HEADERS = (IL_HEADER, [c for c in IL_HEADER if c != "Cooperative Vector Fusion"])
+SOURCE_HEADERS = (SOURCE_HEADER, [c for c in SOURCE_HEADER if c != "Cooperative Vector Fusion"])
 
 
 def parse(records, raw_hash, context, number):
@@ -22,7 +25,7 @@ def parse(records, raw_hash, context, number):
         if not cells:
             continue
         if cells[0] == "#":
-            if cells not in (SOURCE_HEADER, IL_HEADER):
+            if cells not in SOURCE_HEADERS + IL_HEADERS:
                 raise ValueError("Unknown native header at record " + str(raw["record"]))
             header = cells
             headers.append(raw["record"])
@@ -33,9 +36,9 @@ def parse(records, raw_hash, context, number):
         # Nsight file/module markers have fewer trailing empty cells than data.
         marker = not cells[0] and cells[1] and not any(cells[2:])
         module_match = re.fullmatch(r"(.+\.spv) \(([0-9a-fA-F]+)\)", cells[1]) if marker else None
-        source_marker = marker and header == SOURCE_HEADER and not cells[1].startswith("//")
+        source_marker = marker and header in SOURCE_HEADERS and not cells[1].startswith("//")
         if module_match or source_marker:
-            if (module_match is not None) != (header == IL_HEADER):
+            if (module_match is not None) != (header in IL_HEADERS):
                 raise ValueError("Module marker under source header")
             current = {"representation": "il" if module_match else "source", "name": cells[1],
                        "marker_record": raw["record"], "header_record": headers[-1],
@@ -73,7 +76,7 @@ def parse(records, raw_hash, context, number):
                 "dependency_samples": number(cells[columns["dependency_samples"]]),
                 "live_registers": number(cells[columns["live_registers"]]),
                 "inclusive_samples": None,
-                "total_samples": number(cells[2]) if header == SOURCE_HEADER else None,
+                "total_samples": number(cells[2]) if header in SOURCE_HEADERS else None,
                 "stalls": [], "stall_coverage": "top-k-lower-bound",
                 "raw_metrics": dict(zip(header[2:], cells[2:])),
                 "evidence": [{"record": raw["record"], "physical_lines": raw["physical_lines"],

@@ -7,6 +7,8 @@ python -B Tools/Perf/WorkloadCase.py run --case Tools/Perf/WorkloadCase.MiniZora
 python -B Tools/Perf/WorkloadCase.py verify build/workload-case-new
 ```
 
+需要内容身份时，先执行 `python -B Tools/Perf/WorkloadAssets.py --output build/workload-assets-new`，再给 `run` 传入 `--assets build/workload-assets-new/mini.json` 或 `full.json`。此操作顺序读取约 360 GB 的原始资产；manifest 覆盖 graph 的 Asset 路径、glTF images/buffers 和已有 scene sidecar，逐文件保存 SHA-256。每次进程启动前及整批结束后复查长度/mtime，归档 manifest；原始资产没有复制进证据包。
+
 输出目录必须不存在。默认使用 `build-release/Source/MetallicGPUDrivenSample.exe`，可用 `--exe` 显式指定新构建。每次启动独立进程，进程间串行运行。任何采集、身份或输出检查失败立即停止，不将剩余缺失运行补成成功。
 
 ## Case 与生产入口
@@ -31,11 +33,14 @@ python -B Tools/Perf/WorkloadCase.py verify build/workload-case-new
 - 在实际绑定生产 compute pipeline 后记录 module、entry、SPIR-V 指纹、early/late 和所走队列分支。它是引擎侧绑定证据，不是 Nsight module hash、原生 queue handle 或 submit ID。
 - 每个 measured frame 核对 shader/state、驻留、纹理发布与 GPU timestamps。诊断 scope 不得进入测量帧。非空软件 bin 必须对应非零 dispatch；两阶段合计零工作量直接失败。
 - before/after 和各轮之间要求固定输入、binding 与 depth/visibility 字节一致；三个独立进程之间再比较同一身份。某个阶段为空时保留零计数，不能据此宣称该阶段的有效性能。
+- 纹理 upgrades/downgrades 是进程生命周期累计计数，冻结要求测量期间不增长；它们不属于跨进程输入身份。实际 textureBytes 仍须跨进程一致，不能因 depth/visibility 相同而忽略纹理驻留差异。
 - 保存 case、实际 engine config、源码/Shader/Pipeline 文件副本与 SHA256、可执行文件和同目录 DLL 的 SHA256、GPU/driver、日志、逐帧数据、输出读回和 GPU telemetry。`verify` 重新核对归档 hash 并重做语义检查。
 
 `AA.json` 使用独立进程的运行中位数作为统计单位；比较 graph GPU 和同步 early+late SW 总时间的跨运行相对极差。阈值来自 case，默认 10%，只是初始资格检查，不是收益显著性阈值。`stable` 表示本次 A/A 满足该阈值，`inconclusive` 表示噪声过大；两者均不接受任何优化候选。depth/visibility 自身重复一致也不等于与参考渲染器等价。
 
 发生 GPU 错误、报告失败或超时只终止本次启动的进程。若完整 `Capture.json` 已写出而应用 20 秒内仍未退出，runner 回收该进程，记录 `teardownReclaimed`；离线检查仍要求报告和全部输出完整。不能把这种运行描述为正常退出。
+
+可选的 `primeCameraOffset: [x,y,z]` 注册相机移动的帧内 case：在冻结几何与纹理后，每个目标帧之前运行 4 个相同平移相机的历史帧，drain 后恢复目标相机。历史帧不进入目标帧计时，目标帧也在下一次历史预置前 drain。诊断读回使用同一序列；检查器要求 late 软件工作非零。它是特定相机转换下的生产帧，不是所有 GPU 状态的 isolated replay；缓存受到历史帧影响。这类 case 禁用 hold，SDK 最多采一帧。
 
 ## 诊断采集边界
 
@@ -47,6 +52,8 @@ python -B Tools/Perf/WorkloadCase.py verify build/workload-case-new
 
 ## 尚未补齐的可信度
 
-本版对超大 StreamAsset 记录路径、长度和修改时间，**没有内容 hash 和完整纹理/依赖闭包**。Manifest 明确写 `portableInputSnapshotComplete=false`。同样，GPU telemetry 不是逐进程竞争证明，`externalProfilerAbsenceVerified=false`。不能把局部 A/A `stable` 当作完整 M2 或自动接受性能优化的资格。
+不传 `--assets` 时仍只有 StreamAsset 的路径、长度和修改时间。即使提供内容 manifest，证据包也没有完整资产副本，`portableInputSnapshotComplete=false`。依赖范围以 manifest 的 scope 为准，不宣称涵盖未声明的运行时资源。
 
-后续需要补内容寻址的资产/依赖身份、准确的竞争进程记录、SDK 实际 trace 验证及 Nsight 范围对齐，并处理 Full Zorah 资源预算与退出清理。异步队列和 isolated 生产内核必须分别建 case 和验收，不能直接套用同步帧内结果。
+runner 采集 PDH 逐进程 GPU 引擎数据，并按应用记录的测量区间生成 `Competition.json`；背景活动保留并报告，不会主动关闭用户程序。`covered=false` 表示缺少本进程采样，不能当作无竞争。还检查已知 Graphics Capture、GPU Trace 和 RenderDoc 注入；这不证明不存在任意未知 profiler，故 `externalProfilerAbsenceVerified=false` 保留。
+
+当前验收结果见 [M2 报告](../../Documentation/AgenticShaderOptimizationM2.md)。异步队列和 isolated 生产内核必须分别建 case 和验收，不能直接套用同步帧内结果；`stable` 也不是自动接受候选的资格。

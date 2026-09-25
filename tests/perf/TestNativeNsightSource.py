@@ -69,6 +69,23 @@ class NativeNsightTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "row"):
             self.parse(self.data.replace(b",503,503,Barrier", b",503,extra,503,Barrier", 1))
 
+    def test_real_selected_range_without_cooperative_column(self):
+        fixture = FIXTURE.with_name("NsightSourceSelectedRange.csv")
+        data = fixture.read_bytes()
+        provenance = ns.read_json(fixture.with_suffix(".provenance.json"))
+        self.assertFalse(provenance["synthetic"])
+        self.assertEqual(ns.sha(data), provenance["fixture_sha256"])
+        result = self.parse(data)
+        self.assertEqual(ns.shaders(result)[0]["il_self_samples"], 6515)
+        rows = [r for r in result["rows"] if r["representation"] == "source"]
+        self.assertGreater(len({r["file"] for r in rows}), 1)
+        self.assertEqual(sum(r["self_samples"] or 0 for r in rows), 6515)
+        self.assertEqual(sum(r["self_samples"] or 0 for r in rows
+                             if r["file"] == "GPUDrivenStreamWorkRaster.slang"), 4416)
+        self.assertTrue(all("Cooperative Vector Fusion" not in r["raw_metrics"] for r in rows))
+        with self.assertRaisesRegex(ValueError, "header"):
+            self.parse(data.replace(b"Live Registers", b"Unknown Registers", 1))
+
     def test_sample_unit_and_stall_overflow_fail(self):
         with self.assertRaisesRegex(ValueError, "integer"):
             self.parse(self.data.replace(b",503,503,Barrier", b",503,503K,Barrier", 1))

@@ -6,6 +6,8 @@ not a candidate speedup, reference-renderer correctness or isolated replay.
 from __future__ import annotations
 
 import argparse
+import csv
+import datetime
 import hashlib
 import json
 import math
@@ -63,7 +65,7 @@ def file_in(directory, relative):
 
 def validate_case(case):
     allowed = {"protocol", "id", "sampleId", "variant", "scope", "width", "height", "renderWidth", "renderHeight", "sampleFrames", "settleFrames",
-               "warmupSeconds", "rounds", "aaRelativeSpreadLimit", "profileHoldSeconds", "nsightTraceFrames"}
+               "warmupSeconds", "rounds", "aaRelativeSpreadLimit", "profileHoldSeconds", "nsightTraceFrames", "primeCameraOffset"}
     require(isinstance(case, dict) and not set(case) - allowed, "Unknown workload case fields")
     require(case.get("protocol") == "metallic-workload-case-v1", "Unsupported workload case protocol")
     require(isinstance(case.get("id"), str) and 0 < len(case["id"]) <= 128, "Missing case id")
@@ -80,12 +82,19 @@ def validate_case(case):
     require(type(hold) in (int, float) and math.isfinite(hold) and 0 <= hold <= 300, "Invalid hold")
     require(type(trace) is int and 0 <= trace <= 3, "Invalid SDK trace frame count")
     require(not trace or (not hold and case["rounds"] == 1), "SDK trace needs one round and no hold")
+    if "primeCameraOffset" in case:
+        offset = case["primeCameraOffset"]
+        require(isinstance(offset, list) and len(offset) == 3 and
+                all(type(v) in (int, float) and math.isfinite(v) and abs(v) <= 100 for v in offset) and any(offset),
+                "Invalid history camera offset")
+        require(not hold and trace <= 1, "History priming needs no hold and at most one trace frame")
     return case
 
 
 def engine_config(case):
     validate_case(case)
     return {**{k: case[k] for k in ("width", "height", "sampleFrames", "settleFrames", "rounds", "warmupSeconds")},
+            **({"primeCameraOffset": case["primeCameraOffset"]} if "primeCameraOffset" in case else {}),
             "rasterComparison": True, "workloadCounters": False, "sampleId": case["sampleId"],
             "profileHoldSeconds": case.get("profileHoldSeconds", 0),
             "nsightTraceFrames": case.get("nsightTraceFrames", 0),
@@ -103,6 +112,8 @@ def snapshot_identity(directory, snapshot, case):
     require(snapshot["activeGroups"] > 0, "Empty active cut")
     identity = {k: snapshot[k] for k in ("activeGroups", "cutHash", "pageMappingsHash")}
     require(sum(snapshot[p]["softwareClusters"] for p in PHASES) > 0, "Zero software workload")
+    if "primeCameraOffset" in case:
+        require(snapshot[PHASES[1]]["softwareClusters"] > 0, "History case has zero late software workload")
     for phase in PHASES:
         bins = snapshot[phase]
         require(0 <= bins["softwareClusters"] <= bins["capacity"], "Software bin overflow")
@@ -149,7 +160,7 @@ def analyze_run(directory, case):
     require(capture["outputExtent"] == [case["width"], case["height"]], "Output extent changed")
     require(capture["renderExtent"] == [case["renderWidth"], case["renderHeight"]], "Unexpected dynamic render extent")
     require(capture["hidden"] and not capture["validationRequested"], "Wrong timing environment")
-    normal = capture["measurementKind"] == "normal-timing" and not capture["graphicsCaptureInjected"]
+    normal = capture["measurementKind"] == "normal-timing" and not capture["graphicsCaptureInjected"] and not capture.get("gpuTraceInjected", False) and not capture.get("renderDocInjected", False)
     require(len(capture["cases"]) == case["rounds"], "Missing workload rounds")
     reference, residency = None, None
     timings = {"graphGpuMs": [], "softwareEarlyMs": [], "softwareLateMs": []}
@@ -176,7 +187,8 @@ def analyze_run(directory, case):
             if residency is None:
                 residency = resident
             require(resident == residency, "Residency changed during measured frames")
-            require(resident["textureUpgrades"] == resident["textureDowngrades"] == 0, "Texture publication was not frozen")
+            # These are lifetime counters, incremented at texture publication.
+            # Frozen means unchanged during the run, not zero since startup.
             for metric, suffix in (("graphGpuMs", "/RenderGraph GPU envelope"),
                                    ("softwareEarlyMs", "/Stream early/Software raster"),
                                    ("softwareLateMs", "/Stream late/Software raster")):
@@ -192,8 +204,9 @@ def analyze_run(directory, case):
     require(timing_summary["softwareTotalMs"]["median"] > 0, "Zero software GPU timing")
     return {"protocol": "metallic-workload-validation-v1", "valid": True, "normalTiming": normal,
             "identity": {"case": case, "snapshot": reference, "camera": capture["camera"],
-                         "renderExtent": capture["renderExtent"], "residency": residency,
+                         "renderExtent": capture["renderExtent"], "residency": {k: v for k, v in residency.items() if k not in ("textureUpgrades", "textureDowngrades")},
                          "historyInvalidationPolicy": capture["historyInvalidationPolicy"], "graph": capture["graph"]},
+            "texturePublicationCounters": {k: residency[k] for k in ("textureUpgrades", "textureDowngrades")},
             "timings": timing_summary, "correctnessScope": "repeatability of visibility/depth; not candidate equivalence"}
 
 
@@ -223,7 +236,35 @@ def source_inventory():
     return {p.relative_to(ROOT).as_posix(): digest(p) for p in source_files()}
 
 
-def execute(case, executable, output, runs, timeout):
+def asset_metadata_matches(manifest):
+    for relative, record in manifest["files"].items():
+        path = file_in(ROOT, relative)
+        stat = path.stat()
+        require((stat.st_size, stat.st_mtime_ns) == (record["bytes"], record["mtimeNs"]), f"Asset changed after hashing: {relative}")
+
+
+def competition_summary(directory, pid):
+    capture = load(directory / "Capture.json")
+    windows = [(c["measurementBeginUnixMs"], c["measurementEndUnixMs"]) for c in capture["cases"]]
+    peaks = {}
+    own_samples = 0
+    with (directory / "GpuProcesses.csv").open(encoding="utf-8-sig") as stream:
+        for row in csv.DictReader(stream):
+            timestamp = datetime.datetime.fromisoformat(row["timestamp"]).timestamp() * 1000
+            # PDH values cover the preceding one-second interval, not an instant.
+            if not any(timestamp >= start and timestamp - 1000 <= end for start, end in windows):
+                continue
+            if int(row["pid"]) == pid:
+                own_samples += 1
+            else:
+                key = (row["pid"], row["process"], row["engine"])
+                peaks[key] = max(peaks.get(key, 0), float(row["utilization"]))
+    return {"targetSamples": own_samples, "covered": own_samples > 0,
+            "otherProcesses": [{"pid": p, "process": n, "engine": e, "peakPercent": v} for (p, n, e), v in peaks.items()],
+            "semantics": "all PDH GPU engines, intervals overlapping measured host windows; background activity is retained"}
+
+
+def execute(case, executable, output, runs, timeout, assets_path=None):
     validate_case(case)
     require(3 <= runs <= 10 and 1 <= timeout <= 900, "Invalid run budget")
     require(not case.get("nsightTraceFrames") and not case.get("profileHoldSeconds"), "A/A runner only accepts normal timing cases")
@@ -232,6 +273,11 @@ def execute(case, executable, output, runs, timeout):
     shutil.copyfile(Path(__file__), output / "Runner.py")
     save(output / "Case.json", case)
     save(output / "Config.json", engine_config(case))
+    asset_manifest = load(assets_path) if assets_path else None
+    if asset_manifest:
+        require(asset_manifest["protocol"] == "metallic-declared-assets-v1" and asset_manifest["stream"] == ASSETS[case["sampleId"]], "Wrong asset closure")
+        asset_metadata_matches(asset_manifest)
+        save(output / "Assets.json", asset_manifest)
     sources = source_inventory()
     for relative in sources:
         target = output / "source" / relative
@@ -240,10 +286,13 @@ def execute(case, executable, output, runs, timeout):
         require(digest(target) == sources[relative], "Source changed during snapshot")
     asset = ROOT / ASSETS[case["sampleId"]]
     stat = asset.stat()
-    # This 205 GB asset is deliberately not described as content-pinned. The
+    # Without --assets this stream has metadata identity only. The
     # limitation remains visible even when local fixed-state A/A is stable.
     assets = {"path": str(asset), "bytes": stat.st_size, "mtimeNs": stat.st_mtime_ns,
               "verification": "metadata-only", "contentSha256": None}
+    if asset_manifest:
+        assets.update(verification="sha256-manifest; metadata rechecked around runs",
+                      contentSha256=asset_manifest["files"][ASSETS[case["sampleId"]]]["sha256"])
     runtime = {str(p.resolve()): digest(p) for p in [executable, *sorted(executable.parent.glob("*.dll"))]}
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     gpu = subprocess.run(["nvidia-smi", "--query-gpu=name,uuid,driver_version", "--format=csv,noheader"],
@@ -252,11 +301,14 @@ def execute(case, executable, output, runs, timeout):
     manifest = {"protocol": "metallic-workload-evidence-v1", "caseHash": canonical(case), "sources": sources,
                 "runtime": runtime, "asset": assets, "gpu": gpu.stdout.strip(), "runs": [],
                 "portableInputSnapshotComplete": False, "externalProfilerAbsenceVerified": False,
+                "declaredAssetClosureHashed": asset_manifest is not None,
                 "status": "running"}
     save(output / "Manifest.json", manifest)
     results = []
     try:
         for index in range(runs):
+            if asset_manifest:
+                asset_metadata_matches(asset_manifest)
             directory = output / f"run{index+1}"
             directory.mkdir()
             env = os.environ.copy()
@@ -264,10 +316,13 @@ def execute(case, executable, output, runs, timeout):
                 env.pop(key, None)
             env.update(METALLIC_FULL_ROAM_CONFIG=str(output / "Config.json"), METALLIC_FULL_ROAM_OUTPUT=str(directory),
                        METALLIC_FULL_ROAM_HIDDEN="1", METALLIC_NSIGHT_GRAPHICS_CAPTURE="0")
-            monitor = None
+            monitor = competition = None
             with (directory / "stdout.log").open("wb") as stdout, (directory / "stderr.log").open("wb") as stderr, \
-                 (directory / "Gpu.csv").open("wb") as telemetry:
+                 (directory / "Gpu.csv").open("wb") as telemetry, (directory / "GpuProcesses.csv").open("wb") as process_gpu, \
+                 (directory / "GpuProcesses.stderr.log").open("wb") as process_gpu_errors:
                 try:
+                    competition = subprocess.Popen(["powershell.exe", "-NoProfile", "-File", str(ROOT / "Tools/MeasureGpuCompetition.ps1")],
+                                                   stdout=process_gpu, stderr=process_gpu_errors, creationflags=flags)
                     monitor = subprocess.Popen(["nvidia-smi", "--query-gpu=timestamp,utilization.gpu,memory.used,clocks.gr,temperature.gpu,power.draw",
                                                 "--format=csv", "-l", "1"], stdout=telemetry, stderr=subprocess.STDOUT, creationflags=flags)
                     process = subprocess.Popen([str(executable), "--sample", case["sampleId"]], cwd=ROOT,
@@ -307,6 +362,9 @@ def execute(case, executable, output, runs, timeout):
                             process.wait()
                         raise
                 finally:
+                    if competition is not None:
+                        competition.terminate()
+                        competition.wait(timeout=10)
                     if monitor is not None:
                         monitor.terminate()
                         monitor.wait(timeout=10)
@@ -316,16 +374,20 @@ def execute(case, executable, output, runs, timeout):
             logs = "\n".join((directory / n).read_text(encoding="utf-8", errors="replace") for n in ("stdout.log", "stderr.log"))
             require(not any(s in logs for s in ("Validation Error", "VUID-", "DeviceLost", "VK_ERROR_DEVICE_LOST")), "GPU/validation error in log")
             result = analyze_run(directory, case)
+            environment = competition_summary(directory, process.pid)
+            save(directory / "Competition.json", environment)
             save(directory / "Validation.json", result)
             results.append(result)
             print(f"run {index+1}/{runs}: workload identity/output verified", flush=True)
         require(source_inventory() == sources, "Sources changed during A/A")
         require(all(digest(Path(p)) == h for p, h in runtime.items()), "Runtime binary changed during A/A")
         require((asset.stat().st_size, asset.stat().st_mtime_ns) == (stat.st_size, stat.st_mtime_ns), "Asset metadata changed during A/A")
+        if asset_manifest:
+            asset_metadata_matches(asset_manifest)
         aa = compare_runs(results, case)
         save(output / "AA.json", aa)
         manifest["status"] = aa["status"]
-        manifest["limitations"] = ["Asset content/dependency closure is not pinned", "External profiler and competing GPU processes not excluded",
+        manifest["limitations"] = ["Portable asset copies are not archived; declared dependencies refer to content-hashed originals" if asset_manifest else "Asset content/dependency closure is not pinned", "Background GPU activity is recorded, not forcibly excluded",
                                    "Only synchronous graphics-queue in-frame early/late is covered", "No Nsight shader/range correlation asserted"]
         if any(r["teardownReclaimed"] for r in manifest["runs"]):
             manifest["limitations"].append("Completed capture process required reclamation after teardown timeout")
@@ -365,6 +427,7 @@ def main():
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--runs", type=int, default=3)
     run.add_argument("--timeout", type=int, default=600)
+    run.add_argument("--assets", type=Path, help="Content-hashed dependency manifest from WorkloadAssets.py")
     config = commands.add_parser("config")
     config.add_argument("case", type=Path)
     check = commands.add_parser("verify")
@@ -376,7 +439,7 @@ def main():
         elif args.command == "verify":
             result = verify(args.directory.resolve())
         else:
-            result = execute(load(args.case), args.exe.resolve(), args.output.resolve(), args.runs, args.timeout)
+            result = execute(load(args.case), args.exe.resolve(), args.output.resolve(), args.runs, args.timeout, args.assets)
         print(json.dumps(result, indent=2, allow_nan=False))
         return 0 if result.get("status", "stable") == "stable" else 2
     except (ValueError, KeyError, OSError, TypeError, subprocess.SubprocessError) as error:

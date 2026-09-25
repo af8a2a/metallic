@@ -14,6 +14,9 @@
 #include <fstream>
 #include <map>
 #include <stdexcept>
+#ifdef _WIN32
+#include <Windows.h>
+#endif
 
 namespace metallic {
 namespace {
@@ -185,6 +188,19 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         }
         const double profileHoldSeconds = config.value("profileHoldSeconds", 0.0);
         const uint32_t traceFrames = config.value("nsightTraceFrames", 0u);
+        const bool primeHistory = config.contains("primeCameraOffset");
+        if (primeHistory) {
+            const auto& offset = config.at("primeCameraOffset");
+            checkRaster(workloadCase && offset.is_array() && offset.size() == 3 &&
+                profileHoldSeconds == 0 && traceFrames <= 1, "Invalid history priming configuration");
+            bool nonzero = false;
+            for (const auto& component : offset) {
+                checkRaster(component.is_number() && std::isfinite(component.get<double>()) &&
+                    std::abs(component.get<double>()) <= 100, "Invalid history camera offset");
+                nonzero |= component.get<double>() != 0;
+            }
+            checkRaster(nonzero, "History camera offset must be nonzero");
+        }
         checkRaster(traceFrames <= 3 && (!traceFrames || (workloadCase && rounds == 1 && profileHoldSeconds == 0)),
             "SDK trace needs one workload round, 1-3 frames and no timed hold");
         checkRaster(std::isfinite(profileHoldSeconds) && profileHoldSeconds >= 0 && profileHoldSeconds <= 300,
@@ -250,8 +266,31 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         report["validationRequested"] = debugRuntime_ && std::getenv("METALLIC_DEBUG_VALIDATION");
         report["hidden"] = std::getenv("METALLIC_FULL_ROAM_HIDDEN") != nullptr;
         report["graphicsCaptureInjected"] = profiling::NsightGraphicsCapture::vulkanInjectionActive();
+#ifdef _WIN32
+        report["gpuTraceInjected"] = GetModuleHandleW(L"WarpVizTarget.dll") != nullptr;
+        report["renderDocInjected"] = GetModuleHandleW(L"renderdoc.dll") != nullptr;
+#endif
         report["measurementKind"] = profileHoldSeconds > 0 || traceFrames ? "diagnostic" : "normal-timing";
         report["camera"] = viewportCameraProperties();
+        const auto targetCamera = viewportCameraProperties();
+        auto primeCamera = targetCamera;
+        if (primeHistory) {
+            for (const auto* key : {"eye", "center"}) {
+                for (size_t axis = 0; axis < 3; ++axis) {
+                    primeCamera["camera"][key][axis] = targetCamera["camera"][key][axis].get<double>() +
+                        config.at("primeCameraOffset")[axis].get<double>();
+                }
+            }
+            report["historyPriming"] = {{"camera", primeCamera}, {"frames", 4},
+                {"policy", "four unmeasured prime frames before every target frame; target GPU drained before next prime"}};
+        }
+        const auto primeTarget = [&]() {
+            if (!primeHistory) { return; }
+            applyViewportCameraProperties(primeCamera, nullptr);
+            for (uint32_t i = 0; i < 4; ++i) { draw(); }
+            drain();
+            applyViewportCameraProperties(targetCamera, nullptr);
+        };
         report["outputExtent"] = {width,height};
         const auto* depth = graphExecutor_->outputResource("VBuffer.depth");
         checkRaster(depth != nullptr,"Missing raster extent");
@@ -278,6 +317,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         std::string cutHash, mappingHash;
         const auto checkpoint = [&](const std::string& name) {
             drain();
+            primeTarget();
             graphExecutor_->setDebugObserver(&observer); observer.capture=true;
             set("VBuffer", "softwareRasterWorkload", config.value("workloadCounters", false));
             observer.workload.editorFrame = profiler_.nextFrameIndex();
@@ -311,6 +351,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                 // by the same unmeasured recovery frames in every variant.
                 for (uint32_t i=0; i<settle; ++i) { draw(); }
                 if (traceFrames) {
+                    primeTarget();
                     drain();
                     std::string error;
                     const bool started = profiling::beginExternalNsightGpuTrace(error);
@@ -340,18 +381,31 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                     spdlog::info("[Raster Comparison] SW profiler hold end");
                     drain();
                 }
-                profiler_.beginCapture();
+                if (!primeHistory) { profiler_.beginCapture(); }
+                const auto unixMs = []() {
+                    return std::chrono::duration<double, std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+                };
+                const double measurementBeginUnixMs = unixMs();
                 std::vector<double> wall;
+                std::vector<EditorProfiler::Frame> primedFrames;
                 for (uint32_t i=0; i<samples; ++i) {
+                    if (primeHistory) { primeTarget(); profiler_.beginCapture(); }
                     const auto begin=Clock::now(); draw();
                     wall.push_back(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+                    if (primeHistory) {
+                        profiler_.endCapture(); drain();
+                        checkRaster(!profiler_.captureOverflow() && profiler_.capturedFrames().size() == 1,
+                            "History target frame capture failed");
+                        primedFrames.push_back(profiler_.capturedFrames().front());
+                    }
                     checkRaster(graphExecutor_->executionStats().graphGeneration==generation &&
                         viewportTextureWidth_==width && viewportTextureHeight_==height,"Raster graph or viewport changed");
                     checkRaster(viewportCameraProperties()==report["camera"],"Raster camera changed");
                 }
                 profiler_.endCapture(); drain();
+                const double measurementEndUnixMs = unixMs();
                 checkRaster(!profiler_.captureOverflow(),"Raster profiler overflow");
-                const auto& frames = profiler_.capturedFrames();
+                const auto& frames = primeHistory ? primedFrames : profiler_.capturedFrames();
                 checkRaster(frames.size()==samples,"Raster frame count mismatch");
                 Json rows=Json::array();
                 for (size_t i=0; i<frames.size(); ++i) {
@@ -387,7 +441,8 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                 std::ofstream framesFile(output/file); framesFile.exceptions(std::ios::badbit|std::ios::failbit);
                 framesFile<<rows.dump()<<'\n'; framesFile.close();
                 report["cases"].push_back({{"name",name},{"round",round+1},{"maxPixels",(metadataComparison || swComparison) ? 8u : mode},{"variant",variant},
-                    {"fullHardware",mode==0},{"framesFile",file},{"frames",samples},{"before",before},{"after",after}});
+                    {"fullHardware",mode==0},{"framesFile",file},{"frames",samples},{"before",before},{"after",after},
+                    {"measurementBeginUnixMs",measurementBeginUnixMs},{"measurementEndUnixMs",measurementEndUnixMs}});
                 std::ofstream(output/"Progress.json")<<report.dump(2)<<'\n';
                 spdlog::info("[Raster Comparison] {} complete, {} measured frames, cut={} pages={}",name,samples,cutHash,mappingHash);
             }
