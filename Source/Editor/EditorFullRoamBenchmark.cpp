@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Runtime/Render/Profiling/PacingTrace.h"
 #include "Editor/EditorRasterWorkload.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
@@ -214,6 +215,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         std::vector<Sample> samples;
         samples.reserve(size_t(duration*120));
         profiler_.beginCapture();
+        render::profiling::pacingTrace("CaptureBegin");
         const auto start=Clock::now();
         auto previous=start;
         while (true) {
@@ -249,6 +251,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             if (viewportTextureWidth_!=fullRoamWidth_ || viewportTextureHeight_!=fullRoamHeight_ ||
                 graphExecutor_->executionStats().graphGeneration!=graphGeneration) { throw std::runtime_error("Viewport or graph changed during capture"); }
         }
+        render::profiling::pacingTrace("CaptureEnd");
         profiler_.endCapture();
         // Resolve outstanding queries after measurement; no per-frame readback wait.
         if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { throw std::runtime_error("GPU drain failed"); }

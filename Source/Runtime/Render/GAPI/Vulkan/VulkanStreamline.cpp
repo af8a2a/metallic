@@ -1,4 +1,5 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
+#include "Runtime/Render/Profiling/PacingTrace.h"
 
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
@@ -352,6 +353,7 @@ void emitLatencyMarker(StreamlineState& state, sl::PCLMarker marker)
     if (!state.latencyFrameActive || state.activeFrameToken == nullptr || state.pclSetMarker == nullptr) {
         return;
     }
+    profiling::pacingTrace("PCLMarker", state.frameIndex - 1, static_cast<uint32_t>(marker));
     const sl::Result result = state.pclSetMarker(marker, *state.activeFrameToken);
     if (result != sl::Result::eOk) {
         disableReflex(state, "slPCLSetMarker", result);
@@ -1384,7 +1386,9 @@ StreamlineFrameScope::StreamlineFrameScope(bool allowLatency, StreamlineFrameBeg
     // Keep calling even in Off mode so driver frame limiting and PCL still work.
     if (allowLatency && state.reflexSleep != nullptr) {
         if (profile) { profile->sleepCalled = true; }
+        profiling::pacingTrace("SleepBegin", state.frameIndex - 1, static_cast<uint32_t>(effectiveOptions.mode));
         const auto result = state.reflexSleep(*token);
+        profiling::pacingTrace("SleepEnd", state.frameIndex - 1, static_cast<uint32_t>(effectiveOptions.mode));
         if (result != sl::Result::eOk) {
             disableReflex(state, "slReflexSleep", result);
         }

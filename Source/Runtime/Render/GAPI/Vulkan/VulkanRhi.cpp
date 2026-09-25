@@ -9,6 +9,7 @@
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSpirv.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
+#include "Runtime/Render/Profiling/PacingTrace.h"
 #include "Runtime/Render/Profiling/NsightAftermath.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
@@ -4376,7 +4377,9 @@ Result Queue::submit(const QueueSubmitDesc& desc)
         fence = desc.signalFence->impl_->fence;
     }
 
+    profiling::pacingTrace("QueueSubmitBegin", UINT64_MAX, impl_->familyIndex);
     const Result result = resultFromVk(vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence));
+    profiling::pacingTrace("QueueSubmitEnd", UINT64_MAX, impl_->familyIndex);
     if (result) {
         // Mark the whole accepted batch before invoking any CPU publication hooks.
         for (uint32_t index = 0; index < desc.commandBufferCount; ++index) {

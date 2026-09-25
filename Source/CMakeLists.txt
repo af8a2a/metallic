@@ -115,6 +115,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Streamer/Ktx2Texture.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/Profiling/NsightGraphicsCapture.cpp
+    Runtime/Render/Profiling/PacingTrace.cpp
     Runtime/Render/Profiling/NvPerf.cpp
     Runtime/Render/Profiling/TracyProfiler.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
@@ -239,6 +240,7 @@ endif()
 
 if(WIN32)
     target_compile_definitions(MetallicRuntimeRender PRIVATE NOMINMAX)
+    target_link_libraries(MetallicRuntimeRender PRIVATE advapi32)
     target_compile_options(MetallicRuntimeRender PRIVATE /EHsc)
 endif()
 
