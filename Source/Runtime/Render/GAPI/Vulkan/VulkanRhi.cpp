@@ -1,3 +1,4 @@
+#include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
@@ -7933,6 +7934,10 @@ Result Swapchain::present(Queue& queue, uint32_t imageIndex, SwapchainSemaphore&
         .pImageIndices = &imageIndex,
     };
 
+    if (profiling::nvPerfPassActive()) {
+        const auto idle = vkQueueWaitIdle(queue.impl_->queue);
+        if (idle != VK_SUCCESS) { return resultFromVk(idle); }
+    }
     const VkResult result = vkQueuePresentKHR(queue.impl_->queue, &presentInfo);
     if (result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_OUT_OF_DATE_KHR) {
         return makeError(Error::OutOfDate);
@@ -10441,6 +10446,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         instanceExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
     }
 
+    std::string nvPerfError;
+    if ((profiling::nvPerfRequested() && desc.enableValidation) ||
+        !profiling::nvPerfInstanceExtensions(instanceExtensions, kVulkanApiVersion, nvPerfError)) {
+        spdlog::error("[NvPerf] {}", nvPerfError.empty() ? "Validation incompatible with NvPerf" : nvPerfError);
+        return makeError(Error::Unsupported);
+    }
     std::vector<const char*> instanceLayers;
     const std::vector<VkLayerProperties> availableLayers = enumerateInstanceLayers();
     if (desc.enableValidation && hasName(availableLayers, "VK_LAYER_KHRONOS_validation")) {
@@ -10821,6 +10832,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             }
         }
         spdlog::info("[PipelineStatistics] enabled={}", deviceImpl->pipelineExecutableStatistics);
+    }
+    if (!profiling::nvPerfDeviceExtensions(deviceImpl->instance, deviceImpl->physicalDevice, deviceExtensions, nvPerfError)) {
+        spdlog::error("[NvPerf] {}", nvPerfError);
+        return makeError(Error::Unsupported);
     }
     VkDeviceCreateInfo deviceInfo{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,

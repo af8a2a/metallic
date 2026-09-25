@@ -168,6 +168,17 @@ class DeepProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Changed evidence"):
             d.verify(self.path)
 
+    def test_exit_between_poll_and_child_inventory(self):
+        import psutil
+        from unittest.mock import Mock, patch
+        process = Mock(pid=123, returncode=0)
+        process.poll.side_effect = [None, 0]
+        process.children.side_effect = psutil.NoSuchProcess(123)
+        with patch.object(psutil, "Popen", return_value=process), patch.object(psutil, "wait_procs"):
+            d.run_process(["fixture"], {}, self.path, 1)
+        self.assertEqual(d.w.load(self.path / "Process.json")["exitCode"], 0)
+        process.kill.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

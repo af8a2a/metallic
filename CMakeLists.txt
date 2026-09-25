@@ -163,6 +163,7 @@ foreach(METALLIC_SETUP_MODULE IN ITEMS
     SetupDlssNr
     SetupNsight
     SetupNsightGraphicsCapture
+    SetupNvPerf
     SetupAftermath
     SetupNrc
     SetupNtc

@@ -153,8 +153,14 @@ def run_process(command, env, directory, timeout):
         try:
             deadline = time.monotonic() + timeout
             while process.poll() is None:
-                for child in process.children(recursive=True):
-                    owned[child.pid] = child
+                try:
+                    for child in process.children(recursive=True):
+                        owned[child.pid] = child
+                except psutil.NoSuchProcess:
+                    # The renderer may exit between poll() and children().
+                    # Reap its actual exit status below instead of losing a capture.
+                    process.wait(timeout=10)
+                    break
                 if time.monotonic() > deadline:
                     raise TimeoutError("Diagnostic process timed out")
                 time.sleep(.25)

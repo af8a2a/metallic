@@ -3,7 +3,8 @@
 2026-09-25。本轮完成 **实际生产 pipeline 资源统计 + 无 UI 的阶段级硬件指标采集**，
 并用它解释 M3 候选的资源变化。MiniZorah 非零 late case 的 early 六项指标集合通过
 三次独立采集的重复性门槛。完整 early+late 集合仍有 late DRAM 不稳定项；
-没有把它标成全部通过，也没有宣称完成 NvPerf SDK backend 或生产内核隔离重放。
+没有把它标成全部通过，也没有宣称完成生产内核隔离重放。后续 NvPerf backend
+的独立验收见本文末尾及专门记录，不与此处阶段级 CLI 证据混合。
 
 入口为 [DeepProfile.py](../Tools/Perf/DeepProfile.py)，复现、失败处理及证据契约见
 [DeepProfile.md](../Tools/Perf/DeepProfile.md)。[机器结果与原始包 hash](AgenticShaderOptimizationM4.json)
@@ -110,7 +111,7 @@ late 为 5/6，通过项不能掩盖 DRAM 不稳定；整体 `repeatable=false`�
 
 ## 按需扩展的决定与验证
 
-本轮不引入完整 NvPerf SDK backend：现有官方 CLI 已能无人操作导出当前需要的
+前一切片未引入完整 NvPerf SDK backend：现有官方 CLI 已能无人操作导出当前需要的
 真实阶段级计数器。当前问题已经得到新的编译资源证据；引入另一个采集后端还
 不能自动解决生产 dispatch 的正确隔离与状态恢复。
 
@@ -123,3 +124,12 @@ Release 样例构建通过。Perf CTest **6/6**，共 **85** 项 Python 测试�
 13 项，覆盖原生层级/重复列、范围错配、空值/sentinel、shader 映射冲突、SDK
 完成与 snapshot、重复性/非诊断误用及归档篡改。资源与正式 triage 的离线复核通过。
 事务锁已释放，没有遗留本轮 renderer/CLI 进程。
+
+## 后续：NvPerf backend
+
+按后续要求，已增加可选的进程内 Vulkan Range Profiler。使用 D 盘提供的
+Nsight Perf SDK 2025.1 配套头文件与运行库，直接标注生产 WorkControl early/late
+的间接 dispatch，支持单 pass 采集与三进程一致性验证。
+这一扩展不改变上面 M3 候选已拒绝的结论，也未完成 isolated replay 或多 pass 状态恢复。
+详见 [NvPerf 验收记录](AgenticShaderOptimizationNvPerf.md) 与
+[运行方式和证据契约](../Tools/Perf/NvPerf.md)。

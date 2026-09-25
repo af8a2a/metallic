@@ -1,3 +1,4 @@
+#include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/HistoryResources.h"
@@ -3060,8 +3061,12 @@ private:
             }
 
             commands.pushBindlessData(&push, sizeof(push));
-            const Result result = commands.dispatchIndirect(hybridRasterizer_->clusterArguments(),
-                VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
+            Result result;
+            {
+                profiling::NvPerfRange range(commands, phase == GPUSceneCullPhase::Early ? "WorkControl/early" : "WorkControl/late");
+                result = commands.dispatchIndirect(hybridRasterizer_->clusterArguments(),
+                    VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
+            }
             commands.endDebugLabel();
             return result;
         };

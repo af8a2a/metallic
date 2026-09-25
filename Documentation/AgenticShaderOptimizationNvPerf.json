@@ -1,0 +1,103 @@
+{
+  "protocol": "metallic-nvperf-validation-v1",
+  "date": "2026-09-25",
+  "summary": {
+    "runs": 3,
+    "workloadAndReadbacksIdentical": true,
+    "metrics": [
+      {
+        "range": "WorkControl/early",
+        "metric": "gpu__time_duration.sum",
+        "values": [
+          136648.14814814815,
+          138027.77777777778,
+          136879.62962962964
+        ],
+        "median": 136879.62962962964,
+        "dimUnits": [
+          {
+            "exponent": 1,
+            "name": "nanosecond",
+            "unit": 3047500672
+          }
+        ],
+        "relativeSpread": 0.01007914496380982,
+        "repeatableWithin10Percent": true
+      },
+      {
+        "range": "WorkControl/early",
+        "metric": "sm__cycles_active.avg.pct_of_peak_sustained_elapsed",
+        "values": [
+          95.83153751097908,
+          94.98511421430207,
+          95.75757773744516
+        ],
+        "median": 95.75757773744516,
+        "dimUnits": [
+          {
+            "exponent": 1,
+            "name": "percent",
+            "unit": 1284354694
+          }
+        ],
+        "relativeSpread": 0.00883923044709616,
+        "repeatableWithin10Percent": true
+      },
+      {
+        "range": "WorkControl/late",
+        "metric": "gpu__time_duration.sum",
+        "values": [
+          29638.88888888889,
+          29731.48148148148,
+          30129.62962962963
+        ],
+        "median": 29731.48148148148,
+        "dimUnits": [
+          {
+            "exponent": 1,
+            "name": "nanosecond",
+            "unit": 3047500672
+          }
+        ],
+        "relativeSpread": 0.016505761445032706,
+        "repeatableWithin10Percent": true
+      },
+      {
+        "range": "WorkControl/late",
+        "metric": "sm__cycles_active.avg.pct_of_peak_sustained_elapsed",
+        "values": [
+          75.70558642924881,
+          75.78597398008523,
+          74.99082821693318
+        ],
+        "median": 75.70558642924881,
+        "dimUnits": [
+          {
+            "exponent": 1,
+            "name": "percent",
+            "unit": 1284354694
+          }
+        ],
+        "relativeSpread": 0.010503131943838237,
+        "repeatableWithin10Percent": true
+      }
+    ],
+    "vulkanVersionOfficiallySupported": false,
+    "candidateAccepted": false,
+    "measurementKind": "diagnostic",
+    "clockPolicy": "unaltered",
+    "scope": "NvPerf command ranges around production dispatches; not source-line or PC attribution"
+  },
+  "sdkOffOnWorkloadIdentityEqual": true,
+  "tests": {
+    "ctestSuites": 7,
+    "pythonTests": 94
+  },
+  "evidence": {
+    "build/nvperf-20260925-02/Manifest.json": "103b687e1352bebe1276373cbe95c36cfbc8233b64d6e7877e427254abfbbe47",
+    "build/nvperf-20260925-02-audit.json": "428f54bd21feb647f9899368c6b9e4e0e432987436802dbf7efd6ea2e37b6a4b",
+    "build/nvperf-invalid-metric-20260925/Validation.json": "57c7dcd85d700fcda48ddf584d014c95ba0fdac0d0e789e8d63aef159f298e46",
+    "build/nvperf-off-20260925/normal/Validation.json": "8d900da2cdcda831b81423935a5dfcb749e3ac6ad3350c106acf712d60ff330e",
+    "build/nvperf-off-20260925/requested/Validation.json": "1e1b9bf223ebea4e341b14f57229beff410dc46199a8bf92d18ae5d28f817d07"
+  }
+}

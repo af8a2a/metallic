@@ -162,7 +162,8 @@ def analyze_run(directory, case):
     require(capture["hidden"] and not capture["validationRequested"], "Wrong timing environment")
     normal = (capture["measurementKind"] == "normal-timing" and not capture["graphicsCaptureInjected"]
               and not capture.get("gpuTraceInjected", False) and not capture.get("renderDocInjected", False)
-              and not capture.get("pipelineStatisticsRequested", False))
+              and not capture.get("pipelineStatisticsRequested", False)
+              and not capture.get("nvPerfRequested", False))
     require(len(capture["cases"]) == case["rounds"], "Missing workload rounds")
     reference, residency = None, None
     timings = {"graphGpuMs": [], "softwareEarlyMs": [], "softwareLateMs": []}

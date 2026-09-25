@@ -8,6 +8,9 @@ endif()
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicNvPerfTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestNvPerf.py")
+    set_tests_properties(MetallicNvPerfTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
     add_test(NAME MetallicDeepProfileTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestDeepProfile.py")
     set_tests_properties(MetallicDeepProfileTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)

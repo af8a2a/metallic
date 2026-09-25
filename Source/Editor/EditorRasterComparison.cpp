@@ -1,3 +1,4 @@
+#include "Runtime/Render/Profiling/NvPerf.h"
 #include "Editor/EditorApplication.h"
 #include "Editor/EditorRasterWorkload.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
@@ -161,6 +162,8 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
     RasterComparisonObserver observer;
     bool passed = false;
     bool traceActive = false;
+    profiling::NvPerfSession nvPerf;
+    const bool nvPerfRequested = profiling::nvPerfRequested();
     const auto drain = [&]() {
         checkRaster(bool(frameSubmissions_.wait()) && bool(graphExecutor_->waitForSubmittedWork()), "Raster benchmark GPU drain failed");
         std::vector<RenderGraphExecutionStats> completed;
@@ -273,7 +276,14 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         const char* pipelineStatistics = std::getenv("METALLIC_VK_PIPELINE_STATISTICS");
         const bool pipelineStatisticsRequested = pipelineStatistics && std::strcmp(pipelineStatistics, "1") == 0;
         report["pipelineStatisticsRequested"] = pipelineStatisticsRequested;
-        report["measurementKind"] = profileHoldSeconds > 0 || traceFrames || pipelineStatisticsRequested
+        report["nvPerfRequested"] = nvPerfRequested;
+        if (nvPerfRequested) {
+            checkRaster(workloadCase && selectedMode == 15 && rounds == 1 && primeHistory && !traceFrames &&
+                profileHoldSeconds == 0 && !pipelineStatisticsRequested && !report["validationRequested"].get<bool>() &&
+                !report["graphicsCaptureInjected"].get<bool>() && !report.value("gpuTraceInjected", false) &&
+                !report.value("renderDocInjected", false), "NvPerf needs one primed WorkControl round without other instrumentation");
+        }
+        report["measurementKind"] = nvPerfRequested || profileHoldSeconds > 0 || traceFrames || pipelineStatisticsRequested
             ? "diagnostic" : "normal-timing";
         report["camera"] = viewportCameraProperties();
         const auto targetCamera = viewportCameraProperties();
@@ -354,6 +364,18 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                 // Readback/copy cache effects are outside measurement, followed
                 // by the same unmeasured recovery frames in every variant.
                 for (uint32_t i=0; i<settle; ++i) { draw(); }
+                if (nvPerfRequested) {
+                    primeTarget(); drain();
+                    std::string error;
+                    const bool started = nvPerf.begin(*device_, *graphicsQueue_, output / "nvperf", error);
+                    checkRaster(started, error.c_str());
+                    report["nvPerf"] = {{"startFrame", profiler_.nextFrameIndex()}, {"frames", 1},
+                        {"workloadCase", report["workloadCase"]}, {"snapshot", before}, {"complete", false}};
+                    draw(); drain();
+                    const bool stopped = nvPerf.finish(error);
+                    checkRaster(stopped, error.c_str());
+                    report["nvPerf"]["complete"] = true;
+                }
                 if (traceFrames) {
                     primeTarget();
                     drain();

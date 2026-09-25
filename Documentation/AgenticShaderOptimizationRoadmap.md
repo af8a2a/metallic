@@ -121,8 +121,10 @@ flowchart TD
 2026-09-25：[M4 首个验收切片](AgenticShaderOptimizationM4.md)已完成实际生产 compute
 资源统计和官方 CLI 阶段级硬件采集。三组 A/B 证明 M3 候选的寄存器、共享内存实际
 增加；三次 base-clocks capture 的 early 六项硬件集合稳定，late DRAM 仍不稳定。
-完整 NvPerf backend、生产 isolated replay 与 SASS 依赖视图按归因需要继续推进，
-本次不将阶段计数器声称为 WorkControl dispatch 独占计数。
+首个 CLI 切片不将阶段计数器声称为 WorkControl dispatch 独占计数。
+随后 [NvPerf backend](AgenticShaderOptimizationNvPerf.md) 已完成可选构建、生产
+early/late dispatch range 单 pass 采集和三次真实 GPU 验证，普通计时显式排除采集运行。
+多 pass 状态恢复、生产 isolated replay 与 SASS 依赖视图继续按归因需要推进。
 
 预期 4–7 个工作日取得“Agent 可以深入 Nsight 源码分析”的首个演示，约 2–4 周完成一次完整优化闭环。若 M0/M1 发现桌面运行时或 UI 导出不可行，明确记录 source automation 阻塞，继续用人工导出的文件验证 importer 与 M2/M3；不能把这个降级路径宣布为全自动 Nsight 已完成。
 

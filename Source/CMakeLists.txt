@@ -115,6 +115,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Streamer/Ktx2Texture.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/Profiling/NsightGraphicsCapture.cpp
+    Runtime/Render/Profiling/NvPerf.cpp
     Runtime/Render/Profiling/TracyProfiler.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
     Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.cpp
@@ -158,6 +159,7 @@ include("${CMAKE_SOURCE_DIR}/cmake/Zstd.cmake")
 target_link_libraries(MetallicRuntimeRender PRIVATE
     libzstd_static
     metallic::nsight_graphics_capture
+    metallic::nvperf
 )
 
 if(METALLIC_ENABLE_TRACY AND TRACY_ENABLE)
