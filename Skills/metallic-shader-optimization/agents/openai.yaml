@@ -1,0 +1,4 @@
+interface:
+  display_name: "Metallic Shader Optimization"
+  short_description: "可信工作负载、Shader A/B 实验与 NvPerf 无 UI 硬件诊断"
+  default_prompt: "使用 $metallic-shader-optimization 根据当前任务选择可信工作负载、候选 A/B 或 NvPerf 诊断，运行并复核真实 GPU 证据。"

@@ -2211,6 +2211,88 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletLatencyTest);
 
+// Verify eligibility at feedback time, independent of immediate/deferred admission.
+class StreamerMeshletLatencyEligibilityTest final : public RhiTest {
+public:
+    StreamerMeshletLatencyEligibilityTest() { type = RhiTestType::Command; name = "streamer_meshlet_latency_eligibility"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "latency_eligibility.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        if (asset.pageCount() < 4) { return RhiTestResult::fail("Need four latency lifecycle pages"); }
+        const uint64_t capacity = alignStreamStorageBytes(asset.maxPagePayloadBytes()) * 4u;
+        std::unique_ptr<Streamer> streamer;
+        std::unique_ptr<Buffer> destination;
+        if (!context.device.createStreamer(makeTestStreamerDesc(capacity + 4096), streamer) ||
+            !context.device.createBuffer({.size = capacity, .usage = BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::HostReadback}, destination)) {
+            return RhiTestResult::fail("Cannot create latency lifecycle upload resources");
+        }
+        MeshletStreamResidencyManager residency;
+        std::string reason;
+        for (const bool immediate : {false, true}) {
+            const MeshletStreamResidencyDesc desc{.asset = &asset, .maxResidentBytes = capacity,
+                .maxResidentPages = 3, .queuedFrameCount = 1, .unloadDelayFrames = 2,
+                .measurePageLatency = true, .immediateGpuRequests = immediate, .completionDrivenUploads = false};
+            if (!residency.initialize(desc, reason)) { return RhiTestResult::fail(reason); }
+            const auto counts = [&](uint64_t feedback, uint32_t demand, uint32_t prefetch) {
+                const auto value = residency.latencySnapshot();
+                return value.enabled && value.milliseconds[size_t(MeshletStreamLatencyStage::Feedback)].count == feedback &&
+                    value.pendingDemand == demand && value.pendingPrefetch == prefetch;
+            };
+            residency.beginFrame();
+            const uint32_t root = 0, promotedRoot = 1, detail = 2;
+            if (!residency.lockFallbackPages(std::span(&root, 1), reason)) { return RhiTestResult::fail(reason); }
+            (void)residency.requestPage(promotedRoot);
+            const uint32_t forecast = promotedRoot | kStreamPrefetchPageTag;
+            (void)residency.consumeGpuRequests({.loadPageIds = std::span(&forecast, 1), .taggedPrefetchRequests = true});
+            if (!counts(1, 0, 1)) { return RhiTestResult::fail("Queued prefetch not tracked"); }
+            if (!residency.lockFallbackPages(std::span(&promotedRoot, 1), reason)) { return RhiTestResult::fail(reason); }
+            (void)residency.consumeGpuRequests(std::span(&promotedRoot, 1));
+            if (!counts(1, 0, 1)) { return RhiTestResult::fail("Fallback pin without state change promoted latency demand"); }
+            (void)residency.requestPage(detail);
+            const uint32_t mixed[] = {root, promotedRoot, detail, 3, detail, UINT32_MAX};
+            (void)residency.consumeGpuRequests(mixed);
+            if (!counts(3, 2, 1)) { return RhiTestResult::fail("Fallback exclusion, duplicate merge or blocked latency changed"); }
+            // Use the existing frame-delayed CPU residency protocol here; real GPU
+            // submission/cancellation is covered by streamer_meshlet_upload_completion.
+            if (residency.processUploads(*streamer, *destination, 3) != 3) {
+                return RhiTestResult::fail("Cannot prepare latency lifecycle residents");
+            }
+            for (uint32_t i = 0; i < 4; ++i) { residency.beginFrame(); }
+            if (!residency.pageResident(detail) || !counts(3, 1, 0)) {
+                return RhiTestResult::fail("Completion did not publish residency and retire latency");
+            }
+            (void)residency.consumeGpuRequests(mixed);
+            if (!counts(3, 1, 0)) { return RhiTestResult::fail("Resident feedback created a false latency request"); }
+            if (!residency.unloadPage(detail)) { return RhiTestResult::fail("Cannot schedule latency lifecycle unload"); }
+            (void)residency.consumeGpuRequests(std::span(&detail, 1));
+            if (!counts(4, 2, 0)) { return RhiTestResult::fail("Pending unload remained excluded from demand tracking"); }
+            residency.beginFrame(); residency.beginFrame();
+            if (residency.latencySnapshot().abandonedDemand != 1) {
+                return RhiTestResult::fail("Retirement did not abandon pending unload demand exactly once");
+            }
+            (void)residency.consumeGpuRequests(std::span(&detail, 1));
+            if (!counts(5, 2, 0)) { return RhiTestResult::fail("Erased/reloaded page retained stale residency eligibility"); }
+            if (!residency.initialize(desc, reason)) { return RhiTestResult::fail(reason); }
+            residency.beginFrame();
+            const uint32_t newScene[] = {root, promotedRoot, detail};
+            (void)residency.consumeGpuRequests(newScene);
+            if (!counts(3, 3, 0)) { return RhiTestResult::fail("Reset retained exclusions for reused page IDs"); }
+            auto disabled = desc; disabled.measurePageLatency = false;
+            if (!residency.initialize(disabled, reason)) { return RhiTestResult::fail(reason); }
+            residency.beginFrame();
+            if (!residency.lockFallbackPages(std::span(&root, 1), reason)) { return RhiTestResult::fail(reason); }
+            (void)residency.consumeGpuRequests(newScene);
+            if (residency.latencySnapshot().enabled) { return RhiTestResult::fail("Disabled latency tracking became enabled"); }
+        }
+        return RhiTestResult::pass("Fallback pin, completion, pending unload, blocked demand, erase/reload, reset and deferred batches");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletLatencyEligibilityTest);
+
 // Compare against the former full-scan semantics using deterministic timestamps.
 // Exercise sparse IDs, wheel wrap, frame gaps, slot reuse, promotion and in-flight expiry.
 class StreamerMeshletLatencyLifecycleTest final : public RhiTest {

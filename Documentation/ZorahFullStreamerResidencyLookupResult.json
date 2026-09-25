@@ -1,0 +1,2973 @@
+{
+  "runs": [
+    {
+      "group": "before",
+      "source": "build-release\\full-streamer-residency-before-0925\\run1",
+      "manifest": {
+        "executableSha256": "4A16AB02AE61263E225CA43BA11E2C7A0CD9AF2D0CCB702A33F7F0813653A8DB",
+        "asset": {
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z"
+        },
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "protocol": "zorah-full-editor-roam-v1",
+        "gitHead": "d0861a4a44ae4001f49aee5a052b9f228f46bdc8",
+        "validation": false,
+        "dirty": [
+          " ? External/microprofile",
+          "?? Skills/"
+        ],
+        "started": "2026-09-25T15:18:02.8696171+08:00",
+        "runs": 2,
+        "hidden": true,
+        "config": {
+          "width": 1797,
+          "warmupSeconds": 10.0,
+          "height": 660,
+          "durationSeconds": 30.0
+        },
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927"
+      },
+      "conditionsMatch": {
+        "config": true,
+        "graph": true,
+        "absoluteKeyframes": true,
+        "outputExtent": true,
+        "renderExtent": true,
+        "frameSlots": true,
+        "vsync": true,
+        "hidden": true,
+        "shaderSha256": true
+      },
+      "conditions": {
+        "config": {
+          "cullHardwareClassification": false,
+          "distance": 6.0,
+          "durationSeconds": 30.0,
+          "keyframes": [
+            {
+              "forward": 0.0,
+              "stage": "static",
+              "t": 0.0,
+              "yaw": 0.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "first-visit",
+              "t": 0.08333333333333333,
+              "yaw": 0.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "near-wall",
+              "t": 0.3333333333333333,
+              "yaw": 0.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "turn",
+              "t": 0.4444444444444444,
+              "yaw": 65.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "return",
+              "t": 0.6666666666666666,
+              "yaw": -65.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "settle",
+              "t": 0.8888888888888888,
+              "yaw": 0.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "end",
+              "t": 1.0,
+              "yaw": 0.0
+            }
+          ],
+          "metadataFastClassification": true,
+          "routeFrames": 0,
+          "sample": "gpu-driven-zorah-full",
+          "temporalJitter": true,
+          "warmupSeconds": 10.0
+        },
+        "graph": [
+          {
+            "name": "VBuffer",
+            "properties": {
+              "asyncSoftwareRaster": false,
+              "autoBuildStreamAsset": false,
+              "autoLod": true,
+              "coldPageRetentionFrames": 120,
+              "compactClas": true,
+              "compactShadingAttributes": true,
+              "cullHardwareClassification": false,
+              "distributedDemandMinGroups": 65536,
+              "distributedPageDemand": true,
+              "enableClas": true,
+              "enableClusterRtx": true,
+              "enableMeshletStreaming": true,
+              "hybridRaster": true,
+              "instanceFrustumCull": true,
+              "instanceHzbCull": true,
+              "lodPixelError": 1.5,
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "maxActiveGroups": 1048575,
+              "maxBlasBytes": 536870912,
+              "maxClasBuildClusters": 8192,
+              "maxClasBytes": 2147483648,
+              "maxGpuPageRequests": 65536,
+              "maxGpuPageUnloadRequests": 65536,
+              "maxLockedFallbackPages": 65536,
+              "maxPageLoadsInFlight": 1024,
+              "maxPageUploadsPerFrame": 256,
+              "maxResidentBytes": 3758096384,
+              "maxResidentPages": 0,
+              "maxTraversalWorkItems": 1048576,
+              "maxTraversalWorkers": 4096,
+              "maxUploadBytesPerFrame": 8388608,
+              "meshletFrustumCull": true,
+              "meshletNormalConeCull": false,
+              "metadataFastClassification": true,
+              "pageLoadConcurrency": 4,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+              "sceneBinding": "asset",
+              "streamAssetOnly": true,
+              "streamAssetPath": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+              "viewBinding": "global",
+              "visualization": "none"
+            },
+            "type": "VisibilityBufferPass"
+          },
+          {
+            "name": "Shadows",
+            "properties": {
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+              "rayTracedShadows": true,
+              "shadowAngularRadius": 0.266,
+              "shadowBias": 0.01,
+              "shadowLightIndex": -1,
+              "shadowLightRadius": 0.05,
+              "shadowRayLength": 100000.0,
+              "sigmaDenoise": true,
+              "sigmaHistoryLength": 5
+            },
+            "type": "RayTracedShadowPass"
+          },
+          {
+            "name": "Deferred",
+            "properties": {
+              "accumulate": false,
+              "exportUpscalerGuides": true,
+              "lightingMode": "realtime",
+              "materialBinning": true,
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "outputLinear": true,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf"
+            },
+            "type": "VisibilityBufferDeferredPass"
+          },
+          {
+            "name": "DlssSr",
+            "properties": {
+              "exportOutputGuides": true,
+              "mode": "Quality"
+            },
+            "type": "StreamlineDlssSrPass"
+          },
+          {
+            "name": "AutoExposure",
+            "properties": {},
+            "type": "AutoExposurePass"
+          },
+          {
+            "name": "DlssNr",
+            "properties": {
+              "depthInverted": false,
+              "enabled": false,
+              "fallbackToInput": true,
+              "intensity": 1.0,
+              "preset": 0,
+              "style": 0
+            },
+            "type": "DlssNrPass"
+          },
+          {
+            "name": "FinalBlit",
+            "properties": {},
+            "type": "FinalBlitPass"
+          }
+        ],
+        "absoluteKeyframes": [
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 0.0,
+            "stage": "static"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 2.5,
+            "stage": "first-visit"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -6.0921256404618,
+                  4.163491249084473,
+                  -5.886143707625141
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 10.0,
+            "stage": "near-wall"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  1.4835184214141535,
+                  4.163491249084473,
+                  -0.24667183495550882
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 13.333333333333332,
+            "stage": "turn"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -4.1826338924834205,
+                  4.163491249084473,
+                  -15.135352712684481
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 20.0,
+            "stage": "return"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 26.666666666666664,
+            "stage": "settle"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 30.0,
+            "stage": "end"
+          }
+        ],
+        "outputExtent": [
+          1797,
+          660
+        ],
+        "renderExtent": [
+          1198,
+          440
+        ],
+        "frameSlots": 2,
+        "vsync": true,
+        "hidden": true,
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927"
+      },
+      "frameMs": {
+        "count": 1441,
+        "mean": 20.83007279666898,
+        "p50": 20.9212,
+        "p95": 26.2424,
+        "p99": 28.5014,
+        "max": 32.0811
+      },
+      "overBudget": 0,
+      "metrics": {
+        "Reset / latency tracking": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 0.08372873004857738,
+            "p50": 0.0736,
+            "p95": 0.2038,
+            "p99": 0.2726,
+            "max": 1.9004
+          },
+          "gpuMs": null
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 0.7306619014573213,
+            "p50": 0.6789,
+            "p95": 1.274,
+            "p99": 1.5882,
+            "max": 3.2472
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 5.402293476752255,
+            "p50": 5.2986,
+            "p95": 7.5946,
+            "p99": 9.2861,
+            "max": 12.1258
+          },
+          "gpuMs": {
+            "count": 1441,
+            "mean": 0.026261629424011102,
+            "p50": 0.01984,
+            "p95": 0.076832,
+            "p99": 0.12512,
+            "max": 0.193408
+          }
+        },
+        "Consume requests": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 4.868592852185983,
+            "p50": 4.7521,
+            "p95": 7.0249,
+            "p99": 8.2379,
+            "max": 10.7952
+          },
+          "gpuMs": null
+        },
+        "Update resident demand": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 1.019201387925052,
+            "p50": 0.9845,
+            "p95": 1.4747,
+            "p99": 1.8428,
+            "max": 2.6329
+          },
+          "gpuMs": null
+        },
+        "Refresh request priorities": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 0.9564047883414296,
+            "p50": 0.921,
+            "p95": 1.4079,
+            "p99": 1.7688,
+            "max": 2.9178
+          },
+          "gpuMs": null
+        },
+        "Admit demand / prefetch": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 1.3932362942401109,
+            "p50": 1.2367,
+            "p95": 2.7414,
+            "p99": 3.6028,
+            "max": 5.1726
+          },
+          "gpuMs": null
+        },
+        "Filter blocked admission": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 0.36435517002081885,
+            "p50": 0.3891,
+            "p95": 0.4894,
+            "p99": 0.5642,
+            "max": 1.9693
+          },
+          "gpuMs": null
+        },
+        "Prepare admission heap": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 0.12685357390700902,
+            "p50": 0.1281,
+            "p95": 0.1561,
+            "p99": 0.1786,
+            "max": 0.3437
+          },
+          "gpuMs": null
+        },
+        "Joint cold page reclaim": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 0.005180777238029146,
+            "p50": 0.0043,
+            "p95": 0.0127,
+            "p99": 0.02,
+            "max": 0.044
+          },
+          "gpuMs": null
+        },
+        "Publish uploads": {
+          "cpuMs": null,
+          "gpuMs": null
+        },
+        "Visibility prepare": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 1.208717626648161,
+            "p50": 1.1298,
+            "p95": 1.8821,
+            "p99": 2.5205,
+            "max": 6.0597
+          },
+          "gpuMs": {
+            "count": 1441,
+            "mean": 2.6470506592643996e-05,
+            "p50": 3.2e-05,
+            "p95": 6.4e-05,
+            "p99": 6.4e-05,
+            "max": 6.4e-05
+          }
+        },
+        "Software raster": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 0.010262040249826508,
+            "p50": 0.0104,
+            "p95": 0.0138,
+            "p99": 0.0189,
+            "max": 0.0341
+          },
+          "gpuMs": {
+            "count": 1441,
+            "mean": 7.010231228313671,
+            "p50": 7.486016,
+            "p95": 10.929984,
+            "p99": 11.546111999999999,
+            "max": 12.24416
+          }
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 11.328442886884108,
+            "p50": 11.3906,
+            "p95": 15.2795,
+            "p99": 17.4878,
+            "max": 20.3507
+          },
+          "gpuMs": {
+            "count": 1441,
+            "mean": 20.43968683969466,
+            "p50": 20.63952,
+            "p95": 24.461408,
+            "p99": 25.341504,
+            "max": 26.436416
+          }
+        },
+        "Latency tracking combined": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 0.8143906315058987,
+            "p50": 0.7529,
+            "p95": 1.4022999999999999,
+            "p99": 1.7283,
+            "max": 3.5179
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "count": 1441,
+          "mean": 13536.39278278973,
+          "p50": 13696,
+          "p95": 15837,
+          "p99": 16155,
+          "max": 16363
+        },
+        "residentPages": {
+          "count": 1441,
+          "mean": 62098.42609299098,
+          "p50": 62162,
+          "p95": 62455,
+          "p99": 62545,
+          "max": 62641
+        },
+        "admissionCalls": {
+          "count": 1441,
+          "mean": 41.90631505898681,
+          "p50": 31,
+          "p95": 116,
+          "p99": 169,
+          "max": 448
+        },
+        "budgetRetrySuppressed": {
+          "count": 1441,
+          "mean": 13450.660652324774,
+          "p50": 13634,
+          "p95": 15743,
+          "p99": 16024,
+          "max": 16206
+        },
+        "loadFailures": {
+          "count": 1441,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1441,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1441,
+          "mean": 8577.40111034004,
+          "p50": 10585,
+          "p95": 12059,
+          "p99": 12383,
+          "max": 12425
+        },
+        "uploads": {
+          "count": 1441,
+          "mean": 20.775156141568356,
+          "p50": 16,
+          "p95": 61,
+          "p99": 95,
+          "max": 150
+        },
+        "geometryBytes": {
+          "count": 1441,
+          "mean": 3744779559.9722414,
+          "p50": 3742272768,
+          "p95": 3758094592,
+          "p99": 3758094592,
+          "max": 3758094592
+        },
+        "clasBytes": {
+          "count": 1441,
+          "mean": 1818548858.1374047,
+          "p50": 1815918848,
+          "p95": 1829200768,
+          "p99": 1830521856,
+          "max": 1831287296
+        },
+        "textureResidentBytes": {
+          "count": 1441,
+          "mean": 258511672.67175573,
+          "p50": 273838592,
+          "p95": 285504000,
+          "p99": 285962752,
+          "max": 286093824
+        },
+        "uploadsPerSecond": 997.3635879414974
+      },
+      "sleepMs": {
+        "count": 1441,
+        "mean": 6.09878029146426,
+        "p50": 6.3951,
+        "p95": 10.9927,
+        "p99": 12.5292,
+        "max": 17.6653
+      },
+      "effectiveModes": [
+        1
+      ],
+      "missingGpuFrames": 0,
+      "hzbInvalidFrames": 0,
+      "snapshotFrozenFrames": 0
+    },
+    {
+      "group": "before",
+      "source": "build-release\\full-streamer-residency-before-0925\\run2",
+      "manifest": {
+        "executableSha256": "4A16AB02AE61263E225CA43BA11E2C7A0CD9AF2D0CCB702A33F7F0813653A8DB",
+        "asset": {
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z"
+        },
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "protocol": "zorah-full-editor-roam-v1",
+        "gitHead": "d0861a4a44ae4001f49aee5a052b9f228f46bdc8",
+        "validation": false,
+        "dirty": [
+          " ? External/microprofile",
+          "?? Skills/"
+        ],
+        "started": "2026-09-25T15:18:02.8696171+08:00",
+        "runs": 2,
+        "hidden": true,
+        "config": {
+          "width": 1797,
+          "warmupSeconds": 10.0,
+          "height": 660,
+          "durationSeconds": 30.0
+        },
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927"
+      },
+      "conditionsMatch": {
+        "config": true,
+        "graph": true,
+        "absoluteKeyframes": true,
+        "outputExtent": true,
+        "renderExtent": true,
+        "frameSlots": true,
+        "vsync": true,
+        "hidden": true,
+        "shaderSha256": true
+      },
+      "conditions": {
+        "config": {
+          "cullHardwareClassification": false,
+          "distance": 6.0,
+          "durationSeconds": 30.0,
+          "keyframes": [
+            {
+              "forward": 0.0,
+              "stage": "static",
+              "t": 0.0,
+              "yaw": 0.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "first-visit",
+              "t": 0.08333333333333333,
+              "yaw": 0.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "near-wall",
+              "t": 0.3333333333333333,
+              "yaw": 0.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "turn",
+              "t": 0.4444444444444444,
+              "yaw": 65.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "return",
+              "t": 0.6666666666666666,
+              "yaw": -65.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "settle",
+              "t": 0.8888888888888888,
+              "yaw": 0.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "end",
+              "t": 1.0,
+              "yaw": 0.0
+            }
+          ],
+          "metadataFastClassification": true,
+          "routeFrames": 0,
+          "sample": "gpu-driven-zorah-full",
+          "temporalJitter": true,
+          "warmupSeconds": 10.0
+        },
+        "graph": [
+          {
+            "name": "VBuffer",
+            "properties": {
+              "asyncSoftwareRaster": false,
+              "autoBuildStreamAsset": false,
+              "autoLod": true,
+              "coldPageRetentionFrames": 120,
+              "compactClas": true,
+              "compactShadingAttributes": true,
+              "cullHardwareClassification": false,
+              "distributedDemandMinGroups": 65536,
+              "distributedPageDemand": true,
+              "enableClas": true,
+              "enableClusterRtx": true,
+              "enableMeshletStreaming": true,
+              "hybridRaster": true,
+              "instanceFrustumCull": true,
+              "instanceHzbCull": true,
+              "lodPixelError": 1.5,
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "maxActiveGroups": 1048575,
+              "maxBlasBytes": 536870912,
+              "maxClasBuildClusters": 8192,
+              "maxClasBytes": 2147483648,
+              "maxGpuPageRequests": 65536,
+              "maxGpuPageUnloadRequests": 65536,
+              "maxLockedFallbackPages": 65536,
+              "maxPageLoadsInFlight": 1024,
+              "maxPageUploadsPerFrame": 256,
+              "maxResidentBytes": 3758096384,
+              "maxResidentPages": 0,
+              "maxTraversalWorkItems": 1048576,
+              "maxTraversalWorkers": 4096,
+              "maxUploadBytesPerFrame": 8388608,
+              "meshletFrustumCull": true,
+              "meshletNormalConeCull": false,
+              "metadataFastClassification": true,
+              "pageLoadConcurrency": 4,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+              "sceneBinding": "asset",
+              "streamAssetOnly": true,
+              "streamAssetPath": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+              "viewBinding": "global",
+              "visualization": "none"
+            },
+            "type": "VisibilityBufferPass"
+          },
+          {
+            "name": "Shadows",
+            "properties": {
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+              "rayTracedShadows": true,
+              "shadowAngularRadius": 0.266,
+              "shadowBias": 0.01,
+              "shadowLightIndex": -1,
+              "shadowLightRadius": 0.05,
+              "shadowRayLength": 100000.0,
+              "sigmaDenoise": true,
+              "sigmaHistoryLength": 5
+            },
+            "type": "RayTracedShadowPass"
+          },
+          {
+            "name": "Deferred",
+            "properties": {
+              "accumulate": false,
+              "exportUpscalerGuides": true,
+              "lightingMode": "realtime",
+              "materialBinning": true,
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "outputLinear": true,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf"
+            },
+            "type": "VisibilityBufferDeferredPass"
+          },
+          {
+            "name": "DlssSr",
+            "properties": {
+              "exportOutputGuides": true,
+              "mode": "Quality"
+            },
+            "type": "StreamlineDlssSrPass"
+          },
+          {
+            "name": "AutoExposure",
+            "properties": {},
+            "type": "AutoExposurePass"
+          },
+          {
+            "name": "DlssNr",
+            "properties": {
+              "depthInverted": false,
+              "enabled": false,
+              "fallbackToInput": true,
+              "intensity": 1.0,
+              "preset": 0,
+              "style": 0
+            },
+            "type": "DlssNrPass"
+          },
+          {
+            "name": "FinalBlit",
+            "properties": {},
+            "type": "FinalBlitPass"
+          }
+        ],
+        "absoluteKeyframes": [
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 0.0,
+            "stage": "static"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 2.5,
+            "stage": "first-visit"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -6.0921256404618,
+                  4.163491249084473,
+                  -5.886143707625141
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 10.0,
+            "stage": "near-wall"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  1.4835184214141535,
+                  4.163491249084473,
+                  -0.24667183495550882
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 13.333333333333332,
+            "stage": "turn"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -4.1826338924834205,
+                  4.163491249084473,
+                  -15.135352712684481
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 20.0,
+            "stage": "return"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 26.666666666666664,
+            "stage": "settle"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 30.0,
+            "stage": "end"
+          }
+        ],
+        "outputExtent": [
+          1797,
+          660
+        ],
+        "renderExtent": [
+          1198,
+          440
+        ],
+        "frameSlots": 2,
+        "vsync": true,
+        "hidden": true,
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927"
+      },
+      "frameMs": {
+        "count": 1431,
+        "mean": 20.97964332634521,
+        "p50": 21.0305,
+        "p95": 26.8378,
+        "p99": 29.8693,
+        "max": 33.3026
+      },
+      "overBudget": 0,
+      "metrics": {
+        "Reset / latency tracking": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 0.09327596086652691,
+            "p50": 0.0921,
+            "p95": 0.2019,
+            "p99": 0.2768,
+            "max": 0.3566
+          },
+          "gpuMs": null
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 0.7500306778476589,
+            "p50": 0.706,
+            "p95": 1.2084,
+            "p99": 1.5001,
+            "max": 2.0921
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 5.604722921034242,
+            "p50": 5.3723,
+            "p95": 8.1882,
+            "p99": 9.9235,
+            "max": 13.8052
+          },
+          "gpuMs": {
+            "count": 1431,
+            "mean": 0.026376877707896575,
+            "p50": 0.019552,
+            "p95": 0.078176,
+            "p99": 0.13584,
+            "max": 0.2512
+          }
+        },
+        "Consume requests": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 5.0018910552061495,
+            "p50": 4.8348,
+            "p95": 7.1467,
+            "p99": 8.9664,
+            "max": 11.1179
+          },
+          "gpuMs": null
+        },
+        "Update resident demand": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 1.0562220125786164,
+            "p50": 1.0284,
+            "p95": 1.446,
+            "p99": 1.7004,
+            "max": 3.9311
+          },
+          "gpuMs": null
+        },
+        "Refresh request priorities": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 1.0043423480083857,
+            "p50": 0.9841,
+            "p95": 1.3475,
+            "p99": 1.6037,
+            "max": 3.501
+          },
+          "gpuMs": null
+        },
+        "Admit demand / prefetch": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 1.4175890985324948,
+            "p50": 1.1943,
+            "p95": 2.7728,
+            "p99": 3.9272,
+            "max": 5.7399
+          },
+          "gpuMs": null
+        },
+        "Filter blocked admission": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 0.3563526904262753,
+            "p50": 0.3712,
+            "p95": 0.5003,
+            "p99": 0.5873,
+            "max": 4.3743
+          },
+          "gpuMs": null
+        },
+        "Prepare admission heap": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 0.12620349406009782,
+            "p50": 0.1275,
+            "p95": 0.1559,
+            "p99": 0.1987,
+            "max": 0.3061
+          },
+          "gpuMs": null
+        },
+        "Joint cold page reclaim": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 0.005362124388539483,
+            "p50": 0.0042,
+            "p95": 0.0133,
+            "p99": 0.0243,
+            "max": 0.0844
+          },
+          "gpuMs": null
+        },
+        "Publish uploads": {
+          "cpuMs": null,
+          "gpuMs": null
+        },
+        "Visibility prepare": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 1.2948328441649197,
+            "p50": 1.233,
+            "p95": 1.8936,
+            "p99": 2.6555,
+            "max": 4.3386
+          },
+          "gpuMs": {
+            "count": 1431,
+            "mean": 2.6722571628232002e-05,
+            "p50": 3.2e-05,
+            "p95": 6.4e-05,
+            "p99": 6.4e-05,
+            "max": 6.4e-05
+          }
+        },
+        "Software raster": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 0.0107361285814116,
+            "p50": 0.010499999999999999,
+            "p95": 0.0149,
+            "p99": 0.0196,
+            "max": 0.09570000000000001
+          },
+          "gpuMs": {
+            "count": 1431,
+            "mean": 7.0172230663871416,
+            "p50": 7.461504000000001,
+            "p95": 11.089888,
+            "p99": 12.150624,
+            "max": 13.043840000000001
+          }
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 11.716300279524807,
+            "p50": 11.5976,
+            "p95": 16.4882,
+            "p99": 19.102,
+            "max": 23.9066
+          },
+          "gpuMs": {
+            "count": 1431,
+            "mean": 20.558918395527606,
+            "p50": 20.780672,
+            "p95": 24.94784,
+            "p99": 26.872704,
+            "max": 28.087232
+          }
+        },
+        "Latency tracking combined": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 0.8433066387141859,
+            "p50": 0.7976,
+            "p95": 1.3495,
+            "p99": 1.6793,
+            "max": 2.2643
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "count": 1431,
+          "mean": 13552.464709993012,
+          "p50": 13702,
+          "p95": 15819,
+          "p99": 16156,
+          "max": 16366
+        },
+        "residentPages": {
+          "count": 1431,
+          "mean": 62089.50104821803,
+          "p50": 62154,
+          "p95": 62450,
+          "p99": 62531,
+          "max": 62634
+        },
+        "admissionCalls": {
+          "count": 1431,
+          "mean": 41.9874213836478,
+          "p50": 31,
+          "p95": 117,
+          "p99": 174,
+          "max": 412
+        },
+        "budgetRetrySuppressed": {
+          "count": 1431,
+          "mean": 13465.067784765897,
+          "p50": 13640,
+          "p95": 15725,
+          "p99": 16010,
+          "max": 16203
+        },
+        "loadFailures": {
+          "count": 1431,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1431,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1431,
+          "mean": 8582.25995807128,
+          "p50": 10565,
+          "p95": 12071,
+          "p99": 12393,
+          "max": 12425
+        },
+        "uploads": {
+          "count": 1431,
+          "mean": 20.81341719077568,
+          "p50": 15,
+          "p95": 63,
+          "p99": 96,
+          "max": 160
+        },
+        "geometryBytes": {
+          "count": 1431,
+          "mean": 3745104991.7092943,
+          "p50": 3742573312,
+          "p95": 3758094592,
+          "p99": 3758094592,
+          "max": 3758094592
+        },
+        "clasBytes": {
+          "count": 1431,
+          "mean": 1818762476.9475892,
+          "p50": 1816008576,
+          "p95": 1829240320,
+          "p99": 1830499456,
+          "max": 1831333888
+        },
+        "textureResidentBytes": {
+          "count": 1431,
+          "mean": 257702378.53249475,
+          "p50": 271315456,
+          "p95": 286847488,
+          "p99": 287633920,
+          "max": 287896064
+        },
+        "uploadsPerSecond": 992.0767892483285
+      },
+      "sleepMs": {
+        "count": 1431,
+        "mean": 5.618542976939204,
+        "p50": 5.6747,
+        "p95": 10.959,
+        "p99": 12.1838,
+        "max": 13.3449
+      },
+      "effectiveModes": [
+        1
+      ],
+      "missingGpuFrames": 0,
+      "hzbInvalidFrames": 0,
+      "snapshotFrozenFrames": 0
+    },
+    {
+      "group": "after",
+      "source": "build-release\\full-streamer-residency-after-0925\\run1",
+      "manifest": {
+        "validation": false,
+        "started": "2026-09-25T15:27:00.0053758+08:00",
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "asset": {
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "bytes": 205327470912
+        },
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "executableSha256": "81C9D7570F650B1DF150273C413544A0D63E91835F2153C4E1B226160AE36A79",
+        "runs": 2,
+        "hidden": true,
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp",
+          " M Source/Runtime/Render/Streamer/MeshletStreamResidency.h",
+          " M tests/rhi/StreamerTests.cpp",
+          "?? Skills/"
+        ],
+        "config": {
+          "durationSeconds": 30.0,
+          "width": 1797,
+          "height": 660,
+          "warmupSeconds": 10.0
+        },
+        "gitHead": "d0861a4a44ae4001f49aee5a052b9f228f46bdc8",
+        "protocol": "zorah-full-editor-roam-v1"
+      },
+      "conditionsMatch": {
+        "config": true,
+        "graph": true,
+        "absoluteKeyframes": true,
+        "outputExtent": true,
+        "renderExtent": true,
+        "frameSlots": true,
+        "vsync": true,
+        "hidden": true,
+        "shaderSha256": true
+      },
+      "conditions": {
+        "config": {
+          "cullHardwareClassification": false,
+          "distance": 6.0,
+          "durationSeconds": 30.0,
+          "keyframes": [
+            {
+              "forward": 0.0,
+              "stage": "static",
+              "t": 0.0,
+              "yaw": 0.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "first-visit",
+              "t": 0.08333333333333333,
+              "yaw": 0.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "near-wall",
+              "t": 0.3333333333333333,
+              "yaw": 0.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "turn",
+              "t": 0.4444444444444444,
+              "yaw": 65.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "return",
+              "t": 0.6666666666666666,
+              "yaw": -65.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "settle",
+              "t": 0.8888888888888888,
+              "yaw": 0.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "end",
+              "t": 1.0,
+              "yaw": 0.0
+            }
+          ],
+          "metadataFastClassification": true,
+          "routeFrames": 0,
+          "sample": "gpu-driven-zorah-full",
+          "temporalJitter": true,
+          "warmupSeconds": 10.0
+        },
+        "graph": [
+          {
+            "name": "VBuffer",
+            "properties": {
+              "asyncSoftwareRaster": false,
+              "autoBuildStreamAsset": false,
+              "autoLod": true,
+              "coldPageRetentionFrames": 120,
+              "compactClas": true,
+              "compactShadingAttributes": true,
+              "cullHardwareClassification": false,
+              "distributedDemandMinGroups": 65536,
+              "distributedPageDemand": true,
+              "enableClas": true,
+              "enableClusterRtx": true,
+              "enableMeshletStreaming": true,
+              "hybridRaster": true,
+              "instanceFrustumCull": true,
+              "instanceHzbCull": true,
+              "lodPixelError": 1.5,
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "maxActiveGroups": 1048575,
+              "maxBlasBytes": 536870912,
+              "maxClasBuildClusters": 8192,
+              "maxClasBytes": 2147483648,
+              "maxGpuPageRequests": 65536,
+              "maxGpuPageUnloadRequests": 65536,
+              "maxLockedFallbackPages": 65536,
+              "maxPageLoadsInFlight": 1024,
+              "maxPageUploadsPerFrame": 256,
+              "maxResidentBytes": 3758096384,
+              "maxResidentPages": 0,
+              "maxTraversalWorkItems": 1048576,
+              "maxTraversalWorkers": 4096,
+              "maxUploadBytesPerFrame": 8388608,
+              "meshletFrustumCull": true,
+              "meshletNormalConeCull": false,
+              "metadataFastClassification": true,
+              "pageLoadConcurrency": 4,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+              "sceneBinding": "asset",
+              "streamAssetOnly": true,
+              "streamAssetPath": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+              "viewBinding": "global",
+              "visualization": "none"
+            },
+            "type": "VisibilityBufferPass"
+          },
+          {
+            "name": "Shadows",
+            "properties": {
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+              "rayTracedShadows": true,
+              "shadowAngularRadius": 0.266,
+              "shadowBias": 0.01,
+              "shadowLightIndex": -1,
+              "shadowLightRadius": 0.05,
+              "shadowRayLength": 100000.0,
+              "sigmaDenoise": true,
+              "sigmaHistoryLength": 5
+            },
+            "type": "RayTracedShadowPass"
+          },
+          {
+            "name": "Deferred",
+            "properties": {
+              "accumulate": false,
+              "exportUpscalerGuides": true,
+              "lightingMode": "realtime",
+              "materialBinning": true,
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "outputLinear": true,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf"
+            },
+            "type": "VisibilityBufferDeferredPass"
+          },
+          {
+            "name": "DlssSr",
+            "properties": {
+              "exportOutputGuides": true,
+              "mode": "Quality"
+            },
+            "type": "StreamlineDlssSrPass"
+          },
+          {
+            "name": "AutoExposure",
+            "properties": {},
+            "type": "AutoExposurePass"
+          },
+          {
+            "name": "DlssNr",
+            "properties": {
+              "depthInverted": false,
+              "enabled": false,
+              "fallbackToInput": true,
+              "intensity": 1.0,
+              "preset": 0,
+              "style": 0
+            },
+            "type": "DlssNrPass"
+          },
+          {
+            "name": "FinalBlit",
+            "properties": {},
+            "type": "FinalBlitPass"
+          }
+        ],
+        "absoluteKeyframes": [
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 0.0,
+            "stage": "static"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 2.5,
+            "stage": "first-visit"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -6.0921256404618,
+                  4.163491249084473,
+                  -5.886143707625141
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 10.0,
+            "stage": "near-wall"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  1.4835184214141535,
+                  4.163491249084473,
+                  -0.24667183495550882
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 13.333333333333332,
+            "stage": "turn"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -4.1826338924834205,
+                  4.163491249084473,
+                  -15.135352712684481
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 20.0,
+            "stage": "return"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 26.666666666666664,
+            "stage": "settle"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 30.0,
+            "stage": "end"
+          }
+        ],
+        "outputExtent": [
+          1797,
+          660
+        ],
+        "renderExtent": [
+          1198,
+          440
+        ],
+        "frameSlots": 2,
+        "vsync": true,
+        "hidden": true,
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927"
+      },
+      "frameMs": {
+        "count": 1150,
+        "mean": 26.091098782608693,
+        "p50": 29.5248,
+        "p95": 34.2052,
+        "p99": 36.233,
+        "max": 40.1918
+      },
+      "overBudget": 108,
+      "metrics": {
+        "Reset / latency tracking": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.06377330434782608,
+            "p50": 0.0531,
+            "p95": 0.1702,
+            "p99": 0.2211,
+            "max": 0.293
+          },
+          "gpuMs": null
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.2756177391304348,
+            "p50": 0.2432,
+            "p95": 0.5137,
+            "p99": 0.681,
+            "max": 0.8382
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 3.8660868695652173,
+            "p50": 3.655,
+            "p95": 6.2926,
+            "p99": 7.8378,
+            "max": 10.6119
+          },
+          "gpuMs": {
+            "count": 1150,
+            "mean": 0.03121257739130435,
+            "p50": 0.021856,
+            "p95": 0.09344,
+            "p99": 0.173856,
+            "max": 0.220608
+          }
+        },
+        "Consume requests": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 3.3826684347826084,
+            "p50": 3.1838,
+            "p95": 5.4008,
+            "p99": 6.7225,
+            "max": 8.7319
+          },
+          "gpuMs": null
+        },
+        "Update resident demand": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.7184191304347827,
+            "p50": 0.6742,
+            "p95": 1.2,
+            "p99": 1.3966,
+            "max": 1.7124
+          },
+          "gpuMs": null
+        },
+        "Refresh request priorities": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.8079241739130435,
+            "p50": 0.7411,
+            "p95": 1.3147,
+            "p99": 1.581,
+            "max": 1.8907
+          },
+          "gpuMs": null
+        },
+        "Admit demand / prefetch": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.9733039130434783,
+            "p50": 0.8102,
+            "p95": 2.1985,
+            "p99": 2.9652,
+            "max": 4.5024
+          },
+          "gpuMs": null
+        },
+        "Filter blocked admission": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.27197347826086954,
+            "p50": 0.2452,
+            "p95": 0.4564,
+            "p99": 0.5137,
+            "max": 0.6131
+          },
+          "gpuMs": null
+        },
+        "Prepare admission heap": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.1130495652173913,
+            "p50": 0.112,
+            "p95": 0.1448,
+            "p99": 0.157,
+            "max": 0.2163
+          },
+          "gpuMs": null
+        },
+        "Joint cold page reclaim": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.004849304347826087,
+            "p50": 0.0037,
+            "p95": 0.0129,
+            "p99": 0.0261,
+            "max": 0.0447
+          },
+          "gpuMs": null
+        },
+        "Publish uploads": {
+          "cpuMs": null,
+          "gpuMs": null
+        },
+        "Visibility prepare": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.8148248695652174,
+            "p50": 0.7392,
+            "p95": 1.3331,
+            "p99": 1.6057,
+            "max": 3.6277
+          },
+          "gpuMs": {
+            "count": 1150,
+            "mean": 2.7937391304347825e-05,
+            "p50": 3.2e-05,
+            "p95": 6.4e-05,
+            "p99": 6.4e-05,
+            "max": 6.4e-05
+          }
+        },
+        "Software raster": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.007298086956521738,
+            "p50": 0.0066,
+            "p95": 0.0105,
+            "p99": 0.012199999999999999,
+            "max": 0.0236
+          },
+          "gpuMs": {
+            "count": 1150,
+            "mean": 6.213655540869565,
+            "p50": 6.744096,
+            "p95": 10.171168,
+            "p99": 11.065760000000001,
+            "max": 11.81856
+          }
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 8.374723304347826,
+            "p50": 8.1084,
+            "p95": 13.557,
+            "p99": 15.3016,
+            "max": 16.6404
+          },
+          "gpuMs": {
+            "count": 1150,
+            "mean": 17.93286519652174,
+            "p50": 18.250464,
+            "p95": 22.053568,
+            "p99": 23.826336,
+            "max": 25.86784
+          }
+        },
+        "Latency tracking combined": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.3393910434782608,
+            "p50": 0.2934,
+            "p95": 0.6452,
+            "p99": 0.8286,
+            "max": 1.0453999999999999
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "count": 1150,
+          "mean": 13558.828695652173,
+          "p50": 13743,
+          "p95": 15815,
+          "p99": 16199,
+          "max": 16420
+        },
+        "residentPages": {
+          "count": 1150,
+          "mean": 62091.94608695652,
+          "p50": 62143,
+          "p95": 62442,
+          "p99": 62491,
+          "max": 62585
+        },
+        "admissionCalls": {
+          "count": 1150,
+          "mean": 50.88695652173913,
+          "p50": 38,
+          "p95": 141,
+          "p99": 244,
+          "max": 402
+        },
+        "budgetRetrySuppressed": {
+          "count": 1150,
+          "mean": 13471.435652173914,
+          "p50": 13680,
+          "p95": 15714,
+          "p99": 16040,
+          "max": 16261
+        },
+        "loadFailures": {
+          "count": 1150,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1150,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1150,
+          "mean": 8683.894782608695,
+          "p50": 10214,
+          "p95": 12086,
+          "p99": 12401,
+          "max": 12425
+        },
+        "uploads": {
+          "count": 1150,
+          "mean": 25.343478260869563,
+          "p50": 15,
+          "p95": 95,
+          "p99": 158,
+          "max": 300
+        },
+        "geometryBytes": {
+          "count": 1150,
+          "mean": 3745029057.001739,
+          "p50": 3742021120,
+          "p95": 3758096384,
+          "p99": 3758096384,
+          "max": 3758096384
+        },
+        "clasBytes": {
+          "count": 1150,
+          "mean": 1818921832.8486958,
+          "p50": 1816276352,
+          "p95": 1829970304,
+          "p99": 1831548032,
+          "max": 1831653632
+        },
+        "textureResidentBytes": {
+          "count": 1150,
+          "mean": 252855546.2121739,
+          "p50": 264958464,
+          "p95": 276132352,
+          "p99": 276394496,
+          "max": 276656640
+        },
+        "uploadsPerSecond": 971.3457632440737
+      },
+      "sleepMs": {
+        "count": 1150,
+        "mean": 15.824361652173911,
+        "p50": 19.6795,
+        "p95": 24.9288,
+        "p99": 25.7046,
+        "max": 29.6683
+      },
+      "effectiveModes": [
+        1
+      ],
+      "missingGpuFrames": 0,
+      "hzbInvalidFrames": 0,
+      "snapshotFrozenFrames": 0
+    },
+    {
+      "group": "after",
+      "source": "build-release\\full-streamer-residency-after-0925\\run2",
+      "manifest": {
+        "validation": false,
+        "started": "2026-09-25T15:27:00.0053758+08:00",
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "asset": {
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "bytes": 205327470912
+        },
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "executableSha256": "81C9D7570F650B1DF150273C413544A0D63E91835F2153C4E1B226160AE36A79",
+        "runs": 2,
+        "hidden": true,
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp",
+          " M Source/Runtime/Render/Streamer/MeshletStreamResidency.h",
+          " M tests/rhi/StreamerTests.cpp",
+          "?? Skills/"
+        ],
+        "config": {
+          "durationSeconds": 30.0,
+          "width": 1797,
+          "height": 660,
+          "warmupSeconds": 10.0
+        },
+        "gitHead": "d0861a4a44ae4001f49aee5a052b9f228f46bdc8",
+        "protocol": "zorah-full-editor-roam-v1"
+      },
+      "conditionsMatch": {
+        "config": true,
+        "graph": true,
+        "absoluteKeyframes": true,
+        "outputExtent": true,
+        "renderExtent": true,
+        "frameSlots": true,
+        "vsync": true,
+        "hidden": true,
+        "shaderSha256": true
+      },
+      "conditions": {
+        "config": {
+          "cullHardwareClassification": false,
+          "distance": 6.0,
+          "durationSeconds": 30.0,
+          "keyframes": [
+            {
+              "forward": 0.0,
+              "stage": "static",
+              "t": 0.0,
+              "yaw": 0.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "first-visit",
+              "t": 0.08333333333333333,
+              "yaw": 0.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "near-wall",
+              "t": 0.3333333333333333,
+              "yaw": 0.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "turn",
+              "t": 0.4444444444444444,
+              "yaw": 65.0
+            },
+            {
+              "forward": 1.0,
+              "stage": "return",
+              "t": 0.6666666666666666,
+              "yaw": -65.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "settle",
+              "t": 0.8888888888888888,
+              "yaw": 0.0
+            },
+            {
+              "forward": 0.0,
+              "stage": "end",
+              "t": 1.0,
+              "yaw": 0.0
+            }
+          ],
+          "metadataFastClassification": true,
+          "routeFrames": 0,
+          "sample": "gpu-driven-zorah-full",
+          "temporalJitter": true,
+          "warmupSeconds": 10.0
+        },
+        "graph": [
+          {
+            "name": "VBuffer",
+            "properties": {
+              "asyncSoftwareRaster": false,
+              "autoBuildStreamAsset": false,
+              "autoLod": true,
+              "coldPageRetentionFrames": 120,
+              "compactClas": true,
+              "compactShadingAttributes": true,
+              "cullHardwareClassification": false,
+              "distributedDemandMinGroups": 65536,
+              "distributedPageDemand": true,
+              "enableClas": true,
+              "enableClusterRtx": true,
+              "enableMeshletStreaming": true,
+              "hybridRaster": true,
+              "instanceFrustumCull": true,
+              "instanceHzbCull": true,
+              "lodPixelError": 1.5,
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "maxActiveGroups": 1048575,
+              "maxBlasBytes": 536870912,
+              "maxClasBuildClusters": 8192,
+              "maxClasBytes": 2147483648,
+              "maxGpuPageRequests": 65536,
+              "maxGpuPageUnloadRequests": 65536,
+              "maxLockedFallbackPages": 65536,
+              "maxPageLoadsInFlight": 1024,
+              "maxPageUploadsPerFrame": 256,
+              "maxResidentBytes": 3758096384,
+              "maxResidentPages": 0,
+              "maxTraversalWorkItems": 1048576,
+              "maxTraversalWorkers": 4096,
+              "maxUploadBytesPerFrame": 8388608,
+              "meshletFrustumCull": true,
+              "meshletNormalConeCull": false,
+              "metadataFastClassification": true,
+              "pageLoadConcurrency": 4,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+              "sceneBinding": "asset",
+              "streamAssetOnly": true,
+              "streamAssetPath": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+              "viewBinding": "global",
+              "visualization": "none"
+            },
+            "type": "VisibilityBufferPass"
+          },
+          {
+            "name": "Shadows",
+            "properties": {
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+              "rayTracedShadows": true,
+              "shadowAngularRadius": 0.266,
+              "shadowBias": 0.01,
+              "shadowLightIndex": -1,
+              "shadowLightRadius": 0.05,
+              "shadowRayLength": 100000.0,
+              "sigmaDenoise": true,
+              "sigmaHistoryLength": 5
+            },
+            "type": "RayTracedShadowPass"
+          },
+          {
+            "name": "Deferred",
+            "properties": {
+              "accumulate": false,
+              "exportUpscalerGuides": true,
+              "lightingMode": "realtime",
+              "materialBinning": true,
+              "materialTextureBudgetMiB": 512,
+              "materialTextureColdFrames": 180,
+              "materialTextureMaskMaxDimension": 512,
+              "materialTextureMaxDimension": 128,
+              "materialTextureRefineDimension": 512,
+              "materialTextureStreaming": true,
+              "outputLinear": true,
+              "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf"
+            },
+            "type": "VisibilityBufferDeferredPass"
+          },
+          {
+            "name": "DlssSr",
+            "properties": {
+              "exportOutputGuides": true,
+              "mode": "Quality"
+            },
+            "type": "StreamlineDlssSrPass"
+          },
+          {
+            "name": "AutoExposure",
+            "properties": {},
+            "type": "AutoExposurePass"
+          },
+          {
+            "name": "DlssNr",
+            "properties": {
+              "depthInverted": false,
+              "enabled": false,
+              "fallbackToInput": true,
+              "intensity": 1.0,
+              "preset": 0,
+              "style": 0
+            },
+            "type": "DlssNrPass"
+          },
+          {
+            "name": "FinalBlit",
+            "properties": {},
+            "type": "FinalBlitPass"
+          }
+        ],
+        "absoluteKeyframes": [
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 0.0,
+            "stage": "static"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 2.5,
+            "stage": "first-visit"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -6.0921256404618,
+                  4.163491249084473,
+                  -5.886143707625141
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 10.0,
+            "stage": "near-wall"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  1.4835184214141535,
+                  4.163491249084473,
+                  -0.24667183495550882
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 13.333333333333332,
+            "stage": "turn"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -4.1826338924834205,
+                  4.163491249084473,
+                  -15.135352712684481
+                ],
+                "eye": [
+                  2.12179522102082,
+                  2.27831768989563,
+                  -9.012097381941548
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 20.0,
+            "stage": "return"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 26.666666666666664,
+            "stage": "settle"
+          },
+          {
+            "camera": {
+              "camera": {
+                "center": [
+                  -0.484482079744339,
+                  4.163491249084473,
+                  -8.020232200622559
+                ],
+                "eye": [
+                  7.729438781738281,
+                  2.27831768989563,
+                  -11.146185874938965
+                ],
+                "fovDegrees": 60.00000762939453,
+                "orthoHeight": 2.0,
+                "projection": "perspective",
+                "reversedZ": true,
+                "up": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zfar": 29999.998046875,
+                "znear": 0.020000003278255463
+              }
+            },
+            "seconds": 30.0,
+            "stage": "end"
+          }
+        ],
+        "outputExtent": [
+          1797,
+          660
+        ],
+        "renderExtent": [
+          1198,
+          440
+        ],
+        "frameSlots": 2,
+        "vsync": true,
+        "hidden": true,
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927"
+      },
+      "frameMs": {
+        "count": 1158,
+        "mean": 25.93098799654577,
+        "p50": 29.4897,
+        "p95": 34.2154,
+        "p99": 36.2137,
+        "max": 39.0454
+      },
+      "overBudget": 103,
+      "metrics": {
+        "Reset / latency tracking": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.068486701208981,
+            "p50": 0.0586,
+            "p95": 0.1783,
+            "p99": 0.252,
+            "max": 0.3281
+          },
+          "gpuMs": null
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.2947521588946459,
+            "p50": 0.2737,
+            "p95": 0.5166,
+            "p99": 0.6438,
+            "max": 1.2354
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 3.9931316062176165,
+            "p50": 3.8202,
+            "p95": 6.4599,
+            "p99": 8.1482,
+            "max": 9.4368
+          },
+          "gpuMs": {
+            "count": 1158,
+            "mean": 0.03153793436960276,
+            "p50": 0.022656,
+            "p95": 0.094464,
+            "p99": 0.17008,
+            "max": 0.238944
+          }
+        },
+        "Consume requests": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 3.5035766839378235,
+            "p50": 3.3181,
+            "p95": 5.5797,
+            "p99": 6.7491,
+            "max": 8.1225
+          },
+          "gpuMs": null
+        },
+        "Update resident demand": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.7592475820379966,
+            "p50": 0.7077,
+            "p95": 1.2089,
+            "p99": 1.4734,
+            "max": 3.0637
+          },
+          "gpuMs": null
+        },
+        "Refresh request priorities": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.8327599309153714,
+            "p50": 0.7966,
+            "p95": 1.289,
+            "p99": 1.5326,
+            "max": 3.0758
+          },
+          "gpuMs": null
+        },
+        "Admit demand / prefetch": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 1.0088032815198618,
+            "p50": 0.856,
+            "p95": 2.162,
+            "p99": 3.0326,
+            "max": 4.9809
+          },
+          "gpuMs": null
+        },
+        "Filter blocked admission": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.27600863557858374,
+            "p50": 0.2503,
+            "p95": 0.451,
+            "p99": 0.4978,
+            "max": 0.5474
+          },
+          "gpuMs": null
+        },
+        "Prepare admission heap": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.11428549222797928,
+            "p50": 0.1142,
+            "p95": 0.1441,
+            "p99": 0.1539,
+            "max": 0.2494
+          },
+          "gpuMs": null
+        },
+        "Joint cold page reclaim": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.005071848013816925,
+            "p50": 0.0039,
+            "p95": 0.0137,
+            "p99": 0.0232,
+            "max": 0.0508
+          },
+          "gpuMs": null
+        },
+        "Publish uploads": {
+          "cpuMs": null,
+          "gpuMs": null
+        },
+        "Visibility prepare": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.8098428324697755,
+            "p50": 0.7318,
+            "p95": 1.3264,
+            "p99": 1.6457,
+            "max": 2.6384
+          },
+          "gpuMs": {
+            "count": 1158,
+            "mean": 2.7081174438687392e-05,
+            "p50": 3.2e-05,
+            "p95": 6.4e-05,
+            "p99": 6.4e-05,
+            "max": 6.4e-05
+          }
+        },
+        "Software raster": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.0072054404145077714,
+            "p50": 0.006500000000000001,
+            "p95": 0.010499999999999999,
+            "p99": 0.0121,
+            "max": 0.026500000000000003
+          },
+          "gpuMs": {
+            "count": 1158,
+            "mean": 6.140001602763385,
+            "p50": 6.7358720000000005,
+            "p95": 10.100224,
+            "p99": 10.558688,
+            "max": 10.883904
+          }
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 8.576414939550949,
+            "p50": 8.3992,
+            "p95": 13.5163,
+            "p99": 15.5547,
+            "max": 17.9624
+          },
+          "gpuMs": {
+            "count": 1158,
+            "mean": 17.83511883937824,
+            "p50": 18.311712,
+            "p95": 21.859136,
+            "p99": 22.636224,
+            "max": 23.17856
+          }
+        },
+        "Latency tracking combined": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.36323886010362694,
+            "p50": 0.3328,
+            "p95": 0.6482,
+            "p99": 0.8176,
+            "max": 1.3572
+          }
+        }
+      },
+      "counters": {
+        "requests": {
+          "count": 1158,
+          "mean": 13541.476683937824,
+          "p50": 13725,
+          "p95": 15810,
+          "p99": 16182,
+          "max": 16384
+        },
+        "residentPages": {
+          "count": 1158,
+          "mean": 62099.108808290155,
+          "p50": 62156,
+          "p95": 62444,
+          "p99": 62515,
+          "max": 62607
+        },
+        "admissionCalls": {
+          "count": 1158,
+          "mean": 51.03022452504318,
+          "p50": 38,
+          "p95": 143,
+          "p99": 210,
+          "max": 419
+        },
+        "budgetRetrySuppressed": {
+          "count": 1158,
+          "mean": 13451.438687392056,
+          "p50": 13658,
+          "p95": 15711,
+          "p99": 16024,
+          "max": 16227
+        },
+        "loadFailures": {
+          "count": 1158,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1158,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1158,
+          "mean": 8676.000863557858,
+          "p50": 10172,
+          "p95": 12087,
+          "p99": 12402,
+          "max": 12425
+        },
+        "uploads": {
+          "count": 1158,
+          "mean": 25.40587219343696,
+          "p50": 16,
+          "p95": 99,
+          "p99": 146,
+          "max": 280
+        },
+        "geometryBytes": {
+          "count": 1158,
+          "mean": 3744441743.032815,
+          "p50": 3740878848,
+          "p95": 3758094592,
+          "p99": 3758094592,
+          "max": 3758094592
+        },
+        "clasBytes": {
+          "count": 1158,
+          "mean": 1818843099.5233161,
+          "p50": 1816049536,
+          "p95": 1830355584,
+          "p99": 1831999872,
+          "max": 1832115072
+        },
+        "textureResidentBytes": {
+          "count": 1158,
+          "mean": 253714809.58894646,
+          "p50": 267743744,
+          "p95": 277770752,
+          "p99": 278426112,
+          "max": 278491648
+        },
+        "uploadsPerSecond": 979.7494872475064
+      },
+      "sleepMs": {
+        "count": 1158,
+        "mean": 15.40930025906736,
+        "p50": 19.5663,
+        "p95": 25.0219,
+        "p99": 25.7543,
+        "max": 26.8992
+      },
+      "effectiveModes": [
+        1
+      ],
+      "missingGpuFrames": 0,
+      "hzbInvalidFrames": 0,
+      "snapshotFrozenFrames": 0
+    }
+  ],
+  "methodology": {
+    "baseline": "d0861a4a44ae4001f49aee5a052b9f228f46bdc8, freshly built before edits",
+    "order": [
+      "before1",
+      "before2",
+      "after1",
+      "after2"
+    ],
+    "frozenResidency": false,
+    "note": "Same graph, camera route, output, shader hashes and Reflex mode. Wall-clock route with live streaming; no causal end-to-end speedup claim. Full demand-to-drawable histograms not exported."
+  }
+}

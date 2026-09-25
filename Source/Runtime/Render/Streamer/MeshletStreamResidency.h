@@ -448,6 +448,7 @@ private:
     void completeUploadPages(std::span<const uint32_t> pageIndices, uint32_t taskIndex);
     void releasePageStorage(uint32_t pageIndex);
     void setPageState(uint32_t pageIndex, MeshletStreamPageResidencyState state);
+    void updateLatencyEligibility(uint32_t pageIndex, const PageEntry& page);
     void queueUpload(uint32_t pageIndex);
     void recordPatch(uint32_t pageIndex);
     void addToTable(std::vector<uint32_t>& table, PagePositionMember positionMember, uint32_t pageIndex);
@@ -466,6 +467,10 @@ private:
     std::deque<uint32_t> uploadQueue_;
     MeshletStreamPageLoader pageLoader_;
     std::unique_ptr<MeshletStreamLatencyTracker> latency_;
+    // residentState || lockedFallback, maintained at state/pin transitions.
+    // Missing, budget-blocked and in-flight pages remain eligible for latency tracking.
+    // No PageEntry pointers or batch-lifetime residency snapshots escape into requests.
+    std::vector<uint64_t> latencyExcludedPages_;
     std::deque<MeshletStreamPageLoadResult> preparedPageLoads_;
     StreamingTaskQueue requestTaskQueue_;
     std::array<std::vector<PageRequest>, kStreamingMaxActiveTasks> requestTaskPages_;

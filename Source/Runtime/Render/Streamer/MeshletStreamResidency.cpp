@@ -280,6 +280,7 @@ bool MeshletStreamResidencyManager::initialize(
     unloadDelayFrames_ = std::max(desc.unloadDelayFrames, 1u);
     evictionAgeThresholdFrames_ = desc.evictionAgeThresholdFrames;
     pageCount_ = asset_->pageCount();
+    if (latency_) { latencyExcludedPages_.assign((uint64_t(pageCount_) + 63) / 64, 0); }
     unloadRequestBits_.assign((uint64_t(pageCount_) + 63) / 64, 0);
     requestIndexBlocks_.resize((uint64_t(pageCount_) + kRequestIndexBlockSize - 1) / kRequestIndexBlockSize);
     if (maxResidentPages_ != 0) {
@@ -314,6 +315,7 @@ void MeshletStreamResidencyManager::reset()
 {
     pageLoader_.reset();
     latency_.reset();
+    latencyExcludedPages_.clear();
     immediateGpuRequests_ = false;
     completionDrivenUploads_ = true;
     gpuDecompression_ = false;
@@ -765,6 +767,7 @@ bool MeshletStreamResidencyManager::lockFallbackPages(
     for (uint32_t pageIndex : pageIndices) {
         PageEntry& page = pages_.try_emplace(pageIndex).first->second;
         page.lockedFallback = true;
+        updateLatencyEligibility(pageIndex, page);
         if (!pageAllocated(pageIndex) && !allocatePageStorage(pageIndex)) {
             reason = "failed to allocate fallback page storage";
             return false;
@@ -935,8 +938,8 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     if (latency_) {
         const uint64_t feedbackTime = meshletStreamTimeMicroseconds();
         for (const auto& request : uniqueRequests) {
-            const auto tracked = pages_.find(request.pageIndex);
-            if (tracked == pages_.end() || (!residentState(tracked->second.state) && !tracked->second.lockedFallback)) {
+            const uint64_t bit = uint64_t(1) << (request.pageIndex % 64);
+            if ((latencyExcludedPages_[request.pageIndex / 64] & bit) == 0) {
                 latency_->request(request.pageIndex, requests.frameIndex, frameIndex_, request.prefetch, feedbackTime);
             }
         }
@@ -1891,8 +1894,18 @@ void MeshletStreamResidencyManager::setPageState(uint32_t pageIndex, MeshletStre
     }
     const MeshletStreamPageResidencyState oldState = page.state;
     page.state = state;
+    updateLatencyEligibility(pageIndex, page);
     updateStateTables(pageIndex, oldState, state);
     recordPatch(pageIndex);
+}
+
+void MeshletStreamResidencyManager::updateLatencyEligibility(uint32_t pageIndex, const PageEntry& page)
+{
+    if (!latency_) { return; }
+    auto& word = latencyExcludedPages_[pageIndex / 64];
+    const uint64_t bit = uint64_t(1) << (pageIndex % 64);
+    if (residentState(page.state) || page.lockedFallback) { word |= bit; }
+    else { word &= ~bit; }
 }
 
 void MeshletStreamResidencyManager::queueUpload(uint32_t pageIndex)
