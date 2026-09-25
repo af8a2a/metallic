@@ -200,7 +200,8 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         if (!depth) { throw std::runtime_error("Missing VBuffer render extent"); }
         report["renderExtent"]={depth->desc.width,depth->desc.height};
         report["hidden"]=std::getenv("METALLIC_FULL_ROAM_HIDDEN")!=nullptr;
-        report["vsync"]=true;
+        const char* noVsync = std::getenv("METALLIC_FULL_ROAM_NO_VSYNC");
+        report["vsync"]=!(noVsync && std::string_view(noVsync) == "1");
         report["frameSlots"]=frameSlots_.size();
         report["loadingFrames"]=loadingFrames;
         report["loadingSeconds"]=std::chrono::duration<double>(readyAt-loadingStart).count();
@@ -283,7 +284,17 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 {"frameLimitUs", begin.effectiveOptions.frameLimitUs}, {"available", begin.cachedStatus.available},
                 {"suspended", begin.cachedStatus.suspended}, {"reportAvailable", begin.cachedStatus.latencyReportAvailable},
                 {"reportFrameId", begin.cachedStatus.reportFrameId}, {"renderLatencyMs", begin.cachedStatus.renderLatencyMs},
-                {"gpuRenderMs", begin.cachedStatus.gpuRenderMs}};
+                {"gpuRenderMs", begin.cachedStatus.gpuRenderMs},
+                {"driverTiming", {{"simulationStartUs", begin.cachedStatus.simulationStartUs},
+                    {"simulationEndUs", begin.cachedStatus.simulationEndUs},
+                    {"renderSubmitStartUs", begin.cachedStatus.renderSubmitStartUs},
+                    {"renderSubmitEndUs", begin.cachedStatus.renderSubmitEndUs},
+                    {"presentStartUs", begin.cachedStatus.presentStartUs},
+                    {"presentEndUs", begin.cachedStatus.presentEndUs},
+                    {"gpuRenderStartUs", begin.cachedStatus.gpuRenderStartUs},
+                    {"gpuRenderEndUs", begin.cachedStatus.gpuRenderEndUs},
+                    {"gpuActiveRenderTimeUs", begin.cachedStatus.gpuActiveRenderTimeUs},
+                    {"gpuFrameTimeUs", begin.cachedStatus.gpuFrameTimeUs}}}};
             std::vector<std::string> paths;
             bool graphGpu=false;
             for (size_t n=0; n<f.nodes.size(); ++n) {

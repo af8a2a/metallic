@@ -27,6 +27,7 @@ def analyze(root):
             raise ValueError("Phase time exceeds constructor time")
         row["cpu"] = {definitions[s["id"]]: s["cpuMs"] for s in row["scopes"]}
         row["frontWaitMs"] = row["cpu"].get("Frame/Wait Frame Slot Before Input", 0) + begin["sleepMs"]
+        row["outsideFrontWaitMs"] = row["frameMs"] - row["frontWaitMs"]
         row["gpu"] = {definitions[s["id"]]: s["gpuMs"] for s in row["scopes"] if s["gpuMs"] is not None}
 
     def summarize(selected):
@@ -36,6 +37,7 @@ def analyze(root):
         total = sum(r["streamlineBegin"]["totalMs"] for r in selected)
         return dict(count=len(selected), phases=phases,
                     frameSlotPlusSleepMs=distribution([r["frontWaitMs"] for r in selected]),
+                    outsideFrontWaitMs=distribution([r["outsideFrontWaitMs"] for r in selected]),
                     sleepShare=sum(r["streamlineBegin"]["sleepMs"] for r in selected)/total if total else None,
                     nonSleepMs=distribution([r["streamlineBegin"]["totalMs"]-r["streamlineBegin"]["sleepMs"] for r in selected]),
                     **frame_stats(selected))
@@ -51,6 +53,27 @@ def analyze(root):
     for path in scope_paths:
         scopes[path] = {kind: distribution([r[kind][path] for r in rows if path in r[kind]]) for kind in ("cpu", "gpu")}
     reports = {r["streamlineBegin"]["reportFrameId"]: r["streamlineBegin"] for r in rows if r["streamlineBegin"]["reportAvailable"]}
+    # Reports are refreshed periodically and then repeated in frame exports.
+    # Deduplicate by driver frame ID; never pair cached timestamps with the
+    # current application frame or infer exact GPU idle time across report gaps.
+    raw_reports = [r["driverTiming"] for r in reports.values() if "driverTiming" in r]
+
+    def interval(start, end):
+        return distribution([(r[end] - r[start]) / 1000.0 for r in raw_reports
+                             if r[start] and r[end] >= r[start]])
+
+    # The bundled Vulkan backends synthesize gpuActiveRenderTimeUs from the
+    # start/end span; it is not a hardware busy-time counter.
+    driver_timing = dict(
+        activeFieldIsHardwareBusyTime=False,
+        simulationMs=interval("simulationStartUs", "simulationEndUs"),
+        renderSubmitMs=interval("renderSubmitStartUs", "renderSubmitEndUs"),
+        presentMs=interval("presentStartUs", "presentEndUs"),
+        simulationToGpuStartMs=interval("simulationStartUs", "gpuRenderStartUs"),
+        gpuActiveMs=distribution([r["gpuActiveRenderTimeUs"] / 1000.0 for r in raw_reports
+                                  if r["gpuActiveRenderTimeUs"] > 0]),
+        gpuFrameMs=distribution([r["gpuFrameTimeUs"] / 1000.0 for r in raw_reports
+                                 if r["gpuFrameTimeUs"] > 0]))
     result = dict(source=str(root), conditions={k: capture[k] for k in
         ("outputExtent", "renderExtent", "hidden", "vsync", "frameSlots", "config")},
         effectiveModes=sorted({r["streamlineBegin"]["effectiveMode"] for r in rows}),
@@ -61,7 +84,7 @@ def analyze(root):
         all=summarize(rows), slowestFivePercent=summarize(slow),
         refreshFrames=summarize([r for r in rows if r["streamlineBegin"]["statusRefreshed"]]),
         stages={k: summarize(v) for k, v in stages.items()}, scopes=scopes,
-        cachedDriverReports={"uniqueReports": len(reports),
+        cachedDriverReports={"uniqueReports": len(reports), "timing": driver_timing,
             "renderLatencyMs": distribution([r["renderLatencyMs"] for r in reports.values()]),
             "gpuRenderMs": distribution([r["gpuRenderMs"] for r in reports.values()])},
         slowest=[{k: r[k] for k in ("frame", "seconds", "stage", "frameMs", "streamlineBegin", "frontWaitMs", "cpu", "gpu")} for r in slow[:10]])

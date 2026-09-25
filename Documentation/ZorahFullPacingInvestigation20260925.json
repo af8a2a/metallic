@@ -1,0 +1,4036 @@
+{
+  "conditions": {
+    "config": {
+      "cullHardwareClassification": false,
+      "distance": 6.0,
+      "durationSeconds": 30.0,
+      "keyframes": [
+        {
+          "forward": 0.0,
+          "stage": "static",
+          "t": 0.0,
+          "yaw": 0.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "first-visit",
+          "t": 0.08333333333333333,
+          "yaw": 0.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "near-wall",
+          "t": 0.3333333333333333,
+          "yaw": 0.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "turn",
+          "t": 0.4444444444444444,
+          "yaw": 65.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "return",
+          "t": 0.6666666666666666,
+          "yaw": -65.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "settle",
+          "t": 0.8888888888888888,
+          "yaw": 0.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "end",
+          "t": 1.0,
+          "yaw": 0.0
+        }
+      ],
+      "metadataFastClassification": true,
+      "routeFrames": 0,
+      "sample": "gpu-driven-zorah-full",
+      "temporalJitter": true,
+      "warmupSeconds": 10.0
+    },
+    "graph": [
+      {
+        "name": "VBuffer",
+        "properties": {
+          "asyncSoftwareRaster": false,
+          "autoBuildStreamAsset": false,
+          "autoLod": true,
+          "coldPageRetentionFrames": 120,
+          "compactClas": true,
+          "compactShadingAttributes": true,
+          "cullHardwareClassification": false,
+          "distributedDemandMinGroups": 65536,
+          "distributedPageDemand": true,
+          "enableClas": true,
+          "enableClusterRtx": true,
+          "enableMeshletStreaming": true,
+          "hybridRaster": true,
+          "instanceFrustumCull": true,
+          "instanceHzbCull": true,
+          "lodPixelError": 1.5,
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "maxActiveGroups": 1048575,
+          "maxBlasBytes": 536870912,
+          "maxClasBuildClusters": 8192,
+          "maxClasBytes": 2147483648,
+          "maxGpuPageRequests": 65536,
+          "maxGpuPageUnloadRequests": 65536,
+          "maxLockedFallbackPages": 65536,
+          "maxPageLoadsInFlight": 1024,
+          "maxPageUploadsPerFrame": 256,
+          "maxResidentBytes": 3758096384,
+          "maxResidentPages": 0,
+          "maxTraversalWorkItems": 1048576,
+          "maxTraversalWorkers": 4096,
+          "maxUploadBytesPerFrame": 8388608,
+          "meshletFrustumCull": true,
+          "meshletNormalConeCull": false,
+          "metadataFastClassification": true,
+          "pageLoadConcurrency": 4,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+          "sceneBinding": "asset",
+          "streamAssetOnly": true,
+          "streamAssetPath": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+          "viewBinding": "global",
+          "visualization": "none"
+        },
+        "type": "VisibilityBufferPass"
+      },
+      {
+        "name": "Shadows",
+        "properties": {
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+          "rayTracedShadows": true,
+          "shadowAngularRadius": 0.266,
+          "shadowBias": 0.01,
+          "shadowLightIndex": -1,
+          "shadowLightRadius": 0.05,
+          "shadowRayLength": 100000.0,
+          "sigmaDenoise": true,
+          "sigmaHistoryLength": 5
+        },
+        "type": "RayTracedShadowPass"
+      },
+      {
+        "name": "Deferred",
+        "properties": {
+          "accumulate": false,
+          "exportUpscalerGuides": true,
+          "lightingMode": "realtime",
+          "materialBinning": true,
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "outputLinear": true,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf"
+        },
+        "type": "VisibilityBufferDeferredPass"
+      },
+      {
+        "name": "DlssSr",
+        "properties": {
+          "exportOutputGuides": true,
+          "mode": "Quality"
+        },
+        "type": "StreamlineDlssSrPass"
+      },
+      {
+        "name": "AutoExposure",
+        "properties": {},
+        "type": "AutoExposurePass"
+      },
+      {
+        "name": "DlssNr",
+        "properties": {
+          "depthInverted": false,
+          "enabled": false,
+          "fallbackToInput": true,
+          "intensity": 1.0,
+          "preset": 0,
+          "style": 0
+        },
+        "type": "DlssNrPass"
+      },
+      {
+        "name": "FinalBlit",
+        "properties": {},
+        "type": "FinalBlitPass"
+      }
+    ],
+    "absoluteKeyframes": [
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 0.0,
+        "stage": "static"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 2.5,
+        "stage": "first-visit"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -6.0921256404618,
+              4.163491249084473,
+              -5.886143707625141
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 10.0,
+        "stage": "near-wall"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              1.4835184214141535,
+              4.163491249084473,
+              -0.24667183495550882
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 13.333333333333332,
+        "stage": "turn"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -4.1826338924834205,
+              4.163491249084473,
+              -15.135352712684481
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 20.0,
+        "stage": "return"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 26.666666666666664,
+        "stage": "settle"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 30.0,
+        "stage": "end"
+      }
+    ],
+    "outputExtent": [
+      1797,
+      660
+    ],
+    "renderExtent": [
+      1198,
+      440
+    ],
+    "hidden": true,
+    "frameSlots": 2,
+    "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+    "asset": {
+      "bytes": 205327470912,
+      "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+      "modifiedUtc": "2026-09-19T16:20:31.9397327Z"
+    }
+  },
+  "runs": [
+    {
+      "label": "pre-change",
+      "source": "build-release\\full-streamer-residency-before-0925\\run1",
+      "manifest": {
+        "executableSha256": "4A16AB02AE61263E225CA43BA11E2C7A0CD9AF2D0CCB702A33F7F0813653A8DB",
+        "asset": {
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z"
+        },
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "protocol": "zorah-full-editor-roam-v1",
+        "gitHead": "d0861a4a44ae4001f49aee5a052b9f228f46bdc8",
+        "validation": false,
+        "dirty": [
+          " ? External/microprofile",
+          "?? Skills/"
+        ],
+        "started": "2026-09-25T15:18:02.8696171+08:00",
+        "runs": 2,
+        "hidden": true,
+        "config": {
+          "width": 1797,
+          "warmupSeconds": 10.0,
+          "height": 660,
+          "durationSeconds": 30.0
+        },
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927"
+      },
+      "conditionsMatch": true,
+      "vsync": true,
+      "presentModeLogs": [],
+      "missingGpuFrames": 0,
+      "metrics": {
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 1.9753566273421235,
+            "p50": 1.2984,
+            "p95": 6.0522,
+            "p99": 8.1707,
+            "max": 11.3027
+          },
+          "gpuMs": null
+        },
+        "Acquire Swapchain Image": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 0.004994240111034004,
+            "p50": 0.0047,
+            "p95": 0.0068,
+            "p99": 0.0082,
+            "max": 0.0389
+          },
+          "gpuMs": null
+        },
+        "Present": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 0.10697154753643302,
+            "p50": 0.0834,
+            "p95": 0.2331,
+            "p99": 0.3884,
+            "max": 1.8986
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 5.402293476752255,
+            "p50": 5.2986,
+            "p95": 7.5946,
+            "p99": 9.2861,
+            "max": 12.1258
+          },
+          "gpuMs": {
+            "count": 1441,
+            "mean": 0.026261629424011102,
+            "p50": 0.01984,
+            "p95": 0.076832,
+            "p99": 0.12512,
+            "max": 0.193408
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 0.7306619014573213,
+            "p50": 0.6789,
+            "p95": 1.274,
+            "p99": 1.5882,
+            "max": 3.2472
+          },
+          "gpuMs": null
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1441,
+            "mean": 11.328442886884108,
+            "p50": 11.3906,
+            "p95": 15.2795,
+            "p99": 17.4878,
+            "max": 20.3507
+          },
+          "gpuMs": {
+            "count": 1441,
+            "mean": 20.43968683969466,
+            "p50": 20.63952,
+            "p95": 24.461408,
+            "p99": 25.341504,
+            "max": 26.436416
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1441,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1441,
+              "mean": 0.00014212352532963222,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0004,
+              "max": 0.0019
+            },
+            "tokenMs": {
+              "count": 1441,
+              "mean": 0.0005620402498265093,
+              "p50": 0.0005,
+              "p95": 0.0008,
+              "p99": 0.0012,
+              "max": 0.0031
+            },
+            "optionsMs": {
+              "count": 1441,
+              "mean": 5.419847328244275e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0003,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1441,
+              "mean": 6.09878029146426,
+              "p50": 6.3951,
+              "p95": 10.9927,
+              "p99": 12.5292,
+              "max": 17.6653
+            },
+            "statusMs": {
+              "count": 1441,
+              "mean": 0.00012199861207494796,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0032,
+              "max": 0.0049
+            },
+            "markerMs": {
+              "count": 1441,
+              "mean": 0.0025338653712699516,
+              "p50": 0.0024,
+              "p95": 0.0032,
+              "p99": 0.0039,
+              "max": 0.0469
+            },
+            "totalMs": {
+              "count": 1441,
+              "mean": 6.102289590562109,
+              "p50": 6.3983,
+              "p95": 10.9961,
+              "p99": 12.5325,
+              "max": 17.669
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1441,
+            "mean": 8.074136918806385,
+            "p50": 8.3778,
+            "p95": 13.0458,
+            "p99": 14.4378,
+            "max": 17.6771
+          },
+          "outsideFrontWaitMs": {
+            "count": 1441,
+            "mean": 12.755935877862594,
+            "p50": 12.7873,
+            "p95": 16.8882,
+            "p99": 19.2801,
+            "max": 23.2316
+          },
+          "sleepShare": 0.9994249209176707,
+          "nonSleepMs": {
+            "count": 1441,
+            "mean": 0.003509299097848706,
+            "p50": 0.003300000000001191,
+            "p95": 0.004400000000000404,
+            "p99": 0.00590000000000046,
+            "max": 0.05030000000000001
+          },
+          "frameMs": {
+            "count": 1441,
+            "mean": 20.83007279666898,
+            "p50": 20.9212,
+            "p95": 26.2424,
+            "p99": 28.5014,
+            "max": 32.0811
+          },
+          "overBudget": 0,
+          "longestOverBudgetRun": 0,
+          "sampledRouteMeets30Fps": true
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 25,
+          "timing": {
+            "activeFieldIsHardwareBusyTime": false,
+            "simulationMs": null,
+            "renderSubmitMs": null,
+            "presentMs": null,
+            "simulationToGpuStartMs": null,
+            "gpuActiveMs": null,
+            "gpuFrameMs": null
+          },
+          "renderLatencyMs": {
+            "count": 25,
+            "mean": 35.42916,
+            "p50": 35.159,
+            "p95": 41.864,
+            "p99": 42.7,
+            "max": 42.7
+          },
+          "gpuRenderMs": {
+            "count": 25,
+            "mean": 22.41016,
+            "p50": 22.268,
+            "p95": 27.649,
+            "p99": 28.954,
+            "max": 28.954
+          }
+        }
+      },
+      "gpuApproximateCaptureWindow": {
+        "utilization.gpu [%]": {
+          "count": 31,
+          "mean": 93.19354838709677,
+          "p50": 97.0,
+          "p95": 97.0,
+          "p99": 97.0,
+          "max": 97.0
+        },
+        "memory.used [MiB]": {
+          "count": 31,
+          "mean": 14663.483870967742,
+          "p50": 14673.0,
+          "p95": 14711.0,
+          "p99": 14712.0,
+          "max": 14712.0
+        },
+        "clocks.current.graphics [MHz]": {
+          "count": 31,
+          "mean": 2893.967741935484,
+          "p50": 2895.0,
+          "p95": 2902.0,
+          "p99": 2902.0,
+          "max": 2902.0
+        },
+        "temperature.gpu": {
+          "count": 31,
+          "mean": 66.35483870967742,
+          "p50": 67.0,
+          "p95": 69.0,
+          "p99": 69.0,
+          "max": 69.0
+        },
+        "power.draw [W]": {
+          "count": 31,
+          "mean": 172.97806451612902,
+          "p50": 175.33,
+          "p95": 185.4,
+          "p99": 185.79,
+          "max": 185.79
+        }
+      },
+      "competingEngineMaxPercent": {
+        "System": 9.09700813419998,
+        "ChatGPT": 2.16409028181704,
+        "cloudmusic": 0.289846037906031,
+        "dwm": 4.87469388035307,
+        "msedgewebview2": 0.208097492641394,
+        "msedge": 2.00532592291681
+      },
+      "counters": {
+        "requests": {
+          "count": 1441,
+          "mean": 13536.39278278973,
+          "p50": 13696,
+          "p95": 15837,
+          "p99": 16155,
+          "max": 16363
+        },
+        "residentPages": {
+          "count": 1441,
+          "mean": 62098.42609299098,
+          "p50": 62162,
+          "p95": 62455,
+          "p99": 62545,
+          "max": 62641
+        },
+        "loadFailures": {
+          "count": 1441,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1441,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1441,
+          "mean": 8577.40111034004,
+          "p50": 10585,
+          "p95": 12059,
+          "p99": 12383,
+          "max": 12425
+        }
+      }
+    },
+    {
+      "label": "pre-change",
+      "source": "build-release\\full-streamer-residency-before-0925\\run2",
+      "manifest": {
+        "executableSha256": "4A16AB02AE61263E225CA43BA11E2C7A0CD9AF2D0CCB702A33F7F0813653A8DB",
+        "asset": {
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z"
+        },
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "protocol": "zorah-full-editor-roam-v1",
+        "gitHead": "d0861a4a44ae4001f49aee5a052b9f228f46bdc8",
+        "validation": false,
+        "dirty": [
+          " ? External/microprofile",
+          "?? Skills/"
+        ],
+        "started": "2026-09-25T15:18:02.8696171+08:00",
+        "runs": 2,
+        "hidden": true,
+        "config": {
+          "width": 1797,
+          "warmupSeconds": 10.0,
+          "height": 660,
+          "durationSeconds": 30.0
+        },
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927"
+      },
+      "conditionsMatch": true,
+      "vsync": true,
+      "presentModeLogs": [],
+      "missingGpuFrames": 0,
+      "metrics": {
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 2.1396851153039833,
+            "p50": 1.4461,
+            "p95": 6.4759,
+            "p99": 8.8271,
+            "max": 16.2876
+          },
+          "gpuMs": null
+        },
+        "Acquire Swapchain Image": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 0.005120475192173305,
+            "p50": 0.0049,
+            "p95": 0.0068,
+            "p99": 0.008,
+            "max": 0.0407
+          },
+          "gpuMs": null
+        },
+        "Present": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 0.11604668064290706,
+            "p50": 0.0944,
+            "p95": 0.2469,
+            "p99": 0.3626,
+            "max": 1.4015
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 5.604722921034242,
+            "p50": 5.3723,
+            "p95": 8.1882,
+            "p99": 9.9235,
+            "max": 13.8052
+          },
+          "gpuMs": {
+            "count": 1431,
+            "mean": 0.026376877707896575,
+            "p50": 0.019552,
+            "p95": 0.078176,
+            "p99": 0.13584,
+            "max": 0.2512
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 0.7500306778476589,
+            "p50": 0.706,
+            "p95": 1.2084,
+            "p99": 1.5001,
+            "max": 2.0921
+          },
+          "gpuMs": null
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1431,
+            "mean": 11.716300279524807,
+            "p50": 11.5976,
+            "p95": 16.4882,
+            "p99": 19.102,
+            "max": 23.9066
+          },
+          "gpuMs": {
+            "count": 1431,
+            "mean": 20.558918395527606,
+            "p50": 20.780672,
+            "p95": 24.94784,
+            "p99": 26.872704,
+            "max": 28.087232
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1431,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1431,
+              "mean": 0.0001469601677148847,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0004,
+              "max": 0.0012
+            },
+            "tokenMs": {
+              "count": 1431,
+              "mean": 0.0005781271837875611,
+              "p50": 0.0005,
+              "p95": 0.0008,
+              "p99": 0.001,
+              "max": 0.0248
+            },
+            "optionsMs": {
+              "count": 1431,
+              "mean": 6.0587002096436056e-05,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0003,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1431,
+              "mean": 5.618542976939204,
+              "p50": 5.6747,
+              "p95": 10.959,
+              "p99": 12.1838,
+              "max": 13.3449
+            },
+            "statusMs": {
+              "count": 1431,
+              "mean": 0.00012767295597484278,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0033,
+              "max": 0.0045
+            },
+            "markerMs": {
+              "count": 1431,
+              "mean": 0.002687351502445842,
+              "p50": 0.0026,
+              "p95": 0.0034,
+              "p99": 0.0041,
+              "max": 0.066
+            },
+            "totalMs": {
+              "count": 1431,
+              "mean": 5.622237106918239,
+              "p50": 5.6779,
+              "p95": 10.9628,
+              "p99": 12.1869,
+              "max": 13.3498
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1431,
+            "mean": 7.758228092243186,
+            "p50": 7.9586,
+            "p95": 12.941099999999999,
+            "p99": 14.1358,
+            "max": 16.372600000000002
+          },
+          "outsideFrontWaitMs": {
+            "count": 1431,
+            "mean": 13.221415234102027,
+            "p50": 13.0135,
+            "p95": 18.296,
+            "p99": 20.932399999999998,
+            "max": 26.295499999999997
+          },
+          "sleepShare": 0.999342943047619,
+          "nonSleepMs": {
+            "count": 1431,
+            "mean": 0.003694129979035647,
+            "p50": 0.0034999999999998366,
+            "p95": 0.0045999999999999375,
+            "p99": 0.00649999999999995,
+            "max": 0.06700000000000017
+          },
+          "frameMs": {
+            "count": 1431,
+            "mean": 20.97964332634521,
+            "p50": 21.0305,
+            "p95": 26.8378,
+            "p99": 29.8693,
+            "max": 33.3026
+          },
+          "overBudget": 0,
+          "longestOverBudgetRun": 0,
+          "sampledRouteMeets30Fps": true
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 25,
+          "timing": {
+            "activeFieldIsHardwareBusyTime": false,
+            "simulationMs": null,
+            "renderSubmitMs": null,
+            "presentMs": null,
+            "simulationToGpuStartMs": null,
+            "gpuActiveMs": null,
+            "gpuFrameMs": null
+          },
+          "renderLatencyMs": {
+            "count": 25,
+            "mean": 36.371880000000004,
+            "p50": 35.951,
+            "p95": 44.037,
+            "p99": 45.204,
+            "max": 45.204
+          },
+          "gpuRenderMs": {
+            "count": 25,
+            "mean": 23.549,
+            "p50": 21.993,
+            "p95": 32.452,
+            "p99": 33.053,
+            "max": 33.053
+          }
+        }
+      },
+      "gpuApproximateCaptureWindow": {
+        "utilization.gpu [%]": {
+          "count": 31,
+          "mean": 93.09677419354838,
+          "p50": 96.0,
+          "p95": 97.0,
+          "p99": 98.0,
+          "max": 98.0
+        },
+        "memory.used [MiB]": {
+          "count": 31,
+          "mean": 14596.645161290322,
+          "p50": 14609.0,
+          "p95": 14632.0,
+          "p99": 14632.0,
+          "max": 14632.0
+        },
+        "clocks.current.graphics [MHz]": {
+          "count": 31,
+          "mean": 2896.2258064516127,
+          "p50": 2895.0,
+          "p95": 2902.0,
+          "p99": 2917.0,
+          "max": 2917.0
+        },
+        "temperature.gpu": {
+          "count": 31,
+          "mean": 65.41935483870968,
+          "p50": 66.0,
+          "p95": 67.0,
+          "p99": 68.0,
+          "max": 68.0
+        },
+        "power.draw [W]": {
+          "count": 31,
+          "mean": 170.73774193548385,
+          "p50": 174.68,
+          "p95": 183.55,
+          "p99": 184.0,
+          "max": 184.0
+        }
+      },
+      "competingEngineMaxPercent": {
+        "System": 7.29039790874555,
+        "ChatGPT": 1.64743026548114,
+        "cloudmusic": 0.294551529558645,
+        "dwm": 4.89946419876107,
+        "msedge": 1.77368556154927
+      },
+      "counters": {
+        "requests": {
+          "count": 1431,
+          "mean": 13552.464709993012,
+          "p50": 13702,
+          "p95": 15819,
+          "p99": 16156,
+          "max": 16366
+        },
+        "residentPages": {
+          "count": 1431,
+          "mean": 62089.50104821803,
+          "p50": 62154,
+          "p95": 62450,
+          "p99": 62531,
+          "max": 62634
+        },
+        "loadFailures": {
+          "count": 1431,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1431,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1431,
+          "mean": 8582.25995807128,
+          "p50": 10565,
+          "p95": 12071,
+          "p99": 12393,
+          "max": 12425
+        }
+      }
+    },
+    {
+      "label": "slow-on",
+      "source": "build-release\\full-streamer-residency-after-0925\\run1",
+      "manifest": {
+        "validation": false,
+        "started": "2026-09-25T15:27:00.0053758+08:00",
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "asset": {
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "bytes": 205327470912
+        },
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "executableSha256": "81C9D7570F650B1DF150273C413544A0D63E91835F2153C4E1B226160AE36A79",
+        "runs": 2,
+        "hidden": true,
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp",
+          " M Source/Runtime/Render/Streamer/MeshletStreamResidency.h",
+          " M tests/rhi/StreamerTests.cpp",
+          "?? Skills/"
+        ],
+        "config": {
+          "durationSeconds": 30.0,
+          "width": 1797,
+          "height": 660,
+          "warmupSeconds": 10.0
+        },
+        "gitHead": "d0861a4a44ae4001f49aee5a052b9f228f46bdc8",
+        "protocol": "zorah-full-editor-roam-v1"
+      },
+      "conditionsMatch": true,
+      "vsync": true,
+      "presentModeLogs": [],
+      "missingGpuFrames": 0,
+      "metrics": {
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.5383100869565217,
+            "p50": 0.0133,
+            "p95": 3.8769,
+            "p99": 7.9462,
+            "max": 12.2106
+          },
+          "gpuMs": null
+        },
+        "Acquire Swapchain Image": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.0045462608695652175,
+            "p50": 0.0043,
+            "p95": 0.0063,
+            "p99": 0.0081,
+            "max": 0.0127
+          },
+          "gpuMs": null
+        },
+        "Present": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.1486550434782609,
+            "p50": 0.0953,
+            "p95": 0.3179,
+            "p99": 0.4344,
+            "max": 1.0825
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 3.8660868695652173,
+            "p50": 3.655,
+            "p95": 6.2926,
+            "p99": 7.8378,
+            "max": 10.6119
+          },
+          "gpuMs": {
+            "count": 1150,
+            "mean": 0.03121257739130435,
+            "p50": 0.021856,
+            "p95": 0.09344,
+            "p99": 0.173856,
+            "max": 0.220608
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 0.2756177391304348,
+            "p50": 0.2432,
+            "p95": 0.5137,
+            "p99": 0.681,
+            "max": 0.8382
+          },
+          "gpuMs": null
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1150,
+            "mean": 8.374723304347826,
+            "p50": 8.1084,
+            "p95": 13.557,
+            "p99": 15.3016,
+            "max": 16.6404
+          },
+          "gpuMs": {
+            "count": 1150,
+            "mean": 17.93286519652174,
+            "p50": 18.250464,
+            "p95": 22.053568,
+            "p99": 23.826336,
+            "max": 25.86784
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1150,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1150,
+              "mean": 7.756521739130435e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0005
+            },
+            "tokenMs": {
+              "count": 1150,
+              "mean": 0.0004617391304347826,
+              "p50": 0.0004,
+              "p95": 0.0007,
+              "p99": 0.0008,
+              "max": 0.0011
+            },
+            "optionsMs": {
+              "count": 1150,
+              "mean": 4.460869565217392e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0001,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1150,
+              "mean": 15.824361652173911,
+              "p50": 19.6795,
+              "p95": 24.9288,
+              "p99": 25.7046,
+              "max": 29.6683
+            },
+            "statusMs": {
+              "count": 1150,
+              "mean": 0.00014530434782608696,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0036,
+              "max": 0.0056
+            },
+            "markerMs": {
+              "count": 1150,
+              "mean": 0.002790086956521739,
+              "p50": 0.0026,
+              "p95": 0.0037,
+              "p99": 0.0106,
+              "max": 0.0189
+            },
+            "totalMs": {
+              "count": 1150,
+              "mean": 15.82798747826087,
+              "p50": 19.6825,
+              "p95": 24.9324,
+              "p99": 25.7079,
+              "max": 29.6721
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1150,
+            "mean": 16.362671739130434,
+            "p50": 19.8533,
+            "p95": 24.9404,
+            "p99": 25.7212,
+            "max": 29.679499999999997
+          },
+          "outsideFrontWaitMs": {
+            "count": 1150,
+            "mean": 9.728427043478261,
+            "p50": 9.3973,
+            "p95": 15.1423,
+            "p99": 17.0103,
+            "max": 21.432899999999997
+          },
+          "sleepShare": 0.9997709231137605,
+          "nonSleepMs": {
+            "count": 1150,
+            "mean": 0.003625826086956595,
+            "p50": 0.0033999999999991815,
+            "p95": 0.005299999999998306,
+            "p99": 0.011199999999998766,
+            "max": 0.019700000000000273
+          },
+          "frameMs": {
+            "count": 1150,
+            "mean": 26.091098782608693,
+            "p50": 29.5248,
+            "p95": 34.2052,
+            "p99": 36.233,
+            "max": 40.1918
+          },
+          "overBudget": 108,
+          "longestOverBudgetRun": 2,
+          "sampledRouteMeets30Fps": false
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 20,
+          "timing": {
+            "activeFieldIsHardwareBusyTime": false,
+            "simulationMs": null,
+            "renderSubmitMs": null,
+            "presentMs": null,
+            "simulationToGpuStartMs": null,
+            "gpuActiveMs": null,
+            "gpuFrameMs": null
+          },
+          "renderLatencyMs": {
+            "count": 20,
+            "mean": 28.4575,
+            "p50": 27.154,
+            "p95": 36.551,
+            "p99": 36.809,
+            "max": 36.809
+          },
+          "gpuRenderMs": {
+            "count": 20,
+            "mean": 18.43495,
+            "p50": 18.743,
+            "p95": 22.397,
+            "p99": 22.658,
+            "max": 22.658
+          }
+        }
+      },
+      "gpuApproximateCaptureWindow": {
+        "utilization.gpu [%]": {
+          "count": 31,
+          "mean": 67.61290322580645,
+          "p50": 63.0,
+          "p95": 93.0,
+          "p99": 97.0,
+          "max": 97.0
+        },
+        "memory.used [MiB]": {
+          "count": 31,
+          "mean": 14602.451612903225,
+          "p50": 14602.0,
+          "p95": 14683.0,
+          "p99": 14691.0,
+          "max": 14691.0
+        },
+        "clocks.current.graphics [MHz]": {
+          "count": 31,
+          "mean": 2903.064516129032,
+          "p50": 2902.0,
+          "p95": 2910.0,
+          "p99": 2910.0,
+          "max": 2910.0
+        },
+        "temperature.gpu": {
+          "count": 31,
+          "mean": 62.87096774193548,
+          "p50": 63.0,
+          "p95": 66.0,
+          "p99": 66.0,
+          "max": 66.0
+        },
+        "power.draw [W]": {
+          "count": 31,
+          "mean": 146.8967741935484,
+          "p50": 143.78,
+          "p95": 161.11,
+          "p99": 162.99,
+          "max": 162.99
+        }
+      },
+      "competingEngineMaxPercent": {
+        "System": 7.75998094456467,
+        "msedge": 0.694729618794964,
+        "cloudmusic": 0.297745996869271,
+        "dwm": 3.70212420915946
+      },
+      "counters": {
+        "requests": {
+          "count": 1150,
+          "mean": 13558.828695652173,
+          "p50": 13743,
+          "p95": 15815,
+          "p99": 16199,
+          "max": 16420
+        },
+        "residentPages": {
+          "count": 1150,
+          "mean": 62091.94608695652,
+          "p50": 62143,
+          "p95": 62442,
+          "p99": 62491,
+          "max": 62585
+        },
+        "loadFailures": {
+          "count": 1150,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1150,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1150,
+          "mean": 8683.894782608695,
+          "p50": 10214,
+          "p95": 12086,
+          "p99": 12401,
+          "max": 12425
+        }
+      }
+    },
+    {
+      "label": "slow-on",
+      "source": "build-release\\full-streamer-residency-after-0925\\run2",
+      "manifest": {
+        "validation": false,
+        "started": "2026-09-25T15:27:00.0053758+08:00",
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "asset": {
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "bytes": 205327470912
+        },
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "executableSha256": "81C9D7570F650B1DF150273C413544A0D63E91835F2153C4E1B226160AE36A79",
+        "runs": 2,
+        "hidden": true,
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp",
+          " M Source/Runtime/Render/Streamer/MeshletStreamResidency.h",
+          " M tests/rhi/StreamerTests.cpp",
+          "?? Skills/"
+        ],
+        "config": {
+          "durationSeconds": 30.0,
+          "width": 1797,
+          "height": 660,
+          "warmupSeconds": 10.0
+        },
+        "gitHead": "d0861a4a44ae4001f49aee5a052b9f228f46bdc8",
+        "protocol": "zorah-full-editor-roam-v1"
+      },
+      "conditionsMatch": true,
+      "vsync": true,
+      "presentModeLogs": [],
+      "missingGpuFrames": 0,
+      "metrics": {
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.5837437823834196,
+            "p50": 0.0132,
+            "p95": 4.1084,
+            "p99": 7.7224,
+            "max": 13.2217
+          },
+          "gpuMs": null
+        },
+        "Acquire Swapchain Image": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.00472538860103627,
+            "p50": 0.0045,
+            "p95": 0.0064,
+            "p99": 0.009,
+            "max": 0.0149
+          },
+          "gpuMs": null
+        },
+        "Present": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.1461832469775475,
+            "p50": 0.0983,
+            "p95": 0.3339,
+            "p99": 0.44,
+            "max": 1.5951
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 3.9931316062176165,
+            "p50": 3.8202,
+            "p95": 6.4599,
+            "p99": 8.1482,
+            "max": 9.4368
+          },
+          "gpuMs": {
+            "count": 1158,
+            "mean": 0.03153793436960276,
+            "p50": 0.022656,
+            "p95": 0.094464,
+            "p99": 0.17008,
+            "max": 0.238944
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 0.2947521588946459,
+            "p50": 0.2737,
+            "p95": 0.5166,
+            "p99": 0.6438,
+            "max": 1.2354
+          },
+          "gpuMs": null
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1158,
+            "mean": 8.576414939550949,
+            "p50": 8.3992,
+            "p95": 13.5163,
+            "p99": 15.5547,
+            "max": 17.9624
+          },
+          "gpuMs": {
+            "count": 1158,
+            "mean": 17.83511883937824,
+            "p50": 18.311712,
+            "p95": 21.859136,
+            "p99": 22.636224,
+            "max": 23.17856
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1158,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1158,
+              "mean": 7.61658031088083e-05,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0004
+            },
+            "tokenMs": {
+              "count": 1158,
+              "mean": 0.00043618307426597584,
+              "p50": 0.0004,
+              "p95": 0.0007,
+              "p99": 0.0009,
+              "max": 0.0032
+            },
+            "optionsMs": {
+              "count": 1158,
+              "mean": 4.6286701208981e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0001,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1158,
+              "mean": 15.40930025906736,
+              "p50": 19.5663,
+              "p95": 25.0219,
+              "p99": 25.7543,
+              "max": 26.8992
+            },
+            "statusMs": {
+              "count": 1158,
+              "mean": 0.00017927461139896373,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0037,
+              "max": 0.0152
+            },
+            "markerMs": {
+              "count": 1158,
+              "mean": 0.003201986183074266,
+              "p50": 0.0028,
+              "p95": 0.0045,
+              "p99": 0.0127,
+              "max": 0.0906
+            },
+            "totalMs": {
+              "count": 1158,
+              "mean": 15.413361139896374,
+              "p50": 19.5704,
+              "p95": 25.0258,
+              "p99": 25.758,
+              "max": 26.9029
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1158,
+            "mean": 15.993044041450776,
+            "p50": 19.7112,
+            "p95": 25.032999999999998,
+            "p99": 25.7653,
+            "max": 26.9105
+          },
+          "outsideFrontWaitMs": {
+            "count": 1158,
+            "mean": 9.937943955094992,
+            "p50": 9.6921,
+            "p95": 15.273300000000003,
+            "p99": 17.083,
+            "max": 22.788199999999996
+          },
+          "sleepShare": 0.9997365350235969,
+          "nonSleepMs": {
+            "count": 1158,
+            "mean": 0.004060880829015625,
+            "p50": 0.003500000000002501,
+            "p95": 0.00689999999999813,
+            "p99": 0.014900000000000801,
+            "max": 0.09120000000000061
+          },
+          "frameMs": {
+            "count": 1158,
+            "mean": 25.93098799654577,
+            "p50": 29.4897,
+            "p95": 34.2154,
+            "p99": 36.2137,
+            "max": 39.0454
+          },
+          "overBudget": 103,
+          "longestOverBudgetRun": 2,
+          "sampledRouteMeets30Fps": false
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 20,
+          "timing": {
+            "activeFieldIsHardwareBusyTime": false,
+            "simulationMs": null,
+            "renderSubmitMs": null,
+            "presentMs": null,
+            "simulationToGpuStartMs": null,
+            "gpuActiveMs": null,
+            "gpuFrameMs": null
+          },
+          "renderLatencyMs": {
+            "count": 20,
+            "mean": 27.657,
+            "p50": 27.356,
+            "p95": 31.73,
+            "p99": 35.182,
+            "max": 35.182
+          },
+          "gpuRenderMs": {
+            "count": 20,
+            "mean": 18.3554,
+            "p50": 18.39,
+            "p95": 20.853,
+            "p99": 22.468,
+            "max": 22.468
+          }
+        }
+      },
+      "gpuApproximateCaptureWindow": {
+        "utilization.gpu [%]": {
+          "count": 30,
+          "mean": 66.4,
+          "p50": 62.0,
+          "p95": 93.0,
+          "p99": 96.0,
+          "max": 96.0
+        },
+        "memory.used [MiB]": {
+          "count": 30,
+          "mean": 14546.8,
+          "p50": 14546.0,
+          "p95": 14594.0,
+          "p99": 14594.0,
+          "max": 14594.0
+        },
+        "clocks.current.graphics [MHz]": {
+          "count": 30,
+          "mean": 2903.9333333333334,
+          "p50": 2902.0,
+          "p95": 2910.0,
+          "p99": 2910.0,
+          "max": 2910.0
+        },
+        "temperature.gpu": {
+          "count": 30,
+          "mean": 62.9,
+          "p50": 63.0,
+          "p95": 66.0,
+          "p99": 67.0,
+          "max": 67.0
+        },
+        "power.draw [W]": {
+          "count": 30,
+          "mean": 147.19933333333333,
+          "p50": 142.64,
+          "p95": 161.28,
+          "p99": 162.9,
+          "max": 162.9
+        }
+      },
+      "competingEngineMaxPercent": {
+        "System": 7.30342800633246,
+        "msedge": 0.674724307820388,
+        "cloudmusic": 0.335004206649697,
+        "dwm": 1.08349909840228
+      },
+      "counters": {
+        "requests": {
+          "count": 1158,
+          "mean": 13541.476683937824,
+          "p50": 13725,
+          "p95": 15810,
+          "p99": 16182,
+          "max": 16384
+        },
+        "residentPages": {
+          "count": 1158,
+          "mean": 62099.108808290155,
+          "p50": 62156,
+          "p95": 62444,
+          "p99": 62515,
+          "max": 62607
+        },
+        "loadFailures": {
+          "count": 1158,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1158,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1158,
+          "mean": 8676.000863557858,
+          "p50": 10172,
+          "p95": 12087,
+          "p99": 12402,
+          "max": 12425
+        }
+      }
+    },
+    {
+      "label": "same-binary-on",
+      "source": "build-release\\full-pacing-on-recheck-0925\\run1",
+      "manifest": {
+        "validation": false,
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "asset": {
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z"
+        },
+        "runs": 1,
+        "protocol": "zorah-full-editor-roam-v1",
+        "hidden": true,
+        "started": "2026-09-25T15:33:48.9833486+08:00",
+        "dirty": " ? External/microprofile",
+        "config": {
+          "width": 1797,
+          "durationSeconds": 30.0,
+          "warmupSeconds": 10.0,
+          "height": 660
+        },
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "gitHead": "a9a68bd2b2952e7e91952bed8370c1a4487dc907",
+        "executableSha256": "81C9D7570F650B1DF150273C413544A0D63E91835F2153C4E1B226160AE36A79"
+      },
+      "conditionsMatch": true,
+      "vsync": true,
+      "presentModeLogs": [],
+      "missingGpuFrames": 0,
+      "metrics": {
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "count": 1450,
+            "mean": 2.1029232413793104,
+            "p50": 1.3477,
+            "p95": 6.3424,
+            "p99": 8.2638,
+            "max": 24.6252
+          },
+          "gpuMs": null
+        },
+        "Acquire Swapchain Image": {
+          "cpuMs": {
+            "count": 1450,
+            "mean": 0.005056620689655172,
+            "p50": 0.0048,
+            "p95": 0.0069,
+            "p99": 0.0083,
+            "max": 0.0318
+          },
+          "gpuMs": null
+        },
+        "Present": {
+          "cpuMs": {
+            "count": 1450,
+            "mean": 0.10928965517241379,
+            "p50": 0.0864,
+            "p95": 0.248,
+            "p99": 0.4066,
+            "max": 1.5323
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1450,
+            "mean": 5.101745862068966,
+            "p50": 4.9935,
+            "p95": 7.2311,
+            "p99": 8.5527,
+            "max": 10.2458
+          },
+          "gpuMs": {
+            "count": 1450,
+            "mean": 0.026088761379310346,
+            "p50": 0.019232,
+            "p95": 0.078592,
+            "p99": 0.121088,
+            "max": 0.197952
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1450,
+            "mean": 0.3991404827586207,
+            "p50": 0.3823,
+            "p95": 0.598,
+            "p99": 0.6821,
+            "max": 0.7825
+          },
+          "gpuMs": null
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1450,
+            "mean": 10.885063931034482,
+            "p50": 10.8836,
+            "p95": 14.9237,
+            "p99": 16.6074,
+            "max": 18.7803
+          },
+          "gpuMs": {
+            "count": 1450,
+            "mean": 20.297278322758622,
+            "p50": 20.658432,
+            "p95": 24.603424,
+            "p99": 25.597696,
+            "max": 28.4368
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1450,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1450,
+              "mean": 0.0001460689655172414,
+              "p50": 0.0001,
+              "p95": 0.0003,
+              "p99": 0.0004,
+              "max": 0.0006
+            },
+            "tokenMs": {
+              "count": 1450,
+              "mean": 0.0005584827586206896,
+              "p50": 0.0005,
+              "p95": 0.0008,
+              "p99": 0.001,
+              "max": 0.0113
+            },
+            "optionsMs": {
+              "count": 1450,
+              "mean": 4.993103448275862e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0002,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1450,
+              "mean": 6.283535724137931,
+              "p50": 6.0909,
+              "p95": 11.3451,
+              "p99": 12.61,
+              "max": 15.472
+            },
+            "statusMs": {
+              "count": 1450,
+              "mean": 0.00011889655172413793,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0032,
+              "max": 0.004
+            },
+            "markerMs": {
+              "count": 1450,
+              "mean": 0.002511931034482759,
+              "p50": 0.0024,
+              "p95": 0.0033,
+              "p99": 0.0042,
+              "max": 0.0082
+            },
+            "totalMs": {
+              "count": 1450,
+              "mean": 6.2870219999999994,
+              "p50": 6.0947,
+              "p95": 11.349,
+              "p99": 12.6134,
+              "max": 15.4751
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1450,
+            "mean": 8.38645896551724,
+            "p50": 8.5149,
+            "p95": 13.423399999999999,
+            "p99": 15.2119,
+            "max": 24.7034
+          },
+          "outsideFrontWaitMs": {
+            "count": 1450,
+            "mean": 12.309077862068966,
+            "p50": 12.3031,
+            "p95": 16.5331,
+            "p99": 18.4544,
+            "max": 20.4867
+          },
+          "sleepShare": 0.9994454805690088,
+          "nonSleepMs": {
+            "count": 1450,
+            "mean": 0.003486275862068958,
+            "p50": 0.0033000000000003027,
+            "p95": 0.0045000000000001705,
+            "p99": 0.0063000000000013046,
+            "max": 0.014299999999999535
+          },
+          "frameMs": {
+            "count": 1450,
+            "mean": 20.695536827586206,
+            "p50": 20.8147,
+            "p95": 26.7056,
+            "p99": 28.5422,
+            "max": 41.9388
+          },
+          "overBudget": 2,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 25,
+          "timing": {
+            "activeFieldIsHardwareBusyTime": false,
+            "simulationMs": null,
+            "renderSubmitMs": null,
+            "presentMs": null,
+            "simulationToGpuStartMs": null,
+            "gpuActiveMs": null,
+            "gpuFrameMs": null
+          },
+          "renderLatencyMs": {
+            "count": 25,
+            "mean": 35.77168,
+            "p50": 35.068,
+            "p95": 43.127,
+            "p99": 43.212,
+            "max": 43.212
+          },
+          "gpuRenderMs": {
+            "count": 25,
+            "mean": 23.11932,
+            "p50": 21.643,
+            "p95": 31.091,
+            "p99": 31.317,
+            "max": 31.317
+          }
+        }
+      },
+      "gpuApproximateCaptureWindow": {
+        "utilization.gpu [%]": {
+          "count": 31,
+          "mean": 92.90322580645162,
+          "p50": 96.0,
+          "p95": 97.0,
+          "p99": 97.0,
+          "max": 97.0
+        },
+        "memory.used [MiB]": {
+          "count": 31,
+          "mean": 14659.290322580646,
+          "p50": 14647.0,
+          "p95": 14813.0,
+          "p99": 14814.0,
+          "max": 14814.0
+        },
+        "clocks.current.graphics [MHz]": {
+          "count": 31,
+          "mean": 2894.064516129032,
+          "p50": 2895.0,
+          "p95": 2902.0,
+          "p99": 2910.0,
+          "max": 2910.0
+        },
+        "temperature.gpu": {
+          "count": 31,
+          "mean": 66.45161290322581,
+          "p50": 67.0,
+          "p95": 69.0,
+          "p99": 69.0,
+          "max": 69.0
+        },
+        "power.draw [W]": {
+          "count": 31,
+          "mean": 172.22387096774193,
+          "p50": 174.47,
+          "p95": 185.21,
+          "p99": 185.29,
+          "max": 185.29
+        }
+      },
+      "competingEngineMaxPercent": {
+        "System": 9.17518870645285,
+        "ChatGPT": 1.67017268254078,
+        "cloudmusic": 1.02021769769931,
+        "dwm": 3.92742551293555,
+        "msedge": 1.77645861453319
+      },
+      "counters": {
+        "requests": {
+          "count": 1450,
+          "mean": 13540.975862068966,
+          "p50": 13690,
+          "p95": 15827,
+          "p99": 16136,
+          "max": 16358
+        },
+        "residentPages": {
+          "count": 1450,
+          "mean": 62102.31517241379,
+          "p50": 62170,
+          "p95": 62459,
+          "p99": 62531,
+          "max": 62653
+        },
+        "loadFailures": {
+          "count": 1450,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1450,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1450,
+          "mean": 8562.34551724138,
+          "p50": 10555,
+          "p95": 12058,
+          "p99": 12383,
+          "max": 12425
+        }
+      }
+    },
+    {
+      "label": "same-binary-off",
+      "source": "build-release\\full-pacing-off-recheck-0925\\run1",
+      "manifest": {
+        "protocol": "zorah-full-editor-roam-v1",
+        "hidden": true,
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "runs": 1,
+        "gitHead": "a9a68bd2b2952e7e91952bed8370c1a4487dc907",
+        "started": "2026-09-25T15:36:18.2437103+08:00",
+        "dirty": " ? External/microprofile",
+        "config": {
+          "width": 1797,
+          "height": 660,
+          "warmupSeconds": 10.0,
+          "durationSeconds": 30.0
+        },
+        "executableSha256": "81C9D7570F650B1DF150273C413544A0D63E91835F2153C4E1B226160AE36A79",
+        "asset": {
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "bytes": 205327470912
+        },
+        "validation": false,
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927"
+      },
+      "conditionsMatch": true,
+      "vsync": true,
+      "presentModeLogs": [],
+      "missingGpuFrames": 0,
+      "metrics": {
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "count": 1492,
+            "mean": 9.55310455764075,
+            "p50": 9.9352,
+            "p95": 13.7655,
+            "p99": 14.7552,
+            "max": 15.8665
+          },
+          "gpuMs": null
+        },
+        "Acquire Swapchain Image": {
+          "cpuMs": {
+            "count": 1492,
+            "mean": 0.004597117962466488,
+            "p50": 0.0044,
+            "p95": 0.0064,
+            "p99": 0.008,
+            "max": 0.0113
+          },
+          "gpuMs": null
+        },
+        "Present": {
+          "cpuMs": {
+            "count": 1492,
+            "mean": 0.09217238605898123,
+            "p50": 0.0783,
+            "p95": 0.1817,
+            "p99": 0.3157,
+            "max": 1.7674
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1492,
+            "mean": 4.498133310991957,
+            "p50": 4.4633,
+            "p95": 6.4066,
+            "p99": 7.8076,
+            "max": 8.7027
+          },
+          "gpuMs": {
+            "count": 1492,
+            "mean": 0.025317512064343163,
+            "p50": 0.018912,
+            "p95": 0.074624,
+            "p99": 0.1232,
+            "max": 0.198336
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1492,
+            "mean": 0.3370739946380697,
+            "p50": 0.3188,
+            "p95": 0.5481,
+            "p99": 0.6878,
+            "max": 0.96
+          },
+          "gpuMs": null
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1492,
+            "mean": 9.216710790884719,
+            "p50": 9.061,
+            "p95": 13.0196,
+            "p99": 15.4783,
+            "max": 18.2102
+          },
+          "gpuMs": {
+            "count": 1492,
+            "mean": 19.966042659517427,
+            "p50": 20.407456,
+            "p95": 24.231616,
+            "p99": 24.89824,
+            "max": 25.678528
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          0
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1492,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1492,
+              "mean": 0.00016655495978552278,
+              "p50": 0.0002,
+              "p95": 0.0003,
+              "p99": 0.0004,
+              "max": 0.0007
+            },
+            "tokenMs": {
+              "count": 1492,
+              "mean": 0.0005679624664879357,
+              "p50": 0.0005,
+              "p95": 0.0008,
+              "p99": 0.0015,
+              "max": 0.0122
+            },
+            "optionsMs": {
+              "count": 1492,
+              "mean": 5.9115281501340486e-05,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0003,
+              "max": 0.0005
+            },
+            "sleepMs": {
+              "count": 1492,
+              "mean": 0.04546306970509383,
+              "p50": 0.043,
+              "p95": 0.0809,
+              "p99": 0.1125,
+              "max": 2.631
+            },
+            "statusMs": {
+              "count": 1492,
+              "mean": 7.835120643431636e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0023,
+              "max": 0.0037
+            },
+            "markerMs": {
+              "count": 1492,
+              "mean": 0.0015699731903485255,
+              "p50": 0.0015,
+              "p95": 0.0021,
+              "p99": 0.0027,
+              "max": 0.0076
+            },
+            "totalMs": {
+              "count": 1492,
+              "mean": 0.04797701072386059,
+              "p50": 0.0454,
+              "p95": 0.0848,
+              "p99": 0.1154,
+              "max": 2.6334
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1492,
+            "mean": 9.598567627345846,
+            "p50": 9.9773,
+            "p95": 13.8088,
+            "p99": 14.874099999999999,
+            "max": 16.0793
+          },
+          "outsideFrontWaitMs": {
+            "count": 1492,
+            "mean": 10.516805227882037,
+            "p50": 10.3496,
+            "p95": 14.430900000000001,
+            "p99": 17.0129,
+            "max": 19.671999999999997
+          },
+          "sleepShare": 0.9476011326917355,
+          "nonSleepMs": {
+            "count": 1492,
+            "mean": 0.0025139410187667564,
+            "p50": 0.0023999999999999994,
+            "p95": 0.003500000000000003,
+            "p99": 0.005199999999999996,
+            "max": 0.015
+          },
+          "frameMs": {
+            "count": 1492,
+            "mean": 20.115372855227882,
+            "p50": 20.4179,
+            "p95": 25.0737,
+            "p99": 27.6358,
+            "max": 31.6568
+          },
+          "overBudget": 0,
+          "longestOverBudgetRun": 0,
+          "sampledRouteMeets30Fps": true
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 26,
+          "timing": {
+            "activeFieldIsHardwareBusyTime": false,
+            "simulationMs": null,
+            "renderSubmitMs": null,
+            "presentMs": null,
+            "simulationToGpuStartMs": null,
+            "gpuActiveMs": null,
+            "gpuFrameMs": null
+          },
+          "renderLatencyMs": {
+            "count": 26,
+            "mean": 40.20603846153846,
+            "p50": 41.125,
+            "p95": 47.863,
+            "p99": 49.321,
+            "max": 49.321
+          },
+          "gpuRenderMs": {
+            "count": 26,
+            "mean": 25.724346153846152,
+            "p50": 24.823,
+            "p95": 33.702,
+            "p99": 36.525,
+            "max": 36.525
+          }
+        }
+      },
+      "gpuApproximateCaptureWindow": {
+        "utilization.gpu [%]": {
+          "count": 31,
+          "mean": 94.06451612903226,
+          "p50": 97.0,
+          "p95": 98.0,
+          "p99": 98.0,
+          "max": 98.0
+        },
+        "memory.used [MiB]": {
+          "count": 31,
+          "mean": 14597.09677419355,
+          "p50": 14581.0,
+          "p95": 14703.0,
+          "p99": 14705.0,
+          "max": 14705.0
+        },
+        "clocks.current.graphics [MHz]": {
+          "count": 31,
+          "mean": 2893.6774193548385,
+          "p50": 2895.0,
+          "p95": 2902.0,
+          "p99": 2902.0,
+          "max": 2902.0
+        },
+        "temperature.gpu": {
+          "count": 31,
+          "mean": 65.61290322580645,
+          "p50": 66.0,
+          "p95": 67.0,
+          "p99": 68.0,
+          "max": 68.0
+        },
+        "power.draw [W]": {
+          "count": 31,
+          "mean": 174.50774193548386,
+          "p50": 176.52,
+          "p95": 186.31,
+          "p99": 186.91,
+          "max": 186.91
+        }
+      },
+      "competingEngineMaxPercent": {
+        "System": 9.47326125675949,
+        "ChatGPT": 2.2063808955143,
+        "cloudmusic": 0.99441462100994,
+        "dwm": 3.00185227038142,
+        "msedge": 0.727816506448916
+      },
+      "counters": {
+        "requests": {
+          "count": 1492,
+          "mean": 13541.74798927614,
+          "p50": 13692,
+          "p95": 15824,
+          "p99": 16143,
+          "max": 16356
+        },
+        "residentPages": {
+          "count": 1492,
+          "mean": 62099.81367292225,
+          "p50": 62160,
+          "p95": 62451,
+          "p99": 62534,
+          "max": 62641
+        },
+        "loadFailures": {
+          "count": 1492,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1492,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1492,
+          "mean": 8631.264075067023,
+          "p50": 10580,
+          "p95": 12067,
+          "p99": 12402,
+          "max": 12425
+        }
+      }
+    },
+    {
+      "label": "diagnostic-fifo",
+      "source": "build-release\\full-pacing-diag-fifo-0925\\run1",
+      "manifest": {
+        "vsync": true,
+        "protocol": "zorah-full-editor-roam-v1",
+        "reflexMode": "on",
+        "hidden": true,
+        "runs": 1,
+        "started": "2026-09-25T15:40:50.6766484+08:00",
+        "asset": {
+          "bytes": 205327470912,
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z"
+        },
+        "executableSha256": "6B81C4DD400B3781AC8C5692C5E42DE6C38415461FFCE16C1C1BC79A2AF18AFA",
+        "validation": false,
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "config": {
+          "durationSeconds": 30.0,
+          "warmupSeconds": 10.0,
+          "width": 1797,
+          "height": 660
+        },
+        "gitHead": "a9a68bd2b2952e7e91952bed8370c1a4487dc907",
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Editor/EditorApplication.cpp",
+          " M Source/Editor/EditorFullRoamBenchmark.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.h",
+          " M Tools/RunZorahFullRoam.ps1"
+        ],
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB"
+      },
+      "conditionsMatch": true,
+      "vsync": true,
+      "presentModeLogs": [
+        "presentMode=2 vsync=true images=3 extent=2400x1350"
+      ],
+      "missingGpuFrames": 0,
+      "metrics": {
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 2.04350420624152,
+            "p50": 1.4157,
+            "p95": 5.9389,
+            "p99": 8.1118,
+            "max": 12.9798
+          },
+          "gpuMs": null
+        },
+        "Acquire Swapchain Image": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 0.004140027137042063,
+            "p50": 0.0039,
+            "p95": 0.0058,
+            "p99": 0.0076,
+            "max": 0.0105
+          },
+          "gpuMs": null
+        },
+        "Present": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 0.09213710990502036,
+            "p50": 0.079,
+            "p95": 0.1843,
+            "p99": 0.3258,
+            "max": 0.935
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 4.292548168249661,
+            "p50": 4.1698,
+            "p95": 6.2445,
+            "p99": 7.6591,
+            "max": 10.1227
+          },
+          "gpuMs": {
+            "count": 1474,
+            "mean": 0.026106051560379918,
+            "p50": 0.019136,
+            "p95": 0.07568,
+            "p99": 0.150272,
+            "max": 0.634528
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 0.3027495929443691,
+            "p50": 0.2718,
+            "p95": 0.5376,
+            "p99": 0.7179,
+            "max": 1.142
+          },
+          "gpuMs": null
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 9.596184531886024,
+            "p50": 9.6024,
+            "p95": 13.2685,
+            "p99": 14.9766,
+            "max": 19.0959
+          },
+          "gpuMs": {
+            "count": 1474,
+            "mean": 19.988348873812754,
+            "p50": 20.420128,
+            "p95": 24.333216,
+            "p99": 25.3592,
+            "max": 27.628832
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1474,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1474,
+              "mean": 0.00013616010854816825,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0004,
+              "max": 0.0009
+            },
+            "tokenMs": {
+              "count": 1474,
+              "mean": 0.0005366350067842606,
+              "p50": 0.0005,
+              "p95": 0.0008,
+              "p99": 0.0009,
+              "max": 0.0027
+            },
+            "optionsMs": {
+              "count": 1474,
+              "mean": 5.5359565807327006e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0003,
+              "max": 0.0042
+            },
+            "sleepMs": {
+              "count": 1474,
+              "mean": 7.49650671641791,
+              "p50": 7.7207,
+              "p95": 11.9858,
+              "p99": 13.109,
+              "max": 14.4614
+            },
+            "statusMs": {
+              "count": 1474,
+              "mean": 0.00011804613297150612,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0031,
+              "max": 0.0079
+            },
+            "markerMs": {
+              "count": 1474,
+              "mean": 0.0022989823609226596,
+              "p50": 0.0022,
+              "p95": 0.0031,
+              "p99": 0.0043,
+              "max": 0.0076
+            },
+            "totalMs": {
+              "count": 1474,
+              "mean": 7.499775508819538,
+              "p50": 7.7236,
+              "p95": 11.989,
+              "p99": 13.112,
+              "max": 14.4646
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1474,
+            "mean": 9.54001092265943,
+            "p50": 9.6638,
+            "p95": 14.1151,
+            "p99": 15.426400000000001,
+            "max": 18.7141
+          },
+          "outsideFrontWaitMs": {
+            "count": 1474,
+            "mean": 10.82464497964722,
+            "p50": 10.8161,
+            "p95": 14.6473,
+            "p99": 16.4045,
+            "max": 20.9666
+          },
+          "sleepShare": 0.9995641479671246,
+          "nonSleepMs": {
+            "count": 1474,
+            "mean": 0.003268792401628242,
+            "p50": 0.0030999999999998806,
+            "p95": 0.0043000000000001926,
+            "p99": 0.006099999999999994,
+            "max": 0.016899999999999693
+          },
+          "frameMs": {
+            "count": 1474,
+            "mean": 20.364655902306648,
+            "p50": 20.418,
+            "p95": 26.028,
+            "p99": 28.276,
+            "max": 34.9279
+          },
+          "overBudget": 1,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 26,
+          "timing": {
+            "activeFieldIsHardwareBusyTime": false,
+            "simulationMs": {
+              "count": 26,
+              "mean": 0.6900000000000001,
+              "p50": 0.613,
+              "p95": 0.995,
+              "p99": 1.064,
+              "max": 1.064
+            },
+            "renderSubmitMs": {
+              "count": 26,
+              "mean": 9.740961538461537,
+              "p50": 9.295,
+              "p95": 14.684,
+              "p99": 14.994,
+              "max": 14.994
+            },
+            "presentMs": {
+              "count": 26,
+              "mean": 0.0878846153846154,
+              "p50": 0.076,
+              "p95": 0.164,
+              "p99": 0.216,
+              "max": 0.216
+            },
+            "simulationToGpuStartMs": {
+              "count": 26,
+              "mean": 9.26473076923077,
+              "p50": 9.807,
+              "p95": 13.303,
+              "p99": 14.617,
+              "max": 14.617
+            },
+            "gpuActiveMs": {
+              "count": 26,
+              "mean": 23.473576923076923,
+              "p50": 22.202,
+              "p95": 28.845,
+              "p99": 29.141,
+              "max": 29.141
+            },
+            "gpuFrameMs": {
+              "count": 26,
+              "mean": 20.322730769230766,
+              "p50": 20.629,
+              "p95": 23.683,
+              "p99": 24.093,
+              "max": 24.093
+            }
+          },
+          "renderLatencyMs": {
+            "count": 26,
+            "mean": 32.73830769230769,
+            "p50": 32.368,
+            "p95": 38.36,
+            "p99": 39.969,
+            "max": 39.969
+          },
+          "gpuRenderMs": {
+            "count": 26,
+            "mean": 23.473576923076923,
+            "p50": 22.202,
+            "p95": 28.845,
+            "p99": 29.141,
+            "max": 29.141
+          }
+        }
+      },
+      "gpuApproximateCaptureWindow": {
+        "utilization.gpu [%]": {
+          "count": 31,
+          "mean": 93.38709677419355,
+          "p50": 97.0,
+          "p95": 97.0,
+          "p99": 97.0,
+          "max": 97.0
+        },
+        "memory.used [MiB]": {
+          "count": 31,
+          "mean": 14714.129032258064,
+          "p50": 14731.0,
+          "p95": 14749.0,
+          "p99": 14749.0,
+          "max": 14749.0
+        },
+        "clocks.current.graphics [MHz]": {
+          "count": 31,
+          "mean": 2894.7419354838707,
+          "p50": 2895.0,
+          "p95": 2902.0,
+          "p99": 2902.0,
+          "max": 2902.0
+        },
+        "temperature.gpu": {
+          "count": 31,
+          "mean": 65.41935483870968,
+          "p50": 65.0,
+          "p95": 68.0,
+          "p99": 68.0,
+          "max": 68.0
+        },
+        "power.draw [W]": {
+          "count": 31,
+          "mean": 173.9448387096774,
+          "p50": 176.05,
+          "p95": 184.5,
+          "p99": 185.23,
+          "max": 185.23
+        }
+      },
+      "competingEngineMaxPercent": {
+        "System": 7.58080551370113,
+        "ChatGPT": 1.5650701217631,
+        "cloudmusic": 0.990801926899999,
+        "dwm": 2.92757447072783,
+        "msedge": 0.80834979246904
+      },
+      "counters": {
+        "requests": {
+          "count": 1474,
+          "mean": 13553.65671641791,
+          "p50": 13698,
+          "p95": 15846,
+          "p99": 16146,
+          "max": 16353
+        },
+        "residentPages": {
+          "count": 1474,
+          "mean": 62091.92130257802,
+          "p50": 62163,
+          "p95": 62452,
+          "p99": 62526,
+          "max": 62629
+        },
+        "loadFailures": {
+          "count": 1474,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1474,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1474,
+          "mean": 8580.794436906377,
+          "p50": 10551,
+          "p95": 12063,
+          "p99": 12393,
+          "max": 12425
+        }
+      }
+    },
+    {
+      "label": "diagnostic-mailbox",
+      "source": "build-release\\full-pacing-diag-no-vsync-0925\\run1",
+      "manifest": {
+        "started": "2026-09-25T15:42:16.0924497+08:00",
+        "executableSha256": "6B81C4DD400B3781AC8C5692C5E42DE6C38415461FFCE16C1C1BC79A2AF18AFA",
+        "gitHead": "a9a68bd2b2952e7e91952bed8370c1a4487dc907",
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Editor/EditorApplication.cpp",
+          " M Source/Editor/EditorFullRoamBenchmark.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.h",
+          " M Tools/AnalyzeZorahFullReflex.py",
+          " M Tools/RunZorahFullRoam.ps1"
+        ],
+        "protocol": "zorah-full-editor-roam-v1",
+        "runs": 1,
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "reflexMode": "on",
+        "vsync": false,
+        "validation": false,
+        "config": {
+          "height": 660,
+          "warmupSeconds": 10.0,
+          "width": 1797,
+          "durationSeconds": 30.0
+        },
+        "asset": {
+          "bytes": 205327470912,
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin"
+        },
+        "hidden": true
+      },
+      "conditionsMatch": true,
+      "vsync": false,
+      "presentModeLogs": [
+        "presentMode=1 vsync=false images=3 extent=2400x1350"
+      ],
+      "missingGpuFrames": 0,
+      "metrics": {
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 2.0013045454545453,
+            "p50": 1.3227,
+            "p95": 5.8256,
+            "p99": 7.5985,
+            "max": 9.8042
+          },
+          "gpuMs": null
+        },
+        "Acquire Swapchain Image": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 0.004414925373134328,
+            "p50": 0.0042,
+            "p95": 0.006,
+            "p99": 0.0077,
+            "max": 0.0101
+          },
+          "gpuMs": null
+        },
+        "Present": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 0.047530189959294436,
+            "p50": 0.04,
+            "p95": 0.0863,
+            "p99": 0.1314,
+            "max": 0.457
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 4.362326729986432,
+            "p50": 4.3005,
+            "p95": 6.4824,
+            "p99": 7.776,
+            "max": 9.4341
+          },
+          "gpuMs": {
+            "count": 1474,
+            "mean": 0.025921215739484398,
+            "p50": 0.0192,
+            "p95": 0.078144,
+            "p99": 0.157248,
+            "max": 0.206464
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 0.3637996607869742,
+            "p50": 0.3428,
+            "p95": 0.5634,
+            "p99": 0.6511,
+            "max": 0.9424
+          },
+          "gpuMs": null
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1474,
+            "mean": 9.728508005427408,
+            "p50": 9.7686,
+            "p95": 13.8893,
+            "p99": 15.782,
+            "max": 20.2625
+          },
+          "gpuMs": {
+            "count": 1474,
+            "mean": 19.981086263229308,
+            "p50": 20.500608,
+            "p95": 24.4136,
+            "p99": 25.359168,
+            "max": 26.2616
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1474,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1474,
+              "mean": 0.0001423337856173677,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0004,
+              "max": 0.0011
+            },
+            "tokenMs": {
+              "count": 1474,
+              "mean": 0.0005137042062415197,
+              "p50": 0.0005,
+              "p95": 0.0007,
+              "p99": 0.0009,
+              "max": 0.0017
+            },
+            "optionsMs": {
+              "count": 1474,
+              "mean": 4.253731343283583e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0002,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1474,
+              "mean": 7.415279715061059,
+              "p50": 7.2302,
+              "p95": 12.9737,
+              "p99": 13.8771,
+              "max": 15.9438
+            },
+            "statusMs": {
+              "count": 1474,
+              "mean": 0.00011261872455902308,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.003,
+              "max": 0.0044
+            },
+            "markerMs": {
+              "count": 1474,
+              "mean": 0.0023148575305291723,
+              "p50": 0.0022,
+              "p95": 0.0031,
+              "p99": 0.0038,
+              "max": 0.0057
+            },
+            "totalMs": {
+              "count": 1474,
+              "mean": 7.418522048846675,
+              "p50": 7.2333,
+              "p95": 12.9767,
+              "p99": 13.8807,
+              "max": 15.9469
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1474,
+            "mean": 9.416584260515604,
+            "p50": 9.673599999999999,
+            "p95": 14.439499999999999,
+            "p99": 15.2348,
+            "max": 19.5381
+          },
+          "outsideFrontWaitMs": {
+            "count": 1474,
+            "mean": 10.947226526458616,
+            "p50": 10.9415,
+            "p95": 15.264699999999998,
+            "p99": 17.662,
+            "max": 22.9949
+          },
+          "sleepShare": 0.9995629407361375,
+          "nonSleepMs": {
+            "count": 1474,
+            "mean": 0.003242333785617358,
+            "p50": 0.0030999999999998806,
+            "p95": 0.00429999999999886,
+            "p99": 0.005800000000000027,
+            "max": 0.00730000000000075
+          },
+          "frameMs": {
+            "count": 1474,
+            "mean": 20.36381078697422,
+            "p50": 20.6063,
+            "p95": 25.8926,
+            "p99": 27.8223,
+            "max": 32.975
+          },
+          "overBudget": 0,
+          "longestOverBudgetRun": 0,
+          "sampledRouteMeets30Fps": true
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 25,
+          "timing": {
+            "activeFieldIsHardwareBusyTime": false,
+            "simulationMs": {
+              "count": 25,
+              "mean": 0.67744,
+              "p50": 0.651,
+              "p95": 0.886,
+              "p99": 1.017,
+              "max": 1.017
+            },
+            "renderSubmitMs": {
+              "count": 25,
+              "mean": 9.90204,
+              "p50": 9.85,
+              "p95": 15.298,
+              "p99": 17.226,
+              "max": 17.226
+            },
+            "presentMs": {
+              "count": 25,
+              "mean": 0.041280000000000004,
+              "p50": 0.039,
+              "p95": 0.06,
+              "p99": 0.064,
+              "max": 0.064
+            },
+            "simulationToGpuStartMs": {
+              "count": 25,
+              "mean": 11.861559999999999,
+              "p50": 12.289,
+              "p95": 16.455,
+              "p99": 18.993,
+              "max": 18.993
+            },
+            "gpuActiveMs": {
+              "count": 25,
+              "mean": 21.31392,
+              "p50": 20.757,
+              "p95": 27.736,
+              "p99": 29.668,
+              "max": 29.668
+            },
+            "gpuFrameMs": {
+              "count": 25,
+              "mean": 20.22084,
+              "p50": 20.644,
+              "p95": 24.587,
+              "p99": 25.475,
+              "max": 25.475
+            }
+          },
+          "renderLatencyMs": {
+            "count": 25,
+            "mean": 33.17548,
+            "p50": 32.334,
+            "p95": 41.516,
+            "p99": 41.652,
+            "max": 41.652
+          },
+          "gpuRenderMs": {
+            "count": 25,
+            "mean": 21.31392,
+            "p50": 20.757,
+            "p95": 27.736,
+            "p99": 29.668,
+            "max": 29.668
+          }
+        }
+      },
+      "gpuApproximateCaptureWindow": {
+        "utilization.gpu [%]": {
+          "count": 30,
+          "mean": 95.93333333333334,
+          "p50": 96.0,
+          "p95": 97.0,
+          "p99": 97.0,
+          "max": 97.0
+        },
+        "memory.used [MiB]": {
+          "count": 30,
+          "mean": 14684.3,
+          "p50": 14679.0,
+          "p95": 14722.0,
+          "p99": 14723.0,
+          "max": 14723.0
+        },
+        "clocks.current.graphics [MHz]": {
+          "count": 30,
+          "mean": 2893.9666666666667,
+          "p50": 2895.0,
+          "p95": 2902.0,
+          "p99": 2902.0,
+          "max": 2902.0
+        },
+        "temperature.gpu": {
+          "count": 30,
+          "mean": 65.76666666666667,
+          "p50": 66.0,
+          "p95": 68.0,
+          "p99": 68.0,
+          "max": 68.0
+        },
+        "power.draw [W]": {
+          "count": 30,
+          "mean": 174.03333333333333,
+          "p50": 175.02,
+          "p95": 185.0,
+          "p99": 185.33,
+          "max": 185.33
+        }
+      },
+      "competingEngineMaxPercent": {
+        "System": 7.81724819437354,
+        "ChatGPT": 1.59214206656702,
+        "cloudmusic": 0.975860773076242,
+        "dwm": 2.66450450298774,
+        "msedge": 0.393802487630807
+      },
+      "counters": {
+        "requests": {
+          "count": 1474,
+          "mean": 13543.987788331073,
+          "p50": 13696,
+          "p95": 15835,
+          "p99": 16145,
+          "max": 16334
+        },
+        "residentPages": {
+          "count": 1474,
+          "mean": 62098.87449118046,
+          "p50": 62168,
+          "p95": 62455,
+          "p99": 62540,
+          "max": 62633
+        },
+        "loadFailures": {
+          "count": 1474,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1474,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1474,
+          "mean": 8561.179782903664,
+          "p50": 10544,
+          "p95": 12060,
+          "p99": 12381,
+          "max": 12425
+        }
+      }
+    },
+    {
+      "label": "diagnostic-fifo-repeat",
+      "source": "build-release\\full-pacing-diag-fifo-repeat-0925\\run1",
+      "manifest": {
+        "protocol": "zorah-full-editor-roam-v1",
+        "config": {
+          "height": 660,
+          "width": 1797,
+          "durationSeconds": 30.0,
+          "warmupSeconds": 10.0
+        },
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Editor/EditorApplication.cpp",
+          " M Source/Editor/EditorFullRoamBenchmark.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.h",
+          " M Tools/AnalyzeZorahFullReflex.py",
+          " M Tools/RunZorahFullRoam.ps1"
+        ],
+        "hidden": true,
+        "validation": false,
+        "started": "2026-09-25T15:44:16.9863645+08:00",
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "executableSha256": "6B81C4DD400B3781AC8C5692C5E42DE6C38415461FFCE16C1C1BC79A2AF18AFA",
+        "reflexMode": "on",
+        "runs": 2,
+        "vsync": true,
+        "asset": {
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "bytes": 205327470912
+        },
+        "gitHead": "a9a68bd2b2952e7e91952bed8370c1a4487dc907"
+      },
+      "conditionsMatch": true,
+      "vsync": true,
+      "presentModeLogs": [
+        "presentMode=2 vsync=true images=3 extent=2400x1350"
+      ],
+      "missingGpuFrames": 0,
+      "metrics": {
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "count": 1457,
+            "mean": 2.0158113246396705,
+            "p50": 1.3516,
+            "p95": 5.9573,
+            "p99": 7.9916,
+            "max": 27.7515
+          },
+          "gpuMs": null
+        },
+        "Acquire Swapchain Image": {
+          "cpuMs": {
+            "count": 1457,
+            "mean": 0.0044573095401509956,
+            "p50": 0.0042,
+            "p95": 0.0064,
+            "p99": 0.0077,
+            "max": 0.0235
+          },
+          "gpuMs": null
+        },
+        "Present": {
+          "cpuMs": {
+            "count": 1457,
+            "mean": 0.10851681537405629,
+            "p50": 0.0844,
+            "p95": 0.2412,
+            "p99": 0.4022,
+            "max": 2.2068
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1457,
+            "mean": 4.687252916952643,
+            "p50": 4.4958,
+            "p95": 7.0684,
+            "p99": 8.7381,
+            "max": 12.406
+          },
+          "gpuMs": {
+            "count": 1457,
+            "mean": 0.026130690459849004,
+            "p50": 0.01904,
+            "p95": 0.080384,
+            "p99": 0.153184,
+            "max": 0.23952
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1457,
+            "mean": 0.34556932052161976,
+            "p50": 0.3204,
+            "p95": 0.5748,
+            "p99": 0.7996,
+            "max": 1.1307
+          },
+          "gpuMs": null
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1457,
+            "mean": 10.333509746053535,
+            "p50": 10.256,
+            "p95": 14.934,
+            "p99": 17.1961,
+            "max": 27.2728
+          },
+          "gpuMs": {
+            "count": 1457,
+            "mean": 20.17880328345916,
+            "p50": 20.551648,
+            "p95": 24.374912,
+            "p99": 25.869696,
+            "max": 30.512896
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1457,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1457,
+              "mean": 0.00014447494852436516,
+              "p50": 0.0001,
+              "p95": 0.0003,
+              "p99": 0.0004,
+              "max": 0.0008
+            },
+            "tokenMs": {
+              "count": 1457,
+              "mean": 0.0005371310912834591,
+              "p50": 0.0005,
+              "p95": 0.0008,
+              "p99": 0.001,
+              "max": 0.0023
+            },
+            "optionsMs": {
+              "count": 1457,
+              "mean": 4.001372683596431e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0001,
+              "max": 0.0011
+            },
+            "sleepMs": {
+              "count": 1457,
+              "mean": 6.911466575154426,
+              "p50": 6.957,
+              "p95": 12.2401,
+              "p99": 13.889,
+              "max": 18.1581
+            },
+            "statusMs": {
+              "count": 1457,
+              "mean": 0.00011688400823610158,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0031,
+              "max": 0.004
+            },
+            "markerMs": {
+              "count": 1457,
+              "mean": 0.002378860672614962,
+              "p50": 0.0023,
+              "p95": 0.0031,
+              "p99": 0.0039,
+              "max": 0.0169
+            },
+            "totalMs": {
+              "count": 1457,
+              "mean": 6.914804873026767,
+              "p50": 6.9601,
+              "p95": 12.2431,
+              "p99": 13.8918,
+              "max": 18.1615
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1457,
+            "mean": 8.927277899794097,
+            "p50": 9.056,
+            "p95": 14.3947,
+            "p99": 15.8282,
+            "max": 27.860500000000002
+          },
+          "outsideFrontWaitMs": {
+            "count": 1457,
+            "mean": 11.669859231297186,
+            "p50": 11.550699999999999,
+            "p95": 16.5935,
+            "p99": 19.289099999999998,
+            "max": 29.865600000000004
+          },
+          "sleepShare": 0.9995172245734131,
+          "nonSleepMs": {
+            "count": 1457,
+            "mean": 0.003338297872340447,
+            "p50": 0.0031999999999996476,
+            "p95": 0.004400000000000404,
+            "p99": 0.00590000000000046,
+            "max": 0.02429999999999999
+          },
+          "frameMs": {
+            "count": 1457,
+            "mean": 20.597137131091284,
+            "p50": 20.7461,
+            "p95": 26.1299,
+            "p99": 29.2397,
+            "max": 40.0765
+          },
+          "overBudget": 4,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 25,
+          "timing": {
+            "activeFieldIsHardwareBusyTime": false,
+            "simulationMs": {
+              "count": 25,
+              "mean": 0.68608,
+              "p50": 0.637,
+              "p95": 1.005,
+              "p99": 1.097,
+              "max": 1.097
+            },
+            "renderSubmitMs": {
+              "count": 25,
+              "mean": 10.7148,
+              "p50": 10.414,
+              "p95": 14.418,
+              "p99": 16.083,
+              "max": 16.083
+            },
+            "presentMs": {
+              "count": 25,
+              "mean": 0.09247999999999999,
+              "p50": 0.091,
+              "p95": 0.141,
+              "p99": 0.167,
+              "max": 0.167
+            },
+            "simulationToGpuStartMs": {
+              "count": 25,
+              "mean": 9.60316,
+              "p50": 9.715,
+              "p95": 16.268,
+              "p99": 16.393,
+              "max": 16.393
+            },
+            "gpuActiveMs": {
+              "count": 25,
+              "mean": 24.184520000000003,
+              "p50": 23.052,
+              "p95": 28.769,
+              "p99": 33.069,
+              "max": 33.069
+            },
+            "gpuFrameMs": {
+              "count": 25,
+              "mean": 20.726399999999998,
+              "p50": 20.923,
+              "p95": 25.392,
+              "p99": 26.153,
+              "max": 26.153
+            }
+          },
+          "renderLatencyMs": {
+            "count": 25,
+            "mean": 33.78768,
+            "p50": 33.988,
+            "p95": 39.333,
+            "p99": 42.442,
+            "max": 42.442
+          },
+          "gpuRenderMs": {
+            "count": 25,
+            "mean": 24.184520000000003,
+            "p50": 23.052,
+            "p95": 28.769,
+            "p99": 33.069,
+            "max": 33.069
+          }
+        }
+      },
+      "gpuApproximateCaptureWindow": {
+        "utilization.gpu [%]": {
+          "count": 30,
+          "mean": 96.53333333333333,
+          "p50": 97.0,
+          "p95": 97.0,
+          "p99": 97.0,
+          "max": 97.0
+        },
+        "memory.used [MiB]": {
+          "count": 30,
+          "mean": 14650.066666666668,
+          "p50": 14627.0,
+          "p95": 14750.0,
+          "p99": 14750.0,
+          "max": 14750.0
+        },
+        "clocks.current.graphics [MHz]": {
+          "count": 30,
+          "mean": 2894.4,
+          "p50": 2895.0,
+          "p95": 2902.0,
+          "p99": 2902.0,
+          "max": 2902.0
+        },
+        "temperature.gpu": {
+          "count": 30,
+          "mean": 65.86666666666666,
+          "p50": 66.0,
+          "p95": 68.0,
+          "p99": 68.0,
+          "max": 68.0
+        },
+        "power.draw [W]": {
+          "count": 30,
+          "mean": 172.97933333333333,
+          "p50": 175.27,
+          "p95": 184.24,
+          "p99": 184.88,
+          "max": 184.88
+        }
+      },
+      "competingEngineMaxPercent": {
+        "System": 8.15721471145335,
+        "ChatGPT": 1.58423110103145,
+        "cloudmusic": 1.07577908417507,
+        "dwm": 3.98002946312536,
+        "msedge": 2.13494960408104
+      },
+      "counters": {
+        "requests": {
+          "count": 1457,
+          "mean": 13553.795470144132,
+          "p50": 13701,
+          "p95": 15847,
+          "p99": 16156,
+          "max": 16366
+        },
+        "residentPages": {
+          "count": 1457,
+          "mean": 62082.50857927248,
+          "p50": 62152,
+          "p95": 62441,
+          "p99": 62516,
+          "max": 62627
+        },
+        "loadFailures": {
+          "count": 1457,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1457,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1457,
+          "mean": 8570.528483184626,
+          "p50": 10556,
+          "p95": 12070,
+          "p99": 12393,
+          "max": 12425
+        }
+      }
+    },
+    {
+      "label": "diagnostic-fifo-repeat",
+      "source": "build-release\\full-pacing-diag-fifo-repeat-0925\\run2",
+      "manifest": {
+        "protocol": "zorah-full-editor-roam-v1",
+        "config": {
+          "height": 660,
+          "width": 1797,
+          "durationSeconds": 30.0,
+          "warmupSeconds": 10.0
+        },
+        "dirty": [
+          " ? External/microprofile",
+          " M Source/Editor/EditorApplication.cpp",
+          " M Source/Editor/EditorFullRoamBenchmark.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp",
+          " M Source/Runtime/Render/GAPI/Vulkan/VulkanStreamline.h",
+          " M Tools/AnalyzeZorahFullReflex.py",
+          " M Tools/RunZorahFullRoam.ps1"
+        ],
+        "hidden": true,
+        "validation": false,
+        "started": "2026-09-25T15:44:16.9863645+08:00",
+        "shaderSha256": "82D734E5F689F06CBF4954CE71B62B2DFD275D2FE5B98C444D34CACD984F3927",
+        "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+        "executableSha256": "6B81C4DD400B3781AC8C5692C5E42DE6C38415461FFCE16C1C1BC79A2AF18AFA",
+        "reflexMode": "on",
+        "runs": 2,
+        "vsync": true,
+        "asset": {
+          "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+          "modifiedUtc": "2026-09-19T16:20:31.9397327Z",
+          "bytes": 205327470912
+        },
+        "gitHead": "a9a68bd2b2952e7e91952bed8370c1a4487dc907"
+      },
+      "conditionsMatch": true,
+      "vsync": true,
+      "presentModeLogs": [
+        "presentMode=2 vsync=true images=3 extent=2400x1350"
+      ],
+      "missingGpuFrames": 0,
+      "metrics": {
+        "Wait Frame Slot Before Input": {
+          "cpuMs": {
+            "count": 1452,
+            "mean": 2.0151907024793387,
+            "p50": 1.3707,
+            "p95": 5.9477,
+            "p99": 8.0634,
+            "max": 11.0678
+          },
+          "gpuMs": null
+        },
+        "Acquire Swapchain Image": {
+          "cpuMs": {
+            "count": 1452,
+            "mean": 0.0046092286501377405,
+            "p50": 0.0044,
+            "p95": 0.006,
+            "p99": 0.0072,
+            "max": 0.0214
+          },
+          "gpuMs": null
+        },
+        "Present": {
+          "cpuMs": {
+            "count": 1452,
+            "mean": 0.10930488980716253,
+            "p50": 0.0863,
+            "p95": 0.2258,
+            "p99": 0.377,
+            "max": 2.9398
+          },
+          "gpuMs": null
+        },
+        "Stream Begin": {
+          "cpuMs": {
+            "count": 1452,
+            "mean": 4.838236157024793,
+            "p50": 4.7103,
+            "p95": 7.222,
+            "p99": 8.4537,
+            "max": 9.8745
+          },
+          "gpuMs": {
+            "count": 1452,
+            "mean": 0.02622953168044077,
+            "p50": 0.019232,
+            "p95": 0.078336,
+            "p99": 0.154432,
+            "max": 0.202304
+          }
+        },
+        "Track merged demand": {
+          "cpuMs": {
+            "count": 1452,
+            "mean": 0.36176515151515154,
+            "p50": 0.3419,
+            "p95": 0.5619,
+            "p99": 0.702,
+            "max": 2.9983
+          },
+          "gpuMs": null
+        },
+        "RenderGraph GPU envelope": {
+          "cpuMs": {
+            "count": 1452,
+            "mean": 10.607599655647384,
+            "p50": 10.5203,
+            "p95": 14.8868,
+            "p99": 17.0037,
+            "max": 22.7475
+          },
+          "gpuMs": {
+            "count": 1452,
+            "mean": 20.27659268319559,
+            "p50": 20.633664,
+            "p95": 24.693312,
+            "p99": 25.707616,
+            "max": 27.99872
+          }
+        }
+      },
+      "reflex": {
+        "effectiveModes": [
+          1
+        ],
+        "frameLimitUs": [
+          0
+        ],
+        "optionsUpdates": 0,
+        "suspendedFrames": 0,
+        "all": {
+          "count": 1452,
+          "phases": {
+            "mutexWaitMs": {
+              "count": 1452,
+              "mean": 0.00014276859504132233,
+              "p50": 0.0001,
+              "p95": 0.0002,
+              "p99": 0.0003,
+              "max": 0.0006
+            },
+            "tokenMs": {
+              "count": 1452,
+              "mean": 0.0005429063360881543,
+              "p50": 0.0005,
+              "p95": 0.0008,
+              "p99": 0.001,
+              "max": 0.0017
+            },
+            "optionsMs": {
+              "count": 1452,
+              "mean": 4.00137741046832e-05,
+              "p50": 0.0,
+              "p95": 0.0001,
+              "p99": 0.0001,
+              "max": 0.0004
+            },
+            "sleepMs": {
+              "count": 1452,
+              "mean": 6.6943930440771355,
+              "p50": 6.7275,
+              "p95": 11.1319,
+              "p99": 11.9864,
+              "max": 13.2596
+            },
+            "statusMs": {
+              "count": 1452,
+              "mean": 0.00011680440771349863,
+              "p50": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0032,
+              "max": 0.0043
+            },
+            "markerMs": {
+              "count": 1452,
+              "mean": 0.0023331955922865012,
+              "p50": 0.0022,
+              "p95": 0.0031,
+              "p99": 0.0034,
+              "max": 0.0325
+            },
+            "totalMs": {
+              "count": 1452,
+              "mean": 6.697688292011019,
+              "p50": 6.7307,
+              "p95": 11.1349,
+              "p99": 11.9894,
+              "max": 13.2631
+            }
+          },
+          "frameSlotPlusSleepMs": {
+            "count": 1452,
+            "mean": 8.709583746556474,
+            "p50": 8.847100000000001,
+            "p95": 13.685,
+            "p99": 14.758600000000001,
+            "max": 16.7196
+          },
+          "outsideFrontWaitMs": {
+            "count": 1452,
+            "mean": 11.960973209366392,
+            "p50": 11.9121,
+            "p95": 16.4703,
+            "p99": 18.564300000000003,
+            "max": 24.3373
+          },
+          "sleepShare": 0.9995080021956508,
+          "nonSleepMs": {
+            "count": 1452,
+            "mean": 0.003295247933884303,
+            "p50": 0.0030999999999998806,
+            "p95": 0.0041999999999999815,
+            "p99": 0.0058000000000006935,
+            "max": 0.03329999999999966
+          },
+          "frameMs": {
+            "count": 1452,
+            "mean": 20.670556955922866,
+            "p50": 20.6613,
+            "p95": 26.1877,
+            "p99": 28.8717,
+            "max": 34.1907
+          },
+          "overBudget": 1,
+          "longestOverBudgetRun": 1,
+          "sampledRouteMeets30Fps": false
+        },
+        "cachedDriverReports": {
+          "uniqueReports": 25,
+          "timing": {
+            "activeFieldIsHardwareBusyTime": false,
+            "simulationMs": {
+              "count": 25,
+              "mean": 0.73796,
+              "p50": 0.646,
+              "p95": 1.016,
+              "p99": 1.168,
+              "max": 1.168
+            },
+            "renderSubmitMs": {
+              "count": 25,
+              "mean": 10.68348,
+              "p50": 10.445,
+              "p95": 15.439,
+              "p99": 16.464,
+              "max": 16.464
+            },
+            "presentMs": {
+              "count": 25,
+              "mean": 0.0864,
+              "p50": 0.081,
+              "p95": 0.133,
+              "p99": 0.192,
+              "max": 0.192
+            },
+            "simulationToGpuStartMs": {
+              "count": 25,
+              "mean": 9.75372,
+              "p50": 8.753,
+              "p95": 16.895,
+              "p99": 17.799,
+              "max": 17.799
+            },
+            "gpuActiveMs": {
+              "count": 25,
+              "mean": 24.78212,
+              "p50": 24.419,
+              "p95": 31.906,
+              "p99": 33.769,
+              "max": 33.769
+            },
+            "gpuFrameMs": {
+              "count": 25,
+              "mean": 20.76708,
+              "p50": 21.249,
+              "p95": 24.983,
+              "p99": 27.128,
+              "max": 27.128
+            }
+          },
+          "renderLatencyMs": {
+            "count": 25,
+            "mean": 34.53584,
+            "p50": 35.125,
+            "p95": 41.032,
+            "p99": 41.314,
+            "max": 41.314
+          },
+          "gpuRenderMs": {
+            "count": 25,
+            "mean": 24.78212,
+            "p50": 24.419,
+            "p95": 31.906,
+            "p99": 33.769,
+            "max": 33.769
+          }
+        }
+      },
+      "gpuApproximateCaptureWindow": {
+        "utilization.gpu [%]": {
+          "count": 30,
+          "mean": 95.9,
+          "p50": 96.0,
+          "p95": 97.0,
+          "p99": 97.0,
+          "max": 97.0
+        },
+        "memory.used [MiB]": {
+          "count": 30,
+          "mean": 14625.166666666666,
+          "p50": 14626.0,
+          "p95": 14767.0,
+          "p99": 14778.0,
+          "max": 14778.0
+        },
+        "clocks.current.graphics [MHz]": {
+          "count": 30,
+          "mean": 2895.2,
+          "p50": 2895.0,
+          "p95": 2902.0,
+          "p99": 2902.0,
+          "max": 2902.0
+        },
+        "temperature.gpu": {
+          "count": 30,
+          "mean": 66.0,
+          "p50": 66.0,
+          "p95": 68.0,
+          "p99": 68.0,
+          "max": 68.0
+        },
+        "power.draw [W]": {
+          "count": 30,
+          "mean": 173.01433333333335,
+          "p50": 174.94,
+          "p95": 183.3,
+          "p99": 183.74,
+          "max": 183.74
+        }
+      },
+      "competingEngineMaxPercent": {
+        "System": 10.3329633972336,
+        "ChatGPT": 1.56778716313498,
+        "cloudmusic": 1.01194958442972,
+        "dwm": 3.63831124922818,
+        "msedge": 1.9361144274344
+      },
+      "counters": {
+        "requests": {
+          "count": 1452,
+          "mean": 13552.996556473829,
+          "p50": 13699,
+          "p95": 15833,
+          "p99": 16167,
+          "max": 16365
+        },
+        "residentPages": {
+          "count": 1452,
+          "mean": 62085.41115702479,
+          "p50": 62151,
+          "p95": 62444,
+          "p99": 62528,
+          "max": 62624
+        },
+        "loadFailures": {
+          "count": 1452,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "requestOverflows": {
+          "count": 1452,
+          "mean": 0.0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "blasOverflowCount": {
+          "count": 1452,
+          "mean": 8556.159779614325,
+          "p50": 10559,
+          "p95": 12068,
+          "p99": 12401,
+          "max": 12425
+        }
+      }
+    }
+  ],
+  "notes": [
+    "Cached driver reports are deduplicated; not paired with the current application frame.",
+    "Telemetry window is approximate: capture-complete log timestamp minus 31 seconds, including export boundary.",
+    "GPU active field in bundled Vulkan backends is an elapsed span, not hardware busy time.",
+    "New captures did not reproduce the historical slow-On condition; its trigger remains unresolved."
+  ]
+}

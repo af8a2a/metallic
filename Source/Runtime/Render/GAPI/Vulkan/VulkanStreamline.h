@@ -29,6 +29,18 @@ struct StreamlineReflexStatus {
     uint64_t reportFrameId = 0;
     double renderLatencyMs = 0.0; // Simulation start to GPU render end; excludes display latency.
     double gpuRenderMs = 0.0;
+    // Cached driver report, same reportFrameId as above. Zero raw timestamps or
+    // durations can mean unavailable; these are not current-frame GPU queries.
+    uint64_t simulationStartUs = 0;
+    uint64_t simulationEndUs = 0;
+    uint64_t renderSubmitStartUs = 0;
+    uint64_t renderSubmitEndUs = 0;
+    uint64_t presentStartUs = 0;
+    uint64_t presentEndUs = 0;
+    uint64_t gpuRenderStartUs = 0;
+    uint64_t gpuRenderEndUs = 0;
+    uint32_t gpuActiveRenderTimeUs = 0;
+    uint32_t gpuFrameTimeUs = 0;
 };
 
 enum class StreamlineLatencyMarker : uint32_t {

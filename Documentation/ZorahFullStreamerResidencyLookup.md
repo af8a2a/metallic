@@ -46,3 +46,5 @@ Release 样例与 MetallicRhiTests 构建成功，10/10 项聚焦测试通过，
 $env:METALLIC_REFLEX_MODE='on'
 pwsh -NoProfile -File Tools/RunZorahFullRoam.ps1 -OutputRoot build-release/<new-dir> -Runs 2 -DurationSeconds 30 -WarmupSeconds 10 -Width 1797 -Height 660 -TimeoutSeconds 900
 ```
+
+后续 pacing 调查：同一优化后二进制复测恢复到 On / P95 26.71 ms，未撤回缓存。历史慢状态触发条件仍未锁定，详见 [pacing 定位报告](E:/metallic/Documentation/ZorahFullPacingInvestigation20260925.md)。

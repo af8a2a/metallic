@@ -333,6 +333,16 @@ void refreshReflexStatus(StreamlineState& state)
             status.reportFrameId = report.frameID;
             status.renderLatencyMs = static_cast<double>(report.gpuRenderEndTime - report.simStartTime) / 1000.0;
             status.gpuRenderMs = static_cast<double>(report.gpuRenderEndTime - report.gpuRenderStartTime) / 1000.0;
+            status.simulationStartUs = report.simStartTime;
+            status.simulationEndUs = report.simEndTime;
+            status.renderSubmitStartUs = report.renderSubmitStartTime;
+            status.renderSubmitEndUs = report.renderSubmitEndTime;
+            status.presentStartUs = report.presentStartTime;
+            status.presentEndUs = report.presentEndTime;
+            status.gpuRenderStartUs = report.gpuRenderStartTime;
+            status.gpuRenderEndUs = report.gpuRenderEndTime;
+            status.gpuActiveRenderTimeUs = report.gpuActiveRenderTimeUs;
+            status.gpuFrameTimeUs = report.gpuFrameTimeUs;
         }
     }
 }

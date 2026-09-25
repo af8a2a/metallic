@@ -2569,7 +2569,9 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             .imageCount = kSwapchainImageCount,
             .framesInFlight = kFrameSlotCount,
             .format = render::Format::Bgra8Unorm,
-            .vsync = true,
+            .vsync = !(std::getenv("METALLIC_FULL_ROAM_OUTPUT") != nullptr &&
+                std::getenv("METALLIC_FULL_ROAM_NO_VSYNC") != nullptr &&
+                std::string_view(std::getenv("METALLIC_FULL_ROAM_NO_VSYNC")) == "1"),
             .outputMode = hdrOutputRequested_ && displayHdrEnabled_
                 ? render::DisplayOutputMode::HdrScRgb : render::DisplayOutputMode::Sdr,
         },

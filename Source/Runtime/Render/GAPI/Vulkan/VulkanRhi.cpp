@@ -4244,6 +4244,8 @@ Result SwapchainImpl::initialize(const SwapchainDesc& desc)
     width = extent.width;
     height = extent.height;
     wrapImages(images, textureUsage);
+    spdlog::info("[Swapchain] presentMode={} vsync={} images={} extent={}x{}",
+        static_cast<uint32_t>(presentMode), desc.vsync, actualImageCount, width, height);
     return {};
 }
 
