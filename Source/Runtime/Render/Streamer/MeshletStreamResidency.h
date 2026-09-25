@@ -418,6 +418,7 @@ private:
         bool needsAllocation = true;
         uint64_t payloadBytes = 0;
         uint32_t prefetchLod = 0;
+        uint32_t priorityAge = 0;
     };
 
     struct PageEntry {
@@ -513,6 +514,15 @@ private:
     static constexpr uint32_t kRequestIndexBlockSize = 1024;
     using RequestIndexBlock = std::array<uint32_t, kRequestIndexBlockSize>;
     std::vector<std::unique_ptr<RequestIndexBlock>> requestIndexBlocks_;
+    struct RequestPriority {
+        float benefit = -2.0f;
+        uint32_t age = 0;
+        double value = 0.0;
+    };
+    // Immutable asset payload sizes are implicit in this cache's lifetime.
+    // Allocate only for blocks with executable candidates, not all feedback.
+    using RequestPriorityBlock = std::array<RequestPriority, kRequestIndexBlockSize>;
+    std::vector<std::unique_ptr<RequestPriorityBlock>> requestPriorityBlocks_;
     std::vector<PageRequest> requestScratch_;
     // One bit per logical page; clear only words touched by the previous batch.
     std::vector<uint64_t> unloadRequestBits_;

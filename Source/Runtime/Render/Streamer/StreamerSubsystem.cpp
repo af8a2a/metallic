@@ -37,6 +37,14 @@ void StreamerSubsystem::endFrame(const RenderSubsystemFrameContext&)
     uploads_.endFrame();
 }
 
+void StreamerSubsystem::prepareBeforePacing(CpuProfileRecorder* profiler)
+{
+    for (const auto& stream : streams_) {
+        // A released view must not advance residency or launch more I/O.
+        if (stream.use_count() > 1) { stream->prepareMaintenance(profiler); }
+    }
+}
+
 void StreamerSubsystem::shutdown()
 {
     // The host waits for submitted work and retires graph passes before this.

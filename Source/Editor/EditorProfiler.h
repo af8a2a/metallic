@@ -102,6 +102,7 @@ public:
     uint64_t nextFrameIndex() const { return frameIndex_; }
     FrameScope beginFrame();
     Scope scope(std::string_view name, uint32_t color = 0);
+    void addCpuProfile(const std::vector<render::RenderGraphProfileSection>& sections);
     void addRenderGraphStats(const render::RenderGraphExecutionStats& stats);
     void updateRenderGraphGpuStats(const render::RenderGraphExecutionStats& stats);
     bool drawWindow(bool* open, const GraphicsCaptureControls& graphicsCapture);

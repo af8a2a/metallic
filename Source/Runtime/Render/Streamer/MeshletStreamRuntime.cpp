@@ -1822,6 +1822,12 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (!result) {
         return result;
     }
+    requestReadbacks_.resize(std::max(desc.queuedFrameCount, 1u) + 1u);
+    for (auto& readback : requestReadbacks_) {
+        result = createNamedBuffer(device, requestReadbackBuffer_->desc(), readback.buffer,
+            log, "MeshletStreamRuntime completed feedback");
+        if (!result) { return result; }
+    }
     result = createNamedBuffer(
         device,
         BufferDesc{
@@ -2176,6 +2182,9 @@ void MeshletStreamRuntime::reset()
     pageTableBuffer_.reset();
     requestBuffer_.reset();
     requestReadbackBuffer_.reset();
+    requestReadbacks_.clear();
+    consumedRequestFrame_ = 0;
+    maintenancePrepared_ = false;
     requestClearBuffer_.reset();
     frameUploads_.clear();
     currentUploadSlot_ = 0;
@@ -2394,6 +2403,28 @@ RayTracingAccelerationStructure* MeshletStreamRuntime::accelerationStructure() c
     return tlasBuilt_ ? tlas_.get() : nullptr;
 }
 
+void MeshletStreamRuntime::prepareMaintenance(CpuProfileRecorder* profiler, bool allowLegacyReadback)
+{
+    if (maintenancePrepared_ || rasterSnapshotFrozen_ || !ready()) { return; }
+    maintenancePrepared_ = true;
+    if (!sceneReadinessCache_->value.ready) { sceneReadinessCache_->valid = false; }
+    CpuProfileScope profile(profiler, "Residency completion");
+    residency_.beginFrame(profiler);
+    profile.next("GPU request feedback");
+    consumeGpuRequestReadback(profiler, allowLegacyReadback);
+    profile.next("Joint cold page reclaim");
+    if (coldPageRetentionFrames_ != 0) {
+        const auto clas = clasPool_ ? clasPool_->stats() : MeshletStreamClasPoolStats{};
+        residency_.reclaimColdPages({.clasUsedBytes = clas.usedStorageBytes, .clasCapacityBytes = clas.storageBytes,
+            .clasRetiringBytes = clas.retiringStorageBytes, .retentionFrames = coldPageRetentionFrames_,
+            .clasPageBytes = [this](uint32_t page) { return clasPool_ ? clasPool_->pageStorageBytes(page) : 0; }}, profiler);
+    }
+    profile.next("Discard obsolete CLAS plans");
+    if (clasPool_) {
+        std::erase_if(pendingClasPlans_, [this](const auto& entry) { return !residency_.pageAllocated(entry.first); });
+    }
+}
+
 Result MeshletStreamRuntime::cmdBeginFrame(
     CommandBuffer& commandBuffer,
     Streamer& streamer,
@@ -2438,29 +2469,19 @@ Result MeshletStreamRuntime::cmdBeginFrame(
         currentFrameUploadCount_ = 0;
         return {};
     }
-    residency_.beginFrame(profiler);
+    prepareMaintenance(profiler, true);
+    maintenancePrepared_ = false;
+    // CLAS publication writes GPU-visible metadata and stays after graph dependencies.
     if (clasPool_ != nullptr) {
         profile.next("CLAS completion / expiry");
         clasPool_->beginFrame(profiler);
         profile.next("Retire unloaded CLAS");
         clasPool_->retirePages(residency_.newlyUnloadedPages());
     }
-    profile.next("GPU request feedback");
-    consumeGpuRequestReadback(profiler);
-    profile.next("Joint cold page reclaim");
-    if (coldPageRetentionFrames_ != 0) {
-        const auto clas = clasPool_ ? clasPool_->stats() : MeshletStreamClasPoolStats{};
-        residency_.reclaimColdPages({.clasUsedBytes = clas.usedStorageBytes, .clasCapacityBytes = clas.storageBytes,
-            .clasRetiringBytes = clas.retiringStorageBytes, .retentionFrames = coldPageRetentionFrames_,
-            .clasPageBytes = [this](uint32_t page) { return clasPool_ ? clasPool_->pageStorageBytes(page) : 0; }}, profiler);
-    }
-    profile.next("Discard obsolete CLAS plans");
     MeshletStreamResidencyManager::UploadObserver prepareClas;
     MeshletStreamResidencyManager::GpuUploadObserver prepareGpuClas;
     std::string planError;
     if (clasPool_) {
-        // Also drop plans for cancelled uploads whose geometry allocation was evicted.
-        std::erase_if(pendingClasPlans_, [this](const auto& entry) { return !residency_.pageAllocated(entry.first); });
         prepareClas = [&](uint32_t page, std::span<const uint8_t> payload) {
             MeshletStreamClasPagePlan plan;
             std::string reason;
@@ -3355,32 +3376,51 @@ Result MeshletStreamRuntime::clearRequestBuffer(CommandBuffer& commandBuffer)
 
 Result MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& commandBuffer)
 {
+    Buffer* readback = requestReadbackBuffer_.get();
+    if (auto* frame = commandBuffer.frameContext()) {
+        RequestReadback* slot = nullptr;
+        for (auto& candidate : requestReadbacks_) {
+            if (!candidate.submission || candidate.submission->cancelled() ||
+                (candidate.submission->resolved() && candidate.completion.isSubmitted() && candidate.completion.isComplete())) {
+                if (!slot || candidate.frame < slot->frame) { slot = &candidate; }
+            }
+        }
+        // Bounded backpressure: retain prior feedback rather than wait or race.
+        if (!slot) { return {}; }
+        auto transaction = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
+        const auto result = commandBuffer.addSubmissionTransaction(transaction);
+        if (!result) { return result; }
+        slot->submission = std::move(transaction);
+        slot->completion = frame->completion();
+        slot->frame = frameIndex_;
+        readback = slot->buffer.get();
+    }
     transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferSource);
     commandBuffer.copyBuffer(BufferCopyDesc{
         .source = requestBuffer_.get(),
-        .destination = requestReadbackBuffer_.get(),
+        .destination = readback,
         .sourceOffset = 0,
         .destinationOffset = 0,
-        .size = requestReadbackBuffer_->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader),
+        .size = readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader),
     });
     if (distributedPageDemand_) {
         // Piggyback one work counter on the existing completed request feedback;
         // no additional CPU wait or GPU-to-CPU submission is introduced.
         transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::TransferSource);
         commandBuffer.copyBuffer(BufferCopyDesc{
-            .source = demandBuffer_.get(), .destination = requestReadbackBuffer_.get(),
+            .source = demandBuffer_.get(), .destination = readback,
             .sourceOffset = 18u * sizeof(uint32_t),
-            .destinationOffset = requestReadbackBuffer_->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader),
+            .destinationOffset = readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader),
             .size = sizeof(uint32_t),
         });
     }
     if (clusterRtxEnabled_ && blasHeaderBuffer_) {
         transitionBuffer(commandBuffer, *blasHeaderBuffer_, blasHeaderBufferState_, ResourceState::TransferSource);
-        commandBuffer.copyBuffer({.source=blasHeaderBuffer_.get(), .destination=requestReadbackBuffer_.get(),
-            .sourceOffset=0, .destinationOffset=requestReadbackBuffer_->desc().size - sizeof(MeshletStreamGpuBlasHeader),
+        commandBuffer.copyBuffer({.source=blasHeaderBuffer_.get(), .destination=readback,
+            .sourceOffset=0, .destinationOffset=readback->desc().size - sizeof(MeshletStreamGpuBlasHeader),
             .size=sizeof(MeshletStreamGpuBlasHeader)});
     }
-    requestReadbackValid_ = true;
+    requestReadbackValid_ = commandBuffer.frameContext() == nullptr;
     return {};
 }
 
@@ -3886,28 +3926,35 @@ Result MeshletStreamRuntime::transitionPageBufferForTraversal(CommandBuffer& com
     return {};
 }
 
-void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profiler)
+void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profiler, bool allowLegacyReadback)
 {
-    if (!requestReadbackValid_ || requestReadbackBuffer_ == nullptr) {
-        return;
+    RequestReadback* latest = nullptr;
+    for (auto& candidate : requestReadbacks_) {
+        if (candidate.submission && candidate.submission->resolved() && !candidate.submission->cancelled() &&
+            candidate.completion.isSubmitted() && candidate.completion.isComplete() && candidate.frame > consumedRequestFrame_ &&
+            (!latest || candidate.frame > latest->frame)) { latest = &candidate; }
     }
-
+    Buffer* readback = latest ? latest->buffer.get() :
+        (allowLegacyReadback && requestReadbackValid_ ? requestReadbackBuffer_.get() : nullptr);
+    if (!readback) { return; }
     CpuProfileScope profile(profiler, "Map feedback");
-    requestReadbackBuffer_->invalidate();
-    const void* mapped = requestReadbackBuffer_->map();
+    readback->invalidate();
+    const void* mapped = readback->map();
     if (mapped == nullptr) {
         requestReadbackValid_ = false;
         return;
     }
 
+    if (latest) { consumedRequestFrame_ = latest->frame; }
+
     const auto* header = static_cast<const StreamRequestBufferHeader*>(mapped);
     if (distributedPageDemand_) {
         std::memcpy(&recentDemandGroupTests_, static_cast<const uint8_t*>(mapped) +
-            requestReadbackBuffer_->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader), sizeof(uint32_t));
+            readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader), sizeof(uint32_t));
     }
     if (clusterRtxEnabled_) {
         std::memcpy(&recentBlasHeader_, static_cast<const uint8_t*>(mapped) +
-            requestReadbackBuffer_->desc().size - sizeof(MeshletStreamGpuBlasHeader), sizeof(recentBlasHeader_));
+            readback->desc().size - sizeof(MeshletStreamGpuBlasHeader), sizeof(recentBlasHeader_));
     }
     recentGpuRequestCount_ = header->loadCounter;
     // This header is already consumed for residency even when debug capture is off.
@@ -3945,7 +3992,7 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profile
     }
 
     profile.next("Unmap feedback");
-    requestReadbackBuffer_->unmap();
+    readback->unmap();
     requestReadbackValid_ = false;
 }
 
@@ -4096,7 +4143,8 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"prefetchPages", prefetchPages_}, {"prefetchActive", currentFramePrefetch_},
         {"latency", std::move(latencyJson)},
         {"requestBufferBytes", requestBuffer_ ? requestBuffer_->desc().size : 0},
-        {"requestReadbackBytes", requestReadbackBuffer_ ? requestReadbackBuffer_->desc().size : 0},
+        {"requestReadbackBytes", requestReadbackBuffer_ ? requestReadbackBuffer_->desc().size * (requestReadbacks_.size() + 1u) : 0},
+        {"consumedRequestFrame", consumedRequestFrame_}, {"maintenancePrepared", maintenancePrepared_},
         {"lodTopologyBytes", lodTopologyBuffer_ ? lodTopologyBuffer_->desc().size : 0},
         {"lodStateBytes", lodStateBuffer_ ? lodStateBuffer_->desc().size : 0},
         {"requestSourceFrame", debugRequestSourceKnown_ ? DebugValue(debugRequestSourceFrame_) : DebugValue(nullptr)},

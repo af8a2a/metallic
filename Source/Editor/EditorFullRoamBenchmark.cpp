@@ -35,6 +35,7 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"allocationAttempts",s.cpuWork.allocationAttempts},{"budgetRetrySuppressed",s.cpuWork.budgetRetrySuppressed},
         {"requestDuplicatesMerged",s.cpuWork.requestDuplicatesMerged},{"admissionCandidates",s.cpuWork.admissionCandidates},
         {"admissionPriorityPops",s.cpuWork.admissionPriorityPops},{"admissionCalls",s.cpuWork.admissionCalls},
+        {"priorityRecomputed",s.cpuWork.priorityRecomputed},{"priorityReused",s.cpuWork.priorityReused},
         {"admissionBypassed",s.cpuWork.admissionBypassed},
         {"blasFeedbackAvailable",s.blasFeedbackAvailable},{"blasFeedbackFrame",s.blasFeedbackFrame},
         {"blasBuildCount",s.blasBuildCount},{"blasClusterReferences",s.blasClusterReferences},{"blasOverflowCount",s.blasOverflowCount},

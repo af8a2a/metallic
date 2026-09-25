@@ -541,6 +541,9 @@ public:
 
     Result cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame,
         const std::function<void()>& flushUploads = {});
+    // CPU-only, non-blocking maintenance for the next recorded frame. A caller
+    // may invoke this before pacing; cmdBeginFrame remains the fallback owner.
+    void prepareMaintenance(CpuProfileRecorder* profiler = nullptr, bool allowLegacyReadback = false);
     const CpuProfileRecorder& beginFrameCpuProfile() const { return beginFrameCpuProfile_; }
     using TraversalCheckpoint = std::function<void(std::string_view)>;
     Result cmdPreTraversal(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame,
@@ -577,6 +580,7 @@ private:
     // Callbacks retain only this generation's state, never the runtime itself.
     std::shared_ptr<SceneReadinessCache> sceneReadinessCache_ = std::make_shared<SceneReadinessCache>();
     CpuProfileRecorder beginFrameCpuProfile_;
+    bool maintenancePrepared_ = false;
     bool rasterSnapshotFrozen_ = false;
     std::shared_ptr<bool> blasCacheInitialized_ = std::make_shared<bool>(false);
     struct FrameUploads {
@@ -625,7 +629,7 @@ private:
     Result copyRequestBufferForReadback(CommandBuffer& commandBuffer);
     Result updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
-    void consumeGpuRequestReadback(CpuProfileRecorder* profiler);
+    void consumeGpuRequestReadback(CpuProfileRecorder* profiler, bool allowLegacyReadback);
 
     scene::MeshletStreamAsset asset_;
     MeshletStreamResidencyManager residency_;
@@ -641,6 +645,14 @@ private:
     std::unique_ptr<Buffer> pageTableBuffer_;
     std::unique_ptr<Buffer> requestBuffer_;
     std::unique_ptr<Buffer> requestReadbackBuffer_;
+    struct RequestReadback {
+        std::unique_ptr<Buffer> buffer;
+        GpuCompletionPoint completion;
+        std::shared_ptr<SubmissionTransaction> submission;
+        uint32_t frame = 0;
+    };
+    std::vector<RequestReadback> requestReadbacks_;
+    uint32_t consumedRequestFrame_ = 0;
     std::unique_ptr<Buffer> requestClearBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;
     std::unique_ptr<Buffer> visibleClusterBuffer_;

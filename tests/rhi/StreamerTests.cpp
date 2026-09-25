@@ -756,7 +756,17 @@ public:
             uint64_t frameId = 0;
             bool cancelledInitialFallback = false;
             MeshletStreamGpuBlasHeader header;
+            uint64_t lastAcceptedFeedback = UINT64_MAX;
             const auto record = [&](bool cancel = false) {
+                const auto recordedFrame = runtime.frameIndex();
+                runtime.prepareMaintenance();
+                const auto maintained = runtime.residency().stats();
+                runtime.prepareMaintenance();
+                require(runtime.frameIndex() == recordedFrame &&
+                    runtime.residency().stats().frameGpuRequestCount == maintained.frameGpuRequestCount,
+                    "Maintenance advanced recording or consumed feedback twice");
+                require(runtime.profilingStats().feedbackFrame == lastAcceptedFeedback,
+                    "Maintenance consumed cancelled/uncompleted feedback or missed completed feedback");
                 require(bool(frame.begin(++frameId)) && bool(pool->reset()) && bool(commands->begin(&frame)) &&
                     bool(streamer->beginFrame(frame)), "Frame begin failed");
                 require(bool(runtime.cmdBeginFrame(*commands, *streamer, view)), "Stream begin failed");
@@ -789,6 +799,7 @@ public:
                 CommandBuffer* list[] = {commands.get()};
                 require(bool(tracker.submit({.commandBuffers = list, .commandBufferCount = 1}, frame)) &&
                     bool(frame.wait(5000000000ull)), "Frame submit failed");
+                lastAcceptedFeedback = runtime.frameIndex();
                 streamer->endFrame();
                 readback->invalidate();
                 const auto* data = readback->map();
@@ -2796,6 +2807,20 @@ public:
             (void)residency.consumeGpuRequests(batch);
             if (residency.stats().cpuWork.admissionCalls != 1 || residency.queuedUploadCount() != 3) {
                 return RhiTestResult::fail("Next frame lost queued demand or failed to refresh capacity eligibility");
+            }
+            if (residency.stats().cpuWork.priorityRecomputed != 0 || residency.stats().cpuWork.priorityReused == 0) {
+                return RhiTestResult::fail("Unchanged eligible priorities were not reused across feedback batches");
+            }
+            // Change one surviving candidate's benefit without changing its ID;
+            // only that candidate must invalidate, including merged prefetch input.
+            const auto changedPage = expected.back().second;
+            for (size_t i = 0; i < ids.size(); ++i) {
+                if ((ids[i] & ~kStreamPrefetchPageTag) == changedPage) { benefits[i] = 900000.0f; }
+            }
+            residency.beginFrame();
+            (void)residency.consumeGpuRequests(batch);
+            if (residency.stats().cpuWork.priorityRecomputed != 1 || residency.stats().cpuWork.priorityReused == 0) {
+                return RhiTestResult::fail("Benefit change did not incrementally invalidate exactly one cached priority");
             }
         }
         return RhiTestResult::pass("Priority oracle, duplicate promotion, blocked tails, queued keepalive and lookup lifetime");

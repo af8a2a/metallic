@@ -283,6 +283,7 @@ bool MeshletStreamResidencyManager::initialize(
     if (latency_) { latencyExcludedPages_.assign((uint64_t(pageCount_) + 63) / 64, 0); }
     unloadRequestBits_.assign((uint64_t(pageCount_) + 63) / 64, 0);
     requestIndexBlocks_.resize((uint64_t(pageCount_) + kRequestIndexBlockSize - 1) / kRequestIndexBlockSize);
+    requestPriorityBlocks_.resize(requestIndexBlocks_.size());
     if (maxResidentPages_ != 0) {
         const uint32_t residentReserve = std::min(maxResidentPages_, pageCount_);
         pages_.reserve(residentReserve);
@@ -364,6 +365,7 @@ void MeshletStreamResidencyManager::reset()
     budgetAdmissionExhausted_ = false;
     frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;
     requestIndexBlocks_.clear();
+    requestPriorityBlocks_.clear();
     requestScratch_.clear();
     unloadRequestBits_.clear();
     unloadRequestTouchedWords_.clear();
@@ -573,7 +575,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder*
                 }
             }
             auto& taskPages = requestTaskPages_[latestTaskIndex];
-            profile.next("Refresh request priorities");
+            profile.next("Refresh request liveness");
             // Refresh ALL demand before cancelling queued I/O or choosing victims.
             // Allocated/in-flight requests need no sorting or repeated admission.
             const bool prioritized = std::any_of(taskPages.begin(), taskPages.end(),
@@ -585,7 +587,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder*
                 if (found != pages_.end()) {
                     auto& page = found->second;
                     page.lastUsedFrame = frameIndex_;
-                    page.screenBenefit = request.screenBenefit;
+                    if (page.screenBenefit != request.screenBenefit) { page.screenBenefit = request.screenBenefit; }
                     if (!request.prefetch && page.prefetch) {
                         ++stats_.totalPrefetchUsed;
                         page.prefetch = false;
@@ -606,10 +608,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder*
                 request.payloadBytes = scene::meshletStreamDevicePayloadSize(asset_->pages()[request.pageIndex]);
                 if (prioritized) {
                     const uint64_t age = found == pages_.end() ? 0u : frameIndex_ - found->second.firstRequestFrame;
-                    request.schedulingPriority = pageBenefitPerByte(request.screenBenefit, request.payloadBytes, age);
-                    if (request.prefetch) {
-                        request.prefetchLod = asset_->groups()[asset_->pages()[request.pageIndex].lodGroupIndex].lodLevel;
-                    }
+                    request.priorityAge = static_cast<uint32_t>(std::min<uint64_t>(age, 120u));
                 }
                 taskPages[candidateCount++] = request;
             }
@@ -673,6 +672,26 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder*
             };
             profile.next("Filter blocked admission");
             filterBlocked();
+            profile.next("Update changed priorities");
+            if (prioritized) {
+                for (auto& request : taskPages) {
+                    auto& block = requestPriorityBlocks_[request.pageIndex / kRequestIndexBlockSize];
+                    if (!block) { block = std::make_unique<RequestPriorityBlock>(); }
+                    auto& cached = (*block)[request.pageIndex % kRequestIndexBlockSize];
+                    if (cached.benefit != request.screenBenefit || cached.age != request.priorityAge) {
+                        cached.benefit = request.screenBenefit;
+                        cached.age = request.priorityAge;
+                        cached.value = pageBenefitPerByte(cached.benefit, request.payloadBytes, cached.age);
+                        ++stats_.cpuWork.priorityRecomputed;
+                    } else {
+                        ++stats_.cpuWork.priorityReused;
+                    }
+                    request.schedulingPriority = cached.value;
+                    if (request.prefetch) {
+                        request.prefetchLod = asset_->groups()[asset_->pages()[request.pageIndex].lodGroupIndex].lodLevel;
+                    }
+                }
+            }
             profile.next("Prepare admission heap");
             if (prioritized) { std::make_heap(taskPages.begin(), taskPages.end(), lowerPriority); }
             profile.next("Admit demand / prefetch");

@@ -25,6 +25,8 @@ struct StreamCpuWorkCounters {
     uint32_t requestDuplicatesMerged = 0;
     uint32_t admissionCandidates = 0;
     uint32_t admissionPriorityPops = 0;
+    uint32_t priorityRecomputed = 0;
+    uint32_t priorityReused = 0;
     uint32_t admissionCalls = 0;
     uint32_t admissionBypassed = 0;
     uint32_t demandVisited = 0;

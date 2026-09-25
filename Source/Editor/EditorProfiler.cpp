@@ -724,6 +724,19 @@ EditorProfiler::Scope EditorProfiler::scope(std::string_view name, uint32_t colo
     return Scope(this, beginSection(name, color == 0 ? colorFromName(name) : color));
 }
 
+void EditorProfiler::addCpuProfile(const std::vector<render::RenderGraphProfileSection>& sections)
+{
+    if (!frameActive_) { return; }
+    const size_t parent = stack_.empty() ? 0 : stack_.back();
+    std::vector<size_t> nodes;
+    for (const auto& section : sections) {
+        const auto index = addFinishedSection(section.parent < nodes.size() ? nodes[section.parent] : parent,
+            section.name, colorFromName(section.name), section.cpuMilliseconds);
+        currentNodes_[index].cpuOnly = true;
+        nodes.push_back(index);
+    }
+}
+
 void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats& stats)
 {
     if (!frameActive_ || stats.nodes.empty()) {

@@ -2906,13 +2906,34 @@ bool EditorApplication::waitForFrameSlotBeforeInput()
 {
     // Resolve frame-slot backpressure before Reflex sleep and input sampling.
     // renderFrame still begins the context, including for direct smoke-test callers.
-    auto profileScope = profiler_.scope("Wait Frame Slot Before Input");
     const auto& frame = frameSlots_[submittedFrameIndex_ % kFrameSlotCount];
-    const auto result = frame.context.wait();
+    const auto result = [&] {
+        auto profileScope = profiler_.scope("Wait Frame Slot Before Input");
+        return frame.context.wait();
+    }();
     if (!result) {
         spdlog::error("Frame slot wait failed: {}", render::resultToString(result));
         running_ = false;
         return false;
+    }
+    // Previous completed feedback only; no current camera, command recording or
+    // GPU wait. Keep this scope separate from both frame-slot wait and Sleep.
+    bool frozen = false;
+    for (const auto& node : renderGraph_.nodes()) {
+        frozen |= node.runtimeProperties.value("benchmarkFreezeStreaming",
+            node.properties.value("benchmarkFreezeStreaming", false));
+    }
+    static const bool maintenanceBeforePacing = [] {
+        const auto* setting = std::getenv("METALLIC_STREAM_MAINTENANCE_BEFORE_PACING");
+        return !setting || std::string_view(setting) != "0";
+    }();
+    if (maintenanceBeforePacing && !frozen && (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) == 0) {
+        if (auto* streamer = subsystemHost_.get<render::StreamerSubsystem>()) {
+            auto profileScope = profiler_.scope("Streamer maintenance before pacing");
+            render::CpuProfileRecorder profile;
+            streamer->prepareBeforePacing(&profile);
+            profiler_.addCpuProfile(profile.sections);
+        }
     }
     return true;
 }
