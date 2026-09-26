@@ -19,6 +19,7 @@ enum class StageProbeCase : uint32_t {
     NonComputeAccess,
     RasterParentScope,
     PrivateAliases,
+    RepeatedRawReads,
     RepeatedScope,
     NestedScope,
     ForkInsideScope,
@@ -118,6 +119,17 @@ public:
             uses = {{{"privateWrite", Access::BufferStorageWrite}}, {{"privateRead", Access::BufferStorageRead}}};
             break;
         }
+        case StageProbeCase::RepeatedRawReads:
+            // The parent graph boundary covers the initial state. Only the
+            // first read of each writer generation needs a RAW barrier here.
+            uses = {{{"data", Access::BufferStorageWrite}}};
+            for (uint32_t index = 0; index < 6; ++index) {
+                uses.push_back({{"data", Access::BufferStorageRead}});
+            }
+            uses.push_back({{"data", Access::BufferStorageWrite}});
+            uses.push_back({{"data", Access::BufferStorageRead}});
+            uses.push_back({{"data", Access::BufferStorageRead}});
+            break;
         case StageProbeCase::RasterParentScope:
         case StageProbeCase::RepeatedScope:
         case StageProbeCase::NestedScope:
@@ -200,9 +212,27 @@ RhiTestResult runStageProbe(RhiTestContext& context, StageProbeCase mode, uint32
     if (probe.callbacks != callbacks || probe.unexpectedCallbacks != 0) {
         return RhiTestResult::fail(label + ": unexpected callback execution");
     }
-    if (succeeds && (probe.barriersAtCallbacks.size() != 2 ||
+    if (mode == StageProbeCase::PrivateAliases && (probe.barriersAtCallbacks.size() != 2 ||
         probe.barriersAtCallbacks[1] <= probe.barriersAtCallbacks[0])) {
         return RhiTestResult::fail(label + ": aliased private write/read stages lacked their memory dependency");
+    }
+    if (mode == StageProbeCase::RepeatedRawReads) {
+        // Keep the write-after-read/write dependency, then restart visibility
+        // coverage for the new writer. The counters observe native encoding;
+        // the callbacks deliberately do not execute a shader workload.
+        constexpr std::array<uint64_t, 10> expectedDeltas{0, 1, 1, 1, 1, 1, 1, 2, 3, 3};
+        if (probe.barriersAtCallbacks.size() != expectedDeltas.size()) {
+            return RhiTestResult::fail(label + ": unexpected synchronization sample count");
+        }
+        const auto baseline = probe.barriersAtCallbacks.front();
+        for (size_t index = 0; index < expectedDeltas.size(); ++index) {
+            const auto expected = baseline + expectedDeltas[index];
+            if (probe.barriersAtCallbacks[index] != expected) {
+                return RhiTestResult::fail(label + ": stage " + std::to_string(index) +
+                    " expected " + std::to_string(expected) + " memory barriers, got " +
+                    std::to_string(probe.barriersAtCallbacks[index]));
+            }
+        }
     }
     return RhiTestResult::pass();
 }
@@ -246,9 +276,19 @@ public:
     }
 };
 
+class ComputeStageRawVisibilityTest final : public RhiTest {
+public:
+    ComputeStageRawVisibilityTest() { type = RhiTestType::Command; name = "render_graph_compute_stages_repeated_raw_encoding"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        return runStageProbe(context, StageProbeCase::RepeatedRawReads, 10, true);
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(ComputeStageValidationTest);
 METALLIC_REGISTER_RHI_TEST(ComputeStageAliasesTest);
 METALLIC_REGISTER_RHI_TEST(ComputeStageReentryTest);
+METALLIC_REGISTER_RHI_TEST(ComputeStageRawVisibilityTest);
 
 } // namespace
 } // namespace metallic::tests

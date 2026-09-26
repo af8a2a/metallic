@@ -15,12 +15,50 @@ struct AccessEvent {
     SyncScope scope;
 };
 
+struct VisibleScope {
+    uint32_t queue = 0;
+    SyncScope scope;
+};
+
+struct MemoryProducer {
+    AccessEvent event;
+    std::vector<VisibleScope> visible;
+};
+
 struct ResourceFrontier {
     ResourceState state = ResourceState::Undefined;
-    std::optional<AccessEvent> writer;
-    std::optional<AccessEvent> layout;
+    std::optional<MemoryProducer> writer;
+    std::optional<MemoryProducer> layout;
     std::vector<AccessEvent> readers;
 };
+
+bool scopeCovers(SyncScope available, SyncScope requested)
+{
+    // Match explicit bits conservatively; aggregate stage/access aliases need
+    // not be expanded to eliminate repeated uses of the same declaration.
+    const auto stages = static_cast<uint64_t>(requested.stages);
+    const auto access = static_cast<uint64_t>(requested.access);
+    return (static_cast<uint64_t>(available.stages) & stages) == stages &&
+        (static_cast<uint64_t>(available.access) & access) == access;
+}
+
+bool visibleTo(const MemoryProducer& producer, uint32_t queue, SyncScope scope)
+{
+    return std::any_of(producer.visible.begin(), producer.visible.end(), [&](const VisibleScope& visible) {
+        return visible.queue == queue && scopeCovers(visible.scope, scope);
+    });
+}
+
+void rememberVisibility(MemoryProducer& producer, uint32_t queue, SyncScope scope)
+{
+    if (visibleTo(producer, queue, scope)) { return; }
+    // Keep stage/access pairs together: independently OR-ing them would invent
+    // visibility for combinations no barrier actually made visible.
+    std::erase_if(producer.visible, [&](const VisibleScope& visible) {
+        return visible.queue == queue && scopeCovers(scope, visible.scope);
+    });
+    producer.visible.push_back({queue, scope});
+}
 
 void mergeScope(SyncScope& destination, SyncScope source)
 {
@@ -168,7 +206,7 @@ Result<GraphAccessPlan> buildGraphAccessPlan(
             if (scope.stages == PipelineStageBits::None) {
                 scope = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite};
             }
-            frontier.writer = AccessEvent{.scope = scope};
+            frontier.writer = MemoryProducer{.event = {.scope = scope}};
         }
     }
 
@@ -194,23 +232,40 @@ Result<GraphAccessPlan> buildGraphAccessPlan(
             auto& frontier = frontiers[use.resource];
             const bool texture = resources[use.resource].type == RenderGraphResourceType::Texture2D;
             const bool layoutChange = texture && frontier.state != use.state;
+            if (layoutChange && frontier.writer) {
+                // Do not carry data visibility across an image transition.
+                // The new layout anchor will track its own transition writes.
+                frontier.writer->visible.clear();
+            }
             SyncScope before;
             bool localMemoryProducer = false;
-            const auto consume = [&](const AccessEvent& event, bool memoryProducer) {
+            const auto consume = [&](const AccessEvent& event, bool memoryProducer, bool alreadyVisible = false) {
                 if (event.pass != kInitialAccess &&
                     std::find(planned.predecessors.begin(), planned.predecessors.end(), event.pass) == planned.predecessors.end()) {
                     planned.predecessors.push_back(event.pass);
                 }
                 // Semaphores provide availability and visibility for remote
                 // producers. Their stage masks may be illegal on this queue.
-                if (event.pass == kInitialAccess || event.queue == pass.queue) {
+                if (!alreadyVisible && (event.pass == kInitialAccess || event.queue == pass.queue)) {
                     mergeScope(before, event.scope);
                     localMemoryProducer |= memoryProducer;
                 }
             };
 
-            if (frontier.writer) { consume(*frontier.writer, true); }
-            if (frontier.layout) { consume(*frontier.layout, true); }
+            const auto consumeProducer = [&](MemoryProducer& producer) {
+                // The executor preserves actual-queue submission order. A
+                // barrier's destination scope also covers later commands on
+                // that queue, including commands in later submissions.
+                const bool covered = !use.writes && !layoutChange && visibleTo(producer, pass.queue, use.scope);
+                consume(producer.event, true, covered);
+                if (producer.event.pass == kInitialAccess || producer.event.queue == pass.queue) {
+                    // An uncovered local producer necessarily emits a memory
+                    // dependency below. Dependencies remain even when covered.
+                    rememberVisibility(producer, pass.queue, use.scope);
+                }
+            };
+            if (frontier.writer) { consumeProducer(*frontier.writer); }
+            if (frontier.layout) { consumeProducer(*frontier.layout); }
             if (use.writes || layoutChange) {
                 for (const auto& reader : frontier.readers) { consume(reader, false); }
             }
@@ -236,11 +291,14 @@ Result<GraphAccessPlan> buildGraphAccessPlan(
                 // Layout transitions also write memory. Keep their dependency
                 // chain separate from the data writer: later readers on another
                 // stage must see both, even after an earlier read consumed them.
-                frontier.layout = current;
-                frontier.layout->scope.access = AccessBits::MemoryWrite;
+                frontier.layout = MemoryProducer{.event = current};
+                frontier.layout->event.scope.access = AccessBits::MemoryWrite;
+                // The transition barrier already makes its own writes visible
+                // to this destination scope and later matching queue accesses.
+                rememberVisibility(*frontier.layout, pass.queue, use.scope);
             }
             if (use.writes) {
-                frontier.writer = current;
+                frontier.writer = MemoryProducer{.event = current};
                 frontier.readers.clear();
             } else {
                 frontier.readers.push_back(current);

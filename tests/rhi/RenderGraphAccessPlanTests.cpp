@@ -307,6 +307,217 @@ public:
     }
 };
 
+class AccessPlanRawVisibilityReuseTest final : public RhiTest {
+public:
+    AccessPlanRawVisibilityReuseTest() { name = "render_graph_access_plan_raw_visibility_reuse"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
+        std::array<GraphAccessPass, 7> passes{};
+        passes[0].uses = {bufferUse(kComputeWrite, true)};
+        for (size_t reader = 1; reader < passes.size(); ++reader) {
+            passes[reader].uses = {bufferUse(kComputeRead)};
+        }
+        // Coverage belongs to this plan: rebuilding for another frame must
+        // establish visibility again, even with identical declarations.
+        for (uint32_t rebuild = 0; rebuild < 2; ++rebuild) {
+            auto plan = buildGraphAccessPlan(resources, passes);
+            ACCESS_CHECK(plan && plan->passes[0].barriers.empty());
+            size_t barrierCount = 0;
+            for (size_t reader = 1; reader < passes.size(); ++reader) {
+                const auto& planned = plan->passes[reader];
+                barrierCount += planned.barriers.size();
+                ACCESS_CHECK(planned.barriers.size() == (reader == 1 ? 1u : 0u));
+                // Retention uses and producer edges survive barrier removal;
+                // independent readers must not gain read-to-read dependencies.
+                ACCESS_CHECK(planned.uses.size() == 1 && planned.uses[0].resource == 0);
+                ACCESS_CHECK(planned.predecessors.size() == 1 && planned.predecessors[0] == 0);
+            }
+            ACCESS_CHECK(barrierCount == 1);
+        }
+        return RhiTestResult::pass("six same-scope readers require one RAW barrier per plan");
+    }
+};
+
+class AccessPlanRawVisibilityScopePairsTest final : public RhiTest {
+public:
+    AccessPlanRawVisibilityScopePairsTest() { name = "render_graph_access_plan_raw_visibility_scope_pairs"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
+        constexpr SyncScope fragmentUniform{PipelineStageBits::FragmentShader, AccessBits::UniformRead};
+        constexpr SyncScope computeUniform{PipelineStageBits::ComputeShader, AccessBits::UniformRead};
+        const std::array passes{
+            GraphAccessPass{.uses = {bufferUse(kComputeWrite, true)}},
+            GraphAccessPass{.uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.uses = {bufferUse(fragmentUniform)}},
+            GraphAccessPass{.uses = {bufferUse(kFragmentRead)}},
+            GraphAccessPass{.uses = {bufferUse(computeUniform)}},
+            GraphAccessPass{.uses = {bufferUse(kFragmentRead)}},
+            GraphAccessPass{.uses = {bufferUse(computeUniform)}},
+        };
+        auto plan = buildGraphAccessPlan(resources, passes);
+        ACCESS_CHECK(plan);
+        // Compute/ShaderRead plus Fragment/UniformRead does not establish
+        // Fragment/ShaderRead or Compute/UniformRead visibility.
+        for (size_t firstScope = 1; firstScope <= 4; ++firstScope) {
+            ACCESS_CHECK(plan->passes[firstScope].barriers.size() == 1);
+            const auto& barrier = plan->passes[firstScope].barriers.front();
+            ACCESS_CHECK(!barrier.executionOnly);
+            ACCESS_CHECK(containsBits(barrier.beforeScope.access, AccessBits::ShaderWrite));
+            ACCESS_CHECK(containsBits(barrier.afterScope.stages, passes[firstScope].uses[0].scope.stages));
+            ACCESS_CHECK(containsBits(barrier.afterScope.access, passes[firstScope].uses[0].scope.access));
+        }
+        ACCESS_CHECK(plan->passes[5].barriers.empty() && plan->passes[6].barriers.empty());
+
+        constexpr SyncScope bothScopes{PipelineStageBits::ComputeShader | PipelineStageBits::FragmentShader,
+            AccessBits::ShaderRead | AccessBits::UniformRead};
+        const std::array broadThenSubsets{
+            GraphAccessPass{.uses = {bufferUse(kComputeWrite, true)}},
+            GraphAccessPass{.uses = {bufferUse(bothScopes)}},
+            GraphAccessPass{.uses = {bufferUse(kFragmentRead)}},
+            GraphAccessPass{.uses = {bufferUse(computeUniform)}},
+        };
+        auto subsets = buildGraphAccessPlan(resources, broadThenSubsets);
+        ACCESS_CHECK(subsets && subsets->passes[1].barriers.size() == 1);
+        ACCESS_CHECK(subsets->passes[2].barriers.empty() && subsets->passes[3].barriers.empty());
+        return RhiTestResult::pass();
+    }
+};
+
+class AccessPlanRawVisibilityWriterGenerationTest final : public RhiTest {
+public:
+    AccessPlanRawVisibilityWriterGenerationTest() { name = "render_graph_access_plan_raw_visibility_writer_generation"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
+        const std::array passes{
+            GraphAccessPass{.uses = {bufferUse(kComputeWrite, true)}},
+            GraphAccessPass{.uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.uses = {bufferUse(kComputeWrite, true)}},
+            GraphAccessPass{.uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.uses = {bufferUse(kComputeWrite, true)}},
+            GraphAccessPass{.uses = {bufferUse(kComputeWrite, true)}},
+        };
+        auto plan = buildGraphAccessPlan(resources, passes);
+        ACCESS_CHECK(plan && plan->passes[2].barriers.empty() && plan->passes[5].barriers.empty());
+        ACCESS_CHECK(plan->passes[1].barriers.size() == 1 && plan->passes[4].barriers.size() == 1);
+        ACCESS_CHECK(plan->passes[4].predecessors.size() == 1 && hasPredecessor(*plan, 4, 3));
+        for (size_t writer : {3u, 6u}) {
+            // Both readers must remain in the WAR frontier, including the
+            // reader whose redundant RAW barrier was removed.
+            ACCESS_CHECK(hasPredecessor(*plan, writer, writer - 3));
+            ACCESS_CHECK(hasPredecessor(*plan, writer, writer - 2));
+            ACCESS_CHECK(hasPredecessor(*plan, writer, writer - 1));
+            ACCESS_CHECK(plan->passes[writer].barriers.size() == 1);
+            ACCESS_CHECK(!plan->passes[writer].barriers.front().executionOnly);
+            ACCESS_CHECK(containsBits(plan->passes[writer].barriers.front().beforeScope.access,
+                AccessBits::ShaderRead | AccessBits::ShaderWrite));
+        }
+        // Consecutive writes still need WAW ordering even without readers.
+        ACCESS_CHECK(plan->passes[7].barriers.size() == 1 && hasPredecessor(*plan, 7, 6));
+        ACCESS_CHECK(!plan->passes[7].barriers.front().executionOnly);
+        ACCESS_CHECK(containsBits(plan->passes[7].barriers.front().beforeScope.access, AccessBits::ShaderWrite));
+        return RhiTestResult::pass();
+    }
+};
+
+class AccessPlanRawVisibilityLayoutGenerationTest final : public RhiTest {
+public:
+    AccessPlanRawVisibilityLayoutGenerationTest() { name = "render_graph_access_plan_raw_visibility_layout_generation"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Texture2D}};
+        const auto imageUse = [](ResourceState state, SyncScope scope, bool writes = false) {
+            return GraphAccessUse{.resource = 0, .state = state, .scope = scope, .writes = writes};
+        };
+        const std::array passes{
+            GraphAccessPass{.uses = {imageUse(ResourceState::ShaderRead, kComputeRead)}},
+            GraphAccessPass{.uses = {imageUse(ResourceState::ShaderRead, kComputeRead)}},
+            GraphAccessPass{.uses = {imageUse(ResourceState::ShaderRead, kFragmentRead)}},
+            GraphAccessPass{.uses = {imageUse(ResourceState::ShaderRead, kFragmentRead)}},
+            GraphAccessPass{.uses = {imageUse(ResourceState::TransferSource, kTransferRead)}},
+            GraphAccessPass{.uses = {imageUse(ResourceState::TransferSource, kTransferRead)}},
+            GraphAccessPass{.uses = {imageUse(ResourceState::ShaderRead, kComputeRead)}},
+            GraphAccessPass{.uses = {imageUse(ResourceState::ShaderRead, kComputeRead)}},
+        };
+        auto plan = buildGraphAccessPlan(resources, passes);
+        ACCESS_CHECK(plan);
+        for (size_t pass = 0; pass < passes.size(); ++pass) {
+            ACCESS_CHECK(plan->passes[pass].barriers.size() == (pass % 2 == 0 ? 1u : 0u));
+        }
+        ACCESS_CHECK(plan->passes[0].barriers.front().before == ResourceState::Undefined);
+        ACCESS_CHECK(plan->passes[4].barriers.front().before == ResourceState::ShaderRead);
+        ACCESS_CHECK(plan->passes[4].barriers.front().after == ResourceState::TransferSource);
+        ACCESS_CHECK(plan->passes[6].barriers.front().before == ResourceState::TransferSource);
+        ACCESS_CHECK(plan->passes[6].barriers.front().after == ResourceState::ShaderRead);
+        for (size_t reader = 0; reader < 4; ++reader) {
+            ACCESS_CHECK(hasPredecessor(*plan, 4, reader));
+        }
+        ACCESS_CHECK(hasPredecessor(*plan, 6, 4) && hasPredecessor(*plan, 6, 5));
+        ACCESS_CHECK(hasPredecessor(*plan, 7, 6));
+
+        const std::array writerThenLayout{
+            GraphAccessPass{.uses = {imageUse(ResourceState::General, kComputeWrite, true)}},
+            GraphAccessPass{.uses = {imageUse(ResourceState::ShaderRead, kComputeRead)}},
+            GraphAccessPass{.uses = {imageUse(ResourceState::ShaderRead, kComputeRead)}},
+            GraphAccessPass{.uses = {imageUse(ResourceState::ShaderRead, kFragmentRead)}},
+        };
+        auto written = buildGraphAccessPlan(resources, writerThenLayout);
+        ACCESS_CHECK(written && written->passes[1].barriers.size() == 1 && written->passes[2].barriers.empty());
+        ACCESS_CHECK(written->passes[3].barriers.size() == 1);
+        ACCESS_CHECK(hasPredecessor(*written, 3, 0) && hasPredecessor(*written, 3, 1));
+        ACCESS_CHECK(containsBits(written->passes[3].barriers.front().beforeScope.access,
+            AccessBits::ShaderWrite | AccessBits::MemoryWrite));
+        return RhiTestResult::pass();
+    }
+};
+
+class AccessPlanRawVisibilityInitialQueueTest final : public RhiTest {
+public:
+    AccessPlanRawVisibilityInitialQueueTest() { name = "render_graph_access_plan_raw_visibility_initial_queue"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer,
+            .state = ResourceState::General, .scope = kComputeWrite}};
+        const std::array passes{
+            GraphAccessPass{.queue = 0, .uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.queue = 0, .uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.queue = 1, .uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.queue = 1, .uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.queue = 0, .uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.queue = 2, .uses = {bufferUse(kFragmentRead)}},
+            GraphAccessPass{.queue = 2, .uses = {bufferUse(kFragmentRead)}},
+        };
+        auto plan = buildGraphAccessPlan(resources, passes);
+        ACCESS_CHECK(plan);
+        for (size_t pass = 0; pass < passes.size(); ++pass) {
+            const bool firstOnQueue = pass == 0 || pass == 2 || pass == 5;
+            ACCESS_CHECK(plan->passes[pass].barriers.size() == (firstOnQueue ? 1u : 0u));
+            // Initial imports have no in-plan producer. Their independent
+            // consumers must not inherit another queue's coverage or edges.
+            ACCESS_CHECK(plan->passes[pass].predecessors.empty());
+        }
+        const std::array undefined{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
+        const std::array remoteThenLocal{
+            GraphAccessPass{.queue = 0, .uses = {bufferUse(kComputeWrite, true)}},
+            GraphAccessPass{.queue = 1, .uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.queue = 0, .uses = {bufferUse(kComputeRead)}},
+            GraphAccessPass{.queue = 0, .uses = {bufferUse(kComputeRead)}},
+        };
+        auto fanout = buildGraphAccessPlan(undefined, remoteThenLocal);
+        ACCESS_CHECK(fanout && fanout->passes[1].barriers.empty());
+        ACCESS_CHECK(fanout->passes[2].barriers.size() == 1 && fanout->passes[3].barriers.empty());
+        for (size_t reader = 1; reader < remoteThenLocal.size(); ++reader) {
+            ACCESS_CHECK(fanout->passes[reader].predecessors.size() == 1);
+            ACCESS_CHECK(hasPredecessor(*fanout, reader, 0));
+        }
+        return RhiTestResult::pass();
+    }
+};
+
 // Execute the existing copy shader on graphics so the same reflected resource
 // fans out onto genuinely different queues without duplicating shader plumbing.
 class AccessPlanGraphicsCopyPass final : public render::ComputePass {
@@ -411,6 +622,11 @@ METALLIC_REGISTER_RHI_TEST(AccessPlanAliasesTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanInvalidInputTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanFrameBoundaryTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanInternalBoundaryTest);
+METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityReuseTest);
+METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityScopePairsTest);
+METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityWriterGenerationTest);
+METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityLayoutGenerationTest);
+METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityInitialQueueTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanGpuFanoutTest);
 
 #undef ACCESS_REQUIRE

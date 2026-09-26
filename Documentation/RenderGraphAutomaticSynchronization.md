@@ -232,7 +232,7 @@ Metallic 适合借鉴其声明与编译分离，不需要照搬宏系统、另�
 
 本阶段覆盖**图拥有资源的跨 pass、整资源访问**。随后第 10 节加入了单队列 compute 内部阶段与私有 buffer 导入，并迁移 AutoExposure。buffer slice 精确区间、texture mip/layer/aspect、通用 HistoryManager/import/export、NRD、动态 bindless/BDA 可达集合，以及 exclusive ownership transfer 尚未纳入；未迁移的内部 barrier 和 opaque 边界继续承担这些责任。
 
-跨帧和外部命令边界暂时使用现有 completion waits，加保守的 `AllCommands / MemoryRead|MemoryWrite` 初始范围。相同 writer 的重复读取可能仍产生重复 RAW barrier；不同逻辑 texture state 也可能保守生成 layout 依赖，即使后端采用 GENERAL policy。尚未实现按 stage/access 的可见性覆盖缓存或最少 barrier 优化，不宣称全局最优或 GPU 性能提升。
+跨帧和外部命令边界暂时使用现有 completion waits，加保守的 `AllCommands / MemoryRead|MemoryWrite` 初始范围。第 11 节已加入同一计划内按 queue/stage/access 的可见性覆盖，消除重复 RAW barrier。不同逻辑 texture state 仍可能保守生成 layout 依赖，即使后端采用 GENERAL policy；不宣称全局最优或 GPU 性能提升。
 
 ### 验证记录
 
@@ -291,3 +291,34 @@ Histogram 使用外层已经同步好的图资源边界。Reduce 前的计划合
 - MiniZorah 600 帧、1080p、CLAS、4 workers 短程回归通过，用于检查共享编码器对生产图路径的影响；此负载本身不包含 AutoExposure，不能替代上述专门的曝光测试。没有启动 ZorahFull，也未进行新的性能对照或长路线画面验收。
 
 本地证据为 `build-scheduling-release/exposure-stages-build.log`、`exposure-stages-tests.log`、`exposure-stages-regression.log` 与 `exposure-stages-minizorah.log`，生成文件不纳入源码。
+
+## 11. 已实现：重复 RAW barrier 消除
+
+统一 planner 为 data writer 和 image layout anchor 分别保存已建立的目标可见性，记录实际 queue 与完整的 stage/access 对。后续只读访问没有改变 layout，且已被同队列先前的一道 barrier 完整覆盖时，省略该 producer 的重复 barrier source。跨 pass 和 `executeComputeStages()` 自动共享此行为，无需 pass 作者修改声明。
+
+此复用依赖执行器保持每个实际队列的输入顺序；现有 `submitReady()` 用 `nextSubmission` 按图顺序接收批次，涵盖 Joined/Pipelined 和 Queue wrapper 别名。Vulkan barrier 的目标范围包含同一队列提交顺序中后续的匹配访问，因此可跨 command buffer 和 submit 复用：[vkCmdPipelineBarrier2](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdPipelineBarrier2.html)。
+
+### 覆盖规则
+
+- stage/access 必须作为一对判断子集。`Compute / ShaderRead` 加上 `Fragment / UniformRead` 不会虚构 `Fragment / ShaderRead` 的可见性；新增 stage 或 access 仍建立依赖。
+- 新 writer 从空覆盖开始，前置 barrier 不会覆盖其后执行的新写入。写入和 layout 转换始终完整消费 writer、layout anchor 和 reader frontier，保留 WAR/WAW。
+- layout 转换清除原 writer 的覆盖，并建立新的 layout anchor。转换 barrier 自身的目标 scope 可作为这个 anchor 的首条覆盖；随后新增 shader stage 仍需同步转换产生的写入。
+- producer 前驱、完整 reader frontier 和资源使用记录始终保留。远端 producer 继续通过原有 semaphore 等待提供可见性，不复用其他队列的本地覆盖，也不删除跨队列等待。
+- 缓存只活在一次计划构建中。不同执行、取消后重建和跨帧初始边界都重新规划，不把 CPU 录制、提交接收或内容有效性当作已完成 GPU 同步。
+
+当前按明确 bit 子集保守判断：不展开 `AllCommands`、`MemoryRead` 等语义别名，不把多条覆盖拼成新的 scope，也不提前扩大首道 barrier 以覆盖尚未到来的读者。这是消除已有覆盖内的重复操作，尚非全局最少 barrier 求解；整资源范围和原有 import/export 边界保持不变。
+
+### 验证
+
+新增 5 项 CPU 回归和 1 项内部阶段编码统计回归。`writer → 6 个同队列同 scope reader` 从原算法的 6 道 RAW barrier 收敛到 1 道，仍保留每个 reader 到 writer 的依赖。内部 `write → 6 reads → write → 2 reads` 的原生 memory barrier 累计增量断言为 `[0,1,1,1,1,1,1,2,3,3]`：保留中间写入的 WAR/WAW 和新 writer 的首次 RAW。编码统计用例不执行 shader，GPU 数据正确性由实际 fanout、AutoExposure 和像素回归验证。
+
+复用 `build-scheduling-release`，构建 `Metallic`、`MetallicRhiTests`、`MetallicTaskTests` 通过；GPU 运行启用 `VK_LAYER_VALIDATE_SYNC=1`：
+
+- 22 项访问计划、内部阶段、AutoExposure/HDR 专项通过；GPU fanout 覆盖 32 帧、6 消费者、1/4 workers、Joined/Pipelined、实际分离队列与显式别名，回读数据一致。
+- 20 项现有图/提交/取消恢复/像素回归通过，TaskTests 通过。
+- optimal-layout 下 10 项检查通过，包含新增的 5 项 CPU 用例和 5 项 GPU 路径；检查了生成的 `VisibilityPreparedMaterial.png`，串行/并行像素一致性由测试断言。
+- MiniZorah 600 帧、1920×1080、CLAS、4 workers 短程回归通过，复用已有 cook/shader/PSO 缓存。保留原有上传和显存预算，未启动 ZorahFull。
+
+所有上述测试均未跳过，日志未发现 VUID / SYNC-HAZARD。MiniZorah 本身不含 AutoExposure，曝光行为由专项 GPU 用例验证。本轮没有端到端性能 A/B，也未完成长路线时序及全场景视觉验收，不能由 barrier 数量推导帧率收益。
+
+本地构建和运行日志为 `build-scheduling-release/raw-visibility-{build,tests,regression,optimal,minizorah}.log`；场景报告为 `raw-visibility-minizorah/Baseline.json`，均留在 build 输出目录。

@@ -65,6 +65,9 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
 
 // Pure CPU planning. A defined initial state represents prior external/frame
 // work; the caller must provide its queue waits before executing the plan.
+// Passes must preserve input order on each actual queue: visibility established
+// by an earlier boundary can cover later reads, including later submissions.
+// Coverage is local to this invocation; failed/cancelled plans cannot seed it.
 Result<GraphAccessPlan> buildGraphAccessPlan(
     std::span<const GraphAccessResource> resources,
     std::span<const GraphAccessPass> passes);
