@@ -1,10 +1,10 @@
 # RenderGraph 自动同步方案调研
 
-日期：2026-09-26。调研基线：`c596cd1af729386a74c37263c379a2f8d708afd4`。第 1–8 节描述该基线与设计方向，第 9 节记录后续落地的跨 pass 计划。
+日期：2026-09-26。调研基线：`c596cd1af729386a74c37263c379a2f8d708afd4`。第 1–8 节描述该基线与设计方向，第 9 节记录跨 pass 计划，第 10 节记录 AutoExposure 内部阶段的落地。
 
 结论：值得推进。目标是让图编辑者和普通 pass 作者只表达资源用途、读写和数据流，由 RenderGraph 生成同步计划。同步责任归入图编译器与后端；它不能对图编译器本身不可见，也不能仅凭 Buffer / Texture 类型或连线方向推断所有访问。
 
-推荐在现有共享 registry、BufferSlice、typed 参数、prepared dispatch、batch receipt 上增加统一的 **ResourceUse → HazardPlan → Barrier / QueueWait** 编译流程。保留现有 Vulkan 同步编码器，不重建另一套资源身份体系。第 1–8 节的完整 API 属于设计草案；已经实现的范围以第 9 节为准，尚未测得新性能收益。
+推荐在现有共享 registry、BufferSlice、typed 参数、prepared dispatch、batch receipt 上增加统一的 **ResourceUse → HazardPlan → Barrier / QueueWait** 编译流程。保留现有 Vulkan 同步编码器，不重建另一套资源身份体系。第 1–8 节的完整 API 属于设计草案；已经实现的范围以第 9–10 节为准，尚未测得新性能收益。
 
 ## 1. 当前已经自动化了什么
 
@@ -230,7 +230,7 @@ Metallic 适合借鉴其声明与编译分离，不需要照搬宏系统、另�
 
 ### 当前边界
 
-此实现覆盖**图拥有资源的跨 pass、整资源访问**。buffer slice 区间、texture mip/layer/aspect、持久 history/import/export、pass 内阶段、NRD、动态 bindless/BDA 可达集合，以及 exclusive ownership transfer 尚未纳入。现有内部 barrier 和 opaque 边界继续承担这些责任。
+本阶段覆盖**图拥有资源的跨 pass、整资源访问**。随后第 10 节加入了单队列 compute 内部阶段与私有 buffer 导入，并迁移 AutoExposure。buffer slice 精确区间、texture mip/layer/aspect、通用 HistoryManager/import/export、NRD、动态 bindless/BDA 可达集合，以及 exclusive ownership transfer 尚未纳入；未迁移的内部 barrier 和 opaque 边界继续承担这些责任。
 
 跨帧和外部命令边界暂时使用现有 completion waits，加保守的 `AllCommands / MemoryRead|MemoryWrite` 初始范围。相同 writer 的重复读取可能仍产生重复 RAW barrier；不同逻辑 texture state 也可能保守生成 layout 依赖，即使后端采用 GENERAL policy。尚未实现按 stage/access 的可见性覆盖缓存或最少 barrier 优化，不宣称全局最优或 GPU 性能提升。
 
@@ -249,3 +249,45 @@ Metallic 适合借鉴其声明与编译分离，不需要照搬宏系统、另�
 GPU 运行启用 Vulkan validation 与 Synchronization Validation，日志未发现 VUID / SYNC-HAZARD。可用 `VK_LAYER_VALIDATE_SYNC=1` 启用同步检查；早期验证使用等价的旧 `VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT` 设置，验证层仅提示该设置已弃用。
 
 MiniZorah 使用现有 cook/OS 文件缓存/PSO cache，保留原有上传和显存预算。此次没有相同负载的前后性能对照，没有进行长路线时序与完整画面验收；NRD 在该构建配置中未启用。
+
+## 10. 已实现：AutoExposure 内部阶段闭环
+
+新增 [`RenderGraphExecutionContext::executeComputeStages()`](../Source/Runtime/Render/RenderGraph/RenderGraphComputeStages.cpp)。它将一组命名 compute 阶段与各阶段的资源访问编译为局部计划，调用原有 `buildGraphAccessPlan()` 和共享的 `recordGraphAccessBarriers()`。跨 pass 与 pass 内同步没有各自维护一套 hazard 算法或原生 barrier 编码。
+
+[`AutoExposurePass.cpp`](../Source/Runtime/Render/RenderPass/BuiltinPass/AutoExposurePass.cpp) 已移除手写的 history、histogram、exposure barrier，声明如下：
+
+| 阶段 | 读取 | 写入 |
+| --- | --- | --- |
+| Histogram | source | histogram |
+| Reduce | histogram、history | history、exposure |
+| Apply | source、exposure | color |
+
+Histogram 使用外层已经同步好的图资源边界。Reduce 前的计划合并 histogram 的 RAW 和 history 的先前访问；Apply 前同步 exposure 的 RAW。外层 histogram/exposure 保留反射中的读写聚合契约，color 收窄为只写，外层消费者仍从同一跨 pass 计划获得同步。Profiler 中可查看 Histogram、Reduce、Apply 三个阶段。
+
+### 图资源与私有 history
+
+图资源导入局部计划时保留真实 state/layout，并设置 `boundarySynchronized`，避免把父边界当成新的写入者或重复转换为 Undefined。阶段读取/写入与 shader stage 必须是外层反射权限的子集；禁止在局部阶段改变图像 layout，以免破坏外层允许的跨队列读分叉。局部计划不回写外层预先生成的资源状态。
+
+私有 history 以 `RenderGraphBufferImport` 导入，携带现有 `BufferSlice` 的 allocation identity 及 `BufferStorageReadWrite` 边界契约。相同底层 buffer 的多个名字或 slice 归一为同一个 hazard；当前仍按整 allocation 同步。私有导入不能绕过图字段的访问权限，也不能给同一个 allocation 提供冲突的边界契约。
+
+`state_->valid` 只决定曝光内容是否需要重置，不再决定 history 有没有先前 GPU hazard。即使首次使用、显式 reset 或取消录制导致 valid=false，也按保守的 Compute ReadWrite 契约同步 history。沿用原有取消事务使内容失效，不增加 CPU 等待或读取 history。AutoExposure 继续固定 graphics queue；此导入接口不自动增加跨队列等待。
+
+### 录制契约与生命周期
+
+在任何阶段 callback 前验证完整序列并生成计划；晚出现的非法资源名、隐藏写入、超范围 stage、layout 切换均不执行前面的 callback。一个 pass 执行只允许调用一次该入口，拒绝递归调用和阶段内 `parallelCompute()` fork。回调必须仅录制所声明的访问；此接口不能从任意 C++ 或动态 shader 地址访问中发现漏报资源。
+
+图纹理与 buffer allocation 在回调前保留，命令录制资源随现有提交接收协议转移到 frame completion 生命周期；不依赖临时 CPU slice 或原始 Buffer wrapper 活到 GPU 完成。共享 barrier 编码器也保留不需要首个 barrier 的 buffer 使用。
+
+这是单队列 compute 阶段入口，尚不支持内部 raster scope、内部跨队列调度或精确 subresource/range。shader 内的 `GroupMemoryBarrierWithGroupSync()` 仍属于 workgroup 算法，保持不变。
+
+### 验证
+
+复用 `build-scheduling-release` 构建 `Metallic`、`MetallicRhiTests` 和 `MetallicTaskTests`。所有 GPU 运行设置 `VK_LAYER_VALIDATE_SYNC=1`，日志未发现 VUID / SYNC-HAZARD，也没有测试跳过。
+
+- 16 项专项测试通过：9 项访问 planner/GPU 分叉测试，3 项阶段 API 测试，以及 AutoExposure 的 3 项 GPU 测试和 HDR 输出测试。
+- 阶段 API 测试覆盖完整序列预验证、10 种错误声明、不同范围 slice 的 allocation 别名、重复/递归调用与 fork 拒绝。
+- AutoExposure GPU 检查覆盖曝光校准、百分位、EV 限制、补偿、适应速度、帧重叠、resize、sRGB/HDR，以及下游 pass 对每个 histogram tile、exposure 数值和 color 像素的回读。新增用例交替 external/self-submit，验证已完成帧之后取消一次录制的历史重置，覆盖 1/4 recording workers 与两种 layout policy；AutoExposure 本身仍串行录制。
+- 20 项现有图/队列/提交/像素回归和 TaskTests 通过。
+- MiniZorah 600 帧、1080p、CLAS、4 workers 短程回归通过，用于检查共享编码器对生产图路径的影响；此负载本身不包含 AutoExposure，不能替代上述专门的曝光测试。没有启动 ZorahFull，也未进行新的性能对照或长路线画面验收。
+
+本地证据为 `build-scheduling-release/exposure-stages-build.log`、`exposure-stages-tests.log`、`exposure-stages-regression.log` 与 `exposure-stages-minizorah.log`，生成文件不纳入源码。

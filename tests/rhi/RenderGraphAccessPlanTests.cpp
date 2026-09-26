@@ -267,6 +267,46 @@ public:
     }
 };
 
+class AccessPlanInternalBoundaryTest final : public RhiTest {
+public:
+    AccessPlanInternalBoundaryTest() { name = "render_graph_access_plan_internal_boundary_and_stage_hazard"; }
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const std::array resources{
+            GraphAccessResource{.type = render::RenderGraphResourceType::Buffer,
+                .state = ResourceState::General, .scope = kComputeWrite, .boundarySynchronized = true},
+            GraphAccessResource{.type = render::RenderGraphResourceType::Texture2D,
+                .state = ResourceState::ShaderRead, .scope = kComputeWrite, .boundarySynchronized = true},
+            // Private history remains an ordinary import. Its preceding frame
+            // access must still be synchronized on the first internal use.
+            GraphAccessResource{.type = render::RenderGraphResourceType::Buffer,
+                .state = ResourceState::General, .scope = kComputeWrite},
+        };
+        const std::array passes{
+            GraphAccessPass{.uses = {bufferUse(kComputeWrite, true),
+                {.resource = 1, .state = ResourceState::ShaderRead, .scope = kComputeRead}}},
+            GraphAccessPass{.uses = {bufferUse(kComputeRead), bufferUse(kComputeWrite, true, 2)}},
+        };
+        auto plan = buildGraphAccessPlan(resources, passes);
+        ACCESS_CHECK(plan && plan->passes[0].barriers.empty());
+        ACCESS_CHECK(hasPredecessor(*plan, 1, 0));
+        ACCESS_CHECK(plan->passes[1].barriers.size() == 2);
+        ACCESS_CHECK(hasVisibilityBarrier(*plan, 1, 1, PipelineStageBits::ComputeShader,
+            AccessBits::ShaderWrite, PipelineStageBits::ComputeShader));
+        ACCESS_CHECK(std::any_of(plan->passes[1].barriers.begin(), plan->passes[1].barriers.end(),
+            [](const GraphAccessBarrier& barrier) { return barrier.resource == 2; }));
+
+        const std::array changeLayout{GraphAccessPass{.uses = {
+            {.resource = 1, .state = ResourceState::General, .scope = kComputeWrite, .writes = true}}}};
+        auto changed = buildGraphAccessPlan(resources, changeLayout);
+        ACCESS_CHECK(changed && changed->passes[0].barriers.size() == 1);
+        const auto& barrier = changed->passes[0].barriers.front();
+        ACCESS_CHECK(barrier.before == ResourceState::ShaderRead && barrier.after == ResourceState::General);
+        ACCESS_CHECK(!barrier.executionOnly && barrier.beforeScope.access == AccessBits::None);
+        return RhiTestResult::pass();
+    }
+};
+
 // Execute the existing copy shader on graphics so the same reflected resource
 // fans out onto genuinely different queues without duplicating shader plumbing.
 class AccessPlanGraphicsCopyPass final : public render::ComputePass {
@@ -370,6 +410,7 @@ METALLIC_REGISTER_RHI_TEST(AccessPlanImageLayoutTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanAliasesTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanInvalidInputTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanFrameBoundaryTest);
+METALLIC_REGISTER_RHI_TEST(AccessPlanInternalBoundaryTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanGpuFanoutTest);
 
 #undef ACCESS_REQUIRE

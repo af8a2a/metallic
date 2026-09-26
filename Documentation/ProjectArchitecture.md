@@ -231,7 +231,9 @@ sequenceDiagram
 
 录制开始前，执行器将反射字段解析为图资源的规范身份与实际队列，由 [`RenderGraphAccessPlan`](../Source/Runtime/Render/RenderGraph/RenderGraphAccessPlan.h) 一次性生成跨 Pass 的 barrier 和提交依赖。计划保留最后写入者、读取者集合和图像 layout 转换点，避免只记最近一次访问而漏掉后续 shader stage 的可见性。`storageRead()`、`storageWrite()` 与 `storageReadWrite()` 分别声明访问语义，字段 Input/Output 仍只表示图连线方向。
 
-每个节点执行前只编码已生成的 barrier，再构造 `RenderGraphExecutionContext`、绑定图级 Bindless heap 并执行 Pass。计划不依赖 worker 的完成顺序；GPU 分支的资源依赖指向该 Pass 的汇合提交。当前计划以整资源为粒度，Pass 内部阶段和私有资源仍保留原有同步契约。
+每个节点执行前只编码已生成的 barrier，再构造 `RenderGraphExecutionContext`、绑定图级 Bindless heap 并执行 Pass。计划不依赖 worker 的完成顺序；GPU 分支的资源依赖指向该 Pass 的汇合提交。当前计划以整资源为粒度。
+
+单队列 Compute Pass 可以通过 `executeComputeStages()` 声明内部阶段，复用同一 planner 和 barrier 编码器。阶段访问必须位于反射权限内且不能改变图像的外层 layout；全部声明先验证，再录制回调。私有 buffer 通过带 allocation identity 的 `BufferSlice` 与边界访问契约导入。AutoExposure 已把 Histogram → Reduce → Apply 及 history 同步迁入此路径；未迁移的 Pass 和私有资源仍保留原有同步契约。
 
 提供两种执行入口：
 

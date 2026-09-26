@@ -14,6 +14,9 @@ struct GraphAccessResource {
     RenderGraphResourceType type;
     ResourceState state = ResourceState::Undefined;
     SyncScope scope;
+    // The parent access boundary already made prior work visible to every
+    // internal stage. Keep its layout without inventing a second producer.
+    bool boundarySynchronized = false;
 };
 
 struct GraphAccessUse {
@@ -46,6 +49,19 @@ struct GraphAccessPassPlan {
 struct GraphAccessPlan {
     std::vector<GraphAccessPassPlan> passes;
 };
+
+struct GraphAccessBinding {
+    Texture* texture = nullptr;
+    uint32_t mipCount = 1;
+    uint32_t layerCount = 1;
+    BufferSlice buffer;
+};
+
+Result<GraphAccessBinding> bindGraphAccessResource(const RenderGraphResource& resource);
+// Shared by whole graph passes and internal stages. Buffer slices retain their
+// allocation through submission even when their first access needs no barrier.
+Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPassPlan& pass,
+    std::span<const GraphAccessBinding> bindings);
 
 // Pure CPU planning. A defined initial state represents prior external/frame
 // work; the caller must provide its queue waits before executing the plan.

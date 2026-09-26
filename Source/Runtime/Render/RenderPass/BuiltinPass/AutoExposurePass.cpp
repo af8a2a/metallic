@@ -21,8 +21,8 @@ static_assert(sizeof(AutoExposurePush) == 84);
 
 class AutoExposurePass final : public ComputePass {
 public:
-    // All adaptation dispatches stay on graphics. The explicit history barrier
-    // orders consecutive frames on that queue without a CPU readback or wait.
+    // Adaptation stays on graphics. The private history import lets the stage
+    // planner order consecutive frames without a CPU readback or wait.
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return false; }
 
@@ -33,7 +33,7 @@ public:
         source.sampledRead();
         source.format = Format::Unknown;
         auto& color = reflection.addTextureOutput("color", "Exposed color; HDR display mapping occurs in FinalBlit");
-        color.storageReadWrite();
+        color.storageWrite();
         const bool hdr = context.displayOutput.mode == DisplayOutputMode::HdrScRgb;
         color.format = hdr ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
         color.colorEncoding = hdr ? DisplayColorEncoding::ExposedLinear : DisplayColorEncoding::Srgb;
@@ -136,9 +136,6 @@ public:
         Result<> result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
             [] {}, [state = state_] { state->valid = false; }));
         if (!result) { return result; }
-        const BufferBarrierDesc historyBarrier{.buffer = state_->history.get(),
-            .before = state_->valid ? ResourceState::General : ResourceState::Undefined, .after = ResourceState::General};
-        commands.barrier({.buffers = &historyBarrier, .bufferCount = 1});
         TextureView* sourceView = source.view();
         const ComputeDispatchBinding bindings[] = {
             {.binding = 0, .textureViews = &sourceView, .textureViewCount = 1},
@@ -147,23 +144,38 @@ public:
             {.binding = 3, .buffer = exposure.buffer()},
             {.binding = 4, .textureView = color.view()},
         };
-        ComputeDispatchDesc dispatch{.commandBuffer = &commands, .bindings = bindings, .bindingCount = 5,
-            .pushData = &push, .pushDataSize = sizeof(push),
-            .groupCountX = (push.width + 15) / 16, .groupCountY = (push.height + 15) / 16};
-        result = programs_[0].dispatch(dispatch);
-        if (!result) { return result; }
-        const BufferBarrierDesc histogramBarrier{.buffer = histogram.buffer(),
-            .before = ResourceState::General, .after = ResourceState::General};
-        commands.barrier({.buffers = &histogramBarrier, .bufferCount = 1});
-        dispatch.groupCountX = dispatch.groupCountY = 1;
-        result = programs_[1].dispatch(dispatch);
-        if (!result) { return result; }
-        const BufferBarrierDesc exposureBarrier{.buffer = exposure.buffer(),
-            .before = ResourceState::General, .after = ResourceState::General};
-        commands.barrier({.buffers = &exposureBarrier, .bufferCount = 1});
-        dispatch.groupCountX = (push.width + 7) / 8;
-        dispatch.groupCountY = (push.height + 7) / 8;
-        result = programs_[2].dispatch(dispatch);
+        const auto record = [&](size_t program, CommandBuffer& stageCommands, uint32_t x, uint32_t y) {
+            return programs_[program].dispatch({.commandBuffer = &stageCommands,
+                .bindings = bindings, .bindingCount = 5, .pushData = &push, .pushDataSize = sizeof(push),
+                .groupCountX = x, .groupCountY = y});
+        };
+        using Access = RenderGraphResourceAccess;
+        const RenderGraphStageUse histogramUses[] = {
+            {"source", Access::TextureSampleRead}, {"histogram", Access::BufferStorageWrite},
+        };
+        const RenderGraphStageUse reduceUses[] = {
+            {"histogram", Access::BufferStorageRead}, {"history", Access::BufferStorageReadWrite},
+            {"exposure", Access::BufferStorageWrite},
+        };
+        const RenderGraphStageUse applyUses[] = {
+            {"source", Access::TextureSampleRead}, {"exposure", Access::BufferStorageRead},
+            {"color", Access::TextureStorageWrite},
+        };
+        const RenderGraphComputeStage stages[] = {
+            {"Histogram", histogramUses, [&](CommandBuffer& stageCommands) {
+                return record(0, stageCommands, (push.width + 15) / 16, (push.height + 15) / 16);
+            }},
+            {"Reduce", reduceUses, [&](CommandBuffer& stageCommands) { return record(1, stageCommands, 1, 1); }},
+            {"Apply", applyUses, [&](CommandBuffer& stageCommands) {
+                return record(2, stageCommands, (push.width + 7) / 8, (push.height + 7) / 8);
+            }},
+        };
+        auto history = state_->history->slice();
+        if (!history) { return makeError(history.error()); }
+        // Content reset does not erase prior accepted GPU accesses. Keep the
+        // conservative history contract even on reset/cancellation/first use.
+        const RenderGraphBufferImport imports[] = {{"history", *history, Access::BufferStorageReadWrite}};
+        result = context.executeComputeStages(stages, imports);
         if (!result) { return result; }
         state_->valid = true;
         width_ = context.width();

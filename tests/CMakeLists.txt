@@ -286,6 +286,7 @@ add_executable(MetallicRhiTests
     rhi/ReGIRVirtualLightTests.cpp
     rhi/RenderGraphTests.cpp
     rhi/RenderGraphAccessPlanTests.cpp
+    rhi/RenderGraphComputeStageTests.cpp
     rhi/SceneBindingTests.cpp
     rhi/SceneUploadTests.cpp
     rhi/RadianceCacheTests.cpp

@@ -410,6 +410,7 @@ struct RenderGraphExecutor::Impl {
     Queue* recordingQueue = nullptr;
     GraphAccessPlan accessPlan;
     std::vector<RenderGraphResource*> accessResources;
+    std::vector<GraphAccessBinding> accessBindings;
     std::array<std::unique_ptr<TimestampQueryPool>, 3> gpuTimestampQueryPools;
     std::array<GpuTimingSlot, kGpuTimingSlotCount> gpuTimingSlots;
     std::vector<RenderGraphExecutionStats> completedGpuExecutionStats;
@@ -1723,6 +1724,7 @@ struct RenderGraphExecutor::Impl {
         if (queues.size() != executionList.size()) { return makeError(Error::InvalidArgument); }
         std::vector<GraphAccessResource> initial;
         std::vector<RenderGraphResource*> resolved;
+        std::vector<GraphAccessBinding> bindings;
         std::unordered_map<RenderGraphResource*, size_t> identities;
         std::vector<GraphAccessPass> passes;
         passes.reserve(executionList.size());
@@ -1737,7 +1739,10 @@ struct RenderGraphExecutor::Impl {
                 // compile generation. Every input alias resolves to the same slot.
                 const auto [entry, inserted] = identities.try_emplace(allocation, resolved.size());
                 if (inserted) {
+                    auto binding = bindGraphAccessResource(*allocation);
+                    if (!binding) { return makeError(binding.error()); }
                     resolved.push_back(allocation);
+                    bindings.push_back(std::move(*binding));
                     initial.push_back(accessInitialState(*allocation));
                 }
                 pass.uses.push_back({entry->second, stateForAccess(field.access),
@@ -1751,34 +1756,19 @@ struct RenderGraphExecutor::Impl {
         }
         accessPlan = std::move(*planned);
         accessResources = std::move(resolved);
+        accessBindings = std::move(bindings);
         return {};
     }
 
     static Result<> applyAccessPlan(CommandBuffer& commands, const GraphAccessPassPlan& pass,
-        std::span<RenderGraphResource* const> resolved)
+        std::span<RenderGraphResource* const> resolved, std::span<const GraphAccessBinding> bindings)
     {
-        std::vector<TextureBarrierDesc> textures;
-        std::vector<BufferBarrierDesc> buffers;
-        std::vector<MemoryBarrierDesc> memory;
-        for (const auto& barrier : pass.barriers) {
-            auto& resource = *resolved[barrier.resource];
-            if (barrier.executionOnly) {
-                memory.push_back({barrier.beforeScope, barrier.afterScope});
-            } else if (resource.type == RenderGraphResourceType::Texture2D) {
-                if (resource.texture) {
-                    textures.push_back({.texture = resource.texture, .before = barrier.before, .after = barrier.after,
-                        .baseMip = 0, .mipCount = resource.desc.mipCount, .baseLayer = 0, .layerCount = resource.desc.layerCount,
-                        .beforeScope = barrier.beforeScope, .afterScope = barrier.afterScope});
-                }
-            } else if (resource.buffer) {
-                buffers.push_back({.buffer = resource.buffer, .before = barrier.before, .after = barrier.after,
-                    .offset = 0, .size = resource.bufferDesc.size,
-                    .beforeScope = barrier.beforeScope, .afterScope = barrier.afterScope});
+        for (const auto& use : pass.uses) {
+            if (use.resource >= resolved.size() || !resolved[use.resource]) {
+                return makeError(Error::InvalidArgument);
             }
         }
-        auto result = commands.synchronize({.textures = textures.data(), .textureCount = uint32_t(textures.size()),
-            .buffers = buffers.data(), .bufferCount = uint32_t(buffers.size()),
-            .memory = memory.data(), .memoryCount = uint32_t(memory.size())});
+        auto result = recordGraphAccessBarriers(commands, pass, bindings);
         if (!result) { return result; }
         for (const auto& use : pass.uses) {
             auto& resource = *resolved[use.resource];
@@ -1812,8 +1802,11 @@ struct RenderGraphExecutor::Impl {
         const std::array passes{GraphAccessPass{.uses = {{0, state, scope, writes}}}};
         auto planned = buildGraphAccessPlan(initial, passes);
         if (!planned) { return makeError(planned.error()); }
+        auto binding = bindGraphAccessResource(resource);
+        if (!binding) { return makeError(binding.error()); }
         const std::array resolved{&resource};
-        return applyAccessPlan(commands, planned->passes.front(), resolved);
+        const std::array bindings{std::move(*binding)};
+        return applyAccessPlan(commands, planned->passes.front(), resolved, bindings);
     }
 
     Result<> prepareNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
@@ -1823,7 +1816,7 @@ struct RenderGraphExecutor::Impl {
         profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::prepareNs);
         std::vector<RenderGraphExecutionContext::Binding> bindings;
         const size_t passIndex = size_t(&node - executionList.data());
-        auto synchronized = applyAccessPlan(commandBuffer, accessPlan.passes[passIndex], accessResources);
+        auto synchronized = applyAccessPlan(commandBuffer, accessPlan.passes[passIndex], accessResources, accessBindings);
         if (!synchronized) { return synchronized; }
 
         for (const RenderGraphField& field : node.reflection.fields()) {
@@ -1835,6 +1828,7 @@ struct RenderGraphExecutor::Impl {
                 .resource = resource,
                 .visibility = field.visibility,
                 .bindlessAccess = field.bindlessAccess,
+                .scope = scopeForGraphAccess(field.access, node.kind),
                 .bindlessHandle = resource != nullptr
                     ? resource->bindlessHandle
                     : BindlessHandle{},
@@ -2281,6 +2275,7 @@ Result<> RenderGraphExecutor::compile(
     }
     impl_->accessPlan = {};
     impl_->accessResources.clear();
+    impl_->accessBindings.clear();
     if (!registerBuiltInRenderSubsystems(*impl_->subsystemHost, log)) {
         impl_->isCompiled = false;
         return makeError(Error::InvalidArgument);

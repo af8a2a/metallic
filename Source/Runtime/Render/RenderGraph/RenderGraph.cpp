@@ -469,7 +469,7 @@ QueueType UnsafePass::queueType() const
 
 Result<> RenderGraphExecutionContext::parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics)
 {
-    if (!compute || !graphics) { return makeError(Error::InvalidArgument); }
+    if (computeStagesActive_ || !compute || !graphics) { return makeError(Error::InvalidArgument); }
     if (parallelRecorder_) { return parallelRecorder_(*this, compute, graphics); }
     Result<> result = compute(commandBuffer());
     return result ? graphics(commandBuffer()) : result;

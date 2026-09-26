@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -258,6 +259,27 @@ struct RenderPreparationTask {
     std::function<Result<>()> prepare;
 };
 
+struct RenderGraphStageUse {
+    // Reflected field or named private buffer import. Access is for this stage.
+    std::string_view resource;
+    RenderGraphResourceAccess access = RenderGraphResourceAccess::None;
+};
+
+struct RenderGraphComputeStage {
+    std::string_view name;
+    std::span<const RenderGraphStageUse> uses;
+    std::function<Result<>(CommandBuffer&)> record;
+};
+
+struct RenderGraphBufferImport {
+    std::string_view name;
+    BufferSlice buffer;
+    // Conservative incoming and outgoing access contract on this queue. Content
+    // invalidation/reset does not discard prior GPU hazards. The caller orders
+    // prior external work before this sequence; imports do not introduce waits.
+    RenderGraphResourceAccess access = RenderGraphResourceAccess::BufferStorageReadWrite;
+};
+
 class RenderGraphExecutionContext {
 public:
     CommandBuffer& commandBuffer() const { return *commandBuffer_; }
@@ -298,6 +320,13 @@ public:
     // join before subsequent commands. Reacquire commandBuffer() after this call.
     // Only declared shared resources may cross queues. No submission occurs here.
     Result<> parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics);
+    // One synchronous, single-queue sequence per pass execution. All declarations
+    // are checked before recording. Callbacks must stay within their declared
+    // accesses; graph fields cannot exceed reflection or change image layouts.
+    // Buffer slices retain allocation identity; planning currently covers whole
+    // allocations. Keep all pass GPU resource accesses inside these stages.
+    Result<> executeComputeStages(std::span<const RenderGraphComputeStage> stages,
+        std::span<const RenderGraphBufferImport> imports = {});
     // Join independent CPU jobs before returning, including on failure. Capture
     // frozen inputs and distinct output slots; never capture this context or
     // mutate frame/history/subsystems, issue commands, or publish from a job.
@@ -347,6 +376,7 @@ private:
         RenderGraphResource* resource = nullptr;
         RenderGraphFieldVisibility visibility = RenderGraphFieldVisibility::Output;
         RenderGraphBindlessAccess bindlessAccess = RenderGraphBindlessAccess::None;
+        SyncScope scope;
         BindlessHandle bindlessHandle;
         BindlessHandle sampledImageBindlessHandle;
     };
@@ -392,6 +422,8 @@ private:
     IRenderDebugObserver* debugObserver_ = nullptr;
     uint32_t debugPassId_ = 0;
     bool debugAfterPassPublished_ = false;
+    bool computeStagesExecuted_ = false;
+    bool computeStagesActive_ = false;
 
     friend class RenderGraphExecutor;
 };

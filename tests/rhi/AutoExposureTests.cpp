@@ -1,5 +1,6 @@
 #include "RhiTest.h"
 #include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -44,6 +45,201 @@ public:
     }
 private:
     render::ComputeProgram program_;
+};
+
+// Consume every AutoExposure export in another pass. This checks that the
+// internal histogram/reduce/apply phases publish their writes to graph users.
+class AutoExposureReadbackPass final : public render::ComputePass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    render::CpuRecordingPolicy cpuRecordingPolicy() const override
+    {
+        return render::CpuRecordingPolicy::ParallelJoined;
+    }
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
+    {
+        const uint64_t histogramBytes = uint64_t((context.width + 15) / 16) *
+            ((context.height + 15) / 16) * 64 * sizeof(uint32_t);
+        render::RenderPassReflection reflection;
+        reflection.addBufferInput("exposure").buffer(16, 16).transferRead();
+        reflection.addBufferInput("histogram").buffer(histogramBytes, 4).transferRead();
+        reflection.addTextureInput("color").transferRead().format = render::Format::Rgba8Unorm;
+        reflection.addBufferOutput("data")
+            .buffer(16 + histogramBytes + uint64_t(context.width) * context.height * 4)
+            .transferWrite().hostReadback();
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        const auto exposure = context.inputBuffer("exposure");
+        const auto histogram = context.inputBuffer("histogram");
+        const auto color = context.inputTexture("color");
+        const auto data = context.outputBuffer("data");
+        if (!exposure.valid() || !histogram.valid() || !color.valid() || !data.valid()) {
+            return render::makeError(render::Error::InvalidArgument);
+        }
+        auto& commands = context.commandBuffer();
+        commands.copyBuffer({.source = exposure.buffer(), .destination = data.buffer(), .size = 16});
+        commands.copyBuffer({.source = histogram.buffer(), .destination = data.buffer(),
+            .destinationOffset = 16, .size = histogram.desc().size});
+        commands.copyTextureToBuffer({.texture = color.texture(), .buffer = data.buffer(),
+            .bufferOffset = 16 + histogram.desc().size, .width = context.width(), .height = context.height()});
+        return {};
+    }
+};
+
+class AutoExposureInternalStagesTest final : public RhiTest {
+public:
+    AutoExposureInternalStagesTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "auto_exposure_internal_stages_exports_and_cancel";
+    }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        constexpr uint32_t kWidth = 63, kHeight = 37;
+        constexpr uint32_t kTilesX = (kWidth + 15) / 16, kTilesY = (kHeight + 15) / 16;
+        constexpr uint32_t kHistogramCount = kTilesX * kTilesY * 64;
+        render::registerRenderGraphPassType("AutoExposureFixturePass", "HDR test fixture",
+            [] { return std::make_unique<AutoExposureFixturePass>(); });
+        render::registerRenderGraphPassType("AutoExposureReadbackPass", "Auto exposure graph consumer",
+            [] { return std::make_unique<AutoExposureReadbackPass>(); });
+        for (bool preferUnified : {false, true}) {
+            std::atomic_uint validationErrors{0};
+            std::unique_ptr<render::Device> device;
+            auto result = render::createDevice({.applicationName = "Auto exposure internal stages",
+                .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+                .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
+                    if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+                        ++*static_cast<std::atomic_uint*>(target);
+                    }
+                }, &validationErrors}, .preferUnifiedImageLayouts = preferUnified})
+                .transform([&](auto value) { device = std::move(value); });
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip("requires bindless descriptors");
+            }
+            if (!result) { return RhiTestResult::fail("internal-stage device creation failed"); }
+            auto* queue = device->getQueue(render::QueueType::Graphics);
+            if (queue == nullptr) { return RhiTestResult::fail("internal-stage device has no graphics queue"); }
+            for (uint32_t workers : {1u, 4u}) {
+                render::RenderWorld world;
+                scene::LightingSettings lighting;
+                lighting.autoExposure.lowPercent = 0;
+                lighting.autoExposure.highPercent = 100;
+                lighting.autoExposure.transitionDistance = 0;
+                lighting.autoExposure.speedUp = 3;
+                lighting.autoExposure.speedDown = 1;
+                if (!world.setLighting(lighting)) { return RhiTestResult::fail("lighting setup failed"); }
+                render::RenderGraph graph;
+                const auto sourceId = graph.addNode("AutoExposureFixturePass", "Source")->id;
+                graph.addNode("AutoExposurePass", "Exposure", {{"adaptationDeltaSeconds", 0.1f}, {"toneCurve", "none"}});
+                graph.addNode("AutoExposureReadbackPass", "Readback");
+                graph.addEdge("Source.color", "Exposure.source");
+                graph.addEdge("Exposure.histogram", "Readback.histogram");
+                graph.addEdge("Exposure.exposure", "Readback.exposure");
+                graph.addEdge("Exposure.color", "Readback.color");
+                graph.markOutput("Readback.data");
+                render::RenderGraphExecutor executor;
+                executor.bindRenderWorld(&world);
+                std::string log;
+                if (!executor.compile(*device, graph, kWidth, kHeight, log)) {
+                    return RhiTestResult::fail("internal-stage graph compilation failed: " + log);
+                }
+                std::unique_ptr<render::CommandPool> pool;
+                std::unique_ptr<render::CommandBuffer> commands;
+                std::unique_ptr<render::Fence> fence;
+                if (!device->createCommandPool(*queue).transform([&](auto value) { pool = std::move(value); }) ||
+                    !pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }) ||
+                    !device->createFence(false).transform([&](auto value) { fence = std::move(value); })) {
+                    return RhiTestResult::fail("external recording setup failed");
+                }
+                auto setLuminance = [&](float luminance) {
+                    graph.findNode(sourceId)->runtimeProperties = {{"luminance", luminance}};
+                    executor.syncRuntimeProperties(graph);
+                };
+                auto submitExternal = [&](bool cancel) {
+                    if (!pool->reset() || !commands->begin() || !executor.execute(*commands) || !commands->end()) {
+                        return false;
+                    }
+                    if (cancel) { return pool->reset().has_value(); }
+                    render::CommandBuffer* submitted[] = {commands.get()};
+                    return fence->reset() && queue->submit({.commandBuffers = submitted, .commandBufferCount = 1,
+                        .signalFence = fence.get()}) && fence->wait(5'000'000'000ull);
+                };
+                auto checkOutput = [&](float luminance, float expectedEV) -> std::string {
+                    auto* output = executor.outputResource("Readback.data");
+                    if (output == nullptr || output->buffer == nullptr) { return "missing downstream readback"; }
+                    output->buffer->invalidate();
+                    const auto* mapped = static_cast<const uint8_t*>(output->buffer->map());
+                    if (mapped == nullptr) { return "downstream readback is not mapped"; }
+                    std::array<float, 4> exposure{};
+                    std::array<uint32_t, kHistogramCount> histogram{};
+                    std::array<uint32_t, kWidth * kHeight> pixels{};
+                    std::memcpy(exposure.data(), mapped, sizeof(exposure));
+                    std::memcpy(histogram.data(), mapped + sizeof(exposure), sizeof(histogram));
+                    std::memcpy(pixels.data(), mapped + sizeof(exposure) + sizeof(histogram), sizeof(pixels));
+                    output->buffer->unmap();
+                    for (float value : exposure) {
+                        if (!std::isfinite(value)) { return "downstream exposure is not finite"; }
+                    }
+                    if (std::abs(exposure[1] - expectedEV) > 0.02f ||
+                        std::abs(exposure[0] - std::exp2(-expectedEV)) > 0.02f ||
+                        std::abs(exposure[3] - luminance) > luminance * 0.02f) {
+                        return "downstream exposure did not observe histogram/reduce or temporal history";
+                    }
+                    for (uint32_t tileY = 0; tileY < kTilesY; ++tileY) {
+                        for (uint32_t tileX = 0; tileX < kTilesX; ++tileX) {
+                            uint32_t weight = 0;
+                            for (uint32_t bin = 0; bin < 64; ++bin) {
+                                weight += histogram[(tileY * kTilesX + tileX) * 64 + bin];
+                            }
+                            const uint32_t expected = std::min(16u, kWidth - tileX * 16) *
+                                std::min(16u, kHeight - tileY * 16) * 256;
+                            if (weight != expected) { return "downstream histogram has missing or stale tile writes"; }
+                        }
+                    }
+                    const float linear = std::min(luminance * exposure[0], 1.0f);
+                    const float srgb = linear <= 0.0031308f ? linear * 12.92f
+                        : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+                    const int expected = static_cast<int>(std::lround(srgb * 255));
+                    for (uint32_t pixel : pixels) {
+                        if ((pixel >> 24) != 255) { return "downstream color has unwritten pixels"; }
+                        for (uint32_t shift : {0u, 8u, 16u}) {
+                            if (std::abs(static_cast<int>((pixel >> shift) & 255) - expected) > 1) {
+                                return "apply or downstream color copy did not observe the reduced exposure";
+                            }
+                        }
+                    }
+                    return {};
+                };
+                for (uint32_t frame = 0; frame < 4; ++frame) {
+                    const float luminance = frame == 0 ? 0.18f : 0.72f;
+                    setLuminance(luminance);
+                    const bool executed = (frame & 1u) != 0 ? submitExternal(false)
+                        : executor.execute({.graphicsQueue = queue, .recordingWorkerLimit = workers}) &&
+                            executor.waitForSubmittedWork();
+                    if (!executed) { return RhiTestResult::fail("mixed execution entry points failed"); }
+                    const std::string failure = checkOutput(luminance, frame * 0.3f);
+                    if (!failure.empty()) { return RhiTestResult::fail(failure); }
+                }
+                // Cancelling a recorded frame must invalidate its adaptation
+                // history without committing accesses that never reached the GPU.
+                setLuminance(0.18f);
+                if (!submitExternal(true)) { return RhiTestResult::fail("cancelled exposure recording failed"); }
+                setLuminance(0.72f);
+                if (!executor.execute({.graphicsQueue = queue, .recordingWorkerLimit = workers}) ||
+                    !executor.waitForSubmittedWork()) {
+                    return RhiTestResult::fail("exposure execution after cancellation failed");
+                }
+                const std::string failure = checkOutput(0.72f, 2.0f);
+                if (!failure.empty()) { return RhiTestResult::fail("cancelled history reset: " + failure); }
+            }
+            if (validationErrors.load() != 0) {
+                return RhiTestResult::fail("Vulkan validation rejected AutoExposure internal-stage synchronization");
+            }
+        }
+        return RhiTestResult::pass("histogram/reduce/apply exports, temporal history, external cancellation, 1/4 workers and both layout policies");
+    }
 };
 
 class AutoExposureGpuTest final : public RhiTest {
@@ -230,5 +426,6 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(AutoExposureGpuTest);
 METALLIC_REGISTER_RHI_TEST(AutoExposureSrgbTest);
+METALLIC_REGISTER_RHI_TEST(AutoExposureInternalStagesTest);
 } // namespace
 } // namespace metallic::tests

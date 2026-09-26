@@ -86,6 +86,72 @@ SyncScope scopeForGraphAccess(RenderGraphResourceAccess access, RenderGraphPassK
     return {};
 }
 
+Result<GraphAccessBinding> bindGraphAccessResource(const RenderGraphResource& resource)
+{
+    if (resource.type == RenderGraphResourceType::Texture2D) {
+        if (!resource.texture || resource.buffer || !resource.desc.mipCount || !resource.desc.layerCount) {
+            return makeError(Error::InvalidArgument);
+        }
+        return GraphAccessBinding{.texture = resource.texture,
+            .mipCount = resource.desc.mipCount, .layerCount = resource.desc.layerCount};
+    }
+    if (resource.type != RenderGraphResourceType::Buffer || !resource.buffer || resource.texture ||
+        !resource.bufferDesc.size) {
+        return makeError(Error::InvalidArgument);
+    }
+    auto slice = resource.buffer->slice(0, resource.bufferDesc.size);
+    if (!slice) { return makeError(slice.error()); }
+    return GraphAccessBinding{.buffer = std::move(*slice)};
+}
+
+Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPassPlan& pass,
+    std::span<const GraphAccessBinding> bindings)
+{
+    // Validate the complete boundary before recording any barrier or retaining
+    // allocations. Each binding represents exactly one native resource kind.
+    const auto validBinding = [&](size_t resource) {
+        if (resource >= bindings.size()) { return false; }
+        const auto& binding = bindings[resource];
+        if (binding.texture) {
+            return !binding.buffer.valid() && binding.mipCount != 0 && binding.layerCount != 0 &&
+                binding.mipCount <= binding.texture->desc().mipCount &&
+                binding.layerCount <= binding.texture->desc().layerCount;
+        }
+        return binding.buffer.valid() && binding.buffer.size() != 0 &&
+            binding.buffer.deviceIdentity() == commands.deviceIdentity();
+    };
+    for (const auto& use : pass.uses) {
+        if (!validBinding(use.resource)) { return makeError(Error::InvalidArgument); }
+    }
+    for (const auto& barrier : pass.barriers) {
+        if (!validBinding(barrier.resource)) { return makeError(Error::InvalidArgument); }
+    }
+
+    std::vector<TextureBarrierDesc> textures;
+    std::vector<MemoryBarrierDesc> memory;
+    for (const auto& barrier : pass.barriers) {
+        const auto& binding = bindings[barrier.resource];
+        if (binding.texture && !barrier.executionOnly) {
+            textures.push_back({.texture = binding.texture, .before = barrier.before, .after = barrier.after,
+                .baseMip = 0, .mipCount = binding.mipCount, .baseLayer = 0, .layerCount = binding.layerCount,
+                .beforeScope = barrier.beforeScope, .afterScope = barrier.afterScope});
+        } else {
+            // Buffers have no layout. Explicit execution-only dependencies also
+            // need this path because their empty access masks are intentional.
+            memory.push_back({barrier.beforeScope, barrier.afterScope});
+        }
+    }
+    for (const auto& use : pass.uses) {
+        const auto& binding = bindings[use.resource];
+        if (binding.buffer.valid()) {
+            auto retained = commands.retainResource(binding.buffer.retainAllocation());
+            if (!retained) { return retained; }
+        }
+    }
+    return commands.synchronize({.textures = textures.data(), .textureCount = uint32_t(textures.size()),
+        .memory = memory.data(), .memoryCount = uint32_t(memory.size())});
+}
+
 Result<GraphAccessPlan> buildGraphAccessPlan(
     std::span<const GraphAccessResource> resources,
     std::span<const GraphAccessPass> passes)
@@ -97,7 +163,7 @@ Result<GraphAccessPlan> buildGraphAccessPlan(
         const auto& resource = resources[index];
         auto& frontier = frontiers[index];
         frontier.state = resource.state;
-        if (resource.state != ResourceState::Undefined) {
+        if (resource.state != ResourceState::Undefined && !resource.boundarySynchronized) {
             SyncScope scope = resource.scope;
             if (scope.stages == PipelineStageBits::None) {
                 scope = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite};
