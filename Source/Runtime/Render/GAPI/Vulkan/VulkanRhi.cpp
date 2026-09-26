@@ -4408,6 +4408,11 @@ Queue& Queue::operator=(Queue&&) noexcept = default;
 
 Result<> Queue::submit(const QueueSubmitDesc& desc)
 {
+    return submitImpl(desc, false);
+}
+
+Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
+{
     METALLIC_TRACY_CPU_SCOPE("Queue Submit");
     if (impl_ == nullptr || impl_->queue == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
@@ -4459,11 +4464,14 @@ Result<> Queue::submit(const QueueSubmitDesc& desc)
         CommandBuffer* commandBuffer = desc.commandBuffers[index];
         if (commandBuffer == nullptr || commandBuffer->impl_ == nullptr ||
             commandBuffer->submission_ == nullptr || !commandBuffer->submission_->finished.load(std::memory_order_acquire) ||
-            !commandBuffer->submission_->canSubmit() || commandBuffer->recording_) {
+            !commandBuffer->submission_->canSubmit() || commandBuffer->recording_ ||
+            (commandBuffer->submission_->sealed && !tracked)) {
             return makeError(Error::InvalidArgument);
         }
         if (auto* frame = commandBuffer->frameContext_) {
-            if (!frame->recordingsFinished()) { return makeError(Error::InvalidArgument); }
+            if (frame->submissionMode() == FrameSubmissionMode::Pipelined) {
+                if (!tracked || !commandBuffer->submission_->sealed) { return makeError(Error::InvalidArgument); }
+            } else if (!frame->recordingsFinished()) { return makeError(Error::InvalidArgument); }
             retentionCounts[frame] += commandBuffer->submission_->resources.size();
         }
         for (const auto& wait : commandBuffer->dependencyWaits_) {
@@ -5081,6 +5089,17 @@ void Buffer::unmap()
         vmaUnmapMemory(impl_->device->allocator, impl_->allocation);
         impl_->mapped = nullptr;
     }
+}
+
+uint64_t Buffer::hostWriteAlignment() const
+{
+    if (!impl_ || !impl_->allocation) { return 1; }
+    VkMemoryPropertyFlags flags = 0;
+    vmaGetAllocationMemoryProperties(impl_->device->allocator, impl_->allocation, &flags);
+    if (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) { return 1; }
+    const VkPhysicalDeviceProperties* properties = nullptr;
+    vmaGetPhysicalDeviceProperties(impl_->device->allocator, &properties);
+    return properties->limits.nonCoherentAtomSize;
 }
 
 void Buffer::flush(uint64_t offset, uint64_t size)
@@ -5707,6 +5726,7 @@ CommandBuffer::CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl)
 
 CommandBuffer::~CommandBuffer()
 {
+    if (submission_) { submission_->owner = nullptr; submission_->cancel(); }
     if (impl_ != nullptr && impl_->commandBuffer != VK_NULL_HANDLE) {
         if (impl_->capturePool != nullptr) {
             // Nsight 2026.3.1 retains freed wrappers in its event polling list.
@@ -5724,8 +5744,23 @@ CommandBuffer::~CommandBuffer()
     }
 }
 
-CommandBuffer::CommandBuffer(CommandBuffer&&) noexcept = default;
-CommandBuffer& CommandBuffer::operator=(CommandBuffer&&) noexcept = default;
+CommandBuffer::CommandBuffer(CommandBuffer&& other) noexcept
+    : impl_(std::move(other.impl_)), frameContext_(std::exchange(other.frameContext_, nullptr)),
+      submission_(std::move(other.submission_)), frameRecording_(std::move(other.frameRecording_)),
+      dependencyWaits_(std::move(other.dependencyWaits_)), dependencyLifetimes_(std::move(other.dependencyLifetimes_)),
+      recording_(std::exchange(other.recording_, false))
+{
+    if (submission_) { submission_->owner = this; }
+}
+
+CommandBuffer& CommandBuffer::operator=(CommandBuffer&& other) noexcept
+{
+    if (this != &other) {
+        this->~CommandBuffer();
+        new (this) CommandBuffer(std::move(other));
+    }
+    return *this;
+}
 
 QueueAccessBits CommandBuffer::queueCapabilities() const
 {
@@ -5739,7 +5774,8 @@ QueueAccessBits CommandBuffer::queueCapabilities() const
 
 Result<> CommandBuffer::begin(RenderFrameContext* frameContext)
 {
-    if (impl_ == nullptr || (frameContext != nullptr && !frameContext->recording())) {
+    if (impl_ == nullptr || (frameContext != nullptr && !frameContext->recording()) ||
+        (submission_ && submission_->sealed && !submission_->submitted && !submission_->cancelled)) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -5765,6 +5801,7 @@ Result<> CommandBuffer::begin(RenderFrameContext* frameContext)
     if (result) {
         if (submission_ != nullptr) { submission_->cancel(); }
         submission_ = std::make_shared<detail::CommandSubmissionState>();
+        submission_->owner = this;
         impl_->submissions->add(submission_);
         if (frameContext != nullptr) { frameContext->recordings_.add(submission_); }
         dependencyWaits_.clear();

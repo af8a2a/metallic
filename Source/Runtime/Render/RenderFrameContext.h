@@ -10,7 +10,9 @@
 namespace metallic::render {
 
 // A CPU publication made while recording. Submission means the queue accepted
-// the commands, not that the GPU finished. Callbacks must not throw or submit work.
+// the commands, not that the GPU finished. Callbacks must not throw or reenter
+// submission/frame lifecycle. Status reads may be concurrent; cancellation and
+// queue acceptance must be serialized by their coordinator.
 class SubmissionTransaction {
 public:
     SubmissionTransaction(std::function<void()> submitted, std::function<void()> cancelled);
@@ -23,7 +25,7 @@ public:
 
 private:
     enum class Status { Pending, Submitted, Cancelled };
-    Status status_ = Status::Pending;
+    std::atomic<Status> status_ = Status::Pending;
     bool attached_ = false;
     std::function<void()> submitted_;
     std::function<void()> cancelled_;
@@ -38,9 +40,11 @@ struct CommandSubmissionState {
     bool canSubmit() const;
     void submit() noexcept;
     void cancel() noexcept;
-    bool submitted = false;
-    bool cancelled = false;
+    std::atomic<bool> submitted = false;
+    std::atomic<bool> cancelled = false;
     std::atomic<bool> finished = false;
+    bool sealed = false; // Coordinator only, after finished publication.
+    CommandBuffer* owner = nullptr; // Invalidated by wrapper destruction/move.
     std::vector<std::shared_ptr<SubmissionTransaction>> transactions;
     std::vector<std::shared_ptr<void>> resources;
 };
@@ -52,8 +56,8 @@ struct CommandSubmissionRegistry {
 };
 } // namespace detail
 
-// Copies refer to the same one-shot recording/batch. A batch becomes waitable
-// only after it is sealed, and completes when every contributing queue finishes.
+// Immutable identity during recording; a published point becomes waitable.
+// A frame point is published only after its submission window closes.
 class GpuCompletionPoint {
 public:
     bool valid() const { return state_ != nullptr; }
@@ -74,12 +78,43 @@ private:
     friend class QueueSubmissionTracker;
     friend class CommandBuffer;
     friend class CommandRecordingContext;
+    friend class RecordedBatch;
+};
+
+enum class FrameSubmissionMode { Joined, Pipelined };
+
+// CPU hand-off only: seal neither submits commands nor closes the frame.
+// Transaction cancellation is revalidated at acceptance, not during CPU seal.
+// Command buffers/pools must remain alive and untouched through GPU completion.
+class RecordedBatch {
+public:
+    Result<> seal(RenderFrameContext& frame, std::span<CommandBuffer* const> commands);
+    bool valid() const;
+
+private:
+    RenderFrameContext* frame_ = nullptr;
+    GpuCompletionPoint generation_;
+    std::vector<CommandBuffer*> commands_;
+    std::vector<std::shared_ptr<detail::CommandSubmissionState>> states_;
+    friend class QueueSubmissionTracker;
+};
+
+// Queue acceptance is distinct from GPU completion. An empty receipt never
+// exposes a reserved timeline value, including after a failed submission.
+class SubmissionReceipt {
+public:
+    bool accepted() const { return completion_.isSubmitted(); }
+    const GpuCompletionPoint& completion() const { return completion_; }
+private:
+    GpuCompletionPoint completion_;
+    friend class QueueSubmissionTracker;
 };
 
 // CPU recording lifetime and GPU submission lifetime are deliberately separate.
 // Device and Queue must outlive their contexts, completion points and resources.
 // Lifecycle/retain calls belong to the coordinator. Join all recording workers
-// before cancel/reset/submit; workers retain through their CommandBuffer only.
+// before cancel/reset/frame seal; a sealed batch can submit while other contexts
+// record. Workers retain through their CommandBuffer only.
 class RenderFrameContext {
 public:
     explicit RenderFrameContext(uint32_t slotIndex = 0) : slotIndex_(slotIndex) {}
@@ -87,17 +122,23 @@ public:
     RenderFrameContext(const RenderFrameContext&) = delete;
     RenderFrameContext& operator=(const RenderFrameContext&) = delete;
 
-    Result<> begin(uint64_t frameIndex, uint64_t timeoutNanoseconds = UINT64_MAX);
+    Result<> begin(uint64_t frameIndex, uint64_t timeoutNanoseconds = UINT64_MAX,
+        FrameSubmissionMode mode = FrameSubmissionMode::Joined);
     Result<> wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
     // Roll back unsubmitted recordings in reverse order. They become invalid for
     // submission and must be reset before reuse. Accepted segments remain alive.
     void cancel();
-    // Seal a batch after its final successful segment, including partial failure.
+    // Close admission after all recording workers join. Already sealed batches
+    // may still submit; this does not publish the aggregate GPU completion.
+    Result<> sealRecording();
+    // Close admission, cancel any unaccepted tail, then publish all accepted work.
     Result<> finishSubmission();
     Result<> reset();
     bool recording() const;
-    // Coordinator only. All native recordings must finish before any submission.
+    // Coordinator only. Joined mode requires this before any submission.
     bool recordingsFinished() const;
+    bool hasAcceptedWork() const;
+    FrameSubmissionMode submissionMode() const { return submissionMode_; }
     void retain(std::shared_ptr<void> resource);
     Result<> addDependency(GpuCompletionPoint completion);
     uint64_t frameIndex() const { return frameIndex_; }
@@ -108,6 +149,8 @@ private:
     uint32_t slotIndex_ = 0;
     uint64_t frameIndex_ = 0;
     GpuCompletionPoint completion_;
+    std::atomic<bool> recordingOpen_ = false;
+    FrameSubmissionMode submissionMode_ = FrameSubmissionMode::Joined;
     std::vector<std::shared_ptr<void>> resources_;
     std::vector<GpuCompletionPoint> dependencies_;
     detail::CommandSubmissionRegistry recordings_;
@@ -146,8 +189,11 @@ public:
     QueueSubmissionTracker& operator=(const QueueSubmissionTracker&) = delete;
     Result<> initialize(Device& device, Queue& queue);
     Result<> submit(const QueueSubmitDesc& desc, RenderFrameContext& frame);
-    // All command buffers must be recorded before the first segment is submitted.
-    // The returned point covers this segment; frame.completion() covers the batch.
+    // synchronization contains waits/signals only. Receipts cover exactly this
+    // batch; frame.completion() covers every accepted batch on every queue.
+    Result<> submitBatch(const RecordedBatch& batch, const QueueSubmitDesc& synchronization,
+        RenderFrameContext& frame, SubmissionReceipt& receipt);
+    // Compatibility adapter: seals these commands and returns their GPU point.
     Result<> submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame,
         GpuCompletionPoint& completion);
     Result<> wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;

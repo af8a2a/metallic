@@ -15,12 +15,13 @@ struct RenderGraphSubmitDesc {
     // Dependencies supplied by the caller, retained until this graph completes.
     std::span<const GpuCompletionPoint> waitCompletions;
     uint64_t slotWaitTimeoutNanoseconds = UINT64_MAX;
-    // 0 uses up to eight TaskSystem workers; 1 records inline. Native submission
-    // always starts after every batch has joined. A queue change starts a batch.
+    // 0 uses up to eight TaskSystem workers; 1 records inline. A queue change
+    // starts a batch. Pipelining requires every pass's explicit safety contract.
     uint32_t recordingWorkerLimit = 0;
     uint32_t recordingBatchWorkload = 8;
     // Pure preparation uses the same worker limit, with independent CPU batches.
     uint32_t preparationBatchWorkload = 1;
+    FrameSubmissionMode submissionMode = FrameSubmissionMode::Pipelined;
 };
 
 struct RenderGraphCompileOptions {
@@ -58,6 +59,10 @@ struct RenderGraphExecutionStats {
     uint32_t parallelRecordedPassCount = 0;
     uint32_t recordingTaskCount = 0;
     uint32_t preparationTaskCount = 0;
+    bool pipelinedSubmission = false;
+    uint32_t submittedBatchCount = 0;
+    uint32_t batchesSubmittedWhileRecording = 0;
+    std::vector<std::string> submissionBlockingPasses;
 };
 
 class RenderGraphExecutor {

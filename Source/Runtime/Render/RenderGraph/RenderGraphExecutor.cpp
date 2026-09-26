@@ -21,9 +21,12 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
@@ -2918,6 +2921,15 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         return queue != nullptr ? queue : desc.graphicsQueue;
     };
     const bool subsystemCommands = impl_->requiredSubsystemIds.size() > 1;
+    std::vector<std::string> submissionBlockingPasses;
+    for (const auto& node : impl_->executionList) {
+        if (!node.pass->supportsPipelinedSubmission() || node.preparedScene ||
+            node.sceneDependency.source != RenderGraphSceneSource::None || !node.pass->requiredSubsystems().empty()) {
+            submissionBlockingPasses.push_back(node.name);
+        }
+    }
+    const bool pipelined = desc.submissionMode == FrameSubmissionMode::Pipelined &&
+        submissionBlockingPasses.empty() && !subsystemCommands && !impl_->debugObserver && !desc.historyResources;
     if (desc.graphicsQueue != nullptr && desc.graphicsQueue->type() != QueueType::Graphics) {
         return makeError(Error::InvalidArgument);
     }
@@ -2991,7 +3003,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     }
     phase.next("graph.frameBegin");
     preparationPhase.next("Frame begin");
-    result = slot.frame.begin(frameIndex, 0);
+    result = slot.frame.begin(frameIndex, 0, pipelined ? FrameSubmissionMode::Pipelined : FrameSubmissionMode::Joined);
     if (!result) { return result; }
     phase.next("graph.frameSetup");
     preparationPhase.next("Frame setup");
@@ -3020,12 +3032,16 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     impl_->lastExecutionStats.drainReasonMask = drainReasonMask;
     impl_->lastExecutionStats.externalCompletionCount = uint32_t(externalDependencies.size());
     impl_->lastExecutionStats.overlapBlockingPasses = std::move(overlapBlockingPasses);
+    impl_->lastExecutionStats.pipelinedSubmission = pipelined;
+    impl_->lastExecutionStats.submissionBlockingPasses = std::move(submissionBlockingPasses);
     const auto updateCpuTime = [&]() {
         impl_->lastExecutionStats.cpuMilliseconds = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - cpuBegin).count();
         for (auto& timing : impl_->gpuTimingSlots) {
             if (timing.pending && timing.stats.executionId == frameIndex) {
                 timing.stats.cpuMilliseconds = impl_->lastExecutionStats.cpuMilliseconds;
+                timing.stats.submittedBatchCount = impl_->lastExecutionStats.submittedBatchCount;
+                timing.stats.batchesSubmittedWhileRecording = impl_->lastExecutionStats.batchesSubmittedWhileRecording;
             }
         }
     };
@@ -3034,7 +3050,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         impl_->historyResources = nullptr;
         impl_->activeGpuTimingSlot = nullptr;
         impl_->activeGpuTimingValid = false;
-        const bool discardAll = slot.frame.recording();
+        const bool discardAll = !slot.frame.hasAcceptedWork();
         // Roll back in reverse recording order before destroying individual
         // command buffers; container destruction order is not transaction order.
         slot.frame.cancel(); // Preserves resources for any accepted prefix.
@@ -3054,6 +3070,8 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         // Resource states were advanced while recording. Recompile before retrying.
         impl_->isCompiled = false;
         if (desc.historyResources != nullptr) {
+            // A partially accepted legacy graph can still reference history.
+            (void)slot.frame.wait();
             desc.historyResources->reset();
             (void)desc.historyResources->initialize(*impl_->device);
         }
@@ -3112,6 +3130,63 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         auto& predecessors = segments[destination].predecessors;
         if (source != destination && std::find(predecessors.begin(), predecessors.end(), source) == predecessors.end()) {
             predecessors.push_back(source);
+        }
+    };
+    struct PendingBatch {
+        size_t end = 0;
+        RecordedBatch commands;
+    };
+    std::map<size_t, PendingBatch> sealedBatches;
+    size_t nextSubmission = 0;
+    std::unordered_set<Queue*> startedQueues;
+    // Seal contiguous commands only. Merging across another queue can introduce
+    // a cycle (graphics A -> compute B -> graphics C).
+    const auto sealRange = [&](size_t first, size_t end, bool coalesce = false) -> Result<> {
+        while (first < end) {
+            size_t last = first + 1;
+            while (coalesce && last < end && segments[last].queue == segments[first].queue) { ++last; }
+            std::vector<CommandBuffer*> commands;
+            for (size_t i = first; i < last; ++i) { commands.push_back(segments[i].commandBuffer); }
+            PendingBatch batch{.end = last};
+            auto sealed = batch.commands.seal(slot.frame, commands);
+            if (!sealed) { return sealed; }
+            sealedBatches.emplace(first, std::move(batch));
+            first = last;
+        }
+        return {};
+    };
+    // Stable graph order preserves actual-queue order even when queue wrappers
+    // alias. A consumer is never submitted against a merely reserved signal.
+    const auto submitReady = [&](bool whileRecording = false) -> Result<> {
+        for (;;) {
+            auto ready = sealedBatches.find(nextSubmission);
+            if (ready == sealedBatches.end()) { return {}; }
+            const size_t end = ready->second.end;
+            Queue* queue = segments[nextSubmission].queue;
+            std::vector<SemaphoreSubmitDesc> waits;
+            if (!startedQueues.contains(queue)) { waits = initialWaits; }
+            for (size_t i = nextSubmission; i < end; ++i) {
+                for (size_t predecessor : segments[i].predecessors) {
+                    if (predecessor >= nextSubmission && predecessor < end) { continue; }
+                    const auto& producer = segments[predecessor];
+                    if (!producer.completion.isSubmitted()) { return makeError(Error::InvalidArgument); }
+                    if (!producer.queue->sameQueue(*queue)) {
+                        auto appended = producer.completion.appendWaits(waits);
+                        if (!appended) { return appended; }
+                    }
+                }
+            }
+            SubmissionReceipt receipt;
+            auto accepted = impl_->submissionTrackers.at(queue)->submitBatch(ready->second.commands, {
+                .waitSemaphores = waits.data(), .waitSemaphoreCount = uint32_t(waits.size()),
+            }, slot.frame, receipt);
+            if (!accepted) { return accepted; }
+            startedQueues.insert(queue);
+            for (size_t i = nextSubmission; i < end; ++i) { segments[i].completion = receipt.completion(); }
+            ++impl_->lastExecutionStats.submittedBatchCount;
+            if (whileRecording) { ++impl_->lastExecutionStats.batchesSubmittedWhileRecording; }
+            nextSubmission = end;
+            sealedBatches.erase(ready);
         }
     };
     RenderGraphExecutionContext::ParallelRecorder parallel;
@@ -3177,6 +3252,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (!result) { return abort(result); }
     }
     std::unordered_map<std::string, size_t> lastResourceUse;
+    result = sealRange(0, segments.size());
+    if (result && pipelined) { result = submitReady(); }
+    if (!result) { return abort(result); }
     size_t orderingBoundary = segments.empty() ? SIZE_MAX : 0;
     const auto taskSystem = task::detail::tryAcquireTaskSystem();
     const uint32_t workerLimit = taskSystem && !task::isInsideTaskCallback() && !impl_->debugObserver
@@ -3185,14 +3263,19 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     impl_->preparationBatchWorkload = desc.preparationBatchWorkload;
     struct RecordingBatch {
         CommandRecordingContext* context = nullptr;
+        size_t first = 0;
         uint64_t workload = 0;
         std::vector<std::unique_ptr<Impl::NodeRecording>> nodes;
         Result<> result = makeError(Error::Failure);
+        std::atomic<bool> done = false;
+        bool sealed = false;
     };
     std::vector<std::unique_ptr<RecordingBatch>> batches;
     const auto flushRecordings = [&]() -> Result<> {
         if (batches.empty()) { return {}; }
         phase.next("graph.recordBatches", batches.size());
+        std::mutex completionMutex;
+        std::condition_variable completionCv;
         const auto record = [&](RecordingBatch& batch) {
             try {
                 batch.result = batch.context->record([&]() -> Result<> {
@@ -3206,6 +3289,31 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                 spdlog::error("[RenderGraph] Recording task failed: {}", error.what());
                 batch.result = makeError(Error::Failure);
             } catch (...) { batch.result = makeError(Error::Failure); }
+            batch.done.store(true, std::memory_order_release);
+            completionCv.notify_one();
+        };
+        Result<> submitted;
+        const auto collectBatches = [&]() {
+            // Observe every completed failure before accepting another batch.
+            for (const auto& batch : batches) {
+                if (batch->done.load(std::memory_order_acquire) && !batch->result) {
+                    submitted = batch->result;
+                    return;
+                }
+            }
+            if (!submitted) { return; }
+            for (auto& batch : batches) {
+                if (!batch->sealed && batch->done.load(std::memory_order_acquire)) {
+                    submitted = sealRange(batch->first, batch->first + batch->nodes.size(), true);
+                    if (!submitted) { return; }
+                    batch->sealed = true;
+                }
+            }
+            if (pipelined) {
+                const bool recording = std::any_of(batches.begin(), batches.end(),
+                    [](const auto& batch) { return !batch->done.load(std::memory_order_acquire); });
+                submitted = submitReady(recording);
+            }
         };
         bool completed = true;
         if (batches.size() > 1) {
@@ -3219,11 +3327,25 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             if (!run) { return makeError(Error::Failure); }
             impl_->lastExecutionStats.recordingTaskCount += uint32_t(batches.size());
             for (const auto& batch : batches) { impl_->lastExecutionStats.parallelRecordedPassCount += uint32_t(batch->nodes.size()); }
+            try {
+                if (pipelined) {
+                    while (!run->isComplete()) {
+                        collectBatches();
+                        if (!submitted) { break; }
+                        std::unique_lock lock(completionMutex);
+                        // Bounded polling also handles TaskSystem shutdown cancelling
+                        // a job before it can publish done. No worker waits on us.
+                        completionCv.wait_for(lock, std::chrono::milliseconds(1));
+                    }
+                }
+            } catch (...) { submitted = makeError(Error::Failure); }
+            // Always join, including a queue error or exception after acceptance.
             auto joined = run->wait();
             completed = joined && joined->status == task::TaskGraphStatus::Succeeded;
         } else { record(*batches.front()); }
+        if (completed && submitted) { collectBatches(); }
         // Task completion order never changes submission/cancellation order.
-        Result<> result = completed ? Result<>{} : makeError(Error::Failure);
+        Result<> result = completed ? submitted : makeError(Error::Failure);
         for (auto& batch : batches) {
             ++impl_->lastExecutionStats.recordingBatchCount;
             if (result && !batch->result) { result = batch->result; }
@@ -3231,6 +3353,12 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         }
         batches.clear();
         return result;
+    };
+    const auto invokePass = [](auto&& callback) -> Result<> {
+        try { return callback(); }
+        catch (const std::exception& error) { spdlog::error("[RenderGraph] Pass callback failed: {}", error.what()); }
+        catch (...) { spdlog::error("[RenderGraph] Pass callback failed with an unknown exception"); }
+        return makeError(Error::Failure);
     };
     for (auto& node : impl_->executionList) {
         const QueueType type = selectedType(node);
@@ -3259,6 +3387,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                 }
                 auto created = std::make_unique<RecordingBatch>();
                 created->context = context.get();
+                created->first = segments.size();
                 batches.push_back(std::move(created));
             }
             batch = batches.back().get();
@@ -3291,13 +3420,13 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         }
         if (batch) {
             auto recording = std::make_unique<Impl::NodeRecording>();
-            result = impl_->prepareRecording(*recording, *segments[index].commandBuffer, node, frameIndex);
+            result = invokePass([&] { return impl_->prepareRecording(*recording, *segments[index].commandBuffer, node, frameIndex); });
             if (!result) { return abort(result); }
             batch->nodes.push_back(std::move(recording));
             continue;
         }
-        result = impl_->executeNode(*segments[index].commandBuffer, node, frameIndex,
-            segments[index].queue == desc.graphicsQueue ? parallel : RenderGraphExecutionContext::ParallelRecorder{});
+        result = invokePass([&] { return impl_->executeNode(*segments[index].commandBuffer, node, frameIndex,
+            segments[index].queue == desc.graphicsQueue ? parallel : RenderGraphExecutionContext::ParallelRecorder{}); });
         if (!result) {
             if (subsystemCommands && beginSegment(QueueType::Graphics)) {
                 std::string cleanupLog;
@@ -3311,9 +3440,13 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         for (auto& [name, last] : lastResourceUse) { if (last == index) { last = completedIndex; } }
         result = segments[completedIndex].commandBuffer->end();
         if (!result) { return abort(result); }
+        result = sealRange(index, completedIndex + 1);
+        if (result && pipelined) { result = submitReady(); }
+        if (!result) { return abort(result); }
     }
     result = flushRecordings();
     if (!result) { return abort(result); }
+    const size_t epilogueBegin = segments.size();
     if (subsystemCommands) {
         result = beginSegment(QueueType::Graphics);
         if (!result) { return abort(result); }
@@ -3339,26 +3472,11 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     impl_->historyResources = nullptr;
 
     phase.next("graph.submit", segments.size());
-    std::unordered_set<Queue*> startedQueues;
-    for (auto& segment : segments) {
-        std::vector<SemaphoreSubmitDesc> waits;
-        if (startedQueues.insert(segment.queue).second) { waits = initialWaits; }
-        for (size_t predecessor : segment.predecessors) {
-            const auto& producer = segments[predecessor];
-            if (producer.queue != segment.queue) {
-                result = producer.completion.appendWaits(waits);
-                if (!result) { return abort(result); }
-            }
-        }
-        CommandBuffer* buffer = segment.commandBuffer;
-        result = impl_->submissionTrackers.at(segment.queue)->submitSegment(QueueSubmitDesc{
-            .waitSemaphores = waits.data(),
-            .waitSemaphoreCount = static_cast<uint32_t>(waits.size()),
-            .commandBuffers = &buffer,
-            .commandBufferCount = 1,
-        }, slot.frame, segment.completion);
-        if (!result) { return abort(result); }
-    }
+    result = sealRange(epilogueBegin, segments.size());
+    if (result) { result = slot.frame.sealRecording(); }
+    if (result) { result = submitReady(); }
+    if (!result) { return abort(result); }
+    if (nextSubmission != segments.size()) { return abort(makeError(Error::Failure)); }
     phase.next("graph.sealAndFinish");
     result = slot.frame.finishSubmission();
     if (!result) { return abort(result); }

@@ -1466,6 +1466,8 @@ public:
 
 private:
     explicit Queue(std::unique_ptr<detail::QueueImpl> impl);
+    Result<> submitImpl(const QueueSubmitDesc& desc, bool tracked);
+    friend class QueueSubmissionTracker;
 
     std::unique_ptr<detail::QueueImpl> impl_;
 
@@ -1590,6 +1592,8 @@ public:
     // Retains this allocation, not the movable public wrapper. Device must outlive it.
     std::shared_ptr<void> retainAllocation() const;
     const void* deviceIdentity() const;
+    // Independent host writes must not share a non-coherent flush atom.
+    uint64_t hostWriteAlignment() const;
     void* map();
     void unmap();
     void flush(uint64_t offset = 0, uint64_t size = UINT64_MAX);
@@ -2148,6 +2152,7 @@ private:
     std::vector<std::shared_ptr<const void>> dependencyLifetimes_;
     bool recording_ = false;
 
+    friend class RecordedBatch;
     friend class QueueSubmissionTracker;
     friend class CommandPool;
     friend class StreamUploadCompletion;

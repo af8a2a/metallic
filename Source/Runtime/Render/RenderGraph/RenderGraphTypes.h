@@ -428,10 +428,16 @@ public:
     // private resources support the selected queue family. Other passes execute
     // on graphics and form an ordering boundary for independent graph branches.
     virtual bool supportsAsyncQueue() const { return false; }
+    // Includes prepareExecution, execute, and acceptance callbacks: none may
+    // modify host data/descriptors used by an earlier batch, or wait for later
+    // recordings. Private resources must survive the aggregate frame completion.
+    // Scene/SDK subsystems require a separate audit before graph-level opt-in.
+    virtual bool supportsPipelinedSubmission() const { return false; }
     // Independent of GPU queue selection and frame overlap. ParallelJoined may
     // touch only this pass's private state, immutable prepared inputs and its
     // command buffer. No frame/global mutation, SDK hooks or nested task waits.
-    // prepareExecution remains on the coordinator; execute is joined before submit.
+    // prepareExecution remains on the coordinator. Each context is handed back
+    // before its sealed batch submits; other contexts may still be recording.
     virtual CpuRecordingPolicy cpuRecordingPolicy() const { return CpuRecordingPolicy::Serial; }
     virtual uint32_t recordingWorkload() const { return 1; }
     virtual Result<> prepare(const RenderGraphCompileContext& context, std::string& log);

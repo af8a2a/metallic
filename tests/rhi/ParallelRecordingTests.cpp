@@ -153,6 +153,8 @@ struct RecordingProbe {
     uint32_t prepareArrived = 0;
     std::atomic<uint32_t> prepareFinished = 0;
     bool preparePublished = false;
+    render::TimestampQueryPool* progress = nullptr;
+    std::atomic<bool> gpuProgressObserved = false;
 };
 RecordingProbe* recordingProbe = nullptr;
 
@@ -160,6 +162,7 @@ class RecordingProbePass final : public render::RenderGraphPass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
+    bool supportsPipelinedSubmission() const override { return properties().value("pipeline", false); }
     render::CpuRecordingPolicy cpuRecordingPolicy() const override
     {
         return properties().value("serial", false) ? render::CpuRecordingPolicy::Serial : render::CpuRecordingPolicy::ParallelJoined;
@@ -185,6 +188,7 @@ public:
     render::Result<> prepareExecution(render::RenderGraphExecutionContext& context) override
     {
         if (std::this_thread::get_id() != recordingProbe->coordinator) { recordingProbe->wrongThread = true; }
+        if (properties().value("prepareThrow", false)) { throw std::runtime_error("Late preparation failure"); }
         if (!properties().value("prepareJobs", false)) { return {}; }
         auto& probe = *recordingProbe;
         const uint32_t failure = properties().value("prepareFailure", 0u);
@@ -241,7 +245,22 @@ public:
             }, [&probe, index] { probe.events.push_back(-int(index + 1)); }));
         if (!result) { return result; }
         probe.recorded[index] = true;
+        if (probe.progress && index == 2) {
+            // The later CPU batch cannot finish until the earlier copy really
+            // executes on the GPU. A joined-only implementation times out here.
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            render::TimestampQueryResult progress{};
+            do {
+                result = probe.progress->readResults(0, 1, &progress);
+                if (!result) { return result; }
+                if (progress.available) { break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            } while (std::chrono::steady_clock::now() < deadline);
+            if (!progress.available) { return render::makeError(render::Error::Failure); }
+            probe.gpuProgressObserved = true;
+        }
         if (properties().value("fail", false)) { return render::makeError(render::Error::Failure); }
+        if (properties().value("throw", false)) { throw std::runtime_error("Late recording failure"); }
         auto* target = context.outputBuffer("data").buffer();
         render::BufferSlice source;
         if (index == 0) {
@@ -263,6 +282,9 @@ public:
         render::BufferSlice destination;
         result = target->slice(0, 16).transform([&](auto value) { destination = std::move(value); });
         if (result) { result = commands.copyBuffer(source, destination); }
+        if (result && probe.progress && index == 0) {
+            result = commands.writeTimestamp(*probe.progress, 0, render::PipelineStageBits::BottomOfPipe);
+        }
         ++probe.finished;
         return result;
     }
@@ -550,6 +572,228 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(PreparationGraphTest);
+
+class PipelinedBatchTest final : public RhiTest {
+public:
+    PipelinedBatchTest() { type = RhiTestType::Command; name = "pipelined_batch_receipt_and_frame_completion"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderFrameContext frame;
+        render::CommandRecordingContext first, second;
+        render::QueueSubmissionTracker tracker;
+        std::unique_ptr<render::Semaphore> gate;
+        RECORD_REQUIRE(context.device.createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+        QueueDrain drain{context.graphicsQueue, *gate};
+        RECORD_REQUIRE(first.initialize(context.device, context.graphicsQueue));
+        RECORD_REQUIRE(second.initialize(context.device, context.graphicsQueue));
+        RECORD_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
+        RECORD_REQUIRE(frame.begin(0, UINT64_MAX, render::FrameSubmissionMode::Pipelined));
+        render::CommandBuffer* a = nullptr;
+        render::CommandBuffer* b = nullptr;
+        RECORD_REQUIRE(first.prepare(frame).transform([&](auto value) { a = value; }));
+        RECORD_REQUIRE(second.prepare(frame).transform([&](auto value) { b = value; }));
+        auto acceptedOwner = std::make_shared<int>(1);
+        std::weak_ptr<int> acceptedWeak = acceptedOwner;
+        RECORD_REQUIRE(a->retainResource(std::move(acceptedOwner)));
+        RECORD_REQUIRE(first.record([&] { return a->end(); }));
+        RECORD_CHECK(!tracker.submit({.commandBuffers = &a, .commandBufferCount = 1}, frame) && !frame.hasAcceptedWork());
+        render::RecordedBatch batch;
+        std::array<render::CommandBuffer*, 2> duplicates{a, a};
+        RECORD_CHECK(!batch.seal(frame, duplicates));
+        RECORD_REQUIRE(batch.seal(frame, {&a, 1}));
+        RECORD_CHECK(batch.valid() && frame.recording() && !frame.hasAcceptedWork());
+        RECORD_CHECK(!a->begin(&frame) && !frame.sealRecording());
+        RECORD_CHECK(!context.graphicsQueue.submit({.commandBuffers = &a, .commandBufferCount = 1}));
+        render::SubmissionReceipt receipt;
+        RECORD_CHECK(!tracker.submitBatch(batch, {.commandBuffers = &a, .commandBufferCount = 1}, frame, receipt));
+        RECORD_CHECK(!receipt.accepted() && batch.valid());
+        render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
+        RECORD_REQUIRE(tracker.submitBatch(batch, {.waitSemaphores = &wait, .waitSemaphoreCount = 1}, frame, receipt));
+        const auto prefix = receipt.completion();
+        RECORD_CHECK(receipt.accepted() && !prefix.isComplete() && frame.recording() && frame.hasAcceptedWork());
+        RECORD_CHECK(!frame.completion().isSubmitted() && frame.completion().value() == 0 && !frame.wait(0));
+        RECORD_CHECK(!tracker.submitBatch(batch, {}, frame, receipt) && !receipt.accepted());
+        auto tailOwner = std::make_shared<int>(2);
+        std::weak_ptr<int> tailWeak = tailOwner;
+        RECORD_REQUIRE(b->retainResource(std::move(tailOwner)));
+        RECORD_REQUIRE(second.record([&] { return b->end(); }));
+        // Admission stays open after native acceptance, even on the same pool.
+        render::CommandBuffer* c = nullptr;
+        RECORD_REQUIRE(first.prepare(frame).transform([&](auto value) { c = value; }));
+        RECORD_REQUIRE(first.record([&] { return c->end(); }));
+        render::RecordedBatch last;
+        RECORD_REQUIRE(last.seal(frame, {&c, 1}));
+        RECORD_REQUIRE(frame.sealRecording());
+        RECORD_CHECK(!frame.recording() && !first.prepare(frame) && !frame.completion().isSubmitted());
+        RECORD_REQUIRE(tracker.submitBatch(last, {}, frame, receipt));
+        RECORD_REQUIRE(frame.finishSubmission()); // Cancels unaccepted b only.
+        RECORD_CHECK(frame.completion().isSubmitted() && !frame.completion().isComplete());
+        RECORD_CHECK(!acceptedWeak.expired() && tailWeak.expired() && !first.reset());
+        RECORD_REQUIRE(gate->signal(1));
+        RECORD_REQUIRE(frame.wait(kTimeout));
+        RECORD_REQUIRE(prefix.wait(0));
+        RECORD_REQUIRE(first.reset());
+        RECORD_REQUIRE(second.reset());
+        RECORD_REQUIRE(frame.reset());
+        RECORD_CHECK(acceptedWeak.expired());
+        {
+            // Independent queue completion cannot release a blocked graphics
+            // prefix. A failed tail publishes only the signals actually accepted.
+            auto* copyQueue = context.device.getQueue(render::QueueType::Copy);
+            if (!copyQueue) { copyQueue = &context.graphicsQueue; }
+            render::CommandRecordingContext copyContext;
+            render::QueueSubmissionTracker copyTracker;
+            std::unique_ptr<render::Semaphore> partialGate;
+            RECORD_REQUIRE(context.device.createSemaphore().transform([&](auto value) { partialGate = std::move(value); }));
+            QueueDrain partialDrain{context.graphicsQueue, *partialGate};
+            RECORD_REQUIRE(copyContext.initialize(context.device, *copyQueue));
+            RECORD_REQUIRE(copyTracker.initialize(context.device, *copyQueue));
+            RECORD_REQUIRE(frame.begin(1, UINT64_MAX, render::FrameSubmissionMode::Pipelined));
+            RECORD_REQUIRE(first.prepare(frame).transform([&](auto value) { a = value; }));
+            RECORD_REQUIRE(second.prepare(frame).transform([&](auto value) { b = value; }));
+            auto owner = std::make_shared<int>(4);
+            std::weak_ptr<int> weak = owner;
+            RECORD_REQUIRE(a->retainResource(std::move(owner)));
+            RECORD_REQUIRE(first.record([&] { return a->end(); }));
+            render::RecordedBatch prefixBatch;
+            RECORD_REQUIRE(prefixBatch.seal(frame, {&a, 1}));
+            wait.semaphore = partialGate.get();
+            RECORD_REQUIRE(tracker.submitBatch(prefixBatch, {.waitSemaphores = &wait, .waitSemaphoreCount = 1}, frame, receipt));
+            render::CommandBuffer* copy = nullptr;
+            RECORD_REQUIRE(copyContext.prepare(frame).transform([&](auto value) { copy = value; }));
+            RECORD_REQUIRE(copyContext.record([&] { return copy->end(); }));
+            render::RecordedBatch copyBatch;
+            RECORD_REQUIRE(copyBatch.seal(frame, {&copy, 1}));
+            RECORD_REQUIRE(copyTracker.submitBatch(copyBatch, {}, frame, receipt));
+            if (!copyQueue->sameQueue(context.graphicsQueue)) { RECORD_REQUIRE(receipt.completion().wait(kTimeout)); }
+            auto rejected = std::make_shared<render::SubmissionTransaction>(nullptr, nullptr);
+            RECORD_REQUIRE(b->addSubmissionTransaction(rejected));
+            RECORD_REQUIRE(second.record([&] { return b->end(); }));
+            render::RecordedBatch tailBatch;
+            RECORD_REQUIRE(tailBatch.seal(frame, {&b, 1}));
+            rejected->cancel();
+            RECORD_CHECK(!tracker.submitBatch(tailBatch, {}, frame, receipt) && !receipt.accepted());
+            frame.cancel();
+            RECORD_CHECK(frame.completion().isSubmitted() && !frame.completion().isComplete() &&
+                frame.completion().value() == 0 && !weak.expired());
+            RECORD_REQUIRE(partialGate->signal(1));
+            RECORD_REQUIRE(frame.wait(kTimeout));
+            RECORD_REQUIRE(first.reset());
+            RECORD_REQUIRE(second.reset());
+            RECORD_REQUIRE(copyContext.reset());
+            RECORD_REQUIRE(frame.reset());
+            RECORD_CHECK(weak.expired());
+        }
+        // Stale batches cannot follow a wrapper move/destruction or a new frame.
+        RECORD_REQUIRE(frame.begin(1, UINT64_MAX, render::FrameSubmissionMode::Pipelined));
+        RECORD_REQUIRE(first.prepare(frame).transform([&](auto value) { a = value; }));
+        RECORD_REQUIRE(first.record([&] { return a->end(); }));
+        render::RecordedBatch movedBatch;
+        RECORD_REQUIRE(movedBatch.seal(frame, {&a, 1}));
+        {
+            render::CommandBuffer moved(std::move(*a));
+            RECORD_CHECK(!movedBatch.valid() && !tracker.submitBatch(movedBatch, {}, frame, receipt));
+        }
+        RECORD_CHECK(!movedBatch.valid());
+        frame.cancel();
+        RECORD_REQUIRE(first.reset());
+        RECORD_REQUIRE(frame.begin(2));
+        RECORD_CHECK(!tracker.submitBatch(last, {}, frame, receipt));
+        frame.cancel();
+        return RhiTestResult::pass();
+    }
+};
+
+class PipelinedGraphTest final : public RhiTest {
+public:
+    PipelinedGraphTest() { type = RhiTestType::Rendering; name = "pipelined_graph_gpu_progress_and_failure"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        auto* tasks = task::tryGetTaskSystem();
+        if (!tasks || tasks->workerCount() < 3 || !context.device.capabilities().timestampQueries) {
+            return RhiTestResult::skip("three workers and timestamps required");
+        }
+        render::registerRenderGraphPassType("PipelinedProbePass", "Pipeline regression",
+            [] { return std::make_unique<RecordingProbePass>(); });
+        // Live GPU/CPU overlap, late Result/exception failures, mixed queues,
+        // explicit joined reference, unreviewed-pass fallback, and inline waves.
+        for (uint32_t mode = 0; mode < 9; ++mode) {
+            RecordingProbe probe;
+            recordingProbe = &probe;
+            std::unique_ptr<render::TimestampQueryPool> progress;
+            RECORD_REQUIRE(context.device.createTimestampQueryPool(context.graphicsQueue, {.queryCount = 1})
+                .transform([&](auto value) { progress = std::move(value); }));
+            render::RenderFrameContext setupFrame;
+            render::CommandRecordingContext setup;
+            render::QueueSubmissionTracker tracker;
+            RECORD_REQUIRE(setup.initialize(context.device, context.graphicsQueue));
+            RECORD_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
+            RECORD_REQUIRE(setupFrame.begin(0));
+            render::CommandBuffer* commands = nullptr;
+            RECORD_REQUIRE(setup.prepare(setupFrame).transform([&](auto value) { commands = value; }));
+            RECORD_REQUIRE(setup.record([&]() -> render::Result<> {
+                auto result = commands->resetTimestampQueries(*progress, 0, 1);
+                return result ? commands->end() : result;
+            }));
+            RECORD_REQUIRE(tracker.submit({.commandBuffers = &commands, .commandBufferCount = 1}, setupFrame));
+            RECORD_REQUIRE(setupFrame.wait(kTimeout));
+            if (mode < 4 || mode >= 6) { probe.progress = progress.get(); }
+            probe.rendezvous = mode < 3 ? 3 : 0;
+            render::RenderGraph graph;
+            constexpr std::array workloads{3, 1, 2, 2, 1};
+            for (uint32_t i = 0; i < 5; ++i) {
+                const auto name = "Probe" + std::to_string(i);
+                graph.addNode("PipelinedProbePass", name, {{"index", i}, {"work", workloads[i]},
+                    {"pipeline", mode != 5}, {"fail", mode == 1 && i == 2}, {"throw", (mode == 2 || mode == 8) && i == 2},
+                    {"prepareThrow", mode == 7 && i == 4}, {"serial", mode == 8 && i == 2},
+                    {"copyQueue", mode == 3 && i % 2 == 1}});
+                if (i) { graph.addEdge("Probe" + std::to_string(i - 1) + ".data", name + ".source"); }
+            }
+            graph.markOutput("Probe4.data");
+            render::RenderGraphExecutor executor;
+            std::string log;
+            RECORD_REQUIRE(executor.compile(context.device, graph, 4, 4, log));
+            auto result = executor.execute({.graphicsQueue = &context.graphicsQueue,
+                .copyQueue = mode == 3 ? context.device.getQueue(render::QueueType::Copy) : nullptr,
+                .recordingWorkerLimit = mode == 6 ? 1u : mode == 7 ? 2u : 4u, .recordingBatchWorkload = 4,
+                .submissionMode = mode == 4 ? render::FrameSubmissionMode::Joined : render::FrameSubmissionMode::Pipelined});
+            const auto& stats = executor.executionStats();
+            RECORD_CHECK(stats.pipelinedSubmission == (mode != 4 && mode != 5));
+            RECORD_CHECK(!probe.wrongThread && executor.lastSubmittedCompletion().isSubmitted());
+            if (probe.progress) { RECORD_CHECK(probe.gpuProgressObserved && probe.prematureSubmit); }
+            if (mode < 3) { RECORD_CHECK(stats.batchesSubmittedWhileRecording >= 1); }
+            if (mode == 1 || mode == 2 || mode >= 7) {
+                RECORD_CHECK(!result && !executor.compiled());
+                const std::vector<int> expected = mode == 7 ? std::vector<int>{1, 2, 3, 4} :
+                    mode == 8 ? std::vector<int>{1, 2, -3} : std::vector<int>{1, 2, -5, -3};
+                RECORD_CHECK(probe.events == expected);
+                RECORD_CHECK((mode == 7 || probe.owners[2].expired()) && probe.owners[4].expired());
+                RECORD_CHECK(!probe.owners[0].expired() && !probe.owners[1].expired());
+            } else {
+                RECORD_REQUIRE(result);
+                RECORD_CHECK((probe.events == std::vector<int>{1, 2, 3, 4, 5}));
+                if (mode == 4 || mode == 5) { RECORD_CHECK(!probe.prematureSubmit); }
+                if (mode == 5) { RECORD_CHECK(stats.submissionBlockingPasses.size() == 5); }
+            }
+            RECORD_REQUIRE(executor.waitForSubmittedWork(kTimeout));
+            if (result) {
+                auto* output = executor.outputResource("Probe4.data")->buffer;
+                output->invalidate();
+                const auto* mapped = output->map();
+                RECORD_CHECK(mapped);
+                std::array<uint32_t, 4> words{};
+                std::memcpy(words.data(), mapped, sizeof(words));
+                output->unmap();
+                RECORD_CHECK((words == std::array<uint32_t, 4>{17, 23, 42, 99}));
+            }
+            for (auto& owner : probe.owners) { RECORD_CHECK(owner.expired()); }
+        }
+        recordingProbe = nullptr;
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(PipelinedBatchTest);
+METALLIC_REGISTER_RHI_TEST(PipelinedGraphTest);
 
 METALLIC_REGISTER_RHI_TEST(RecordingContextTest);
 METALLIC_REGISTER_RHI_TEST(RecordingGraphTest);

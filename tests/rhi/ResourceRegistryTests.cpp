@@ -301,6 +301,89 @@ public:
 METALLIC_REGISTER_RHI_TEST(RegistryIdentityTest);
 METALLIC_REGISTER_RHI_TEST(RegistrySubmissionTest);
 
+class RegistryPipelinedParametersTest final : public RhiTest {
+public:
+    RegistryPipelinedParametersTest() { type = RhiTestType::Command; name = "registry_pipelined_parameter_append"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
+            std::unique_ptr<render::Device> device;
+            REG_REQUIRE(render::createDevice({.applicationName = "Pipelined parameters", .enableValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
+            auto& queue = *device->getQueue(render::QueueType::Graphics);
+            std::shared_ptr<render::ResourceRegistry> registry;
+            REG_REQUIRE(device->resourceRegistry().transform([&](auto value) { registry = std::move(value); }));
+            render::ComputeKernel kernel;
+            std::string log;
+            REG_REQUIRE(makeKernel(*device, kernel, log, mode));
+            std::unique_ptr<render::Buffer> source, output;
+            REG_REQUIRE(makeBuffer(*device, source, 11));
+            REG_REQUIRE(makeBuffer(*device, output));
+            render::RenderFrameContext frame;
+            std::array<render::CommandRecordingContext, 3> recordings;
+            render::QueueSubmissionTracker tracker;
+            std::unique_ptr<render::Semaphore> gate;
+            REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+            Drain drain{queue, *gate};
+            REG_REQUIRE(tracker.initialize(*device, queue));
+            REG_REQUIRE(frame.begin(0, UINT64_MAX, render::FrameSubmissionMode::Pipelined));
+            render::ParameterWriter writer(*device, frame, *registry);
+            ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 0, 0};
+            std::array<render::EncodedParameters, 3> packets;
+            for (uint32_t i = 0; i < 3; ++i) {
+                // Iteration 1 appends while batch 0 is pending behind a gate;
+                // iteration 2 appends after prior batches complete, frame open.
+                params.add = (i + 1) * 100;
+                params.index = i;
+                REG_REQUIRE(writer.encode(params, kAbi, packets[i]));
+                if (i) { REG_CHECK(packets[i].address() > packets[i - 1].address()); }
+                REG_REQUIRE(recordings[i].initialize(*device, queue));
+                render::CommandBuffer* commands = nullptr;
+                REG_REQUIRE(recordings[i].prepare(frame).transform([&](auto value) { commands = value; }));
+                REG_REQUIRE(recordings[i].record([&]() -> render::Result<> {
+                    render::BufferBarrierDesc barrier{.buffer = output.get(),
+                        .before = render::ResourceState::General, .after = render::ResourceState::General};
+                    commands->barrier({.buffers = &barrier, .bufferCount = 1});
+                    auto result = kernel.dispatch(*commands, packets[i], 1);
+                    // Re-read the very first packet after additional uploads.
+                    if (result && i == 2) {
+                        commands->barrier({.buffers = &barrier, .bufferCount = 1});
+                        result = kernel.dispatch(*commands, packets[0], 1);
+                    }
+                    return result ? commands->end() : result;
+                }));
+                render::RecordedBatch batch;
+                REG_REQUIRE(batch.seal(frame, {&commands, 1}));
+                render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
+                render::SubmissionReceipt receipt;
+                REG_REQUIRE(tracker.submitBatch(batch, {.waitSemaphores = i == 0 ? &wait : nullptr,
+                    .waitSemaphoreCount = i == 0 ? 1u : 0u}, frame, receipt));
+                REG_CHECK(receipt.accepted() && frame.recording() && !frame.completion().isSubmitted());
+                if (i == 0) { REG_CHECK(!receipt.completion().isComplete()); }
+                if (i == 1) {
+                    REG_REQUIRE(gate->signal(1));
+                    REG_REQUIRE(receipt.completion().wait(5'000'000'000ull));
+                    REG_CHECK(!frame.completion().isComplete());
+                }
+            }
+            REG_REQUIRE(frame.sealRecording());
+            render::EncodedParameters rejected;
+            REG_CHECK(!writer.encode(params, kAbi, rejected));
+            REG_REQUIRE(frame.finishSubmission());
+            REG_REQUIRE(frame.wait(5'000'000'000ull));
+            output->invalidate();
+            auto* mapped = output->map();
+            REG_CHECK(mapped);
+            std::array<uint32_t, 3> values;
+            std::memcpy(values.data(), mapped, sizeof(values));
+            output->unmap();
+            REG_CHECK((values == std::array<uint32_t, 3>{111, 211, 311}));
+        }
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(RegistryPipelinedParametersTest);
+
 class RegistryPartialSubmissionTest final : public RhiTest {
 public:
     RegistryPartialSubmissionTest() { type = RhiTestType::Command; name = "registry_partial_multi_queue_retention"; }

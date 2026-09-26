@@ -390,7 +390,10 @@ Result<> ParameterWriter::upload(const void* data, uint64_t size, uint64_t align
         if (candidate->completion.isComplete()) {
             candidate->completion = frame_.completion(); candidate->used = 0;
         }
-        offset = (candidate->used + alignment - 1) & ~(alignment - 1);
+        // A later batch can upload while an accepted prefix reads this chunk.
+        // Start each write in a distinct flush atom (including the prior tail).
+        const uint64_t writeAlignment = std::max(alignment, candidate->buffer->hostWriteAlignment());
+        offset = (candidate->used + writeAlignment - 1) & ~(writeAlignment - 1);
         if (candidate->completion.sameSubmission(frame_.completion()) &&
             offset <= candidate->buffer->desc().size && size <= candidate->buffer->desc().size - offset) {
             chunk = candidate; break;

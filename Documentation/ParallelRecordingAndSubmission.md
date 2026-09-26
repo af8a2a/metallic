@@ -181,7 +181,7 @@ A 与 C 合成一个等待 B 的 batch：A 无法先完成，B 又等 A，形成
 
 ## 9. 边录制边提交需要第二套清晰状态边界
 
-这是后续能力，不是为现有 frame 容器加 mutex 就能得到的能力。当前 EncodedParameters::compatible、CommandBuffer::begin、ParameterWriter 都依赖 frame.recording；首次成功 submitSegment 后继续录制会违反接口契约。
+本节记录最初的改造约束；第 16 节已实现分批流水提交。原有 EncodedParameters::compatible、CommandBuffer::begin、ParameterWriter 都依赖 frame.recording；旧实现首次成功 submitSegment 后继续录制会违反接口契约，需要先拆开录制窗口和 GPU 完成状态。
 
 后续应拆开：
 
@@ -379,3 +379,55 @@ VisibilityBufferMaterialPass 已拆为准备期捕获/验证 scene、rasterInfo�
 其中还通过 `visibility_buffer_material_edit_refresh` 与 `visibility_buffer_async_scene_handoff` 两项真实场景回归，无跳过和验证层错误，日志为 `parallel-prepare-scene-refresh.log`。资源包准备还会检查每个 lease 的 registry 来源，保留旧逐项 retain 的来源验证。
 
 本阶段完成并行准备和寿命契约迁移，没有测量 Release 端到端帧率收益。小场景中两个准备任务的调度成本可能超过计算收益，可用 worker limit 1 或较大的准备批次目标比较。lane 参数 arena、跨 pass 准备流水线、VisibilityBuffer 分支的并行原生录制和提前提交均未在本阶段引入；共享 registry 的参数分配锁、既有 streaming 预算和完成门控保持原策略。
+
+## 16. Batch seal、接收回执与按批流水提交
+
+本轮把录制窗口从 GPU 完成状态中拆出。帧 generation 的共享身份在整个录制/提交窗口内不变；`recording()` 读取独立原子状态，首批被接收不会关闭窗口。`GpuCompletionPoint` 的状态原子发布，读者只在 Submitted 后读取不可变 signals，避免 worker 检查旧参数包时读取 coordinator 正在扩展的队列完成列表。
+
+| 接口 | 含义 | 不代表 |
+| --- | --- | --- |
+| `RecordedBatch::seal(frame, commands)` | 接管已经结束的命令录制，固定批内命令列表 | 队列接受、GPU 完成、关闭整帧 |
+| `QueueSubmissionTracker::submitBatch(batch, synchronization, frame, receipt)` | 当前队列成功接收该批；返回独立 `SubmissionReceipt` | 整帧已录完或 GPU 已完成 |
+| `receipt.completion()` | 该批的已提交 timeline 完成点，可用于下一批跨队列等待 | 同帧其他批次或队列完成 |
+| `frame.sealRecording()` | 所有录制结束后关闭新录制/参数编码入口 | 所有已封口批次已被接收 |
+| `frame.finishSubmission()` | 关闭窗口，取消未接收尾部，发布已接收工作的多队列完成点 | GPU 已完成 |
+
+`seal` 检查 native recording 已结束、frame generation、重复命令及所有权。事务取消在提交接收前重新检查，保持环境贴图等已有部分提交恢复语义。batch 持有本地 submission state，wrapper 移动/销毁或 pool reset 会使其失效；command buffer、pool 和 device 仍须活到对应 GPU 工作完成。seal 后禁止重新 begin 尚未提交的录制。接收失败时 receipt 清空，不发布预留 timeline 值；`submitSegment` 是旧接口适配器，失败仍保留调用者原有 completion 输出。
+
+`RenderFrameContext::begin` 默认 Joined，保留低层调用者的整帧录完门控。显式 Pipelined 模式允许只检查当前已封口批次；直接 `Queue::submit` 拒绝该模式的 frame command，必须经过 tracker 更新完成账本。成功事务回调仍在提交 coordinator 上执行，必须不抛异常、不重入提交/帧生命周期。接收资源从 command-local 容器移交到 frame，直到所有已接收队列完成才释放。`StreamUploadCompletion` 仍要求实际 copy 事务成功和帧完成，不提前发布未完成的 streaming 数据。
+
+### Executor 调度与启用范围
+
+`RenderGraphSubmitDesc::submissionMode` 默认请求 Pipelined；实际启用要求所有 pass 显式返回 `supportsPipelinedSubmission()`，且无 scene dependency、显式 subsystem、外部 history manager 或 debug observer。此契约覆盖 prepare、execute 和接收回调：后续 CPU 工作不得改写已提交批次使用的 host 数据/descriptor，不得等待后续录制。它与 CPU 并行录制、GPU async queue、跨帧重叠是不同契约。
+
+已审计并启用 ClearColorPass、CopyColorPass、RenderGraphBufferWritePass、RenderGraphBufferCopyPass。VisibilityBuffer、GPUScene/streaming、NRD 和其他 SDK pass 继续 Joined；上一阶段的纯准备任务与 prepared dispatch 保持有效，但不凭这一点自动获得提前提交资格。`pipelinedSubmission` 和 `submissionBlockingPasses` 暴露实际模式与阻止启用的 pass；history/debug/subsystem 边界也会使实际模式回退。
+
+仍按 workload 与 queue 分批，每波有界派发到独占 context。worker 完成整批、释放 context 后发布结果；coordinator 在其他 worker 仍录制时收取完成批次并提交。为保留实际 queue 顺序（包括别名队列），当前按图顺序推进已封口前缀，不做跨越未完成前批的乱序调度。跨队列 waits 只引用已接收 producer 的 receipt，无 wait-before-signal 预留。
+
+只把同一显式工作量批次的连续同队列命令合成一次 native submit；不会跨队列间隔合并，也保留串行 pass 内 GPU fork/join 的原有提交边界，避免把硬件分支并入 join 的 compute 等待。prologue、serial island、后续 wave 和 epilogue 均可在各自完成后推进提交。单 worker 或 TaskSystem 内嵌调用仍内联录制，并可在安全的 pass 边界流水提交；没有额外提交线程。
+
+worker Result 失败、异常或队列拒绝时停止接收新批次，先汇合全部已启动 worker，再逆序取消未接收录制。已接收前缀的资源和 pools 不会重置，取消操作发布覆盖前缀的 frame completion，后续重编译/销毁仍等待它。任务系统提前取消未启动任务时，有界等待会检查 graph run 完成状态，不依赖每个任务一定发出完成通知。
+
+`submittedBatchCount` 统计实际接收的批次数，包含计时前后段；`batchesSubmittedWhileRecording` 统计 coordinator 观察到其他录制批次尚未结束时推进的提交。它们用于验证调度行为，不是 CPU/GPU 加速比。
+
+### 参数 arena 与验证
+
+同一帧允许在前批接收之后继续生成 ParameterWriter/PreparedComputeDispatch 包。arena 仍按 aggregate frame completion 回收，前批 GPU 单独完成不会复用其地址；上传起点按 buffer 的 host write alignment 对齐，使独立写入不共享 non-coherent flush atom。此规则也处理前一包末尾的 padding，保留公开 ABI 对齐约束。
+
+新增回归：
+
+- `pipelined_batch_receipt_and_frame_completion`：seal/接收/关闭三种状态，拒绝直接提交、重复命令、旧 generation 和移动后的 wrapper；GPU gate 下保留前缀，取消未接收尾部；独立队列完成不能回收尚未完成的另一队列。
+- `pipelined_graph_gpu_progress_and_failure`：让后续 CPU 批次等待前批 copy 后的 GPU timestamp 可用，证明前批确实在整波录完前执行；覆盖失败、异常、混合队列、内联、显式 Joined 和未审计 pass 回退，并检查逐字 readback、回调线程和逆序取消。
+- `registry_pipelined_parameter_append`：Mapped/Native 两种参数 ABI，在前批等待及完成后继续追加包，检查地址不复用、旧包再次派发输出正确、关闭窗口后拒绝编码。
+
+最终复用 MSVC Debug `build-full`，构建 Metallic、MetallicRhiTests、MetallicTaskTests、MetallicNrdTests。相关 GPU 回归 47 项，46 通过、1 个已知基线失败，无跳过或 Vulkan 验证层错误；唯一失败仍为 `frame_self_submit_two_slots`，使用 2026-09-24 的 `build-relwithdebinfo/tests/MetallicRhiTests.exe` 再次复现相同的 copy 被 graphics 计时 prologue 阻塞问题。新流水测试、环境贴图部分提交恢复和原有 GPU fork/join 均通过。
+
+```powershell
+.\build-full\tests\MetallicRhiTests.exe --rhi-bindless --rhi-async-compute '--gtest_filter=*parallel_*:*pipelined*:*registry_*:*frame_*:*submission*:*prepared_*:*buffer_slice*:*ordinary_data*:*synchronization*:*gpu_profiling*:*render_graph_buffer*:*hybrid_*:*visibility_preparation*:*stream_metadata_vbuffer*:*visibility_buffer_material_edit_refresh*:*visibility_buffer_async_scene_handoff*' --gtest_color=no --output-dir build-full/rhi-pipeline-output
+ctest --test-dir build-full -R '^Metallic(Task|Nrd)Tests$' --output-on-failure
+.\build-full\Source\Metallic.exe --smoke-test
+```
+
+TaskSystem/NRD 两个 CTest 目标和编辑器 smoke 通过。实际 VisibilityBuffer 串行/并行准备像素对照、材质编辑刷新、场景 handoff、stream metadata 与 hybrid raster 回归通过，并检查 Bunny 输出 `build-full/rhi-pipeline-output/VisibilityPreparedMaterial.png`。完整日志为 `pipeline-final-build.log`、`pipeline-regression-final.log`、`pipeline-known-baseline.log`、`pipeline-cpu-tests.log`、`pipeline-smoke.log`，均在 `build-full` 下。
+
+当前实现仍维持两个 frame slot、既有 streaming 上传预算与完成门控；没有增加 GPU 在途帧数。本轮未测量 Release 生产场景的帧率收益，也未进行长时间场景压力测试。non-coherent atom 隔离在 coherent 硬件上的测试不能替代该内存类型的实际验证。

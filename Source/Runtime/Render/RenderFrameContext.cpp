@@ -30,8 +30,8 @@ SubmissionTransaction::~SubmissionTransaction()
 
 void SubmissionTransaction::submit() noexcept
 {
-    if (resolved()) { return; }
-    status_ = Status::Submitted;
+    auto pending = Status::Pending;
+    if (!status_.compare_exchange_strong(pending, Status::Submitted)) { return; }
     auto callback = std::move(submitted_);
     cancelled_ = {};
     if (callback) { callback(); }
@@ -39,8 +39,8 @@ void SubmissionTransaction::submit() noexcept
 
 void SubmissionTransaction::cancel() noexcept
 {
-    if (resolved()) { return; }
-    status_ = Status::Cancelled;
+    auto pending = Status::Pending;
+    if (!status_.compare_exchange_strong(pending, Status::Cancelled)) { return; }
     auto callback = std::move(cancelled_);
     submitted_ = {};
     if (callback) { callback(); }
@@ -111,8 +111,10 @@ Result<> CommandBuffer::retainResource(std::shared_ptr<void> resource)
 }
 
 struct GpuCompletionPoint::State {
-    enum class Status { Recording, Submitting, Submitted, Cancelled };
-    Status status = Status::Recording;
+    enum class Status { Recording, Submitted, Cancelled };
+    // Signals are coordinator-owned until release publication. Readers never
+    // inspect the growing aggregate while its status is Recording.
+    std::atomic<Status> status = Status::Recording;
     struct Signal {
         std::shared_ptr<Semaphore> timeline;
         uint64_t value = 0;
@@ -139,7 +141,7 @@ bool GpuCompletionPoint::isComplete() const
 
 uint64_t GpuCompletionPoint::value() const
 {
-    return state_ != nullptr && state_->signals.size() == 1 ? state_->signals.front().value : 0;
+    return isSubmitted() && state_->signals.size() == 1 ? state_->signals.front().value : 0;
 }
 
 Result<> GpuCompletionPoint::wait(uint64_t timeoutNanoseconds) const
@@ -198,7 +200,7 @@ RenderFrameContext::~RenderFrameContext()
     (void)reset();
 }
 
-Result<> RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanoseconds)
+Result<> RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanoseconds, FrameSubmissionMode mode)
 {
     profiling::CpuPhase phase("frame.wait", frameIndex);
     if (recording()) {
@@ -215,6 +217,8 @@ Result<> RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanoseco
     phase.next("frame.newState");
     completion_.state_ = std::make_shared<GpuCompletionPoint::State>();
     frameIndex_ = frameIndex;
+    submissionMode_ = mode;
+    recordingOpen_.store(true, std::memory_order_release);
     return {};
 }
 
@@ -225,8 +229,21 @@ Result<> RenderFrameContext::wait(uint64_t timeoutNanoseconds) const
 
 bool RenderFrameContext::recording() const
 {
-    return completion_.state_ != nullptr &&
-        completion_.state_->status == GpuCompletionPoint::State::Status::Recording;
+    return recordingOpen_.load(std::memory_order_acquire);
+}
+
+bool RenderFrameContext::hasAcceptedWork() const
+{
+    return completion_.state_ && !completion_.state_->signals.empty();
+}
+
+Result<> RenderFrameContext::sealRecording()
+{
+    if (!completion_.valid() || completion_.isSubmitted() || completion_.isCancelled() || !recordingsFinished()) {
+        return makeError(Error::InvalidArgument);
+    }
+    recordingOpen_.store(false, std::memory_order_release);
+    return {};
 }
 
 bool RenderFrameContext::recordingsFinished() const
@@ -307,24 +324,23 @@ Result<> CommandRecordingContext::reset()
 void RenderFrameContext::cancel()
 {
     recordings_.cancel();
-    if (recording()) {
-        completion_.state_->status = GpuCompletionPoint::State::Status::Cancelled;
-        resources_.clear();
-        dependencies_.clear();
-    } else if (completion_.state_ != nullptr &&
-        completion_.state_->status == GpuCompletionPoint::State::Status::Submitting) {
-        // Successful segments cannot be cancelled. Preserve their resources and
-        // make the partial batch waitable before returning an error to the caller.
-        (void)finishSubmission();
+    recordingOpen_.store(false, std::memory_order_release);
+    if (completion_.state_ && !completion_.isSubmitted() && !completion_.isCancelled()) {
+        if (hasAcceptedWork()) {
+            completion_.state_->status = GpuCompletionPoint::State::Status::Submitted;
+        } else {
+            completion_.state_->status = GpuCompletionPoint::State::Status::Cancelled;
+            resources_.clear();
+            dependencies_.clear();
+        }
     }
 }
 
 Result<> RenderFrameContext::finishSubmission()
 {
-    if (completion_.state_ == nullptr ||
-        completion_.state_->status != GpuCompletionPoint::State::Status::Submitting) {
-        return makeError(Error::InvalidArgument);
-    }
+    if (!hasAcceptedWork()) { return makeError(Error::InvalidArgument); }
+    auto result = sealRecording();
+    if (!result) { return result; }
     recordings_.cancel();
     completion_.state_->status = GpuCompletionPoint::State::Status::Submitted;
     return {};
@@ -390,7 +406,7 @@ Result<> QueueSubmissionTracker::initialize(Device& device, Queue& queue)
 
 Result<> QueueSubmissionTracker::submit(const QueueSubmitDesc& desc, RenderFrameContext& frame)
 {
-    if (!frame.recording()) { return makeError(Error::InvalidArgument); }
+    if (!frame.recording() || !frame.recordingsFinished()) { return makeError(Error::InvalidArgument); }
     GpuCompletionPoint completion;
     Result<> result = submitSegment(desc, frame, completion);
     return result ? frame.finishSubmission() : result;
@@ -399,11 +415,66 @@ Result<> QueueSubmissionTracker::submit(const QueueSubmitDesc& desc, RenderFrame
 Result<> QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame,
     GpuCompletionPoint& completion)
 {
+    if (desc.commandBufferCount && !desc.commandBuffers) { return makeError(Error::InvalidArgument); }
+    RecordedBatch batch;
+    auto result = batch.seal(frame, {desc.commandBuffers, desc.commandBufferCount});
+    if (!result) { return result; }
+    QueueSubmitDesc synchronization = desc;
+    synchronization.commandBuffers = nullptr;
+    synchronization.commandBufferCount = 0;
+    SubmissionReceipt receipt;
+    result = submitBatch(batch, synchronization, frame, receipt);
+    if (result) { completion = receipt.completion(); }
+    else { for (auto& state : batch.states_) { state->sealed = false; } }
+    return result;
+}
+
+Result<> RecordedBatch::seal(RenderFrameContext& frame, std::span<CommandBuffer* const> commands)
+{
+    if (frame_ || !frame.completion().valid() || frame.completion().isSubmitted() ||
+        frame.completion().isCancelled()) { return makeError(Error::InvalidArgument); }
+    std::vector<std::shared_ptr<detail::CommandSubmissionState>> states;
+    states.reserve(commands.size());
+    for (auto* command : commands) {
+        if (!command || !command->submission_ || !command->submission_->finished.load(std::memory_order_acquire) ||
+            command->submission_->submitted || command->submission_->cancelled || command->submission_->sealed || command->recording_ ||
+            command->frameContext_ != &frame || command->frameRecording_ != frame.completion().state_ ||
+            std::find(states.begin(), states.end(), command->submission_) != states.end()) {
+            return makeError(Error::InvalidArgument);
+        }
+        states.push_back(command->submission_);
+    }
+    commands_.assign(commands.begin(), commands.end());
+    states_ = std::move(states);
+    generation_ = frame.completion();
+    frame_ = &frame;
+    for (auto& state : states_) { state->sealed = true; }
+    return {};
+}
+
+bool RecordedBatch::valid() const
+{
+    if (!frame_ || generation_.isSubmitted() || generation_.isCancelled()) { return false; }
+    for (size_t i = 0; i < states_.size(); ++i) {
+        // Inspect the retained state before ever dereferencing its public wrapper.
+        if (states_[i]->owner != commands_[i] || !states_[i]->canSubmit()) { return false; }
+    }
+    return true;
+}
+
+Result<> QueueSubmissionTracker::submitBatch(const RecordedBatch& batch, const QueueSubmitDesc& synchronization,
+    RenderFrameContext& frame, SubmissionReceipt& receipt)
+{
+    receipt = {};
     using State = GpuCompletionPoint::State;
+    if (!batch.valid() || batch.frame_ != &frame || !batch.generation_.sameSubmission(frame.completion()) ||
+        synchronization.commandBufferCount || synchronization.commandBuffers) { return makeError(Error::InvalidArgument); }
+    QueueSubmitDesc desc = synchronization;
+    desc.commandBuffers = batch.commands_.data();
+    desc.commandBufferCount = uint32_t(batch.commands_.size());
     if (queue_ == nullptr || timeline_ == nullptr || frame.completion_.state_ == nullptr ||
-        (frame.completion_.state_->status != State::Status::Recording &&
-            frame.completion_.state_->status != State::Status::Submitting) ||
-        nextValue_ == UINT64_MAX || !frame.recordingsFinished() ||
+        frame.completion_.state_->status != State::Status::Recording ||
+        nextValue_ == UINT64_MAX || (frame.submissionMode() == FrameSubmissionMode::Joined && !frame.recordingsFinished()) ||
         (desc.waitSemaphoreCount != 0 && desc.waitSemaphores == nullptr) ||
         (desc.signalSemaphoreCount != 0 && desc.signalSemaphores == nullptr) ||
         (desc.commandBufferCount != 0 && desc.commandBuffers == nullptr)) {
@@ -441,7 +512,7 @@ Result<> QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, Rend
     segment->signals.push_back({timeline_, nextValue_});
     auto& state = *frame.completion_.state_;
     state.signals.reserve(state.signals.size() + 1);
-    Result<> result = queue_->submit(submission);
+    Result<> result = queue_->submitImpl(submission, true);
     if (!result) {
         return result;
     }
@@ -453,10 +524,9 @@ Result<> QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, Rend
         existing->value = nextValue_;
     }
     ++nextValue_;
-    state.status = State::Status::Submitting;
     segment->status = State::Status::Submitted;
-    completion.state_ = std::move(segment);
-    lastSubmission_ = completion;
+    receipt.completion_.state_ = std::move(segment);
+    lastSubmission_ = receipt.completion_;
     return {};
 }
 
