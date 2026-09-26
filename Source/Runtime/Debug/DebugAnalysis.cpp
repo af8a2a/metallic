@@ -1,4 +1,5 @@
 #include "Runtime/Debug/DebugCore.h"
+#include "Runtime/Debug/ShaderTraceCore.h"
 #include "Runtime/Debug/DebugProbe.h"
 
 #include <algorithm>
@@ -80,6 +81,13 @@ DebugResult<DebugValue> DebugCapture::statistics() const
     DebugValue result = DebugValue::object();
     uint64_t elements = 0;
     for (const auto& artifact : artifacts) {
+        if (artifact.metadata.value("kind", "") == "shader-trace-v1") {
+            const auto trace = decodeShaderTraceArtifact(artifact.bytes, artifact.metadata.at("sha256").get<std::string>());
+            if (!trace) { return std::unexpected(trace.error()); }
+            result["shaderTrace"] = {{"outcome",trace->at("outcome")}, {"selectedScopeComplete",trace->at("selectedScopeComplete")},
+                {"receivedRecordCount",trace->at("receivedRecordCount")}};
+            continue;
+        }
         if (artifact.metadata.value("kind", "") == "gpuProbe") {
             auto summary = summarizeProbe(artifact.bytes, artifact.metadata);
             if (!summary) { return std::unexpected(summary.error()); }

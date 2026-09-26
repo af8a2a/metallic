@@ -1,5 +1,7 @@
 #include "Runtime/Debug/DebugCore.h"
 #include "Runtime/Debug/DebugProbe.h"
+#include "Runtime/Debug/ShaderTraceCore.h"
+#include "Runtime/Debug/DebugHash.h"
 
 #include <algorithm>
 #include <random>
@@ -57,8 +59,20 @@ DebugResult<DebugValue> DebugCapture::evaluationRoot() const
     DebugValue root = snapshot.values;
     root["buffers"] = DebugValue::object();
     root["coverage"] = DebugValue::object();
+    root.erase("shaderTraceCompletion");
+    root.erase("shaderTrace"); // Offline results always come from the hashed raw artifact.
     uint64_t elementCount = 0;
     for (const auto& artifact : artifacts) {
+        if (artifact.metadata.value("kind", "") == "shader-trace-v1") {
+            auto decoded = decodeShaderTraceArtifact(artifact.bytes, artifact.metadata.at("sha256").get<std::string>());
+            if (!decoded) { return std::unexpected(decoded.error()); }
+            if (root.contains("shaderTrace")) { return std::unexpected(DebugError{"InvalidShaderTrace", "Duplicate trace artifact"}); }
+            root["shaderTraceCompletion"] = {{"outcome",decoded->at("outcome")},
+                {"selectedScopeComplete",decoded->at("selectedScopeComplete")}, {"parserVersion",kShaderTraceParserVersion}};
+            root["shaderTrace"] = std::move(*decoded);
+            root["coverage"]["shaderTrace"] = artifact.metadata;
+            continue;
+        }
         if (!artifact.layout.stride) { return std::unexpected(DebugError{"LayoutMismatch", "Missing layout"}); }
         elementCount += artifact.bytes.size() / artifact.layout.stride;
         if (elementCount > 262144) {
@@ -210,7 +224,7 @@ std::vector<DebugCaptureRequest> DebugCore::takeRequests(std::string_view graph,
     }
     for (const auto& id : order_) {
         auto& job = jobs_.at(id);
-        if (job.state != "Queued") { continue; }
+        if (job.state != "Queued" || job.request.shaderTrace) { continue; }
         if (job.request.graph != graph || job.request.generation != generation) {
             job.state = "Failed";
             job.error = {"StaleHandle", "Capture generation is no longer current"};
@@ -360,7 +374,7 @@ DebugValue DebugCore::route(std::string_view method, const DebugValue& params)
         for (auto it = schemas_.begin(); it != schemas_.end(); ++it) { providers.push_back(it.key()); }
         return {{"protocolVersion", 1}, {"session", session_}, {"process", process_}, {"engine", engineState_},
             {"providers", std::move(providers)}, {"schemaMethod", "schema"}, {"transport", "u32le-json-client-ack"},
-            {"methods", {"hello", "schema", "frame.latest", "rg.describe", "rg.trace", "object.get", "eval", "capture.batch", "gpu.probe", "watch.create", "watch.get", "watch.list", "watch.cancel", "watch.delete", "jobs.get", "jobs.cancel", "artifact.read"}},
+            {"methods", {"hello", "schema", "frame.latest", "rg.describe", "rg.trace", "object.get", "eval", "capture.batch", "gpu.probe", "shader.capabilities", "shader.sites", "shader.watch", "watch.create", "watch.get", "watch.list", "watch.cancel", "watch.delete", "jobs.get", "jobs.cancel", "artifact.read"}},
             {"limits", {{"snapshotCount", limits_.snapshotCount}, {"snapshotBytes", limits_.snapshotBytes}, {"capturePoolBytes", limits_.capturePoolBytes},
                 {"jobBytes", limits_.jobBytes}, {"frameBytes", limits_.frameBytes}, {"queueCount", limits_.queueCount},
                 {"commandsPerFrame", limits_.commandsPerFrame}, {"probeScanBytes", limits_.probeScanBytes},
@@ -391,6 +405,31 @@ DebugValue DebugCore::route(std::string_view method, const DebugValue& params)
             }
         }
         return {{"passes", visited}, {"edges", edges}, {"direction", backward ? "backward" : "forward"}};
+    }
+    if (method == "shader.capabilities") { return shaderCapabilities_; }
+    if (method == "shader.sites") { return shaderSites_; }
+    if (method == "shader.watch") {
+        if (!shaderCapabilities_.value("configured", false)) { reject("RestartRequired", "Shader trace backend was not enabled at startup"); }
+        if (!shaderCapabilities_.value("smokeVerified", false)) { reject("BackendUnavailable", "Current backend has not passed a live echo probe"); }
+        for (const auto& [id, job] : jobs_) {
+            if (job.request.shaderTrace && (!terminal(job.state) || (job.reservedBytes && !job.capture))) {
+                reject("Busy", "One shader observation owns the backend until collection finishes");
+            }
+        }
+        const auto found = std::find_if(shaderSites_.begin(), shaderSites_.end(), [&](const auto& site) {
+            return site.at("name") == params.at("target").at("site");
+        });
+        if (found == shaderSites_.end()) { reject("Unsupported", "Shader site is not registered"); }
+        auto valid = validateShaderWatch(params, *found, graph_.value("generation", uint64_t(0)));
+        if (!valid) { reject(valid.error().code, valid.error().message); }
+        pruneLocked();
+        if (jobs_.size() >= limits_.queueCount) { reject("QueueFull", "Capture job queue is full"); }
+        const std::string id = std::to_string(nextJob_++);
+        DebugJob job;
+        job.request = {id, graph_.value("id", ""), graph_.value("generation", uint64_t(0)), params, 1, true};
+        job.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(debugUnsigned(params.at("limits").at("timeoutMs"), 30000));
+        jobs_.emplace(id, std::move(job)); order_.push_back(id);
+        return {{"job", id}, {"state", "Queued"}};
     }
     if (method == "capture.batch" || method == "gpu.probe") { return enqueueCaptureLocked(params, method == "gpu.probe"); }
     if (method == "jobs.get" || method == "jobs.cancel" || method == "artifact.read") {
@@ -429,6 +468,7 @@ DebugValue DebugCore::route(std::string_view method, const DebugValue& params)
             // manifest. A large metadata snapshot must not break job polling.
             result["evidence"] = capture->snapshot.evidence.value();
             result["artifactCount"] = capture->artifacts.size();
+            if (capture->snapshot.values.contains("shaderTraceCompletion")) { result["shaderTrace"] = capture->snapshot.values.at("shaderTraceCompletion"); }
             if (capture->snapshot.values.contains("probes")) { result["probes"] = capture->snapshot.values.at("probes"); }
             if (params.value("includeCapture", false)) { result["capture"] = capture->manifest(); }
             if (params.value("stats", false)) {
@@ -479,6 +519,72 @@ DebugValue DebugCore::route(std::string_view method, const DebugValue& params)
             {"coverage", root.value("coverage", DebugValue::object())}};
     }
     reject("Unsupported", "Unknown method: " + std::string(method));
+}
+
+
+void DebugCore::configureShaderTrace(DebugValue capabilities, DebugValue sites)
+{
+    std::lock_guard lock(mutex_);
+    if (!sites.is_array() || sites.size() > 64) { throw std::invalid_argument("Invalid shader site registry"); }
+    shaderCapabilities_ = std::move(capabilities); shaderSites_ = std::move(sites);
+}
+
+std::vector<DebugCaptureRequest> DebugCore::takeShaderRequests(std::string_view graph, uint64_t generation)
+{
+    std::lock_guard lock(mutex_);
+    expireLocked();
+    for (const auto& id : order_) {
+        auto& job = jobs_.at(id);
+        if (!job.request.shaderTrace || job.state != "Queued") { continue; }
+        if (job.request.graph != graph || job.request.generation != generation) {
+            job.state = "Failed"; job.error = {"StaleHandle", "Shader graph generation changed"}; continue;
+        }
+        job.state = "Planning";
+        return {job.request};
+    }
+    return {};
+}
+
+void DebugCore::completeShaderTrace(std::string_view id, DebugValue bundle)
+{
+    // GPU/backend ownership must have ended before this call, including cancellation.
+    std::lock_guard lock(mutex_);
+    expireLocked();
+    const auto found = jobs_.find(std::string(id));
+    if (found == jobs_.end() || !found->second.request.shaderTrace) { return; }
+    auto& job = found->second;
+    if (!job.error.code.empty()) { bundle["health"]["stopReason"] = job.error.code; }
+    if (bundle.at("dispatch").at("session") != session_ || bundle.at("dispatch").at("graph") != job.request.graph ||
+        bundle.at("dispatch").at("generation") != job.request.generation || bundle.at("request") != job.request.specification) {
+        captureBytes_ -= job.reservedBytes; job.reservedBytes = 0;
+        job.state = "Failed"; job.error = {"StaleHandle", "Shader evidence does not belong to this job"}; return;
+    }
+    const auto analyzed = analyzeShaderTrace(bundle);
+    if (!analyzed) {
+        captureBytes_ -= job.reservedBytes; job.reservedBytes = 0;
+        job.state = "Failed"; job.error = analyzed.error(); return;
+    }
+    const std::string serialized = encodeLossless(bundle).dump();
+    if (serialized.size() > kShaderTraceArtifactBudget || serialized.size() > job.reservedBytes) {
+        captureBytes_ -= job.reservedBytes; job.reservedBytes = 0;
+        job.state = "Failed"; job.error = {"BudgetExceeded", "Shader artifact exceeds reservation"}; return;
+    }
+    auto capture = std::make_shared<DebugCapture>();
+    const auto& d = bundle.at("dispatch");
+    capture->snapshot.evidence = {.session = session_, .graph = job.request.graph, .generation = job.request.generation,
+        .execution = debugUnsigned(d.at("execution")), .pass = d.value("pass", ""), .checkpoint = d.value("phase", ""),
+        .provenance = {{"instrumentation", "Printf"}, {"performanceEligible", false}, {"completion", analyzed->at("targetExecutionStatus")}}};
+    capture->snapshot.values["shaderTraceCompletion"] = {{"outcome",analyzed->at("outcome")},
+        {"selectedScopeComplete",analyzed->at("selectedScopeComplete")}, {"parserVersion", kShaderTraceParserVersion}};
+    DebugArtifact artifact;
+    artifact.bytes.assign(serialized.begin(), serialized.end());
+    artifact.layout = {"ShaderTraceJsonBytes", 1, {{"byte", "u8", 0}}};
+    artifact.metadata = {{"id", "shaderTrace"}, {"kind", "shader-trace-v1"}, {"sha256", debugSha256(std::span(artifact.bytes))},
+        {"parserVersion", kShaderTraceParserVersion}, {"performanceEligible", false}};
+    capture->artifacts.push_back(std::move(artifact));
+    job.capture = std::move(capture);
+    // Terminal cancellation/timeout stays terminal, but its partial evidence is exportable.
+    if (!terminal(job.state)) { job.state = "Ready"; }
 }
 
 } // namespace metallic::debug

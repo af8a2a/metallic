@@ -107,6 +107,12 @@ DebugValue run(Options& options)
     }
     if (!options.capture.empty()) {
         const auto capture = loadCapture(options.capture);
+        if (word(0) == "shader" && word(1) == "verify") {
+            const auto root = capture.evaluationRoot();
+            if (!root) { return debugErrorResponse("cli", root.error().code, root.error().message); }
+            if (!root->contains("shaderTrace")) { throw std::runtime_error("No shader trace artifact"); }
+            return {{"status","ok"}, {"result",root->at("shaderTrace")}};
+        }
         if (word(0) == "stats") {
             const auto stats = capture.statistics();
             if (!stats) { return debugErrorResponse("cli", stats.error().code, stats.error().message); }
@@ -135,7 +141,7 @@ DebugValue run(Options& options)
     if (word(0) == "capture" && word(1) == "export") {
         auto response = invoke(options, "jobs.get", {{"job", word(2)}});
         if (response["status"] != "ok") { return response; }
-        if (response["result"]["state"] != "Ready") { throw std::runtime_error("Capture is not ready"); }
+        if (!response["result"].contains("artifactCount")) { throw std::runtime_error("Capture is not ready"); }
         std::string manifestBytes;
         uint64_t manifestSize = 0;
         do {
@@ -182,6 +188,9 @@ DebugValue run(Options& options)
         method = "jobs." + word(1); params["job"] = word(2);
     } else if (method == "capture" && word(1) == "batch") {
         method = "capture.batch"; params = readJson(params.at("spec").get<std::string>());
+    } else if (method == "shader") {
+        method = "shader." + word(1);
+        if (word(1) == "watch") { params = readJson(params.at("spec").get<std::string>()); }
     } else if (method == "probe") {
         method = "gpu.probe"; params = readJson(params.at("spec").get<std::string>());
     } else if (method == "watch") {
@@ -210,7 +219,7 @@ DebugValue run(Options& options)
         if (words.size() > 2) { params = decodeLossless(DebugValue::parse(word(2))); }
     }
     auto response = invoke(options, method, params);
-    if ((method == "capture.batch" || method == "gpu.probe") && options.wait && response["status"] == "ok") {
+    if ((method == "capture.batch" || method == "gpu.probe" || method == "shader.watch") && options.wait && response["status"] == "ok") {
         const auto waitForJob = [&](const DebugValue& job) -> DebugValue {
             DebugValue response;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(options.timeoutMs);
@@ -266,11 +275,12 @@ int main(int argc, char** argv)
                     "  eval EXPR [--job ID] [--frame N] | object.get PATH [--offset N --count N]\n"
                     "  capture batch --spec FILE [--wait] | capture export JOB --out NEW_DIRECTORY\n"
                     "  probe --spec FILE [--wait] | watch create --spec FILE\n"
+                    "  shader capabilities | shader sites | shader watch --spec FILE [--wait]\n"
                     "  watch list | watch get/cancel/delete ID\n"
                     "  inspect buffer ID --pass PASS --checkpoint POINT --count N [--offset N --layout TYPE]\n"
                     "  inspect texture ID --pass PASS --roi X,Y,W,H [--stats --wait]\n"
                     "  jobs get|cancel ID | call METHOD JSON | repl\n"
-                    "  --capture DIRECTORY eval EXPR | stats (offline)\n";
+                    "  --capture DIRECTORY eval EXPR | stats | shader verify (offline)\n";
                 return 0;
             } else if (arg == "--json") { options.json = true; }
             else if (arg == "--wait") { options.wait = true; }

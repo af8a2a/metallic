@@ -11,6 +11,8 @@
 
 namespace metallic::render {
 
+namespace vulkan { class ShaderPrintf; }
+
 enum class Error : int8_t {
     Failure = 1,
     InvalidArgument,
@@ -466,6 +468,8 @@ struct DeviceDesc {
     MemoryBudgetPolicy memoryBudget;
     // Optional backend policy; unsupported devices keep optimal layouts.
     bool preferUnifiedImageLayouts = true;
+    // Opt-in diagnostics; implies validation, excludes NvPerf. Must outlive this device.
+    vulkan::ShaderPrintf* shaderPrintf = nullptr;
 };
 
 struct DeviceCapabilities {

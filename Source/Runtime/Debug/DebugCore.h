@@ -16,6 +16,7 @@ struct DebugCaptureRequest {
     uint64_t generation = 0;
     DebugValue specification;
     uint32_t groupRemaining = 1;
+    bool shaderTrace = false;
 };
 
 struct DebugArtifact {
@@ -68,6 +69,9 @@ public:
     void fail(std::string_view id, DebugError error);
     void complete(std::string_view id, std::shared_ptr<const DebugCapture> capture);
     void expire();
+    void configureShaderTrace(DebugValue capabilities, DebugValue sites);
+    std::vector<DebugCaptureRequest> takeShaderRequests(std::string_view graph, uint64_t generation);
+    void completeShaderTrace(std::string_view id, DebugValue bundle);
 
 private:
     struct Watch {
@@ -105,6 +109,8 @@ private:
     std::unordered_map<std::string, Watch> watches_;
     uint64_t nextWatch_ = 1;
     uint64_t executionTick_ = 0;
+    DebugValue shaderCapabilities_ = {{"configured", false}, {"smokeVerified", false}, {"reason", "RestartRequired"}};
+    DebugValue shaderSites_ = DebugValue::array();
 };
 
 DebugValue debugErrorResponse(const DebugValue& id, std::string code, std::string message);

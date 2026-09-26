@@ -140,7 +140,7 @@ if(WIN32)
     )
 endif()
 
-add_executable(MetallicDebugTests debug/DebugCoreTests.cpp)
+add_executable(MetallicDebugTests debug/DebugCoreTests.cpp debug/ShaderTraceTests.cpp)
 target_link_libraries(MetallicDebugTests PRIVATE MetallicDebugCore GTest::gtest_main)
 if(WIN32)
     target_compile_definitions(MetallicDebugTests PRIVATE NOMINMAX)
@@ -402,4 +402,23 @@ if(METALLIC_HAS_DLSS_NR)
         --rhi-streamline --filter dlss_nr_runtime --rhi-no-validation
         --output-dir "$<TARGET_FILE_DIR:MetallicRhiTests>/dlss-nr-output")
     set_tests_properties(MetallicDlssNrRuntimeTests PROPERTIES LABELS "rhi;dlss-nr" SKIP_RETURN_CODE 77 TIMEOUT 120)
+endif()
+
+# Small host-side tests for callback ownership and loss accounting; no Vulkan device.
+add_executable(MetallicShaderPrintfTests
+    rhi/ShaderPrintfTests.cpp
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.cpp")
+target_include_directories(MetallicShaderPrintfTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_link_libraries(MetallicShaderPrintfTests PRIVATE metallic::volk GTest::gtest_main)
+if(MSVC)
+    target_compile_options(MetallicShaderPrintfTests PRIVATE /EHsc)
+endif()
+add_test(NAME MetallicShaderPrintfTests COMMAND MetallicShaderPrintfTests --gtest_color=no)
+set_tests_properties(MetallicShaderPrintfTests PROPERTIES LABELS "rhi;shader-printf" TIMEOUT 30)
+
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicShaderPrintfEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/rhi/TestShaderPrintfEvidence.py")
+    set_tests_properties(MetallicShaderPrintfEvidenceTests PROPERTIES LABELS "tools;shader-printf" TIMEOUT 30)
 endif()

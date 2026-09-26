@@ -10,6 +10,8 @@ add_library(MetallicDebugCore STATIC
     Runtime/Debug/DebugTypes.cpp
     Runtime/Debug/DebugEval.cpp
     Runtime/Debug/DebugCore.cpp
+    Runtime/Debug/DebugHash.cpp
+    Runtime/Debug/ShaderTraceCore.cpp
     Runtime/Debug/DebugAnalysis.cpp
     Runtime/Debug/DebugProbe.cpp
     Runtime/Debug/DebugWatch.cpp
@@ -44,6 +46,7 @@ endif()
 
 add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Debug/RenderDebug.cpp
+    Runtime/Render/Debug/ShaderTraceRuntime.cpp
     Runtime/Render/Debug/RenderDebugProviders.cpp
     Runtime/Render/Debug/GpuDebugProbe.cpp
     Runtime/Render/ComputeProgram.cpp
@@ -124,6 +127,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Profiling/NvPerf.cpp
     Runtime/Render/Profiling/TracyProfiler.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.cpp
     Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.cpp
     Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.cpp
@@ -511,3 +515,29 @@ add_executable(MetallicRtxcrSample
     ${METALLIC_EDITOR_SOURCES}
 )
 configure_metallic_editor_sample(MetallicRtxcrSample)
+
+# Manual diagnostics only; never a dependency of editor/sample/default builds.
+add_executable(MetallicShaderPrintfProbe EXCLUDE_FROM_ALL Tools/ShaderPrintfProbe.cpp)
+target_link_libraries(MetallicShaderPrintfProbe PRIVATE MetallicRuntimeRender)
+target_include_directories(MetallicShaderPrintfProbe BEFORE PRIVATE "${METALLIC_SLANG_ROOT}/include")
+target_compile_definitions(MetallicShaderPrintfProbe PRIVATE PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+if(WIN32)
+    target_compile_definitions(MetallicShaderPrintfProbe PRIVATE NOMINMAX)
+    target_compile_options(MetallicShaderPrintfProbe PRIVATE /EHsc /utf-8)
+    foreach(_dll IN LISTS METALLIC_SLANG_RUNTIME_DLLS)
+        add_custom_command(TARGET MetallicShaderPrintfProbe POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dll}" "$<TARGET_FILE_DIR:MetallicShaderPrintfProbe>")
+    endforeach()
+    if(TARGET SDL3-shared)
+        set(_printf_sdl SDL3-shared)
+    else()
+        set(_printf_sdl SDL3::SDL3-shared)
+    endif()
+    add_custom_command(TARGET MetallicShaderPrintfProbe POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${_printf_sdl}>" "$<TARGET_FILE_DIR:MetallicShaderPrintfProbe>")
+    metallic_copy_streamline_runtime(MetallicShaderPrintfProbe)
+    metallic_copy_dlss_nr_runtime(MetallicShaderPrintfProbe)
+    metallic_copy_aftermath_runtime(MetallicShaderPrintfProbe)
+    metallic_copy_nrc_runtime(MetallicShaderPrintfProbe)
+endif()
+metallic_copy_spdlog_runtime(MetallicShaderPrintfProbe)

@@ -4,6 +4,7 @@
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanSurfaceFormat.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanOpacityMicromap.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSpirv.h"
@@ -1245,17 +1246,28 @@ VmaAllocationCreateInfo allocationInfoForMemory(MemoryLocation location)
     return info;
 }
 
+struct DebugCallbackContext {
+    ValidationSink validation;
+    vulkan::ShaderPrintf* printf = nullptr;
+};
+
 VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT type,
     const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
     void* userData)
 {
+    const auto* context = static_cast<const DebugCallbackContext*>(userData);
+    if (context && context->printf) {
+        context->printf->capture(severity, *callbackData);
+        // Printf sessions use the bounded raw queue; decoding/logging happens after completion.
+        return VK_FALSE;
+    }
     if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0 ||
         (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
         spdlog::warn("Vulkan validation: {}", callbackData->pMessage);
     }
-    const auto* sink = static_cast<const ValidationSink*>(userData);
+    const auto* sink = context ? &context->validation : nullptr;
     if (sink && sink->callback) {
         std::array<ValidationObject, 16> objects{};
         const uint32_t count = std::min(callbackData->objectCount, uint32_t(objects.size()));
@@ -1268,7 +1280,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     return VK_FALSE;
 }
 
-VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance, ValidationSink* sink)
+VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance, DebugCallbackContext* sink)
 {
     auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
         vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
@@ -1287,6 +1299,9 @@ VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance, ValidationSin
         .pUserData = sink,
     };
 
+    if (sink->printf && sink->printf->options().subscribeInfo) {
+        info.messageSeverity |= VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
+    }
     VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
     if (create(instance, &info, nullptr, &messenger) != VK_SUCCESS) {
         return VK_NULL_HANDLE;
@@ -3464,7 +3479,7 @@ struct BindlessHeapImpl {
 struct DeviceImpl {
     std::mutex registryMutex;
     std::shared_ptr<ResourceRegistry> resourceRegistry;
-    ValidationSink validationSink;
+    DebugCallbackContext debugContext;
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -10787,17 +10802,42 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     }
 
     std::string nvPerfError;
-    if ((profiling::nvPerfRequested() && desc.enableValidation) ||
+    if ((profiling::nvPerfRequested() && (desc.enableValidation || desc.shaderPrintf != nullptr)) ||
         !profiling::nvPerfInstanceExtensions(instanceExtensions, kVulkanApiVersion, nvPerfError)) {
         spdlog::error("[NvPerf] {}", nvPerfError.empty() ? "Validation incompatible with NvPerf" : nvPerfError);
         return makeError(Error::Unsupported);
     }
     std::vector<const char*> instanceLayers;
     const std::vector<VkLayerProperties> availableLayers = enumerateInstanceLayers();
-    if (desc.enableValidation && hasName(availableLayers, "VK_LAYER_KHRONOS_validation")) {
+    const bool validationRequested = desc.enableValidation || desc.shaderPrintf != nullptr;
+    if (desc.shaderPrintf) {
+        auto& printf = *desc.shaderPrintf;
+        for (const auto& layer : availableLayers) {
+            if (std::strcmp(layer.layerName, "VK_LAYER_KHRONOS_validation") == 0) {
+                printf.layerDiscovered = true;
+                printf.layerSpecVersion = layer.specVersion;
+                printf.layerImplementationVersion = layer.implementationVersion;
+            }
+        }
+        if (!printf.valid() || !printf.layerDiscovered || !debugUtilsAvailable) {
+            spdlog::error("Shader Printf requires a valid buffer budget, Khronos validation and debug utils.");
+            return makeError(Error::Unsupported);
+        }
+        uint32_t count = 0;
+        vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &count, nullptr);
+        std::vector<VkExtensionProperties> layerExtensions(count);
+        if (vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &count, layerExtensions.data()) != VK_SUCCESS ||
+            (!hasName(layerExtensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) &&
+             !hasName(availableExtensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME))) {
+            spdlog::error("Shader Printf requires VK_EXT_layer_settings.");
+            return makeError(Error::Unsupported);
+        }
+        instanceExtensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+    }
+    if (validationRequested && hasName(availableLayers, "VK_LAYER_KHRONOS_validation")) {
         instanceLayers.push_back("VK_LAYER_KHRONOS_validation");
         deviceImpl->validationEnabled = true;
-    } else if (desc.enableValidation) {
+    } else if (validationRequested) {
         spdlog::warn("Vulkan validation requested but VK_LAYER_KHRONOS_validation is not available.");
     }
 
@@ -10810,8 +10850,22 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         .apiVersion = kVulkanApiVersion,
     };
 
+    deviceImpl->debugContext = {desc.validationSink, desc.shaderPrintf};
+    VkDebugUtilsMessengerCreateInfoEXT earlyMessages{
+        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+        .pNext = desc.shaderPrintf ? desc.shaderPrintf->settings() : nullptr,
+        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+        .pfnUserCallback = debugCallback,
+        .pUserData = &deviceImpl->debugContext,
+    };
+    if (desc.shaderPrintf && desc.shaderPrintf->options().subscribeInfo) {
+        earlyMessages.messageSeverity |= VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
+    }
     VkInstanceCreateInfo instanceInfo{
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pNext = desc.shaderPrintf ? &earlyMessages : nullptr,
         .pApplicationInfo = &applicationInfo,
         .enabledLayerCount = static_cast<uint32_t>(instanceLayers.size()),
         .ppEnabledLayerNames = instanceLayers.data(),
@@ -10826,8 +10880,12 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     volkLoadInstance(deviceImpl->instance);
 
     if (deviceImpl->validationEnabled && debugUtilsAvailable) {
-        deviceImpl->validationSink = desc.validationSink;
-        deviceImpl->debugMessenger = createDebugMessenger(deviceImpl->instance, &deviceImpl->validationSink);
+        deviceImpl->debugMessenger = createDebugMessenger(deviceImpl->instance, &deviceImpl->debugContext);
+    }
+    if (desc.shaderPrintf) {
+        desc.shaderPrintf->instanceConfigured = true;
+        desc.shaderPrintf->messengerConfigured = deviceImpl->debugMessenger != VK_NULL_HANDLE;
+        if (!desc.shaderPrintf->messengerConfigured) { return makeError(Error::Unsupported); }
     }
 
     uint32_t physicalDeviceCount = 0;
@@ -10882,6 +10940,11 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
 
         VulkanDeviceFeatureProbe probe;
         probe.query(physicalDevice, extensions);
+        if (desc.shaderPrintf && (!probe.features.features.fragmentStoresAndAtomics ||
+            !probe.features.features.vertexPipelineStoresAndAtomics ||
+            !probe.vulkan12Features.vulkanMemoryModel || !probe.vulkan12Features.vulkanMemoryModelDeviceScope ||
+            !probe.vulkan12Features.storageBuffer8BitAccess || !probe.vulkan12Features.shaderInt8 ||
+            !probe.vulkan11Features.storageBuffer16BitAccess)) { continue; }
         if (probe.vulkan12Features.bufferDeviceAddress != VK_TRUE ||
             probe.deviceAddressCommandsFeatures.deviceAddressCommands != VK_TRUE) {
             spdlog::warn("Skipping Vulkan device '{}': deviceAddressCommands and bufferDeviceAddress must be supported.",
@@ -11070,6 +11133,15 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     }
 
     VulkanEnabledFeatureChain enabledFeatureChain(selectedFeatures);
+    if (desc.shaderPrintf) {
+        enabledFeatureChain.features.features.fragmentStoresAndAtomics = VK_TRUE;
+        enabledFeatureChain.features.features.vertexPipelineStoresAndAtomics = VK_TRUE;
+        enabledFeatureChain.vulkan12Features.vulkanMemoryModel = VK_TRUE;
+        enabledFeatureChain.vulkan12Features.vulkanMemoryModelDeviceScope = VK_TRUE;
+        enabledFeatureChain.vulkan12Features.storageBuffer8BitAccess = VK_TRUE;
+        enabledFeatureChain.vulkan12Features.shaderInt8 = VK_TRUE;
+        enabledFeatureChain.vulkan11Features.storageBuffer16BitAccess = VK_TRUE;
+    }
     std::vector<const char*> deviceExtensions = enabledDeviceExtensions(selectedFeatures);
     const VulkanExtensionSet selectedDeviceExtensions = VulkanExtensionSet::query(deviceImpl->physicalDevice);
     deviceImpl->memoryBudgetExtension = selectedDeviceExtensions.has(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
@@ -11191,6 +11263,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         return std::unexpected(resultFromVk(vkResult).error());
     }
     activateVolkDevice(deviceImpl->device);
+    if (desc.shaderPrintf) { desc.shaderPrintf->deviceConfigured = true; }
 
     VkPhysicalDeviceProperties selectedProperties{};
     if (calibratedTimestamps) {
