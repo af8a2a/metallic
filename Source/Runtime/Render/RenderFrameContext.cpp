@@ -87,6 +87,17 @@ Result CommandBuffer::addSubmissionTransaction(std::shared_ptr<SubmissionTransac
     return {};
 }
 
+Result CommandBuffer::retainResource(std::shared_ptr<void> resource)
+{
+    if (!recording_ || !submission_ || submission_->submitted || submission_->cancelled ||
+        (frameContext_ && !frameContext_->recording()) || !resource) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (frameContext_) { frameContext_->retain(std::move(resource)); }
+    else { submission_->resources.push_back(std::move(resource)); }
+    return {};
+}
+
 struct GpuCompletionPoint::State {
     enum class Status { Recording, Submitting, Submitted, Cancelled };
     Status status = Status::Recording;

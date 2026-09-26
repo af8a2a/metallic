@@ -4,6 +4,7 @@
 
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/ResourceRegistry.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Scene/scene.h"
 
@@ -307,8 +308,7 @@ struct GPUSceneRasterDrawLayout {
 
 struct GPUSceneBufferView {
     Buffer* buffer = nullptr;
-    BufferView* view = nullptr;
-    BindlessHandle bindless;
+    ResourceLease resource;
     uint64_t offset = 0;
     uint64_t size = 0;
     uint32_t structureStride = 0;
@@ -360,14 +360,14 @@ inline constexpr size_t kGPUSceneGlobalBufferKindCount =
     static_cast<size_t>(GPUSceneGlobalBufferKind::Count);
 
 struct GPUSceneConsumerBindings {
-    std::array<BindlessHandle, kGPUSceneGlobalBufferKindCount> buffers{};
+    std::array<ResourceLease, kGPUSceneGlobalBufferKindCount> buffers{};
     // Descriptor handles remain valid across in-place revision updates. A
     // DrawSet generation change is the resource-allocation boundary.
     uint32_t drawSetGeneration = 0;
     // Revision captured when the handles were created, for diagnostics only.
     uint64_t drawSetRevision = 0;
 
-    BindlessHandle operator[](GPUSceneGlobalBufferKind kind) const
+    ResourceLease operator[](GPUSceneGlobalBufferKind kind) const
     {
         return buffers[static_cast<size_t>(kind)];
     }

@@ -40,6 +40,7 @@ struct CommandSubmissionState {
     bool submitted = false;
     bool cancelled = false;
     std::vector<std::shared_ptr<SubmissionTransaction>> transactions;
+    std::vector<std::shared_ptr<void>> resources;
 };
 
 struct CommandSubmissionRegistry {

@@ -52,21 +52,32 @@ Result ResidentMeshletLod::initialize(Device& device, uint32_t capacity, std::st
     return {};
 }
 
-Result ResidentMeshletLod::record(CommandBuffer& commands, BindlessHeap& heap,
+Result ResidentMeshletLod::record(CommandBuffer& commands, ResourceRegistry& registry,
     const GPUSceneConsumerBindings& bindings, const MeshletLodView& view,
     GPUSceneRasterDrawRange candidates, uint32_t instanceCount, uint32_t groupCount,
-    BindlessHandle output, BindlessHandle arguments, BindlessHandle scratch, uint32_t manualLevel)
+    ResourceLease output, ResourceLease arguments, ResourceLease scratch, uint32_t manualLevel)
 {
     // Provision for every input record. Selection can never overflow, even when
     // the camera crosses the near plane and requests the finest entire scene.
     if (candidates.count > capacity_) { return makeError(Error::InvalidArgument); }
+    for (const auto& lease : bindings.buffers) {
+        if (!lease.valid()) { continue; }
+        auto result = registry.retain(commands, lease);
+        if (!result) { return result; }
+    }
+    for (const auto& lease : {output, arguments, scratch}) {
+        auto result = registry.retain(commands, lease);
+        if (!result) { return result; }
+    }
+    auto result = registry.bind(commands);
+    if (!result) { return result; }
     const LodPush push{view,
-        bindings[GPUSceneGlobalBufferKind::Meshlets].shaderIndex,
-        bindings[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex,
-        bindings[GPUSceneGlobalBufferKind::Instances].shaderIndex,
-        bindings[GPUSceneGlobalBufferKind::LodGroups].shaderIndex,
-        output.shaderIndex, arguments.shaderIndex, candidates.offset, candidates.count,
-        capacity_, instanceCount, groupCount, manualLevel, scratch.shaderIndex, 0u};
+        bindings[GPUSceneGlobalBufferKind::Meshlets].shaderIndex(),
+        bindings[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex(),
+        bindings[GPUSceneGlobalBufferKind::Instances].shaderIndex(),
+        bindings[GPUSceneGlobalBufferKind::LodGroups].shaderIndex(),
+        output.shaderIndex(), arguments.shaderIndex(), candidates.offset, candidates.count,
+        capacity_, instanceCount, groupCount, manualLevel, scratch.shaderIndex(), 0u};
     commands.beginDebugLabel({.name = "Resident adaptive meshlet LOD"});
     BufferBarrierDesc barriers[] = {
         {.buffer = selections_.get(), .before = initialized_ ? ResourceState::ShaderRead : ResourceState::Undefined,
@@ -76,7 +87,6 @@ Result ResidentMeshletLod::record(CommandBuffer& commands, BindlessHeap& heap,
         {.buffer = scratch_.get(), .before = initialized_ ? ResourceState::General : ResourceState::Undefined,
             .after = ResourceState::General}};
     commands.barrier({.buffers = barriers, .bufferCount = 3});
-    commands.bindBindlessHeap(heap);
     for (uint32_t stage = 0; stage < 4; ++stage) {
         commands.bindComputePipeline(*pipelines_[stage]);
         commands.pushBindlessData(&push, sizeof(push));

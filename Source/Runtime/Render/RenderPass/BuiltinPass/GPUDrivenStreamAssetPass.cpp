@@ -683,84 +683,28 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
 
-        BindlessHeap* heap = streamRuntime_->bindlessHeap();
-        result = heap->allocateSampledImage(visibilityImageHandle_);
-        if (!result || !visibilityImageHandle_.valid()) {
-            log += resultMessage("allocateSampledImage(GPUDrivenStreamAsset visibility)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-        result = heap->allocateSampledImage(depthImageHandle_);
-        if (!result || !depthImageHandle_.valid()) {
-            log += resultMessage("allocateSampledImage(GPUDrivenStreamAsset depth)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-        result = heap->allocateBuffer(deferredColorHandle_);
-        if (!result || !deferredColorHandle_.valid()) {
-            log += resultMessage("allocateBuffer(GPUDrivenStreamAsset deferred color)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-        result = heap->writeStorageBuffer(deferredColorHandle_, *deferredColorBuffer_);
+        ResourceRegistry* heap = streamRuntime_->resourceRegistry();
+        result = heap->storageBuffer(*deferredColorBuffer_, deferredColorHandle_);
         if (!result) {
             log += resultMessage("writeStorageBuffer(GPUDrivenStreamAsset deferred color)", result);
             log += '\n';
             return result;
         }
 
-        auto allocateGpuSceneBufferHandle = [&](BindlessHandle& handle,
-                                                const char* label) -> Result {
-            Result allocateResult = heap->allocateBuffer(handle);
-            if (!allocateResult || !handle.valid()) {
-                log += resultMessage(
-                    std::string("allocateBuffer(GPUDrivenStreamAsset ") + label + ")",
-                    allocateResult);
-                log += '\n';
-                return allocateResult ? makeError(Error::Failure) : allocateResult;
-            }
-            return {};
-        };
-        result = allocateGpuSceneBufferHandle(
-            instanceVisibilityHandle_,
-            "instance visibility");
-        if (!result) {
-            return result;
-        }
-        result = allocateGpuSceneBufferHandle(
-            visibleInstanceIdsHandle_,
-            "visible instance IDs");
-        if (!result) {
-            return result;
-        }
-        result = allocateGpuSceneBufferHandle(
-            visibleInstanceCounterHandle_,
-            "visible instance counter");
-        if (!result) {
-            return result;
-        }
-        for (uint32_t historyIndex = 0; historyIndex < hzbHandles_.size(); ++historyIndex) {
-            result = allocateGpuSceneBufferHandle(
-                hzbHandles_[historyIndex],
-                "HZB history");
-            if (!result) {
-                return result;
-            }
-        }
         result = streamRuntime_->updateRasterBindings(MeshletStreamGpuRasterBindings{
-            .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex,
-            .hzbBuffer0 = hzbHandles_[0].shaderIndex,
-            .hzbBuffer1 = hzbHandles_[1].shaderIndex,
-            .depthImage = depthImageHandle_.shaderIndex,
-            .visibilityImage = visibilityImageHandle_.shaderIndex,
-            .deferredColorBuffer = deferredColorHandle_.shaderIndex,
-            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.shaderIndex,
+            .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex(),
+            .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
+            .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
+            .depthImage = depthImageHandle_.shaderIndex(),
+            .visibilityImage = visibilityImageHandle_.shaderIndex(),
+            .deferredColorBuffer = deferredColorHandle_.shaderIndex(),
+            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.shaderIndex(),
             .hzbMipCount = hzbMipCount_,
             .hzbValid = 0u,
             .cullingFlags = cullingFlagsFromProperties(properties()),
             .width = frameWidth_,
             .height = frameHeight_,
-            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex,
+            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex(),
         });
         if (!result) {
             log = "GPUDrivenStreamAssetPass failed to publish raster bindings";
@@ -830,17 +774,11 @@ public:
         }
 
         const MeshletStreamFrameDesc frame = frameDescFromContext(context);
-        result = streamRuntime_->bindlessHeap()->writeSampledImage(
-            visibilityImageHandle_,
-            *visibility.view(),
-            ResourceState::ShaderRead);
+        result = streamRuntime_->resourceRegistry()->sampledImage(*visibility.view(), visibilityImageHandle_, ResourceState::ShaderRead);
         if (!result) {
             return result;
         }
-        result = streamRuntime_->bindlessHeap()->writeSampledImage(
-            depthImageHandle_,
-            *depth.view(),
-            ResourceState::ShaderRead);
+        result = streamRuntime_->resourceRegistry()->sampledImage(*depth.view(), depthImageHandle_, ResourceState::ShaderRead);
         if (!result) {
             return result;
         }
@@ -905,6 +843,18 @@ public:
         const auto depth = context.outputTexture("depth");
         const auto frame = frameDescFromContext(context);
         Result result;
+        auto& registry = *streamRuntime_->resourceRegistry();
+        for (const auto& lease : {visibilityImageHandle_, depthImageHandle_, deferredColorHandle_,
+             instanceVisibilityHandle_, visibleInstanceIdsHandle_, visibleInstanceCounterHandle_,
+             hzbHandles_[0], hzbHandles_[1]}) {
+            if (lease.valid()) {
+                result = registry.retain(context.commandBuffer(), lease);
+                if (!result) { return result; }
+            }
+        }
+        result = registry.bind(context.commandBuffer());
+        if (!result) { return result; }
+
         if (rtasVisualization_) {
             {
                 auto profile = context.profileScope("Ray query");
@@ -1022,14 +972,6 @@ public:
 private:
     void releaseRasterHandles()
     {
-        if (streamRuntime_ && streamRuntime_->bindlessHeap()) {
-            auto& heap = *streamRuntime_->bindlessHeap();
-            for (const auto handle : {visibilityImageHandle_, depthImageHandle_, deferredColorHandle_,
-                    instanceVisibilityHandle_, visibleInstanceIdsHandle_, visibleInstanceCounterHandle_}) {
-                if (handle.valid()) { heap.release(handle); }
-            }
-            for (const auto handle : hzbHandles_) { if (handle.valid()) { heap.release(handle); } }
-        }
         visibilityImageHandle_ = {};
         depthImageHandle_ = {};
         deferredColorHandle_ = {};
@@ -1135,9 +1077,7 @@ private:
             return result;
         }
 
-        result = streamRuntime_->bindlessHeap()->writeStorageBuffer(
-            deferredColorHandle_,
-            *resizedDeferredColorBuffer);
+        result = streamRuntime_->resourceRegistry()->storageBuffer(*resizedDeferredColorBuffer, deferredColorHandle_);
         if (!result) {
             return result;
         }
@@ -1257,54 +1197,46 @@ private:
                 gpuSceneView_,
                 activeFrameSlot_,
                 resources) ||
-            resources.instanceVisibilityStates.view == nullptr ||
-            resources.visibleInstanceIds.view == nullptr ||
-            resources.visibleInstanceCounter.view == nullptr ||
-            resources.hzbHistory[0].view == nullptr ||
-            resources.hzbHistory[1].view == nullptr ||
+            resources.instanceVisibilityStates.buffer == nullptr ||
+            resources.visibleInstanceIds.buffer == nullptr ||
+            resources.visibleInstanceCounter.buffer == nullptr ||
+            resources.hzbHistory[0].buffer == nullptr ||
+            resources.hzbHistory[1].buffer == nullptr ||
             streamRuntime_->bindlessHeap() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        BindlessHeap& heap = *streamRuntime_->bindlessHeap();
-        Result result = heap.writeBufferView(
-            instanceVisibilityHandle_,
-            *resources.instanceVisibilityStates.view);
+        ResourceRegistry& heap = *streamRuntime_->resourceRegistry();
+        Result result = heap.storageBuffer(*resources.instanceVisibilityStates.buffer, instanceVisibilityHandle_);
         if (result) {
-            result = heap.writeBufferView(
-                visibleInstanceIdsHandle_,
-                *resources.visibleInstanceIds.view);
+            result = heap.storageBuffer(*resources.visibleInstanceIds.buffer, visibleInstanceIdsHandle_);
         }
         if (result) {
-            result = heap.writeBufferView(
-                visibleInstanceCounterHandle_,
-                *resources.visibleInstanceCounter.view);
+            result = heap.storageBuffer(*resources.visibleInstanceCounter.buffer, visibleInstanceCounterHandle_);
         }
         for (uint32_t historyIndex = 0;
              historyIndex < hzbHandles_.size() && result;
              ++historyIndex) {
-            result = heap.writeBufferView(
-                hzbHandles_[historyIndex],
-                *resources.hzbHistory[historyIndex].view);
+            result = heap.storageBuffer(*resources.hzbHistory[historyIndex].buffer, hzbHandles_[historyIndex]);
         }
         if (!result) {
             return result;
         }
 
         return streamRuntime_->updateRasterBindings(MeshletStreamGpuRasterBindings{
-            .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex,
-            .hzbBuffer0 = hzbHandles_[0].shaderIndex,
-            .hzbBuffer1 = hzbHandles_[1].shaderIndex,
-            .depthImage = depthImageHandle_.shaderIndex,
-            .visibilityImage = visibilityImageHandle_.shaderIndex,
-            .deferredColorBuffer = deferredColorHandle_.shaderIndex,
-            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.shaderIndex,
+            .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex(),
+            .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
+            .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
+            .depthImage = depthImageHandle_.shaderIndex(),
+            .visibilityImage = visibilityImageHandle_.shaderIndex(),
+            .deferredColorBuffer = deferredColorHandle_.shaderIndex(),
+            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.shaderIndex(),
             .hzbMipCount = hzbMipCount_,
             .hzbValid = hzbValid_ ? 1u : 0u,
             .cullingFlags = cullingFlagsFromProperties(properties()),
             .width = frameWidth_,
             .height = frameHeight_,
-            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex,
+            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex(),
         });
     }
 
@@ -1727,13 +1659,13 @@ private:
     std::unique_ptr<ComputePipeline> instanceCullPipeline_;
     std::unique_ptr<ComputePipeline> hzbPipeline_;
     std::unique_ptr<Buffer> deferredColorBuffer_;
-    BindlessHandle visibilityImageHandle_;
-    BindlessHandle depthImageHandle_;
-    BindlessHandle deferredColorHandle_;
-    BindlessHandle instanceVisibilityHandle_;
-    BindlessHandle visibleInstanceIdsHandle_;
-    BindlessHandle visibleInstanceCounterHandle_;
-    std::array<BindlessHandle, 2> hzbHandles_{};
+    ResourceLease visibilityImageHandle_;
+    ResourceLease depthImageHandle_;
+    ResourceLease deferredColorHandle_;
+    ResourceLease instanceVisibilityHandle_;
+    ResourceLease visibleInstanceIdsHandle_;
+    ResourceLease visibleInstanceCounterHandle_;
+    std::array<ResourceLease, 2> hzbHandles_{};
     ResourceState deferredColorState_ = ResourceState::Undefined;
     uint32_t frameWidth_ = 1;
     uint32_t frameHeight_ = 1;

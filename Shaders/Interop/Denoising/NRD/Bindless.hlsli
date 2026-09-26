@@ -2,7 +2,7 @@
 #define NRD_INTERNAL 1
 
 // Slots describe algorithm inputs, never Vulkan descriptor bindings. Values are
-// Metallic BindlessHandle::shaderIndex and may be anywhere in the native heap.
+// device ResourceRegistry indices and may be anywhere in the native heap.
 struct NrdResourceIndices
 {
     uint sampled[32];
@@ -16,7 +16,8 @@ struct NrdPushData
     NrdResourceIndices* resources;
 };
 
-[[vk::push_constant]] NrdPushData gNrdPush;
+import ParameterRoot;
+#define gNrdPush (Metallic::getParameters<NrdPushData>())
 
 #define NRD_CONSTANTS_START(name) struct name {
 #define NRD_TYPE_float4x4 column_major float4x4

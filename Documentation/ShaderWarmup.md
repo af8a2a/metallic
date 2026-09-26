@@ -20,6 +20,26 @@ Repeated invocations validate dependencies and reuse current entries. Compilatio
 errors or failure to read back a newly written cache entry produce a nonzero exit
 code; other requests are still attempted. This warms SPIR-V, not driver PSO caches.
 
+## Parallel compilation and progress
+
+Warmup uses a worker pool. The default is the available CPU thread count capped
+at 4 to limit simultaneous Slang compiler memory use. --jobs N sets an explicit
+positive worker count; --jobs 1 restores serial compilation. The actual worker
+count is capped by the number of selected requests.
+
+~~~powershell
+.\build-release\Source\MetallicShaderCompiler.exe --jobs 8
+cmake -S . -B build-release "-DMETALLIC_SHADER_WARMUP_ARGS=--jobs;8"
+cmake --build build-release --target MetallicShaderWarmup
+~~~
+
+CMake's --parallel option controls the build, not shader compiler workers.
+Requests compile with independent Slang sessions. Progress reports completed
+requests/total, percentage, cache hits, failures, elapsed time, and the completed
+shader name. Completion order may differ from request order. Errors are counted
+per request and remaining requests are still processed before the final summary.
+The progress percentage measures request count, not estimated remaining time.
+
 ## Selection and shader debug modes
 
 ~~~powershell

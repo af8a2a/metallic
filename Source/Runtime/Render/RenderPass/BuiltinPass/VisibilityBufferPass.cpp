@@ -76,56 +76,54 @@ struct GPUDrivenPreviewFrameSlotResources {
     Buffer* visibleInstanceCounterBuffer = nullptr;
     std::array<Buffer*, 2> visibleMeshletBuffers{};
     std::array<Buffer*, 2> indirectBuffers{};
-    BindlessHandle paramsHandle;
-    BindlessHandle lodSelectionHandle;
-    BindlessHandle lodArgumentsHandle;
-    BindlessHandle lodScratchHandle;
-    BindlessHandle instanceVisibilityHandle;
-    BindlessHandle visibleInstanceIdsHandle;
-    BindlessHandle visibleInstanceCounterHandle;
-    std::array<BindlessHandle, 2> visibleMeshletHandles;
-    std::array<BindlessHandle, 2> indirectHandles;
+    ResourceLease paramsHandle;
+    ResourceLease lodSelectionHandle;
+    ResourceLease lodArgumentsHandle;
+    ResourceLease lodScratchHandle;
+    ResourceLease instanceVisibilityHandle;
+    ResourceLease visibleInstanceIdsHandle;
+    ResourceLease visibleInstanceCounterHandle;
+    std::array<ResourceLease, 2> visibleMeshletHandles;
+    std::array<ResourceLease, 2> indirectHandles;
 };
 
 struct GPUDrivenPreviewFrameSlotBindings {
-    BindlessHandle paramsHandle;
-    BindlessHandle lodSelectionHandle;
-    BindlessHandle lodArgumentsHandle;
-    BindlessHandle lodScratchHandle;
-    BindlessHandle instanceVisibilityHandle;
-    BindlessHandle visibleInstanceIdsHandle;
-    BindlessHandle visibleInstanceCounterHandle;
-    std::array<BindlessHandle, 2> visibleMeshletHandles;
-    std::array<BindlessHandle, 2> indirectHandles;
+    ResourceLease paramsHandle;
+    ResourceLease lodSelectionHandle;
+    ResourceLease lodArgumentsHandle;
+    ResourceLease lodScratchHandle;
+    ResourceLease instanceVisibilityHandle;
+    ResourceLease visibleInstanceIdsHandle;
+    ResourceLease visibleInstanceCounterHandle;
+    std::array<ResourceLease, 2> visibleMeshletHandles;
+    std::array<ResourceLease, 2> indirectHandles;
 };
 
 struct GPUDrivenPreviewBindingBundle {
     std::vector<std::shared_ptr<ResidentMeshletLod>> residentLods;
     std::shared_ptr<VisibilityHybridRasterizer> hybridRasterizer;
-    BindlessHandle hybridQueueHandle;
-    BindlessHandle hybridClusterHandle;
-    BindlessHandle hybridPixelHandle;
+    ResourceLease hybridQueueHandle;
+    ResourceLease hybridClusterHandle;
+    ResourceLease hybridPixelHandle;
     std::unique_ptr<Buffer> materialTextureRemapBuffer;
-    std::unique_ptr<Buffer> streamMaterialTextureRemapBuffer;
     std::unique_ptr<Buffer> tessellationBuffer;
-    std::unique_ptr<Buffer> streamTessellationBuffer;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer;
     std::unique_ptr<Buffer> hzbSpdCounterBuffer;
     std::unique_ptr<Buffer> hzbSpdResetBuffer;
-    BindlessHandle hzbSpdCounterHandle;
-    std::unique_ptr<BindlessHeap> heap;
+    ResourceLease hzbSpdCounterHandle;
+    std::shared_ptr<ResourceRegistry> registry;
     GPUSceneConsumerBindings gpuSceneBindings;
-    BindlessHandle materialTextureRemapHandle;
-    BindlessHandle tessellationHandle;
+    ResourceLease materialTextureRemapHandle;
+    ResourceLease tessellationHandle;
     std::vector<GPUDrivenPreviewFrameSlotBindings> frameSlots;
-    std::array<BindlessHandle, 2> hzbHandles;
-    BindlessHandle depthImageHandle;
-    BindlessHandle visibilityImageHandle;
-    BindlessHandle cullingDepthImageHandle;
-    std::vector<BindlessHandle> materialTextureHandles;
-    BindlessHandle streamOwnerMaskHandle;
-    BindlessHandle streamDebugRecordsHandle;
-    BindlessHandle streamDebugGroupsHandle;
+    std::array<ResourceLease, 2> hzbHandles;
+    ResourceLease depthImageHandle;
+    ResourceLease visibilityImageHandle;
+    ResourceLease cullingDepthImageHandle;
+    std::vector<ResourceLease> materialTextureHandles;
+    ResourceLease streamOwnerMaskHandle;
+    ResourceLease streamDebugRecordsHandle;
+    ResourceLease streamDebugGroupsHandle;
     MeshletStreamDeferredGpuResourcesView streamDebugResources;
 };
 
@@ -134,13 +132,11 @@ struct GPUDrivenPreviewRetiredViewResources {
     std::shared_ptr<VisibilityHybridRasterizer> hybridRasterizer;
     GPUDrivenPreviewCullingTargets cullingTargets;
     std::unique_ptr<Buffer> materialTextureRemapBuffer;
-    std::unique_ptr<Buffer> streamMaterialTextureRemapBuffer;
     std::unique_ptr<Buffer> tessellationBuffer;
-    std::unique_ptr<Buffer> streamTessellationBuffer;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer;
     std::unique_ptr<Buffer> hzbSpdCounterBuffer;
     std::unique_ptr<Buffer> hzbSpdResetBuffer;
-    std::unique_ptr<BindlessHeap> bindlessHeap;
+    std::shared_ptr<ResourceRegistry> registry;
 };
 
 class VisibilityBufferPass final : public UnsafePass {
@@ -465,15 +461,10 @@ public:
         if (requestedStreamEnabled) {
             resetStreamIntegration();
             streamRuntime_ = preparedScene_->geometry;
-            Result streamResult;
             streamEnabled_ = true;
             compiledStreamAssetPath_ = requestedStreamAssetPath;
             compiledStreamSourceId_ = preparedScene_->streamSourceId;
             compiledStreamSourcePath_ = preparedScene_->streamSourcePath;
-            streamResult = allocateStreamRasterBindings(log);
-            if (!streamResult) {
-                return streamResult;
-            }
         } else {
             resetStreamIntegration();
         }
@@ -697,6 +688,9 @@ public:
         if (streamRuntime_) {
             if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(streamRuntime_); }
         }
+        if (const auto* prepared = context.preparedScene(); prepared && prepared->snapshot) {
+            sharedTextureResources_ = prepared->snapshot->pathTraceResources;
+        }
         Result syncResult = syncRuntimeGeometry(context.runtimeScene());
         if (!syncResult) {
             return syncResult;
@@ -714,7 +708,7 @@ public:
         if (!color.valid() ||
             !visibility.valid() ||
             !depth.valid() ||
-            bindlessHeap_ == nullptr ||
+            registry_ == nullptr ||
             visibilityPipelines_[0] == nullptr ||
             compositePipeline_ == nullptr ||
             cullingTargets_.visibilityView == nullptr ||
@@ -817,17 +811,11 @@ public:
         std::memcpy(mappedInfo, &info, sizeof(info));
         rasterInfo.buffer()->flush(0, sizeof(info));
         rasterInfo.buffer()->unmap();
-        result = bindlessHeap_->writeSampledImage(
-            depthImageHandle_,
-            *depth.view(),
-            ResourceState::ShaderRead);
+        result = registry_->sampledImage(*depth.view(), depthImageHandle_, ResourceState::ShaderRead);
         if (!result) {
             return result;
         }
-        result = bindlessHeap_->writeSampledImage(
-            visibilityImageHandle_,
-            *visibility.view(),
-            ResourceState::ShaderRead);
+        result = registry_->sampledImage(*visibility.view(), visibilityImageHandle_, ResourceState::ShaderRead);
         if (!result) {
             return result;
         }
@@ -854,6 +842,52 @@ public:
             streamRuntime_.get(), UINT32_MAX, residentRecordCapacity_);
     }
 
+    Result retainBindings(CommandBuffer& commands) const
+    {
+        if (!registry_) { return makeError(Error::InvalidArgument); }
+        auto retain = [&](const ResourceLease& lease) {
+            return lease.valid() ? registry_->retain(commands, lease) : Result{};
+        };
+        for (const auto& lease : {
+            hybridQueueHandle_, hybridClusterHandle_, hybridPixelHandle_,
+            streamWorkloadHandle_, streamHybridClusterHandle_, streamHybridPixelHandle_,
+            streamCandidateArgumentsHandle_, streamHybridQueueHandle_, tessellationHandle_,
+            streamTessellationHandle_, hzbSpdCounterHandle_, materialTextureRemapHandle_,
+            depthImageHandle_, visibilityImageHandle_, cullingDepthImageHandle_,
+            streamOwnerMaskHandle_, streamDebugRecordsHandle_, streamDebugGroupsHandle_,
+            streamGPUSceneInstanceHandle_, streamMaterialHandle_, streamMaterialTextureRemapHandle_,
+            streamVisibilityImageHandle_, streamDepthImageHandle_, streamInstanceVisibilityHandle_,
+            streamVisibleInstanceIdsHandle_, streamVisibleInstanceCounterHandle_}) {
+            auto result = retain(lease);
+            if (!result) { return result; }
+        }
+        for (const auto& lease : hzbHandles_) {
+            auto result = retain(lease);
+            if (!result) { return result; }
+        }
+        for (const auto& lease : streamHzbHandles_) {
+            auto result = retain(lease);
+            if (!result) { return result; }
+        }
+        for (const auto& lease : materialTextureHandles_) {
+            auto result = retain(lease);
+            if (!result) { return result; }
+        }
+        for (const auto& lease : gpuSceneBindings_.buffers) {
+            auto result = retain(lease);
+            if (!result) { return result; }
+        }
+        const auto& slot = frameSlotResources_[activeFrameSlot_];
+        for (const auto& lease : {slot.paramsHandle, slot.lodSelectionHandle, slot.lodArgumentsHandle,
+             slot.lodScratchHandle, slot.instanceVisibilityHandle, slot.visibleInstanceIdsHandle,
+             slot.visibleInstanceCounterHandle, slot.visibleMeshletHandles[0], slot.visibleMeshletHandles[1],
+             slot.indirectHandles[0], slot.indirectHandles[1]}) {
+            auto result = retain(lease);
+            if (!result) { return result; }
+        }
+        return registry_->bind(commands);
+    }
+
     Result execute(RenderGraphExecutionContext& context) override
     {
         // The graph node also owns streaming/traversal work. Keep the actual
@@ -864,7 +898,8 @@ public:
         const auto visibility = context.outputTexture("visibility");
         const auto depth = context.outputTexture("depth");
         Result result;
-        context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
+        result = retainBindings(context.commandBuffer());
+        if (!result) { return result; }
         {
             auto profile = context.profileScope("Initialize / light grid");
             result = initializeInternalBuffers(context.commandBuffer());
@@ -887,7 +922,7 @@ public:
         const auto& slot = activeFrameResources();
         {
             auto profile = context.profileScope("Resident LOD");
-            result = residentLods_[activeFrameSlot_]->record(context.commandBuffer(), *bindlessHeap_,
+            result = residentLods_[activeFrameSlot_]->record(context.commandBuffer(), *registry_,
                 gpuSceneBindings_, lodView, adaptiveMeshletRange_, instanceCount_, lodGroupCount_,
                 slot.lodSelectionHandle, slot.lodArgumentsHandle, slot.lodScratchHandle,
                 autoLodFromProperties(properties()) ? UINT32_MAX : lodLevelFromProperties(properties()));
@@ -1171,12 +1206,6 @@ private:
 
     void resetStreamIntegration()
     {
-        if (streamRuntime_ && streamRuntime_->bindlessHeap()) {
-            auto& heap = *streamRuntime_->bindlessHeap();
-            for (const auto handle : streamRasterHandles_) { heap.release(handle); }
-            for (const auto handle : streamMaterialTextureHandles_) { heap.release(handle); }
-        }
-        streamRasterHandles_.clear();
         streamRuntime_.reset();
         streamMeshShader_.reset();
         streamFragmentShader_.reset();
@@ -1188,7 +1217,6 @@ private:
         streamInstanceCullPipeline_.reset();
         streamHybridQueueHandle_ = {};
         streamTessellationHandle_ = {};
-        streamMaterialTextureHandles_.clear();
         streamHybridClusterHandle_ = {};
         streamWorkloadHandle_ = {};
         for (auto& pipeline : streamWorkloadPipelines_) { pipeline.reset(); }
@@ -1227,80 +1255,6 @@ private:
         compiledStreamSourcePath_.clear();
         streamOwnerMask_.clear();
         streamMappedInstanceCount_ = 0;
-    }
-
-    Result allocateStreamRasterBindings(std::string& log)
-    {
-        BindlessHeap* heap = streamRuntime_->bindlessHeap();
-        if (!streamEnabled_ || heap == nullptr) {
-            log = "VisibilityBufferPass stream runtime has no bindless heap";
-            return makeError(Error::InvalidArgument);
-        }
-        auto allocateBuffer = [&](BindlessHandle& handle,
-                                  const char* label) -> Result {
-            Result result = heap->allocateBuffer(handle);
-            if (!result || !handle.valid()) {
-                log += resultMessage(
-                    std::string("allocateBuffer(VisibilityBufferPass stream ") +
-                        label + ")",
-                    result);
-                log += '\n';
-                return result ? makeError(Error::Failure) : result;
-            }
-            streamRasterHandles_.push_back(handle);
-            return {};
-        };
-        auto allocateImage = [&](BindlessHandle& handle,
-                                 const char* label) -> Result {
-            Result result = heap->allocateSampledImage(handle);
-            if (!result || !handle.valid()) {
-                log += resultMessage(
-                    std::string("allocateSampledImage(VisibilityBufferPass stream ") +
-                        label + ")",
-                    result);
-                log += '\n';
-                return result ? makeError(Error::Failure) : result;
-            }
-            streamRasterHandles_.push_back(handle);
-            return {};
-        };
-
-        Result result = allocateBuffer(streamHybridQueueHandle_, "hybrid queue");
-        if (result && tessellationEnabled()) { result = allocateBuffer(streamTessellationHandle_, "tessellation"); }
-        if (result) { result = allocateBuffer(streamGPUSceneInstanceHandle_, "GPUScene instances"); }
-        if (result) { result = allocateBuffer(streamMaterialHandle_, "GPUScene materials"); }
-        if (result) { result = allocateBuffer(streamMaterialTextureRemapHandle_, "material texture remap"); }
-        if (result) { result = allocateBuffer(streamHybridClusterHandle_, "hybrid clusters"); }
-        if (result) { result = allocateBuffer(streamWorkloadHandle_, "SW workload"); }
-        if (result) { result = allocateBuffer(streamHybridPixelHandle_, "hybrid pixels"); }
-        if (result) { result = allocateBuffer(streamCandidateArgumentsHandle_, "cluster candidate arguments"); }
-        if (result) { result = allocateImage(streamVisibilityImageHandle_, "visibility"); }
-        if (result) {
-            result = allocateImage(streamDepthImageHandle_, "depth");
-        }
-        if (result) {
-            result = allocateBuffer(
-                streamInstanceVisibilityHandle_,
-                "instance visibility");
-        }
-        if (result) {
-            result = allocateBuffer(
-                streamVisibleInstanceIdsHandle_,
-                "visible instance IDs");
-        }
-        if (result) {
-            result = allocateBuffer(
-                streamVisibleInstanceCounterHandle_,
-                "visible instance counter");
-        }
-        for (uint32_t historyIndex = 0;
-             historyIndex < streamHzbHandles_.size() && result;
-             ++historyIndex) {
-            result = allocateBuffer(
-                streamHzbHandles_[historyIndex],
-                "HZB history");
-        }
-        return result;
     }
 
     void invalidateHzbHistory()
@@ -1989,7 +1943,7 @@ private:
         RenderSubsystemHost& subsystemHost,
         std::string& log)
     {
-        if (bindlessHeap_ == nullptr || materialTextureRemapBuffer_ == nullptr ||
+        if (registry_ == nullptr || materialTextureRemapBuffer_ == nullptr ||
             cullingTargets_.depthView == nullptr) {
             log = "VisibilityBufferPass cannot bind GPUScene before consumer resources exist";
             return makeError(Error::InvalidArgument);
@@ -2017,7 +1971,7 @@ private:
             !remapLayoutChanged &&
             !streamEnabled_ &&
             !ownerMaskLayoutChanged) {
-            return subsystem.createBindings(*bindlessHeap_, gpuSceneBindings_, log);
+            return subsystem.createBindings(gpuSceneBindings_, log);
         }
         const auto streamDebugResources = streamEnabled_
             ? streamRuntime_->deferredGpuResources() : MeshletStreamDeferredGpuResourcesView{};
@@ -2042,10 +1996,8 @@ private:
         auto retired = std::make_shared<GPUDrivenPreviewRetiredViewResources>();
         retired->residentLods = residentLods_;
         retired->hybridRasterizer = hybridRasterizer_;
-        retired->bindlessHeap = std::move(bindlessHeap_);
+        retired->registry = std::move(registry_);
         retired->tessellationBuffer = std::move(tessellationBuffer_);
-        retired->streamMaterialTextureRemapBuffer = std::move(streamMaterialTextureRemapBuffer_);
-        retired->streamTessellationBuffer = std::move(streamTessellationBuffer_);
         retired->materialTextureRemapBuffer =
             std::move(materialTextureRemapBuffer_);
         retired->streamOwnerMaskBuffer = std::move(streamOwnerMaskBuffer_);
@@ -2063,46 +2015,46 @@ private:
     {
         const GPUDrivenPreviewFrameSlotResources& slot = activeFrameResources();
         return GPUDrivenPreviewUserPush{
-            .positionBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Vertices].shaderIndex,
-            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].shaderIndex,
+            .positionBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Vertices].shaderIndex(),
+            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].shaderIndex(),
             .meshletDrawBuffer =
-                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex,
+                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex(),
             .meshletVertexBuffer =
-                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletVertices].shaderIndex,
+                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletVertices].shaderIndex(),
             .meshletTriangleBuffer =
-                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletTriangleWords].shaderIndex,
-            .paramsBuffer = slot.paramsHandle.shaderIndex,
-            .transformBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Geometries].shaderIndex,
-            .instanceBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Instances].shaderIndex,
-            .instanceVisibilityBuffer = slot.instanceVisibilityHandle.shaderIndex,
-            .visibleInstanceIdsBuffer = slot.visibleInstanceIdsHandle.shaderIndex,
-            .visibleInstanceCounterBuffer = slot.visibleInstanceCounterHandle.shaderIndex,
-            .visibleMeshletBuffer0 = slot.visibleMeshletHandles[0].shaderIndex,
-            .visibleMeshletBuffer1 = slot.visibleMeshletHandles[1].shaderIndex,
-            .indirectBuffer0 = slot.indirectHandles[0].shaderIndex,
-            .indirectBuffer1 = slot.indirectHandles[1].shaderIndex,
-            .hzbBuffer0 = hzbHandles_[0].shaderIndex,
-            .hzbBuffer1 = hzbHandles_[1].shaderIndex,
+                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletTriangleWords].shaderIndex(),
+            .paramsBuffer = slot.paramsHandle.shaderIndex(),
+            .transformBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Geometries].shaderIndex(),
+            .instanceBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Instances].shaderIndex(),
+            .instanceVisibilityBuffer = slot.instanceVisibilityHandle.shaderIndex(),
+            .visibleInstanceIdsBuffer = slot.visibleInstanceIdsHandle.shaderIndex(),
+            .visibleInstanceCounterBuffer = slot.visibleInstanceCounterHandle.shaderIndex(),
+            .visibleMeshletBuffer0 = slot.visibleMeshletHandles[0].shaderIndex(),
+            .visibleMeshletBuffer1 = slot.visibleMeshletHandles[1].shaderIndex(),
+            .indirectBuffer0 = slot.indirectHandles[0].shaderIndex(),
+            .indirectBuffer1 = slot.indirectHandles[1].shaderIndex(),
+            .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
+            .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
             // Reuse the raster-only unused color slot for the hybrid queue.
             .deferredColorBuffer = hybridRasterEnabled() && !clusterPrebinEnabled()
-                ? hybridQueueHandle_.shaderIndex : kGPUDrivenInvalidBindlessIndex,
+                ? hybridQueueHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
             .depthImage = freezeCullingCamera_
-                ? cullingDepthImageHandle_.shaderIndex
-                : depthImageHandle_.shaderIndex,
-            .visibilityImage = visibilityImageHandle_.shaderIndex,
+                ? cullingDepthImageHandle_.shaderIndex()
+                : depthImageHandle_.shaderIndex(),
+            .visibilityImage = visibilityImageHandle_.shaderIndex(),
             .passIndex = passIndex,
             .mipLevel = mipLevel,
             .projectWithCullingCamera = projectWithCullingCamera ? 1u : 0u,
-            .materialBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Materials].shaderIndex,
-            .materialTextureRemapBuffer = materialTextureRemapHandle_.shaderIndex,
+            .materialBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Materials].shaderIndex(),
+            .materialTextureRemapBuffer = materialTextureRemapHandle_.shaderIndex(),
             .environmentImage = kGPUDrivenInvalidBindlessIndex,
             .environmentSHBuffer = clusterPrebinEnabled()
-                ? hybridClusterHandle_.shaderIndex : kGPUDrivenInvalidBindlessIndex,
+                ? hybridClusterHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
             .streamDeferredBindingsBuffer = kGPUDrivenInvalidBindlessIndex,
             .residentRecordCapacity = residentRecordCapacity_,
             .streamOwnerMaskBuffer =
                 streamEnabled_ && streamOwnerMaskHandle_.valid()
-                ? streamOwnerMaskHandle_.shaderIndex
+                ? streamOwnerMaskHandle_.shaderIndex()
                 : kGPUDrivenInvalidBindlessIndex,
             .tessellationEdgePixels = tessellationEdgePixels(),
             .tessellationMaxFactor = tessellationMaxFactor(),
@@ -2146,7 +2098,7 @@ private:
 
     Result initializeInternalBuffers(CommandBuffer& commandBuffer)
     {
-        if (gpuSceneSubsystem_ == nullptr) {
+        if (gpuSceneSubsystem_ == nullptr || !gpuSceneView_.valid()) {
             return makeError(Error::InvalidArgument);
         }
         std::string log;
@@ -2205,7 +2157,7 @@ private:
             .phase = passIndex == 0
                 ? GPUSceneCullPhase::Early
                 : GPUSceneCullPhase::Late,
-            .bindlessHeap = bindlessHeap_.get(),
+            .bindlessHeap = registry_->heap(),
             .resetPipeline = resetPipeline_.get(),
             .instanceCullPipeline = instanceCullPipeline_.get(),
             .pushData = &push,
@@ -2294,9 +2246,9 @@ private:
         if (prebin) {
             auto binProfile = context.profileScope("Soft/hard classification");
             Result result = hybridRasterizer_->beginClusters(commandBuffer,
-                softwareRasterMaxPixels(), reversedZ, hybridPixelHandle_.shaderIndex, activeMeshletCount_, false, false, tessellationEnabled());
+                softwareRasterMaxPixels(), reversedZ, hybridPixelHandle_.shaderIndex(), activeMeshletCount_, false, false, tessellationEnabled());
             if (!result) { return result; }
-            commandBuffer.bindBindlessHeap(*bindlessHeap_);
+            commandBuffer.bindBindlessHeap(*registry_->heap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify resident clusters"});
             const auto push = makePush(passIndex, 0, projectWithCullingCamera);
             commandBuffer.bindComputePipeline(*clusterCountPipeline_);
@@ -2333,7 +2285,7 @@ private:
                     .after = ResourceState::General, .acquireFromQueue = true}};
             if (async) { commands.barrier({.buffers = acquires, .bufferCount = 3}); }
             commands.beginDebugLabel({.name = "Hybrid raster: resident software clusters"});
-            commands.bindBindlessHeap(*bindlessHeap_);
+            commands.bindBindlessHeap(*registry_->heap());
             commands.bindComputePipeline(*clusterRasterPipeline_);
             const auto push = makePush(passIndex, 0, projectWithCullingCamera);
             commands.pushBindlessData(&push, sizeof(push));
@@ -2360,7 +2312,7 @@ private:
                 .maxDepth = 1.0f,
             });
             commands.setScissor(renderArea);
-            commands.bindBindlessHeap(*bindlessHeap_);
+            commands.bindBindlessHeap(*registry_->heap());
             for (uint32_t bucketIndex = 0;
                  bucketIndex < kGPUDrivenPreviewDrawBucketCount;
                  ++bucketIndex) {
@@ -2400,9 +2352,9 @@ private:
         if (boolProperty(&properties(), "hzbSpd", true) &&
             frameWidth_ <= kHzbSpdMaxDimension && frameHeight_ <= kHzbSpdMaxDimension) {
             const HzbSpdUserPush push{
-                .depthImage = freezeCullingCamera_ ? cullingDepthImageHandle_.shaderIndex : depthImageHandle_.shaderIndex,
-                .hzbBuffer = hzbHandles_[frameIndex_ & 1u].shaderIndex,
-                .counterBuffer = hzbSpdCounterHandle_.shaderIndex,
+                .depthImage = freezeCullingCamera_ ? cullingDepthImageHandle_.shaderIndex() : depthImageHandle_.shaderIndex(),
+                .hzbBuffer = hzbHandles_[frameIndex_ & 1u].shaderIndex(),
+                .counterBuffer = hzbSpdCounterHandle_.shaderIndex(),
                 .width = frameWidth_, .height = frameHeight_, .mipCount = hzbMipCount_,
                 .reversedZ = previousParams_.clipOrtho[3] > 0.5f ? 1u : 0u};
             const GPUSceneComputeDispatchDesc dispatch{
@@ -2410,7 +2362,7 @@ private:
                 .groupCountX = divideRoundUp(frameWidth_, kHzbSpdTileSize),
                 .groupCountY = divideRoundUp(frameHeight_, kHzbSpdTileSize)};
             const GPUSceneHzbRecordDesc desc{
-                .bindlessHeap = bindlessHeap_.get(),
+                .bindlessHeap = registry_->heap(),
                 .pipeline = hzbSpdWavePipeline_ && boolProperty(&properties(), "hzbSpdWaveOps", true)
                     ? hzbSpdWavePipeline_.get() : hzbSpdPipeline_.get(),
                 .dispatches = std::span(&dispatch, 1), .singleDispatch = true,
@@ -2442,7 +2394,7 @@ private:
             mipHeight = std::max(1u, (mipHeight + 1u) / 2u);
         }
         const GPUSceneHzbRecordDesc desc{
-            .bindlessHeap = bindlessHeap_.get(),
+            .bindlessHeap = registry_->heap(),
             .pipeline = hzbPipeline_.get(),
             .dispatches = dispatches,
         };
@@ -2493,18 +2445,18 @@ private:
         commandBuffer.setScissor(renderArea);
         // Stream rasterization binds its own heap; the frozen-camera path does
         // not run a final viewport HZB dispatch to restore this pass's heap.
-        commandBuffer.bindBindlessHeap(*bindlessHeap_);
+        commandBuffer.bindBindlessHeap(*registry_->heap());
         commandBuffer.bindGraphicsPipeline(*compositePipeline_);
         const VisibilityBufferCompositeUserPush push{
-            .paramsBuffer = activeFrameResources().paramsHandle.shaderIndex,
-            .visibilityImage = visibilityImageHandle_.shaderIndex,
+            .paramsBuffer = activeFrameResources().paramsHandle.shaderIndex(),
+            .visibilityImage = visibilityImageHandle_.shaderIndex(),
             // Frozen HZB depth belongs to the culling camera, not the debug viewport.
-            .depthImage = depthImageHandle_.shaderIndex,
-            .residentRecords = gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex,
-            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].shaderIndex,
+            .depthImage = depthImageHandle_.shaderIndex(),
+            .residentRecords = gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex(),
+            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].shaderIndex(),
             .residentRecordCapacity = residentRecordCapacity_,
-            .streamRecords = streamEnabled_ ? streamDebugRecordsHandle_.shaderIndex : kGPUDrivenInvalidBindlessIndex,
-            .streamGroups = streamEnabled_ ? streamDebugGroupsHandle_.shaderIndex : kGPUDrivenInvalidBindlessIndex,
+            .streamRecords = streamEnabled_ ? streamDebugRecordsHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
+            .streamGroups = streamEnabled_ ? streamDebugGroupsHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
             .shadedColors = boolProperty(&properties(), "shadedDebugColors", true) ? 1u : 0u,
         };
         commandBuffer.pushBindlessData(&push, sizeof(push));
@@ -2610,23 +2562,18 @@ private:
         if (runtimeScene == nullptr) {
             return {};
         }
-        if (runtimeScene->materialRevision() != sceneMaterialRevision_) {
-            const std::vector<uint32_t> alphaTextures = alphaTestTextureIndices(*runtimeScene);
-            if (alphaTextures != alphaTestTextureIndices_) {
-                // The graph waits for all prior submissions when contentRevision
-                // changes, before any pass records commands using these resources.
-                if (device_ == nullptr) { return makeError(Error::InvalidArgument); }
-                std::string log;
-                Result result = prepareAlphaTestResources(*device_, *runtimeScene, log);
-                if (!result) {
-                    spdlog::error("[VisibilityBufferPass] Runtime alpha texture update failed: {}", log);
-                    return result;
-                }
-                // Rebuild the descriptor remap/heap before the next raster draw,
-                // including when the view allocation itself remains unchanged.
-                bindingViewAllocationId_ = 0;
+        if (runtimeScene->materialRevision() != sceneMaterialRevision_ ||
+            (sharedTextureResources_ && sharedTextureResources_->materialTextureSnapshot() != materialSnapshot_)) {
+            if (device_ == nullptr) { return makeError(Error::InvalidArgument); }
+            std::string log;
+            const auto result = prepareAlphaTestResources(*device_, *runtimeScene, log);
+            if (!result) {
+                spdlog::error("[VisibilityBufferPass] Runtime material snapshot update failed: {}", log);
+                return result;
             }
-            if (tessellationEnabled()) { bindingViewAllocationId_ = 0; }
+            // Rebuild derived remaps whenever the published texture generation
+            // changes, including mip streaming and material edits with the same slots.
+            bindingViewAllocationId_ = 0;
             sceneMaterialRevision_ = runtimeScene->materialRevision();
             invalidateHzbHistory();
         }
@@ -2689,66 +2636,51 @@ private:
                 gpuSceneView_,
                 activeFrameSlot_,
                 resources) ||
-            resources.instanceVisibilityStates.view == nullptr ||
-            resources.visibleInstanceIds.view == nullptr ||
-            resources.visibleInstanceCounter.view == nullptr ||
-            resources.hzbHistory[0].view == nullptr ||
-            resources.hzbHistory[1].view == nullptr) {
+            resources.instanceVisibilityStates.buffer == nullptr ||
+            resources.visibleInstanceIds.buffer == nullptr ||
+            resources.visibleInstanceCounter.buffer == nullptr ||
+            resources.hzbHistory[0].buffer == nullptr ||
+            resources.hzbHistory[1].buffer == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        BindlessHeap& heap = *streamRuntime_->bindlessHeap();
-        Result instanceBinding = heap.writeBufferView(streamGPUSceneInstanceHandle_,
-            *subsystem.globalBufferViews().instances.view);
+        ResourceRegistry& heap = *streamRuntime_->resourceRegistry();
+        Result instanceBinding = heap.storageBuffer(*subsystem.globalBufferViews().instances.buffer, streamGPUSceneInstanceHandle_);
         if (!instanceBinding) { return instanceBinding; }
-        instanceBinding = heap.writeBufferView(streamMaterialHandle_, *subsystem.globalBufferViews().materials.view);
-        if (instanceBinding && streamMaterialTextureRemapBuffer_) {
-            instanceBinding = heap.writeStorageBuffer(streamMaterialTextureRemapHandle_, *streamMaterialTextureRemapBuffer_);
+        instanceBinding = heap.storageBuffer(*subsystem.globalBufferViews().materials.buffer, streamMaterialHandle_);
+        if (instanceBinding && materialTextureRemapBuffer_) {
+            instanceBinding = heap.storageBuffer(*materialTextureRemapBuffer_, streamMaterialTextureRemapHandle_);
         }
         if (!instanceBinding) { return instanceBinding; }
         if (hybridRasterizer_) {
-            Result hybridResult = heap.writeStorageBuffer(streamHybridQueueHandle_, hybridRasterizer_->queueBuffer());
-            if (hybridResult) { hybridResult = heap.writeStorageBuffer(streamHybridClusterHandle_, hybridRasterizer_->clusterBuffer()); }
-            if (hybridResult) { hybridResult = heap.writeStorageBuffer(streamWorkloadHandle_, hybridRasterizer_->workloadBuffer()); }
-            if (hybridResult) { hybridResult = heap.writeStorageBuffer(streamHybridPixelHandle_, hybridRasterizer_->pixelBuffer()); }
-            if (hybridResult) { hybridResult = heap.writeStorageBuffer(streamCandidateArgumentsHandle_, hybridRasterizer_->candidateArguments()); }
+            Result hybridResult = heap.storageBuffer(hybridRasterizer_->queueBuffer(), streamHybridQueueHandle_);
+            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->clusterBuffer(), streamHybridClusterHandle_); }
+            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->workloadBuffer(), streamWorkloadHandle_); }
+            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->pixelBuffer(), streamHybridPixelHandle_); }
+            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->candidateArguments(), streamCandidateArgumentsHandle_); }
             if (!hybridResult) { return hybridResult; }
         }
         if (tessellationEnabled()) {
-            Result tessResult = heap.writeStorageBuffer(streamTessellationHandle_, *streamTessellationBuffer_);
+            Result tessResult = heap.storageBuffer(*tessellationBuffer_, streamTessellationHandle_);
             if (!tessResult) { return tessResult; }
         }
-        Result result = heap.writeSampledImage(
-            streamVisibilityImageHandle_,
-            *visibility.view(),
-            ResourceState::ShaderRead);
+        Result result = heap.sampledImage(*visibility.view(), streamVisibilityImageHandle_, ResourceState::ShaderRead);
         if (result) {
-            result = heap.writeSampledImage(
-                streamDepthImageHandle_,
-                *depth.view(),
-                ResourceState::ShaderRead);
+            result = heap.sampledImage(*depth.view(), streamDepthImageHandle_, ResourceState::ShaderRead);
         }
         if (result) {
-            result = heap.writeBufferView(
-                streamInstanceVisibilityHandle_,
-                *resources.instanceVisibilityStates.view);
+            result = heap.storageBuffer(*resources.instanceVisibilityStates.buffer, streamInstanceVisibilityHandle_);
         }
         if (result) {
-            result = heap.writeBufferView(
-                streamVisibleInstanceIdsHandle_,
-                *resources.visibleInstanceIds.view);
+            result = heap.storageBuffer(*resources.visibleInstanceIds.buffer, streamVisibleInstanceIdsHandle_);
         }
         if (result) {
-            result = heap.writeBufferView(
-                streamVisibleInstanceCounterHandle_,
-                *resources.visibleInstanceCounter.view);
+            result = heap.storageBuffer(*resources.visibleInstanceCounter.buffer, streamVisibleInstanceCounterHandle_);
         }
         for (uint32_t historyIndex = 0;
              historyIndex < streamHzbHandles_.size() && result;
              ++historyIndex) {
-            result = heap.writeBufferView(
-                streamHzbHandles_[historyIndex],
-                *resources.hzbHistory[historyIndex].view);
+            result = heap.storageBuffer(*resources.hzbHistory[historyIndex].buffer, streamHzbHandles_[historyIndex]);
         }
         if (!result) {
             return result;
@@ -2764,13 +2696,13 @@ private:
         result = streamRuntime_->updateRasterBindings(
             MeshletStreamGpuRasterBindings{
                 .instanceVisibilityBuffer =
-                    streamInstanceVisibilityHandle_.shaderIndex,
-                .hzbBuffer0 = streamHzbHandles_[0].shaderIndex,
-                .hzbBuffer1 = streamHzbHandles_[1].shaderIndex,
-                .depthImage = streamDepthImageHandle_.shaderIndex,
-                .visibilityImage = streamVisibilityImageHandle_.shaderIndex,
+                    streamInstanceVisibilityHandle_.shaderIndex(),
+                .hzbBuffer0 = streamHzbHandles_[0].shaderIndex(),
+                .hzbBuffer1 = streamHzbHandles_[1].shaderIndex(),
+                .depthImage = streamDepthImageHandle_.shaderIndex(),
+                .visibilityImage = streamVisibilityImageHandle_.shaderIndex(),
                 .visibleInstanceIdsBuffer =
-                    streamVisibleInstanceIdsHandle_.shaderIndex,
+                    streamVisibleInstanceIdsHandle_.shaderIndex(),
                 .visibleRecordBase = residentRecordCapacity_,
                 .visibleRecordCapacity = streamRecordCapacity,
                 .hzbMipCount = hzbMipCount_,
@@ -2779,13 +2711,13 @@ private:
                 .width = frameWidth_,
                 .height = frameHeight_,
                 .visibleInstanceCounterBuffer =
-                    streamVisibleInstanceCounterHandle_.shaderIndex,
-                .gpuSceneInstanceBuffer = streamGPUSceneInstanceHandle_.shaderIndex,
-                .tessellationBuffer = tessellationEnabled() ? streamTessellationHandle_.shaderIndex : UINT32_MAX,
+                    streamVisibleInstanceCounterHandle_.shaderIndex(),
+                .gpuSceneInstanceBuffer = streamGPUSceneInstanceHandle_.shaderIndex(),
+                .tessellationBuffer = tessellationEnabled() ? streamTessellationHandle_.shaderIndex() : UINT32_MAX,
                 .displacementBound = previousParams_.displacementBound,
                 .classificationFlags = boolProperty(&properties(), "metadataFastClassification", true) ? 0u : 1u,
-                .materialBuffer = streamMaterialHandle_.shaderIndex,
-                .materialTextureRemapBuffer = streamMaterialTextureRemapHandle_.shaderIndex,
+                .materialBuffer = streamMaterialHandle_.shaderIndex(),
+                .materialTextureRemapBuffer = streamMaterialTextureRemapHandle_.shaderIndex(),
                 .materialTextureCount = materialTextureCount_,
             });
         if (!result || streamOwnerMaskBuffer_ == nullptr) {
@@ -2951,8 +2883,8 @@ private:
         MeshletStreamUserPush push = streamRuntime_->userPush();
         const bool forceHardware = prebin && !tessellationEnabled() &&
             boolProperty(&properties(), "benchmarkForceHardwareRaster", false);
-        push.hybridQueueBuffer = hybridRasterEnabled() && !prebin ? streamHybridQueueHandle_.shaderIndex : UINT32_MAX;
-        push.hybridClusterBuffer = prebin ? streamHybridClusterHandle_.shaderIndex : UINT32_MAX;
+        push.hybridQueueBuffer = hybridRasterEnabled() && !prebin ? streamHybridQueueHandle_.shaderIndex() : UINT32_MAX;
+        push.hybridClusterBuffer = prebin ? streamHybridClusterHandle_.shaderIndex() : UINT32_MAX;
         push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
         push.tessellationEdgePixels = tessellationEdgePixels();
         push.tessellationMaxFactor = tessellationMaxFactor();
@@ -2961,13 +2893,13 @@ private:
             auto binProfile = context.profileScope("Candidates");
             const uint32_t count = streamRuntime_->visibleClusterCapacity();
             result = hybridRasterizer_->beginClusters(commandBuffer,
-                forceHardware ? 0.0f : softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.shaderIndex, count, true, true, tessellationEnabled());
+                forceHardware ? 0.0f : softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.shaderIndex(), count, true, true, tessellationEnabled());
             if (!result) { return result; }
             commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: compact stream candidates"});
             // The prepare entry uses this otherwise unused handle for its
             // indirect dispatches; raster entries retain the queue contract.
-            push.hybridQueueBuffer = streamCandidateArgumentsHandle_.shaderIndex;
+            push.hybridQueueBuffer = streamCandidateArgumentsHandle_.shaderIndex();
             result = hybridRasterizer_->prepareStreamClusterCandidates(commandBuffer, *streamClusterPreparePipeline_, push);
             commandBuffer.endDebugLabel();
             if (!result) { return result; }
@@ -3002,7 +2934,7 @@ private:
                 auto diagnostic = context.profileScope("SW workload replay (diagnostic)");
                 commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
                 auto counterPush = push;
-                counterPush.hybridQueueBuffer = streamWorkloadHandle_.shaderIndex;
+                counterPush.hybridQueueBuffer = streamWorkloadHandle_.shaderIndex();
                 BufferBarrierDesc barrier{.buffer = &hybridRasterizer_->workloadBuffer(),
                     .before = ResourceState::General, .after = ResourceState::General};
                 commandBuffer.barrier({.buffers = &barrier, .bufferCount = 1});
@@ -3115,25 +3047,6 @@ private:
         return result;
     }
 
-    std::vector<uint32_t> alphaTestTextureIndices(const scene::Scene& loadedScene) const
-    {
-        std::vector<uint32_t> indices;
-        for (const scene::RenderMaterial& material : loadedScene.materials()) {
-            if (tessellationEnabled() && material.displacementTexture.textureIndex >= 0 &&
-                size_t(material.displacementTexture.textureIndex) < loadedScene.textures().size()) {
-                indices.push_back(uint32_t(material.displacementTexture.textureIndex));
-            }
-            const int32_t textureIndex = material.baseColorTexture.textureIndex;
-            if ((material.alphaMode == "MASK" || material.alphaMode == "BLEND") && textureIndex >= 0 &&
-                static_cast<size_t>(textureIndex) < loadedScene.textures().size()) {
-                indices.push_back(static_cast<uint32_t>(textureIndex));
-            }
-        }
-        std::sort(indices.begin(), indices.end());
-        indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
-        return indices;
-    }
-
     Result prepareAlphaTestResources(
         Device& device,
         const scene::Scene& loadedScene,
@@ -3144,10 +3057,12 @@ private:
         logicalTextureToMaterialTexture_.clear();
 
         if (!sharedTextureResources_) { return makeError(Error::InvalidArgument); }
-        materialViews_ = sharedTextureResources_->materialTextureViews();
+        materialSnapshot_ = sharedTextureResources_->materialTextureSnapshot();
+        if (!materialSnapshot_) { return makeError(Error::InvalidArgument); }
+        materialViews_.reserve(materialSnapshot_->views.size());
+        for (const auto& view : materialSnapshot_->views) { materialViews_.push_back(view.get()); }
         const auto indices = sharedTextureResources_->logicalTextureIndices();
         logicalTextureToMaterialTexture_.assign(indices.begin(), indices.end());
-        alphaTestTextureIndices_ = alphaTestTextureIndices(loadedScene);
         if (properties().value("materialTextureStreaming", false)) {
             // Raster descriptors only sample alpha/displacement. Never leave an
             // unused descriptor pointing at a reclaimable shading texture.
@@ -3227,22 +3142,13 @@ private:
     }
 
     static Result allocateAndWriteBuffer(
-        BindlessHeap& heap,
+        ResourceRegistry& heap,
         Buffer& buffer,
-        BindlessHandle& outHandle,
+        ResourceLease& outHandle,
         std::string& log,
         std::string_view label)
     {
-        Result result = heap.allocateBuffer(outHandle);
-        if (!result || !outHandle.valid()) {
-            log += resultMessage(std::string("allocateBuffer(VisibilityBufferPass ") +
-                                     std::string(label) + ")",
-                                 result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        result = heap.writeStorageBuffer(outHandle, buffer);
+        Result result = heap.storageBuffer(buffer, outHandle);
         if (!result) {
             log += resultMessage(std::string("writeStorageBuffer(VisibilityBufferPass ") +
                                      std::string(label) + ")",
@@ -3283,39 +3189,17 @@ private:
                 if (!hybridResult) { return hybridResult; }
             }
         }
-        Result result = device_->createBindlessHeap(
-            BindlessHeapDesc{
-                .maxSampledImages = 3u + static_cast<uint32_t>(materialViews_.size()),
-                .maxBuffers = 8u + frameSlotCount_ * 11u +
-                    static_cast<uint32_t>(kGPUSceneGlobalBufferKindCount) +
-                    (streamEnabled_ ? 3u : 0u),
-            },
-            bundle.heap);
-        if (!result || bundle.heap == nullptr) {
-            log += resultMessage("createBindlessHeap(VisibilityBufferPass)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
+        Result result = device_->resourceRegistry(bundle.registry);
+        if (!result) { return result; }
 
-        auto bindBuffer = [&](Buffer& buffer, BindlessHandle& handle,
+        auto bindBuffer = [&](Buffer& buffer, ResourceLease& handle,
                               std::string_view label) -> Result {
-            return allocateAndWriteBuffer(*bundle.heap, buffer, handle, log, label);
+            return allocateAndWriteBuffer(*bundle.registry, buffer, handle, log, label);
         };
-        auto allocateImage = [&](BindlessHandle& handle, std::string_view label) -> Result {
-            Result allocateResult = bundle.heap->allocateSampledImage(handle);
-            if (!allocateResult || !handle.valid()) {
-                log += resultMessage(std::string("allocateSampledImage(VisibilityBufferPass ") +
-                                         std::string(label) + ")",
-                                     allocateResult);
-                log += '\n';
-                return allocateResult ? makeError(Error::Failure) : allocateResult;
-            }
-            return {};
-        };
-        auto writeImage = [&](BindlessHandle handle, TextureView& view,
+        auto writeImage = [&](ResourceLease& handle, TextureView& view,
                               std::string_view label) -> Result {
             Result writeResult =
-                bundle.heap->writeSampledImage(handle, view, ResourceState::ShaderRead);
+                bundle.registry->sampledImage(view, handle, ResourceState::ShaderRead);
             if (!writeResult) {
                 log += resultMessage(std::string("writeSampledImage(VisibilityBufferPass ") +
                                          std::string(label) + ")",
@@ -3453,18 +3337,6 @@ private:
                 return result;
             }
         }
-        result = allocateImage(bundle.depthImageHandle, "depth");
-        if (!result) {
-            return result;
-        }
-        result = allocateImage(bundle.visibilityImageHandle, "visibility");
-        if (!result) {
-            return result;
-        }
-        result = allocateImage(bundle.cullingDepthImageHandle, "culling depth");
-        if (!result) {
-            return result;
-        }
         result = writeImage(bundle.cullingDepthImageHandle, cullingDepthView, "culling depth");
         if (!result) {
             return result;
@@ -3476,10 +3348,6 @@ private:
             if (textureView == nullptr) {
                 log = "VisibilityBufferPass material texture view is null";
                 return makeError(Error::InvalidArgument);
-            }
-            result = allocateImage(bundle.materialTextureHandles[textureIndex], "material");
-            if (!result) {
-                return result;
             }
             result =
                 writeImage(bundle.materialTextureHandles[textureIndex], *textureView, "material");
@@ -3498,7 +3366,7 @@ private:
         }
         std::vector<uint32_t> materialTextureRemap(
             materialTextureCount_,
-            bundle.materialTextureHandles.front().shaderIndex);
+            bundle.materialTextureHandles.front().shaderIndex());
         const auto textureForSlot = [](const scene::RenderMaterial& material,
                                        uint32_t slot) -> const scene::RenderTextureInfo* {
             const std::array<const scene::RenderTextureInfo*,
@@ -3542,7 +3410,7 @@ private:
                 continue;
             }
             materialTextureRemap[remapIndex] =
-                bundle.materialTextureHandles[consumerTextureIndex].shaderIndex;
+                bundle.materialTextureHandles[consumerTextureIndex].shaderIndex();
         }
         result = uploadStorageBuffer(
             *device_, materialTextureRemap.data(),
@@ -3560,7 +3428,6 @@ private:
 
         if (includeGPUSceneBindings) {
             result = gpuSceneSubsystem_->createBindings(
-                *bundle.heap,
                 bundle.gpuSceneBindings,
                 log);
             if (!result) {
@@ -3568,30 +3435,6 @@ private:
             }
         }
 
-        if (streamEnabled_) {
-            auto& streamHeap = *streamRuntime_->bindlessHeap();
-            while (streamMaterialTextureHandles_.size() < materialViews_.size()) {
-                BindlessHandle handle;
-                result = streamHeap.allocateSampledImage(handle);
-                if (!result) { return result; }
-                streamMaterialTextureHandles_.push_back(handle);
-            }
-            for (size_t i = 0; i < materialViews_.size(); ++i) {
-                result = streamHeap.writeSampledImage(streamMaterialTextureHandles_[i], *materialViews_[i], ResourceState::ShaderRead);
-                if (!result) { return result; }
-            }
-            std::unordered_map<uint32_t, uint32_t> streamDescriptors;
-            streamDescriptors.reserve(bundle.materialTextureHandles.size());
-            for (size_t i = 0; i < bundle.materialTextureHandles.size(); ++i) {
-                streamDescriptors.emplace(bundle.materialTextureHandles[i].shaderIndex, streamMaterialTextureHandles_[i].shaderIndex);
-            }
-            for (auto& descriptor : materialTextureRemap) {
-                descriptor = streamDescriptors.at(descriptor);
-            }
-            result = uploadStorageBuffer(*device_, materialTextureRemap.data(), materialTextureRemap.size() * sizeof(uint32_t),
-                bundle.streamMaterialTextureRemapBuffer, log, "Stream material texture descriptor remap");
-            if (!result) { return result; }
-        }
         if (tessellationEnabled()) {
             result = createTessellationBuffers(bundle, log);
             if (!result) { return result; }
@@ -3610,11 +3453,11 @@ private:
     {
         if (!gpuSceneSource_) { return makeError(Error::InvalidArgument); }
         const auto materials = gpuSceneSource_->materials();
-        const auto makeData = [&](const std::vector<BindlessHandle>& handles) {
+        const auto makeData = [&](const std::vector<ResourceLease>& handles) {
             std::vector<uint32_t> descriptors(logicalTextureToMaterialTexture_.size(), UINT32_MAX);
             for (size_t i = 0; i < descriptors.size(); ++i) {
                 const uint32_t mapped = logicalTextureToMaterialTexture_[i];
-                if (mapped < handles.size()) { descriptors[i] = handles[mapped].shaderIndex; }
+                if (mapped < handles.size()) { descriptors[i] = handles[mapped].shaderIndex(); }
             }
             return buildTessellationData(materials, descriptors);
         };
@@ -3635,23 +3478,9 @@ private:
         Result result = uploadStorageBuffer(*device_, data.data(), data.size() * sizeof(uint32_t),
             bundle.tessellationBuffer, log, "Tessellation patterns and materials");
         if (!result) { return result; }
-        result = allocateAndWriteBuffer(*bundle.heap, *bundle.tessellationBuffer,
+        result = allocateAndWriteBuffer(*bundle.registry, *bundle.tessellationBuffer,
             bundle.tessellationHandle, log, "tessellation");
-        if (!result || !streamEnabled_) { return result; }
-        auto& heap = *streamRuntime_->bindlessHeap();
-        while (streamMaterialTextureHandles_.size() < materialViews_.size()) {
-            BindlessHandle handle;
-            result = heap.allocateSampledImage(handle);
-            if (!result) { return result; }
-            streamMaterialTextureHandles_.push_back(handle);
-        }
-        for (size_t i = 0; i < materialViews_.size(); ++i) {
-            result = heap.writeSampledImage(streamMaterialTextureHandles_[i], *materialViews_[i], ResourceState::ShaderRead);
-            if (!result) { return result; }
-        }
-        data = makeData(streamMaterialTextureHandles_);
-        return uploadStorageBuffer(*device_, data.data(), data.size() * sizeof(uint32_t),
-            bundle.streamTessellationBuffer, log, "Stream tessellation patterns and materials");
+        return result;
     }
 
     void installBindingBundle(GPUDrivenPreviewBindingBundle&& bundle)
@@ -3661,11 +3490,9 @@ private:
         hybridQueueHandle_ = bundle.hybridQueueHandle;
         hybridClusterHandle_ = bundle.hybridClusterHandle;
         hybridPixelHandle_ = bundle.hybridPixelHandle;
-        bindlessHeap_ = std::move(bundle.heap);
+        registry_ = std::move(bundle.registry);
         materialTextureRemapBuffer_ = std::move(bundle.materialTextureRemapBuffer);
-        streamMaterialTextureRemapBuffer_ = std::move(bundle.streamMaterialTextureRemapBuffer);
         tessellationBuffer_ = std::move(bundle.tessellationBuffer);
-        streamTessellationBuffer_ = std::move(bundle.streamTessellationBuffer);
         tessellationHandle_ = bundle.tessellationHandle;
         streamOwnerMaskBuffer_ = std::move(bundle.streamOwnerMaskBuffer);
         hzbSpdCounterBuffer_ = std::move(bundle.hzbSpdCounterBuffer);
@@ -3710,7 +3537,7 @@ private:
             bindingViewAllocationId_ == gpuSceneViewAllocationId_) {
             return {};
         }
-        if (device_ == nullptr || bindlessHeap_ == nullptr || subsystemHost == nullptr) {
+        if (device_ == nullptr || registry_ == nullptr || subsystemHost == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -3758,10 +3585,8 @@ private:
         retired->hybridRasterizer = hybridRasterizer_;
         retired->cullingTargets = std::move(cullingTargets_);
         retired->residentLods = residentLods_;
-        retired->bindlessHeap = std::move(bindlessHeap_);
+        retired->registry = std::move(registry_);
         retired->tessellationBuffer = std::move(tessellationBuffer_);
-        retired->streamMaterialTextureRemapBuffer = std::move(streamMaterialTextureRemapBuffer_);
-        retired->streamTessellationBuffer = std::move(streamTessellationBuffer_);
         retired->materialTextureRemapBuffer = std::move(materialTextureRemapBuffer_);
         retired->streamOwnerMaskBuffer = std::move(streamOwnerMaskBuffer_);
         retired->hzbSpdCounterBuffer = std::move(hzbSpdCounterBuffer_);
@@ -4592,9 +4417,9 @@ private:
 
         params.meshletOffset = adaptiveMeshletRange_.offset;
         params.meshletCount = adaptiveMeshletRange_.count;
-        params.lodSelectionBuffer = slot.lodSelectionHandle.shaderIndex;
+        params.lodSelectionBuffer = slot.lodSelectionHandle.shaderIndex();
         params.lodSelectionEnabled = 1u;
-        params.tessellationBuffer = tessellationEnabled() ? tessellationHandle_.shaderIndex : UINT32_MAX;
+        params.tessellationBuffer = tessellationEnabled() ? tessellationHandle_.shaderIndex() : UINT32_MAX;
         params.displacementBound = tessellationEnabled() && gpuSceneSource_ ? tessellationDisplacementBound(gpuSceneSource_->materials()) : 0.0f;
         void* mapped = slot.paramsBuffer->map();
         if (mapped == nullptr) {
@@ -4614,16 +4439,16 @@ private:
     GPUSceneRasterDrawRange adaptiveMeshletRange_;
     uint32_t lodGroupCount_ = 0;
     std::shared_ptr<VisibilityHybridRasterizer> hybridRasterizer_;
-    BindlessHandle hybridQueueHandle_;
-    BindlessHandle hybridClusterHandle_;
-    BindlessHandle hybridPixelHandle_;
-    BindlessHandle streamWorkloadHandle_;
+    ResourceLease hybridQueueHandle_;
+    ResourceLease hybridClusterHandle_;
+    ResourceLease hybridPixelHandle_;
+    ResourceLease streamWorkloadHandle_;
     std::array<std::unique_ptr<ShaderModule>, 2> streamWorkloadShaders_;
     std::array<std::unique_ptr<ComputePipeline>, 2> streamWorkloadPipelines_;
     std::map<std::string, std::string> shaderHashes_;
-    BindlessHandle streamHybridClusterHandle_;
-    BindlessHandle streamHybridPixelHandle_;
-    BindlessHandle streamCandidateArgumentsHandle_;
+    ResourceLease streamHybridClusterHandle_;
+    ResourceLease streamHybridPixelHandle_;
+    ResourceLease streamCandidateArgumentsHandle_;
     std::unique_ptr<ShaderModule> streamClusterPrepareShader_;
     std::unique_ptr<ComputePipeline> streamClusterPreparePipeline_;
     std::unique_ptr<ShaderModule> clusterBinShader_;
@@ -4642,14 +4467,11 @@ private:
     std::unique_ptr<ComputePipeline> streamClusterCullPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterCullP0Pipeline_;
     std::array<std::unique_ptr<ComputePipeline>, 6> streamClusterRasterPipelines_;
-    BindlessHandle streamHybridQueueHandle_;
+    ResourceLease streamHybridQueueHandle_;
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
-    std::unique_ptr<Buffer> streamMaterialTextureRemapBuffer_;
     std::unique_ptr<Buffer> tessellationBuffer_;
-    std::unique_ptr<Buffer> streamTessellationBuffer_;
-    BindlessHandle tessellationHandle_;
-    BindlessHandle streamTessellationHandle_;
-    std::vector<BindlessHandle> streamMaterialTextureHandles_;
+    ResourceLease tessellationHandle_;
+    ResourceLease streamTessellationHandle_;
     std::unique_ptr<ShaderModule> streamTaskShader_;
     std::string compiledTessellationKey_;
     int compiledTextureMaxDimension_ = 512;
@@ -4662,39 +4484,40 @@ private:
     std::array<Buffer*, 2> hzbBuffers_{};
     std::unique_ptr<Buffer> hzbSpdCounterBuffer_;
     std::unique_ptr<Buffer> hzbSpdResetBuffer_;
-    BindlessHandle hzbSpdCounterHandle_;
+    ResourceLease hzbSpdCounterHandle_;
     GPUDrivenPreviewCullingTargets cullingTargets_;
     std::shared_ptr<PreparedSceneResources> preparedScene_;
     std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
     std::vector<TextureView*> materialViews_;
     std::shared_ptr<ScenePathTraceResources> sharedTextureResources_;
+    std::shared_ptr<const ComputeSampledImageSnapshot> materialSnapshot_;
     Device* device_ = nullptr;
     GPUSceneSubsystem* gpuSceneSubsystem_ = nullptr;
     const scene::Scene* gpuSceneSource_ = nullptr;
     const scene::Scene* compiledScene_ = nullptr;
     GPUSceneSourceOverrideToken gpuSceneSourceToken_;
     GPUSceneViewId gpuSceneView_;
-    std::unique_ptr<BindlessHeap> bindlessHeap_;
+    std::shared_ptr<ResourceRegistry> registry_;
     GPUSceneConsumerBindings gpuSceneBindings_;
-    BindlessHandle materialTextureRemapHandle_;
-    std::array<BindlessHandle, 2> hzbHandles_;
-    BindlessHandle depthImageHandle_;
-    BindlessHandle visibilityImageHandle_;
-    BindlessHandle cullingDepthImageHandle_;
-    std::vector<BindlessHandle> materialTextureHandles_;
-    BindlessHandle streamOwnerMaskHandle_;
-    BindlessHandle streamDebugRecordsHandle_;
-    BindlessHandle streamDebugGroupsHandle_;
+    ResourceLease materialTextureRemapHandle_;
+    std::array<ResourceLease, 2> hzbHandles_;
+    ResourceLease depthImageHandle_;
+    ResourceLease visibilityImageHandle_;
+    ResourceLease cullingDepthImageHandle_;
+    std::vector<ResourceLease> materialTextureHandles_;
+    ResourceLease streamOwnerMaskHandle_;
+    ResourceLease streamDebugRecordsHandle_;
+    ResourceLease streamDebugGroupsHandle_;
     MeshletStreamDeferredGpuResourcesView streamDebugResources_;
-    BindlessHandle streamGPUSceneInstanceHandle_;
-    BindlessHandle streamMaterialHandle_;
-    BindlessHandle streamMaterialTextureRemapHandle_;
-    BindlessHandle streamVisibilityImageHandle_;
-    BindlessHandle streamDepthImageHandle_;
-    BindlessHandle streamInstanceVisibilityHandle_;
-    BindlessHandle streamVisibleInstanceIdsHandle_;
-    BindlessHandle streamVisibleInstanceCounterHandle_;
-    std::array<BindlessHandle, 2> streamHzbHandles_;
+    ResourceLease streamGPUSceneInstanceHandle_;
+    ResourceLease streamMaterialHandle_;
+    ResourceLease streamMaterialTextureRemapHandle_;
+    ResourceLease streamVisibilityImageHandle_;
+    ResourceLease streamDepthImageHandle_;
+    ResourceLease streamInstanceVisibilityHandle_;
+    ResourceLease streamVisibleInstanceIdsHandle_;
+    ResourceLease streamVisibleInstanceCounterHandle_;
+    std::array<ResourceLease, 2> streamHzbHandles_;
     std::unique_ptr<ShaderModule> amplificationShader_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> maskedMeshShader_;
@@ -4744,8 +4567,6 @@ private:
     GPUDrivenPreviewMeshletRange baseMeshletRange_;
     std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges_;
     std::vector<uint32_t> logicalTextureToMaterialTexture_;
-    std::vector<uint32_t> alphaTestTextureIndices_;
-    std::vector<BindlessHandle> streamRasterHandles_;
     std::vector<uint32_t> streamOwnerMask_;
     std::filesystem::path compiledStreamAssetPath_;
     std::string compiledStreamSourceId_;

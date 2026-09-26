@@ -581,18 +581,18 @@ GPUSceneCpuUploadData buildGpuUploadData(
 
 struct GPUSceneSubsystem::GpuBufferResource {
     std::unique_ptr<Buffer> buffer;
-    std::unique_ptr<BufferView> view;
+    ResourceLease resource;
     uint64_t byteSize = 0;
     uint32_t structureStride = 0;
 
     GPUSceneBufferView sceneView(uint32_t generation, uint64_t revision) const
     {
-        if (buffer == nullptr || view == nullptr) {
+        if (buffer == nullptr || !resource.valid()) {
             return {};
         }
         return GPUSceneBufferView{
             .buffer = buffer.get(),
-            .view = view.get(),
+            .resource = resource,
             .offset = 0,
             .size = byteSize,
             .structureStride = structureStride,
@@ -931,20 +931,10 @@ Result GPUSceneSubsystem::ensureViewGpuResources(
         }
         resource.byteSize = byteSize;
         resource.structureStride = structureStride;
-        result = device_->createBufferView(
-            *resource.buffer,
-            BufferViewDesc{
-                .type = BufferViewType::ReadWriteStructured,
-                .offset = 0,
-                .size = byteSize,
-                .structureStride = structureStride,
-            },
-            resource.view);
-        if (!result || resource.view == nullptr) {
-            log = std::string("GPUSceneSubsystem failed to create View ") +
-                label + " buffer view: " + resultToString(result);
-            return result ? makeError(Error::Failure) : result;
-        }
+        std::shared_ptr<ResourceRegistry> registry;
+        result = device_->resourceRegistry(registry);
+        if (result) { result = registry->storageBuffer(*resource.buffer, resource.resource); }
+        if (!result) { return result; }
         return {};
     };
 
@@ -1480,20 +1470,10 @@ Result GPUSceneSubsystem::uploadFullScene(
         }
         resource.byteSize = byteSize;
         resource.structureStride = sizeof(T);
-        result = device_->createBufferView(
-            *resource.buffer,
-            BufferViewDesc{
-                .type = BufferViewType::Structured,
-                .offset = 0,
-                .size = byteSize,
-                .structureStride = sizeof(T),
-            },
-            resource.view);
-        if (!result || resource.view == nullptr) {
-            log = std::string("GPUScene failed to create ") + label +
-                " buffer view: " + resultToString(result);
-            return result ? makeError(Error::Failure) : result;
-        }
+        std::shared_ptr<ResourceRegistry> registry;
+        result = device_->resourceRegistry(registry);
+        if (result) { result = registry->storageBuffer(*resource.buffer, resource.resource); }
+        if (!result) { return result; }
 
         std::unique_ptr<Buffer> staging;
         result = device_->createBuffer(
@@ -1679,7 +1659,7 @@ Result GPUSceneSubsystem::uploadInstances(
         static_cast<uint64_t>(instances.size()) * sizeof(GPUSceneGpuInstanceRecord);
     GpuBufferResource& resource =
         gpuResources_->resource(GPUSceneGlobalBufferKind::Instances);
-    if (resource.buffer == nullptr || resource.view == nullptr ||
+    if (resource.buffer == nullptr || !resource.resource.valid() ||
         resource.byteSize != byteSize ||
         resource.structureStride != sizeof(GPUSceneGpuInstanceRecord)) {
         return uploadFullScene(context, log);
@@ -1756,11 +1736,10 @@ Result GPUSceneSubsystem::uploadInstances(
 }
 
 Result GPUSceneSubsystem::createBindings(
-    BindlessHeap& heap,
     GPUSceneConsumerBindings& bindings,
     std::string& log) const
 {
-    releaseBindings(heap, bindings);
+    releaseBindings(bindings);
     const GPUSceneGlobalBufferViews& views = scene_.globalBufferViews();
     const uint32_t generation = scene_.drawSet().generation;
     const uint64_t revision = scene_.drawSet().revision;
@@ -1785,48 +1764,29 @@ Result GPUSceneSubsystem::createBindings(
     };
     for (size_t index = 0; index < bufferViews.size(); ++index) {
         const GPUSceneBufferView& view = *bufferViews[index];
-        if (view.buffer == nullptr && view.view == nullptr && view.size == 0) {
+        if (view.buffer == nullptr && view.size == 0) {
             continue;
         }
-        if (view.view == nullptr) {
-            log = "GPUScene createBindings encountered a buffer without a BufferView";
-            releaseBindings(heap, bindings);
+        if (!view.resource.valid()) {
+            log = "GPUScene createBindings encountered a buffer without a registry lease";
+            releaseBindings(bindings);
             return makeError(Error::Failure);
         }
-        Result result = heap.allocateBuffer(bindings.buffers[index]);
-        if (!result) {
-            log = "GPUScene createBindings failed to allocate a bindless buffer handle: ";
-            log += resultToString(result);
-            releaseBindings(heap, bindings);
-            return result;
-        }
-        result = heap.writeBufferView(bindings.buffers[index], *view.view);
-        if (!result) {
-            log = "GPUScene createBindings failed to write a bindless buffer view: ";
-            log += resultToString(result);
-            releaseBindings(heap, bindings);
-            return result;
-        }
+        bindings.buffers[index] = view.resource;
     }
     bindings.drawSetGeneration = generation;
     bindings.drawSetRevision = revision;
     if (!bindings.validFor(views)) {
         log = "GPUScene createBindings produced an incomplete binding set";
-        releaseBindings(heap, bindings);
+        releaseBindings(bindings);
         return makeError(Error::Failure);
     }
     return {};
 }
 
 void GPUSceneSubsystem::releaseBindings(
-    BindlessHeap& heap,
     GPUSceneConsumerBindings& bindings) const
 {
-    for (BindlessHandle handle : bindings.buffers) {
-        if (handle.valid()) {
-            heap.release(handle);
-        }
-    }
     bindings = {};
 }
 

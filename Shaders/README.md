@@ -56,7 +56,7 @@ Core 是 `gComputeResources` 的唯一声明者，多个导入路径共用同一
 它维持现有 RHI 的两个 heap 索引、资源表指针和常量指针布局，不引入新的描述符绑定。
 `getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
 取代原来的 `METALLIC_RESOURCE`、`METALLIC_RESOURCE_ARRAY`、`METALLIC_CONSTANTS` 宏。
-数组访问继续通过 `nonuniform` 选择 descriptor。pass 可用本地别名描述槽位，但库不依赖消费者的宏。
+数组通过 slot 的 `array` 地址读取共享 registry 的实际句柄，再用 `nonuniform` 选择 descriptor；不要求连续 descriptor 分配。标量存于 slot 的 `handle` 字段。pass 可用本地别名描述槽位，但库不依赖消费者的宏。
 
 Lighting 的算法显式接收 `StructuredBuffer<GpuPunctualLight>` 或 `PunctualSamplingResources`；
 库内不再固定光源、ReGIR、PDF 的槽位。顶点位置读取同样显式接收 buffer；

@@ -353,7 +353,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
             for (size_t i = 0; i < 3; ++i) { sigma.lightDirection[i] = -parameters.light.directionType[i]; }
         }
         result = state->sigma.setSigmaSettings(sigma);
-        if (result) { result = state->sigma.denoise(NrdDenoiserMode::Sigma, commands, streamer); }
+        if (result) { result = state->sigma.denoise(NrdDenoiserMode::Sigma, commands); }
         if (!result) { return result; }
     }
 #endif

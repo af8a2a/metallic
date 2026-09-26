@@ -11,7 +11,7 @@
 
 namespace metallic::render {
 
-enum class ShaderResourceKind : uint8_t { Buffer, SampledImage, StorageImage, Sampler, AccelerationStructure };
+enum class ShaderResourceKind : uint8_t { Buffer, SampledImage, StorageImage, Sampler, AccelerationStructure, PartitionedAccelerationStructure };
 
 // GPU wire values are independent of the CPU allocator's BindlessHandle.
 template<ShaderResourceKind Kind>
@@ -44,6 +44,7 @@ class ResourceLease {
 public:
     bool valid() const { return state_ != nullptr; }
     uint64_t shaderValue() const;
+    uint32_t shaderIndex() const { return static_cast<uint32_t>(shaderValue()); }
     ShaderResourceKind kind() const;
 private:
     std::shared_ptr<detail::ResourceLeaseState> state_;
@@ -62,6 +63,7 @@ private:
     std::shared_ptr<detail::ParameterPacket> packet_;
     friend class ParameterWriter;
     friend class ComputeKernel;
+    friend class ComputeProgram;
 };
 
 struct ResourceRegistryStats {
@@ -84,8 +86,13 @@ public:
     Result storageImage(TextureView& view, ResourceLease& out);
     Result sampler(const SamplerDesc& sampler, ResourceLease& out);
     Result accelerationStructure(RayTracingAccelerationStructure& structure, ResourceLease& out);
+    Result partitionedAccelerationStructure(PartitionedAccelerationStructure& structure, ResourceLease& out);
     void collect();
     ResourceRegistryStats stats() const;
+    // Borrowed heap for prepared raster/SDK pipelines. Only registry registration writes descriptors.
+    BindlessHeap* heap() const;
+    Result bind(CommandBuffer& commands) const;
+    Result retain(CommandBuffer& commands, const ResourceLease& lease) const;
 private:
     Result image(TextureView& view, ResourceLease& out, ShaderResourceKind kind, ResourceState layout);
     std::shared_ptr<detail::RegistryState> state_;
@@ -105,6 +112,8 @@ public:
     ShaderAccelerationStructure accelerationStructure(RayTracingAccelerationStructure* structure);
     // Immutable GPU array of uint2 handles, with no contiguous descriptor allocation requirement.
     uint64_t sampledImages(std::span<TextureView* const> views);
+    // Immutable ABI payload owned by the same submission as the root packet.
+    uint64_t data(const void* bytes, uint64_t size, uint64_t alignment = 16);
     Result use(const ResourceLease& lease);
     // Retain transitive owners (for example a scene's BLAS set behind a TLAS).
     void retain(std::shared_ptr<void> owner) { if (owner) { arrays_.push_back(std::move(owner)); } }

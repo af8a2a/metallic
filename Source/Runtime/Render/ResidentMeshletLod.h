@@ -8,10 +8,10 @@ namespace metallic::render {
 class ResidentMeshletLod {
 public:
     Result initialize(Device& device, uint32_t capacity, std::string& log);
-    Result record(CommandBuffer& commands, BindlessHeap& heap,
+    Result record(CommandBuffer& commands, ResourceRegistry& registry,
         const GPUSceneConsumerBindings& bindings, const MeshletLodView& view,
         GPUSceneRasterDrawRange candidates, uint32_t instanceCount, uint32_t groupCount,
-        BindlessHandle output, BindlessHandle arguments, BindlessHandle scratch, uint32_t manualLevel = UINT32_MAX);
+        ResourceLease output, ResourceLease arguments, ResourceLease scratch, uint32_t manualLevel = UINT32_MAX);
     Buffer& selections() const { return *selections_; }
     Buffer& arguments() const { return *arguments_; }
     Buffer& scratch() const { return *scratch_; }

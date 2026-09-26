@@ -921,14 +921,9 @@ public:
             return RhiTestResult::fail("GPUScene subsystem lookup failed after activation");
         }
 
-        std::unique_ptr<render::BindlessHeap> bindlessHeap;
-        result = device->createBindlessHeap(
-            render::BindlessHeapDesc{.maxBuffers = 64},
-            bindlessHeap);
-        if (!result || bindlessHeap == nullptr) {
-            return RhiTestResult::fail(
-                std::string("createBindlessHeap returned ") + toString(result));
-        }
+        std::shared_ptr<render::ResourceRegistry> registry;
+        result = device->resourceRegistry(registry);
+        if (!result) { return RhiTestResult::fail("Device registry unavailable"); }
 
         std::vector<scene::RenderPrimitive> primitives{
             makeCanonicalRasterPrimitive(),
@@ -1187,13 +1182,20 @@ public:
             firstDrawKeys = views.drawKeys.buffer;
             log.clear();
             render::Result bindingResult =
-                subsystem->createBindings(*bindlessHeap, bindings, log);
+                subsystem->createBindings(bindings, log);
             if (!bindingResult || !bindings.validFor(views) ||
                 !bindings[render::GPUSceneGlobalBufferKind::Geometries].valid() ||
                 !bindings[render::GPUSceneGlobalBufferKind::Instances].valid() ||
                 !bindings[render::GPUSceneGlobalBufferKind::MeshletDraws].valid() ||
                 !bindings[render::GPUSceneGlobalBufferKind::DescriptorRemap].valid()) {
                 return RhiTestResult::fail("GPUScene consumer binding creation failed: " + log);
+            }
+            const auto writesBeforeConsumer = registry->stats().descriptorWrites;
+            render::GPUSceneConsumerBindings secondConsumer;
+            if (!subsystem->createBindings(secondConsumer, log) ||
+                registry->stats().descriptorWrites != writesBeforeConsumer ||
+                secondConsumer[render::GPUSceneGlobalBufferKind::Instances].shaderValue() != views.instances.resource.shaderValue()) {
+                return RhiTestResult::fail("GPUScene consumers duplicated the producer's descriptor identity");
             }
             if (subsystem->gpuUploadStats().fullUploadCount != 1 ||
                 subsystem->gpuUploadStats().instanceUploadCount != 0) {
@@ -1504,9 +1506,9 @@ public:
             if (subsystem->gpuUploadStats().fullUploadCount != 2) {
                 return RhiTestResult::fail("GPUScene rebuild upload statistics are incorrect");
             }
-            subsystem->releaseBindings(*bindlessHeap, bindings);
+            subsystem->releaseBindings(bindings);
             log.clear();
-            if (!subsystem->createBindings(*bindlessHeap, bindings, log) ||
+            if (!subsystem->createBindings(bindings, log) ||
                 !bindings.validFor(views)) {
                 return RhiTestResult::fail("GPUScene rebuild binding creation failed: " + log);
             }
@@ -1516,7 +1518,7 @@ public:
             return frameResult;
         }
 
-        subsystem->releaseBindings(*bindlessHeap, bindings);
+        subsystem->releaseBindings(bindings);
         host.shutdown();
         result = device->waitIdle();
         return result
@@ -1634,7 +1636,7 @@ public:
         for (uint32_t frameSlot = 0; frameSlot < firstSlots.size(); ++frameSlot) {
             const render::GPUSceneViewGpuResourcesView& slot = firstSlots[frameSlot];
             if (slot.instanceVisibilityStates.buffer == nullptr ||
-                slot.instanceVisibilityStates.view == nullptr ||
+                !slot.instanceVisibilityStates.resource.valid() ||
                 slot.instanceVisibilityStates.size != 8u * sizeof(uint32_t) ||
                 slot.visibleInstanceIds.buffer == nullptr ||
                 slot.visibleInstanceIds.size != 8u * sizeof(uint32_t) ||

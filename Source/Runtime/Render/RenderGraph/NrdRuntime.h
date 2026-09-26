@@ -63,12 +63,12 @@ public:
     Result setReblurSettings(const denoising::ReblurSettings& settings);
     Result setRelaxSettings(const denoising::RelaxSettings& settings);
     Result setSigmaSettings(const denoising::SigmaSettings& settings);
-    Result denoise(NrdDenoiserMode mode, CommandBuffer& commandBuffer, Streamer& streamer);
-    Result denoiseReference(bool specular, CommandBuffer& commandBuffer, Streamer& streamer);
+    Result denoise(NrdDenoiserMode mode, CommandBuffer& commandBuffer);
+    Result denoiseReference(bool specular, CommandBuffer& commandBuffer);
 
 private:
-    Result record(uint32_t index, CommandBuffer& commandBuffer, Streamer& streamer);
-    Result dispatch(CommandBuffer& commandBuffer, Streamer& streamer, const denoising::DispatchDesc& stage);
+    Result record(uint32_t index, CommandBuffer& commandBuffer);
+    Result dispatch(CommandBuffer& commandBuffer, const denoising::DispatchDesc& stage);
 
     struct Impl;
     std::shared_ptr<Impl> impl_;

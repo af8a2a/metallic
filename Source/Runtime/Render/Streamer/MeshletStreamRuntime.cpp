@@ -180,24 +180,11 @@ Result createAndPopulateHostStorageBuffer(
     return {};
 }
 
-Result allocateAndWriteBuffer(
-    BindlessHeap& heap,
-    Buffer& buffer,
-    BindlessHandle& outHandle,
-    std::string& log,
-    std::string_view label)
+Result allocateAndWriteBuffer(ResourceRegistry& registry, Buffer& buffer,
+    ResourceLease& outHandle, std::string& log, std::string_view label)
 {
-    Result result = heap.allocateBuffer(outHandle);
-    if (!result || !outHandle.valid()) {
-        log += resultMessage(std::string("allocateBuffer(") + std::string(label) + ")", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
-    }
-    result = heap.writeStorageBuffer(outHandle, buffer);
-    if (!result) {
-        log += resultMessage(std::string("writeStorageBuffer(") + std::string(label) + ")", result);
-        log += '\n';
-    }
+    auto result = registry.storageBuffer(buffer, outHandle);
+    if (!result) { log += resultMessage(std::string("register buffer ") + std::string(label), result); }
     return result;
 }
 
@@ -275,7 +262,7 @@ Result createSlangShaderModule(
 
 class MeshletStreamRuntime::UpdatePass {
 public:
-    Result initialize(Device& device, BindlessHeap& bindlessHeap, uint64_t updateByteSize, uint32_t frameSlots, std::string& log,
+    Result initialize(Device& device, ResourceRegistry& registry, uint64_t updateByteSize, uint32_t frameSlots, std::string& log,
         PipelineCache* pipelineCache)
     {
         if (updateByteSize == 0 || frameSlots == 0) {
@@ -287,7 +274,7 @@ public:
         for (uint32_t slot = 0; slot < frameSlots; ++slot) {
             result = createHostStorageBuffer(device, updateByteSize, updateBuffers_[slot], log, "MeshletStreamRuntime update");
             if (!result) { return result; }
-            result = allocateAndWriteBuffer(bindlessHeap, *updateBuffers_[slot], updateHandles_[slot], log, "meshlet stream update");
+            result = allocateAndWriteBuffer(registry, *updateBuffers_[slot], updateHandles_[slot], log, "meshlet stream update");
             if (!result) { return result; }
         }
 
@@ -351,7 +338,7 @@ public:
             updatePipeline_ != nullptr;
     }
 
-    BindlessHandle updateHandle() const { return updateHandles_.empty() ? BindlessHandle{} : updateHandles_.front(); }
+    ResourceLease updateHandle() const { return updateHandles_.empty() ? ResourceLease{} : updateHandles_.front(); }
 
     Result initializePageTable(
         CommandBuffer& commandBuffer,
@@ -409,7 +396,9 @@ public:
             frameIndex % static_cast<uint32_t>(updateBuffers_.size());
         if (slot >= updateBuffers_.size()) { return makeError(Error::InvalidArgument); }
         auto& updateBuffer = *updateBuffers_[slot];
-        push.updateBuffer = updateHandles_[slot].shaderIndex;
+        auto retained = commandBuffer.retainResource(updateBuffers_[slot]->retainAllocation());
+        if (!retained) { return retained; }
+        push.updateBuffer = updateHandles_[slot].shaderIndex();
         void* mapped = updateBuffer.map();
         if (mapped == nullptr) {
             return makeError(Error::Failure);
@@ -453,7 +442,7 @@ private:
     std::unique_ptr<ComputePipeline> pageTableInitPipeline_;
     std::unique_ptr<ShaderModule> updateShader_;
     std::unique_ptr<ComputePipeline> updatePipeline_;
-    std::vector<BindlessHandle> updateHandles_;
+    std::vector<ResourceLease> updateHandles_;
 };
 
 class MeshletStreamRuntime::TraversalPass {
@@ -1903,41 +1892,30 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         log = "Stream raster material textures exceed the device descriptor capacity";
         return makeError(Error::Unsupported);
     }
-    result = device.createBindlessHeap(
-        BindlessHeapDesc{
-            .maxSamplers = 0,
-            .maxSampledImages = 4u + desc.rasterMaterialTextureCapacity,
-            .maxBuffers = 64u +
-                static_cast<uint32_t>(residentPageFrames_.size()),
-        },
-        bindlessHeap_);
-    if (!result || bindlessHeap_ == nullptr) {
-        log += resultMessage("createBindlessHeap(MeshletStreamRuntime)", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
-    }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *pageBuffer_, pageHandle_, log, "meshlet stream pages");
+    result = device.resourceRegistry(registry_);
+    if (!result) { return result; }
+    result = allocateAndWriteBuffer(*registry_, *pageBuffer_, pageHandle_, log, "meshlet stream pages");
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *activeGroupBuffer_, activeGroupHandle_, log, "meshlet stream active groups");
+    result = allocateAndWriteBuffer(*registry_, *activeGroupBuffer_, activeGroupHandle_, log, "meshlet stream active groups");
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *activeHeaderBuffer_, activeHeaderHandle_, log, "meshlet stream active header");
+    result = allocateAndWriteBuffer(*registry_, *activeHeaderBuffer_, activeHeaderHandle_, log, "meshlet stream active header");
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *pageTableBuffer_, pageTableHandle_, log, "meshlet stream page table");
+    result = allocateAndWriteBuffer(*registry_, *pageTableBuffer_, pageTableHandle_, log, "meshlet stream page table");
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *paramsBuffer_, paramsHandle_, log, "meshlet stream params");
+    result = allocateAndWriteBuffer(*registry_, *paramsBuffer_, paramsHandle_, log, "meshlet stream params");
     if (!result) {
         return result;
     }
     result = allocateAndWriteBuffer(
-        *bindlessHeap_,
+        *registry_,
         *visibleClusterBuffer_,
         visibleClusterHandle_,
         log,
@@ -1946,7 +1924,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return result;
     }
     result = allocateAndWriteBuffer(
-        *bindlessHeap_,
+        *registry_,
         *rasterBindingsBuffer_,
         rasterBindingsHandle_,
         log,
@@ -1958,13 +1936,13 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *requestBuffer_, requestHandle_, log, "meshlet stream request");
+    result = allocateAndWriteBuffer(*registry_, *requestBuffer_, requestHandle_, log, "meshlet stream request");
     if (!result) {
         return result;
     }
     for (ResidentPageFrame& frame : residentPageFrames_) {
         result = allocateAndWriteBuffer(
-            *bindlessHeap_,
+            *registry_,
             *frame.buffer,
             frame.handle,
             log,
@@ -1973,38 +1951,38 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *instanceBuffer_, instanceHandle_, log, "meshlet stream instances");
+    result = allocateAndWriteBuffer(*registry_, *instanceBuffer_, instanceHandle_, log, "meshlet stream instances");
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *primitiveBuffer_, primitiveHandle_, log, "meshlet stream primitives");
+    result = allocateAndWriteBuffer(*registry_, *primitiveBuffer_, primitiveHandle_, log, "meshlet stream primitives");
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *lodLevelBuffer_, lodLevelHandle_, log, "meshlet stream LOD levels");
+    result = allocateAndWriteBuffer(*registry_, *lodLevelBuffer_, lodLevelHandle_, log, "meshlet stream LOD levels");
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *groupBuffer_, groupHandle_, log, "meshlet stream groups");
+    result = allocateAndWriteBuffer(*registry_, *groupBuffer_, groupHandle_, log, "meshlet stream groups");
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *lodTopologyBuffer_, lodTopologyHandle_, log, "meshlet stream LOD topology");
+    result = allocateAndWriteBuffer(*registry_, *lodTopologyBuffer_, lodTopologyHandle_, log, "meshlet stream LOD topology");
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *lodStateBuffer_, lodStateHandle_, log, "meshlet stream LOD frontier");
+    result = allocateAndWriteBuffer(*registry_, *lodStateBuffer_, lodStateHandle_, log, "meshlet stream LOD frontier");
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *demandBuffer_, demandHandle_, log, "meshlet stream demand");
+    result = allocateAndWriteBuffer(*registry_, *demandBuffer_, demandHandle_, log, "meshlet stream demand");
     if (!result) { return result; }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *nodeBuffer_, nodeHandle_, log, "meshlet stream hierarchy nodes");
+    result = allocateAndWriteBuffer(*registry_, *nodeBuffer_, nodeHandle_, log, "meshlet stream hierarchy nodes");
     if (!result) {
         return result;
     }
     result = allocateAndWriteBuffer(
-        *bindlessHeap_,
+        *registry_,
         *drawIndirectBuffer_,
         drawIndirectHandle_,
         log,
@@ -2013,7 +1991,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return result;
     }
     result = allocateAndWriteBuffer(
-        *bindlessHeap_,
+        *registry_,
         *traversalHeaderBuffer_,
         traversalHeaderHandle_,
         log,
@@ -2022,7 +2000,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return result;
     }
     result = allocateAndWriteBuffer(
-        *bindlessHeap_,
+        *registry_,
         *traversalWorkBuffer_,
         traversalWorkHandle_,
         log,
@@ -2032,7 +2010,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     }
     if (clasPool_ != nullptr) {
         result = allocateAndWriteBuffer(
-            *bindlessHeap_,
+            *registry_,
             *clasPool_->clusterAddressBuffer(),
             clasAddressHandle_,
             log,
@@ -2041,7 +2019,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
         result = allocateAndWriteBuffer(
-            *bindlessHeap_,
+            *registry_,
             *clasPool_->pageTableBuffer(),
             clasPageTableHandle_,
             log,
@@ -2052,7 +2030,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     }
     if (desc.enableClusterRtx) {
         result = allocateAndWriteBuffer(
-            *bindlessHeap_,
+            *registry_,
             *blasHeaderBuffer_,
             blasHeaderHandle_,
             log,
@@ -2061,7 +2039,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
         result = allocateAndWriteBuffer(
-            *bindlessHeap_,
+            *registry_,
             *instanceBlasBuffer_,
             instanceBlasHandle_,
             log,
@@ -2070,7 +2048,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
         result = allocateAndWriteBuffer(
-            *bindlessHeap_,
+            *registry_,
             *blasBuildInfoBuffer_,
             blasBuildInfoHandle_,
             log,
@@ -2079,7 +2057,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
         result = allocateAndWriteBuffer(
-            *bindlessHeap_,
+            *registry_,
             *blasClusterReferenceBuffer_,
             blasClusterReferenceHandle_,
             log,
@@ -2088,7 +2066,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
         result = allocateAndWriteBuffer(
-            *bindlessHeap_,
+            *registry_,
             *fallbackBlasAddressBuffer_,
             fallbackBlasAddressHandle_,
             log,
@@ -2097,7 +2075,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
         result = allocateAndWriteBuffer(
-            *bindlessHeap_,
+            *registry_,
             *blasAddressBuffer_,
             dynamicBlasAddressHandle_,
             log,
@@ -2106,7 +2084,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             return result;
         }
         result = allocateAndWriteBuffer(
-            *bindlessHeap_,
+            *registry_,
             *tlasInstanceBuffer_,
             tlasInstanceHandle_,
             log,
@@ -2118,7 +2096,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
 
     phase.next("streamInit.updatePass");
     updatePass_ = std::make_unique<UpdatePass>();
-    result = updatePass_->initialize(device, *bindlessHeap_, updateByteSize, desc.queuedFrameCount, log, pipelineCache);
+    result = updatePass_->initialize(device, *registry_, updateByteSize, desc.queuedFrameCount, log, pipelineCache);
     if (!result) {
         return result;
     }
@@ -2153,8 +2131,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         if (!(result = device.createBuffer(paramsBuffer_->desc(), slot.params)) ||
             !(result = device.createBuffer(rasterBindingsBuffer_->desc(), slot.raster)) ||
             !(result = device.createBuffer(requestClearBuffer_->desc(), slot.clear)) ||
-            !(result = allocateAndWriteBuffer(*bindlessHeap_, *slot.params, slot.paramsHandle, log, "stream frame params")) ||
-            !(result = allocateAndWriteBuffer(*bindlessHeap_, *slot.raster, slot.rasterHandle, log, "stream frame raster"))) {
+            !(result = allocateAndWriteBuffer(*registry_, *slot.params, slot.paramsHandle, log, "stream frame params")) ||
+            !(result = allocateAndWriteBuffer(*registry_, *slot.raster, slot.rasterHandle, log, "stream frame raster"))) {
             return result;
         }
     }
@@ -2232,7 +2210,7 @@ void MeshletStreamRuntime::reset()
     tlasInstanceBuffer_.reset();
     tlasScratchBuffer_.reset();
     tlas_.reset();
-    bindlessHeap_.reset();
+    registry_.reset();
     updatePass_.reset();
     traversalPass_.reset();
     activeBuildPass_.reset();
@@ -2324,7 +2302,7 @@ void MeshletStreamRuntime::reset()
 bool MeshletStreamRuntime::ready() const
 {
     return asset_.valid() &&
-        bindlessHeap_ != nullptr &&
+        registry_ != nullptr &&
         updatePass_ != nullptr &&
         updatePass_->ready() &&
         traversalPass_ != nullptr &&
@@ -2431,6 +2409,33 @@ Result MeshletStreamRuntime::cmdBeginFrame(
     const MeshletStreamFrameDesc& frame,
     const std::function<void()>& flushUploads)
 {
+    if (!registry_) { return makeError(Error::InvalidArgument); }
+    for (const auto& lease : {
+        pageHandle_, activeGroupHandle_, activeHeaderHandle_, pageTableHandle_,
+        paramsHandle_, visibleClusterHandle_, rasterBindingsHandle_, requestHandle_,
+        instanceHandle_, primitiveHandle_, lodLevelHandle_, groupHandle_,
+        lodTopologyHandle_, lodStateHandle_, demandHandle_, nodeHandle_,
+        drawIndirectHandle_, traversalHeaderHandle_, traversalWorkHandle_, clasAddressHandle_,
+        clasPageTableHandle_, blasHeaderHandle_, instanceBlasHandle_, blasBuildInfoHandle_,
+        blasClusterReferenceHandle_, fallbackBlasAddressHandle_, dynamicBlasAddressHandle_, tlasInstanceHandle_}) {
+        if (lease.valid()) {
+            auto retained = registry_->retain(commandBuffer, lease);
+            if (!retained) { return retained; }
+        }
+    }
+    for (const auto& slot : frameUploads_) {
+        for (const auto& lease : {slot.paramsHandle, slot.rasterHandle}) {
+            if (!lease.valid()) { continue; }
+            auto retained = registry_->retain(commandBuffer, lease);
+            if (!retained) { return retained; }
+        }
+    }
+    for (const auto& slot : residentPageFrames_) {
+        if (!slot.handle.valid()) { continue; }
+        auto retained = registry_->retain(commandBuffer, slot.handle);
+        if (!retained) { return retained; }
+    }
+
     // Geometry roots are locked; completed root CLAS / accepted fallback BLAS
     // remain valid until reset or an explicit root invalidation. While loading,
     // completion polling below can advance progress, so refresh once per frame.
@@ -2703,40 +2708,40 @@ Result MeshletStreamRuntime::cmdEndFrame(CommandBuffer& commandBuffer)
 MeshletStreamUserPush MeshletStreamRuntime::userPush() const
 {
     return MeshletStreamUserPush{
-        .pageBuffer = pageHandle_.shaderIndex,
-        .activeGroupBuffer = activeGroupHandle_.shaderIndex,
-        .pageTableBuffer = pageTableHandle_.shaderIndex,
-        .paramsBuffer = paramsHandle_.shaderIndex,
-        .requestBuffer = requestHandle_.shaderIndex,
+        .pageBuffer = pageHandle_.shaderIndex(),
+        .activeGroupBuffer = activeGroupHandle_.shaderIndex(),
+        .pageTableBuffer = pageTableHandle_.shaderIndex(),
+        .paramsBuffer = paramsHandle_.shaderIndex(),
+        .requestBuffer = requestHandle_.shaderIndex(),
         .residentPageBuffer = !residentPageFrames_.empty()
-            ? residentPageFrames_[frameIndex_ % residentPageFrames_.size()].handle.shaderIndex
+            ? residentPageFrames_[frameIndex_ % residentPageFrames_.size()].handle.shaderIndex()
             : 0u,
-        .updateBuffer = updatePass_ != nullptr ? updatePass_->updateHandle().shaderIndex : 0u,
-        .activeHeaderBuffer = activeHeaderHandle_.shaderIndex,
-        .instanceBuffer = instanceHandle_.shaderIndex,
-        .primitiveBuffer = primitiveHandle_.shaderIndex,
-        .lodLevelBuffer = lodLevelHandle_.shaderIndex,
-        .groupBuffer = groupHandle_.shaderIndex,
-        .nodeBuffer = nodeHandle_.shaderIndex,
-        .drawIndirectBuffer = drawIndirectHandle_.shaderIndex,
-        .traversalHeaderBuffer = traversalHeaderHandle_.shaderIndex,
-        .traversalWorkBuffer = traversalWorkHandle_.shaderIndex,
-        .clasAddressBuffer = clasAddressHandle_.valid() ? clasAddressHandle_.shaderIndex : 0u,
-        .clasPageTableBuffer = clasPageTableHandle_.valid() ? clasPageTableHandle_.shaderIndex : 0u,
-        .blasHeaderBuffer = blasHeaderHandle_.valid() ? blasHeaderHandle_.shaderIndex : 0u,
-        .instanceBlasBuffer = instanceBlasHandle_.valid() ? instanceBlasHandle_.shaderIndex : 0u,
-        .blasBuildInfoBuffer = blasBuildInfoHandle_.valid() ? blasBuildInfoHandle_.shaderIndex : 0u,
+        .updateBuffer = updatePass_ != nullptr ? updatePass_->updateHandle().shaderIndex() : 0u,
+        .activeHeaderBuffer = activeHeaderHandle_.shaderIndex(),
+        .instanceBuffer = instanceHandle_.shaderIndex(),
+        .primitiveBuffer = primitiveHandle_.shaderIndex(),
+        .lodLevelBuffer = lodLevelHandle_.shaderIndex(),
+        .groupBuffer = groupHandle_.shaderIndex(),
+        .nodeBuffer = nodeHandle_.shaderIndex(),
+        .drawIndirectBuffer = drawIndirectHandle_.shaderIndex(),
+        .traversalHeaderBuffer = traversalHeaderHandle_.shaderIndex(),
+        .traversalWorkBuffer = traversalWorkHandle_.shaderIndex(),
+        .clasAddressBuffer = clasAddressHandle_.valid() ? clasAddressHandle_.shaderIndex() : 0u,
+        .clasPageTableBuffer = clasPageTableHandle_.valid() ? clasPageTableHandle_.shaderIndex() : 0u,
+        .blasHeaderBuffer = blasHeaderHandle_.valid() ? blasHeaderHandle_.shaderIndex() : 0u,
+        .instanceBlasBuffer = instanceBlasHandle_.valid() ? instanceBlasHandle_.shaderIndex() : 0u,
+        .blasBuildInfoBuffer = blasBuildInfoHandle_.valid() ? blasBuildInfoHandle_.shaderIndex() : 0u,
         .blasClusterReferenceBuffer = blasClusterReferenceHandle_.valid()
-            ? blasClusterReferenceHandle_.shaderIndex
+            ? blasClusterReferenceHandle_.shaderIndex()
             : 0u,
         .fallbackBlasAddressBuffer = fallbackBlasAddressHandle_.valid()
-            ? fallbackBlasAddressHandle_.shaderIndex
+            ? fallbackBlasAddressHandle_.shaderIndex()
             : 0u,
         .dynamicBlasAddressBuffer = dynamicBlasAddressHandle_.valid()
-            ? dynamicBlasAddressHandle_.shaderIndex
+            ? dynamicBlasAddressHandle_.shaderIndex()
             : 0u,
-        .tlasInstanceBuffer = tlasInstanceHandle_.valid() ? tlasInstanceHandle_.shaderIndex : 0u,
-        .rasterBindingsBuffer = rasterBindingsHandle_.shaderIndex,
+        .tlasInstanceBuffer = tlasInstanceHandle_.valid() ? tlasInstanceHandle_.shaderIndex() : 0u,
+        .rasterBindingsBuffer = rasterBindingsHandle_.shaderIndex(),
         .clasPublicationRevision = clasPool_ ? uint32_t(clasPool_->stats().publicationRevision) : 0u,
     };
 }
@@ -2748,7 +2753,7 @@ Result MeshletStreamRuntime::updateRasterBindings(
         return makeError(Error::InvalidArgument);
     }
     MeshletStreamGpuRasterBindings resolved = bindings;
-    resolved.visibleClusterBuffer = visibleClusterHandle_.shaderIndex;
+    resolved.visibleClusterBuffer = visibleClusterHandle_.shaderIndex();
     return updateHostBuffer(*rasterBindingsBuffer_, &resolved, sizeof(resolved));
 }
 
@@ -3293,7 +3298,7 @@ Result MeshletStreamRuntime::initializePageTableIfNeeded(CommandBuffer& commandB
 
     Result result = updatePass_->initializePageTable(
         commandBuffer,
-        *bindlessHeap_,
+        *registry_->heap(),
         userPush(),
         asset_.pageCount(),
         *pageTableBuffer_,
@@ -3331,7 +3336,7 @@ Result MeshletStreamRuntime::applyPageTablePatches(CommandBuffer& commandBuffer)
     }
     Result result = updatePass_->apply(
         commandBuffer,
-        *bindlessHeap_,
+        *registry_->heap(),
         userPush(),
         patches,
         maxUpdatePatches_,
@@ -3473,14 +3478,14 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
     params.enableGpuLodSelection = frame.enableGpuLodSelection ? 1u : 0u;
     params.lodPixelError = std::clamp(finiteOr(frame.lodPixelError, 1.5f), 0.05f, 16.0f) *
         std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f));
-    params.lodTopologyBuffer = lodTopologyHandle_.shaderIndex;
-    params.lodStateBuffer = lodStateHandle_.shaderIndex;
+    params.lodTopologyBuffer = lodTopologyHandle_.shaderIndex();
+    params.lodStateBuffer = lodStateHandle_.shaderIndex();
     const uint64_t threshold = uint64_t(distributedDemandMinGroups_) +
         (currentFrameDistributedDemand_ ? 0u : distributedDemandMinGroups_ / 8u);
     currentFrameDistributedDemand_ = distributedPageDemand_ &&
         (distributedDemandMinGroups_ == 0 || recentDemandGroupTests_ == UINT32_MAX || recentDemandGroupTests_ >= threshold);
-    params.demandBuffer = currentFrameDistributedDemand_ ? demandHandle_.shaderIndex : UINT32_MAX;
-    params.demandStatsBuffer = distributedPageDemand_ ? demandHandle_.shaderIndex : UINT32_MAX;
+    params.demandBuffer = currentFrameDistributedDemand_ ? demandHandle_.shaderIndex() : UINT32_MAX;
+    params.demandStatsBuffer = distributedPageDemand_ ? demandHandle_.shaderIndex() : UINT32_MAX;
     params.demandTaskOffset = demandTaskOffset_;
     params.demandTaskCount = demandTaskCount_;
     params.demandInstanceOffsetsOffset = demandInstanceOffsetsOffset_;
@@ -3547,7 +3552,7 @@ Result MeshletStreamRuntime::dispatchTraversal(
     uint32_t threadCount,
     uint32_t traversalPhase)
 {
-    if (traversalPass_ == nullptr || bindlessHeap_ == nullptr || !traversalPass_->ready()) {
+    if (traversalPass_ == nullptr || registry_ == nullptr || !traversalPass_->ready()) {
         return makeError(Error::InvalidArgument);
     }
     MeshletStreamUserPush push = userPush();
@@ -3555,7 +3560,7 @@ Result MeshletStreamRuntime::dispatchTraversal(
     push.activeBuildPhase = threadCount;
     return traversalPass_->dispatch(
         commandBuffer,
-        *bindlessHeap_,
+        *registry_->heap(),
         push,
         threadCount,
         *pageTableBuffer_,
@@ -3566,7 +3571,7 @@ Result MeshletStreamRuntime::dispatchTraversal(
 
 Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint)
 {
-    if (activeBuildPass_ == nullptr || bindlessHeap_ == nullptr || !activeBuildPass_->ready()) {
+    if (activeBuildPass_ == nullptr || registry_ == nullptr || !activeBuildPass_->ready()) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -3577,7 +3582,7 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, cons
     const auto dispatchPhase = [&](uint32_t phase, uint32_t threadCount) {
         push.activeBuildPhase = phase;
         Result result = activeBuildPass_->dispatch(
-            commandBuffer, *bindlessHeap_, push, threadCount,
+            commandBuffer, *registry_->heap(), push, threadCount,
             *activeGroupBuffer_, activeGroupBufferState_,
             *activeHeaderBuffer_, activeHeaderBufferState_,
             *pageTableBuffer_, pageTableState_, *requestBuffer_, requestBufferState_,
@@ -3643,7 +3648,7 @@ Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, const
 {
     if (blasInputPass_ == nullptr ||
         !blasInputPass_->ready() ||
-        bindlessHeap_ == nullptr ||
+        registry_ == nullptr ||
         clasPool_ == nullptr ||
         blasHeaderBuffer_ == nullptr ||
         instanceBlasBuffer_ == nullptr ||
@@ -3660,7 +3665,7 @@ Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, const
         push.traversalPhase = *blasCacheInitialized_ ? 0u : 1u;
         return blasInputPass_->dispatch(
             commandBuffer,
-            *bindlessHeap_,
+            *registry_->heap(),
             push,
             threadCount,
             *activeGroupBuffer_,
@@ -3876,7 +3881,7 @@ Result MeshletStreamRuntime::buildTlasInstances(CommandBuffer& commandBuffer)
 {
     if (tlasInputPass_ == nullptr ||
         !tlasInputPass_->ready() ||
-        bindlessHeap_ == nullptr ||
+        registry_ == nullptr ||
         instanceBlasBuffer_ == nullptr ||
         tlasInstanceBuffer_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -3884,7 +3889,7 @@ Result MeshletStreamRuntime::buildTlasInstances(CommandBuffer& commandBuffer)
     commandBuffer.hostWriteBarrier();
     return tlasInputPass_->dispatch(
         commandBuffer,
-        *bindlessHeap_,
+        *registry_->heap(),
         userPush(),
         asset_.instanceCount(),
         *instanceBlasBuffer_,

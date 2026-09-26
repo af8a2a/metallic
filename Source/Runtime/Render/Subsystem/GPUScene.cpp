@@ -369,7 +369,7 @@ bool normalizeBufferView(
 
 bool emptyBufferView(const GPUSceneBufferView& view)
 {
-    return view.buffer == nullptr && view.view == nullptr && view.size == 0;
+    return view.buffer == nullptr && view.size == 0;
 }
 
 bool normalizeOptionalBufferView(
@@ -468,16 +468,6 @@ bool GPUSceneBufferView::valid() const
         (bufferDesc.structureStride != 0 &&
             bufferDesc.structureStride != structureStride)) {
         return false;
-    }
-    if (view != nullptr) {
-        const BufferViewDesc& viewDesc = view->desc();
-        if (offset < viewDesc.offset ||
-            size > viewDesc.size ||
-            offset - viewDesc.offset > viewDesc.size - size ||
-            (viewDesc.structureStride != 0 &&
-                viewDesc.structureStride != structureStride)) {
-            return false;
-        }
     }
     return true;
 }

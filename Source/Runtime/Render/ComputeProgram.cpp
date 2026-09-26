@@ -1,6 +1,7 @@
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/ResourceRegistry.h"
 
 #include <spdlog/spdlog.h>
 
@@ -111,13 +112,11 @@ struct ComputeDescriptorTables {
     std::vector<uint32_t> bufferBaseShaderIndices;
     GpuCompletionPoint completion;
     std::vector<bool> usedTables;
-    // One immutable packet per table and submission. Indirect batches store
-    // all of their constants in the same packet, with a distinct address each.
-    std::vector<std::unique_ptr<Buffer>> resourcePackets;
 };
 
 struct ComputeProgram::Impl : ComputeDescriptorTables {
     Device* device = nullptr;
+    std::shared_ptr<ResourceRegistry> registry;
     std::unique_ptr<ShaderModule> shader;
     std::unique_ptr<ComputePipeline> pipeline;
     uint32_t pushConstantSize = 0;
@@ -219,7 +218,6 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
             }
         }
         tables->usedTables.assign(resourceTableCount, false);
-        tables->resourcePackets.resize(resourceTableCount);
         tables->usedTables[tableIndex] = true;
         tables->completion = frame.completion();
         frameTables.push_back(tables);
@@ -244,7 +242,6 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
         samplerBasePushDataOffset = UINT32_MAX;
         imageBasePushDataOffset = UINT32_MAX;
         bufferBasePushDataOffset = UINT32_MAX;
-        resourcePackets.clear();
         bindings.clear();
         samplerBaseShaderIndices.clear();
         imageBaseShaderIndices.clear();
@@ -305,7 +302,6 @@ Result ComputeProgram::initialize(
         }
         word += count;
     }
-    impl_->resourcePackets.resize(desc.resourceTableCount);
     impl_->debugName = desc.debugName != nullptr ? desc.debugName : "ComputeProgram";
 
     uint64_t samplerCount = 0;
@@ -402,83 +398,90 @@ Result ComputeProgram::initialize(
     }
     impl_->bindlessPushDataSize = desc.usesResourceTable ? sizeof(ComputeResourcePush) : nextPushDataOffset;
 
-    Result result = device.createBindlessHeap(
-        BindlessHeapDesc{
-            .maxSamplers = static_cast<uint32_t>(samplerCount),
-            .maxSampledImages = static_cast<uint32_t>(sampledImageCount),
-            .maxStorageImages = static_cast<uint32_t>(storageImageCount),
-            .maxBuffers = static_cast<uint32_t>(bufferCount),
-        },
-        impl_->heap);
-    if (!result) {
-        log = resultMessage("createBindlessHeap(ComputeProgram)", result);
-        clear();
-        return result;
-    }
+    Result result;
+    if (desc.usesResourceTable) {
+        result = device.resourceRegistry(impl_->registry);
+        if (!result) { return result; }
+    } else {
+        result = device.createBindlessHeap(
+            BindlessHeapDesc{
+                .maxSamplers = static_cast<uint32_t>(samplerCount),
+                .maxSampledImages = static_cast<uint32_t>(sampledImageCount),
+                .maxStorageImages = static_cast<uint32_t>(storageImageCount),
+                .maxBuffers = static_cast<uint32_t>(bufferCount),
+            },
+            impl_->heap);
+        if (!result) {
+            log = resultMessage("createBindlessHeap(ComputeProgram)", result);
+            clear();
+            return result;
+        }
 
-    for (Impl::BindingState& binding : impl_->bindings) {
-        const uint32_t descriptorCount = std::max(binding.desc.descriptorCount, 1u);
-        binding.handles.reserve(descriptorCount * desc.resourceTableCount);
-    }
-    for (uint32_t resourceTableIndex = 0;
-         resourceTableIndex < desc.resourceTableCount;
-         ++resourceTableIndex) {
         for (Impl::BindingState& binding : impl_->bindings) {
             const uint32_t descriptorCount = std::max(binding.desc.descriptorCount, 1u);
-            std::vector<uint32_t>* groupBases = nullptr;
-            if (usesSamplerHeap(binding.desc.kind)) {
-                groupBases = &impl_->samplerBaseShaderIndices;
-            } else if (usesImageHeap(binding.desc.kind)) {
-                groupBases = &impl_->imageBaseShaderIndices;
-            } else {
-                groupBases = &impl_->bufferBaseShaderIndices;
-            }
-            for (uint32_t descriptorIndex = 0;
-                 descriptorIndex < descriptorCount;
-                 ++descriptorIndex) {
-                BindlessHandle handle;
-                switch (binding.desc.kind) {
-                case ComputeResourceBindingKind::Sampler:
-                    result = impl_->heap->allocateSampler(handle);
-                    break;
-                case ComputeResourceBindingKind::AccelerationStructure:
-                    result = impl_->heap->allocateAccelerationStructure(handle);
-                    break;
-                case ComputeResourceBindingKind::PartitionedAccelerationStructure:
-                    result = impl_->heap->allocatePartitionedAccelerationStructure(handle);
-                    break;
-                case ComputeResourceBindingKind::StorageImage:
-                    result = impl_->heap->allocateStorageImage(handle);
-                    break;
-                case ComputeResourceBindingKind::StorageBuffer:
-                    result = impl_->heap->allocateBuffer(handle);
-                    break;
-                case ComputeResourceBindingKind::SampledImage:
-                    result = impl_->heap->allocateSampledImage(handle);
-                    break;
+            binding.handles.reserve(descriptorCount * desc.resourceTableCount);
+        }
+        for (uint32_t resourceTableIndex = 0;
+             resourceTableIndex < desc.resourceTableCount;
+             ++resourceTableIndex) {
+            for (Impl::BindingState& binding : impl_->bindings) {
+                const uint32_t descriptorCount = std::max(binding.desc.descriptorCount, 1u);
+                std::vector<uint32_t>* groupBases = nullptr;
+                if (usesSamplerHeap(binding.desc.kind)) {
+                    groupBases = &impl_->samplerBaseShaderIndices;
+                } else if (usesImageHeap(binding.desc.kind)) {
+                    groupBases = &impl_->imageBaseShaderIndices;
+                } else {
+                    groupBases = &impl_->bufferBaseShaderIndices;
                 }
-                if (!result) {
-                    log = resultMessage("allocate bindless ComputeProgram slot", result);
-                    clear();
-                    return result;
+                for (uint32_t descriptorIndex = 0;
+                     descriptorIndex < descriptorCount;
+                     ++descriptorIndex) {
+                    BindlessHandle handle;
+                    switch (binding.desc.kind) {
+                    case ComputeResourceBindingKind::Sampler:
+                        result = impl_->heap->allocateSampler(handle);
+                        break;
+                    case ComputeResourceBindingKind::AccelerationStructure:
+                        result = impl_->heap->allocateAccelerationStructure(handle);
+                        break;
+                    case ComputeResourceBindingKind::PartitionedAccelerationStructure:
+                        result = impl_->heap->allocatePartitionedAccelerationStructure(handle);
+                        break;
+                    case ComputeResourceBindingKind::StorageImage:
+                        result = impl_->heap->allocateStorageImage(handle);
+                        break;
+                    case ComputeResourceBindingKind::StorageBuffer:
+                        result = impl_->heap->allocateBuffer(handle);
+                        break;
+                    case ComputeResourceBindingKind::SampledImage:
+                        result = impl_->heap->allocateSampledImage(handle);
+                        break;
+                    }
+                    if (!result) {
+                        log = resultMessage("allocate bindless ComputeProgram slot", result);
+                        clear();
+                        return result;
+                    }
+                    if ((*groupBases)[resourceTableIndex] == UINT32_MAX) {
+                        (*groupBases)[resourceTableIndex] = handle.shaderIndex;
+                    }
+                    if (resourceTableIndex == 0 && descriptorIndex == 0) {
+                        binding.heapIndexOffset =
+                            handle.shaderIndex - (*groupBases)[resourceTableIndex];
+                    }
+                    const uint32_t expectedShaderIndex = (*groupBases)[resourceTableIndex] +
+                        binding.heapIndexOffset + descriptorIndex;
+                    if (handle.shaderIndex != expectedShaderIndex) {
+                        log = "ComputeProgram descriptor-table allocation is not contiguous";
+                        clear();
+                        return makeError(Error::Failure);
+                    }
+                    binding.handles.push_back(handle);
                 }
-                if ((*groupBases)[resourceTableIndex] == UINT32_MAX) {
-                    (*groupBases)[resourceTableIndex] = handle.shaderIndex;
-                }
-                if (resourceTableIndex == 0 && descriptorIndex == 0) {
-                    binding.heapIndexOffset =
-                        handle.shaderIndex - (*groupBases)[resourceTableIndex];
-                }
-                const uint32_t expectedShaderIndex = (*groupBases)[resourceTableIndex] +
-                    binding.heapIndexOffset + descriptorIndex;
-                if (handle.shaderIndex != expectedShaderIndex) {
-                    log = "ComputeProgram descriptor-table allocation is not contiguous";
-                    clear();
-                    return makeError(Error::Failure);
-                }
-                binding.handles.push_back(handle);
             }
         }
+
     }
 
     std::vector<ShaderBindingMappingDesc> mappings;
@@ -552,7 +555,7 @@ bool ComputeProgram::valid() const
     return impl_ != nullptr &&
         impl_->shader != nullptr &&
         impl_->pipeline != nullptr &&
-        impl_->heap != nullptr &&
+        (impl_->registry != nullptr || impl_->heap != nullptr) &&
         impl_->resourceTableCount != 0;
 }
 
@@ -611,6 +614,7 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
             return makeError(Error::InvalidArgument);
         }
     }
+    if (impl_->usesResourceTable) { return dispatchShared(desc, dispatches, betweenDispatches); }
     if (RenderFrameContext* frame = desc.commandBuffer->frameContext()) {
         if (!frame->recording()) {
             return makeError(Error::InvalidArgument);
@@ -833,58 +837,6 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
     }
 
     profile.next("Prepare dispatch constants");
-    uint64_t constantsAddress = 0;
-    const uint64_t constantStride = (uint64_t(impl_->pushConstantSize) + 15u) & ~uint64_t(15u);
-    if (impl_->usesResourceTable) {
-        const uint64_t constantsOffset = (uint64_t(impl_->resourceSlotCount) * sizeof(uint64_t) + 15u) & ~uint64_t(15u);
-        const uint64_t dispatchCount = std::max<size_t>(dispatches.size(), 1);
-        if (constantStride != 0 && dispatchCount > (UINT64_MAX - constantsOffset) / constantStride) {
-            return makeError(Error::InvalidArgument);
-        }
-        const uint64_t packetSize = constantsOffset + constantStride * dispatchCount;
-        auto& packet = tables->resourcePackets[desc.resourceTableIndex];
-        if (packet == nullptr || packet->desc().size < packetSize) {
-            Result result = impl_->device->createBuffer(BufferDesc{
-                .size = packetSize,
-                .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
-                .memoryLocation = MemoryLocation::HostUpload,
-                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
-            }, packet);
-            if (!result) {
-                return result;
-            }
-        }
-        auto* bytes = static_cast<uint8_t*>(packet->map());
-        if (bytes == nullptr || packet->deviceAddress() == 0) {
-            if (bytes != nullptr) { packet->unmap(); }
-            return makeError(Error::Failure);
-        }
-        std::memset(bytes, 0xff, static_cast<size_t>(constantsOffset));
-        for (const auto& binding : tables->bindings) {
-            const uint32_t descriptorCount = std::max(binding.desc.descriptorCount, 1u);
-            uint64_t handle = binding.handles[desc.resourceTableIndex * descriptorCount].shaderIndex;
-            // AS handles carry the full device address in both descriptor modes.
-            if (binding.desc.kind == ComputeResourceBindingKind::AccelerationStructure ||
-                binding.desc.kind == ComputeResourceBindingKind::PartitionedAccelerationStructure) {
-                const auto* resource = findDispatchBinding(desc, binding.desc.binding);
-                handle = binding.desc.kind == ComputeResourceBindingKind::AccelerationStructure
-                    ? resource->accelerationStructure->deviceAddress() : resource->partitionedAccelerationStructure->deviceAddress();
-            }
-            std::memcpy(bytes + binding.desc.binding * sizeof(uint64_t), &handle, sizeof(handle));
-        }
-        if (impl_->pushConstantSize != 0) {
-            for (size_t index = 0; index < dispatchCount; ++index) {
-                const void* constants = dispatches.empty() ? desc.pushData : dispatches[index].pushData;
-                std::memcpy(bytes + constantsOffset + constantStride * index, constants, impl_->pushConstantSize);
-            }
-        }
-        packet->flush();
-        packet->unmap();
-        constantsAddress = packet->deviceAddress() + constantsOffset;
-        const ComputeResourcePush push{packet->deviceAddress(), constantsAddress};
-        std::memcpy(pushData.data(), &push, sizeof(push));
-    }
-
     profile.next("Record dispatch commands");
     desc.commandBuffer->bindBindlessHeap(*tables->heap);
     desc.commandBuffer->bindComputePipeline(*impl_->pipeline);
@@ -896,10 +848,7 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
                 desc.commandBuffer->bindComputePipeline(*program->pipeline);
                 boundProgram = program;
             }
-            if (impl_->usesResourceTable) {
-                const uint64_t address = constantsAddress + constantStride * index;
-                std::memcpy(pushData.data() + offsetof(ComputeResourcePush, constants), &address, sizeof(address));
-            } else if (impl_->pushConstantSize > 0) {
+            if (impl_->pushConstantSize > 0) {
                 std::memcpy(pushData.data(), dispatches[index].pushData, impl_->pushConstantSize);
             }
             desc.commandBuffer->pushBindlessData(pushData.data(), static_cast<uint32_t>(pushData.size()));
@@ -921,6 +870,158 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         desc.groupCountX,
         desc.groupCountY,
         desc.groupCountZ);
+    return {};
+}
+
+Result ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
+    std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches)
+{
+    auto& commands = *desc.commandBuffer;
+    auto& registry = *impl_->registry;
+    auto result = commands.retainResource(impl_);
+    if (!result || commands.deviceIdentity() != impl_->device->identity()) { return makeError(Error::InvalidArgument); }
+    for (const auto& item : dispatches) {
+        if (item.program) {
+            result = commands.retainResource(item.program->impl_);
+            if (!result) { return result; }
+        }
+    }
+    if (desc.indirectArguments) {
+        if (desc.indirectArguments->deviceIdentity() != commands.deviceIdentity()) { return makeError(Error::InvalidArgument); }
+        result = commands.retainResource(desc.indirectArguments->retainAllocation());
+        if (!result) { return result; }
+    }
+    std::unique_ptr<ParameterWriter> writer;
+    if (auto* frame = commands.frameContext()) {
+        writer = std::make_unique<ParameterWriter>(*impl_->device, *frame, registry);
+    }
+    auto upload = [&](const void* bytes, uint64_t size) -> uint64_t {
+        if (!result || size == 0) { return 0; }
+        if (writer) {
+            const auto address = writer->data(bytes, size);
+            result = writer->status();
+            return address;
+        }
+        std::unique_ptr<Buffer> packet;
+        result = impl_->device->createBuffer({.size = size,
+            .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
+            .memoryLocation = MemoryLocation::HostUpload,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, packet);
+        if (!result) { return 0; }
+        auto* mapped = packet->map();
+        if (!mapped) { result = makeError(Error::Failure); return 0; }
+        std::memcpy(mapped, bytes, size);
+        packet->flush(); packet->unmap();
+        const auto address = packet->deviceAddress();
+        result = commands.retainResource(packet->retainAllocation());
+        return address;
+    };
+    // Matches Core.ComputeResourceSlot: direct access stays scalar, arrays carry
+    // explicit handles so unrelated consumers never need contiguous descriptors.
+    struct ResourceSlot { uint64_t handle = UINT64_MAX; uint64_t array = 0; };
+    static_assert(sizeof(ResourceSlot) == 16);
+    std::vector<ResourceSlot> slots(impl_->resourceSlotCount);
+    for (const auto& expected : impl_->bindings) {
+        const auto* binding = findDispatchBinding(desc, expected.desc.binding);
+        if (!binding) { return makeError(Error::InvalidArgument); }
+        if (binding->sampledImages) {
+            result = commands.retainResource(std::const_pointer_cast<ComputeSampledImageSnapshot>(binding->sampledImages));
+            if (!result) { return result; }
+        }
+        const uint32_t count = std::max(expected.desc.descriptorCount, 1u);
+        std::vector<uint64_t> handles;
+        handles.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            ResourceLease lease;
+            switch (expected.desc.kind) {
+            case ComputeResourceBindingKind::StorageBuffer:
+                if (!binding->buffer || binding->offset != 0 ||
+                    (binding->size != UINT64_MAX && binding->size != binding->buffer->desc().size)) {
+                    return makeError(Error::InvalidArgument);
+                }
+                result = registry.storageBuffer(*binding->buffer, lease);
+                break;
+            case ComputeResourceBindingKind::AccelerationStructure:
+                if (!binding->accelerationStructure) { return makeError(Error::InvalidArgument); }
+                result = registry.accelerationStructure(*binding->accelerationStructure, lease);
+                break;
+            case ComputeResourceBindingKind::PartitionedAccelerationStructure:
+                if (!binding->partitionedAccelerationStructure) { return makeError(Error::InvalidArgument); }
+                result = registry.partitionedAccelerationStructure(*binding->partitionedAccelerationStructure, lease);
+                break;
+            case ComputeResourceBindingKind::Sampler:
+                if (!binding->sampler) { return makeError(Error::InvalidArgument); }
+                result = registry.sampler(*binding->sampler, lease);
+                break;
+            case ComputeResourceBindingKind::SampledImage:
+            case ComputeResourceBindingKind::StorageImage: {
+                TextureView* view = nullptr;
+                if (binding->sampledImages && expected.desc.kind == ComputeResourceBindingKind::SampledImage) {
+                    if (binding->sampledImages->views.size() < count) { return makeError(Error::InvalidArgument); }
+                    view = binding->sampledImages->views[i].get();
+                } else if (binding->textureViews && binding->textureViewCount >= count) {
+                    view = binding->textureViews[i];
+                } else if (count == 1) { view = binding->textureView; }
+                if (!view) { return makeError(Error::InvalidArgument); }
+                const auto before = desc.stats ? registry.stats().descriptorWrites : 0;
+                result = expected.desc.kind == ComputeResourceBindingKind::SampledImage
+                    ? registry.sampledImage(*view, lease) : registry.storageImage(*view, lease);
+                if (result && desc.stats && expected.desc.kind == ComputeResourceBindingKind::SampledImage) {
+                    if (registry.stats().descriptorWrites != before) { ++desc.stats->sampledImageWrites; }
+                    else { ++desc.stats->sampledImageCacheHits; }
+                }
+                break;
+            }
+            }
+            if (!result) { return result; }
+            result = registry.retain(commands, lease);
+            if (!result) { return result; }
+            handles.push_back(lease.shaderValue());
+        }
+        auto& slot = slots[expected.desc.binding];
+        slot.handle = handles.front();
+        if (usesImageHeap(expected.desc.kind)) { slot.array = upload(handles.data(), handles.size() * sizeof(uint64_t)); }
+        if (!result) { return result; }
+    }
+    ComputeResourcePush push;
+    push.resources = upload(slots.data(), slots.size() * sizeof(ResourceSlot));
+    const uint64_t stride = (uint64_t(impl_->pushConstantSize) + 15) & ~uint64_t(15);
+    const size_t count = std::max<size_t>(1, dispatches.size());
+    if (stride && count > SIZE_MAX / stride) { return makeError(Error::InvalidArgument); }
+    std::vector<uint8_t> constants(stride * count);
+    if (impl_->pushConstantSize) {
+        for (size_t i = 0; i < count; ++i) {
+            std::memcpy(constants.data() + stride * i,
+                dispatches.empty() ? desc.pushData : dispatches[i].pushData, impl_->pushConstantSize);
+        }
+        push.constants = upload(constants.data(), constants.size());
+    }
+    if (!result) { return result; }
+    if (writer) {
+        EncodedParameters packet;
+        result = writer->encode(push, 0x434f4d5055544502ull, packet);
+        if (result) { result = packet.bindResources(commands); }
+    } else { result = registry.bind(commands); }
+    if (!result) { return result; }
+    commands.bindComputePipeline(*impl_->pipeline);
+    if (dispatches.empty()) {
+        commands.pushBindlessData(&push, sizeof(push));
+        if (desc.indirectArguments) { return commands.dispatchIndirect(*desc.indirectArguments, desc.indirectOffset); }
+        commands.dispatch(desc.groupCountX, desc.groupCountY, desc.groupCountZ);
+        return {};
+    }
+    const uint64_t base = push.constants;
+    for (size_t i = 0; i < dispatches.size(); ++i) {
+        const auto* program = dispatches[i].program ? dispatches[i].program->impl_.get() : impl_.get();
+        commands.bindComputePipeline(*program->pipeline);
+        push.constants = base + stride * i;
+        commands.pushBindlessData(&push, sizeof(push));
+        result = commands.dispatchIndirect(*desc.indirectArguments, dispatches[i].argumentOffset);
+        if (!result) { return result; }
+        if (i + 1 < dispatches.size() && (betweenDispatches.bufferCount || betweenDispatches.textureCount)) {
+            commands.barrier(betweenDispatches);
+        }
+    }
     return {};
 }
 

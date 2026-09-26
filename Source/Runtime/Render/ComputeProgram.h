@@ -70,7 +70,7 @@ struct ComputeDispatchBinding {
     uint64_t offset = 0;
     uint64_t size = UINT64_MAX;
     // Optional immutable sampled-image array; takes precedence over textureViews.
-    // Only this opt-in binding uses cached descriptors. Other resources remain dynamic.
+    // The shared registry also deduplicates individual resource registrations.
     std::shared_ptr<const ComputeSampledImageSnapshot> sampledImages;
 };
 
@@ -125,6 +125,8 @@ public:
 
 private:
     Result dispatchImpl(const ComputeDispatchDesc& desc,
+        std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches);
+    Result dispatchShared(const ComputeDispatchDesc& desc,
         std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches);
     struct Impl;
     std::shared_ptr<Impl> impl_;

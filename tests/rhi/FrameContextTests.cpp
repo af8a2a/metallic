@@ -501,7 +501,7 @@ public:
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         render::QueueSubmissionTracker tracker;
         Commands commands, pending(1);
-        render::ComputeProgram program;
+        render::ComputeProgram program, secondProgram;
         std::unique_ptr<render::Buffer> output;
         std::unique_ptr<render::Semaphore> gate;
         struct Images {
@@ -535,8 +535,10 @@ public:
         };
         std::string log;
         FRAME_REQUIRE(createProbe(*device, "sampleImages", bindings, program, log));
+        FRAME_REQUIRE(createProbe(*device, "sampleImages", bindings, secondProgram, log));
         QueueDrain drain{queue, gate.get()};
-        const std::array<uint32_t, 6> writes{2, 0, 1, 2, 2, 1};
+        // A raw array and a second program reuse the same canonical descriptors.
+        const std::array<uint32_t, 6> writes{2, 0, 1, 0, 0, 0};
         const std::array<uint32_t, 8> expected{30, 30, 40, 30, 30, 40, 30, 40};
         for (uint32_t i = 0; i < 6; ++i) {
             FRAME_REQUIRE(commands.begin(i));
@@ -560,7 +562,7 @@ public:
                 {.binding = 1, .buffer = output.get()},
             };
             render::ComputeDispatchStats stats;
-            FRAME_REQUIRE(program.dispatch({.commandBuffer = commands.buffer.get(), .bindings = resources,
+            FRAME_REQUIRE((i == 4 ? secondProgram : program).dispatch({.commandBuffer = commands.buffer.get(), .bindings = resources,
                 .bindingCount = 2, .pushData = &i, .pushDataSize = 4, .stats = &stats}));
             if (stats.sampledImageWrites != writes[i] || stats.sampledImageCacheHits != 2 - writes[i]) {
                 return RhiTestResult::fail("incorrect sampled-image generation reuse at step " + std::to_string(i));

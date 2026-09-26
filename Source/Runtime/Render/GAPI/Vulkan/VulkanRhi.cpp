@@ -4851,6 +4851,16 @@ PartitionedAccelerationStructure::PartitionedAccelerationStructure(
 {
 }
 
+std::shared_ptr<void> PartitionedAccelerationStructure::retainAllocation() const
+{
+    return impl_;
+}
+
+const void* PartitionedAccelerationStructure::deviceIdentity() const
+{
+    return impl_ ? impl_->device : nullptr;
+}
+
 PartitionedAccelerationStructure::~PartitionedAccelerationStructure() = default;
 PartitionedAccelerationStructure::PartitionedAccelerationStructure(
     PartitionedAccelerationStructure&&) noexcept = default;

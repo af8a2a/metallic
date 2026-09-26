@@ -136,8 +136,8 @@ public:
             .enableBindlessDescriptorHeap = true}, device);
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless compute"); }
         LOD_REQUIRE(created);
-        std::unique_ptr<BindlessHeap> heap;
-        LOD_REQUIRE(device->createBindlessHeap({.maxBuffers = 7}, heap));
+        std::shared_ptr<ResourceRegistry> registry;
+        LOD_REQUIRE(device->resourceRegistry(registry));
         std::array<std::unique_ptr<Buffer>, 4> buffers;
         GPUSceneConsumerBindings bindings;
         const GPUSceneGlobalBufferKind kinds[] = {GPUSceneGlobalBufferKind::LodGroups, GPUSceneGlobalBufferKind::Meshlets,
@@ -152,15 +152,15 @@ public:
             if (!mapped) { return RhiTestResult::fail("input map"); }
             std::memcpy(mapped, data[i], counts[i] * strides[i]); buffers[i]->flush(); buffers[i]->unmap();
             auto& handle = bindings.buffers[static_cast<size_t>(kinds[i])];
-            LOD_REQUIRE(heap->allocateBuffer(handle)); LOD_REQUIRE(heap->writeStorageBuffer(handle, *buffers[i]));
+            LOD_REQUIRE(registry->storageBuffer(*buffers[i], handle));
         }
         ResidentMeshletLod selector;
         const uint32_t capacity = static_cast<uint32_t>(f.candidates.size());
         LOD_REQUIRE(selector.initialize(*device, capacity, log));
-        BindlessHandle selections, arguments, scratch;
-        LOD_REQUIRE(heap->allocateBuffer(selections)); LOD_REQUIRE(heap->writeStorageBuffer(selections, selector.selections()));
-        LOD_REQUIRE(heap->allocateBuffer(arguments)); LOD_REQUIRE(heap->writeStorageBuffer(arguments, selector.arguments()));
-        LOD_REQUIRE(heap->allocateBuffer(scratch)); LOD_REQUIRE(heap->writeStorageBuffer(scratch, selector.scratch()));
+        ResourceLease selections, arguments, scratch;
+        LOD_REQUIRE(registry->storageBuffer(selector.selections(), selections));
+        LOD_REQUIRE(registry->storageBuffer(selector.arguments(), arguments));
+        LOD_REQUIRE(registry->storageBuffer(selector.scratch(), scratch));
         std::unique_ptr<Buffer> readback;
         const uint64_t selectionBytes = (uint64_t(capacity) + 1u) * 16u;
         LOD_REQUIRE(device->createBuffer({.size = selectionBytes + 24, .usage = BufferUsageBits::TransferDestination,
@@ -188,7 +188,7 @@ public:
                     commands->barrier({.buffers = &barrier, .bufferCount = 1});
                 }
             }
-            LOD_REQUIRE(selector.record(*commands, *heap, bindings, view, {0, count},
+            LOD_REQUIRE(selector.record(*commands, *registry, bindings, view, {0, count},
                 static_cast<uint32_t>(f.instances.size()), static_cast<uint32_t>(f.groups.size()), selections, arguments, scratch, manual));
             BufferBarrierDesc barriers[] = {
                 {.buffer = &selector.selections(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},

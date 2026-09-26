@@ -236,6 +236,21 @@ Result ResourceRegistry::accelerationStructure(RayTracingAccelerationStructure& 
         }, out.state_);
 }
 
+Result ResourceRegistry::partitionedAccelerationStructure(PartitionedAccelerationStructure& structure, ResourceLease& out)
+{
+    out = {};
+    if (!state_ || structure.deviceIdentity() != state_->device || !structure.valid()) {
+        return makeError(Error::InvalidArgument);
+    }
+    auto allocation = structure.retainAllocation();
+    return acquire(state_, keyFor(ShaderResourceKind::PartitionedAccelerationStructure, allocation),
+        ShaderResourceKind::PartitionedAccelerationStructure, allocation, false, [&](auto& entry) {
+            // Matches Core.resolveDescriptor's explicit AS address contract in both modes.
+            entry.value = structure.deviceAddress();
+            return Result{};
+        }, out.state_);
+}
+
 void ResourceRegistry::collect()
 {
     if (state_) { std::lock_guard lock(state_->mutex); state_->collectLocked(); }
@@ -246,6 +261,27 @@ ResourceRegistryStats ResourceRegistry::stats() const
     if (!state_) { return {}; }
     std::lock_guard lock(state_->mutex);
     return state_->stats;
+}
+
+BindlessHeap* ResourceRegistry::heap() const
+{
+    return state_ ? state_->heap.get() : nullptr;
+}
+
+Result ResourceRegistry::bind(CommandBuffer& commands) const
+{
+    if (!state_ || commands.deviceIdentity() != state_->device) { return makeError(Error::InvalidArgument); }
+    auto result = commands.retainResource(state_);
+    if (result) { commands.bindBindlessHeap(*state_->heap); }
+    return result;
+}
+
+Result ResourceRegistry::retain(CommandBuffer& commands, const ResourceLease& lease) const
+{
+    if (!state_ || !lease.state_ || lease.state_->registry != state_ || commands.deviceIdentity() != state_->device) {
+        return makeError(Error::InvalidArgument);
+    }
+    return commands.retainResource(lease.state_);
 }
 
 ParameterWriter::ParameterWriter(Device& device, RenderFrameContext& frame, ResourceRegistry& registry)
@@ -366,6 +402,15 @@ uint64_t ParameterWriter::sampledImages(std::span<TextureView* const> views)
     uint64_t address = 0;
     std::shared_ptr<void> allocation;
     result_ = upload(handles.data(), handles.size() * sizeof(ShaderSampledImage), alignof(ShaderSampledImage), address, allocation);
+    if (result_) { arrays_.push_back(std::move(allocation)); }
+    return address;
+}
+
+uint64_t ParameterWriter::data(const void* bytes, uint64_t size, uint64_t alignment)
+{
+    uint64_t address = 0;
+    std::shared_ptr<void> allocation;
+    result_ = upload(bytes, size, alignment, address, allocation);
     if (result_) { arrays_.push_back(std::move(allocation)); }
     return address;
 }

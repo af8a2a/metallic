@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderGraph/NrdRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/ComputeKernel.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #if METALLIC_HAS_NRD
 #include "Runtime/Render/Denoising/NrdPlan.h"
@@ -116,6 +117,7 @@ Format formatFromNrd(denoising::Format format)
     return Format::Unknown;
 }
 
+constexpr uint64_t kNrdAbi = 0x4e52445000000001ull;
 struct NrdPushData {
     uint64_t constants;
     uint64_t resources;
@@ -146,21 +148,13 @@ struct NrdRuntime::Impl {
         std::unique_ptr<TextureView> view;
         ResourceState state = ResourceState::Undefined;
     };
-    struct Handles {
-        BindlessHandle sampled;
-        BindlessHandle storage;
-    };
     denoising::NrdPlan plan;
     Device* device = nullptr;
     uint16_t width = 0, height = 0;
     std::vector<TextureResource> permanentTextures, transientTextures;
     NrdUserTexturePool userTexturePool{};
-    std::unique_ptr<BindlessHeap> descriptorHeap;
-    std::array<BindlessHandle, 2> samplers;
-    std::vector<BindlessHandle> sampledHandles, storageHandles;
-    std::unordered_map<TextureView*, Handles> textureHandles;
-    std::vector<std::unique_ptr<ComputePipeline>> pipelines;
-    uint32_t sampledCursor = 0, storageCursor = 0;
+    std::shared_ptr<ResourceRegistry> registry;
+    std::vector<ComputeKernel> pipelines;
     bool clearPending = true;
     bool historyInvalid = true;
     bool frameReady = false;
@@ -168,7 +162,7 @@ struct NrdRuntime::Impl {
 
     Result pipeline(uint32_t index)
     {
-        if (pipelines[index])
+        if (pipelines[index].valid())
             return {};
         const auto& recipe = plan.pipelines()[index];
         std::vector<SlangMacroDefine> defines;
@@ -191,20 +185,9 @@ struct NrdRuntime::Impl {
             spdlog::error("NRD {}: {}", recipe.shaderName, compiled.diagnostics);
             return result;
         }
-        std::unique_ptr<ShaderModule> shader;
-        result = device->createShaderModule({.code = compiled.spirv.data(),
-                                             .byteSize = compiled.spirv.size() * sizeof(uint32_t),
-                                             .debugName = recipe.shaderName.c_str()},
-                                            shader);
-        if (!result)
-            return result;
-        // Shader source already accesses the native heap. No binding remap,
-        // register shifts, descriptor sets, or NRD shader blobs are involved.
-        return device->createComputePipeline({.computeShader = shader.get(),
-                                              .computeEntryPoint = "main",
-                                              .usesBindlessHeap = true,
-                                              .bindlessUserPushDataSize = sizeof(NrdPushData)},
-                                             pipelines[index]);
+        std::string log;
+        return pipelines[index].initialize(*device, {.spirv = compiled.spirv,
+            .parameters = parameterAbi<NrdPushData>(kNrdAbi), .debugName = recipe.shaderName.c_str()}, log);
     }
 };
 
@@ -286,49 +269,8 @@ Result NrdRuntime::initialize(Device& device, uint16_t width, uint16_t height,
         clear();
         return result;
     }
-    // One descriptor per distinct view/access, reused by every stage in a frame.
-    // The extra user slots allow REFERENCE diffuse/specular to bind distinct
-    // signals without overwriting descriptors used by an earlier dispatch.
-    const uint32_t capacity = static_cast<uint32_t>(impl_->permanentTextures.size() + impl_->transientTextures.size() +
-                                                    userTexturePool.size() * 2);
-    result = device.createBindlessHeap({.maxSamplers = 2, .maxSampledImages = capacity, .maxStorageImages = capacity},
-                                       impl_->descriptorHeap);
-    if (!result) {
-        clear();
-        return result;
-    }
-    std::array<BindlessSamplerWrite, 2> samplers;
-    for (uint32_t i = 0; i < 2; ++i) {
-        result = impl_->descriptorHeap->allocateSampler(impl_->samplers[i]);
-        if (!result) {
-            clear();
-            return result;
-        }
-        const auto filter = i == 0 ? SamplerFilter::Nearest : SamplerFilter::Linear;
-        samplers[i] = {.handle = impl_->samplers[i],
-                       .sampler = {.minFilter = filter,
-                                   .magFilter = filter,
-                                   .mipFilter = SamplerFilter::Nearest,
-                                   .addressU = SamplerAddressMode::ClampToEdge,
-                                   .addressV = SamplerAddressMode::ClampToEdge,
-                                   .addressW = SamplerAddressMode::ClampToEdge}};
-    }
-    result = impl_->descriptorHeap->writeSamplers(samplers.data(), 2);
-    if (!result) {
-        clear();
-        return result;
-    }
-    impl_->sampledHandles.resize(capacity);
-    impl_->storageHandles.resize(capacity);
-    for (uint32_t i = 0; i < capacity; ++i) {
-        result = impl_->descriptorHeap->allocateSampledImage(impl_->sampledHandles[i]);
-        if (result)
-            result = impl_->descriptorHeap->allocateStorageImage(impl_->storageHandles[i]);
-        if (!result) {
-            clear();
-            return result;
-        }
-    }
+    result = device.resourceRegistry(impl_->registry);
+    if (!result) { clear(); return result; }
     impl_->pipelines.resize(impl_->plan.pipelines().size());
     return {};
 }
@@ -339,7 +281,7 @@ void NrdRuntime::clear()
 }
 bool NrdRuntime::valid() const
 {
-    return impl_ && impl_->descriptorHeap;
+    return impl_ && impl_->registry;
 }
 uint16_t NrdRuntime::width() const
 {
@@ -370,8 +312,6 @@ Result NrdRuntime::setCommonSettings(const denoising::CommonSettings& settings)
         return makeError(Error::InvalidArgument);
     impl_->clearPending |=
         impl_->plan.commonSettings().accumulationMode == denoising::AccumulationMode::CLEAR_AND_RESTART;
-    impl_->textureHandles.clear();
-    impl_->sampledCursor = impl_->storageCursor = 0;
     impl_->scheduled.fill(false);
     impl_->frameReady = true;
     return {};
@@ -399,18 +339,19 @@ Result NrdRuntime::setSigmaSettings(const denoising::SigmaSettings& settings)
     return {};
 }
 
-Result NrdRuntime::denoise(NrdDenoiserMode mode, CommandBuffer& commands, Streamer& streamer)
+Result NrdRuntime::denoise(NrdDenoiserMode mode, CommandBuffer& commands)
 {
-    return record(static_cast<uint32_t>(mode), commands, streamer);
+    return record(static_cast<uint32_t>(mode), commands);
 }
-Result NrdRuntime::denoiseReference(bool specular, CommandBuffer& commands, Streamer& streamer)
+Result NrdRuntime::denoiseReference(bool specular, CommandBuffer& commands)
 {
-    return record(specular ? 3 : 2, commands, streamer);
+    return record(specular ? 3 : 2, commands);
 }
 
-Result NrdRuntime::record(uint32_t index, CommandBuffer& commands, Streamer& streamer)
+Result NrdRuntime::record(uint32_t index, CommandBuffer& commands)
 {
-    if (!valid() || !impl_->frameReady || index >= impl_->scheduled.size() || impl_->scheduled[index])
+    if (!commands.recording() || !commands.frameContext() || !commands.frameContext()->recording() ||
+        !valid() || !impl_->frameReady || index >= impl_->scheduled.size() || impl_->scheduled[index])
         return makeError(Error::InvalidArgument);
     if (index == 0 && !impl_->device->capabilities().shaderImageGatherExtended)
         return makeError(Error::Unsupported);
@@ -451,13 +392,13 @@ Result NrdRuntime::record(uint32_t index, CommandBuffer& commands, Streamer& str
         impl_->clearPending = false;
     }
     const auto dispatches = impl_->plan.schedule(index);
-    commands.bindBindlessHeap(*impl_->descriptorHeap);
+    commands.frameContext()->retain(impl_);
     for (const auto& stage : dispatches) {
         result = impl_->pipeline(stage.pipelineIndex);
         if (!result)
             return result;
         commands.beginDebugLabel({.name = stage.name, .color = {0.2f, 0.8f, 0.25f, 1.0f}});
-        result = dispatch(commands, streamer, stage);
+        result = dispatch(commands, stage);
         commands.endDebugLabel();
         if (!result)
             return result;
@@ -465,13 +406,17 @@ Result NrdRuntime::record(uint32_t index, CommandBuffer& commands, Streamer& str
     return {};
 }
 
-Result NrdRuntime::dispatch(CommandBuffer& commands, Streamer& streamer, const denoising::DispatchDesc& stage)
+Result NrdRuntime::dispatch(CommandBuffer& commands, const denoising::DispatchDesc& stage)
 {
+    ParameterWriter writer(*impl_->device, *commands.frameContext(), *impl_->registry);
     NrdResourceIndices indices;
-    for (uint32_t i = 0; i < 2; ++i)
-        indices.samplers[i] = impl_->samplers[i].shaderIndex;
+    for (uint32_t i = 0; i < 2; ++i) {
+        const auto filter = i == 0 ? SamplerFilter::Nearest : SamplerFilter::Linear;
+        indices.samplers[i] = static_cast<uint32_t>(writer.sampler({.minFilter = filter, .magFilter = filter,
+            .mipFilter = SamplerFilter::Nearest, .addressU = SamplerAddressMode::ClampToEdge,
+            .addressV = SamplerAddressMode::ClampToEdge, .addressW = SamplerAddressMode::ClampToEdge}).value);
+    }
     uint32_t sampled = 0, storage = 0;
-    std::vector<BindlessImageWrite> writes;
     std::vector<TextureBarrierDesc> barriers;
     std::unordered_set<Texture*> transitioned;
     for (uint32_t i = 0; i < stage.resourcesNum; ++i) {
@@ -498,20 +443,10 @@ Result NrdRuntime::dispatch(CommandBuffer& commands, Streamer& streamer, const d
         const bool output = resource.descriptorType == denoising::DescriptorType::STORAGE_TEXTURE;
         if ((output && storage >= 16) || (!output && sampled >= 32))
             return makeError(Error::InvalidArgument);
-        auto& handles = impl_->textureHandles[texture.view];
-        auto& handle = output ? handles.storage : handles.sampled;
-        if (!handle.valid()) {
-            auto& cursor = output ? impl_->storageCursor : impl_->sampledCursor;
-            const auto& available = output ? impl_->storageHandles : impl_->sampledHandles;
-            if (cursor >= available.size())
-                return makeError(Error::OutOfMemory);
-            handle = available[cursor++];
-            writes.push_back({.handle = handle, .view = texture.view, .state = ResourceState::General});
-        }
         if (output)
-            indices.storage[storage++] = handle.shaderIndex;
+            indices.storage[storage++] = static_cast<uint32_t>(writer.storageImage(texture.view).value);
         else
-            indices.sampled[sampled++] = handle.shaderIndex;
+            indices.sampled[sampled++] = static_cast<uint32_t>(writer.sampledImage(texture.view, ResourceState::General).value);
         if (transitioned.insert(texture.texture).second) {
             barriers.push_back({.texture = texture.texture,
                                 .before = state ? *state : ResourceState::General,
@@ -522,24 +457,14 @@ Result NrdRuntime::dispatch(CommandBuffer& commands, Streamer& streamer, const d
         if (state)
             *state = ResourceState::General;
     }
-    if (!writes.empty()) {
-        const auto result = impl_->descriptorHeap->writeImages(writes.data(), static_cast<uint32_t>(writes.size()));
-        if (!result)
-            return result;
-    }
+    if (!writer.status()) { return writer.status(); }
     commands.barrier({.textures = barriers.data(), .textureCount = static_cast<uint32_t>(barriers.size())});
-    const auto constantsOffset = streamer.streamConstantData(stage.constantBufferData, stage.constantBufferDataSize);
-    const auto resourcesOffset = streamer.streamConstantData(&indices, sizeof(indices));
-    auto* buffer = streamer.constantBuffer();
-    if (!buffer || constantsOffset == UINT64_MAX || resourcesOffset == UINT64_MAX)
-        return makeError(Error::OutOfMemory);
-    const auto address = buffer->deviceAddress();
-    if (!address)
-        return makeError(Error::Failure);
-    const NrdPushData push{address + constantsOffset, address + resourcesOffset};
-    commands.bindComputePipeline(*impl_->pipelines[stage.pipelineIndex], &push, sizeof(push));
-    commands.dispatch(stage.gridWidth, stage.gridHeight, 1);
-    return {};
+    const NrdPushData params{stage.constantBufferDataSize ? writer.data(stage.constantBufferData, stage.constantBufferDataSize) : 0,
+        writer.data(&indices, sizeof(indices))};
+    EncodedParameters encoded;
+    auto result = writer.encode(params, kNrdAbi, encoded);
+    if (!result) { return result; }
+    return impl_->pipelines[stage.pipelineIndex].dispatch(commands, encoded, stage.gridWidth, stage.gridHeight);
 }
 #endif
 } // namespace metallic::render

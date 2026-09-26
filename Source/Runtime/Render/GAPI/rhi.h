@@ -1648,12 +1648,14 @@ public:
     const PartitionedAccelerationStructureDesc& desc() const;
     bool valid() const;
     uint64_t deviceAddress() const;
+    std::shared_ptr<void> retainAllocation() const;
+    const void* deviceIdentity() const;
 
 private:
     explicit PartitionedAccelerationStructure(
         std::unique_ptr<detail::PartitionedAccelerationStructureImpl> impl);
 
-    std::unique_ptr<detail::PartitionedAccelerationStructureImpl> impl_;
+    std::shared_ptr<detail::PartitionedAccelerationStructureImpl> impl_;
 
     friend class Device;
     friend class CommandBuffer;
@@ -1937,6 +1939,8 @@ public:
     // timeline lifetimes until its next recording. Call while recording.
     Result addDependency(const GpuCompletionPoint& completion);
     Result addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction);
+    // Frames retain through completion; standalone callers retain until command reset.
+    Result retainResource(std::shared_ptr<void> resource);
     Result end();
     void beginDebugLabel(const DebugLabelDesc& desc);
     void endDebugLabel();

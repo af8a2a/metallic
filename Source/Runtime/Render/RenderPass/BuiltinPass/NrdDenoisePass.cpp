@@ -154,8 +154,7 @@ public:
             !validTexture(denoisedDiffuse) ||
             !validTexture(denoisedSpecular) ||
             !validTexture(validation) ||
-            device_ == nullptr ||
-            context.streamer() == nullptr) {
+            device_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -581,14 +580,14 @@ private:
         if (denoiserMode == kNrdDenoiserModeReference) {
             nrd_->setUserPoolTexture(denoising::ResourceType::IN_SIGNAL, *noisyDiffuse.texture(), *noisyDiffuse.view());
             nrd_->setUserPoolTexture(denoising::ResourceType::OUT_SIGNAL, *denoisedDiffuse.texture(), *denoisedDiffuse.view());
-            result = nrd_->denoiseReference(false, context.commandBuffer(), *context.streamer());
+            result = nrd_->denoiseReference(false, context.commandBuffer());
             if (!result) {
                 return result;
             }
 
             nrd_->setUserPoolTexture(denoising::ResourceType::IN_SIGNAL, *noisySpecular.texture(), *noisySpecular.view());
             nrd_->setUserPoolTexture(denoising::ResourceType::OUT_SIGNAL, *denoisedSpecular.texture(), *denoisedSpecular.view());
-            return nrd_->denoiseReference(true, context.commandBuffer(), *context.streamer());
+            return nrd_->denoiseReference(true, context.commandBuffer());
         }
 
         if (denoiserMode == kNrdDenoiserModeRelax) {
@@ -652,8 +651,7 @@ private:
         }
         return nrd_->denoise(
             runtimeMode(denoiserMode),
-            context.commandBuffer(),
-            *context.streamer());
+            context.commandBuffer());
     }
 #endif
 

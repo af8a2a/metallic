@@ -260,10 +260,9 @@ public:
     }
 
     Result createBindings(
-        BindlessHeap& heap,
         GPUSceneConsumerBindings& bindings,
         std::string& log) const;
-    void releaseBindings(BindlessHeap& heap, GPUSceneConsumerBindings& bindings) const;
+    void releaseBindings(GPUSceneConsumerBindings& bindings) const;
 
     Result recordCull(
         CommandBuffer& commandBuffer,

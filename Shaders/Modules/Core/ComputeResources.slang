@@ -3,10 +3,16 @@ implementing Core;
 
 namespace Metallic
 {
-// Shared with ComputeProgram. Slots contain absolute descriptor indices or RTAS addresses.
+// Shared with ComputeProgram. Arrays contain canonical handles; descriptor slots
+// do not have to be contiguous in the device registry.
+public struct ComputeResourceSlot
+{
+    public uint2 handle;
+    public uint2* array;
+};
 public struct ComputeResourcePush
 {
-    public uint2* resources;
+    public ComputeResourceSlot* resources;
     public uint* constants;
 };
 
@@ -17,12 +23,12 @@ public struct ComputeResourcePush
 
 public T getResource<T : IOpaqueDescriptor>(uint slot)
 {
-    return resolveDescriptor(DescriptorHandle<T>(gComputeResources.resources[slot]));
+    return resolveDescriptor(DescriptorHandle<T>(gComputeResources.resources[slot].handle));
 }
 
 public T getResourceArray<T : IOpaqueDescriptor>(uint slot, uint index)
 {
-    return resolveDescriptor(nonuniform(DescriptorHandle<T>(uint2(gComputeResources.resources[slot].x + index, 0))));
+    return resolveDescriptor(nonuniform(DescriptorHandle<T>(gComputeResources.resources[slot].array[index])));
 }
 
 public T getConstants<T>()

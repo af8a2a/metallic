@@ -1,4 +1,6 @@
 #include "Runtime/Render/RenderGraph/NrdRuntime.h"
+#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/ResourceRegistry.h"
 #include "Runtime/Render/Denoising/NrdPlan.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
@@ -266,9 +268,10 @@ protected:
     // Constant, positive radiance over a flat surface is invariant under the
     // spatial filter. Distinct diffuse/specular values catch descriptor aliasing.
     std::array<float, 2> frame(render::NrdDenoiserMode mode, float diffuse, float specular, bool reset = false,
-                               bool confidence = true, bool discard = false)
+                               bool confidence = true, bool discard = false, bool retireRuntime = false)
     {
-        require(command->begin());
+        require(recording.begin(frameIndex));
+        require(command->begin(&recording));
         for (size_t i = 0; i < textures.size(); ++i) {
             render::TextureBarrierDesc barrier{.texture = textures[i].get(),
                                                .before = initialized ? render::ResourceState::General
@@ -310,10 +313,10 @@ protected:
                                                          : rd::ResourceType::OUT_DIFF_RADIANCE_HITDIST)];
                 runtime.setUserPoolTexture(rd::ResourceType::IN_SIGNAL, *input.texture, *input.view);
                 runtime.setUserPoolTexture(rd::ResourceType::OUT_SIGNAL, *output.texture, *output.view);
-                require(runtime.denoiseReference(i != 0, *command, *streamer));
+                require(runtime.denoiseReference(i != 0, *command));
             }
         } else {
-            require(runtime.denoise(mode, *command, *streamer));
+            require(runtime.denoise(mode, *command));
         }
         std::array<float, 2> values{};
         for (uint32_t i = 0; i < 2; ++i) {
@@ -337,12 +340,16 @@ protected:
             command->barrier({.textures = &barrier, .textureCount = 1});
         }
         require(command->end());
+        if (retireRuntime) { runtime.clear(); }
         if (discard) {
+            recording.cancel();
             command.reset();
             require(commands->createCommandBuffer(command));
         } else {
             render::CommandBuffer* list[] = {command.get()};
-            require(queue->submit({.commandBuffers = list, .commandBufferCount = 1}));
+            render::QueueSubmissionTracker tracker;
+            require(tracker.initialize(*device, *queue));
+            require(tracker.submit({.commandBuffers = list, .commandBufferCount = 1}, recording));
             require(queue->waitIdle());
             initialized = true;
             readback->invalidate();
@@ -376,6 +383,7 @@ protected:
     uint16_t w = 0, h = 0;
     uint32_t frameIndex = 0;
     bool initialized = false;
+    render::RenderFrameContext recording;
 };
 
 TEST_F(NrdGpu, ReferenceIndependentSignalsResetResizeAndDiscard)
@@ -397,6 +405,25 @@ TEST_F(NrdGpu, ReferenceIndependentSignalsResetResizeAndDiscard)
     values = frame(render::NrdDenoiserMode::Reference, 7, 14);
     EXPECT_FLOAT_EQ(values[0], 7);
     EXPECT_FLOAT_EQ(values[1], 14);
+}
+
+TEST_F(NrdGpu, SharedRegistryAndRetiredRuntimeSubmission)
+{
+    const auto first = frame(render::NrdDenoiserMode::Reference, 2, 10);
+    EXPECT_FLOAT_EQ(first[0], 2);
+    EXPECT_FLOAT_EQ(first[1], 10);
+    std::shared_ptr<render::ResourceRegistry> registry;
+    require(device->resourceRegistry(registry));
+    const auto before = registry->stats().descriptorWrites;
+    render::ResourceLease output;
+    require(registry->storageImage(*pool[static_cast<size_t>(rd::ResourceType::OUT_DIFF_RADIANCE_HITDIST)].view, output));
+    EXPECT_EQ(registry->stats().descriptorWrites, before);
+    // The frame, rather than the SDK wrapper, owns the old pipelines, internal
+    // images and parameter data until this queued recording completes.
+    const auto second = frame(render::NrdDenoiserMode::Reference, 4, 20, false, true, false, true);
+    EXPECT_FALSE(runtime.valid());
+    EXPECT_FLOAT_EQ(second[0], 3);
+    EXPECT_FLOAT_EQ(second[1], 15);
 }
 
 TEST_F(NrdGpu, ReblurAndRelaxPreserveFlatRadiance)
@@ -576,7 +603,8 @@ TEST_F(NrdRayTracingGpu, RayTracedShadowOcclusionAndHistory)
         }
         upload->flush(0, uint64_t(w) * h * 4);
         upload->unmap();
-        require(command->begin());
+        require(recording.begin(frameIndex));
+        require(command->begin(&recording));
         command->hostWriteBarrier();
         render::TextureBarrierDesc barrier{.texture = depth.get(),
             .before = depthReady ? render::ResourceState::ShaderRead : render::ResourceState::Undefined,
@@ -602,13 +630,16 @@ TEST_F(NrdRayTracingGpu, RayTracedShadowOcclusionAndHistory)
         command->barrier({.textures = &barrier, .textureCount = 1});
         require(command->end());
         if (discard) {
+            recording.cancel();
             command.reset();
             require(commands->createCommandBuffer(command));
             streamer->endFrame();
             return std::vector<uint8_t>{};
         }
         render::CommandBuffer* list[] = {command.get()};
-        require(queue->submit({.commandBuffers = list, .commandBufferCount = 1}));
+        render::QueueSubmissionTracker tracker;
+        require(tracker.initialize(*device, *queue));
+        require(tracker.submit({.commandBuffers = list, .commandBufferCount = 1}, recording));
         require(queue->waitIdle());
         depthReady = true;
         previous = view;

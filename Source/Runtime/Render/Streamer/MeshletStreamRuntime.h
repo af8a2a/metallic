@@ -7,6 +7,7 @@
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/ResourceRegistry.h"
 #include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/Streamer/MeshletStreamClas.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
@@ -551,7 +552,8 @@ public:
     Result cmdPostTraversal(CommandBuffer& commandBuffer);
     Result cmdEndFrame(CommandBuffer& commandBuffer);
 
-    BindlessHeap* bindlessHeap() const { return bindlessHeap_.get(); }
+    ResourceRegistry* resourceRegistry() const { return registry_.get(); }
+    BindlessHeap* bindlessHeap() const { return registry_ ? registry_->heap() : nullptr; }
     MeshletStreamUserPush userPush() const;
     Result updateRasterBindings(const MeshletStreamGpuRasterBindings& bindings);
     Result cmdPrepareVisibility(CommandBuffer& commandBuffer);
@@ -585,7 +587,7 @@ private:
     std::shared_ptr<bool> blasCacheInitialized_ = std::make_shared<bool>(false);
     struct FrameUploads {
         std::unique_ptr<Buffer> params, raster, clear;
-        BindlessHandle paramsHandle, rasterHandle;
+        ResourceLease paramsHandle, rasterHandle;
         GpuCompletionPoint completion;
     };
     std::vector<FrameUploads> frameUploads_;
@@ -603,7 +605,7 @@ private:
 
     struct ResidentPageFrame {
         std::unique_ptr<Buffer> buffer;
-        BindlessHandle handle;
+        ResourceLease handle;
     };
 
     class UpdatePass;
@@ -686,7 +688,7 @@ private:
     std::unique_ptr<Buffer> tlasInstanceBuffer_;
     std::unique_ptr<Buffer> tlasScratchBuffer_;
     std::unique_ptr<RayTracingAccelerationStructure> tlas_;
-    std::unique_ptr<BindlessHeap> bindlessHeap_;
+    std::shared_ptr<ResourceRegistry> registry_;
     std::unique_ptr<UpdatePass> updatePass_;
     std::unique_ptr<TraversalPass> traversalPass_;
     std::unique_ptr<ActiveBuildPass> activeBuildPass_;
@@ -700,40 +702,40 @@ private:
     uint32_t coldPageRetentionFrames_ = 0;
     bool clusterRtxEnabled_ = false;
     MeshletStreamGpuBlasHeader recentBlasHeader_;
-    BindlessHandle pageHandle_;
-    BindlessHandle activeGroupHandle_;
-    BindlessHandle activeHeaderHandle_;
-    BindlessHandle pageTableHandle_;
-    BindlessHandle paramsHandle_;
-    BindlessHandle visibleClusterHandle_;
-    BindlessHandle rasterBindingsHandle_;
-    BindlessHandle requestHandle_;
-    BindlessHandle instanceHandle_;
-    BindlessHandle primitiveHandle_;
-    BindlessHandle lodLevelHandle_;
-    BindlessHandle groupHandle_;
-    BindlessHandle lodTopologyHandle_;
-    BindlessHandle lodStateHandle_;
-    BindlessHandle demandHandle_;
+    ResourceLease pageHandle_;
+    ResourceLease activeGroupHandle_;
+    ResourceLease activeHeaderHandle_;
+    ResourceLease pageTableHandle_;
+    ResourceLease paramsHandle_;
+    ResourceLease visibleClusterHandle_;
+    ResourceLease rasterBindingsHandle_;
+    ResourceLease requestHandle_;
+    ResourceLease instanceHandle_;
+    ResourceLease primitiveHandle_;
+    ResourceLease lodLevelHandle_;
+    ResourceLease groupHandle_;
+    ResourceLease lodTopologyHandle_;
+    ResourceLease lodStateHandle_;
+    ResourceLease demandHandle_;
     uint32_t demandTaskOffset_ = 0;
     uint32_t demandTaskCount_ = 0;
     uint32_t demandInstanceOffsetsOffset_ = 0;
     ResourceState demandBufferState_ = ResourceState::Undefined;
     uint32_t lodInstanceOffsetsOffset_ = 0;
     ResourceState lodStateBufferState_ = ResourceState::Undefined;
-    BindlessHandle nodeHandle_;
-    BindlessHandle drawIndirectHandle_;
-    BindlessHandle traversalHeaderHandle_;
-    BindlessHandle traversalWorkHandle_;
-    BindlessHandle clasAddressHandle_;
-    BindlessHandle clasPageTableHandle_;
-    BindlessHandle blasHeaderHandle_;
-    BindlessHandle instanceBlasHandle_;
-    BindlessHandle blasBuildInfoHandle_;
-    BindlessHandle blasClusterReferenceHandle_;
-    BindlessHandle fallbackBlasAddressHandle_;
-    BindlessHandle dynamicBlasAddressHandle_;
-    BindlessHandle tlasInstanceHandle_;
+    ResourceLease nodeHandle_;
+    ResourceLease drawIndirectHandle_;
+    ResourceLease traversalHeaderHandle_;
+    ResourceLease traversalWorkHandle_;
+    ResourceLease clasAddressHandle_;
+    ResourceLease clasPageTableHandle_;
+    ResourceLease blasHeaderHandle_;
+    ResourceLease instanceBlasHandle_;
+    ResourceLease blasBuildInfoHandle_;
+    ResourceLease blasClusterReferenceHandle_;
+    ResourceLease fallbackBlasAddressHandle_;
+    ResourceLease dynamicBlasAddressHandle_;
+    ResourceLease tlasInstanceHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
     ResourceState activeGroupBufferState_ = ResourceState::Undefined;
     ResourceState activeHeaderBufferState_ = ResourceState::Undefined;
