@@ -431,3 +431,11 @@ ctest --test-dir build-full -R '^Metallic(Task|Nrd)Tests$' --output-on-failure
 TaskSystem/NRD 两个 CTest 目标和编辑器 smoke 通过。实际 VisibilityBuffer 串行/并行准备像素对照、材质编辑刷新、场景 handoff、stream metadata 与 hybrid raster 回归通过，并检查 Bunny 输出 `build-full/rhi-pipeline-output/VisibilityPreparedMaterial.png`。完整日志为 `pipeline-final-build.log`、`pipeline-regression-final.log`、`pipeline-known-baseline.log`、`pipeline-cpu-tests.log`、`pipeline-smoke.log`，均在 `build-full` 下。
 
 当前实现仍维持两个 frame slot、既有 streaming 上传预算与完成门控；没有增加 GPU 在途帧数。本轮未测量 Release 生产场景的帧率收益，也未进行长时间场景压力测试。non-coherent atom 隔离在 coherent 硬件上的测试不能替代该内存类型的实际验证。
+
+## 17. 按测量决定下一阶段
+
+使用 MiniZorah 和 Release 小型 pass 链完成 CPU 调度归因，详见 [2026-09-26 测量、决策与复现记录](ParallelSchedulingMeasurements20260926.md)。新增默认关闭的 `schedulingDiagnostics`，区分准备、frame drain、录制、batch 等待、seal、tracker/native submit 和 rendering scope CPU 成本；worker 本地采集后汇合。
+
+测量发现批次完成通知可能发生在 coordinator 无条件定时等待之前。现以 mutex 保护的完成计数和等待谓词保存通知；全部 batch 完成后直接 join，仍保留任务取消路径的有界检查。64-pass、4-worker 流水基准中，等待均值从 4.38–4.69 ms 降到 0.11–0.34 ms；这是小型基准的阶段耗时，不是生产帧率收益。
+
+MiniZorah 实际仍走 Joined，MaterialResolve 的 overlap 契约触发 prior-frame drain；原生提交每帧约 0.07–0.08 ms，单 rendering scope 只有几微秒且最多一个 native draw。独立提交线程、跨调用异步录制和 scope 分片均暂不引入，保留现有回调线程、资源所有权与 frame completion 契约。后续需要证明可隐藏的关键路径工作及稳定的跨调用快照，具体启用前提见测量记录。

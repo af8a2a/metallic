@@ -301,6 +301,7 @@ struct RenderGraphExecutor::Impl {
         CommandBuffer* commandBuffer = nullptr;
         std::vector<size_t> predecessors;
         GpuCompletionPoint completion;
+        bool passWork = false;
     };
 
     struct BindlessResourcePlan {
@@ -1786,6 +1787,7 @@ struct RenderGraphExecutor::Impl {
         RenderGraphProperties& executionProperties, std::unique_ptr<RenderGraphExecutionContext>& prepared,
         std::vector<RenderGraphResource>* snapshots = nullptr)
     {
+        profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::prepareNs);
         std::vector<RenderGraphExecutionContext::Binding> bindings;
         std::vector<TextureBarrierDesc> pendingTextures;
         std::vector<BufferBarrierDesc> pendingBuffers;
@@ -1914,7 +1916,10 @@ struct RenderGraphExecutor::Impl {
         }
         recording.passTimer = recording.beginInterval(commands);
         const auto begin = std::chrono::steady_clock::now();
-        result = node.pass->prepareExecution(*recording.context);
+        {
+            profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::prepareNs);
+            result = node.pass->prepareExecution(*recording.context);
+        }
         recording.stats.cpuMilliseconds = renderGraphElapsedMilliseconds(begin);
         return result;
     }
@@ -1961,7 +1966,10 @@ struct RenderGraphExecutor::Impl {
         };
         context.streamingProfile_ = [&](SceneStreamingProfile sample) { recording.streaming.push_back(std::move(sample)); };
         const auto begin = std::chrono::steady_clock::now();
-        recording.result = recording.node->pass->execute(context);
+        {
+            profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::workerExecuteNs);
+            recording.result = recording.node->pass->execute(context);
+        }
         stats.cpuMilliseconds += renderGraphElapsedMilliseconds(begin);
         tracyGpuProfiler.endZone(recording.profile);
         if (recording.result) { recording.endInterval(commands, recording.passTimer); }
@@ -2084,20 +2092,28 @@ struct RenderGraphExecutor::Impl {
         std::string streamingLog;
         Result<> result;
         if (upload && node.preparedScene) {
+            profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::scenePrepareNs);
             auto scope = context.profileScope("Streamer prepare");
             MeshletStreamFrameDesc view;
             view.freezeRasterSnapshot = context.properties().value("benchmarkFreezeStreaming", false);
             result = upload->recordSceneBegin(*node.preparedScene, node.sceneRequirements, context, view, streamingLog);
         }
         const bool sceneReady = !node.preparedScene || node.preparedScene->ready;
-        if (result && sceneReady) { result = node.pass->prepareExecution(context); }
+        if (result && sceneReady) {
+            profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::prepareNs);
+            result = node.pass->prepareExecution(context);
+        }
         if (result && sceneReady && upload && node.preparedScene && node.preparedScene->geometry) {
+            profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::scenePrepareNs);
             MeshletStreamFrameDesc view;
             node.pass->describeSceneView(context, view);
             result = upload->recordSceneTraversal(*node.preparedScene, context, view,
                 [&](std::string_view point) { node.pass->sceneTraversalCheckpoint(context, point); });
         }
-        if (result && sceneReady) { result = node.pass->execute(context); }
+        if (result && sceneReady) {
+            profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::serialExecuteNs);
+            result = node.pass->execute(context);
+        }
         if (result && sceneReady && upload && node.preparedScene) {
             result = upload->recordSceneEnd(*node.preparedScene, context);
         }
@@ -2896,6 +2912,8 @@ void RenderGraphExecutor::acceptSceneResourcePreparation()
 
 Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 {
+    profiling::SchedulingMetrics scheduling;
+    profiling::SchedulingCapture schedulingCapture(desc.schedulingDiagnostics || profiling::SchedulingCapture::requested() ? &scheduling : nullptr);
     CpuProfileRecorder preparation;
     CpuProfileScope preparationPhase(&preparation, "Refresh scene bindings");
     profiling::CpuPhase phase("graph.refreshSceneBindings");
@@ -2972,6 +2990,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         (sceneStamp != impl_->recordedSceneStamp ? 2u : 0u);
     preflightDetail.end();
     if (drainReasonMask != 0) {
+        profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::frameWaitNs);
         phase.next("graph.priorFrameDrain");
         preparationPhase.next("Prior frame drain");
         Result<> result = impl_->waitForSubmittedWork(desc.slotWaitTimeoutNanoseconds);
@@ -2984,7 +3003,11 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     Impl::SubmissionSlot& slot = *impl_->submissionSlots[frameIndex % slotCount];
     phase.next("graph.slotWait", frameIndex);
     preparationPhase.next("Submission slot wait");
-    Result<> result = slot.frame.wait(desc.slotWaitTimeoutNanoseconds);
+    Result<> result;
+    {
+        profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::frameWaitNs);
+        result = slot.frame.wait(desc.slotWaitTimeoutNanoseconds);
+    }
     if (!result) { return result; }
     phase.next("graph.poolReset");
     preparationPhase.next("Command pool reset");
@@ -3035,6 +3058,8 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     impl_->lastExecutionStats.pipelinedSubmission = pipelined;
     impl_->lastExecutionStats.submissionBlockingPasses = std::move(submissionBlockingPasses);
     const auto updateCpuTime = [&]() {
+        scheduling.executeNs = schedulingCapture.elapsed();
+        impl_->lastExecutionStats.scheduling = scheduling;
         impl_->lastExecutionStats.cpuMilliseconds = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - cpuBegin).count();
         for (auto& timing : impl_->gpuTimingSlots) {
@@ -3042,6 +3067,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                 timing.stats.cpuMilliseconds = impl_->lastExecutionStats.cpuMilliseconds;
                 timing.stats.submittedBatchCount = impl_->lastExecutionStats.submittedBatchCount;
                 timing.stats.batchesSubmittedWhileRecording = impl_->lastExecutionStats.batchesSubmittedWhileRecording;
+                timing.stats.scheduling = scheduling;
             }
         }
     };
@@ -3134,6 +3160,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     };
     struct PendingBatch {
         size_t end = 0;
+        uint64_t readyNs = 0;
         RecordedBatch commands;
     };
     std::map<size_t, PendingBatch> sealedBatches;
@@ -3141,13 +3168,14 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     std::unordered_set<Queue*> startedQueues;
     // Seal contiguous commands only. Merging across another queue can introduce
     // a cycle (graphics A -> compute B -> graphics C).
-    const auto sealRange = [&](size_t first, size_t end, bool coalesce = false) -> Result<> {
+    const auto sealRange = [&](size_t first, size_t end, bool coalesce = false, uint64_t readyNs = 0) -> Result<> {
+        profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::sealNs);
         while (first < end) {
             size_t last = first + 1;
             while (coalesce && last < end && segments[last].queue == segments[first].queue) { ++last; }
             std::vector<CommandBuffer*> commands;
             for (size_t i = first; i < last; ++i) { commands.push_back(segments[i].commandBuffer); }
-            PendingBatch batch{.end = last};
+            PendingBatch batch{.end = last, .readyNs = readyNs ? readyNs : schedulingCapture.elapsed()};
             auto sealed = batch.commands.seal(slot.frame, commands);
             if (!sealed) { return sealed; }
             sealedBatches.emplace(first, std::move(batch));
@@ -3177,10 +3205,19 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                 }
             }
             SubmissionReceipt receipt;
+            const uint64_t submitBegin = schedulingCapture.elapsed();
             auto accepted = impl_->submissionTrackers.at(queue)->submitBatch(ready->second.commands, {
                 .waitSemaphores = waits.data(), .waitSemaphoreCount = uint32_t(waits.size()),
             }, slot.frame, receipt);
             if (!accepted) { return accepted; }
+            if (scheduling.enabled) {
+                const uint64_t delay = submitBegin - ready->second.readyNs;
+                scheduling.readyDelayNs += delay;
+                scheduling.maxReadyDelayNs = std::max(scheduling.maxReadyDelayNs, delay);
+                if (!scheduling.firstSubmitNs) { scheduling.firstSubmitNs = submitBegin; }
+                if (!scheduling.firstPassSubmitNs && std::any_of(segments.begin() + nextSubmission, segments.begin() + end,
+                        [](const auto& segment) { return segment.passWork; })) { scheduling.firstPassSubmitNs = submitBegin; }
+            }
             startedQueues.insert(queue);
             for (size_t i = nextSubmission; i < end; ++i) { segments[i].completion = receipt.completion(); }
             ++impl_->lastExecutionStats.submittedBatchCount;
@@ -3203,6 +3240,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             result = beginSegment(QueueType::Compute);
             if (!result) { return result; }
             const size_t software = segments.size() - 1;
+            segments[software].passWork = true;
             addDependency(software, producer);
             result = compute(*segments[software].commandBuffer);
             if (result) { result = segments[software].commandBuffer->end(); }
@@ -3210,6 +3248,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             result = beginSegment(QueueType::Graphics);
             if (!result) { return result; }
             const size_t hardware = segments.size() - 1;
+            segments[hardware].passWork = true;
             addDependency(hardware, producer); // Deliberately independent of software.
             result = graphics(*segments[hardware].commandBuffer);
             if (result) { result = segments[hardware].commandBuffer->end(); }
@@ -3217,6 +3256,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             result = beginSegment(QueueType::Graphics);
             if (!result) { return result; }
             const size_t join = segments.size() - 1;
+            segments[join].passWork = true;
             addDependency(join, hardware);
             addDependency(join, software);
             context.commandBuffer_ = segments[join].commandBuffer;
@@ -3269,6 +3309,8 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         Result<> result = makeError(Error::Failure);
         std::atomic<bool> done = false;
         bool sealed = false;
+        uint64_t readyNs = 0;
+        profiling::SchedulingMetrics scheduling;
     };
     std::vector<std::unique_ptr<RecordingBatch>> batches;
     const auto flushRecordings = [&]() -> Result<> {
@@ -3276,7 +3318,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         phase.next("graph.recordBatches", batches.size());
         std::mutex completionMutex;
         std::condition_variable completionCv;
+        size_t completedBatches = 0;
         const auto record = [&](RecordingBatch& batch) {
+            profiling::SchedulingCapture workerCapture(scheduling.enabled ? &batch.scheduling : nullptr, schedulingCapture.origin());
             try {
                 batch.result = batch.context->record([&]() -> Result<> {
                     for (auto& node : batch.nodes) {
@@ -3289,7 +3333,12 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                 spdlog::error("[RenderGraph] Recording task failed: {}", error.what());
                 batch.result = makeError(Error::Failure);
             } catch (...) { batch.result = makeError(Error::Failure); }
-            batch.done.store(true, std::memory_order_release);
+            batch.readyNs = workerCapture.elapsed();
+            {
+                std::lock_guard lock(completionMutex);
+                batch.done.store(true, std::memory_order_release);
+                ++completedBatches;
+            }
             completionCv.notify_one();
         };
         Result<> submitted;
@@ -3304,7 +3353,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             if (!submitted) { return; }
             for (auto& batch : batches) {
                 if (!batch->sealed && batch->done.load(std::memory_order_acquire)) {
-                    submitted = sealRange(batch->first, batch->first + batch->nodes.size(), true);
+                    submitted = sealRange(batch->first, batch->first + batch->nodes.size(), true, batch->readyNs);
                     if (!submitted) { return; }
                     batch->sealed = true;
                 }
@@ -3330,16 +3379,26 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             try {
                 if (pipelined) {
                     while (!run->isComplete()) {
+                        size_t observedCompletions;
+                        {
+                            std::lock_guard lock(completionMutex);
+                            observedCompletions = completedBatches;
+                        }
                         collectBatches();
-                        if (!submitted) { break; }
+                        if (!submitted || observedCompletions == batches.size()) { break; }
                         std::unique_lock lock(completionMutex);
                         // Bounded polling also handles TaskSystem shutdown cancelling
-                        // a job before it can publish done. No worker waits on us.
-                        completionCv.wait_for(lock, std::chrono::milliseconds(1));
+                        // a job before it can publish done. The predicate preserves
+                        // notifications arriving during collection/submission.
+                        profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::waitNs);
+                        completionCv.wait_for(lock, std::chrono::milliseconds(1), [&] {
+                            return completedBatches != observedCompletions || run->isComplete();
+                        });
                     }
                 }
             } catch (...) { submitted = makeError(Error::Failure); }
             // Always join, including a queue error or exception after acceptance.
+            profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::waitNs);
             auto joined = run->wait();
             completed = joined && joined->status == task::TaskGraphStatus::Succeeded;
         } else { record(*batches.front()); }
@@ -3347,6 +3406,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         // Task completion order never changes submission/cancellation order.
         Result<> result = completed ? submitted : makeError(Error::Failure);
         for (auto& batch : batches) {
+            if (scheduling.enabled) { scheduling.mergeRecording(batch->scheduling); }
             ++impl_->lastExecutionStats.recordingBatchCount;
             if (result && !batch->result) { result = batch->result; }
             for (auto& node : batch->nodes) { impl_->mergeRecording(*node); }
@@ -3399,6 +3459,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         result = beginSegment(type, batch ? batch->context : nullptr);
         if (!result) { return abort(result); }
         const size_t index = segments.size() - 1;
+        segments[index].passWork = true;
         if (orderingBoundary != SIZE_MAX) { addDependency(index, orderingBoundary); }
         const bool opaque = !node.pass->supportsAsyncQueue();
         if (opaque) {
@@ -3473,6 +3534,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 
     phase.next("graph.submit", segments.size());
     result = sealRange(epilogueBegin, segments.size());
+    scheduling.recordingEndNs = schedulingCapture.elapsed();
     if (result) { result = slot.frame.sealRecording(); }
     if (result) { result = submitReady(); }
     if (!result) { return abort(result); }

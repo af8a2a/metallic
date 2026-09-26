@@ -676,6 +676,8 @@ public:
         const bool clas = setting("METALLIC_MINIZORAH_BENCH_CLAS", 1) != 0;
         const bool quality = setting("METALLIC_MINIZORAH_BENCH_QUALITY", 0) != 0;
         const bool realtime = setting("METALLIC_MINIZORAH_BENCH_REALTIME", 0) != 0;
+        const uint32_t recordingWorkers = setting("METALLIC_MINIZORAH_RECORDING_WORKERS", 0);
+        const uint32_t finalHoldFrames = setting("METALLIC_MINIZORAH_BENCH_FINAL_HOLD", 0);
         if (realtime && !context.device.capabilities().streamlineDlssSr) {
             return RhiTestResult::skip("Realtime replay requires --rhi-realtime and DLSS-SR");
         }
@@ -689,6 +691,8 @@ public:
             {"cacheScope", "New process/device GPU residency; existing cook, OS file cache and persistent PSO cache. Repeated route retains normal eviction policy."},
             {"quality", Json::array()}};
         report["realtime"] = realtime;
+        report["recordingWorkerLimit"] = recordingWorkers;
+        report["finalHoldFrames"] = finalHoldFrames;
         if (realtime) {
             report["timingScope"] = "Offscreen streamed realtime graph including BLAS/TLAS, shadows, deferred lighting, DLSS-SR, exposure and final blit. No UI/present or timed-frame output readback. CPU phase trace enabled in both baseline and candidate.";
         }
@@ -708,6 +712,8 @@ public:
                 report["frameCount"] = frameCount;
             }
             checkRoam(frameCount >= 600 && frameCount <= 8400, "Baseline frame count must be 600..8400");
+            checkRoam(finalHoldFrames < frameCount && (!finalHoldFrames || replay.is_null()),
+                "Final hold must leave route frames and cannot modify an external replay");
             RenderSampleLoadResult sample;
             std::string log;
             checkRoam(loadBuiltInRenderSample(realtime ? kDefaultGPUDrivenSampleId : "gpu-driven-minizorah-vbuffer", sample, log), log);
@@ -779,6 +785,7 @@ public:
             farCamera["znear"] = radius*.001f; farCamera["zfar"] = radius*5;
             const auto cameraAt = [&](uint32_t f) {
                 if (!replay.is_null()) { return replay.at("frames").at(f).at("camera"); }
+                if (finalHoldFrames) { f = std::min(f, frameCount - finalHoldFrames - 1); }
                 if (f < 600 || f >= 7800) { return original; }
                 const double phase = double((f - 600) % 3600) / 60.0;
                 if ((phase >= 20 && phase < 25) || (phase >= 50 && phase < 55)) { return farCamera; }
@@ -796,6 +803,7 @@ public:
             };
             const auto phaseAt = [&](uint32_t f) -> std::string {
                 if (!replay.is_null()) { return replay.at("frames").at(f).at("phase").get<std::string>(); }
+                if (finalHoldFrames && f >= frameCount - finalHoldFrames) { return "final_hold"; }
                 if (f < 300) { return "cold_start"; }
                 if (f < 600) { return "static_warm"; }
                 if (f < 4200) { return "roam_first"; }
@@ -883,7 +891,8 @@ public:
             const auto submit = [&]() {
                 checkRoam(bool(executor.execute({.graphicsQueue = replayDevice->getQueue(QueueType::Graphics),
                     .computeQueue = replayDevice->getQueue(QueueType::Compute), .historyResources = &history,
-                    .slotWaitTimeoutNanoseconds = 30000000000ull})), "Baseline execute failed");
+                    .slotWaitTimeoutNanoseconds = 30000000000ull,
+                    .recordingWorkerLimit = recordingWorkers})), "Baseline execute failed");
                 if (realtime) { checkRoam(bool(vulkan::notifyStreamlineOffscreenFrame()), "Streamline offscreen frame bookkeeping failed"); }
             };
             const auto checkpoint = [&](uint32_t f, const Json& camera, bool final) {
@@ -998,7 +1007,22 @@ public:
                             childSums[section.parent] += section.cpuMilliseconds;
                             if (section.parent == beginIndex) { ++children; childCpuMs += section.cpuMilliseconds; }
                         }
-                        checkRoam(children >= 7 && childCpuMs <= streamBegin->cpuMilliseconds + .01,
+                        // Maintenance is nested under Residency completion; page-copy
+                        // and CLAS scopes are conditional. Validate stable named roots.
+                        const auto hasRoot = [&](std::string_view name) {
+                            return std::any_of(pass.sections.begin(), pass.sections.end(), [&](const auto& section) {
+                                return section.cpuOnly && section.parent == beginIndex && section.name == name;
+                            });
+                        };
+                        const bool complete = hasRoot("Residency completion") && hasRoot("Prepare page uploads") &&
+                            hasRoot("Queue resident CLAS") && hasRoot("Publish resident pages") &&
+                            (!clas || (hasRoot("CLAS completion / expiry") && hasRoot("Retire unloaded CLAS")));
+                        if (!complete || childCpuMs > streamBegin->cpuMilliseconds + .01) {
+                            report["invalidCpuProfile"] = {{"frame", f}, {"pass", pass.name},
+                                {"profilingOverflow", stats.profilingOverflow}, {"directChildren", children},
+                                {"childCpuMs", childCpuMs}, {"sections", sections}};
+                        }
+                        checkRoam(complete && childCpuMs <= streamBegin->cpuMilliseconds + .01,
                             "Stream Begin CPU breakdown missing or double-counted");
                         for (uint32_t i = 0; i < pass.sections.size(); ++i) {
                             if (pass.sections[i].cpuOnly) {
@@ -1020,6 +1044,12 @@ public:
                     {"cpuExecuteMs", frame.executeMs}, {"hostFrameMs", frame.hostMs},
                     {"overlap", frame.overlap}, {"nodes", std::move(nodes)},
                     {"cpuPhases", frame.cpuPhases},
+                    {"scheduling", stats.scheduling},
+                    {"pipelinedSubmission", stats.pipelinedSubmission},
+                    {"submissionBlockingPasses", stats.submissionBlockingPasses},
+                    {"overlapBlockingPasses", stats.overlapBlockingPasses}, {"drainReasonMask", stats.drainReasonMask},
+                    {"recordingTasks", stats.recordingTaskCount}, {"preparationTasks", stats.preparationTaskCount},
+                    {"submittedBatches", stats.submittedBatchCount},
                     {"stream", {{"frame", s.frameIndex}, {"feedbackFrame", s.feedbackFrame},
                         {"geometryBytes", s.geometryUsedBytes}, {"geometryBudgetBytes", s.geometryBudgetBytes},
                         {"clasBytes", s.clasUsedBytes}, {"clasEncodedBytes", s.clasEncodedBytes},

@@ -12,11 +12,16 @@ opacity micromap support. Unsupported devices fail initialization with
 device-address commands; buffers with these usages receive device addresses
 without an explicit `ShaderDeviceAddress` request from the caller.
 
+All build presets enable parallel builds by default ("jobs": 0), equivalent to
+passing `-j` without a job count. Ninja chooses its default parallelism. To limit
+concurrency for a particular build, pass an explicit count, for example
+`cmake --build --preset metallic-dev -j 8`.
+
 ## Daily development
 
 ```powershell
 cmake --preset metallic-dev
-cmake --build --preset metallic-dev --parallel 8
+cmake --build --preset metallic-dev
 ```
 
 This builds the editor with glTF, Streamline DLSS and NVIDIA NRC support when the
@@ -26,7 +31,7 @@ disables Streamline and NRC and enables the scene, task and debug tests:
 
 ```powershell
 cmake --preset metallic-ci
-cmake --build --preset metallic-ci --parallel 8
+cmake --build --preset metallic-ci
 ctest --preset metallic-ci
 ```
 
@@ -44,7 +49,7 @@ DLLs together:
 ```powershell
 git submodule update --init --recursive -- External/NRC
 cmake --preset metallic-dev
-cmake --build --preset metallic-dev --parallel 8
+cmake --build --preset metallic-dev
 ```
 
 On Windows, CMake enables `METALLIC_HAS_NRC=1` when it finds the SDK headers,
@@ -122,10 +127,10 @@ precedence over the environment variable. Other presets keep capture opt-in.
 
 ```powershell
 cmake --preset metallic-release
-cmake --build --preset metallic-release --parallel 8
+cmake --build --preset metallic-release
 
 cmake --preset metallic-relwithdebinfo
-cmake --build --preset metallic-relwithdebinfo --parallel 8
+cmake --build --preset metallic-relwithdebinfo
 ```
 
 In CLion, reload the CMake project and enable the desired preset in CMake
@@ -140,7 +145,7 @@ Build and install SDL3, spdlog, oneTBB and monolithic OpenUSD once:
 cmake --preset metallic-deps-debug
 cmake --build --preset metallic-deps-debug
 cmake --preset metallic-full
-cmake --build --preset metallic-full --parallel 8
+cmake --build --preset metallic-full
 ```
 
 The dependency build installs automatically; no separate `cmake --install` is

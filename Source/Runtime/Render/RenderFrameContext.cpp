@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/CpuPhaseTrace.h"
+#include "Runtime/Render/Profiling/SchedulingDiagnostics.h"
 
 #include <algorithm>
 #include <chrono>
@@ -465,6 +466,7 @@ bool RecordedBatch::valid() const
 Result<> QueueSubmissionTracker::submitBatch(const RecordedBatch& batch, const QueueSubmitDesc& synchronization,
     RenderFrameContext& frame, SubmissionReceipt& receipt)
 {
+    profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::submitNs);
     receipt = {};
     using State = GpuCompletionPoint::State;
     if (!batch.valid() || batch.frame_ != &frame || !batch.generation_.sameSubmission(frame.completion()) ||

@@ -10,6 +10,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/PacingTrace.h"
+#include "Runtime/Render/Profiling/SchedulingDiagnostics.h"
 #include "Runtime/Render/Profiling/NsightAftermath.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
@@ -4542,7 +4543,11 @@ Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
         frame->resources_.reserve(frame->resources_.size() + count);
     }
     profiling::pacingTrace("QueueSubmitBegin", UINT64_MAX, impl_->familyIndex);
-    const Result<> result = resultFromVk(vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence));
+    const Result<> result = [&] {
+        profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::nativeSubmitNs);
+        if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->nativeSubmits; }
+        return resultFromVk(vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence));
+    }();
     profiling::pacingTrace("QueueSubmitEnd", UINT64_MAX, impl_->familyIndex);
     if (result) {
         // Mark the whole accepted batch before invoking any CPU publication hooks.
@@ -6484,6 +6489,7 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
         .pDepthAttachment = depthAttachmentPtr,
     };
     vkCmdBeginRendering(impl_->commandBuffer, &renderingInfo);
+    if (auto* capture = profiling::SchedulingCapture::active) { capture->beginRendering(this); }
     return {};
 }
 
@@ -6517,6 +6523,7 @@ void CommandBuffer::endRendering()
 {
     if (impl_ != nullptr) {
         vkCmdEndRendering(impl_->commandBuffer);
+        if (auto* capture = profiling::SchedulingCapture::active) { capture->endRendering(this); }
     }
 }
 
@@ -6915,6 +6922,7 @@ void CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t 
 {
     if (impl_ != nullptr) {
         vkCmdDraw(impl_->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+        if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
     }
 }
 
@@ -6926,6 +6934,7 @@ void CommandBuffer::drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY, ui
 #ifdef VK_EXT_mesh_shader
     if (vkCmdDrawMeshTasksEXT != nullptr) {
         vkCmdDrawMeshTasksEXT(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
+        if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
     }
 #endif
 }
@@ -6952,6 +6961,7 @@ void CommandBuffer::drawMeshTasksIndirect(Buffer& buffer, uint64_t offset)
     };
     if (vkCmdDrawMeshTasksIndirect2EXT != nullptr) {
         vkCmdDrawMeshTasksIndirect2EXT(impl_->commandBuffer, &info);
+        if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
     }
 #endif
 }
@@ -6960,6 +6970,7 @@ void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_
 {
     if (impl_ != nullptr && groupCountX > 0 && groupCountY > 0 && groupCountZ > 0) {
         vkCmdDispatch(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
+        if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->dispatchCalls; }
     }
 }
 
@@ -6984,6 +6995,7 @@ Result<> CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
         .addressFlags = addressCommandFlags(arguments.allocationDesc().usage),
     };
     vkCmdDispatchIndirect2KHR(impl_->commandBuffer, &info);
+    if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->dispatchCalls; }
     return {};
 }
 

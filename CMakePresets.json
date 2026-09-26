@@ -79,12 +79,12 @@
     }
   ],
   "buildPresets": [
-    { "name": "metallic-dev", "configurePreset": "metallic-dev", "targets": ["Metallic"] },
-    { "name": "metallic-release", "configurePreset": "metallic-release", "targets": ["Metallic"] },
-    { "name": "metallic-relwithdebinfo", "configurePreset": "metallic-relwithdebinfo", "targets": ["Metallic"] },
-    { "name": "metallic-full", "configurePreset": "metallic-full", "targets": ["Metallic", "MetallicSceneTests", "MetallicTaskTests", "MetallicDebugTests"] },
-    { "name": "metallic-ci", "configurePreset": "metallic-ci", "targets": ["MetallicSceneTests", "MetallicTaskTests", "MetallicDebugTests"] },
-    { "name": "metallic-deps-debug", "configurePreset": "metallic-deps-debug", "targets": ["MetallicDependencies"] }
+    { "name": "metallic-dev", "configurePreset": "metallic-dev", "jobs": 0, "targets": ["Metallic"] },
+    { "name": "metallic-release", "configurePreset": "metallic-release", "jobs": 0, "targets": ["Metallic"] },
+    { "name": "metallic-relwithdebinfo", "configurePreset": "metallic-relwithdebinfo", "jobs": 0, "targets": ["Metallic"] },
+    { "name": "metallic-full", "configurePreset": "metallic-full", "jobs": 0, "targets": ["Metallic", "MetallicSceneTests", "MetallicTaskTests", "MetallicDebugTests"] },
+    { "name": "metallic-ci", "configurePreset": "metallic-ci", "jobs": 0, "targets": ["MetallicSceneTests", "MetallicTaskTests", "MetallicDebugTests"] },
+    { "name": "metallic-deps-debug", "configurePreset": "metallic-deps-debug", "jobs": 0, "targets": ["MetallicDependencies"] }
   ],
   "testPresets": [
     { "name": "metallic-ci", "configurePreset": "metallic-ci", "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^(scene|task|debug|build)$" } } }

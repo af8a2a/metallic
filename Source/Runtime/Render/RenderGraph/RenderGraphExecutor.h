@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/RenderGraph/RenderGraphNode.h"
 #include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Profiling/SchedulingDiagnostics.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
 #include "Runtime/Scene/SceneLoad.h"
 #include "Runtime/Scene/SceneLighting.h"
@@ -22,6 +23,9 @@ struct RenderGraphSubmitDesc {
     // Pure preparation uses the same worker limit, with independent CPU batches.
     uint32_t preparationBatchWorkload = 1;
     FrameSubmissionMode submissionMode = FrameSubmissionMode::Pipelined;
+    // CPU attribution only; can also be enabled process-wide by
+    // METALLIC_RENDER_SCHEDULING_DIAGNOSTICS=1. No diagnostic clocks run while disabled.
+    bool schedulingDiagnostics = false;
 };
 
 struct RenderGraphCompileOptions {
@@ -63,6 +67,7 @@ struct RenderGraphExecutionStats {
     uint32_t submittedBatchCount = 0;
     uint32_t batchesSubmittedWhileRecording = 0;
     std::vector<std::string> submissionBlockingPasses;
+    profiling::SchedulingMetrics scheduling;
 };
 
 class RenderGraphExecutor {
