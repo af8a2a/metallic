@@ -51,11 +51,11 @@ public:
             .storeOp = StoreOp::Store,
             .clearColor = clear,
         };
-        context.commandBuffer().beginRendering(RenderingDesc{
+        if (auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
             .colorAttachments = &attachment,
             .colorAttachmentCount = 1,
-        });
+        }); !rendering) { return rendering; }
         context.commandBuffer().endRendering();
         return {};
     }

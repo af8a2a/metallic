@@ -164,6 +164,43 @@ enum class PipelineStageBits : uint64_t {
     Transfer = 1ull << 6,
     BottomOfPipe = 1ull << 7,
     AllCommands = 1ull << 8,
+    DepthStencil = 1ull << 9,
+    PreRasterization = 1ull << 10,
+    AccelerationStructureBuild = 1ull << 11,
+    RayTracingShader = 1ull << 12,
+    MemoryDecompression = 1ull << 13,
+    Host = 1ull << 14,
+};
+
+// Access semantics are independent of image layout policy.
+enum class AccessBits : uint64_t {
+    None = 0,
+    ShaderRead = 1ull << 0, ShaderWrite = 1ull << 1, UniformRead = 1ull << 2,
+    IndirectRead = 1ull << 3, TransferRead = 1ull << 4, TransferWrite = 1ull << 5,
+    ColorRead = 1ull << 6, ColorWrite = 1ull << 7,
+    DepthStencilRead = 1ull << 8, DepthStencilWrite = 1ull << 9,
+    AccelerationStructureRead = 1ull << 10, AccelerationStructureWrite = 1ull << 11,
+    DecompressionRead = 1ull << 12, DecompressionWrite = 1ull << 13,
+    DescriptorRead = 1ull << 14, HostRead = 1ull << 15, HostWrite = 1ull << 16,
+    MemoryRead = 1ull << 17, MemoryWrite = 1ull << 18,
+};
+constexpr AccessBits operator|(AccessBits lhs, AccessBits rhs)
+{
+    return static_cast<AccessBits>(static_cast<uint64_t>(lhs) | static_cast<uint64_t>(rhs));
+}
+struct SyncScope {
+    PipelineStageBits stages = PipelineStageBits::None;
+    AccessBits access = AccessBits::None;
+};
+struct MemoryBarrierDesc {
+    SyncScope before;
+    SyncScope after;
+};
+struct SynchronizationStats {
+    uint64_t calls = 0;
+    uint64_t memoryBarriers = 0;
+    uint64_t imageTransitions = 0;
+    uint64_t coalescedResources = 0;
 };
 
 enum class BufferUsageBits : uint32_t {
@@ -427,9 +464,12 @@ struct DeviceDesc {
     // Optional: unsupported devices keep ordinary command recording.
     bool enableDeviceGeneratedCommands = true;
     MemoryBudgetPolicy memoryBudget;
+    // Optional backend policy; unsupported devices keep optimal layouts.
+    bool preferUnifiedImageLayouts = true;
 };
 
 struct DeviceCapabilities {
+    bool unifiedImageLayouts = false;
     bool memoryDecompression = false;
     bool deviceGeneratedCommands = false;
     bool dynamicGeneratedPipelineLayout = false;
@@ -555,6 +595,9 @@ struct TextureBarrierDesc {
     // Previous access is covered by a semaphore wait on the consuming queue.
     // The resource must be shared with this queue family; no ownership transfer.
     bool acquireFromQueue = false;
+    // Empty scopes derive access from before/after for legacy callers.
+    SyncScope beforeScope;
+    SyncScope afterScope;
 };
 
 struct BufferBarrierDesc {
@@ -564,6 +607,9 @@ struct BufferBarrierDesc {
     uint64_t offset = 0;
     uint64_t size = UINT64_MAX;
     bool acquireFromQueue = false;
+    // Empty scopes derive access from before/after for legacy callers.
+    SyncScope beforeScope;
+    SyncScope afterScope;
 };
 
 struct ClusterAccelerationStructureProperties {
@@ -962,10 +1008,13 @@ struct PartitionedAccelerationStructureBuildDesc {
 };
 
 struct BarrierDesc {
+    // Resources remain explicit for layout transitions and graph dependency tracking.
     const TextureBarrierDesc* textures = nullptr;
     uint32_t textureCount = 0;
     const BufferBarrierDesc* buffers = nullptr;
     uint32_t bufferCount = 0;
+    const MemoryBarrierDesc* memory = nullptr;
+    uint32_t memoryCount = 0;
 };
 
 struct SemaphoreDesc {
@@ -1733,6 +1782,9 @@ public:
     TextureView& operator=(const TextureView&) = delete;
 
     const TextureViewDesc& desc() const;
+    // Semantic shader views are cheap. Materialize only for attachments/interop.
+    Result<> prepareNative();
+    bool hasNativeView() const;
     // Owns the image allocation, not this view. Borrowed swapchain images return empty.
     std::shared_ptr<void> retainTexture() const;
     const void* deviceIdentity() const;
@@ -1740,7 +1792,7 @@ public:
 private:
     explicit TextureView(std::unique_ptr<detail::TextureViewImpl> impl);
 
-    std::unique_ptr<detail::TextureViewImpl> impl_;
+    std::shared_ptr<detail::TextureViewImpl> impl_;
 
     friend class Device;
     friend class CommandBuffer;
@@ -1795,6 +1847,32 @@ private:
     friend struct detail::DeviceImpl;
 };
 
+struct RasterExecutionState {
+    RasterizationState rasterization;
+    DepthStencilState depthStencil;
+    uint32_t colorAttachmentCount = 1;
+};
+enum class ExecutionKind : uint8_t { Compute, Raster };
+
+// Immutable snapshot of already-created executable code. Copies keep native
+// objects alive across reload/retirement; no lookup or PSO creation at bind time.
+class PreparedExecution {
+public:
+    bool valid() const { return compute_ || graphics_ || shaders_; }
+    ExecutionKind kind() const { return compute_ ? ExecutionKind::Compute : ExecutionKind::Raster; }
+    const void* deviceIdentity() const;
+private:
+    std::shared_ptr<detail::ComputePipelineImpl> compute_;
+    std::shared_ptr<detail::GraphicsPipelineImpl> graphics_;
+    std::shared_ptr<detail::GraphicsShaderObjectProgramImpl> shaders_;
+    RasterExecutionState raster_;
+    bool applyRasterState_ = true;
+    friend class ComputePipeline;
+    friend class GraphicsPipeline;
+    friend class GraphicsShaderObjectProgram;
+    friend class CommandBuffer;
+};
+
 class GraphicsPipeline {
 public:
     GraphicsPipeline() = default;
@@ -1810,10 +1888,12 @@ public:
     uint64_t psoHash() const;
     bool pipelineCacheHit() const;
 
+    PreparedExecution execution() const;
+
 private:
     explicit GraphicsPipeline(std::unique_ptr<detail::GraphicsPipelineImpl> impl);
 
-    std::unique_ptr<detail::GraphicsPipelineImpl> impl_;
+    std::shared_ptr<detail::GraphicsPipelineImpl> impl_;
 
     friend class Device;
     friend class CommandBuffer;
@@ -1836,10 +1916,12 @@ public:
     uint64_t psoHash() const;
     bool pipelineCacheHit() const;
 
+    PreparedExecution execution() const;
+
 private:
     explicit ComputePipeline(std::unique_ptr<detail::ComputePipelineImpl> impl);
 
-    std::unique_ptr<detail::ComputePipelineImpl> impl_;
+    std::shared_ptr<detail::ComputePipelineImpl> impl_;
 
     friend class Device;
     friend class CommandBuffer;
@@ -1857,10 +1939,12 @@ public:
     GraphicsShaderObjectProgram(const GraphicsShaderObjectProgram&) = delete;
     GraphicsShaderObjectProgram& operator=(const GraphicsShaderObjectProgram&) = delete;
 
+    PreparedExecution execution(const RasterExecutionState& state = {}) const;
+
 private:
     explicit GraphicsShaderObjectProgram(std::unique_ptr<detail::GraphicsShaderObjectProgramImpl> impl);
 
-    std::unique_ptr<detail::GraphicsShaderObjectProgramImpl> impl_;
+    std::shared_ptr<detail::GraphicsShaderObjectProgramImpl> impl_;
 
     friend class Device;
     friend class CommandBuffer;
@@ -1994,6 +2078,9 @@ public:
         RayTracingAccelerationStructureCompactionQueryPool& queryPool,
         uint32_t queryIndex,
         RayTracingAccelerationStructure& accelerationStructure);
+    // One dependency boundary; compatible resource barriers are coalesced.
+    Result<> synchronize(const BarrierDesc& desc);
+    SynchronizationStats synchronizationStats() const;
     void barrier(const BarrierDesc& desc);
     void hostWriteBarrier();
     void copyBuffer(const BufferCopyDesc& desc);
@@ -2005,12 +2092,17 @@ public:
     void copyBufferToTexture(const BufferTextureCopyDesc& desc);
     void clearColorTexture(Texture& texture, ResourceState state, const ColorValue& color = {});
     void copyStreamedData(Streamer& streamer);
-    void beginRendering(const RenderingDesc& desc);
+    Result<> beginRendering(const RenderingDesc& desc);
+    // Native SDK consumers retain the view itself as well as its image.
+    Result<> useNativeTextureView(TextureView& view);
     void clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect);
     void endRendering();
     void setViewport(const Viewport& viewport);
     void setScissor(const Rect& scissor);
     void setDepthStencilState(const DepthStencilState& state);
+    Result<> bindExecution(const PreparedExecution& execution);
+    Result<> bindExecution(const PreparedExecution& execution, const void* pushData, uint32_t byteSize);
+    // Compatibility adapters route through bindExecution.
     void bindGraphicsPipeline(GraphicsPipeline& pipeline);
     void bindComputePipeline(ComputePipeline& pipeline);
     void bindComputePipeline(ComputePipeline& pipeline, const void* bindlessData, uint32_t byteSize);
@@ -2044,6 +2136,7 @@ public:
 
 private:
     explicit CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl);
+    Result<> bindExecutionImpl(const PreparedExecution& execution, const void* data, uint32_t byteSize, bool replaceData);
 
     std::unique_ptr<detail::CommandBufferImpl> impl_;
     Result<> processDecompressionBuffers(std::span<const BufferDecompressionDesc> regions, bool record) const;

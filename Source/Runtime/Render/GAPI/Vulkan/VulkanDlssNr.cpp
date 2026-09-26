@@ -452,6 +452,10 @@ Result<> DlssNrContext::evaluate(CommandBuffer& commandBuffer, const DlssNrDesc&
         spdlog::info("[DLSS-NR] Created Vulkan feature 18: {}x{} -> {}x{}, preset {}",
             input.width, input.height, output.width, output.height, s.preset);
     }
+    for (const auto* ref : {&desc.inputColor, &desc.outputColor, &desc.motionVectors, &desc.depth}) {
+        auto retained = commandBuffer.useNativeTextureView(*ref->view);
+        if (!retained) { return retained; }
+    }
     std::array resources{resourceFrom(desc.inputColor), resourceFrom(desc.outputColor),
         resourceFrom(desc.motionVectors), resourceFrom(desc.depth)};
     p->Set("DLSSNR.Color", static_cast<void*>(&resources[0]));

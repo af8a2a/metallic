@@ -205,6 +205,7 @@ struct RenderGraphResource {
     BufferViewDesc bufferViewDesc;
     ResourceState state = ResourceState::Undefined;
     RenderGraphResourceAccess lastAccess = RenderGraphResourceAccess::None;
+    SyncScope lastScope;
     BindlessHandle bindlessHandle;
     BindlessHandle sampledImageBindlessHandle;
 };

@@ -1640,8 +1640,25 @@ struct RenderGraphExecutor::Impl {
         CommandBuffer& commandBuffer,
         RenderGraphResource& resource,
         ResourceState state,
-        RenderGraphResourceAccess access)
+        RenderGraphResourceAccess access, RenderGraphPassKind kind = RenderGraphPassKind::Unsafe,
+        std::vector<TextureBarrierDesc>* pendingTextures = nullptr, std::vector<BufferBarrierDesc>* pendingBuffers = nullptr)
     {
+        SyncScope scope;
+        if (kind != RenderGraphPassKind::Unsafe && (state == ResourceState::ShaderRead || state == ResourceState::General)) {
+            scope.stages = kind == RenderGraphPassKind::Compute ? PipelineStageBits::ComputeShader
+                : PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader;
+            scope.access = state == ResourceState::General ? AccessBits::ShaderRead | AccessBits::ShaderWrite
+                : access == RenderGraphResourceAccess::BufferConstantRead ? AccessBits::UniformRead : AccessBits::ShaderRead;
+        }
+        // Keep ordered transitions if a pass aliases multiple fields to one resource.
+        if (pendingTextures && pendingBuffers &&
+            (std::any_of(pendingTextures->begin(), pendingTextures->end(), [&](const auto& b) { return b.texture == resource.texture; }) ||
+             std::any_of(pendingBuffers->begin(), pendingBuffers->end(), [&](const auto& b) { return b.buffer == resource.buffer; }))) {
+            auto result = commandBuffer.synchronize({.textures = pendingTextures->data(), .textureCount = uint32_t(pendingTextures->size()),
+                .buffers = pendingBuffers->data(), .bufferCount = uint32_t(pendingBuffers->size())});
+            if (!result) { return result; }
+            pendingTextures->clear(); pendingBuffers->clear();
+        }
         Queue*& previousQueue = resourceQueues[&resource];
         const bool acquireFromQueue = previousQueue != recordingQueue && resource.state != ResourceState::Undefined;
         previousQueue = recordingQueue;
@@ -1650,6 +1667,9 @@ struct RenderGraphExecutor::Impl {
             (accessWrites(resource.lastAccess) || accessWrites(access));
         if (resource.state == state && !needsSameStateWriteBarrier && !acquireFromQueue) {
             resource.lastAccess = access;
+            // Multiple read stages must all finish before a following write.
+            if (scope.stages == PipelineStageBits::None || resource.lastScope.stages == PipelineStageBits::None) { resource.lastScope = {}; }
+            else { resource.lastScope.stages = resource.lastScope.stages | scope.stages; resource.lastScope.access = resource.lastScope.access | scope.access; }
             return {};
         }
 
@@ -1666,11 +1686,14 @@ struct RenderGraphExecutor::Impl {
                 .baseLayer = 0,
                 .layerCount = resource.desc.layerCount,
                 .acquireFromQueue = acquireFromQueue,
+                .beforeScope = resource.state == ResourceState::Undefined ? SyncScope{} : resource.lastScope,
+                .afterScope = scope,
             };
-            commandBuffer.barrier(BarrierDesc{
-                .textures = &barrier,
-                .textureCount = 1,
-            });
+            if (pendingTextures) { pendingTextures->push_back(barrier); }
+            else {
+                auto result = commandBuffer.synchronize({.textures = &barrier, .textureCount = 1});
+                if (!result) { return result; }
+            }
         } else {
             if (resource.buffer == nullptr) {
                 return {};
@@ -1682,15 +1705,19 @@ struct RenderGraphExecutor::Impl {
                 .offset = 0,
                 .size = resource.bufferDesc.size,
                 .acquireFromQueue = acquireFromQueue,
+                .beforeScope = resource.state == ResourceState::Undefined ? SyncScope{} : resource.lastScope,
+                .afterScope = scope,
             };
-            commandBuffer.barrier(BarrierDesc{
-                .buffers = &barrier,
-                .bufferCount = 1,
-            });
+            if (pendingBuffers) { pendingBuffers->push_back(barrier); }
+            else {
+                auto result = commandBuffer.synchronize({.buffers = &barrier, .bufferCount = 1});
+                if (!result) { return result; }
+            }
         }
 
         resource.state = state;
         resource.lastAccess = access;
+        resource.lastScope = scope;
         return {};
     }
 
@@ -1698,6 +1725,8 @@ struct RenderGraphExecutor::Impl {
         const RenderGraphExecutionContext::ParallelRecorder& parallel = {})
     {
         std::vector<RenderGraphExecutionContext::Binding> bindings;
+        std::vector<TextureBarrierDesc> pendingTextures;
+        std::vector<BufferBarrierDesc> pendingBuffers;
 
         for (const RenderGraphField& field : node.reflection.fields()) {
             const std::string localName = field.name;
@@ -1711,7 +1740,7 @@ struct RenderGraphExecutor::Impl {
                         commandBuffer,
                         *resource,
                         stateForAccess(field.access),
-                        field.access);
+                        field.access, node.kind, &pendingTextures, &pendingBuffers);
                     if (!result) {
                         return result;
                     }
@@ -1725,7 +1754,7 @@ struct RenderGraphExecutor::Impl {
                             commandBuffer,
                             *resource,
                             stateForAccess(field.access),
-                            field.access);
+                            field.access, node.kind, &pendingTextures, &pendingBuffers);
                         if (!result) {
                             return result;
                         }
@@ -1746,6 +1775,10 @@ struct RenderGraphExecutor::Impl {
                     : BindlessHandle{},
             });
         }
+
+        auto synchronized = commandBuffer.synchronize({.textures = pendingTextures.data(), .textureCount = uint32_t(pendingTextures.size()),
+            .buffers = pendingBuffers.data(), .bufferCount = uint32_t(pendingBuffers.size())});
+        if (!synchronized) { return synchronized; }
 
         if (bindlessHeap != nullptr && usesBindlessResource(node)) {
             commandBuffer.bindBindlessHeap(*bindlessHeap);

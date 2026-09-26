@@ -229,12 +229,13 @@ public:
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(reversedZ),
         };
-        context.commandBuffer().beginRendering(RenderingDesc{
+        auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
             .colorAttachments = &attachment,
             .colorAttachmentCount = 1,
             .depthStencilAttachment = &depthAttachment,
         });
+        if (!rendering) { return rendering; }
         if (drawVertexCount_ == 0) {
             context.commandBuffer().endRendering();
             return {};
@@ -249,13 +250,10 @@ public:
         });
         context.commandBuffer().setScissor(renderArea);
         context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
-        context.commandBuffer().bindGraphicsShaderObjectProgram(*program_);
-        context.commandBuffer().setGraphicsShaderObjectState();
-        context.commandBuffer().setDepthStencilState(DepthStencilState{
-            .depthTestEnable = true,
-            .depthWriteEnable = true,
-            .depthCompareOp = depthCompareOp(reversedZ),
-        });
+        const auto execution = program_->execution({.depthStencil = {
+            .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp(reversedZ)}});
+        auto bound = context.commandBuffer().bindExecution(execution);
+        if (!bound) { context.commandBuffer().endRendering(); return bound; }
         const BunnyWireframeUserPush push{
             .paramsBuffer = paramsHandle_.shaderIndex,
             .positionBuffer = positionHandle_.shaderIndex,

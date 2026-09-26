@@ -1448,12 +1448,12 @@ private:
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(reversedZ),
         };
-        context.commandBuffer().beginRendering(RenderingDesc{
+        if (auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
             .colorAttachments = &attachment,
             .colorAttachmentCount = 1,
             .depthStencilAttachment = &depthAttachment,
-        });
+        }); !rendering) { return rendering; }
         context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
@@ -1544,11 +1544,11 @@ private:
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
         };
-        context.commandBuffer().beginRendering(RenderingDesc{
+        if (auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
             .colorAttachments = &attachment,
             .colorAttachmentCount = 1,
-        });
+        }); !rendering) { return rendering; }
         context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,

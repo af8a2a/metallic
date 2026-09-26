@@ -249,18 +249,22 @@ public:
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(kMaterialReversedZ),
         };
-        context.commandBuffer().beginRendering(RenderingDesc{
+        auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
             .colorAttachments = &attachment,
             .colorAttachmentCount = 1,
             .depthStencilAttachment = &depthAttachment,
         });
+        if (!rendering) { return rendering; }
         if (batches_.empty()) {
             context.commandBuffer().endRendering();
             return {};
         }
         context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
-        context.commandBuffer().bindGraphicsShaderObjectProgram(*defaultProgram_);
+        const RasterExecutionState rasterState{.depthStencil = {
+            .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp(kMaterialReversedZ)}};
+        auto bound = context.commandBuffer().bindExecution(defaultProgram_->execution(rasterState));
+        if (!bound) { context.commandBuffer().endRendering(); return bound; }
         context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
@@ -270,12 +274,7 @@ public:
             .maxDepth = 1.0f,
         });
         context.commandBuffer().setScissor(renderArea);
-        context.commandBuffer().setGraphicsShaderObjectState();
-        context.commandBuffer().setDepthStencilState(DepthStencilState{
-            .depthTestEnable = true,
-            .depthWriteEnable = true,
-            .depthCompareOp = depthCompareOp(kMaterialReversedZ),
-        });
+
 
         const bool debugAlternateShaders =
             context.properties().value("debugAlternateShaders", false);
@@ -286,7 +285,8 @@ public:
                 ? alternateProgram_.get()
                 : defaultProgram_.get();
             if (desiredProgram != currentProgram) {
-                context.commandBuffer().bindGraphicsShaderObjectProgram(*desiredProgram);
+                bound = context.commandBuffer().bindExecution(desiredProgram->execution(rasterState));
+                if (!bound) { context.commandBuffer().endRendering(); return bound; }
                 currentProgram = desiredProgram;
             }
 

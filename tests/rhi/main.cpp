@@ -53,6 +53,7 @@ struct Options {
     bool exportNsightCapture = false;
     bool enableAsyncCompute = false;
     bool enableAftermath = false;
+    bool preferUnifiedImageLayouts = true;
     std::filesystem::path outputDirectory = "rhi-test-output";
 };
 
@@ -65,6 +66,7 @@ void printRhiUsage()
         "  --rhi-validation         Enable Vulkan validation for RHI tests\n"
         "  --rhi-streamline         Enable Streamline, bindless heap and ray queries\n"
         "  --rhi-bindless           Enable bindless heap without Streamline\n"
+        "  --rhi-optimal-layouts    Force optimal layouts on the shared test device\n"
         "  --rhi-realtime           Enable the realtime raster + DLSS test device\n"
         "  --rhi-nsight-capture     Inject Nsight Graphics before creating test devices\n"
         "  --rhi-nsight-export      Also export a Sponza realtime frame for replay testing\n"
@@ -89,6 +91,10 @@ bool parseArguments(int argc, char** argv, Options& options, std::vector<std::st
         }
         if (argument == "--rhi-validation") {
             options.enableValidation = true;
+            continue;
+        }
+        if (argument == "--rhi-optimal-layouts") {
+            options.preferUnifiedImageLayouts = false;
             continue;
         }
         if (argument == "--rhi-bindless") {
@@ -219,6 +225,7 @@ public:
                     }
                 }, .context = &validationMessageCount_},
                 .enableAsyncCompute = options_.enableAsyncCompute,
+                .preferUnifiedImageLayouts = options_.preferUnifiedImageLayouts,
             }).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });
         if (!result) {
             const std::string message = std::string("createDevice returned ") + metallic::tests::toString(result);

@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/ComputeKernel.h"
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -138,6 +139,7 @@ public:
         REG_CHECK(generalImage.shaderValue() != imageA.shaderValue());
         REG_REQUIRE(registry.storageImage(*second, storageImage));
         REG_CHECK(storageImage.kind() == render::ShaderResourceKind::StorageImage);
+        REG_CHECK(!first->hasNativeView() && !second->hasNativeView());
         std::weak_ptr<void> textureAllocation = first->retainTexture();
         texture.reset(); first.reset(); second.reset();
         REG_CHECK(!textureAllocation.expired());
@@ -634,6 +636,196 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(BufferSliceSubmissionTest);
+
+
+class SynchronizationScopesTest final : public RhiTest {
+public:
+    SynchronizationScopesTest() { type = RhiTestType::Command; name = "synchronization_scopes_batch_and_validation"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using S = render::PipelineStageBits;
+        using A = render::AccessBits;
+        auto& device = context.device;
+        Commands recording;
+        REG_REQUIRE(recording.initialize(device, context.graphicsQueue));
+        REG_REQUIRE(recording.begin(0));
+        auto& command = *recording.commands;
+        std::array<std::unique_ptr<render::Buffer>, 3> buffers;
+        std::array<render::BufferBarrierDesc, 3> barriers;
+        for (uint32_t i = 0; i < buffers.size(); ++i) {
+            REG_REQUIRE(makeBuffer(device, buffers[i]));
+            barriers[i] = {.buffer = buffers[i].get(), .before = render::ResourceState::General,
+                .after = render::ResourceState::ShaderRead,
+                .beforeScope = {S::ComputeShader, A::ShaderWrite}, .afterScope = {S::ComputeShader, A::ShaderRead}};
+        }
+        REG_REQUIRE(command.synchronize({.buffers = barriers.data(), .bufferCount = 3}));
+        auto stats = command.synchronizationStats();
+        REG_CHECK(stats.calls == 1 && stats.memoryBarriers == 1 && stats.coalescedResources == 3 && stats.imageTransitions == 0);
+        for (auto& barrier : barriers) { barrier.beforeScope.access = A::ShaderRead; }
+        REG_REQUIRE(command.synchronize({.buffers = barriers.data(), .bufferCount = 3}));
+        REG_CHECK(command.synchronizationStats().calls == 1); // Read/read does not order execution.
+        std::array<render::MemoryBarrierDesc, 2> memory{{
+            {{S::ComputeShader, A::ShaderWrite}, {S::DrawIndirect, A::IndirectRead}},
+            {{S::Transfer, A::TransferWrite}, {S::ComputeShader, A::ShaderRead}},
+        }};
+        REG_REQUIRE(command.synchronize({.memory = memory.data(), .memoryCount = 2}));
+        REG_CHECK(command.synchronizationStats().memoryBarriers == 3); // Keep distinct stage pairs.
+        const std::array<render::SyncScope, 5> invalid{{
+            {S::Transfer, A::ShaderWrite}, {S::ComputeShader, A::IndirectRead},
+            {S::None, A::MemoryRead}, {static_cast<S>(1ull << 63), A::None}, {S::Transfer, static_cast<A>(1ull << 63)},
+        }};
+        for (const auto scope : invalid) {
+            memory[1].after = scope;
+            REG_CHECK(render::hasError(command.synchronize({.memory = memory.data(), .memoryCount = 2}), render::Error::InvalidArgument));
+            REG_CHECK(command.synchronizationStats().calls == 2); // Validation is atomic.
+        }
+        barriers[0].offset = 64;
+        REG_CHECK(render::hasError(command.synchronize({.buffers = barriers.data(), .bufferCount = 3}), render::Error::InvalidArgument));
+        REG_REQUIRE(command.end());
+        REG_CHECK(render::hasError(command.synchronize({}), render::Error::InvalidArgument));
+        recording.frame.cancel();
+        REG_REQUIRE(recording.begin(1));
+        REG_CHECK(command.synchronizationStats().calls == 0);
+        recording.frame.cancel();
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(SynchronizationScopesTest);
+
+class PreparedExecutionViewsTest final : public RhiTest {
+public:
+    PreparedExecutionViewsTest() { type = RhiTestType::Rendering; name = "prepared_execution_lazy_views_layout_policy"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        constexpr uint32_t extent = 32, bytes = extent * extent * 4;
+        std::array<uint8_t, bytes> reference{};
+        bool unifiedTested = false;
+        for (bool preferUnified : {false, true}) {
+            std::atomic_uint errors{0};
+            std::unique_ptr<render::Device> device;
+            REG_REQUIRE(render::createDevice({.applicationName = "Prepared execution lifetime", .enableValidation = context.enableValidation,
+                .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
+                    if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+                        ++*static_cast<std::atomic_uint*>(target);
+                    }
+                }, &errors}, .preferUnifiedImageLayouts = preferUnified}).transform([&](auto value) { device = std::move(value); }));
+            const bool unified = device->capabilities().unifiedImageLayouts;
+            REG_CHECK(preferUnified || !unified);
+            unifiedTested |= unified;
+            auto& queue = *device->getQueue(render::QueueType::Graphics);
+            std::array<render::ShaderCompileResult, 2> compiled;
+            std::array<std::unique_ptr<render::ShaderModule>, 2> modules;
+            const char* entries[] = {"triangleVertexMain", "triangleFragmentMain"};
+            for (uint32_t i = 0; i < modules.size(); ++i) {
+                REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "Features/Samples/Triangle",
+                    .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled[i]));
+                REG_REQUIRE(device->createShaderModule({.code = compiled[i].spirv.data(),
+                    .byteSize = compiled[i].spirv.size() * sizeof(uint32_t)}).transform([&](auto value) { modules[i] = std::move(value); }));
+            }
+            std::unique_ptr<render::GraphicsPipeline> pipeline;
+            REG_REQUIRE(device->createGraphicsPipeline({.vertexShader = modules[0].get(), .fragmentShader = modules[1].get(),
+                .colorFormat = render::Format::Rgba8Unorm}).transform([&](auto value) { pipeline = std::move(value); }));
+            std::unique_ptr<render::GraphicsShaderObjectProgram> program;
+            REG_REQUIRE(device->createGraphicsShaderObjectProgram({.vertexCode = compiled[0].spirv.data(),
+                .vertexByteSize = compiled[0].spirv.size() * sizeof(uint32_t), .fragmentCode = compiled[1].spirv.data(),
+                .fragmentByteSize = compiled[1].spirv.size() * sizeof(uint32_t)}).transform([&](auto value) { program = std::move(value); }));
+            std::array<render::PreparedExecution, 3> executions{pipeline->execution(), program->execution(), pipeline->execution()};
+            auto invalidState = program->execution({.colorAttachmentCount = 9});
+            // Snapshots survive hot replacement of all source objects before recording.
+            pipeline.reset(); program.reset(); modules = {};
+            render::QueueSubmissionTracker tracker;
+            REG_REQUIRE(tracker.initialize(*device, queue));
+            Commands recording;
+            REG_REQUIRE(recording.initialize(*device, queue));
+            std::unique_ptr<render::Semaphore> gate;
+            REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+            Drain drain{queue, *gate};
+            REG_REQUIRE(recording.begin(0));
+            auto& command = *recording.commands;
+            REG_CHECK(render::hasError(command.bindExecution({}), render::Error::InvalidArgument));
+            REG_CHECK(render::hasError(command.bindExecution(invalidState), render::Error::InvalidArgument));
+            invalidState = {};
+            std::array<std::unique_ptr<render::Buffer>, 3> readbacks;
+            std::array<std::weak_ptr<void>, 3> allocations;
+            for (uint32_t i = 0; i < executions.size(); ++i) {
+                std::unique_ptr<render::Texture> texture;
+                REG_REQUIRE(device->createTexture({.usage = render::TextureUsageBits::ColorAttachment | render::TextureUsageBits::TransferSource,
+                    .format = render::Format::Rgba8Unorm, .width = extent, .height = extent}).transform([&](auto value) { texture = std::move(value); }));
+                std::unique_ptr<render::TextureView> view;
+                REG_REQUIRE(device->createTextureView(*texture, {}).transform([&](auto value) { view = std::move(value); }));
+                REG_CHECK(!view->hasNativeView());
+                REG_CHECK(render::hasError(device->createTextureView(*texture, {.baseMip = 1}).transform([](auto) {}), render::Error::InvalidArgument));
+                REG_CHECK(render::vulkan::nativeImageLayout(*view, render::ResourceState::ColorAttachment) ==
+                    (unified ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL));
+                REG_CHECK(!view->hasNativeView());
+                allocations[i] = view->retainTexture();
+                REG_REQUIRE(device->createBuffer({.size = bytes, .usage = render::BufferUsageBits::TransferDestination,
+                    .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto value) { readbacks[i] = std::move(value); }));
+                render::TextureBarrierDesc barrier{.texture = texture.get(), .after = render::ResourceState::ColorAttachment};
+                REG_REQUIRE(command.synchronize({.textures = &barrier, .textureCount = 1}));
+                render::RenderingAttachmentDesc attachment{.view = view.get(), .state = render::ResourceState::ColorAttachment,
+                    .loadOp = render::LoadOp::Clear, .clearColor = {0, 0, 0, 1}};
+                REG_REQUIRE(command.beginRendering({.renderArea = {0, 0, extent, extent}, .colorAttachments = &attachment, .colorAttachmentCount = 1}));
+                REG_CHECK(view->hasNativeView());
+                const auto native = render::vulkan::nativeImageView(*view);
+                REG_CHECK(native != VK_NULL_HANDLE && native == render::vulkan::nativeImageView(*view));
+                // Simulate the SDK/DGC boundary, then explicitly establish the new state.
+                if (i == 1) { render::vulkan::notifyExternalDescriptorSetBinding(command); }
+                REG_REQUIRE(command.bindExecution(executions[i]));
+                command.setViewport({0, 0, float(extent), float(extent), 0, 1});
+                command.setScissor({0, 0, extent, extent});
+                command.draw(3);
+                command.endRendering();
+                barrier.before = render::ResourceState::ColorAttachment;
+                barrier.after = render::ResourceState::TransferSource;
+                REG_REQUIRE(command.synchronize({.textures = &barrier, .textureCount = 1}));
+                command.copyTextureToBuffer({.texture = texture.get(), .buffer = readbacks[i].get(), .width = extent, .height = extent});
+                view.reset(); texture.reset();
+                REG_CHECK(!allocations[i].expired());
+            }
+            const auto stats = command.synchronizationStats();
+            REG_CHECK(stats.imageTransitions == (unified ? 3 : 6));
+            REG_CHECK(stats.memoryBarriers == (unified ? 3 : 0));
+            executions = {}; // Only recorded commands now own the native programs.
+            REG_REQUIRE(recording.submit(tracker, *gate));
+            REG_CHECK(!recording.frame.completion().isComplete());
+            REG_REQUIRE(gate->signal(1));
+            REG_REQUIRE(recording.frame.wait(5'000'000'000ull));
+            for (uint32_t i = 0; i < readbacks.size(); ++i) {
+                readbacks[i]->invalidate();
+                const auto* pixels = static_cast<const uint8_t*>(readbacks[i]->map());
+                REG_CHECK(pixels && pixels[(extent / 2 * extent + extent / 2) * 4] > 0);
+                if (!preferUnified && i == 0) { std::memcpy(reference.data(), pixels, bytes); }
+                const bool same = std::memcmp(reference.data(), pixels, bytes) == 0;
+                readbacks[i]->unmap();
+                REG_CHECK(same);
+            }
+            REG_REQUIRE(recording.pool->reset());
+            REG_REQUIRE(recording.frame.reset());
+            for (const auto& allocation : allocations) { REG_CHECK(allocation.expired()); }
+            // Cancellation also releases an exported native view without submitting it.
+            REG_REQUIRE(recording.begin(1));
+            std::weak_ptr<void> cancelled;
+            {
+                auto texture = device->createTexture({.usage = render::TextureUsageBits::ColorAttachment, .format = render::Format::Rgba8Unorm});
+                REG_CHECK(texture);
+                auto view = device->createTextureView(**texture, {});
+                REG_CHECK(view);
+                cancelled = (*view)->retainTexture();
+                REG_REQUIRE(command.useNativeTextureView(**view));
+            }
+            REG_CHECK(!cancelled.expired());
+            recording.frame.cancel();
+            REG_REQUIRE(recording.pool->reset());
+            REG_REQUIRE(recording.frame.reset());
+            REG_CHECK(cancelled.expired());
+            REG_CHECK(errors.load() == 0);
+        }
+        return RhiTestResult::pass(unifiedTested ? "GENERAL and optimal layouts produced identical PSO/shader-object readback" :
+            "Optimal-layout fallback passed; unified image layouts unavailable on this device");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(PreparedExecutionViewsTest);
 
 #undef REG_REQUIRE
 #undef REG_CHECK

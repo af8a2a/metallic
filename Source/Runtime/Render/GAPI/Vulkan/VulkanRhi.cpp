@@ -1129,6 +1129,13 @@ StateInfo stateInfo(ResourceState state, VkQueueFlags queueFlags = VK_QUEUE_GRAP
     return {};
 }
 
+VkImageLayout imageLayout(ResourceState usage, bool unified)
+{
+    const auto layout = stateInfo(usage).layout;
+    return unified && layout != VK_IMAGE_LAYOUT_UNDEFINED && layout != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        ? VK_IMAGE_LAYOUT_GENERAL : layout;
+}
+
 VkPipelineStageFlags2 toVkPipelineStages(PipelineStageBits stages)
 {
     VkPipelineStageFlags2 flags = VK_PIPELINE_STAGE_2_NONE;
@@ -1160,7 +1167,45 @@ VkPipelineStageFlags2 toVkPipelineStages(PipelineStageBits stages)
     if ((value & static_cast<uint64_t>(PipelineStageBits::AllCommands)) != 0) {
         flags |= VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     }
+    if (value & uint64_t(PipelineStageBits::DepthStencil)) { flags |= VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT; }
+    if (value & uint64_t(PipelineStageBits::PreRasterization)) { flags |= VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT; }
+    if (value & uint64_t(PipelineStageBits::AccelerationStructureBuild)) { flags |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR; }
+    if (value & uint64_t(PipelineStageBits::RayTracingShader)) { flags |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR; }
+    if (value & uint64_t(PipelineStageBits::MemoryDecompression)) { flags |= VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT; }
+    if (value & uint64_t(PipelineStageBits::Host)) { flags |= VK_PIPELINE_STAGE_2_HOST_BIT; }
     return flags != VK_PIPELINE_STAGE_2_NONE ? flags : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+}
+
+VkAccessFlags2 accessFlags(AccessBits access)
+{
+    VkAccessFlags2 flags = 0;
+    const auto value = uint64_t(access);
+    if (value & uint64_t(AccessBits::ShaderRead)) { flags |= VK_ACCESS_2_SHADER_READ_BIT; }
+    if (value & uint64_t(AccessBits::ShaderWrite)) { flags |= VK_ACCESS_2_SHADER_WRITE_BIT; }
+    if (value & uint64_t(AccessBits::UniformRead)) { flags |= VK_ACCESS_2_UNIFORM_READ_BIT; }
+    if (value & uint64_t(AccessBits::IndirectRead)) { flags |= VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT; }
+    if (value & uint64_t(AccessBits::TransferRead)) { flags |= VK_ACCESS_2_TRANSFER_READ_BIT; }
+    if (value & uint64_t(AccessBits::TransferWrite)) { flags |= VK_ACCESS_2_TRANSFER_WRITE_BIT; }
+    if (value & uint64_t(AccessBits::ColorRead)) { flags |= VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT; }
+    if (value & uint64_t(AccessBits::ColorWrite)) { flags |= VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT; }
+    if (value & uint64_t(AccessBits::DepthStencilRead)) { flags |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT; }
+    if (value & uint64_t(AccessBits::DepthStencilWrite)) { flags |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT; }
+    if (value & uint64_t(AccessBits::AccelerationStructureRead)) { flags |= VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR; }
+    if (value & uint64_t(AccessBits::AccelerationStructureWrite)) { flags |= VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR; }
+    if (value & uint64_t(AccessBits::DecompressionRead)) { flags |= VK_ACCESS_2_MEMORY_DECOMPRESSION_READ_BIT_EXT; }
+    if (value & uint64_t(AccessBits::DecompressionWrite)) { flags |= VK_ACCESS_2_MEMORY_DECOMPRESSION_WRITE_BIT_EXT; }
+    if (value & uint64_t(AccessBits::HostRead)) { flags |= VK_ACCESS_2_HOST_READ_BIT; }
+    if (value & uint64_t(AccessBits::HostWrite)) { flags |= VK_ACCESS_2_HOST_WRITE_BIT; }
+    if (value & uint64_t(AccessBits::MemoryRead)) { flags |= VK_ACCESS_2_MEMORY_READ_BIT; }
+    if (value & uint64_t(AccessBits::MemoryWrite)) { flags |= VK_ACCESS_2_MEMORY_WRITE_BIT; }
+    if (value & uint64_t(AccessBits::DescriptorRead)) { flags |= VK_ACCESS_2_RESOURCE_HEAP_READ_BIT_EXT | VK_ACCESS_2_SAMPLER_HEAP_READ_BIT_EXT; }
+    return flags;
+}
+
+StateInfo scopeInfo(SyncScope scope)
+{
+    return {scope.stages == PipelineStageBits::None ? VK_PIPELINE_STAGE_2_NONE : toVkPipelineStages(scope.stages),
+        accessFlags(scope.access), VK_IMAGE_LAYOUT_UNDEFINED};
 }
 
 VmaAllocationCreateInfo allocationInfoForMemory(MemoryLocation location)
@@ -1584,6 +1629,7 @@ struct VulkanExtensionSet {
     bool deviceAddressCommands = false;
     bool deviceGeneratedCommands = false;
     bool descriptorHeap = false;
+    bool unifiedImageLayouts = false;
     bool shaderUntypedPointers = false;
     bool shaderObject = false;
     bool accelerationStructure = false;
@@ -1623,6 +1669,7 @@ struct VulkanExtensionSet {
         result.descriptorHeap = result.has(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
         result.shaderUntypedPointers = result.has(VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME);
         result.shaderObject = result.has(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
+        result.unifiedImageLayouts = result.has(VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME);
         result.accelerationStructure = result.has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         result.deferredHostOperations = result.has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         result.rayQuery = result.has(VK_KHR_RAY_QUERY_EXTENSION_NAME);
@@ -1679,6 +1726,7 @@ struct VulkanDeviceFeatureRequest {
     bool meshShader = false;
     bool taskShader = false;
     bool taskShaderSubgroupBallot = false;
+    bool preferUnifiedImageLayouts = true;
     bool geometryShader = false;
     bool subgroupSizeControl = false;
     bool computeFullSubgroups = false;
@@ -1705,6 +1753,7 @@ struct VulkanDeviceFeatureRequest {
                 desc.preferredTaskSubgroupSize != 0,
             .taskShaderSubgroupBallot =
                 desc.enableTaskShaderSubgroupBallot,
+            .preferUnifiedImageLayouts = desc.preferUnifiedImageLayouts,
             .geometryShader = desc.enableGeometryShader,
             .subgroupSizeControl = desc.enableSubgroupSizeControl ||
                 desc.preferredTaskSubgroupSize != 0,
@@ -1739,6 +1788,9 @@ struct VulkanDeviceFeatureProbe {
     };
     VkPhysicalDeviceShaderUntypedPointersFeaturesKHR untypedPointerFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_UNTYPED_POINTERS_FEATURES_KHR,
+    };
+    VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR unifiedImageLayoutsFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR,
     };
     VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
@@ -1823,6 +1875,7 @@ struct VulkanDeviceFeatureProbe {
         if (extensions.shaderUntypedPointers) {
             appendPNext(featureTail, untypedPointerFeatures);
         }
+        if (extensions.unifiedImageLayouts) { appendPNext(featureTail, unifiedImageLayoutsFeatures); }
         if (extensions.shaderObject) {
             appendPNext(featureTail, shaderObjectFeatures);
         }
@@ -2022,6 +2075,7 @@ struct VulkanDeviceFeatureSelection {
     bool shaderIntegerDotProduct = false;
     bool cooperativeVector = false;
     bool bindlessDescriptorHeap = false;
+    bool unifiedImageLayouts = false;
     bool shaderUntypedPointers = false;
     bool shaderObject = false;
     bool meshShader = false;
@@ -2113,6 +2167,8 @@ struct VulkanDeviceFeatureSelection {
             DescriptorHeapWriter::hasUsableProperties(physicalDevice);
         result.shaderUntypedPointers = result.bindlessDescriptorHeap && extensions.shaderUntypedPointers &&
             probe.untypedPointerFeatures.shaderUntypedPointers == VK_TRUE;
+        result.unifiedImageLayouts = request.preferUnifiedImageLayouts && extensions.unifiedImageLayouts &&
+            probe.unifiedImageLayoutsFeatures.unifiedImageLayouts == VK_TRUE;
         result.shaderObject =
             request.shaderObject &&
             extensions.shaderObject &&
@@ -2283,6 +2339,9 @@ struct VulkanEnabledFeatureChain {
     VkPhysicalDeviceShaderUntypedPointersFeaturesKHR untypedPointerFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_UNTYPED_POINTERS_FEATURES_KHR,
     };
+    VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR unifiedImageLayoutsFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR,
+    };
     VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
     };
@@ -2450,6 +2509,10 @@ struct VulkanEnabledFeatureChain {
         if (selection.shaderUntypedPointers) {
             appendPNext(featureTail, untypedPointerFeatures);
         }
+        if (selection.unifiedImageLayouts) {
+            unifiedImageLayoutsFeatures.unifiedImageLayouts = VK_TRUE;
+            appendPNext(featureTail, unifiedImageLayoutsFeatures);
+        }
         if (selection.shaderObject) {
             appendPNext(featureTail, shaderObjectFeatures);
         }
@@ -2526,6 +2589,7 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
     if (selection.shaderUntypedPointers) {
         extensions.push_back(VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME);
     }
+    if (selection.unifiedImageLayouts) { extensions.push_back(VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME); }
     if (selection.shaderObject) {
         extensions.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
     }
@@ -3232,8 +3296,11 @@ struct TextureViewImpl {
     DeviceImpl* device = nullptr;
     std::shared_ptr<TextureImpl> texture;
     TextureViewDesc desc;
+    mutable std::mutex mutex;
     VkImageView view = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
+    VkImageViewCreateInfo createInfo() const;
+    Result<> materialize();
     ~TextureViewImpl();
 };
 
@@ -3273,6 +3340,7 @@ struct GraphicsPipelineImpl {
     bool usesBindlessHeap = false;
     uint64_t psoHash = 0;
     bool pipelineCacheHit = false;
+    ~GraphicsPipelineImpl();
 };
 
 struct ComputePipelineImpl {
@@ -3282,6 +3350,7 @@ struct ComputePipelineImpl {
     bool usesBindlessHeap = false;
     uint64_t psoHash = 0;
     bool pipelineCacheHit = false;
+    ~ComputePipelineImpl();
 };
 
 struct GraphicsShaderObjectProgramImpl {
@@ -3289,6 +3358,7 @@ struct GraphicsShaderObjectProgramImpl {
     VkShaderEXT vertexShader = VK_NULL_HANDLE;
     VkShaderEXT fragmentShader = VK_NULL_HANDLE;
     bool usesBindlessHeap = false;
+    ~GraphicsShaderObjectProgramImpl();
 };
 
 struct CaptureCommandPool {
@@ -3308,6 +3378,7 @@ struct CommandPoolImpl {
 };
 
 struct CommandBufferImpl {
+    SynchronizationStats synchronizationStats;
     std::shared_ptr<CommandSubmissionRegistry> submissions;
     DeviceImpl* device = nullptr;
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -3411,6 +3482,7 @@ struct DeviceImpl {
     bool bufferDeviceAddressEnabled = false;
     bool rayTracingAccelerationStructureEnabled = false;
     bool rayQueryEnabled = false;
+    bool rayTracingPipelineEnabled = false;
     bool opacityMicromapExt = false;
     bool pushDescriptorEnabled = false;
     bool clusterAccelerationStructureEnabled = false;
@@ -3554,6 +3626,30 @@ TextureImpl::~TextureImpl()
     std::lock_guard lock(device->memoryBudgetState->mutex);
     vmaDestroyImage(device->allocator, image, allocation);
     device->trackMemoryLocked(desc.memoryDomain, allocationSize, deviceLocal, false);
+}
+
+VkImageViewCreateInfo TextureViewImpl::createInfo() const
+{
+    auto type = toVkImageViewType(texture->desc.type);
+    if (desc.layerCount > 1) {
+        if (type == VK_IMAGE_VIEW_TYPE_1D) { type = VK_IMAGE_VIEW_TYPE_1D_ARRAY; }
+        if (type == VK_IMAGE_VIEW_TYPE_2D) { type = VK_IMAGE_VIEW_TYPE_2D_ARRAY; }
+    }
+    return {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = texture->image,
+        .viewType = type, .format = format,
+        .components = {static_cast<VkComponentSwizzle>(desc.swizzle[0]),
+            static_cast<VkComponentSwizzle>(desc.swizzle[1]), static_cast<VkComponentSwizzle>(desc.swizzle[2]),
+            static_cast<VkComponentSwizzle>(desc.swizzle[3])},
+        .subresourceRange = {aspectForFormat(desc.format), desc.baseMip, desc.mipCount, desc.baseLayer, desc.layerCount}};
+}
+
+Result<> TextureViewImpl::materialize()
+{
+    std::lock_guard lock(mutex);
+    if (view != VK_NULL_HANDLE) { return {}; }
+    const auto info = createInfo();
+    activateVolkDevice(device->device);
+    return resultFromVk(vkCreateImageView(device->device, &info, nullptr, &view));
 }
 
 TextureViewImpl::~TextureViewImpl()
@@ -5032,6 +5128,18 @@ TextureView::TextureView(std::unique_ptr<detail::TextureViewImpl> impl)
 {
 }
 
+Result<> TextureView::prepareNative()
+{
+    return impl_ ? impl_->materialize() : Result<>(makeError(Error::InvalidArgument));
+}
+
+bool TextureView::hasNativeView() const
+{
+    if (!impl_) { return false; }
+    std::lock_guard lock(impl_->mutex);
+    return impl_->view != VK_NULL_HANDLE;
+}
+
 TextureView::~TextureView() = default;
 
 const TextureViewDesc& TextureView::desc() const
@@ -5111,24 +5219,48 @@ Result<> PipelineCache::save()
     return impl_->saveLocked();
 }
 
+const void* PreparedExecution::deviceIdentity() const
+{
+    return compute_ ? compute_->device : graphics_ ? graphics_->device : shaders_ ? shaders_->device : nullptr;
+}
+
+PreparedExecution ComputePipeline::execution() const
+{
+    PreparedExecution result; result.compute_ = impl_; return result;
+}
+
+PreparedExecution GraphicsPipeline::execution() const
+{
+    PreparedExecution result; result.graphics_ = impl_; return result;
+}
+
+PreparedExecution GraphicsShaderObjectProgram::execution(const RasterExecutionState& state) const
+{
+    PreparedExecution result; result.shaders_ = impl_; result.raster_ = state; return result;
+}
+
 GraphicsPipeline::GraphicsPipeline(std::unique_ptr<detail::GraphicsPipelineImpl> impl)
     : impl_(std::move(impl))
 {
 }
 
-GraphicsPipeline::~GraphicsPipeline()
+namespace detail {
+GraphicsPipelineImpl::~GraphicsPipelineImpl()
 {
-    if (impl_ != nullptr) {
-        if (impl_->pipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(impl_->device->device, impl_->pipeline, nullptr);
-            impl_->pipeline = VK_NULL_HANDLE;
+    if (device != nullptr) {
+        if (pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device->device, pipeline, nullptr);
+            pipeline = VK_NULL_HANDLE;
         }
-        if (impl_->layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(impl_->device->device, impl_->layout, nullptr);
-            impl_->layout = VK_NULL_HANDLE;
+        if (layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device->device, layout, nullptr);
+            layout = VK_NULL_HANDLE;
         }
     }
 }
+} // namespace detail
+
+GraphicsPipeline::~GraphicsPipeline() = default;
 
 GraphicsPipeline::GraphicsPipeline(GraphicsPipeline&&) noexcept = default;
 GraphicsPipeline& GraphicsPipeline::operator=(GraphicsPipeline&&) noexcept = default;
@@ -5148,19 +5280,23 @@ ComputePipeline::ComputePipeline(std::unique_ptr<detail::ComputePipelineImpl> im
 {
 }
 
-ComputePipeline::~ComputePipeline()
+namespace detail {
+ComputePipelineImpl::~ComputePipelineImpl()
 {
-    if (impl_ != nullptr) {
-        if (impl_->pipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(impl_->device->device, impl_->pipeline, nullptr);
-            impl_->pipeline = VK_NULL_HANDLE;
+    if (device != nullptr) {
+        if (pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device->device, pipeline, nullptr);
+            pipeline = VK_NULL_HANDLE;
         }
-        if (impl_->layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(impl_->device->device, impl_->layout, nullptr);
-            impl_->layout = VK_NULL_HANDLE;
+        if (layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device->device, layout, nullptr);
+            layout = VK_NULL_HANDLE;
         }
     }
 }
+} // namespace detail
+
+ComputePipeline::~ComputePipeline() = default;
 
 ComputePipeline::ComputePipeline(ComputePipeline&&) noexcept = default;
 ComputePipeline& ComputePipeline::operator=(ComputePipeline&&) noexcept = default;
@@ -5181,19 +5317,23 @@ GraphicsShaderObjectProgram::GraphicsShaderObjectProgram(
 {
 }
 
-GraphicsShaderObjectProgram::~GraphicsShaderObjectProgram()
+namespace detail {
+GraphicsShaderObjectProgramImpl::~GraphicsShaderObjectProgramImpl()
 {
-    if (impl_ != nullptr) {
-        if (impl_->vertexShader != VK_NULL_HANDLE) {
-            vkDestroyShaderEXT(impl_->device->device, impl_->vertexShader, nullptr);
-            impl_->vertexShader = VK_NULL_HANDLE;
+    if (device != nullptr) {
+        if (vertexShader != VK_NULL_HANDLE) {
+            vkDestroyShaderEXT(device->device, vertexShader, nullptr);
+            vertexShader = VK_NULL_HANDLE;
         }
-        if (impl_->fragmentShader != VK_NULL_HANDLE) {
-            vkDestroyShaderEXT(impl_->device->device, impl_->fragmentShader, nullptr);
-            impl_->fragmentShader = VK_NULL_HANDLE;
+        if (fragmentShader != VK_NULL_HANDLE) {
+            vkDestroyShaderEXT(device->device, fragmentShader, nullptr);
+            fragmentShader = VK_NULL_HANDLE;
         }
     }
 }
+} // namespace detail
+
+GraphicsShaderObjectProgram::~GraphicsShaderObjectProgram() = default;
 
 GraphicsShaderObjectProgram::GraphicsShaderObjectProgram(GraphicsShaderObjectProgram&&) noexcept = default;
 GraphicsShaderObjectProgram& GraphicsShaderObjectProgram::operator=(GraphicsShaderObjectProgram&&) noexcept = default;
@@ -5393,29 +5533,12 @@ Result<> BindlessHeap::writeImages(const BindlessImageWrite* writes, uint32_t wr
             (storage && !hasFlag(textureDesc.usage, TextureUsageBits::Storage))) {
             return makeError(Error::InvalidArgument);
         }
-        const TextureViewDesc& viewDesc = view->impl_->desc;
         handles[index] = write.handle;
-        viewInfos[index] = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = view->impl_->texture->image,
-            .viewType = toVkImageViewType(textureDesc.type),
-            .format = view->impl_->format,
-            .components = {static_cast<VkComponentSwizzle>(viewDesc.swizzle[0]),
-                static_cast<VkComponentSwizzle>(viewDesc.swizzle[1]),
-                static_cast<VkComponentSwizzle>(viewDesc.swizzle[2]),
-                static_cast<VkComponentSwizzle>(viewDesc.swizzle[3])},
-            .subresourceRange = {
-                .aspectMask = aspectForFormat(textureDesc.format),
-                .baseMipLevel = viewDesc.baseMip,
-                .levelCount = viewDesc.mipCount,
-                .baseArrayLayer = viewDesc.baseLayer,
-                .layerCount = viewDesc.layerCount,
-            },
-        };
+        viewInfos[index] = view->impl_->createInfo();
         imageInfos[index] = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_DESCRIPTOR_INFO_EXT,
             .pView = &viewInfos[index],
-            .layout = stateInfo(write.state).layout,
+            .layout = imageLayout(write.state, impl_->device->capabilities.unifiedImageLayouts),
         };
         resourceInfos[index] = {
             .sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
@@ -5620,6 +5743,7 @@ Result<> CommandBuffer::begin(RenderFrameContext* frameContext)
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
+    impl_->synchronizationStats = {};
     Result<> result = resultFromVk(vkBeginCommandBuffer(impl_->commandBuffer, &beginInfo));
     recording_ = result.has_value();
     if (result) {
@@ -5799,85 +5923,139 @@ Result<> CommandBuffer::writeRayTracingAccelerationStructureCompactedSize(
     return {};
 }
 
+SynchronizationStats CommandBuffer::synchronizationStats() const
+{
+    return impl_ ? impl_->synchronizationStats : SynchronizationStats{};
+}
+
 void CommandBuffer::barrier(const BarrierDesc& desc)
 {
-    if (impl_ == nullptr) {
-        return;
+    (void)synchronize(desc);
+}
+
+Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
+{
+    if (!impl_ || !recording_ || (desc.textureCount && !desc.textures) ||
+        (desc.bufferCount && !desc.buffers) || (desc.memoryCount && !desc.memory)) {
+        return makeError(Error::InvalidArgument);
     }
-
-    std::vector<VkImageMemoryBarrier2> imageBarriers;
-    imageBarriers.reserve(desc.textureCount);
-
-    for (uint32_t index = 0; index < desc.textureCount && desc.textures != nullptr; ++index) {
-        const TextureBarrierDesc& barrier = desc.textures[index];
-        if (barrier.texture == nullptr || barrier.texture->impl_ == nullptr) {
-            continue;
-        }
-
-        const StateInfo before = stateInfo(barrier.before, impl_->queueFlags);
-        const StateInfo after = stateInfo(barrier.after, impl_->queueFlags);
-        const TextureDesc& textureDesc = barrier.texture->impl_->desc;
-
-        imageBarriers.push_back({
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask = barrier.acquireFromQueue ? VK_PIPELINE_STAGE_2_NONE : before.stage,
-            .srcAccessMask = barrier.acquireFromQueue ? VK_ACCESS_2_NONE : before.access,
-            .dstStageMask = after.stage,
-            .dstAccessMask = after.access,
-            .oldLayout = before.layout,
-            .newLayout = after.layout,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = barrier.texture->impl_->image,
-            .subresourceRange = {
-                .aspectMask = aspectForFormat(textureDesc.format),
-                .baseMipLevel = barrier.baseMip,
-                .levelCount = barrier.mipCount,
-                .baseArrayLayer = barrier.baseLayer,
-                .layerCount = barrier.layerCount,
-            },
-        });
-    }
-
-    std::vector<VkBufferMemoryBarrier2> bufferBarriers;
-    bufferBarriers.reserve(desc.bufferCount);
-
-    for (uint32_t index = 0; index < desc.bufferCount && desc.buffers != nullptr; ++index) {
-        const BufferBarrierDesc& barrier = desc.buffers[index];
-        if (barrier.buffer == nullptr || barrier.buffer->impl_ == nullptr) {
-            continue;
-        }
-
-        const StateInfo before = stateInfo(barrier.before, impl_->queueFlags);
-        const StateInfo after = stateInfo(barrier.after, impl_->queueFlags);
-        bufferBarriers.push_back({
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = barrier.acquireFromQueue ? VK_PIPELINE_STAGE_2_NONE : before.stage,
-            .srcAccessMask = barrier.acquireFromQueue ? VK_ACCESS_2_NONE : before.access,
-            .dstStageMask = after.stage,
-            .dstAccessMask = after.access,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = barrier.buffer->impl_->buffer,
-            .offset = barrier.offset,
-            .size = barrier.size == UINT64_MAX ? VK_WHOLE_SIZE : barrier.size,
-        });
-    }
-
-    if (imageBarriers.empty() && bufferBarriers.empty()) {
-        return;
-    }
-
-    VkDependencyInfo dependencyInfo{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 0,
-        .pMemoryBarriers = nullptr,
-        .bufferMemoryBarrierCount = static_cast<uint32_t>(bufferBarriers.size()),
-        .pBufferMemoryBarriers = bufferBarriers.data(),
-        .imageMemoryBarrierCount = static_cast<uint32_t>(imageBarriers.size()),
-        .pImageMemoryBarriers = imageBarriers.data(),
+    const auto validScope = [&](SyncScope scope) {
+        const auto stages = uint64_t(scope.stages);
+        const auto access = uint64_t(scope.access);
+        if ((stages & ~((1ull << 15) - 1)) || (access & ~((1ull << 19) - 1)) || (!stages && access)) { return false; }
+        const uint64_t graphics = uint64_t(PipelineStageBits::VertexShader) | uint64_t(PipelineStageBits::FragmentShader) |
+            uint64_t(PipelineStageBits::ColorAttachment) | uint64_t(PipelineStageBits::DepthStencil) | uint64_t(PipelineStageBits::PreRasterization);
+        if ((stages & graphics) && !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) { return false; }
+        if ((stages & uint64_t(PipelineStageBits::ComputeShader)) && !(impl_->queueFlags & VK_QUEUE_COMPUTE_BIT)) { return false; }
+        if ((stages & uint64_t(PipelineStageBits::AccelerationStructureBuild)) && !impl_->device->capabilities.rayTracingAccelerationStructure) { return false; }
+        if ((stages & uint64_t(PipelineStageBits::MemoryDecompression)) && !impl_->device->capabilities.memoryDecompression) { return false; }
+        if ((stages & uint64_t(PipelineStageBits::RayTracingShader)) && !impl_->device->rayTracingPipelineEnabled) { return false; }
+        const uint64_t computeQueueStages = uint64_t(PipelineStageBits::AccelerationStructureBuild) |
+            uint64_t(PipelineStageBits::RayTracingShader) | uint64_t(PipelineStageBits::MemoryDecompression);
+        if ((stages & computeQueueStages) && !(impl_->queueFlags & VK_QUEUE_COMPUTE_BIT)) { return false; }
+        if ((stages & uint64_t(PipelineStageBits::DrawIndirect)) && !(impl_->queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) { return false; }
+        if ((access & uint64_t(AccessBits::DescriptorRead)) && !impl_->device->capabilities.bindlessDescriptorHeap) { return false; }
+        if ((access & uint64_t(AccessBits::AccelerationStructureRead | AccessBits::AccelerationStructureWrite)) &&
+            !impl_->device->capabilities.rayTracingAccelerationStructure) { return false; }
+        if ((access & uint64_t(AccessBits::DecompressionRead | AccessBits::DecompressionWrite)) &&
+            !impl_->device->capabilities.memoryDecompression) { return false; }
+        const auto supports = [&](AccessBits mask, PipelineStageBits required, bool allCommands = true) {
+            return !(access & uint64_t(mask)) || (stages & uint64_t(required)) ||
+                (allCommands && (stages & uint64_t(PipelineStageBits::AllCommands)));
+        };
+        const auto shaders = PipelineStageBits::VertexShader | PipelineStageBits::FragmentShader |
+            PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader | PipelineStageBits::RayTracingShader;
+        return supports(AccessBits::ShaderRead, shaders | PipelineStageBits::AccelerationStructureBuild) &&
+            supports(AccessBits::ShaderWrite | AccessBits::UniformRead | AccessBits::DescriptorRead, shaders) &&
+            supports(AccessBits::IndirectRead, PipelineStageBits::DrawIndirect) &&
+            supports(AccessBits::TransferRead | AccessBits::TransferWrite, PipelineStageBits::Transfer) &&
+            supports(AccessBits::ColorRead | AccessBits::ColorWrite, PipelineStageBits::ColorAttachment) &&
+            supports(AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite, PipelineStageBits::DepthStencil) &&
+            supports(AccessBits::AccelerationStructureRead, shaders | PipelineStageBits::AccelerationStructureBuild) &&
+            supports(AccessBits::AccelerationStructureWrite, PipelineStageBits::AccelerationStructureBuild) &&
+            supports(AccessBits::DecompressionRead | AccessBits::DecompressionWrite, PipelineStageBits::MemoryDecompression) &&
+            supports(AccessBits::HostRead | AccessBits::HostWrite, PipelineStageBits::Host, false);
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependencyInfo);
+    std::vector<VkImageMemoryBarrier2> images;
+    std::vector<VkMemoryBarrier2> memory;
+    uint64_t coalesced = 0;
+    const auto appendMemory = [&](StateInfo before, StateInfo after) {
+        // Preserve stage pairs; unioning unrelated pairs would add false ordering.
+        for (auto& existing : memory) {
+            if (existing.srcStageMask == before.stage && existing.dstStageMask == after.stage) {
+                existing.srcAccessMask |= before.access;
+                existing.dstAccessMask |= after.access;
+                return;
+            }
+        }
+        memory.push_back({.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .srcStageMask = before.stage, .srcAccessMask = before.access,
+            .dstStageMask = after.stage, .dstAccessMask = after.access});
+    };
+    constexpr VkAccessFlags2 writes = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+        VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_2_MEMORY_DECOMPRESSION_WRITE_BIT_EXT |
+        VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    const auto resourceMemory = [&](StateInfo before, StateInfo after) {
+        // Undefined contents need no memory dependency. Queue waits already cover
+        // memory availability/visibility when acquireFromQueue cleared the source.
+        if (before.stage && ((before.access | after.access) & writes)) {
+            appendMemory(before, after);
+            ++coalesced;
+        }
+    };
+    for (uint32_t i = 0; i < desc.memoryCount; ++i) {
+        const auto& barrier = desc.memory[i];
+        if (!validScope(barrier.before) || !validScope(barrier.after)) { return makeError(Error::InvalidArgument); }
+        appendMemory(scopeInfo(barrier.before), scopeInfo(barrier.after));
+    }
+    for (uint32_t i = 0; i < desc.textureCount; ++i) {
+        const auto& barrier = desc.textures[i];
+        if (!barrier.texture || !barrier.texture->impl_ || barrier.texture->impl_->device != impl_->device ||
+            !validScope(barrier.beforeScope) || !validScope(barrier.afterScope)) { return makeError(Error::InvalidArgument); }
+        const auto& texture = *barrier.texture->impl_;
+        if (!barrier.mipCount || !barrier.layerCount || barrier.baseMip >= texture.desc.mipCount ||
+            barrier.mipCount > texture.desc.mipCount - barrier.baseMip || barrier.baseLayer >= texture.desc.layerCount ||
+            barrier.layerCount > texture.desc.layerCount - barrier.baseLayer) { return makeError(Error::InvalidArgument); }
+        auto before = barrier.beforeScope.stages != PipelineStageBits::None ? scopeInfo(barrier.beforeScope) : stateInfo(barrier.before, impl_->queueFlags);
+        const auto after = barrier.afterScope.stages != PipelineStageBits::None ? scopeInfo(barrier.afterScope) : stateInfo(barrier.after, impl_->queueFlags);
+        if (barrier.acquireFromQueue) { before.stage = 0; before.access = 0; }
+        const auto oldLayout = imageLayout(barrier.before, impl_->device->capabilities.unifiedImageLayouts);
+        const auto newLayout = imageLayout(barrier.after, impl_->device->capabilities.unifiedImageLayouts);
+        if (newLayout == VK_IMAGE_LAYOUT_UNDEFINED) { return makeError(Error::InvalidArgument); }
+        if (oldLayout == newLayout) { resourceMemory(before, after); continue; }
+        images.push_back({.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = before.stage, .srcAccessMask = before.access, .dstStageMask = after.stage, .dstAccessMask = after.access,
+            .oldLayout = oldLayout, .newLayout = newLayout,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = texture.image,
+            .subresourceRange = {aspectForFormat(texture.desc.format), barrier.baseMip, barrier.mipCount, barrier.baseLayer, barrier.layerCount}});
+    }
+    for (uint32_t i = 0; i < desc.bufferCount; ++i) {
+        const auto& barrier = desc.buffers[i];
+        if (!barrier.buffer || barrier.buffer->deviceIdentity() != deviceIdentity() ||
+            !validScope(barrier.beforeScope) || !validScope(barrier.afterScope)) { return makeError(Error::InvalidArgument); }
+        const auto available = barrier.buffer->desc().size;
+        if (barrier.offset >= available || !barrier.size ||
+            (barrier.size != UINT64_MAX && barrier.size > available - barrier.offset)) { return makeError(Error::InvalidArgument); }
+        auto before = barrier.beforeScope.stages != PipelineStageBits::None ? scopeInfo(barrier.beforeScope) : stateInfo(barrier.before, impl_->queueFlags);
+        const auto after = barrier.afterScope.stages != PipelineStageBits::None ? scopeInfo(barrier.afterScope) : stateInfo(barrier.after, impl_->queueFlags);
+        if (barrier.acquireFromQueue) { before.stage = 0; before.access = 0; }
+        resourceMemory(before, after);
+    }
+    if (images.empty() && memory.empty()) { return {}; }
+    // Everything was validated before retaining resources or recording Vulkan commands.
+    for (uint32_t i = 0; i < desc.textureCount; ++i) {
+        auto result = retainResource(desc.textures[i].texture->impl_);
+        if (!result) { return result; }
+    }
+    const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = uint32_t(memory.size()), .pMemoryBarriers = memory.data(),
+        .imageMemoryBarrierCount = uint32_t(images.size()), .pImageMemoryBarriers = images.data()};
+    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+    auto& stats = impl_->synchronizationStats;
+    ++stats.calls; stats.memoryBarriers += memory.size(); stats.imageTransitions += images.size(); stats.coalescedResources += coalesced;
+    return {};
 }
 
 void CommandBuffer::copyBuffer(const BufferCopyDesc& desc)
@@ -6013,9 +6191,9 @@ void CommandBuffer::copyTexture(const TextureCopyDesc& desc)
     vkCmdCopyImage(
         impl_->commandBuffer,
         desc.source->impl_->image,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        imageLayout(ResourceState::TransferSource, impl_->device->capabilities.unifiedImageLayouts),
         desc.destination->impl_->image,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        imageLayout(ResourceState::TransferDestination, impl_->device->capabilities.unifiedImageLayouts),
         1,
         &copyRegion);
 }
@@ -6060,7 +6238,7 @@ void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
             .baseArrayLayer = desc.baseLayer,
             .layerCount = desc.layerCount,
         },
-        .imageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .imageLayout = imageLayout(ResourceState::TransferSource, impl_->device->capabilities.unifiedImageLayouts),
         .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
         .imageExtent = {desc.width, desc.height, desc.depth},
     };
@@ -6114,7 +6292,7 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
             .baseArrayLayer = desc.baseLayer,
             .layerCount = desc.layerCount,
         },
-        .imageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .imageLayout = imageLayout(ResourceState::TransferDestination, impl_->device->capabilities.unifiedImageLayouts),
         .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
         .imageExtent = {desc.width, desc.height, desc.depth},
     };
@@ -6170,19 +6348,27 @@ void CommandBuffer::clearColorTexture(Texture& texture, ResourceState state, con
     vkCmdClearColorImage(
         impl_->commandBuffer,
         texture.impl_->image,
-        stateInfo(state).layout,
+        imageLayout(state, impl_->device->capabilities.unifiedImageLayouts),
         &clearValue,
         1,
         &range);
 }
 
-void CommandBuffer::beginRendering(const RenderingDesc& desc)
+Result<> CommandBuffer::useNativeTextureView(TextureView& view)
 {
-    if (impl_ == nullptr) {
-        return;
+    if (!impl_ || !recording_ || view.deviceIdentity() != deviceIdentity()) { return makeError(Error::InvalidArgument); }
+    auto result = view.prepareNative();
+    return result ? retainResource(view.impl_) : result;
+}
+
+Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
+{
+    if (impl_ == nullptr || !recording_ || !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+        return makeError(Error::InvalidArgument);
     }
-    if (desc.colorAttachmentCount > 0 && desc.colorAttachments == nullptr) {
-        return;
+    if ((desc.colorAttachmentCount > 0 && desc.colorAttachments == nullptr) ||
+        (desc.depthStencilAttachment && !desc.depthStencilAttachment->view)) {
+        return makeError(Error::InvalidArgument);
     }
 
     std::vector<VkRenderingAttachmentInfo> colorAttachments;
@@ -6193,15 +6379,16 @@ void CommandBuffer::beginRendering(const RenderingDesc& desc)
     for (uint32_t index = 0; index < desc.colorAttachmentCount; ++index) {
         const RenderingAttachmentDesc& attachment = desc.colorAttachments[index];
         if (attachment.view == nullptr || attachment.view->impl_ == nullptr) {
-            continue;
+            return makeError(Error::InvalidArgument);
         }
 
-        const StateInfo state = stateInfo(attachment.state);
+        auto result = useNativeTextureView(*attachment.view);
+        if (!result) { return result; }
         const ColorValue& clear = attachment.clearColor;
         colorAttachments.push_back({
             .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
             .imageView = attachment.view->impl_->view,
-            .imageLayout = state.layout,
+            .imageLayout = imageLayout(attachment.state, impl_->device->capabilities.unifiedImageLayouts),
             .loadOp = toVkLoadOp(attachment.loadOp),
             .storeOp = toVkStoreOp(attachment.storeOp),
             .clearValue = {
@@ -6213,11 +6400,12 @@ void CommandBuffer::beginRendering(const RenderingDesc& desc)
     if (desc.depthStencilAttachment != nullptr) {
         const RenderingAttachmentDesc& attachment = *desc.depthStencilAttachment;
         if (attachment.view != nullptr && attachment.view->impl_ != nullptr) {
-            const StateInfo state = stateInfo(attachment.state);
+            auto result = useNativeTextureView(*attachment.view);
+            if (!result) { return result; }
             depthAttachment = {
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .imageView = attachment.view->impl_->view,
-                .imageLayout = state.layout,
+                .imageLayout = imageLayout(attachment.state, impl_->device->capabilities.unifiedImageLayouts),
                 .loadOp = toVkLoadOp(attachment.loadOp),
                 .storeOp = toVkStoreOp(attachment.storeOp),
                 .clearValue = {
@@ -6240,6 +6428,7 @@ void CommandBuffer::beginRendering(const RenderingDesc& desc)
         .pDepthAttachment = depthAttachmentPtr,
     };
     vkCmdBeginRendering(impl_->commandBuffer, &renderingInfo);
+    return {};
 }
 
 void CommandBuffer::clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect)
@@ -6396,55 +6585,90 @@ void pushCurrentBindlessData(detail::CommandBufferImpl& commandBuffer)
 
 } // namespace
 
+Result<> CommandBuffer::bindExecution(const PreparedExecution& execution)
+{
+    return bindExecutionImpl(execution, nullptr, 0, false);
+}
+
+Result<> CommandBuffer::bindExecutionImpl(const PreparedExecution& execution, const void* data, uint32_t byteSize, bool replaceData)
+{
+    if (!impl_ || !recording_ || !execution.valid() || execution.deviceIdentity() != deviceIdentity() ||
+        (execution.kind() == ExecutionKind::Compute && !(impl_->queueFlags & VK_QUEUE_COMPUTE_BIT)) ||
+        (execution.kind() == ExecutionKind::Raster && !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) ||
+        (execution.shaders_ && execution.raster_.colorAttachmentCount > 8) ||
+        (replaceData && ((byteSize && !data) || (byteSize & 3u) || byteSize > impl_->device->descriptorHeapWriter.maxPushDataSize()))) { return makeError(Error::InvalidArgument); }
+    if (execution.compute_) {
+        auto result = retainResource(execution.compute_);
+        if (!result) { return result; }
+        const auto& pipeline = *execution.compute_;
+        vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+        impl_->currentComputePipeline = pipeline.pipeline;
+        impl_->currentComputePipelineLayout = pipeline.layout;
+        impl_->currentComputePipelineUsesBindlessHeap = pipeline.usesBindlessHeap;
+    } else if (execution.graphics_) {
+        auto result = retainResource(execution.graphics_);
+        if (!result) { return result; }
+        const auto& pipeline = *execution.graphics_;
+        clearGraphicsShaderObjects(*impl_);
+        vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline);
+        impl_->currentGraphicsPipelineLayout = pipeline.layout;
+        impl_->currentGraphicsPipelineUsesBindlessHeap = pipeline.usesBindlessHeap;
+    } else {
+        if (!impl_->device->shaderObjectEnabled || !vkCmdBindShadersEXT) { return makeError(Error::Unsupported); }
+        auto result = retainResource(execution.shaders_);
+        if (!result) { return result; }
+        const auto& program = *execution.shaders_;
+        const std::array<VkShaderStageFlagBits, 5> stages{VK_SHADER_STAGE_VERTEX_BIT,
+            VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+            VK_SHADER_STAGE_GEOMETRY_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
+        const std::array<VkShaderEXT, 5> shaders{program.vertexShader, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, program.fragmentShader};
+        vkCmdBindShadersEXT(impl_->commandBuffer, uint32_t(stages.size()), stages.data(), shaders.data());
+        impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
+        impl_->currentGraphicsPipelineUsesBindlessHeap = false;
+        impl_->currentGraphicsShaderObjectBound = true;
+        impl_->currentGraphicsShaderObjectUsesBindlessHeap = program.usesBindlessHeap;
+        if (execution.applyRasterState_) {
+            setGraphicsShaderObjectState();
+            setDepthStencilState(execution.raster_.depthStencil);
+            vkCmdSetCullModeEXT(impl_->commandBuffer, toVkCullMode(execution.raster_.rasterization.cullMode));
+            vkCmdSetFrontFaceEXT(impl_->commandBuffer, toVkFrontFace(execution.raster_.rasterization.frontFace));
+            for (uint32_t i = 0; i < execution.raster_.colorAttachmentCount; ++i) {
+                const VkBool32 blend = VK_FALSE;
+                const VkColorBlendEquationEXT equation{VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD,
+                    VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD};
+                const VkColorComponentFlags mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+                vkCmdSetColorBlendEnableEXT(impl_->commandBuffer, i, 1, &blend);
+                vkCmdSetColorBlendEquationEXT(impl_->commandBuffer, i, 1, &equation);
+                vkCmdSetColorWriteMaskEXT(impl_->commandBuffer, i, 1, &mask);
+            }
+        }
+    }
+    if (replaceData) {
+        impl_->currentBindlessUserData.resize(byteSize);
+        if (byteSize) { std::memcpy(impl_->currentBindlessUserData.data(), data, byteSize); }
+    }
+    if (impl_->currentBindlessHeap) { pushCurrentBindlessData(*impl_); }
+    return {};
+}
+
+Result<> CommandBuffer::bindExecution(const PreparedExecution& execution, const void* data, uint32_t byteSize)
+{
+    return bindExecutionImpl(execution, data, byteSize, true);
+}
+
 void CommandBuffer::bindGraphicsPipeline(GraphicsPipeline& pipeline)
 {
-    if (impl_ == nullptr || pipeline.impl_ == nullptr) {
-        return;
-    }
-    clearGraphicsShaderObjects(*impl_);
-    vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.impl_->pipeline);
-    impl_->currentGraphicsPipelineLayout = pipeline.impl_->layout;
-    impl_->currentGraphicsPipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
-    if (impl_->currentGraphicsPipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
-        pushCurrentBindlessData(*impl_);
-    }
+    (void)bindExecution(pipeline.execution());
 }
 
 void CommandBuffer::bindComputePipeline(ComputePipeline& pipeline)
 {
-    if (impl_ == nullptr || pipeline.impl_ == nullptr) {
-        return;
-    }
-    vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.impl_->pipeline);
-    impl_->currentComputePipeline = pipeline.impl_->pipeline;
-    impl_->currentComputePipelineLayout = pipeline.impl_->layout;
-    impl_->currentComputePipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
-    if (impl_->currentComputePipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
-        pushCurrentBindlessData(*impl_);
-    }
+    (void)bindExecution(pipeline.execution());
 }
 
-void CommandBuffer::bindComputePipeline(
-    ComputePipeline& pipeline,
-    const void* bindlessData,
-    uint32_t byteSize)
+void CommandBuffer::bindComputePipeline(ComputePipeline& pipeline, const void* data, uint32_t byteSize)
 {
-    if (impl_ == nullptr ||
-        pipeline.impl_ == nullptr ||
-        (byteSize > 0 && bindlessData == nullptr)) {
-        return;
-    }
-    impl_->currentBindlessUserData.resize(byteSize);
-    if (byteSize > 0) {
-        std::memcpy(impl_->currentBindlessUserData.data(), bindlessData, byteSize);
-    }
-    vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.impl_->pipeline);
-    impl_->currentComputePipeline = pipeline.impl_->pipeline;
-    impl_->currentComputePipelineLayout = pipeline.impl_->layout;
-    impl_->currentComputePipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
-    if (impl_->currentComputePipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
-        pushCurrentBindlessData(*impl_);
-    }
+    (void)bindExecution(pipeline.execution(), data, byteSize);
 }
 
 void CommandBuffer::setGraphicsShaderObjectState()
@@ -6563,41 +6787,11 @@ void CommandBuffer::setGraphicsShaderObjectState()
 
 void CommandBuffer::bindGraphicsShaderObjectProgram(GraphicsShaderObjectProgram& program)
 {
-    if (impl_ == nullptr ||
-        program.impl_ == nullptr ||
-        impl_->device == nullptr ||
-        !impl_->device->shaderObjectEnabled ||
-        vkCmdBindShadersEXT == nullptr) {
-        return;
-    }
-
-    const std::array<VkShaderStageFlagBits, 5> stages{
-        VK_SHADER_STAGE_VERTEX_BIT,
-        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
-        VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
-        VK_SHADER_STAGE_GEOMETRY_BIT,
-        VK_SHADER_STAGE_FRAGMENT_BIT,
-    };
-    const std::array<VkShaderEXT, 5> shaders{
-        program.impl_->vertexShader,
-        VK_NULL_HANDLE,
-        VK_NULL_HANDLE,
-        VK_NULL_HANDLE,
-        program.impl_->fragmentShader,
-    };
-    vkCmdBindShadersEXT(
-        impl_->commandBuffer,
-        static_cast<uint32_t>(stages.size()),
-        stages.data(),
-        shaders.data());
-
-    impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
-    impl_->currentGraphicsPipelineUsesBindlessHeap = false;
-    impl_->currentGraphicsShaderObjectBound = true;
-    impl_->currentGraphicsShaderObjectUsesBindlessHeap = program.impl_->usesBindlessHeap;
-    if (impl_->currentGraphicsShaderObjectUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
-        pushCurrentBindlessData(*impl_);
-    }
+    // Legacy permutations supplied dynamic state separately. New callers pass a
+    // complete RasterExecutionState through PreparedExecution.
+    auto execution = program.execution();
+    execution.applyRasterState_ = false;
+    (void)bindExecution(execution);
 }
 
 void CommandBuffer::bindBindlessHeap(BindlessHeap& heap)
@@ -9421,32 +9615,19 @@ Result<std::unique_ptr<TextureView>> Device::createTextureView(Texture& texture,
     if (impl_ == nullptr || texture.impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
-
+    if (texture.impl_->device != impl_.get()) { return makeError(Error::InvalidArgument); }
     const TextureDesc& textureDesc = texture.impl_->desc;
     const Format format = desc.format != Format::Unknown ? desc.format : textureDesc.format;
-    VkImageViewCreateInfo viewInfo{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = texture.impl_->image,
-        .viewType = toVkImageViewType(textureDesc.type),
-        .format = toVkFormat(format),
-        .components = {static_cast<VkComponentSwizzle>(desc.swizzle[0]),
-            static_cast<VkComponentSwizzle>(desc.swizzle[1]),
-            static_cast<VkComponentSwizzle>(desc.swizzle[2]),
-            static_cast<VkComponentSwizzle>(desc.swizzle[3])},
-        .subresourceRange = {
-            .aspectMask = aspectForFormat(format),
-            .baseMipLevel = desc.baseMip,
-            .levelCount = desc.mipCount,
-            .baseArrayLayer = desc.baseLayer,
-            .layerCount = desc.layerCount,
-        },
-    };
-
-    VkImageView view = VK_NULL_HANDLE;
-    const VkResult result = vkCreateImageView(impl_->device, &viewInfo, nullptr, &view);
-    if (result != VK_SUCCESS) {
-        return std::unexpected(resultFromVk(result).error());
+    // Images currently have no mutable-format flag. Validate semantic views now,
+    // even if a native object is never needed.
+    if (format != textureDesc.format || !desc.mipCount || !desc.layerCount ||
+        desc.baseMip >= textureDesc.mipCount || desc.mipCount > textureDesc.mipCount - desc.baseMip ||
+        desc.baseLayer >= textureDesc.layerCount || desc.layerCount > textureDesc.layerCount - desc.baseLayer ||
+        (textureDesc.type == TextureType::Texture3D && (desc.baseLayer != 0 || desc.layerCount != 1))) {
+        return makeError(Error::InvalidArgument);
+    }
+    for (auto component : desc.swizzle) {
+        if (component > TextureViewDesc::Component::A) { return makeError(Error::InvalidArgument); }
     }
 
     auto viewImpl = std::make_unique<detail::TextureViewImpl>();
@@ -9454,7 +9635,6 @@ Result<std::unique_ptr<TextureView>> Device::createTextureView(Texture& texture,
     viewImpl->texture = texture.impl_;
     viewImpl->desc = desc;
     viewImpl->desc.format = format;
-    viewImpl->view = view;
     viewImpl->format = toVkFormat(format);
     return std::unique_ptr<TextureView>(new TextureView(std::move(viewImpl)));
 }
@@ -10994,6 +11174,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && vkCmdDecompressMemoryEXT != nullptr;
     deviceImpl->capabilities.deviceGeneratedCommands = selectedFeatures.deviceGeneratedCommands;
     deviceImpl->capabilities.dynamicGeneratedPipelineLayout = selectedFeatures.dynamicGeneratedPipelineLayout;
+    deviceImpl->capabilities.unifiedImageLayouts = selectedFeatures.unifiedImageLayouts;
     deviceImpl->capabilities.shaderObject = selectedFeatures.shaderObject;
     deviceImpl->shaderObjectEnabled = selectedFeatures.shaderObject;
     deviceImpl->shaderUntypedPointersEnabled = selectedFeatures.shaderUntypedPointers;
@@ -11021,6 +11202,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     deviceImpl->rayTracingAccelerationStructureEnabled = selectedFeatures.rayTracingAccelerationStructure;
     deviceImpl->capabilities.rayQuery = selectedFeatures.rayQuery;
     deviceImpl->rayQueryEnabled = selectedFeatures.rayQuery;
+    deviceImpl->rayTracingPipelineEnabled = selectedFeatures.streamline || selectedFeatures.nrcRayTracingPipeline;
     deviceImpl->capabilities.opacityMicromap = selectedFeatures.opacityMicromap;
     deviceImpl->opacityMicromapExt = selectedFeatures.opacityMicromapExt;
     if (selectedFeatures.opacityMicromap) {
@@ -11306,9 +11488,9 @@ struct VulkanNativeAccess {
 
     static void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer)
     {
-        if (commandBuffer.impl_ != nullptr) {
-            commandBuffer.impl_->currentBindlessHeap = nullptr;
-        }
+        // External SDK execution can overwrite pipelines, dynamic state and push
+        // data as well as descriptor sets. The next prepared bind re-establishes them.
+        notifyGeneratedCommandsExecution(commandBuffer);
     }
 
     static VkFormat nativeSwapchainFormat(Swapchain& swapchain)
@@ -11316,9 +11498,14 @@ struct VulkanNativeAccess {
         return swapchain.impl_ != nullptr ? swapchain.impl_->vkFormat : VK_FORMAT_UNDEFINED;
     }
 
+    static VkImageLayout nativeImageLayout(TextureView& view, ResourceState usage)
+    {
+        return view.impl_ ? imageLayout(usage, view.impl_->device->capabilities.unifiedImageLayouts) : VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+
     static VkImageView nativeImageView(TextureView& view)
     {
-        return view.impl_ != nullptr ? view.impl_->view : VK_NULL_HANDLE;
+        return view.prepareNative() ? view.impl_->view : VK_NULL_HANDLE;
     }
 
 };
@@ -11385,6 +11572,11 @@ void notifyGeneratedCommandsExecution(CommandBuffer& commands)
 VkFormat nativeSwapchainFormat(Swapchain& swapchain)
 {
     return detail::VulkanNativeAccess::nativeSwapchainFormat(swapchain);
+}
+
+VkImageLayout nativeImageLayout(TextureView& view, ResourceState usage)
+{
+    return detail::VulkanNativeAccess::nativeImageLayout(view, usage);
 }
 
 VkImageView nativeImageView(TextureView& view)

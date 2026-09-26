@@ -175,8 +175,8 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
     const RenderingAttachmentDesc z{.view = &depth, .state = ResourceState::DepthStencilAttachment,
         .loadOp = LoadOp::Load, .storeOp = StoreOp::Store};
     const Rect area{.width = push_.width, .height = push_.height};
-    commands.beginRendering({.renderArea = area, .colorAttachments = &color,
-        .colorAttachmentCount = 1, .depthStencilAttachment = &z});
+    if (auto rendering = commands.beginRendering({.renderArea = area, .colorAttachments = &color,
+        .colorAttachmentCount = 1, .depthStencilAttachment = &z}); !rendering) { return rendering; }
     commands.setViewport({.width = float(push_.width), .height = float(push_.height), .maxDepth = 1.0f});
     commands.setScissor(area);
     commands.bindGraphicsPipeline(*resolve_[push_.reversedZ]);

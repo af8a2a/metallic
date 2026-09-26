@@ -1014,10 +1014,10 @@ private:
             .storeOp = StoreOp::Store,
             .clearDepth = 1.0f,
         };
-        commandBuffer.beginRendering(RenderingDesc{
+        if (auto rendering = commandBuffer.beginRendering(RenderingDesc{
             .renderArea = renderArea,
             .depthStencilAttachment = &depthAttachment,
-        });
+        }); !rendering) { return rendering; }
         commandBuffer.setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,

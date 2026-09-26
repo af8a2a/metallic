@@ -283,6 +283,7 @@ Result<> NrcIntegration::beginFrame(CommandBuffer& commandBuffer, const nrc::Fra
         return makeError(Error::Failure);
     }
     const nrc::Status status = context_->BeginFrame(nativeCommandBuffer(commandBuffer), frameSettings);
+    notifyExternalDescriptorSetBinding(commandBuffer);
     return resultFromNrc(status);
 }
 
@@ -303,6 +304,7 @@ Result<> NrcIntegration::queryAndTrain(CommandBuffer& commandBuffer, float* trai
         return makeError(Error::Failure);
     }
     const nrc::Status status = context_->QueryAndTrain(nativeCommandBuffer(commandBuffer), trainingLoss);
+    notifyExternalDescriptorSetBinding(commandBuffer);
     return resultFromNrc(status);
 }
 
@@ -311,7 +313,10 @@ Result<> NrcIntegration::resolve(CommandBuffer& commandBuffer, TextureView& outp
     if (!valid()) {
         return makeError(Error::Failure);
     }
+    auto retained = commandBuffer.useNativeTextureView(outputView);
+    if (!retained) { return retained; }
     const nrc::Status status = context_->Resolve(nativeCommandBuffer(commandBuffer), nativeImageView(outputView));
+    notifyExternalDescriptorSetBinding(commandBuffer);
     return resultFromNrc(status);
 }
 

@@ -121,6 +121,7 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
     std::shared_ptr<ResourceRegistry> registry;
     std::unique_ptr<ShaderModule> shader;
     std::unique_ptr<ComputePipeline> pipeline;
+    PreparedExecution execution;
     uint32_t pushConstantSize = 0;
     uint32_t resourceTableCount = 0;
     uint32_t bindlessPushDataSize = 0;
@@ -555,6 +556,7 @@ Result<> ComputeProgram::initialize(
         return result;
     }
 
+    impl_->execution = impl_->pipeline->execution();
     return {};
 }
 
@@ -854,13 +856,15 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
     profile.next("Prepare dispatch constants");
     profile.next("Record dispatch commands");
     desc.commandBuffer->bindBindlessHeap(*tables->heap);
-    desc.commandBuffer->bindComputePipeline(*impl_->pipeline);
+    auto bound = desc.commandBuffer->bindExecution(impl_->execution);
+    if (!bound) { return bound; }
     if (!dispatches.empty()) {
         const Impl* boundProgram = impl_.get();
         for (size_t index = 0; index < dispatches.size(); ++index) {
             const Impl* program = dispatches[index].program != nullptr ? dispatches[index].program->impl_.get() : impl_.get();
             if (program != boundProgram) {
-                desc.commandBuffer->bindComputePipeline(*program->pipeline);
+                bound = desc.commandBuffer->bindExecution(program->execution);
+                if (!bound) { return bound; }
                 boundProgram = program;
             }
             if (impl_->pushConstantSize > 0) {
@@ -1042,7 +1046,8 @@ Result<> ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
         if (result) { result = packet.bindResources(commands); }
     } else { result = registry.bind(commands); }
     if (!result) { return result; }
-    commands.bindComputePipeline(*impl_->pipeline);
+    result = commands.bindExecution(impl_->execution);
+    if (!result) { return result; }
     if (dispatches.empty()) {
         commands.pushBindlessData(&push, sizeof(push));
         if (desc.indirectArguments) { return commands.dispatchIndirect(*desc.indirectArguments, desc.indirectOffset); }
@@ -1052,7 +1057,8 @@ Result<> ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
     const uint64_t base = push.constants;
     for (size_t i = 0; i < dispatches.size(); ++i) {
         const auto* program = dispatches[i].program ? dispatches[i].program->impl_.get() : impl_.get();
-        commands.bindComputePipeline(*program->pipeline);
+        result = commands.bindExecution(program->execution);
+        if (!result) { return result; }
         push.constants = base + stride * i;
         commands.pushBindlessData(&push, sizeof(push));
         result = commands.dispatchIndirect(*desc.indirectArguments, dispatches[i].argumentOffset);

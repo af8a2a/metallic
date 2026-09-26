@@ -6854,11 +6854,15 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             .name = "Editor ImGui",
             .color = render::ColorValue{0.22f, 0.70f, 0.45f, 1.0f},
         });
-        frame.commandBuffer->beginRendering(render::RenderingDesc{
+        result = frame.commandBuffer->beginRendering(render::RenderingDesc{
             .renderArea = renderArea,
             .colorAttachments = &colorAttachment,
             .colorAttachmentCount = 1,
         });
+        if (!result) {
+            spdlog::error("Editor attachment preparation failed: {}", render::resultToString(result));
+            return false;
+        }
 
         {
             auto profileScope = profiler_.scope("Record ImGui Draw");
@@ -7789,7 +7793,7 @@ bool EditorApplication::bindViewportPreviewOutput(std::string_view outputName)
     viewportDescriptor_ = ImGui_ImplVulkan_AddTexture(
         viewportSampler_,
         imageView,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        render::vulkan::nativeImageLayout(*output->view, render::ResourceState::ShaderRead));
     if (viewportDescriptor_ == VK_NULL_HANDLE) {
         renderGraphStatus_ = "ImGui failed to allocate viewport descriptor";
         return false;

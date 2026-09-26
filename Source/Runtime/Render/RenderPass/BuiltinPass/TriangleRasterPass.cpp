@@ -45,6 +45,7 @@ public:
             log += resultMessage("createGraphicsPipeline", result);
             log += '\n';
         }
+        if (result) { execution_ = pipeline_->execution(); }
         return result;
     }
 
@@ -68,11 +69,12 @@ public:
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.04f, 0.06f, 0.09f, 1.0f},
         };
-        context.commandBuffer().beginRendering(RenderingDesc{
+        auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
             .colorAttachments = &attachment,
             .colorAttachmentCount = 1,
         });
+        if (!rendering) { return rendering; }
         context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
@@ -82,7 +84,8 @@ public:
             .maxDepth = 1.0f,
         });
         context.commandBuffer().setScissor(renderArea);
-        context.commandBuffer().bindGraphicsPipeline(*pipeline_);
+        auto bound = context.commandBuffer().bindExecution(execution_);
+        if (!bound) { context.commandBuffer().endRendering(); return bound; }
         context.commandBuffer().draw(3);
         context.commandBuffer().endRendering();
         return {};
@@ -133,6 +136,7 @@ private:
     std::unique_ptr<ShaderModule> vertexShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
+    PreparedExecution execution_;
 };
 
 } // namespace

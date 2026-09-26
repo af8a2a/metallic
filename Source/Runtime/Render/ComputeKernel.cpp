@@ -7,6 +7,7 @@ struct ComputeKernel::Impl {
     ParameterAbi parameters;
     std::unique_ptr<ShaderModule> shader;
     std::unique_ptr<ComputePipeline> pipeline;
+    PreparedExecution execution;
 };
 
 Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc, std::string& log)
@@ -26,6 +27,7 @@ Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc
     if (!result) {
         log += "ComputeKernel creation failed: "; log += resultToString(result); return result;
     }
+    impl->execution = impl->pipeline->execution();
     impl->device = device.identity(); impl->parameters = desc.parameters;
     impl_ = std::move(impl);
     return {};
@@ -41,8 +43,7 @@ Result<> ComputeKernel::bind(CommandBuffer& commands, const EncodedParameters& p
     auto result = params.bindResources(commands);
     if (!result) { return result; }
     const uint64_t root = params.address();
-    commands.bindComputePipeline(*impl_->pipeline, &root, sizeof(root));
-    return {};
+    return commands.bindExecution(impl_->execution, &root, sizeof(root));
 }
 
 Result<> ComputeKernel::dispatch(CommandBuffer& commands, const EncodedParameters& params,

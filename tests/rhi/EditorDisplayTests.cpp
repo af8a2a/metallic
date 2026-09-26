@@ -82,7 +82,7 @@ public:
         render::TextureBarrierDesc readable{.texture = source.get(), .before = render::ResourceState::ColorAttachment,
             .after = render::ResourceState::ShaderRead};
         commands->barrier({.textures = &readable, .textureCount = 1});
-        const auto descriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*sourceView), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        const auto descriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*sourceView), render::vulkan::nativeImageLayout(*sourceView, render::ResourceState::ShaderRead));
         ImGui_ImplVulkan_NewFrame();
         ImGui::NewFrame();
         auto* list = ImGui::GetBackgroundDrawList();

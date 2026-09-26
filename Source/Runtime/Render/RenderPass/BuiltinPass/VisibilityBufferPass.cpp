@@ -1088,7 +1088,8 @@ public:
         // Display the final IDs/depth while the images are shader-readable.
         {
             auto profile = context.profileScope("Debug composite");
-            drawComposite(context.commandBuffer(), color);
+            result = drawComposite(context.commandBuffer(), color);
+            if (!result) { return result; }
         }
         transitionTexture(context.commandBuffer(), *visibility.texture(), ResourceState::ShaderRead, ResourceState::ColorAttachment);
         transitionTexture(context.commandBuffer(), *depth.texture(), ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
@@ -2214,12 +2215,12 @@ private:
             .clearDepth = depthClearValue(reversedZ),
         };
         if (!hasResidentGeometry) {
-            commandBuffer.beginRendering(RenderingDesc{
+            if (auto rendering = commandBuffer.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
                 .colorAttachments = colors,
                 .colorAttachmentCount = tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u,
                 .depthStencilAttachment = &depthAttachment,
-            });
+            }); !rendering) { return rendering; }
             commandBuffer.endRendering();
             return {};
         }
@@ -2278,12 +2279,12 @@ private:
         const auto hardware = [&](CommandBuffer& commands) -> Result<> {
             auto profile = context.profileScope(commands, "Hardware raster");
             commands.beginDebugLabel({.name = "Hybrid raster: resident hardware clusters"});
-            commands.beginRendering(RenderingDesc{
+            if (auto rendering = commands.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
                 .colorAttachments = colors,
                 .colorAttachmentCount = tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u,
                 .depthStencilAttachment = &depthAttachment,
-            });
+            }); !rendering) { return rendering; }
             commands.setViewport(Viewport{
                 .x = 0.0f,
                 .y = 0.0f,
@@ -2392,11 +2393,11 @@ private:
         return result;
     }
 
-    void drawComposite(CommandBuffer& commandBuffer, TextureHandle color)
+    Result<> drawComposite(CommandBuffer& commandBuffer, TextureHandle color)
     {
         // Tessellation raster writes individual generated-triangle colors into
         // the existing diagnostic target, with exactly the visibility depth test.
-        if (tessellationEnabled() && previousParams_.mode == kVisibilityModeTessellatedTriangle) { return; }
+        if (tessellationEnabled() && previousParams_.mode == kVisibilityModeTessellatedTriangle) { return {}; }
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -2410,11 +2411,11 @@ private:
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
         };
-        commandBuffer.beginRendering(RenderingDesc{
+        if (auto rendering = commandBuffer.beginRendering(RenderingDesc{
             .renderArea = renderArea,
             .colorAttachments = &attachment,
             .colorAttachmentCount = 1,
-        });
+        }); !rendering) { return rendering; }
         commandBuffer.setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
@@ -2445,6 +2446,7 @@ private:
             commandBuffer.draw(3);
         }
         commandBuffer.endRendering();
+        return {};
     }
 
     Result<> prepareGPUSceneView(
@@ -2986,12 +2988,12 @@ private:
         const auto hardware = [&](CommandBuffer& commands) -> Result<> {
             auto profile = context.profileScope(commands, "Hardware raster");
             commands.beginDebugLabel({.name = "Hybrid raster: stream hardware clusters"});
-            commands.beginRendering(RenderingDesc{
+            if (auto rendering = commands.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
                 .colorAttachments = colors,
                 .colorAttachmentCount = tessellationEnabled() ? 3u : 1u,
                 .depthStencilAttachment = &depthAttachment,
-            });
+            }); !rendering) { return rendering; }
             commands.setViewport(Viewport{
                 .x = 0.0f,
                 .y = 0.0f,

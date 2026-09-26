@@ -109,13 +109,12 @@ Raster 捕获实际使用的 leases，NRD 捕获 packet 和 kernel 实现。场�
 `BufferSlice` 只从 `Buffer::slice()` 或父 slice 的 `subslice()` 创建。它保存原生分配的强引用、分配内字节偏移及长度，设备 identity、usage 和地址均取自同一分配，不能用裸地址伪造来源。子范围只能缩小，`UINT64_MAX` 表示父范围余量；失败会清空输出，也支持原地缩小。零长度 slice 可用于 CPU 范围计算，但 GPU 数据/命令入口拒绝它。Buffer 包装对象移动、销毁或替换不会改变旧 slice 的来源。
 
 ```cpp
-BufferSlice records;
-auto result = buffer.slice(records, byteOffset, byteSize);
-if (!result) { return result; }
+auto records = buffer.slice(byteOffset, byteSize);
+if (!records) { return std::unexpected(records.error()); }
 ParameterWriter writer(device, frame, *registry);
-MyParams params{.records = writer.dataBuffer<MyGpuRecord>(records)};
+MyParams params{.records = writer.dataBuffer<MyGpuRecord>(*records)};
 EncodedParameters packet;
-result = writer.encode(params, kMyAbi, packet);
+auto result = writer.encode(params, kMyAbi, packet);
 if (!result) { return result; }
 return kernel.dispatch(commands, packet, groupCount);
 ```
@@ -152,3 +151,60 @@ Slang 的 `.data` 是普通 GPU 指针，`.length()` 在 stride 与 `sizeof(T)` 
 | Native 编辑器 smoke | 退出码 0，提交并呈现一帧 | `smoke.log` |
 
 用例有重叠，表中数量不能相加为独立用例总数；所跑验证未报告 Vulkan VUID。仍排除前述已记录基线失败的 `frame_self_submit_two_slots`，本轮未重建该基线。实时管线为 compact Bunny fixture，关闭 DLSS 节点；这不是完整 DLSS 编辑器场景切换验证。没有帧时间 A/B 结果。测试改写的 `meet_mat.glb.meshlets.bin` 已按 HEAD 匹配的原备份恢复。
+
+
+## 第四批：同步策略、按需原生 view 与统一执行入口
+
+### 同步与 layout 分离
+
+`SyncScope { stages, access }` 表达执行阶段和内存访问；`MemoryBarrierDesc` 表达不依赖具体资源对象的普通内存依赖。`synchronize(BarrierDesc)` 返回 Result，在录制任何原生命令前检查数组、范围、设备、阶段/access 配对和功能支持。旧 `barrier()` 转发至它；旧资源状态仍可推导默认 scope，调用者可用 `beforeScope/afterScope` 提供更精确的阶段。
+
+RenderGraph 按 pass 边界批量收集依赖。Compute/Raster shader 访问使用对应阶段；不透明的 Unsafe pass 继续保守处理。连续读者的阶段会累积，防止后续写入仅等待最后一个读者。同一批次内出现同一资源的顺序转换时先提交已有批次，不把转换链误合成一个 barrier。
+
+Vulkan 后端把 buffer 和相同 layout 的 image 普通依赖合并为 `VkMemoryBarrier2`，只合并相同 source/destination 阶段对；读/读不生成依赖，读/写仍保留执行顺序。范围信息仍用于参数检查及图调度，真正的 layout transition 继续使用对应 subresource 的 image barrier。全局 memory barrier 可以扩大受影响的资源集合，这里只证明命令表达简化，没有声称所有硬件或负载都更快。
+
+`DeviceDesc::preferUnifiedImageLayouts` 默认开启软偏好：仅当扩展和 feature 都可用时启用 `VK_KHR_unified_image_layouts`，实际结果由 capabilities 查询。普通读写、attachment、copy 和 clear 统一使用 GENERAL；初始化的 UNDEFINED 和呈现的 PRESENT 仍需转换。不支持或显式关闭时保留 optimal layouts。descriptor 编码、attachment、复制与原生导出 `nativeImageLayout()` 使用同一策略。该规则遵循 [unified image layouts 提案](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_unified_image_layouts.html)。普通内存依赖和真实 layout 转换的区别参见 [Khronos 同步示例](https://docs.vulkan.org/guide/latest/synchronization_examples.html)。
+
+显式 scope 包括 indirect、AS build、ray tracing、decompression、host 和 descriptor heap。`DescriptorRead` 映射到资源堆/采样器堆访问位，不能拿 `DESCRIPTOR_BUFFER_READ` 替代；参见 [Vulkan access flags](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccessFlagBits2.html)。SDK/DGC 特有命令内部的同步仍由对应集成负责，图中的队列分支、timeline 等待和部分提交回收协议保持有效。
+
+### 语义 view 与原生 view
+
+`createTextureView()` 校验并保存格式、swizzle、mip/layer 范围及 image allocation，不调用 `vkCreateImageView`。descriptor heap 从同一份规范化的 `VkImageViewCreateInfo` 编码资源，shader-only view 不创建原生对象。
+
+只有 attachment 或 SDK 原生导出才调用 `prepareNative()`；同一个 view 以 mutex 保护首次创建，随后复用。`hasNativeView()` 可观测这一边界。`beginRendering()` 现在返回 Result，生产光栅调用者传播首次创建失败。`CommandBuffer::useNativeTextureView()` 在 SDK 导出前准备并保留 view，attachment 录制也保留 view 本身，因此 view 与 image 都能活到提交完成；取消走已有录制回收机制。单独调用 `nativeImageView()` 只负责按需导出，不自行建立提交期保留，原生调用者应先使用 `useNativeTextureView()` 或提供等价的外部 owner。
+
+Streamline、DLSS-NR 与 NRC 已接入该准备/保留入口，编辑器 ImGui descriptor 使用后端导出的实际 layout。CPU 语义 view/registry identity 与原生对象没有合并成第三套 shader 句柄体系。
+
+### 预备执行对象
+
+`PreparedExecution` 是已创建 compute PSO、graphics PSO 或 graphics shader-object program 的拥有型快照。通过相应对象的 `execution()` 得到，`bindExecution()` 只验证、绑定和保留，不在 draw/dispatch 时查找或创建 pipeline。旧 bind 入口统一转发至这一实现，ComputeKernel/ComputeProgram 及样例 raster pass 已使用新入口。
+
+Shader objects 使用明确的 `RasterExecutionState`（cull/front-face、depth 状态、color attachment 数量），绑定时恢复当前实现支持的固定 triangle/fill/single-sample/no-blend 状态；viewport/scissor 和 heap/参数仍由调用者提供。它没有把所有 Vulkan 动态状态包装成通用渲染状态系统。PSO 继续使用预编译的固定状态和原有缓存键，shader 编译与 PSO 生命周期也没有合并。
+
+快照及 command recording 共同持有原生 pipeline/shaders。热替换或释放源包装对象不会让已录制命令失效；Device 仍必须晚于所有执行快照、命令和 GPU 工作销毁。SDK/DGC 执行后显式失效 pipeline/shader、heap、push data、viewport/scissor 的跟踪缓存，后续调用重新建立状态。兼容名 `notifyExternalDescriptorSetBinding()` 现在失效完整执行缓存。
+
+### 第四批验证（2026-09-26）
+
+新增 `synchronization_scopes_batch_and_validation` 和 `prepared_execution_lazy_views_layout_policy`。前者检查三资源合并、阶段对隔离、读/读跳过、无副作用的非法 scope/范围拒绝与录制重置；后者验证 PSO → shader object → PSO 逐字节相同的 GPU 读回、执行对象热替换、延迟 view 创建、提交前释放及取消。registry identity 用例额外断言 sampled/storage descriptor 写入不创建原生 view。
+
+本机实际启用了 unified layout：三张测试目标的 image transition 从 optimal 策略的 6 次降为 GENERAL 策略的 3 次，其余三个依赖为 memory barrier；两种策略的完整像素结果一致。原始证据在 `.cache/registry-stage4/core-mapped.xml`。这些是功能/命令数量证据，不是帧时间收益。
+
+
+沿用 `build-full` Debug 配置，`Metallic`、`MetallicRhiTests`、`MetallicNrdTests` 构建通过。主要回归通过 `VK_LAYER_SETTINGS_PATH=.cache/registry-stage4/sync-validation` 加载 `khronos_validation.validate_sync = true`，同时启用常规 Vulkan validation。
+
+| 验证 | 结果 | `.cache/registry-stage4/` 日志 |
+| --- | --- | --- |
+| Mapped registry / CPU slice / GPUScene / frame / streaming 上传 / 新接口 | 38 通过 | `core-mapped.log`、`core-mapped.xml` |
+| Native registry / GPUScene / deferred / LOD / 状态切换 / DebugControl / DGC / 多队列 / 热重载和 resize | 47 通过 | `native.log`、`native.xml` |
+| Mapped 场景材质 / streaming / CLAS | 19 通过 | `scene-mapped.log` |
+| NRD Mapped / Native | 各 10 通过 | `nrd-mapped.log`、`nrd-native.log` |
+| DLSS-NR runtime / slider / scene，包含 DLSS-RR | GENERAL / optimal 各 3 通过；两种策略都有下述 SDK 同步告警 | `dlss-runtime.log`、`dlss-optimal.log` |
+| Native 实时 streaming，启用独立 compute queue | 1 通过 | `realtime.log` |
+| Native 编辑器 smoke | 退出码 0，提交并呈现一帧 | `smoke.log` |
+| 最终代码新接口 / slice / view 去重复验 | 5 通过 | `final.log`、`final.xml` |
+
+用例之间有重叠，数量不可相加作为独立用例数。除 DLSS 下述告警外，所跑回归日志未发现 VUID 或同步 hazard。
+
+同步验证在 DLSS-RR 的 `nv.ngx.dlssd.Evaluate` 内报告两条 `WRITE_AFTER_WRITE`：SDK 私有 `nv.ngx.dlssd.resource` 的 layout transition 后执行 clear，内部依赖未包含 transfer write。用新增测试选项 `--rhi-optimal-layouts` 关闭统一 layout 后，资源名称、命令和告警均复现。该对照只能排除 GENERAL 策略是必要触发条件，不能替代整个变更前的基线对照；未修改 NVIDIA SDK，也不把 DLSS 的测试退出码 0 描述为同步验证完全无误。NRC 集成完成编译验证，未单独运行 NRC 场景。
+
+仍排除前文已有基线记录的 `frame_self_submit_two_slots`，本批未重新构建其旧基线；其他 frame 和多队列用例已通过。实时 streaming 使用关闭 DLSS 的 compact Bunny fixture；DLSS 另由上表专门测试覆盖。测试改写的 `Asset/meet_mat.glb.meshlets.bin` 从与当前 HEAD hash 一致的本轮备份恢复。未修改 External 内容，未做性能 A/B 测量。

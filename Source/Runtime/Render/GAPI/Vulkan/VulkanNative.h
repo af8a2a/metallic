@@ -62,7 +62,10 @@ VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer);
 VkDevice nativeCommandBufferDevice(CommandBuffer& commandBuffer);
 // DGC leaves affected state undefined. Rebind pipeline/shaders, heap and push data afterwards.
 void notifyGeneratedCommandsExecution(CommandBuffer& commandBuffer);
+// Compatibility name: invalidates all tracked execution state after external commands.
 void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer);
 VkFormat nativeSwapchainFormat(Swapchain& swapchain);
+// Exporters use the backend policy, rather than hard-coding an optimal layout.
+VkImageLayout nativeImageLayout(TextureView& view, ResourceState usage);
 VkImageView nativeImageView(TextureView& view);
 } // namespace metallic::render::vulkan
